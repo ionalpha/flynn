@@ -5,7 +5,7 @@ import "runtime/debug"
 
 // Version is the semantic version. Override at build time with:
 //
-//	go build -ldflags "-X github.com/ionalpha/flynn/internal/version.Version=v0.1.0" ./cmd/agent
+//	go build -ldflags "-X github.com/ionalpha/flynn/internal/version.Version=v0.1.0" ./cmd/flynn
 var Version = "0.0.0-dev"
 
 // String returns a human-readable version, appending the VCS revision when the

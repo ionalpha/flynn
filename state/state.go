@@ -4,7 +4,7 @@
 // This is the open-core boundary: the agent depends only on these interfaces.
 // The open agent ships local implementations (e.g. in-memory here, SQLite
 // later). A commercial host such as an Ion Alpha instance can provide its own
-// implementation backed by a knowledge graph and fleet/federated learning —
+// implementation backed by a knowledge graph and fleet/federated learning,
 // without this package importing the host.
 package state
 

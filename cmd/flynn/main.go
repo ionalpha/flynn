@@ -1,7 +1,7 @@
-// Command agent is the standalone Flynn agent binary.
+// Command flynn is the standalone Flynn agent binary.
 //
-// Build:  go build -o agent ./cmd/agent
-// Run:    ./agent --model anthropic:claude-opus-4-8
+// Build:  go build -o flynn ./cmd/flynn
+// Run:    ./flynn --model anthropic:claude-opus-4-8
 package main
 
 import (
@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/ionalpha/flynn"
+	agent "github.com/ionalpha/flynn"
 	"github.com/ionalpha/flynn/internal/version"
 )
 

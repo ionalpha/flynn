@@ -1,9 +1,15 @@
 # Build output
 /agent
 /agent.exe
+/flynn
+/flynn.exe
 /dist/
 *.exe
 *.out
+
+# CI artifacts
+coverage.out
+results.sarif
 
 # Local config / secrets
 .env

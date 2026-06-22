@@ -1,10 +1,10 @@
 // Package agent is the Ion Alpha open-source agent runtime.
 //
 // It is transport- and provider-agnostic, builds to a single static binary
-// (see cmd/agent), and exposes importable packages so a host application can
+// (see cmd/flynn), and exposes importable packages so a host application can
 // embed it directly. Persistence and context are reached only through the
 // interfaces in the state package: the open agent ships local implementations,
-// while a richer host (e.g. an Ion Alpha instance) can supply its own —
+// while a richer host (e.g. an Ion Alpha instance) can supply its own,
 // without this package ever depending on the host.
 package agent
 
@@ -44,12 +44,12 @@ func New(cfg Config) *Agent {
 	return &Agent{cfg: cfg}
 }
 
-// Run starts the agent. This is a skeleton entry point — the conversation loop,
+// Run starts the agent. This is a skeleton entry point; the conversation loop,
 // tool dispatch, router, and learning loop are wired in follow-up tasks.
 func (a *Agent) Run(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	fmt.Fprintf(a.cfg.Out, "flynn: runtime ready (model=%q, store=%s)\n", a.cfg.Model, a.cfg.Store.Name())
+	_, _ = fmt.Fprintf(a.cfg.Out, "flynn: runtime ready (model=%q, store=%s)\n", a.cfg.Model, a.cfg.Store.Name())
 	return nil
 }
