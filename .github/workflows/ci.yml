@@ -30,8 +30,8 @@ jobs:
         go: ["1.24", "1.25"]
     steps:
       # TODO: pin actions to a full commit SHA (see task 4a54468e). Dependabot keeps them current.
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: ${{ matrix.go }}
           cache: true
@@ -40,7 +40,7 @@ jobs:
       - run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.25'
-        uses: codecov/codecov-action@v5
+        uses: codecov/codecov-action@v7
         with:
           files: coverage.out
         continue-on-error: true
@@ -49,8 +49,8 @@ jobs:
     name: Lint & format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
           cache: true
@@ -61,7 +61,7 @@ jobs:
       - name: golangci-lint
         # v8 of the action installs golangci-lint v2 (v6 caps at v1 and cannot
         # read a v2 config). Pin the linter version for deterministic results.
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.12.2
 
@@ -69,8 +69,8 @@ jobs:
     name: govulncheck
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
           cache: true
@@ -85,8 +85,8 @@ jobs:
     # Tolerant until then so it never blocks an empty package.
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v6
         with:
           go-version: "1.25"
           cache: true
