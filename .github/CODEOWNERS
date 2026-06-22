@@ -1,0 +1,6 @@
+# Default owners for everything in the repo.
+* @ion-alpha-dev
+
+# CI, release, and security config require owner review.
+/.github/        @ion-alpha-dev
+/.goreleaser.yaml @ion-alpha-dev

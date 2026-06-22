@@ -1,0 +1,53 @@
+version: 2
+
+project_name: flynn
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: flynn
+    main: ./cmd/flynn
+    binary: flynn
+    env:
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ldflags:
+      - -s -w -X github.com/ionalpha/flynn/internal/version.Version={{ .Version }}
+
+archives:
+  - formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+checksum:
+  name_template: checksums.txt
+
+sboms:
+  - artifacts: archive
+
+# Keyless signing of the checksum file via cosign + Sigstore (OIDC in CI).
+signs:
+  - cmd: cosign
+    certificate: "${artifact}.pem"
+    signature: "${artifact}.sig"
+    args:
+      - sign-blob
+      - "--yes"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  draft: false
+  prerelease: auto
