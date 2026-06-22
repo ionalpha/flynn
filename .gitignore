@@ -1,0 +1,19 @@
+# Build output
+/agent
+/agent.exe
+/dist/
+*.exe
+*.out
+
+# Local config / secrets
+.env
+*.local
+
+# Local tooling config
+CLAUDE.md
+.claude/
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
