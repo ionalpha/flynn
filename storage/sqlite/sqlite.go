@@ -1,15 +1,21 @@
 // Package sqlite is the agent's durable, single-file backend. One SQLite database
 // (pure-Go modernc.org/sqlite, no cgo) backs every persistence domain: the state
 // provider (sessions, skills, memory) and the event spine share one file and one
-// connection, so the single static binary keeps all durable data in one place and
-// a future cross-domain write can be one transaction.
+// connection, so all durable data lives in one place and a state mutation's event
+// and its projection commit in one transaction.
+//
+// Writes go through the command path: every mutation is stamped once by the shared
+// state.Stamper (IDs, HLC, versions, the sync envelope, CAS, tombstones), appended
+// to the event spine, and projected into the tables by applyEvent, all inside a
+// single transaction. The same applyEvent reprojects the log in Rebuild, so a
+// rebuilt-from-log database is identical to a live one and the event log can never
+// drift from the tables. No write touches a projection table except through
+// applyEvent, which keeps full event-sourcing reachable: state is a fold of the
+// spine.
 //
 // A Store implements state.Provider directly and exposes the event log via Log().
 // Both pass the shared conformance suites (statetest.RunSuite, spinetest.RunSuite),
 // so this backend stays byte-for-byte interchangeable with the in-memory ones.
-// Each state write is a "dual write": the projection table and its FTS5 search
-// index are updated in one transaction, so search can never drift from the
-// records it indexes.
 package sqlite
 
 import (
@@ -46,9 +52,9 @@ func WithInstanceID(id string) Option {
 	}
 }
 
-// WithClock sets the time source for event timestamps and the hybrid logical
-// clock (default: clock.System). Tests and deterministic replay pass a
-// clock.Manual.
+// WithClock sets the time source for record timestamps, event times, and the
+// hybrid logical clock (default: clock.System). Tests and deterministic replay
+// pass a clock.Manual.
 func WithClock(c clock.Clock) Option {
 	return func(s *Store) {
 		if c != nil {
@@ -57,13 +63,27 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
+// WithIDGenerator sets the source of record IDs (default: a generator on the
+// store's clock with crypto/rand entropy). Supply a generator seeded with a
+// deterministic clock and entropy so a re-run with the same seeds produces the
+// exact same IDs, the basis of deterministic replay.
+func WithIDGenerator(g *ids.Generator) Option {
+	return func(s *Store) {
+		if g != nil {
+			s.gen = g
+		}
+	}
+}
+
 // Store is the SQLite backend. It implements state.Provider (sessions, skills,
 // memory) and exposes the event spine via Log(), all over one database and one
-// connection so cross-domain work can share a single file and transaction.
+// connection so cross-domain work shares a single file and transaction.
 type Store struct {
 	db         *sql.DB
-	hlc        *hlc.Clock
 	clk        clock.Clock
+	hlc        *hlc.Clock
+	gen        *ids.Generator
+	st         *state.Stamper
 	instanceID string
 }
 
@@ -86,7 +106,11 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	for _, o := range opts {
 		o(s)
 	}
+	if s.gen == nil {
+		s.gen = ids.NewGenerator(ids.WithClock(s.clk))
+	}
 	s.hlc = hlc.NewClock(hlc.WithPhysical(s.clk))
+	s.st = state.NewStamper(s.instanceID, s.clk, s.hlc, s.gen)
 	return s, nil
 }
 
@@ -111,9 +135,94 @@ func (s *Store) Log() spine.Log { return &eventLog{db: s.db, clk: s.clk} }
 // event log.
 func (s *Store) Close() error { return s.db.Close() }
 
-// --- shared helpers ---------------------------------------------------------
+// commit runs the command path for one mutation: build stamps the record and
+// produces the event to append (doing any tx-scoped lookup it needs for CAS),
+// then commit appends the event to the spine and projects it into the tables,
+// both in one transaction. Append-and-project is atomic, so the log and the
+// projection can never diverge.
+func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.AppendInput, error)) error {
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		in, err := build(tx)
+		if err != nil {
+			return err
+		}
+		e, err := appendTx(ctx, tx, s.clk, in)
+		if err != nil {
+			return err
+		}
+		return s.applyEvent(ctx, tx, e)
+	})
+}
 
-func newID() string { return ids.New() }
+// Rebuild reprojects the state tables from the event log: it folds the state
+// stream through the same applyEvent the live write path uses, so the projection
+// is reconciled to the log. It is idempotent (every event is the post-image of its
+// record, applied by id), so running it repeatedly is safe. Its existence is the
+// proof that the log is the source of truth and the tables are a derived view.
+func (s *Store) Rebuild(ctx context.Context) error {
+	events, err := s.Log().Read(ctx, spine.Query{Stream: state.StateStream})
+	if err != nil {
+		return err
+	}
+	return s.tx(ctx, func(tx *sql.Tx) error {
+		for _, e := range events {
+			if err := s.applyEvent(ctx, tx, e); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// applyEvent projects one state event into the tables (and the FTS indexes),
+// decoding the canonical post-image the Stamper wrote. It is the single source of
+// the SQLite projection logic, shared by the live write path (commit) and
+// reconstruction (Rebuild), so a rebuilt database is identical to a live one.
+func (s *Store) applyEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error {
+	switch e.Type {
+	case state.EvSessionCreated, state.EvSessionDeleted:
+		ses, err := state.DecodeSession(e.Payload)
+		if err != nil {
+			return err
+		}
+		return upsertSessionRow(ctx, tx, ses)
+	case state.EvTurnAppended:
+		t, err := state.DecodeTurn(e.Payload)
+		if err != nil {
+			return err
+		}
+		ses, err := state.DecodeSession(e.Payload)
+		if err != nil {
+			return err
+		}
+		if err := insertTurnRow(ctx, tx, t); err != nil {
+			return err
+		}
+		return upsertSessionRow(ctx, tx, ses)
+	case state.EvSkillUpserted, state.EvSkillDeleted:
+		sk, err := state.DecodeSkill(e.Payload)
+		if err != nil {
+			return err
+		}
+		if err := upsertSkillRow(ctx, tx, sk); err != nil {
+			return err
+		}
+		return reindexSkill(ctx, tx, sk)
+	case state.EvMemoryWritten, state.EvMemoryDeleted:
+		it, err := state.DecodeMemoryItem(e.Payload)
+		if err != nil {
+			return err
+		}
+		if err := upsertMemoryRow(ctx, tx, it); err != nil {
+			return err
+		}
+		return reindexMemory(ctx, tx, it)
+	default:
+		return fmt.Errorf("sqlite: unknown state event %q", e.Type)
+	}
+}
+
+// --- shared helpers ---------------------------------------------------------
 
 func formatTime(t time.Time) string { return sqlitex.FormatTime(t) }
 
@@ -140,6 +249,17 @@ func boolToInt(b bool) int {
 	return 0
 }
 
+func marshalTags(tags []string) string {
+	if len(tags) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(tags)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
 // --- sessions ---------------------------------------------------------------
 
 type sessions struct{ p *Store }
@@ -164,31 +284,52 @@ func scanSession(sc interface{ Scan(...any) error }) (state.Session, error) {
 	return s, nil
 }
 
-func (s *sessions) Create(ctx context.Context, ses state.Session) (state.Session, error) {
-	if ses.ID == "" {
-		ses.ID = newID()
-	}
-	now := time.Now().UTC()
-	if ses.CreatedAt.IsZero() {
-		ses.CreatedAt = now
-	}
-	ses.UpdatedAt = now
-	if ses.OriginInstanceID == "" {
-		ses.OriginInstanceID = s.p.instanceID
-	}
-	ses.LastWriterID = s.p.instanceID
-	ses.UpdatedHLC = s.p.hlc.Now()
-	ses.SyncVersion = 1
-	ses.Deleted = false
-
-	_, err := s.p.db.ExecContext(ctx,
-		`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+// upsertSessionRow writes the session post-image in place. It is an ON CONFLICT
+// upsert rather than INSERT OR REPLACE: REPLACE would delete the existing row,
+// which the turns foreign key forbids once a session has turns. DO UPDATE mutates
+// the row in place, so the projection stays consistent and Rebuild is idempotent.
+func upsertSessionRow(ctx context.Context, tx *sql.Tx, ses state.Session) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET
+			title=excluded.title, model=excluded.model,
+			created_at=excluded.created_at, updated_at=excluded.updated_at,
+			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
+			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
+			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
 		ses.ID, ses.Title, ses.Model, formatTime(ses.CreatedAt), formatTime(ses.UpdatedAt),
-		ses.SyncVersion, ses.OriginInstanceID, ses.UpdatedHLC.Wall, int64(ses.UpdatedHLC.Counter), ses.LastWriterID, 0)
+		ses.SyncVersion, ses.OriginInstanceID, ses.UpdatedHLC.Wall, int64(ses.UpdatedHLC.Counter), ses.LastWriterID, boolToInt(ses.Deleted))
+	return err
+}
+
+// insertTurnRow writes a turn post-image. Turns are append-only, but an upsert by
+// id keeps Rebuild idempotent (replaying the same event is a no-op write).
+func insertTurnRow(ctx context.Context, tx *sql.Tx, t state.Turn) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO turns (id, session_id, seq, role, content, created_at,
+			sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET
+			session_id=excluded.session_id, seq=excluded.seq, role=excluded.role, content=excluded.content,
+			created_at=excluded.created_at, sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
+			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
+			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
+		t.ID, t.SessionID, t.Seq, t.Role, t.Content, formatTime(t.CreatedAt),
+		t.SyncVersion, t.OriginInstanceID, t.UpdatedHLC.Wall, int64(t.UpdatedHLC.Counter), t.LastWriterID, boolToInt(t.Deleted))
+	return err
+}
+
+func (s *sessions) Create(ctx context.Context, ses state.Session) (state.Session, error) {
+	var rec state.Session
+	err := s.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, error) {
+		r, ev, err := s.p.st.CreateSession(ses)
+		rec = r
+		return ev, err
+	})
 	if err != nil {
 		return state.Session{}, fmt.Errorf("sqlite: create session: %w", err)
 	}
-	return ses, nil
+	return rec, nil
 }
 
 func (s *sessions) Get(ctx context.Context, id string) (state.Session, error) {
@@ -218,56 +359,21 @@ func (s *sessions) List(ctx context.Context) ([]state.Session, error) {
 }
 
 func (s *sessions) AppendTurn(ctx context.Context, t state.Turn) (state.Turn, error) {
-	var out state.Turn
-	err := s.p.tx(ctx, func(tx *sql.Tx) error {
-		var deleted int
-		err := tx.QueryRowContext(ctx, `SELECT deleted FROM sessions WHERE id = ?`, t.SessionID).Scan(&deleted)
-		if errors.Is(err, sql.ErrNoRows) || deleted != 0 {
-			return state.ErrNotFound
-		}
+	var rec state.Turn
+	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+		ses, err := getSessionTx(ctx, tx, t.SessionID)
 		if err != nil {
-			return err
-		}
-
-		if t.ID == "" {
-			t.ID = newID()
+			return spine.AppendInput{}, err
 		}
 		var maxSeq int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM turns WHERE session_id = ?`, t.SessionID).Scan(&maxSeq); err != nil {
-			return err
+			return spine.AppendInput{}, err
 		}
-		t.Seq = maxSeq + 1
-		if t.CreatedAt.IsZero() {
-			t.CreatedAt = time.Now().UTC()
-		}
-		if t.OriginInstanceID == "" {
-			t.OriginInstanceID = s.p.instanceID
-		}
-		now := s.p.hlc.Now()
-		t.LastWriterID = s.p.instanceID
-		t.UpdatedHLC = now
-		t.SyncVersion = 1
-		t.Deleted = false
-
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO turns (id, session_id, seq, role, content, created_at,
-				sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted)
-			 VALUES (?,?,?,?,?,?,?,?,?,?,?,0)`,
-			t.ID, t.SessionID, t.Seq, t.Role, t.Content, formatTime(t.CreatedAt),
-			t.SyncVersion, t.OriginInstanceID, now.Wall, int64(now.Counter), t.LastWriterID); err != nil {
-			return err
-		}
-		// Appending a turn mutates the session: bump its envelope.
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE sessions SET updated_at = ?, sync_version = sync_version + 1,
-				updated_hlc_wall = ?, updated_hlc_counter = ?, last_writer_id = ? WHERE id = ?`,
-			formatTime(t.CreatedAt), now.Wall, int64(now.Counter), s.p.instanceID, t.SessionID); err != nil {
-			return err
-		}
-		out = t
-		return nil
+		r, _, ev, err := s.p.st.AppendTurn(ses, t, maxSeq+1)
+		rec = r
+		return ev, err
 	})
-	return out, err
+	return rec, err
 }
 
 func (s *sessions) Turns(ctx context.Context, sessionID string) ([]state.Turn, error) {
@@ -300,23 +406,32 @@ func (s *sessions) Turns(ctx context.Context, sessionID string) ([]state.Turn, e
 }
 
 func (s *sessions) Delete(ctx context.Context, id string) error {
-	now := s.p.hlc.Now()
-	res, err := s.p.db.ExecContext(ctx,
-		`UPDATE sessions SET deleted = 1, sync_version = sync_version + 1,
-			updated_at = ?, updated_hlc_wall = ?, updated_hlc_counter = ?, last_writer_id = ?
-		 WHERE id = ? AND deleted = 0`,
-		formatTime(time.Now().UTC()), now.Wall, int64(now.Counter), s.p.instanceID, id)
-	if err != nil {
-		return err
+	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+		ses, err := getSessionTx(ctx, tx, id)
+		if err != nil {
+			return spine.AppendInput{}, err
+		}
+		_, ev, err := s.p.st.DeleteSession(ses)
+		return ev, err
+	})
+}
+
+// getSessionTx loads a live session within tx (for the envelope it bumps), or
+// returns ErrNotFound if it is missing or tombstoned.
+func getSessionTx(ctx context.Context, tx *sql.Tx, id string) (state.Session, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE id = ? AND deleted = 0`, id)
+	ses, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state.Session{}, state.ErrNotFound
 	}
-	return notFoundIfNoRows(res)
+	return ses, err
 }
 
 // --- skills -----------------------------------------------------------------
 
 type skills struct{ p *Store }
 
-// skillCols matches the skills table column order; queries use `SELECT s.*`.
+// skillCols matches the skills table column order.
 const skillCols = `id, slug, name, body, tags, scope_instance, scope_project, scope_workspace,
 	version, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
@@ -344,96 +459,42 @@ func scanSkill(sc interface{ Scan(...any) error }) (state.Skill, error) {
 	return s, nil
 }
 
+func upsertSkillRow(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO skills (`+skillCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET
+			slug=excluded.slug, name=excluded.name, body=excluded.body, tags=excluded.tags,
+			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
+			version=excluded.version, created_at=excluded.created_at, updated_at=excluded.updated_at,
+			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
+			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
+			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
+		sk.ID, sk.Slug, sk.Name, sk.Body, marshalTags(sk.Tags),
+		sk.Scope.Instance, sk.Scope.Project, sk.Scope.Workspace,
+		sk.Version, formatTime(sk.CreatedAt), formatTime(sk.UpdatedAt),
+		sk.SyncVersion, sk.OriginInstanceID, sk.UpdatedHLC.Wall, int64(sk.UpdatedHLC.Counter), sk.LastWriterID, boolToInt(sk.Deleted))
+	return err
+}
+
 func (s *skills) Upsert(ctx context.Context, sk state.Skill) (state.Skill, error) {
-	var out state.Skill
-	err := s.p.tx(ctx, func(tx *sql.Tx) error {
-		// Look up the existing record by (scope, slug), tombstones included: the
-		// row holds the slot, so an upsert over a tombstone resurrects it.
-		var (
-			id          string
-			created     string
-			origin      string
-			version     int
-			syncVersion int64
-			found       bool
-		)
-		err := tx.QueryRowContext(ctx,
-			`SELECT id, created_at, origin_instance_id, version, sync_version FROM skills
-			 WHERE scope_instance = ? AND scope_project = ? AND scope_workspace = ? AND slug = ?`,
-			sk.Scope.Instance, sk.Scope.Project, sk.Scope.Workspace, sk.Slug).
-			Scan(&id, &created, &origin, &version, &syncVersion)
-		switch {
-		case err == nil:
-			found = true
-		case errors.Is(err, sql.ErrNoRows):
-			found = false
-		default:
-			return err
+	var rec state.Skill
+	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+		existing, err := getSkillBySlugTx(ctx, tx, sk.Scope, sk.Slug)
+		if err != nil {
+			return spine.AppendInput{}, err
 		}
-
-		now := s.p.hlc.Now()
-		ts := time.Now().UTC()
-		if found {
-			// Opt-in optimistic concurrency: a non-zero SyncVersion must match.
-			if sk.SyncVersion != 0 && sk.SyncVersion != syncVersion {
-				return state.ErrConflict
-			}
-			sk.ID = id
-			sk.CreatedAt = parseTime(created)
-			sk.OriginInstanceID = origin // origin is preserved
-			sk.Version = version + 1
-			sk.SyncVersion = syncVersion + 1
-			sk.LastWriterID = s.p.instanceID
-			sk.UpdatedHLC = now
-			sk.UpdatedAt = ts
-			if _, err := tx.ExecContext(ctx,
-				`UPDATE skills SET name = ?, body = ?, tags = ?, version = ?, updated_at = ?,
-					sync_version = ?, updated_hlc_wall = ?, updated_hlc_counter = ?, last_writer_id = ?, deleted = ?
-				 WHERE id = ?`,
-				sk.Name, sk.Body, marshalTags(sk.Tags), sk.Version, formatTime(sk.UpdatedAt),
-				sk.SyncVersion, now.Wall, int64(now.Counter), sk.LastWriterID, boolToInt(sk.Deleted), sk.ID); err != nil {
-				return err
-			}
-			out = sk
-			return reindexSkill(ctx, tx, sk)
-		}
-
-		// Creating: a non-zero SyncVersion expected a record that does not exist.
-		if sk.SyncVersion != 0 {
-			return state.ErrConflict
-		}
-		if sk.ID == "" {
-			sk.ID = newID()
-		}
-		if sk.Version == 0 {
-			sk.Version = 1
-		}
-		sk.SyncVersion = 1
-		if sk.OriginInstanceID == "" {
-			sk.OriginInstanceID = s.p.instanceID
-		}
-		sk.LastWriterID = s.p.instanceID
-		sk.UpdatedHLC = now
-		sk.CreatedAt, sk.UpdatedAt = ts, ts
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO skills (`+skillCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			sk.ID, sk.Slug, sk.Name, sk.Body, marshalTags(sk.Tags),
-			sk.Scope.Instance, sk.Scope.Project, sk.Scope.Workspace,
-			sk.Version, formatTime(sk.CreatedAt), formatTime(sk.UpdatedAt),
-			sk.SyncVersion, sk.OriginInstanceID, now.Wall, int64(now.Counter), sk.LastWriterID, boolToInt(sk.Deleted)); err != nil {
-			return err
-		}
-		out = sk
-		return reindexSkill(ctx, tx, sk)
+		r, ev, err := s.p.st.UpsertSkill(existing, sk)
+		rec = r
+		return ev, err
 	})
 	if err != nil {
 		return state.Skill{}, err
 	}
-	return out, nil
+	return rec, nil
 }
 
 func (s *skills) Get(ctx context.Context, idOrSlug string) (state.Skill, error) {
-	row := s.p.db.QueryRowContext(ctx, `SELECT * FROM skills WHERE id = ? AND deleted = 0`, idOrSlug)
+	row := s.p.db.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE id = ? AND deleted = 0`, idOrSlug)
 	sk, err := scanSkill(row)
 	if err == nil {
 		return sk, nil
@@ -441,7 +502,7 @@ func (s *skills) Get(ctx context.Context, idOrSlug string) (state.Skill, error) 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return state.Skill{}, err
 	}
-	row = s.p.db.QueryRowContext(ctx, `SELECT * FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`, idOrSlug)
+	row = s.p.db.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`, idOrSlug)
 	sk, err = scanSkill(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state.Skill{}, state.ErrNotFound
@@ -451,7 +512,7 @@ func (s *skills) Get(ctx context.Context, idOrSlug string) (state.Skill, error) 
 
 func (s *skills) List(ctx context.Context, scope state.Scope) ([]state.Skill, error) {
 	rows, err := s.p.db.QueryContext(ctx,
-		`SELECT * FROM skills WHERE scope_instance = ? AND scope_project = ? AND scope_workspace = ? AND deleted = 0 ORDER BY slug`,
+		`SELECT `+skillCols+` FROM skills WHERE scope_instance = ? AND scope_project = ? AND scope_workspace = ? AND deleted = 0 ORDER BY slug`,
 		scope.Instance, scope.Project, scope.Workspace)
 	if err != nil {
 		return nil, err
@@ -468,7 +529,7 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 	if q == "" {
 		// An empty query matches everything, ordered by slug (FTS5 rejects an
 		// empty MATCH), capped at limit.
-		sqlStr := `SELECT * FROM skills WHERE deleted = 0 ORDER BY slug`
+		sqlStr := `SELECT ` + skillCols + ` FROM skills WHERE deleted = 0 ORDER BY slug`
 		if limit > 0 {
 			sqlStr += ` LIMIT ?`
 			rows, err = s.p.db.QueryContext(ctx, sqlStr, limit)
@@ -476,7 +537,10 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 			rows, err = s.p.db.QueryContext(ctx, sqlStr)
 		}
 	} else {
-		sqlStr := `SELECT s.* FROM skills s JOIN skills_fts f ON f.skill_id = s.id
+		sqlStr := `SELECT s.id, s.slug, s.name, s.body, s.tags, s.scope_instance, s.scope_project, s.scope_workspace,
+			s.version, s.created_at, s.updated_at,
+			s.sync_version, s.origin_instance_id, s.updated_hlc_wall, s.updated_hlc_counter, s.last_writer_id, s.deleted
+			FROM skills s JOIN skills_fts f ON f.skill_id = s.id
 			WHERE f.skills_fts MATCH ? AND s.deleted = 0 ORDER BY s.slug`
 		if limit > 0 {
 			sqlStr += ` LIMIT ?`
@@ -492,28 +556,13 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 }
 
 func (s *skills) Delete(ctx context.Context, idOrSlug string) error {
-	return s.p.tx(ctx, func(tx *sql.Tx) error {
-		var id string
-		err := tx.QueryRowContext(ctx, `SELECT id FROM skills WHERE id = ? AND deleted = 0`, idOrSlug).Scan(&id)
-		if errors.Is(err, sql.ErrNoRows) {
-			err = tx.QueryRowContext(ctx, `SELECT id FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`, idOrSlug).Scan(&id)
-		}
-		if errors.Is(err, sql.ErrNoRows) {
-			return state.ErrNotFound
-		}
+	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+		existing, err := getLiveSkillTx(ctx, tx, idOrSlug)
 		if err != nil {
-			return err
+			return spine.AppendInput{}, err
 		}
-		now := s.p.hlc.Now()
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE skills SET deleted = 1, version = version + 1, sync_version = sync_version + 1,
-				updated_at = ?, updated_hlc_wall = ?, updated_hlc_counter = ?, last_writer_id = ? WHERE id = ?`,
-			formatTime(time.Now().UTC()), now.Wall, int64(now.Counter), s.p.instanceID, id); err != nil {
-			return err
-		}
-		// Drop it from the live search index.
-		_, err = tx.ExecContext(ctx, `DELETE FROM skills_fts WHERE skill_id = ?`, id)
-		return err
+		_, ev, err := s.p.st.DeleteSkill(existing)
+		return ev, err
 	})
 }
 
@@ -530,6 +579,43 @@ func collectSkills(rows *sql.Rows) ([]state.Skill, error) {
 	return out, rows.Err()
 }
 
+// getSkillBySlugTx loads the stored skill for (scope, slug) within tx, tombstones
+// included so an upsert over a tombstone can resurrect it (the row holds the
+// slot). It returns nil when no row exists.
+func getSkillBySlugTx(ctx context.Context, tx *sql.Tx, scope state.Scope, slug string) (*state.Skill, error) {
+	row := tx.QueryRowContext(ctx,
+		`SELECT `+skillCols+` FROM skills
+		 WHERE scope_instance = ? AND scope_project = ? AND scope_workspace = ? AND slug = ?`,
+		scope.Instance, scope.Project, scope.Workspace, slug)
+	sk, err := scanSkill(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &sk, nil
+}
+
+// getLiveSkillTx loads a live skill by id or slug within tx, or returns
+// ErrNotFound.
+func getLiveSkillTx(ctx context.Context, tx *sql.Tx, idOrSlug string) (state.Skill, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE id = ? AND deleted = 0`, idOrSlug)
+	sk, err := scanSkill(row)
+	if err == nil {
+		return sk, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return state.Skill{}, err
+	}
+	row = tx.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`, idOrSlug)
+	sk, err = scanSkill(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state.Skill{}, state.ErrNotFound
+	}
+	return sk, err
+}
+
 // reindexSkill rewrites a skill's FTS row so search reflects the latest content,
 // and holds an entry only while the skill is live.
 func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
@@ -543,17 +629,6 @@ func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 		`INSERT INTO skills_fts (skill_id, name, body, tags) VALUES (?,?,?,?)`,
 		sk.ID, sk.Name, sk.Body, strings.Join(sk.Tags, " "))
 	return err
-}
-
-func marshalTags(tags []string) string {
-	if len(tags) == 0 {
-		return "[]"
-	}
-	b, err := json.Marshal(tags)
-	if err != nil {
-		return "[]"
-	}
-	return string(b)
 }
 
 // --- memory -----------------------------------------------------------------
@@ -581,36 +656,45 @@ func scanMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
 	return m, nil
 }
 
-func (m *memory) Write(ctx context.Context, it state.MemoryItem) (state.MemoryItem, error) {
-	if it.ID == "" {
-		it.ID = newID()
-	}
-	if it.CreatedAt.IsZero() {
-		it.CreatedAt = time.Now().UTC()
-	}
-	if it.OriginInstanceID == "" {
-		it.OriginInstanceID = m.p.instanceID
-	}
-	now := m.p.hlc.Now()
-	it.LastWriterID = m.p.instanceID
-	it.UpdatedHLC = now
-	it.SyncVersion = 1
-	it.Deleted = false
+func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 ON CONFLICT(id) DO UPDATE SET
+			kind=excluded.kind, content=excluded.content,
+			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
+			source=excluded.source, created_at=excluded.created_at,
+			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
+			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
+			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
+		it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, it.Source,
+		formatTime(it.CreatedAt), it.SyncVersion, it.OriginInstanceID, it.UpdatedHLC.Wall, int64(it.UpdatedHLC.Counter), it.LastWriterID, boolToInt(it.Deleted))
+	return err
+}
 
-	err := m.p.tx(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)`,
-			it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, it.Source,
-			formatTime(it.CreatedAt), it.SyncVersion, it.OriginInstanceID, now.Wall, int64(now.Counter), it.LastWriterID); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO memory_fts (item_id, content) VALUES (?, ?)`, it.ID, it.Content)
+// reindexMemory keeps the memory FTS index holding an entry only while the item
+// is live, so a tombstone drops out of recall.
+func reindexMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_fts WHERE item_id = ?`, it.ID); err != nil {
 		return err
+	}
+	if it.Deleted {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO memory_fts (item_id, content) VALUES (?, ?)`, it.ID, it.Content)
+	return err
+}
+
+func (m *memory) Write(ctx context.Context, it state.MemoryItem) (state.MemoryItem, error) {
+	var rec state.MemoryItem
+	err := m.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, error) {
+		r, ev, err := m.p.st.WriteMemory(it)
+		rec = r
+		return ev, err
 	})
 	if err != nil {
 		return state.MemoryItem{}, err
 	}
-	return it, nil
+	return rec, nil
 }
 
 func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
@@ -620,9 +704,13 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	var sb strings.Builder
 	args := make([]any, 0, 5)
 	if query == "" {
-		sb.WriteString(`SELECT m.* FROM memory_items m WHERE m.deleted = 0`)
+		sb.WriteString(`SELECT m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.source, m.created_at,
+			m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted
+			FROM memory_items m WHERE m.deleted = 0`)
 	} else {
-		sb.WriteString(`SELECT m.* FROM memory_items m JOIN memory_fts f ON f.item_id = m.id
+		sb.WriteString(`SELECT m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.source, m.created_at,
+			m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted
+			FROM memory_items m JOIN memory_fts f ON f.item_id = m.id
 			WHERE f.memory_fts MATCH ? AND m.deleted = 0`)
 		args = append(args, ftsPhrase(query))
 	}
@@ -653,38 +741,31 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 }
 
 func (m *memory) Delete(ctx context.Context, id string) error {
-	return m.p.tx(ctx, func(tx *sql.Tx) error {
-		now := m.p.hlc.Now()
-		res, err := tx.ExecContext(ctx,
-			`UPDATE memory_items SET deleted = 1, sync_version = sync_version + 1,
-				updated_hlc_wall = ?, updated_hlc_counter = ?, last_writer_id = ? WHERE id = ? AND deleted = 0`,
-			now.Wall, int64(now.Counter), m.p.instanceID, id)
+	return m.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+		existing, err := getLiveMemoryTx(ctx, tx, id)
 		if err != nil {
-			return err
+			return spine.AppendInput{}, err
 		}
-		if err := notFoundIfNoRows(res); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `DELETE FROM memory_fts WHERE item_id = ?`, id)
-		return err
+		_, ev, err := m.p.st.DeleteMemory(existing)
+		return ev, err
 	})
 }
 
-// --- tx + misc --------------------------------------------------------------
-
-// tx runs fn inside a transaction (so a failed dual write leaves neither the
-// projection nor its index changed). The shared engine owns the commit/rollback.
-func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
-	return sqlitex.Tx(ctx, s.db, fn)
+// getLiveMemoryTx loads a live memory item by id within tx, or returns
+// ErrNotFound.
+func getLiveMemoryTx(ctx context.Context, tx *sql.Tx, id string) (state.MemoryItem, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+memoryCols+` FROM memory_items WHERE id = ? AND deleted = 0`, id)
+	it, err := scanMemory(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return state.MemoryItem{}, state.ErrNotFound
+	}
+	return it, err
 }
 
-func notFoundIfNoRows(res sql.Result) error {
-	n, err := res.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if n == 0 {
-		return state.ErrNotFound
-	}
-	return nil
+// --- tx ----------------------------------------------------------------------
+
+// tx runs fn inside a transaction (so a failed append+project leaves neither the
+// event nor the projection changed). The shared engine owns the commit/rollback.
+func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	return sqlitex.Tx(ctx, s.db, fn)
 }

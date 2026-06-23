@@ -29,9 +29,26 @@ var _ spine.Log = (*eventLog)(nil)
 // unset Time from the clock, inside one transaction so a concurrent append can
 // never claim the same (stream, seq).
 func (l *eventLog) Append(ctx context.Context, in spine.AppendInput) (spine.Event, error) {
+	var e spine.Event
+	err := sqlitex.Tx(ctx, l.db, func(tx *sql.Tx) error {
+		var err error
+		e, err = appendTx(ctx, tx, l.clk, in)
+		return err
+	})
+	if err != nil {
+		return spine.Event{}, err
+	}
+	return e, nil
+}
+
+// appendTx appends one event inside an existing transaction. The durable command
+// path calls it so a state mutation's event and its projection commit together in
+// one tx (and the public Append wraps it in a transaction of its own). It assigns
+// the next per-stream Seq and stamps an unset Time from clk.
+func appendTx(ctx context.Context, tx *sql.Tx, clk clock.Clock, in spine.AppendInput) (spine.Event, error) {
 	t := in.Time
 	if t.IsZero() {
-		t = l.clk.Now()
+		t = clk.Now()
 	}
 	t = t.UTC()
 
@@ -40,33 +57,25 @@ func (l *eventLog) Append(ctx context.Context, in spine.AppendInput) (spine.Even
 		return spine.Event{}, fmt.Errorf("sqlite: marshal event payload: %w", err)
 	}
 
-	var e spine.Event
-	err = sqlitex.Tx(ctx, l.db, func(tx *sql.Tx) error {
-		var maxSeq int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream = ?`, in.Stream).Scan(&maxSeq); err != nil {
-			return err
-		}
-		seq := maxSeq + 1
-		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id)
-			 VALUES (?,?,?,?,?,?,?,?,?,?)`,
-			in.Stream, seq, sqlitex.FormatTime(t), in.Type, string(in.Actor), string(payload),
-			in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID); err != nil {
-			return err
-		}
-		e = spine.Event{
-			Stream: in.Stream, Seq: seq, Time: t, Type: in.Type, Actor: in.Actor,
-			Payload:     clonePayload(in.Payload),
-			TraceID:     in.TraceID,
-			SpanID:      in.SpanID,
-			CausationID: in.CausationID, OriginInstanceID: in.OriginInstanceID,
-		}
-		return nil
-	})
-	if err != nil {
+	var maxSeq int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream = ?`, in.Stream).Scan(&maxSeq); err != nil {
 		return spine.Event{}, err
 	}
-	return e, nil
+	seq := maxSeq + 1
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id)
+		 VALUES (?,?,?,?,?,?,?,?,?,?)`,
+		in.Stream, seq, sqlitex.FormatTime(t), in.Type, string(in.Actor), string(payload),
+		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID); err != nil {
+		return spine.Event{}, err
+	}
+	return spine.Event{
+		Stream: in.Stream, Seq: seq, Time: t, Type: in.Type, Actor: in.Actor,
+		Payload:     clonePayload(in.Payload),
+		TraceID:     in.TraceID,
+		SpanID:      in.SpanID,
+		CausationID: in.CausationID, OriginInstanceID: in.OriginInstanceID,
+	}, nil
 }
 
 // Read implements spine.Log: events on a stream in Seq order, AfterSeq exclusive,

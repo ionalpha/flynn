@@ -6,9 +6,6 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ionalpha/flynn/clock"
-	"github.com/ionalpha/flynn/hlc"
-	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -18,18 +15,28 @@ import (
 // audit the state stream directly.
 const StateStream = "state"
 
-// State event types. Each is the post-image of the affected record(s): the
-// command computes the canonical record (IDs, Seq, HLC, version, timestamps all
-// assigned) and writes it as the event payload, so replaying the event in Seq
-// order reproduces identical state without re-running any clock or RNG.
+// State event types: the vocabulary of the state stream. Each event is the
+// post-image of the affected record(s): the Stamper computes the canonical record
+// (IDs, Seq, HLC, version, timestamps all assigned) and it is written as the event
+// payload, so replaying the events in Seq order reproduces identical state without
+// re-running any clock or RNG. Exported so durable backends project the same
+// vocabulary rather than redeclaring the strings.
 const (
-	evSessionCreated = "session.created"
-	evTurnAppended   = "session.turn_appended"
-	evSessionDeleted = "session.deleted"
-	evSkillUpserted  = "skill.upserted"
-	evSkillDeleted   = "skill.deleted"
-	evMemoryWritten  = "memory.written"
-	evMemoryDeleted  = "memory.deleted"
+	EvSessionCreated = "session.created"
+	EvTurnAppended   = "session.turn_appended"
+	EvSessionDeleted = "session.deleted"
+	EvSkillUpserted  = "skill.upserted"
+	EvSkillDeleted   = "skill.deleted"
+	EvMemoryWritten  = "memory.written"
+	EvMemoryDeleted  = "memory.deleted"
+)
+
+// Payload keys under which a state event carries its post-image record(s).
+const (
+	keySession = "session"
+	keyTurn    = "turn"
+	keySkill   = "skill"
+	keyItem    = "item"
 )
 
 // core is the in-memory read model behind the command path. Every mutation
@@ -41,11 +48,8 @@ const (
 // reached only from record (the live write path) and Replay (reconstruction) —
 // there are no raw map writes in the store methods.
 type core struct {
-	instanceID string
-	clk        clock.Clock
-	hlc        *hlc.Clock
-	log        spine.Log
-	gen        *ids.Generator
+	st  *Stamper
+	log spine.Log
 
 	mu      sync.Mutex
 	lastSeq int64 // the highest event Seq this projection has applied
@@ -57,13 +61,10 @@ type core struct {
 	memItems   []MemoryItem
 }
 
-func newCore(instanceID string, clk clock.Clock, hc *hlc.Clock, log spine.Log, gen *ids.Generator) *core {
+func newCore(st *Stamper, log spine.Log) *core {
 	return &core{
-		instanceID: instanceID,
-		clk:        clk,
-		hlc:        hc,
+		st:         st,
 		log:        log,
-		gen:        gen,
 		sessions:   map[string]Session{},
 		turns:      map[string][]Turn{},
 		skillsByID: map[string]Skill{},
@@ -71,18 +72,12 @@ func newCore(instanceID string, clk clock.Clock, hc *hlc.Clock, log spine.Log, g
 	}
 }
 
-// record appends a single state event and projects it. The caller holds mu and
-// has already computed the canonical record(s) in payload. Append-then-project
-// is the in-memory analogue of the one-transaction append+project the durable
-// provider performs; here mu is the boundary that makes the pair atomic.
-func (c *core) record(ctx context.Context, typ string, payload map[string]any) error {
-	e, err := c.log.Append(ctx, spine.AppendInput{
-		Stream:           StateStream,
-		Type:             typ,
-		Actor:            spine.ActorAgent,
-		Payload:          payload,
-		OriginInstanceID: c.instanceID,
-	})
+// record appends a stamped event and projects it. The caller holds mu and has
+// already produced the event via the Stamper. Append-then-project is the in-memory
+// analogue of the one-transaction append+project the durable provider performs;
+// here mu is the boundary that makes the pair atomic.
+func (c *core) record(ctx context.Context, in spine.AppendInput) error {
+	e, err := c.log.Append(ctx, in)
 	if err != nil {
 		return err
 	}
@@ -99,45 +94,45 @@ func (c *core) record(ctx context.Context, typ string, payload map[string]any) e
 // one. Callers hold mu.
 func (c *core) apply(e spine.Event) error {
 	switch e.Type {
-	case evSessionCreated, evSessionDeleted:
-		var s Session
-		if err := decodeRecord(e.Payload, "session", &s); err != nil {
+	case EvSessionCreated, EvSessionDeleted:
+		s, err := DecodeSession(e.Payload)
+		if err != nil {
 			return err
 		}
 		c.sessions[s.ID] = s
-	case evTurnAppended:
-		var t Turn
-		var s Session
-		if err := decodeRecord(e.Payload, "turn", &t); err != nil {
+	case EvTurnAppended:
+		t, err := DecodeTurn(e.Payload)
+		if err != nil {
 			return err
 		}
-		if err := decodeRecord(e.Payload, "session", &s); err != nil {
+		s, err := DecodeSession(e.Payload)
+		if err != nil {
 			return err
 		}
 		c.turns[t.SessionID] = append(c.turns[t.SessionID], t)
 		c.sessions[s.ID] = s
-	case evSkillUpserted:
-		var sk Skill
-		if err := decodeRecord(e.Payload, "skill", &sk); err != nil {
+	case EvSkillUpserted:
+		sk, err := DecodeSkill(e.Payload)
+		if err != nil {
 			return err
 		}
 		c.skillsByID[sk.ID] = sk
 		c.slugToID[scopeKey(sk.Scope)+"\x00"+sk.Slug] = sk.ID
-	case evSkillDeleted:
-		var sk Skill
-		if err := decodeRecord(e.Payload, "skill", &sk); err != nil {
+	case EvSkillDeleted:
+		sk, err := DecodeSkill(e.Payload)
+		if err != nil {
 			return err
 		}
 		c.skillsByID[sk.ID] = sk
-	case evMemoryWritten:
-		var it MemoryItem
-		if err := decodeRecord(e.Payload, "item", &it); err != nil {
+	case EvMemoryWritten:
+		it, err := DecodeMemoryItem(e.Payload)
+		if err != nil {
 			return err
 		}
 		c.memItems = append(c.memItems, it)
-	case evMemoryDeleted:
-		var it MemoryItem
-		if err := decodeRecord(e.Payload, "item", &it); err != nil {
+	case EvMemoryDeleted:
+		it, err := DecodeMemoryItem(e.Payload)
+		if err != nil {
 			return err
 		}
 		for i := range c.memItems {
@@ -171,6 +166,31 @@ func Replay(ctx context.Context, log spine.Log, opts ...Option) (Provider, error
 		p.core.lastSeq = e.Seq
 	}
 	return p, nil
+}
+
+// DecodeSession extracts the Session post-image from a state event payload.
+// Durable backends use it to project the same records the in-memory core does.
+func DecodeSession(payload map[string]any) (Session, error) {
+	var s Session
+	return s, decodeRecord(payload, keySession, &s)
+}
+
+// DecodeTurn extracts the Turn post-image from a state event payload.
+func DecodeTurn(payload map[string]any) (Turn, error) {
+	var t Turn
+	return t, decodeRecord(payload, keyTurn, &t)
+}
+
+// DecodeSkill extracts the Skill post-image from a state event payload.
+func DecodeSkill(payload map[string]any) (Skill, error) {
+	var sk Skill
+	return sk, decodeRecord(payload, keySkill, &sk)
+}
+
+// DecodeMemoryItem extracts the MemoryItem post-image from a state event payload.
+func DecodeMemoryItem(payload map[string]any) (MemoryItem, error) {
+	var it MemoryItem
+	return it, decodeRecord(payload, keyItem, &it)
 }
 
 // encodeRecord serialises a record to a JSON-compatible value for an event
