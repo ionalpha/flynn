@@ -9,7 +9,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/state"
-	"github.com/ionalpha/flynn/state/sqlite"
+	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
 // These properties drive generated skills — arbitrary unicode names, bodies, and
