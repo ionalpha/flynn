@@ -32,11 +32,37 @@ linters:
           deny:
             - pkg: "log/slog"
               desc: "log through the observe.Logger port; log/slog is allowed only inside package observe"
-    # No ad-hoc stdout logging; use the observe.Logger port instead.
+        # Randomness is reached through the seeded ids.Generator so a replay
+        # re-seeds identically. Only package ids may import a rand source.
+        no-direct-rand:
+          files:
+            - "**/*.go"
+            - "!**/ids/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "math/rand"
+              desc: "use the seeded ids.Generator; direct rand breaks deterministic replay"
+            - pkg: "math/rand/v2"
+              desc: "use the seeded ids.Generator; direct rand breaks deterministic replay"
+            - pkg: "crypto/rand"
+              desc: "entropy belongs in package ids; direct crypto/rand breaks deterministic replay"
+    # No ad-hoc stdout logging, and no wall-clock or randomness outside their
+    # seams: time.Now and rand defeat deterministic replay (see clock and ids).
     forbidigo:
       forbid:
         - pattern: '^fmt\.Print.*$'
           msg: "use the observe.Logger port, not fmt.Print*"
+        - pattern: '^time\.Now$'
+          msg: "use the injected clock.Clock, not time.Now (deterministic replay)"
+  exclusions:
+    rules:
+      # clock is the home of the system time source, and the migration runner
+      # stamps applied_at with wall time (migration bookkeeping is not part of a
+      # replayed run), so time.Now is legitimate in both.
+      - linters:
+          - forbidigo
+        path: '(^|/)(clock|migrate)/'
+        source: 'time\.Now'
 
 formatters:
   enable:
