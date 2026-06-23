@@ -19,21 +19,20 @@ generator or a fault plan once, reuse it in every package.
 | **Determinism / replay** | `clock.Manual` + `go-cmp` | The same scenario under a manual clock yields byte-identical event streams; behavior changes surface as spine diffs (`testkit.DiffEvents`). |
 | **Invariants** | `testkit` assertions | Reusable checks: `RequireLifecycle` (every action is start+end or a single reject), budget-never-exceeded, no-action-without-a-capability (added as the governor lands). |
 | **Race** | stdlib `-race` | The concurrent dispatcher/orchestrator runs under the race detector in CI. |
+| **Model-based / DST** | `rapid` state machines | Long randomized action sequences against a model, checking invariants after every step (e.g. the spine log) — the deterministic-simulation tier, no extra dependency. |
+| **Golden / snapshot** | `testkit.Golden` + go-cmp | A whole output (a replay, a rendered spec) compared against a `testdata/*.golden` JSON fixture; `-update` regenerates it, so large outputs need no hand-written expected value. |
+| **Fuzzing** | stdlib `go test -fuzz` | Arbitrary-input targets on the error model and the dispatch→spine payload mapping; seed corpora run in CI, deep fuzzing on demand. Expands to parsers/manifests/protocol messages as they land. |
 
 ## Deferred (planned, not yet wired)
 
-- **Model-based / stateful testing** — `rapid`'s state-machine support drives long
-  randomized action sequences against a store or the dispatcher, checking invariants
-  after every step. This is our deterministic-simulation tier; it needs no new
-  dependency. (We evaluated `gosim` for full goroutine/disk/network simulation — it is
-  unmaintained, so we take the idea, not the dependency.)
 - **Deterministic concurrency** — `testing/synctest` (a fake-clock "bubble" with
   deterministic goroutine scheduling) lands when the module moves to Go 1.25, where it
   is GA. It will replace sleep-based concurrency tests.
-- **Fuzzing** — native `go test -fuzz` on parsers, manifests, and protocol messages,
-  added next to the code being fuzzed.
 - **Benchmarks** — stdlib `testing.B` + `benchstat` for dispatch and spine overhead.
 - **Mutation testing** — a CI job to verify the suite actually catches injected bugs.
+
+(We evaluated `gosim` for full goroutine/disk/network simulation; it is unmaintained, so
+we take the idea — model-based DST on our own primitives — not the dependency.)
 
 ## Dependencies
 
