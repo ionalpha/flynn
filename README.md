@@ -308,7 +308,11 @@ cmd/flynn/          standalone binary entry point
 agent.go          core runtime (Config, Agent, Run)
 state/            persistence interfaces (the host boundary)
 obs/              logging and tracing seam (slog + tracer, no-op default)
-orchestration/    goals, missions, dispatcher, governor, event spine
+dispatch/         the action chokepoint: governance, tracing, events, hooks
+spine/            the canonical ordered event log (source of truth, replay)
+clock/            deterministic time source (replay and tests)
+fault/            canonical error model (typed, classified)
+orchestration/    goals, missions, dispatcher, and the governor
 skills/           skill capture, curation, and reinforcement
 router/           cost-aware model routing
 integrations/     data-driven integration and plugin engine
