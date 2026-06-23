@@ -1,0 +1,56 @@
+#!/usr/bin/env sh
+# Open a pull request against main, using the repo's PR template.
+# Thin wrapper around `gh pr create` so the base branch and template are
+# consistent for everyone. A scripted body must contain the template's sections
+# (## What / ## Why / ## How to verify) or this refuses — the template can't be
+# skipped by passing --body. Any extra args pass straight through to gh, e.g.:
+#   dev/pr                                  # interactive, opens the template
+#   dev/pr --title "feat: x" --body-file b  # scripted
+#   dev/pr --web                            # finish in the browser
+#
+# Requires the GitHub CLI: https://cli.github.com
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+command -v gh >/dev/null 2>&1 || { echo "GitHub CLI (gh) not found: https://cli.github.com" >&2; exit 1; }
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "$branch" = "main" ]; then
+  echo "Refusing to open a PR from 'main'. Create a feature branch first:" >&2
+  echo "  git switch -c feat/my-change" >&2
+  exit 1
+fi
+
+# Enforce the PR template. gh only opens the template when no body is passed, so a
+# scripted --body/--body-file silently bypasses it. Instead of trusting that, we
+# require any explicit body to carry the template's sections — the template becomes
+# impossible to skip, not merely the default. Interactive runs (no body flag) fall
+# through to gh, which opens .github/PULL_REQUEST_TEMPLATE.md as usual.
+template=".github/PULL_REQUEST_TEMPLATE.md"
+body=""; have_body=0; prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --body|-b)      body="$arg"; have_body=1 ;;
+    --body-file|-F) body="$(cat -- "$arg")"; have_body=1 ;;
+  esac
+  case "$arg" in
+    --body=*)       body="${arg#--body=}"; have_body=1 ;;
+    --body-file=*)  body="$(cat -- "${arg#--body-file=}")"; have_body=1 ;;
+  esac
+  prev="$arg"
+done
+if [ "$have_body" -eq 1 ]; then
+  for section in '## What' '## Why' '## How to verify'; do
+    case "$body" in
+      *"$section"*) ;;
+      *)
+        echo "Refusing to open a PR: the body is missing the '$section' section." >&2
+        echo "Base it on $template (What / Why / How to verify / Notes)." >&2
+        exit 1 ;;
+    esac
+  done
+fi
+
+# gh auto-detects the PR template; --fill-first seeds title from the first commit
+# when the caller doesn't pass one. Push happens via gh if there's no upstream.
+exec gh pr create --base main "$@"

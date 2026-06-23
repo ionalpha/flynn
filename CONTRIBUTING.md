@@ -7,8 +7,9 @@ it is the canonical contribution contract (and what automated triage checks agai
 
 1. Open or find an issue describing the change.
 2. Fork, branch, and make a focused change.
-3. Run `make ci` locally until it is green.
-4. Open a pull request that links the issue and follows Conventional Commits.
+3. Run `./dev/check` (or `make check`) locally until it is green — it runs exactly
+   what CI runs (build, vet, test, lint, vuln).
+4. Open a pull request (`./dev/pr`) that links the issue and follows Conventional Commits.
 5. Sign your commits off with DCO: `git commit -s`.
 
 ## What gets merged fast

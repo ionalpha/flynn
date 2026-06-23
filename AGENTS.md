@@ -23,14 +23,21 @@ issues against it. Read it before opening anything.
 
 ## Local development
 
+The `dev/` scripts are the single source of truth — **CI runs these same
+scripts**, so a green run locally is a green run in CI. `make` targets forward
+to them (`make test` == `./dev/test`); use the scripts directly to pass args.
+
 ```sh
-make build      # build the flynn binary
-make test       # go test -race ./...
-make lint       # golangci-lint
-make fmt        # gofumpt + goimports
-make vuln       # govulncheck
-make ci         # everything CI runs, locally
+./dev/check     # everything CI gates on: build, vet, test, lint, vuln
+./dev/build     # go build ./...
+./dev/test      # race + coverage; scope with e.g. ./dev/test ./state/...
+./dev/lint      # go mod tidy check + golangci-lint (pinned to CI's version)
+./dev/fmt       # auto-format (gofumpt + goimports)
+./dev/vuln      # govulncheck
+./dev/pr        # open a PR against main using the template (needs gh)
 ```
+
+Run `./dev/check` until it is green before opening a PR.
 
 ## Standards
 

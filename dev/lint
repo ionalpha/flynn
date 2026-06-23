@@ -1,0 +1,32 @@
+#!/usr/bin/env sh
+# Lint and format checks. Mirrors the CI "Lint & format" job:
+#   1. `go mod tidy` leaves go.mod/go.sum unchanged
+#   2. golangci-lint (govet, staticcheck, gosec, formatting, ...) is clean
+#
+# CI pins golangci-lint to this version via golangci-lint-action; we pin the
+# same version here so local results match CI exactly. Run `dev/fmt` to fix
+# formatting findings automatically.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+GOLANGCI_VERSION="v2.12.2"
+
+# Resolve golangci-lint from PATH or the Go bin dir.
+golangci="$(command -v golangci-lint || true)"
+if [ -z "$golangci" ]; then
+  gobin="$(go env GOBIN)"; [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+  if [ -x "$gobin/golangci-lint" ]; then
+    golangci="$gobin/golangci-lint"
+  else
+    echo "golangci-lint not found. Install the version CI uses:" >&2
+    echo "  go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$GOLANGCI_VERSION" >&2
+    exit 1
+  fi
+fi
+
+echo "==> go mod tidy (must leave go.mod/go.sum unchanged)"
+go mod tidy
+git diff --exit-code -- go.mod go.sum
+
+echo "==> golangci-lint run"
+"$golangci" run
