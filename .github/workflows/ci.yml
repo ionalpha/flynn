@@ -27,7 +27,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        go: ["1.24", "1.25"]
+        # Floor is Go 1.25: modernc.org/sqlite requires it (and it brings GA testing/synctest).
+        go: ["1.25"]
     steps:
       # TODO: pin actions to a full commit SHA (see task 4a54468e). Dependabot keeps them current.
       - uses: actions/checkout@v7
