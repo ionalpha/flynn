@@ -12,7 +12,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log/slog"
 
 	"github.com/ionalpha/flynn/observe"
 	"github.com/ionalpha/flynn/state"
@@ -60,9 +59,9 @@ func (a *Agent) Run(ctx context.Context) error {
 	ctx, span := a.cfg.Obs.Tracer.Start(ctx, "agent.Run")
 	defer span.End()
 
-	a.cfg.Obs.Log.InfoContext(ctx, "runtime ready",
-		slog.String("model", a.cfg.Model),
-		slog.String("store", a.cfg.State.Name()))
+	a.cfg.Obs.Log.Info(ctx, "runtime ready",
+		observe.String("model", a.cfg.Model),
+		observe.String("store", a.cfg.State.Name()))
 	_, _ = fmt.Fprintf(a.cfg.Out, "flynn: runtime ready (model=%q, store=%s)\n", a.cfg.Model, a.cfg.State.Name())
 	return nil
 }
