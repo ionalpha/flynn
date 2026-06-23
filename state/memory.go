@@ -10,15 +10,32 @@ import (
 	"time"
 )
 
+// Option configures the in-memory Provider.
+type Option func(*memProvider)
+
+// WithInstanceID sets the origin instance stamped onto records this provider
+// creates (default "local"). The agent passes its own instance identity here so
+// fleet/P2P merge can attribute records.
+func WithInstanceID(id string) Option {
+	return func(p *memProvider) {
+		if id != "" {
+			p.instanceID = id
+		}
+	}
+}
+
 // NewMemory returns an empty in-memory Provider so the agent runs with zero
 // setup. It is safe for concurrent use and intended as the standalone default
 // and for tests; the durable SQLite Provider lands in a follow-up.
-func NewMemory() Provider {
-	return &memProvider{
-		sessions: &memSessions{byID: map[string]Session{}, turns: map[string][]Turn{}},
-		skills:   &memSkills{byID: map[string]Skill{}, slugToID: map[string]string{}},
-		memory:   &memMemory{},
+func NewMemory(opts ...Option) Provider {
+	p := &memProvider{instanceID: "local"}
+	for _, o := range opts {
+		o(p)
 	}
+	p.sessions = &memSessions{instanceID: p.instanceID, byID: map[string]Session{}, turns: map[string][]Turn{}}
+	p.skills = &memSkills{instanceID: p.instanceID, byID: map[string]Skill{}, slugToID: map[string]string{}}
+	p.memory = &memMemory{instanceID: p.instanceID}
+	return p
 }
 
 // Compile-time checks that the in-memory types satisfy the state interfaces.
@@ -30,9 +47,10 @@ var (
 )
 
 type memProvider struct {
-	sessions *memSessions
-	skills   *memSkills
-	memory   *memMemory
+	instanceID string
+	sessions   *memSessions
+	skills     *memSkills
+	memory     *memMemory
 }
 
 func (m *memProvider) Name() string           { return "memory" }
@@ -54,9 +72,10 @@ func scopeKey(s Scope) string {
 }
 
 type memSessions struct {
-	mu    sync.Mutex
-	byID  map[string]Session
-	turns map[string][]Turn
+	instanceID string
+	mu         sync.Mutex
+	byID       map[string]Session
+	turns      map[string][]Turn
 }
 
 func (s *memSessions) Create(_ context.Context, ses Session) (Session, error) {
@@ -70,6 +89,10 @@ func (s *memSessions) Create(_ context.Context, ses Session) (Session, error) {
 		ses.CreatedAt = now
 	}
 	ses.UpdatedAt = now
+	if ses.OriginInstanceID == "" {
+		ses.OriginInstanceID = s.instanceID
+	}
+	ses.SyncVersion = 1
 	s.byID[ses.ID] = ses
 	return ses, nil
 }
@@ -109,8 +132,14 @@ func (s *memSessions) AppendTurn(_ context.Context, t Turn) (Turn, error) {
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = time.Now().UTC()
 	}
+	if t.OriginInstanceID == "" {
+		t.OriginInstanceID = s.instanceID
+	}
+	t.SyncVersion = 1
 	s.turns[t.SessionID] = append(s.turns[t.SessionID], t)
+	// Appending a turn mutates the session.
 	ses.UpdatedAt = t.CreatedAt
+	ses.SyncVersion++
 	s.byID[t.SessionID] = ses
 	return t, nil
 }
@@ -125,9 +154,10 @@ func (s *memSessions) Turns(_ context.Context, sessionID string) ([]Turn, error)
 }
 
 type memSkills struct {
-	mu       sync.Mutex
-	byID     map[string]Skill
-	slugToID map[string]string // scopeKey+"\x00"+slug -> id
+	instanceID string
+	mu         sync.Mutex
+	byID       map[string]Skill
+	slugToID   map[string]string // scopeKey+"\x00"+slug -> id
 }
 
 func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
@@ -135,20 +165,36 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 	defer s.mu.Unlock()
 	now := time.Now().UTC()
 	key := scopeKey(sk.Scope) + "\x00" + sk.Slug
+
 	if id, ok := s.slugToID[key]; ok {
 		existing := s.byID[id]
+		// Opt-in optimistic concurrency: a non-zero SyncVersion must match.
+		if sk.SyncVersion != 0 && sk.SyncVersion != existing.SyncVersion {
+			return Skill{}, ErrConflict
+		}
 		sk.ID = id
 		sk.CreatedAt = existing.CreatedAt
+		sk.OriginInstanceID = existing.OriginInstanceID // origin is preserved
 		sk.Version = existing.Version + 1
+		sk.SyncVersion = existing.SyncVersion + 1
 		sk.UpdatedAt = now
 		s.byID[id] = sk
 		return sk, nil
+	}
+
+	// Creating: a non-zero SyncVersion expected an existing record that is gone.
+	if sk.SyncVersion != 0 {
+		return Skill{}, ErrConflict
 	}
 	if sk.ID == "" {
 		sk.ID = newID()
 	}
 	if sk.Version == 0 {
 		sk.Version = 1
+	}
+	sk.SyncVersion = 1
+	if sk.OriginInstanceID == "" {
+		sk.OriginInstanceID = s.instanceID
 	}
 	sk.CreatedAt = now
 	sk.UpdatedAt = now
@@ -208,8 +254,9 @@ func skillMatches(sk Skill, lowerQuery string) bool {
 }
 
 type memMemory struct {
-	mu    sync.Mutex
-	items []MemoryItem
+	instanceID string
+	mu         sync.Mutex
+	items      []MemoryItem
 }
 
 func (m *memMemory) Write(_ context.Context, it MemoryItem) (MemoryItem, error) {
@@ -221,6 +268,10 @@ func (m *memMemory) Write(_ context.Context, it MemoryItem) (MemoryItem, error) 
 	if it.CreatedAt.IsZero() {
 		it.CreatedAt = time.Now().UTC()
 	}
+	if it.OriginInstanceID == "" {
+		it.OriginInstanceID = m.instanceID
+	}
+	it.SyncVersion = 1
 	m.items = append(m.items, it)
 	return it, nil
 }
