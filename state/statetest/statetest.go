@@ -6,11 +6,13 @@ package statetest
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
 	"testing"
 
+	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -34,6 +36,111 @@ func RunSuite(t *testing.T, newProvider func() state.Provider) {
 	t.Run("Memory", func(t *testing.T) { testMemory(t, newProvider()) })
 	t.Run("Envelope", func(t *testing.T) { testEnvelope(t, newProvider()) })
 	t.Run("Concurrency", func(t *testing.T) { testConcurrency(t, newProvider()) })
+	t.Run("EventSourced", func(t *testing.T) { testEventSourced(t, newProvider()) })
+}
+
+// eventLogged is the optional capability of a provider that exposes the spine its
+// state mutations are recorded on. Every event-sourced backend implements it; the
+// invariant check below holds such a backend to "no write bypasses the log".
+type eventLogged interface {
+	Log() spine.Log
+}
+
+// testEventSourced enforces the architecture's central invariant: every state
+// mutation appends to the event log, and the log alone fully describes the state.
+// A backend that writes directly to its tables (the bug this guards against) would
+// produce a short or empty stream and fail here, and the suite proves it for every
+// backend rather than re-testing each by hand. Providers with no event log (a host
+// may back state differently) are skipped.
+func testEventSourced(t *testing.T, p state.Provider) {
+	el, ok := p.(eventLogged)
+	if !ok {
+		t.Skip("provider does not expose an event log")
+	}
+	ctx := context.Background()
+
+	s, err := p.Sessions().Create(ctx, state.Session{Title: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Sessions().AppendTurn(ctx, state.Turn{SessionID: s.ID, Role: "user", Content: "hi"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := p.Skills().Upsert(ctx, state.Skill{Slug: "k", Body: "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Skills().Delete(ctx, "k"); err != nil {
+		t.Fatal(err)
+	}
+	m, err := p.Memory().Write(ctx, state.MemoryItem{Content: "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Memory().Delete(ctx, m.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Sessions().Delete(ctx, s.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := el.Log().Read(ctx, spine.Query{Stream: state.StateStream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]int{
+		state.EvSessionCreated: 1, state.EvTurnAppended: 1, state.EvSessionDeleted: 1,
+		state.EvSkillUpserted: 1, state.EvSkillDeleted: 1,
+		state.EvMemoryWritten: 1, state.EvMemoryDeleted: 1,
+	}
+	got := map[string]int{}
+	for _, e := range events {
+		got[e.Type]++
+	}
+	for typ, n := range want {
+		if got[typ] != n {
+			t.Errorf("event %q recorded %d times, want %d (a write bypassed the log)", typ, got[typ], n)
+		}
+	}
+	if len(events) != len(want) {
+		t.Errorf("state stream has %d events, want %d (one per mutation)", len(events), len(want))
+	}
+
+	// The log is authoritative: a provider folded purely from it reproduces the
+	// live reads, so state is genuinely a projection of the spine.
+	replayed, err := state.Replay(ctx, el.Log())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := liveSnapshot(t, replayed), liveSnapshot(t, p); got != want {
+		t.Fatalf("state replayed from the log differs from live reads\n replay: %s\n live:   %s", got, want)
+	}
+}
+
+// liveSnapshot serialises a provider's observable live state to a stable JSON
+// string so two providers can be compared for byte-for-byte equivalence.
+func liveSnapshot(t *testing.T, p state.Provider) string {
+	t.Helper()
+	ctx := context.Background()
+	var view struct {
+		Sessions []state.Session
+		Skills   []state.Skill
+		Memory   []state.MemoryItem
+	}
+	var err error
+	if view.Sessions, err = p.Sessions().List(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if view.Skills, err = p.Skills().Search(ctx, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	if view.Memory, err = p.Memory().Recall(ctx, state.RecallQuery{}); err != nil {
+		t.Fatal(err)
+	}
+	b, err := json.Marshal(view)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
 }
 
 func testSessions(t *testing.T, p state.Provider) {
