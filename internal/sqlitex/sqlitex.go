@@ -23,12 +23,23 @@ import (
 // schema using the .sql files under "migrations" in migrationsFS. dsn is a file
 // path, or ":memory:" for an ephemeral store.
 //
+// Pragmas, chosen for an append-heavy event-sourcing workload that must be light
+// on SSDs:
+//   - journal_mode(WAL): writes append to a write-ahead log instead of rewriting
+//     pages through a rollback journal, which cuts write amplification and lets
+//     reads run without blocking the writer. (A no-op for ":memory:".)
+//   - synchronous(NORMAL): the WAL is fsynced at checkpoints rather than on every
+//     commit, the configuration SQLite recommends with WAL. It is crash-safe (no
+//     corruption); only the last few unsynced transactions can be lost on a power
+//     cut, an acceptable trade for a local agent and far fewer fsyncs / less wear.
+//   - busy_timeout(5000): wait rather than fail on a lock.
+//   - foreign_keys(1): enforce referential integrity (a no-op where none declared).
+//
 // One connection: SQLite serialises writers anyway, and a single connection keeps
-// a ":memory:" database alive with a consistent view. busy_timeout waits rather
-// than failing on a lock; foreign_keys enforces referential integrity (a no-op
-// for schemas that declare none).
+// a ":memory:" database alive with a consistent view.
 func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) {
-	conn := dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
+	conn := dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)" +
+		"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
 	db, err := sql.Open("sqlite", conn)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
