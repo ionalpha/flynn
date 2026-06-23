@@ -80,7 +80,8 @@ func NewMemory(opts ...Option) Provider {
 	if p.gen == nil {
 		p.gen = ids.NewGenerator(ids.WithClock(p.clk))
 	}
-	p.core = newCore(p.instanceID, p.clk, p.hlc, p.log, p.gen)
+	st := NewStamper(p.instanceID, p.clk, p.hlc, p.gen)
+	p.core = newCore(st, p.log)
 	p.sessions = &memSessions{c: p.core}
 	p.skills = &memSkills{c: p.core}
 	p.memory = &memMemory{c: p.core}
@@ -126,29 +127,14 @@ func (s *memSessions) Create(ctx context.Context, ses Session) (Session, error) 
 	c := s.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if ses.ID == "" {
-		ses.ID = c.gen.New()
-	}
-	now := c.clk.Now()
-	if ses.CreatedAt.IsZero() {
-		ses.CreatedAt = now
-	}
-	ses.UpdatedAt = now
-	if ses.OriginInstanceID == "" {
-		ses.OriginInstanceID = c.instanceID
-	}
-	ses.LastWriterID = c.instanceID
-	ses.UpdatedHLC = c.hlc.Now()
-	ses.SyncVersion = 1
-	ses.Deleted = false
-	payload, err := encodeRecord(ses)
+	rec, ev, err := c.st.CreateSession(ses)
 	if err != nil {
 		return Session{}, err
 	}
-	if err := c.record(ctx, evSessionCreated, map[string]any{"session": payload}); err != nil {
+	if err := c.record(ctx, ev); err != nil {
 		return Session{}, err
 	}
-	return ses, nil
+	return rec, nil
 }
 
 func (s *memSessions) Get(_ context.Context, id string) (Session, error) {
@@ -190,39 +176,15 @@ func (s *memSessions) AppendTurn(ctx context.Context, t Turn) (Turn, error) {
 	if !ok || ses.Deleted {
 		return Turn{}, ErrNotFound
 	}
-	if t.ID == "" {
-		t.ID = c.gen.New()
-	}
-	t.Seq = int64(len(c.turns[t.SessionID]) + 1)
-	now := c.clk.Now()
-	if t.CreatedAt.IsZero() {
-		t.CreatedAt = now
-	}
-	if t.OriginInstanceID == "" {
-		t.OriginInstanceID = c.instanceID
-	}
-	hnow := c.hlc.Now()
-	t.LastWriterID = c.instanceID
-	t.UpdatedHLC = hnow
-	t.SyncVersion = 1
-	t.Deleted = false
-	// Appending a turn mutates the session: bump its envelope under the same HLC.
-	ses.UpdatedAt = t.CreatedAt
-	ses.LastWriterID = c.instanceID
-	ses.UpdatedHLC = hnow
-	ses.SyncVersion++
-	turnPayload, err := encodeRecord(t)
+	nextSeq := int64(len(c.turns[t.SessionID]) + 1)
+	rec, _, ev, err := c.st.AppendTurn(ses, t, nextSeq)
 	if err != nil {
 		return Turn{}, err
 	}
-	sessionPayload, err := encodeRecord(ses)
-	if err != nil {
+	if err := c.record(ctx, ev); err != nil {
 		return Turn{}, err
 	}
-	if err := c.record(ctx, evTurnAppended, map[string]any{"turn": turnPayload, "session": sessionPayload}); err != nil {
-		return Turn{}, err
-	}
-	return t, nil
+	return rec, nil
 }
 
 func (s *memSessions) Turns(_ context.Context, sessionID string) ([]Turn, error) {
@@ -243,16 +205,11 @@ func (s *memSessions) Delete(ctx context.Context, id string) error {
 	if !ok || ses.Deleted {
 		return ErrNotFound
 	}
-	ses.Deleted = true
-	ses.LastWriterID = c.instanceID
-	ses.UpdatedHLC = c.hlc.Now()
-	ses.UpdatedAt = c.clk.Now()
-	ses.SyncVersion++
-	payload, err := encodeRecord(ses)
+	_, ev, err := c.st.DeleteSession(ses)
 	if err != nil {
 		return err
 	}
-	return c.record(ctx, evSessionDeleted, map[string]any{"session": payload})
+	return c.record(ctx, ev)
 }
 
 type memSkills struct {
@@ -263,60 +220,19 @@ func (s *memSkills) Upsert(ctx context.Context, sk Skill) (Skill, error) {
 	c := s.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	now := c.clk.Now()
-	key := scopeKey(sk.Scope) + "\x00" + sk.Slug
-
-	if id, ok := c.slugToID[key]; ok {
-		existing := c.skillsByID[id]
-		// Opt-in optimistic concurrency: a non-zero SyncVersion must match.
-		if sk.SyncVersion != 0 && sk.SyncVersion != existing.SyncVersion {
-			return Skill{}, ErrConflict
-		}
-		sk.ID = id
-		sk.CreatedAt = existing.CreatedAt
-		sk.OriginInstanceID = existing.OriginInstanceID // origin is preserved
-		sk.Version = existing.Version + 1
-		sk.SyncVersion = existing.SyncVersion + 1
-		sk.LastWriterID = c.instanceID
-		sk.UpdatedHLC = c.hlc.Now()
-		sk.UpdatedAt = now
-		// An upsert over a tombstone resurrects it (Deleted comes from sk).
-		payload, err := encodeRecord(sk)
-		if err != nil {
-			return Skill{}, err
-		}
-		if err := c.record(ctx, evSkillUpserted, map[string]any{"skill": payload}); err != nil {
-			return Skill{}, err
-		}
-		return sk, nil
+	var existing *Skill
+	if id, ok := c.slugToID[scopeKey(sk.Scope)+"\x00"+sk.Slug]; ok {
+		e := c.skillsByID[id]
+		existing = &e
 	}
-
-	// Creating: a non-zero SyncVersion expected an existing record that is gone.
-	if sk.SyncVersion != 0 {
-		return Skill{}, ErrConflict
-	}
-	if sk.ID == "" {
-		sk.ID = c.gen.New()
-	}
-	if sk.Version == 0 {
-		sk.Version = 1
-	}
-	sk.SyncVersion = 1
-	if sk.OriginInstanceID == "" {
-		sk.OriginInstanceID = c.instanceID
-	}
-	sk.LastWriterID = c.instanceID
-	sk.UpdatedHLC = c.hlc.Now()
-	sk.CreatedAt = now
-	sk.UpdatedAt = now
-	payload, err := encodeRecord(sk)
+	rec, ev, err := c.st.UpsertSkill(existing, sk)
 	if err != nil {
 		return Skill{}, err
 	}
-	if err := c.record(ctx, evSkillUpserted, map[string]any{"skill": payload}); err != nil {
+	if err := c.record(ctx, ev); err != nil {
 		return Skill{}, err
 	}
-	return sk, nil
+	return rec, nil
 }
 
 func (s *memSkills) Get(_ context.Context, idOrSlug string) (Skill, error) {
@@ -377,18 +293,11 @@ func (s *memSkills) Delete(ctx context.Context, idOrSlug string) error {
 	if !ok {
 		return ErrNotFound
 	}
-	sk := c.skillsByID[id]
-	sk.Deleted = true
-	sk.Version++
-	sk.SyncVersion++
-	sk.LastWriterID = c.instanceID
-	sk.UpdatedHLC = c.hlc.Now()
-	sk.UpdatedAt = c.clk.Now()
-	payload, err := encodeRecord(sk)
+	_, ev, err := c.st.DeleteSkill(c.skillsByID[id])
 	if err != nil {
 		return err
 	}
-	return c.record(ctx, evSkillDeleted, map[string]any{"skill": payload})
+	return c.record(ctx, ev)
 }
 
 // resolveSkill finds a live skill's id by id or slug. Callers hold mu.
@@ -429,27 +338,14 @@ func (m *memMemory) Write(ctx context.Context, it MemoryItem) (MemoryItem, error
 	c := m.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if it.ID == "" {
-		it.ID = c.gen.New()
-	}
-	if it.CreatedAt.IsZero() {
-		it.CreatedAt = c.clk.Now()
-	}
-	if it.OriginInstanceID == "" {
-		it.OriginInstanceID = c.instanceID
-	}
-	it.LastWriterID = c.instanceID
-	it.UpdatedHLC = c.hlc.Now()
-	it.SyncVersion = 1
-	it.Deleted = false
-	payload, err := encodeRecord(it)
+	rec, ev, err := c.st.WriteMemory(it)
 	if err != nil {
 		return MemoryItem{}, err
 	}
-	if err := c.record(ctx, evMemoryWritten, map[string]any{"item": payload}); err != nil {
+	if err := c.record(ctx, ev); err != nil {
 		return MemoryItem{}, err
 	}
-	return it, nil
+	return rec, nil
 }
 
 func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, error) {
@@ -487,16 +383,11 @@ func (m *memMemory) Delete(ctx context.Context, id string) error {
 	defer c.mu.Unlock()
 	for i := range c.memItems {
 		if c.memItems[i].ID == id && !c.memItems[i].Deleted {
-			it := c.memItems[i]
-			it.Deleted = true
-			it.LastWriterID = c.instanceID
-			it.UpdatedHLC = c.hlc.Now()
-			it.SyncVersion++
-			payload, err := encodeRecord(it)
+			_, ev, err := c.st.DeleteMemory(c.memItems[i])
 			if err != nil {
 				return err
 			}
-			return c.record(ctx, evMemoryDeleted, map[string]any{"item": payload})
+			return c.record(ctx, ev)
 		}
 	}
 	return ErrNotFound
