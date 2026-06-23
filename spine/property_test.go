@@ -12,6 +12,7 @@ import (
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/spinesink"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -107,7 +108,7 @@ func TestSinkRecordsScopeAndErrorClass(t *testing.T) {
 		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
 			return dispatch.Result{}, fault.New(fault.Transient, "boom", "x")
 		}),
-		dispatch.WithEventSink(spine.NewSink(log, "run")),
+		dispatch.WithEventSink(spinesink.New(log, "run")),
 	)
 	if _, err := d.Dispatch(ctx, dispatch.Action{Name: "fetch", Scope: state.Scope{Project: "alpha"}}); err == nil {
 		t.Fatal("expected the handler error to propagate")
