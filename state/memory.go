@@ -114,6 +114,12 @@ func (m *memProvider) Skills() SkillStore     { return m.skills }
 func (m *memProvider) Memory() MemoryStore    { return m.memory }
 func (m *memProvider) Close() error           { return nil }
 
+// Log returns the spine this provider records its state mutations on, so the
+// state stream can be observed, audited, or folded with Replay. It is the
+// event-sourced capability the conformance suite checks: a backend that exposes
+// its log is held to "no write bypasses the log".
+func (m *memProvider) Log() spine.Log { return m.log }
+
 // scopeKey is a stable map key for a Scope.
 func scopeKey(s Scope) string {
 	return s.Instance + "\x00" + s.Project + "\x00" + s.Workspace
