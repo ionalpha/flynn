@@ -7,15 +7,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/ids"
 )
 
 // Option configures the in-memory Provider.
 type Option func(*memProvider)
 
-// WithInstanceID sets the origin instance stamped onto records this provider
-// creates (default "local"). The agent passes its own instance identity here so
-// fleet/P2P merge can attribute records.
+// WithInstanceID sets the origin/last-writer instance stamped onto records this
+// provider creates (default "local"). The agent passes its own instance identity
+// here so fleet/P2P merge can attribute records.
 func WithInstanceID(id string) Option {
 	return func(p *memProvider) {
 		if id != "" {
@@ -28,13 +29,13 @@ func WithInstanceID(id string) Option {
 // setup. It is safe for concurrent use and intended as the standalone default
 // and for tests; the durable SQLite Provider lands in a follow-up.
 func NewMemory(opts ...Option) Provider {
-	p := &memProvider{instanceID: "local"}
+	p := &memProvider{instanceID: "local", hlc: hlc.NewClock()}
 	for _, o := range opts {
 		o(p)
 	}
-	p.sessions = &memSessions{instanceID: p.instanceID, byID: map[string]Session{}, turns: map[string][]Turn{}}
-	p.skills = &memSkills{instanceID: p.instanceID, byID: map[string]Skill{}, slugToID: map[string]string{}}
-	p.memory = &memMemory{instanceID: p.instanceID}
+	p.sessions = &memSessions{instanceID: p.instanceID, hlc: p.hlc, byID: map[string]Session{}, turns: map[string][]Turn{}}
+	p.skills = &memSkills{instanceID: p.instanceID, hlc: p.hlc, byID: map[string]Skill{}, slugToID: map[string]string{}}
+	p.memory = &memMemory{instanceID: p.instanceID, hlc: p.hlc}
 	return p
 }
 
@@ -48,6 +49,7 @@ var (
 
 type memProvider struct {
 	instanceID string
+	hlc        *hlc.Clock
 	sessions   *memSessions
 	skills     *memSkills
 	memory     *memMemory
@@ -71,6 +73,7 @@ func scopeKey(s Scope) string {
 
 type memSessions struct {
 	instanceID string
+	hlc        *hlc.Clock
 	mu         sync.Mutex
 	byID       map[string]Session
 	turns      map[string][]Turn
@@ -90,6 +93,8 @@ func (s *memSessions) Create(_ context.Context, ses Session) (Session, error) {
 	if ses.OriginInstanceID == "" {
 		ses.OriginInstanceID = s.instanceID
 	}
+	ses.LastWriterID = s.instanceID
+	ses.UpdatedHLC = s.hlc.Now()
 	ses.SyncVersion = 1
 	s.byID[ses.ID] = ses
 	return ses, nil
@@ -133,10 +138,15 @@ func (s *memSessions) AppendTurn(_ context.Context, t Turn) (Turn, error) {
 	if t.OriginInstanceID == "" {
 		t.OriginInstanceID = s.instanceID
 	}
+	now := s.hlc.Now()
+	t.LastWriterID = s.instanceID
+	t.UpdatedHLC = now
 	t.SyncVersion = 1
 	s.turns[t.SessionID] = append(s.turns[t.SessionID], t)
 	// Appending a turn mutates the session.
 	ses.UpdatedAt = t.CreatedAt
+	ses.LastWriterID = s.instanceID
+	ses.UpdatedHLC = now
 	ses.SyncVersion++
 	s.byID[t.SessionID] = ses
 	return t, nil
@@ -153,6 +163,7 @@ func (s *memSessions) Turns(_ context.Context, sessionID string) ([]Turn, error)
 
 type memSkills struct {
 	instanceID string
+	hlc        *hlc.Clock
 	mu         sync.Mutex
 	byID       map[string]Skill
 	slugToID   map[string]string // scopeKey+"\x00"+slug -> id
@@ -175,6 +186,8 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 		sk.OriginInstanceID = existing.OriginInstanceID // origin is preserved
 		sk.Version = existing.Version + 1
 		sk.SyncVersion = existing.SyncVersion + 1
+		sk.LastWriterID = s.instanceID
+		sk.UpdatedHLC = s.hlc.Now()
 		sk.UpdatedAt = now
 		s.byID[id] = sk
 		return sk, nil
@@ -194,6 +207,8 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 	if sk.OriginInstanceID == "" {
 		sk.OriginInstanceID = s.instanceID
 	}
+	sk.LastWriterID = s.instanceID
+	sk.UpdatedHLC = s.hlc.Now()
 	sk.CreatedAt = now
 	sk.UpdatedAt = now
 	s.byID[sk.ID] = sk
@@ -253,6 +268,7 @@ func skillMatches(sk Skill, lowerQuery string) bool {
 
 type memMemory struct {
 	instanceID string
+	hlc        *hlc.Clock
 	mu         sync.Mutex
 	items      []MemoryItem
 }
@@ -269,6 +285,8 @@ func (m *memMemory) Write(_ context.Context, it MemoryItem) (MemoryItem, error) 
 	if it.OriginInstanceID == "" {
 		it.OriginInstanceID = m.instanceID
 	}
+	it.LastWriterID = m.instanceID
+	it.UpdatedHLC = m.hlc.Now()
 	it.SyncVersion = 1
 	m.items = append(m.items, it)
 	return it, nil

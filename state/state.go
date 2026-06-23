@@ -12,6 +12,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/ionalpha/flynn/hlc"
 )
 
 // ErrNotFound is returned by stores when a requested record does not exist.
@@ -42,10 +44,18 @@ type Scope struct {
 // from the start keeps replay, optimistic concurrency, and fleet merge reachable
 // without a schema migration later.
 type Envelope struct {
-	// SyncVersion is bumped on every write; 1 on create.
+	// SyncVersion is bumped on every write; 1 on create. It powers local
+	// optimistic concurrency (compare-and-set).
 	SyncVersion int64
 	// OriginInstanceID is the instance that first created the record.
 	OriginInstanceID string
+	// UpdatedHLC is the hybrid-logical-clock time of the last write. It orders
+	// writes across instances for last-writer-wins merge, where SyncVersion (a
+	// local counter) cannot.
+	UpdatedHLC hlc.Time
+	// LastWriterID is the instance that performed the last write (distinct from
+	// OriginInstanceID, the creator). The LWW key is (UpdatedHLC, LastWriterID).
+	LastWriterID string
 }
 
 // Provider is the agent's durable backend: the single interface a host

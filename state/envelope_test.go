@@ -134,3 +134,45 @@ func TestSkillOriginPreservedOnUpdate(t *testing.T) {
 		t.Fatalf("origin = %q after update, want node-1 (preserved)", saved.OriginInstanceID)
 	}
 }
+
+func TestUpdatedHLCMonotonicAndLastWriter(t *testing.T) {
+	ctx := context.Background()
+	p := state.NewMemory(state.WithInstanceID("node-1"))
+
+	a, err := p.Skills().Upsert(ctx, state.Skill{Slug: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := p.Skills().Upsert(ctx, state.Skill{Slug: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.UpdatedHLC.IsZero() || !a.UpdatedHLC.Before(b.UpdatedHLC) {
+		t.Fatalf("UpdatedHLC not stamped/monotonic: %v then %v", a.UpdatedHLC, b.UpdatedHLC)
+	}
+	if a.LastWriterID != "node-1" || b.LastWriterID != "node-1" {
+		t.Fatalf("LastWriterID = %q/%q, want node-1", a.LastWriterID, b.LastWriterID)
+	}
+
+	// An update advances the HLC and re-stamps the writer.
+	upd := a
+	upd.Body = "v2"
+	saved, err := p.Skills().Upsert(ctx, upd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !b.UpdatedHLC.Before(saved.UpdatedHLC) {
+		t.Fatalf("update HLC not after prior write: %v then %v", b.UpdatedHLC, saved.UpdatedHLC)
+	}
+
+	// Appending a turn advances the session's HLC.
+	s, _ := p.Sessions().Create(ctx, state.Session{})
+	turn, _ := p.Sessions().AppendTurn(ctx, state.Turn{SessionID: s.ID, Role: "user"})
+	if turn.UpdatedHLC.IsZero() || turn.LastWriterID != "node-1" {
+		t.Fatalf("turn envelope not stamped: hlc=%v writer=%q", turn.UpdatedHLC, turn.LastWriterID)
+	}
+	got, _ := p.Sessions().Get(ctx, s.ID)
+	if !s.UpdatedHLC.Before(got.UpdatedHLC) {
+		t.Fatalf("session HLC did not advance on append: %v then %v", s.UpdatedHLC, got.UpdatedHLC)
+	}
+}
