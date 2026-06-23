@@ -6,6 +6,7 @@ import (
 
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/spinesink"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -21,7 +22,7 @@ func FuzzSinkPayload(f *testing.F) {
 	f.Fuzz(func(t *testing.T, action, project, errClass string) {
 		ctx := context.Background()
 		log := spine.NewMemoryLog()
-		sink := spine.NewSink(log, "run")
+		sink := spinesink.New(log, "run")
 
 		ev := dispatch.Event{
 			Type:   dispatch.EventEnd,

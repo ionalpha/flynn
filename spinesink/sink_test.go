@@ -1,4 +1,4 @@
-package spine_test
+package spinesink_test
 
 import (
 	"context"
@@ -8,6 +8,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/spinesink"
 )
 
 // TestSinkRecordsDispatchOntoSpine wires the dispatch waist to the spine and
@@ -23,7 +24,7 @@ func TestSinkRecordsDispatchOntoSpine(t *testing.T) {
 			return dispatch.Result{Tokens: 3}, nil
 		}),
 		dispatch.WithClock(clk),
-		dispatch.WithEventSink(spine.NewSink(log, "run-1")),
+		dispatch.WithEventSink(spinesink.New(log, "run-1")),
 	)
 
 	if _, err := d.Dispatch(ctx, dispatch.Action{Name: "search"}); err != nil {

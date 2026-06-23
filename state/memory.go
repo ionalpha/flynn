@@ -4,11 +4,11 @@ import (
 	"context"
 	"sort"
 	"strings"
-	"sync"
-	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/ids"
+	"github.com/ionalpha/flynn/spine"
 )
 
 // Option configures the in-memory Provider.
@@ -25,17 +25,65 @@ func WithInstanceID(id string) Option {
 	}
 }
 
+// WithClock sets the time source for record timestamps (default clock.System),
+// so tests and deterministic replay can supply a clock.Manual. The same clock
+// stamps the event log when one is not injected separately.
+func WithClock(c clock.Clock) Option {
+	return func(p *memProvider) {
+		if c != nil {
+			p.clk = c
+		}
+	}
+}
+
+// WithEventLog backs the provider with a specific spine.Log instead of a private
+// in-memory one. Inject a shared log to observe, audit, or Replay the state
+// stream; pass the same log to Replay to reconstruct the provider from it.
+func WithEventLog(l spine.Log) Option {
+	return func(p *memProvider) {
+		if l != nil {
+			p.log = l
+		}
+	}
+}
+
+// WithIDGenerator sets the source of record IDs (default: a generator on the
+// provider's clock with crypto/rand entropy). Supply a generator seeded with a
+// deterministic clock and entropy so a re-run with the same seeds produces the
+// exact same IDs — the basis of deterministic replay.
+func WithIDGenerator(g *ids.Generator) Option {
+	return func(p *memProvider) {
+		if g != nil {
+			p.gen = g
+		}
+	}
+}
+
 // NewMemory returns an empty in-memory Provider so the agent runs with zero
 // setup. It is safe for concurrent use and intended as the standalone default
-// and for tests; the durable SQLite Provider lands in a follow-up.
+// and for tests. Every mutation is recorded on a spine.Log and projected, so the
+// provider's state is always a fold of its log (see Replay).
 func NewMemory(opts ...Option) Provider {
-	p := &memProvider{instanceID: "local", hlc: hlc.NewClock()}
+	p := &memProvider{instanceID: "local"}
 	for _, o := range opts {
 		o(p)
 	}
-	p.sessions = &memSessions{instanceID: p.instanceID, hlc: p.hlc, byID: map[string]Session{}, turns: map[string][]Turn{}}
-	p.skills = &memSkills{instanceID: p.instanceID, hlc: p.hlc, byID: map[string]Skill{}, slugToID: map[string]string{}}
-	p.memory = &memMemory{instanceID: p.instanceID, hlc: p.hlc}
+	if p.clk == nil {
+		p.clk = clock.System{}
+	}
+	if p.hlc == nil {
+		p.hlc = hlc.NewClock(hlc.WithPhysical(p.clk))
+	}
+	if p.log == nil {
+		p.log = spine.NewMemoryLog(spine.WithClock(p.clk))
+	}
+	if p.gen == nil {
+		p.gen = ids.NewGenerator(ids.WithClock(p.clk))
+	}
+	p.core = newCore(p.instanceID, p.clk, p.hlc, p.log, p.gen)
+	p.sessions = &memSessions{c: p.core}
+	p.skills = &memSkills{c: p.core}
+	p.memory = &memMemory{c: p.core}
 	return p
 }
 
@@ -49,7 +97,11 @@ var (
 
 type memProvider struct {
 	instanceID string
+	clk        clock.Clock
 	hlc        *hlc.Clock
+	log        spine.Log
+	gen        *ids.Generator
+	core       *core
 	sessions   *memSessions
 	skills     *memSkills
 	memory     *memMemory
@@ -61,49 +113,49 @@ func (m *memProvider) Skills() SkillStore     { return m.skills }
 func (m *memProvider) Memory() MemoryStore    { return m.memory }
 func (m *memProvider) Close() error           { return nil }
 
-// newID returns a new time-sortable, globally-unique identifier (UUIDv7).
-func newID() string {
-	return ids.New()
-}
-
 // scopeKey is a stable map key for a Scope.
 func scopeKey(s Scope) string {
 	return s.Instance + "\x00" + s.Project + "\x00" + s.Workspace
 }
 
 type memSessions struct {
-	instanceID string
-	hlc        *hlc.Clock
-	mu         sync.Mutex
-	byID       map[string]Session
-	turns      map[string][]Turn
+	c *core
 }
 
-func (s *memSessions) Create(_ context.Context, ses Session) (Session, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+func (s *memSessions) Create(ctx context.Context, ses Session) (Session, error) {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if ses.ID == "" {
-		ses.ID = newID()
+		ses.ID = c.gen.New()
 	}
-	now := time.Now().UTC()
+	now := c.clk.Now()
 	if ses.CreatedAt.IsZero() {
 		ses.CreatedAt = now
 	}
 	ses.UpdatedAt = now
 	if ses.OriginInstanceID == "" {
-		ses.OriginInstanceID = s.instanceID
+		ses.OriginInstanceID = c.instanceID
 	}
-	ses.LastWriterID = s.instanceID
-	ses.UpdatedHLC = s.hlc.Now()
+	ses.LastWriterID = c.instanceID
+	ses.UpdatedHLC = c.hlc.Now()
 	ses.SyncVersion = 1
-	s.byID[ses.ID] = ses
+	ses.Deleted = false
+	payload, err := encodeRecord(ses)
+	if err != nil {
+		return Session{}, err
+	}
+	if err := c.record(ctx, evSessionCreated, map[string]any{"session": payload}); err != nil {
+		return Session{}, err
+	}
 	return ses, nil
 }
 
 func (s *memSessions) Get(_ context.Context, id string) (Session, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ses, ok := s.byID[id]
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ses, ok := c.sessions[id]
 	if !ok || ses.Deleted {
 		return Session{}, ErrNotFound
 	}
@@ -111,91 +163,111 @@ func (s *memSessions) Get(_ context.Context, id string) (Session, error) {
 }
 
 func (s *memSessions) List(_ context.Context) ([]Session, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]Session, 0, len(s.byID))
-	for _, ses := range s.byID {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Session, 0, len(c.sessions))
+	for _, ses := range c.sessions {
 		if ses.Deleted {
 			continue
 		}
 		out = append(out, ses)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.Before(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID // total order: deterministic reads regardless of map iteration
+	})
 	return out, nil
 }
 
-func (s *memSessions) AppendTurn(_ context.Context, t Turn) (Turn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ses, ok := s.byID[t.SessionID]
+func (s *memSessions) AppendTurn(ctx context.Context, t Turn) (Turn, error) {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ses, ok := c.sessions[t.SessionID]
 	if !ok || ses.Deleted {
 		return Turn{}, ErrNotFound
 	}
 	if t.ID == "" {
-		t.ID = newID()
+		t.ID = c.gen.New()
 	}
-	t.Seq = int64(len(s.turns[t.SessionID]) + 1)
+	t.Seq = int64(len(c.turns[t.SessionID]) + 1)
+	now := c.clk.Now()
 	if t.CreatedAt.IsZero() {
-		t.CreatedAt = time.Now().UTC()
+		t.CreatedAt = now
 	}
 	if t.OriginInstanceID == "" {
-		t.OriginInstanceID = s.instanceID
+		t.OriginInstanceID = c.instanceID
 	}
-	now := s.hlc.Now()
-	t.LastWriterID = s.instanceID
-	t.UpdatedHLC = now
+	hnow := c.hlc.Now()
+	t.LastWriterID = c.instanceID
+	t.UpdatedHLC = hnow
 	t.SyncVersion = 1
-	s.turns[t.SessionID] = append(s.turns[t.SessionID], t)
-	// Appending a turn mutates the session.
+	t.Deleted = false
+	// Appending a turn mutates the session: bump its envelope under the same HLC.
 	ses.UpdatedAt = t.CreatedAt
-	ses.LastWriterID = s.instanceID
-	ses.UpdatedHLC = now
+	ses.LastWriterID = c.instanceID
+	ses.UpdatedHLC = hnow
 	ses.SyncVersion++
-	s.byID[t.SessionID] = ses
+	turnPayload, err := encodeRecord(t)
+	if err != nil {
+		return Turn{}, err
+	}
+	sessionPayload, err := encodeRecord(ses)
+	if err != nil {
+		return Turn{}, err
+	}
+	if err := c.record(ctx, evTurnAppended, map[string]any{"turn": turnPayload, "session": sessionPayload}); err != nil {
+		return Turn{}, err
+	}
 	return t, nil
 }
 
 func (s *memSessions) Turns(_ context.Context, sessionID string) ([]Turn, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	src := s.turns[sessionID]
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	src := c.turns[sessionID]
 	out := make([]Turn, len(src))
 	copy(out, src)
 	return out, nil
 }
 
-func (s *memSessions) Delete(_ context.Context, id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	ses, ok := s.byID[id]
+func (s *memSessions) Delete(ctx context.Context, id string) error {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ses, ok := c.sessions[id]
 	if !ok || ses.Deleted {
 		return ErrNotFound
 	}
 	ses.Deleted = true
-	ses.LastWriterID = s.instanceID
-	ses.UpdatedHLC = s.hlc.Now()
-	ses.UpdatedAt = time.Now().UTC()
+	ses.LastWriterID = c.instanceID
+	ses.UpdatedHLC = c.hlc.Now()
+	ses.UpdatedAt = c.clk.Now()
 	ses.SyncVersion++
-	s.byID[id] = ses
-	return nil
+	payload, err := encodeRecord(ses)
+	if err != nil {
+		return err
+	}
+	return c.record(ctx, evSessionDeleted, map[string]any{"session": payload})
 }
 
 type memSkills struct {
-	instanceID string
-	hlc        *hlc.Clock
-	mu         sync.Mutex
-	byID       map[string]Skill
-	slugToID   map[string]string // scopeKey+"\x00"+slug -> id
+	c *core
 }
 
-func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	now := time.Now().UTC()
+func (s *memSkills) Upsert(ctx context.Context, sk Skill) (Skill, error) {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.clk.Now()
 	key := scopeKey(sk.Scope) + "\x00" + sk.Slug
 
-	if id, ok := s.slugToID[key]; ok {
-		existing := s.byID[id]
+	if id, ok := c.slugToID[key]; ok {
+		existing := c.skillsByID[id]
 		// Opt-in optimistic concurrency: a non-zero SyncVersion must match.
 		if sk.SyncVersion != 0 && sk.SyncVersion != existing.SyncVersion {
 			return Skill{}, ErrConflict
@@ -205,10 +277,17 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 		sk.OriginInstanceID = existing.OriginInstanceID // origin is preserved
 		sk.Version = existing.Version + 1
 		sk.SyncVersion = existing.SyncVersion + 1
-		sk.LastWriterID = s.instanceID
-		sk.UpdatedHLC = s.hlc.Now()
+		sk.LastWriterID = c.instanceID
+		sk.UpdatedHLC = c.hlc.Now()
 		sk.UpdatedAt = now
-		s.byID[id] = sk // an upsert over a tombstone resurrects it (Deleted from sk)
+		// An upsert over a tombstone resurrects it (Deleted comes from sk).
+		payload, err := encodeRecord(sk)
+		if err != nil {
+			return Skill{}, err
+		}
+		if err := c.record(ctx, evSkillUpserted, map[string]any{"skill": payload}); err != nil {
+			return Skill{}, err
+		}
 		return sk, nil
 	}
 
@@ -217,31 +296,37 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 		return Skill{}, ErrConflict
 	}
 	if sk.ID == "" {
-		sk.ID = newID()
+		sk.ID = c.gen.New()
 	}
 	if sk.Version == 0 {
 		sk.Version = 1
 	}
 	sk.SyncVersion = 1
 	if sk.OriginInstanceID == "" {
-		sk.OriginInstanceID = s.instanceID
+		sk.OriginInstanceID = c.instanceID
 	}
-	sk.LastWriterID = s.instanceID
-	sk.UpdatedHLC = s.hlc.Now()
+	sk.LastWriterID = c.instanceID
+	sk.UpdatedHLC = c.hlc.Now()
 	sk.CreatedAt = now
 	sk.UpdatedAt = now
-	s.byID[sk.ID] = sk
-	s.slugToID[key] = sk.ID
+	payload, err := encodeRecord(sk)
+	if err != nil {
+		return Skill{}, err
+	}
+	if err := c.record(ctx, evSkillUpserted, map[string]any{"skill": payload}); err != nil {
+		return Skill{}, err
+	}
 	return sk, nil
 }
 
 func (s *memSkills) Get(_ context.Context, idOrSlug string) (Skill, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if sk, ok := s.byID[idOrSlug]; ok && !sk.Deleted {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if sk, ok := c.skillsByID[idOrSlug]; ok && !sk.Deleted {
 		return sk, nil
 	}
-	for _, sk := range s.byID {
+	for _, sk := range c.skillsByID {
 		if sk.Slug == idOrSlug && !sk.Deleted {
 			return sk, nil
 		}
@@ -250,24 +335,26 @@ func (s *memSkills) Get(_ context.Context, idOrSlug string) (Skill, error) {
 }
 
 func (s *memSkills) List(_ context.Context, scope Scope) ([]Skill, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	out := make([]Skill, 0)
-	for _, sk := range s.byID {
+	for _, sk := range c.skillsByID {
 		if sk.Scope == scope && !sk.Deleted {
 			out = append(out, sk)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	sort.Slice(out, sliceSkillsBySlug(out))
 	return out, nil
 }
 
 func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	q := strings.ToLower(strings.TrimSpace(query))
 	out := make([]Skill, 0)
-	for _, sk := range s.byID {
+	for _, sk := range c.skillsByID {
 		if sk.Deleted {
 			continue
 		}
@@ -275,42 +362,57 @@ func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill,
 			out = append(out, sk)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	sort.Slice(out, sliceSkillsBySlug(out))
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
 	return out, nil
 }
 
-func (s *memSkills) Delete(_ context.Context, idOrSlug string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	id, ok := s.resolve(idOrSlug)
+func (s *memSkills) Delete(ctx context.Context, idOrSlug string) error {
+	c := s.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	id, ok := c.resolveSkill(idOrSlug)
 	if !ok {
 		return ErrNotFound
 	}
-	sk := s.byID[id]
+	sk := c.skillsByID[id]
 	sk.Deleted = true
 	sk.Version++
 	sk.SyncVersion++
-	sk.LastWriterID = s.instanceID
-	sk.UpdatedHLC = s.hlc.Now()
-	sk.UpdatedAt = time.Now().UTC()
-	s.byID[id] = sk
-	return nil
+	sk.LastWriterID = c.instanceID
+	sk.UpdatedHLC = c.hlc.Now()
+	sk.UpdatedAt = c.clk.Now()
+	payload, err := encodeRecord(sk)
+	if err != nil {
+		return err
+	}
+	return c.record(ctx, evSkillDeleted, map[string]any{"skill": payload})
 }
 
-// resolve finds a live skill's id by id or slug.
-func (s *memSkills) resolve(idOrSlug string) (string, bool) {
-	if sk, ok := s.byID[idOrSlug]; ok && !sk.Deleted {
+// resolveSkill finds a live skill's id by id or slug. Callers hold mu.
+func (c *core) resolveSkill(idOrSlug string) (string, bool) {
+	if sk, ok := c.skillsByID[idOrSlug]; ok && !sk.Deleted {
 		return idOrSlug, true
 	}
-	for id, sk := range s.byID {
+	for id, sk := range c.skillsByID {
 		if sk.Slug == idOrSlug && !sk.Deleted {
 			return id, true
 		}
 	}
 	return "", false
+}
+
+// sliceSkillsBySlug orders skills by Slug with an ID tiebreak, so reads are a
+// total, deterministic order even when slugs collide across scopes.
+func sliceSkillsBySlug(s []Skill) func(i, j int) bool {
+	return func(i, j int) bool {
+		if s[i].Slug != s[j].Slug {
+			return s[i].Slug < s[j].Slug
+		}
+		return s[i].ID < s[j].ID
+	}
 }
 
 func skillMatches(sk Skill, lowerQuery string) bool {
@@ -320,37 +422,43 @@ func skillMatches(sk Skill, lowerQuery string) bool {
 }
 
 type memMemory struct {
-	instanceID string
-	hlc        *hlc.Clock
-	mu         sync.Mutex
-	items      []MemoryItem
+	c *core
 }
 
-func (m *memMemory) Write(_ context.Context, it MemoryItem) (MemoryItem, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *memMemory) Write(ctx context.Context, it MemoryItem) (MemoryItem, error) {
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if it.ID == "" {
-		it.ID = newID()
+		it.ID = c.gen.New()
 	}
 	if it.CreatedAt.IsZero() {
-		it.CreatedAt = time.Now().UTC()
+		it.CreatedAt = c.clk.Now()
 	}
 	if it.OriginInstanceID == "" {
-		it.OriginInstanceID = m.instanceID
+		it.OriginInstanceID = c.instanceID
 	}
-	it.LastWriterID = m.instanceID
-	it.UpdatedHLC = m.hlc.Now()
+	it.LastWriterID = c.instanceID
+	it.UpdatedHLC = c.hlc.Now()
 	it.SyncVersion = 1
-	m.items = append(m.items, it)
+	it.Deleted = false
+	payload, err := encodeRecord(it)
+	if err != nil {
+		return MemoryItem{}, err
+	}
+	if err := c.record(ctx, evMemoryWritten, map[string]any{"item": payload}); err != nil {
+		return MemoryItem{}, err
+	}
 	return it, nil
 }
 
 func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	query := strings.ToLower(strings.TrimSpace(q.Query))
 	out := make([]MemoryItem, 0)
-	for _, it := range m.items {
+	for _, it := range c.memItems {
 		if it.Deleted {
 			continue
 		}
@@ -361,23 +469,34 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 			out = append(out, it)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
+			return out[i].CreatedAt.After(out[j].CreatedAt)
+		}
+		return out[i].ID < out[j].ID // total order: deterministic reads regardless of map iteration
+	})
 	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
 	}
 	return out, nil
 }
 
-func (m *memMemory) Delete(_ context.Context, id string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for i := range m.items {
-		if m.items[i].ID == id && !m.items[i].Deleted {
-			m.items[i].Deleted = true
-			m.items[i].LastWriterID = m.instanceID
-			m.items[i].UpdatedHLC = m.hlc.Now()
-			m.items[i].SyncVersion++
-			return nil
+func (m *memMemory) Delete(ctx context.Context, id string) error {
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for i := range c.memItems {
+		if c.memItems[i].ID == id && !c.memItems[i].Deleted {
+			it := c.memItems[i]
+			it.Deleted = true
+			it.LastWriterID = c.instanceID
+			it.UpdatedHLC = c.hlc.Now()
+			it.SyncVersion++
+			payload, err := encodeRecord(it)
+			if err != nil {
+				return err
+			}
+			return c.record(ctx, evMemoryDeleted, map[string]any{"item": payload})
 		}
 	}
 	return ErrNotFound
