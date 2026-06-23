@@ -64,6 +64,7 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("Admission", func(t *testing.T) { testAdmission(t, newStore) })
 	t.Run("OptimisticConcurrency", func(t *testing.T) { testCAS(t, newStore) })
 	t.Run("ListSelector", func(t *testing.T) { testListSelector(t, newStore) })
+	t.Run("ListAllScopes", func(t *testing.T) { testListAll(t, newStore) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore) })
 	t.Run("ContentHash", func(t *testing.T) { testContentHash(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
@@ -200,6 +201,49 @@ func testListSelector(t *testing.T, newStore func(*resource.Registry) resource.S
 	scoped, _ := s.List(ctx, widgetKind, resource.Scope{Project: "p"}, nil)
 	if len(scoped) != 1 {
 		t.Fatalf("scoped List = %d, want 1", len(scoped))
+	}
+}
+
+func testListAll(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+
+	global := widget("a", "s", map[string]string{"tier": "pro"})
+	proj := resource.Resource{APIVersion: widgetAPIVersion, Kind: widgetKind, Name: "a", Scope: resource.Scope{Project: "p"}, Spec: json.RawMessage(`{"size":"m"}`)}
+	work := resource.Resource{APIVersion: widgetAPIVersion, Kind: widgetKind, Name: "b", Scope: resource.Scope{Project: "p", Workspace: "w"}, Labels: map[string]string{"tier": "free"}, Spec: json.RawMessage(`{"size":"l"}`)}
+	mustPut(t, s, global)
+	mustPut(t, s, proj)
+	mustPut(t, s, work)
+
+	all, err := s.ListAll(ctx, widgetKind, nil)
+	if err != nil || len(all) != 3 {
+		t.Fatalf("ListAll = (%d, %v), want 3 across scopes", len(all), err)
+	}
+	// Ordered by scope (instance, project, workspace) then name: global "a", then
+	// project-p "a", then project-p/workspace-w "b".
+	if all[0].Scope != (resource.Scope{}) || all[1].Scope.Project != "p" || all[1].Scope.Workspace != "" || all[2].Scope.Workspace != "w" {
+		t.Fatalf("ListAll not ordered by scope: %v", scopes(all))
+	}
+
+	// A scoped List sees only its own namespace; ListAll spans them.
+	if one, _ := s.List(ctx, widgetKind, resource.Scope{Project: "p"}, nil); len(one) != 1 {
+		t.Fatalf("scoped List = %d, want 1", len(one))
+	}
+
+	// The selector applies across every scope.
+	sel, _ := resource.ParseSelector("tier=pro")
+	pro, err := s.ListAll(ctx, widgetKind, sel)
+	if err != nil || len(pro) != 1 || pro[0].Scope != (resource.Scope{}) {
+		t.Fatalf("ListAll tier=pro = (%d, %v), want only the global widget", len(pro), err)
+	}
+
+	// A tombstone drops out of ListAll.
+	if err := s.Delete(ctx, widgetKind, resource.Scope{}, "a"); err != nil {
+		t.Fatal(err)
+	}
+	if rest, _ := s.ListAll(ctx, widgetKind, nil); len(rest) != 2 {
+		t.Fatalf("ListAll after delete = %d, want 2", len(rest))
 	}
 }
 
@@ -343,6 +387,14 @@ func names(rs []resource.Resource) []string {
 	out := make([]string, len(rs))
 	for i, r := range rs {
 		out[i] = r.Name
+	}
+	return out
+}
+
+func scopes(rs []resource.Resource) []resource.Scope {
+	out := make([]resource.Scope, len(rs))
+	for i, r := range rs {
+		out[i] = r.Scope
 	}
 	return out
 }

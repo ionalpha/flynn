@@ -39,6 +39,13 @@ type Store interface {
 	// List returns the live resources of a kind in a scope whose labels satisfy
 	// the selector (nil selector matches all), ordered by name.
 	List(ctx context.Context, kind string, scope Scope, sel Selector) ([]Resource, error)
+	// ListAll returns the live resources of a kind across every scope whose labels
+	// satisfy the selector (nil selector matches all), ordered by scope then name.
+	// It is the cross-namespace query: typed facades that resolve by a
+	// scope-independent handle (a skill slug, say) and selector-driven views over a
+	// whole kind read through it, the way Kubernetes lists a kind across all
+	// namespaces.
+	ListAll(ctx context.Context, kind string, sel Selector) ([]Resource, error)
 	// Delete tombstones the resource addressed by (kind, scope, name), or returns
 	// ErrNotFound.
 	Delete(ctx context.Context, kind string, scope Scope, name string) error
