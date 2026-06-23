@@ -3,7 +3,7 @@
 // It is transport- and provider-agnostic, builds to a single static binary
 // (see cmd/flynn), and exposes importable packages so a host application can
 // embed it directly. Persistence is reached only through the interfaces in the
-// state package, and observability through the obs package: the open agent ships
+// state package, and observability through the observe package: the open agent ships
 // local implementations and no-op defaults, while a richer host (e.g. an Ion
 // Alpha instance) can supply its own, without this package depending on the host.
 package agent
@@ -14,7 +14,7 @@ import (
 	"io"
 	"log/slog"
 
-	"github.com/ionalpha/flynn/obs"
+	"github.com/ionalpha/flynn/observe"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -27,7 +27,7 @@ type Config struct {
 	// in-memory provider is used so the agent runs with zero setup.
 	State state.Provider
 	// Obs carries the logger and tracer. If nil, no-op defaults are used.
-	Obs *obs.Observability
+	Obs *observe.Observability
 	// Out is where human-facing output is written. Defaults to io.Discard.
 	Out io.Writer
 }
@@ -43,7 +43,7 @@ func New(cfg Config) *Agent {
 		cfg.State = state.NewMemory()
 	}
 	if cfg.Obs == nil {
-		cfg.Obs = obs.Default()
+		cfg.Obs = observe.Default()
 	}
 	if cfg.Out == nil {
 		cfg.Out = io.Discard

@@ -307,7 +307,7 @@ latency, and outcome.
 cmd/flynn/          standalone binary entry point
 agent.go          core runtime (Config, Agent, Run)
 state/            persistence interfaces (the host boundary)
-obs/              logging and tracing seam (slog + tracer, no-op default)
+observe/          logging and tracing seam (slog + tracer, no-op default)
 dispatch/         the action chokepoint: governance, tracing, events, hooks
 spine/            the canonical ordered event log (source of truth, replay)
 clock/            deterministic time source (replay and tests)
@@ -323,8 +323,8 @@ mcp/              tool protocol server and client
 internal/         build and runtime internals
 ```
 
-The agent depends only on the interfaces in `state/` (persistence) and `obs/`
-(observability). Local implementations and no-op defaults ship in this
+The agent depends only on the interfaces in `state/` (persistence) and
+`observe/` (observability). Local implementations and no-op defaults ship in this
 repository; a host such as an Ion Alpha instance can supply a richer one backed
 by a knowledge graph and fleet-wide learning, without this repository ever
 depending on the host.
