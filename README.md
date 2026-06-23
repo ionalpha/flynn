@@ -311,6 +311,7 @@ observe/          logging and tracing seam (slog + tracer, no-op default)
 dispatch/         the action chokepoint: governance, tracing, events, hooks
 spine/            the canonical ordered event log (source of truth, replay)
 clock/            deterministic time source (replay and tests)
+ids/              time-sortable unique identifiers (UUIDv7, injectable)
 fault/            canonical error model (typed, classified)
 orchestration/    goals, missions, dispatcher, and the governor
 skills/           skill capture, curation, and reinforcement

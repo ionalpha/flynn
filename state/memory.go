@@ -2,12 +2,12 @@ package state
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ionalpha/flynn/ids"
 )
 
 // Option configures the in-memory Provider.
@@ -59,11 +59,9 @@ func (m *memProvider) Skills() SkillStore     { return m.skills }
 func (m *memProvider) Memory() MemoryStore    { return m.memory }
 func (m *memProvider) Close() error           { return nil }
 
-// newID returns a random 16-hex-character identifier.
+// newID returns a new time-sortable, globally-unique identifier (UUIDv7).
 func newID() string {
-	var b [8]byte
-	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return ids.New()
 }
 
 // scopeKey is a stable map key for a Scope.
