@@ -8,7 +8,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/spine"
-	"github.com/ionalpha/flynn/spine/sqlite"
+	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
 // logModel drives the durable Log through random Append/Read sequences and
@@ -17,7 +17,7 @@ import (
 // per-stream MAX(seq) assignment) rather than the in-memory map.
 type logModel struct {
 	ctx    context.Context
-	log    *sqlite.Log
+	log    spine.Log
 	stream string
 	count  int
 }
@@ -87,12 +87,12 @@ func (m *logModel) Check(t *rapid.T) {
 
 func TestSQLiteLogStateMachine(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		l, err := sqlite.Open(context.Background(), ":memory:")
+		s, err := sqlite.Open(context.Background(), ":memory:")
 		if err != nil {
 			t.Fatalf("open: %v", err)
 		}
-		defer func() { _ = l.Close() }()
-		m := &logModel{ctx: context.Background(), log: l, stream: "run"}
+		defer func() { _ = s.Close() }()
+		m := &logModel{ctx: context.Background(), log: s.Log(), stream: "run"}
 		t.Repeat(rapid.StateMachineActions(m))
 	})
 }

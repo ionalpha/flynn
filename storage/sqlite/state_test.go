@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/state"
-	"github.com/ionalpha/flynn/state/sqlite"
 	"github.com/ionalpha/flynn/state/statetest"
+	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
 // open returns a fresh in-memory provider, panicking on error: opening an
@@ -25,7 +25,7 @@ func open(t *testing.T) state.Provider {
 // TestConformance holds the SQLite provider to the identical contract as the
 // in-memory one. This is the payoff of the shared suite: a single line proves
 // byte-for-byte parity across backends.
-func TestConformance(t *testing.T) {
+func TestStateConformance(t *testing.T) {
 	statetest.RunSuite(t, func() state.Provider {
 		p, err := sqlite.Open(context.Background(), ":memory:")
 		if err != nil {
@@ -60,7 +60,7 @@ func TestWithInstanceID(t *testing.T) {
 // TestPersistsAcrossReopen is the whole point of a durable provider: state
 // written by one process is read back by the next. A file is closed and
 // reopened, and the records survive.
-func TestPersistsAcrossReopen(t *testing.T) {
+func TestStatePersistsAcrossReopen(t *testing.T) {
 	ctx := context.Background()
 	dsn := filepath.Join(t.TempDir(), "state.db")
 
@@ -108,7 +108,7 @@ func TestPersistsAcrossReopen(t *testing.T) {
 // TestReopenRerunsMigrationsCleanly verifies the migration runner is idempotent
 // against a populated database: reopening an existing store must not error or
 // re-apply.
-func TestReopenRerunsMigrationsCleanly(t *testing.T) {
+func TestStateReopenRerunsMigrationsCleanly(t *testing.T) {
 	ctx := context.Background()
 	dsn := filepath.Join(t.TempDir(), "state.db")
 	for i := 0; i < 3; i++ {
