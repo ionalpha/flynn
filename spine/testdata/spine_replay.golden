@@ -1,0 +1,38 @@
+[
+  {
+    "Stream": "run",
+    "Seq": 1,
+    "Time": "2023-11-14T22:13:20Z",
+    "Type": "start",
+    "Actor": "agent",
+    "Payload": null,
+    "TraceID": "",
+    "SpanID": "",
+    "CausationID": "",
+    "OriginInstanceID": ""
+  },
+  {
+    "Stream": "run",
+    "Seq": 2,
+    "Time": "2023-11-14T22:13:20Z",
+    "Type": "tool",
+    "Actor": "agent",
+    "Payload": null,
+    "TraceID": "",
+    "SpanID": "",
+    "CausationID": "",
+    "OriginInstanceID": ""
+  },
+  {
+    "Stream": "run",
+    "Seq": 3,
+    "Time": "2023-11-14T22:13:20Z",
+    "Type": "end",
+    "Actor": "agent",
+    "Payload": null,
+    "TraceID": "",
+    "SpanID": "",
+    "CausationID": "",
+    "OriginInstanceID": ""
+  }
+]
