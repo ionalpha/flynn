@@ -137,6 +137,29 @@ func (s *resourceStore) List(ctx context.Context, kind string, scope resource.Sc
 	return out, rows.Err()
 }
 
+func (s *resourceStore) ListAll(ctx context.Context, kind string, sel resource.Selector) ([]resource.Resource, error) {
+	rows, err := s.p.db.QueryContext(ctx,
+		`SELECT `+resourceCols+` FROM resources
+		 WHERE kind = ? AND deleted = 0
+		 ORDER BY scope_instance, scope_project, scope_workspace, name, id`,
+		kind)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]resource.Resource, 0)
+	for rows.Next() {
+		r, err := scanResource(rows)
+		if err != nil {
+			return nil, err
+		}
+		if sel.Matches(r.Labels) {
+			out = append(out, r)
+		}
+	}
+	return out, rows.Err()
+}
+
 func (s *resourceStore) Delete(ctx context.Context, kind string, scope resource.Scope, name string) error {
 	return s.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
 		existing, err := getResourceByKeyTx(ctx, tx, kind, scope, name)

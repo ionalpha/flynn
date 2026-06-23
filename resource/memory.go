@@ -167,6 +167,24 @@ func (s *memStore) List(_ context.Context, kind string, scope Scope, sel Selecto
 	return out, nil
 }
 
+func (s *memStore) ListAll(_ context.Context, kind string, sel Selector) ([]Resource, error) {
+	c := s.core
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]Resource, 0)
+	for _, r := range c.byID {
+		if r.Deleted || r.Kind != kind {
+			continue
+		}
+		if !sel.Matches(r.Labels) {
+			continue
+		}
+		out = append(out, r)
+	}
+	sort.Slice(out, func(i, j int) bool { return lessByScopeName(out[i], out[j]) })
+	return out, nil
+}
+
 func (s *memStore) Delete(ctx context.Context, kind string, scope Scope, name string) error {
 	c := s.core
 	c.mu.Lock()
@@ -184,6 +202,25 @@ func (s *memStore) Delete(ctx context.Context, kind string, scope Scope, name st
 		return err
 	}
 	return c.record(ctx, ev)
+}
+
+// lessByScopeName is the total order ListAll returns: by scope (instance, project,
+// workspace), then name, with an ID tiebreak, so a cross-scope listing is
+// deterministic even when a name repeats across scopes.
+func lessByScopeName(a, b Resource) bool {
+	if a.Scope.Instance != b.Scope.Instance {
+		return a.Scope.Instance < b.Scope.Instance
+	}
+	if a.Scope.Project != b.Scope.Project {
+		return a.Scope.Project < b.Scope.Project
+	}
+	if a.Scope.Workspace != b.Scope.Workspace {
+		return a.Scope.Workspace < b.Scope.Workspace
+	}
+	if a.Name != b.Name {
+		return a.Name < b.Name
+	}
+	return a.ID < b.ID
 }
 
 // core is the in-memory read model behind the command path. Every mutation
