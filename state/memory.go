@@ -1,0 +1,246 @@
+package state
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"sort"
+	"strings"
+	"sync"
+	"time"
+)
+
+// NewMemory returns an empty in-memory Provider so the agent runs with zero
+// setup. It is safe for concurrent use and intended as the standalone default
+// and for tests; the durable SQLite Provider lands in a follow-up.
+func NewMemory() Provider {
+	return &memProvider{
+		sessions: &memSessions{byID: map[string]Session{}, turns: map[string][]Turn{}},
+		skills:   &memSkills{byID: map[string]Skill{}, slugToID: map[string]string{}},
+		memory:   &memMemory{},
+	}
+}
+
+// Compile-time checks that the in-memory types satisfy the state interfaces.
+var (
+	_ Provider     = (*memProvider)(nil)
+	_ SessionStore = (*memSessions)(nil)
+	_ SkillStore   = (*memSkills)(nil)
+	_ MemoryStore  = (*memMemory)(nil)
+)
+
+type memProvider struct {
+	sessions *memSessions
+	skills   *memSkills
+	memory   *memMemory
+}
+
+func (m *memProvider) Name() string           { return "memory" }
+func (m *memProvider) Sessions() SessionStore { return m.sessions }
+func (m *memProvider) Skills() SkillStore     { return m.skills }
+func (m *memProvider) Memory() MemoryStore    { return m.memory }
+func (m *memProvider) Close() error           { return nil }
+
+// newID returns a random 16-hex-character identifier.
+func newID() string {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	return hex.EncodeToString(b[:])
+}
+
+// scopeKey is a stable map key for a Scope.
+func scopeKey(s Scope) string {
+	return s.Instance + "\x00" + s.Project + "\x00" + s.Workspace
+}
+
+type memSessions struct {
+	mu    sync.Mutex
+	byID  map[string]Session
+	turns map[string][]Turn
+}
+
+func (s *memSessions) Create(_ context.Context, ses Session) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ses.ID == "" {
+		ses.ID = newID()
+	}
+	now := time.Now().UTC()
+	if ses.CreatedAt.IsZero() {
+		ses.CreatedAt = now
+	}
+	ses.UpdatedAt = now
+	s.byID[ses.ID] = ses
+	return ses, nil
+}
+
+func (s *memSessions) Get(_ context.Context, id string) (Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ses, ok := s.byID[id]
+	if !ok {
+		return Session{}, ErrNotFound
+	}
+	return ses, nil
+}
+
+func (s *memSessions) List(_ context.Context) ([]Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Session, 0, len(s.byID))
+	for _, ses := range s.byID {
+		out = append(out, ses)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
+	return out, nil
+}
+
+func (s *memSessions) AppendTurn(_ context.Context, t Turn) (Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ses, ok := s.byID[t.SessionID]
+	if !ok {
+		return Turn{}, ErrNotFound
+	}
+	if t.ID == "" {
+		t.ID = newID()
+	}
+	t.Seq = int64(len(s.turns[t.SessionID]) + 1)
+	if t.CreatedAt.IsZero() {
+		t.CreatedAt = time.Now().UTC()
+	}
+	s.turns[t.SessionID] = append(s.turns[t.SessionID], t)
+	ses.UpdatedAt = t.CreatedAt
+	s.byID[t.SessionID] = ses
+	return t, nil
+}
+
+func (s *memSessions) Turns(_ context.Context, sessionID string) ([]Turn, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	src := s.turns[sessionID]
+	out := make([]Turn, len(src))
+	copy(out, src)
+	return out, nil
+}
+
+type memSkills struct {
+	mu       sync.Mutex
+	byID     map[string]Skill
+	slugToID map[string]string // scopeKey+"\x00"+slug -> id
+}
+
+func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	key := scopeKey(sk.Scope) + "\x00" + sk.Slug
+	if id, ok := s.slugToID[key]; ok {
+		existing := s.byID[id]
+		sk.ID = id
+		sk.CreatedAt = existing.CreatedAt
+		sk.Version = existing.Version + 1
+		sk.UpdatedAt = now
+		s.byID[id] = sk
+		return sk, nil
+	}
+	if sk.ID == "" {
+		sk.ID = newID()
+	}
+	if sk.Version == 0 {
+		sk.Version = 1
+	}
+	sk.CreatedAt = now
+	sk.UpdatedAt = now
+	s.byID[sk.ID] = sk
+	s.slugToID[key] = sk.ID
+	return sk, nil
+}
+
+func (s *memSkills) Get(_ context.Context, idOrSlug string) (Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sk, ok := s.byID[idOrSlug]; ok {
+		return sk, nil
+	}
+	for _, sk := range s.byID {
+		if sk.Slug == idOrSlug {
+			return sk, nil
+		}
+	}
+	return Skill{}, ErrNotFound
+}
+
+func (s *memSkills) List(_ context.Context, scope Scope) ([]Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Skill, 0)
+	for _, sk := range s.byID {
+		if sk.Scope == scope {
+			out = append(out, sk)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	return out, nil
+}
+
+func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	q := strings.ToLower(strings.TrimSpace(query))
+	out := make([]Skill, 0)
+	for _, sk := range s.byID {
+		if q == "" || skillMatches(sk, q) {
+			out = append(out, sk)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Slug < out[j].Slug })
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+func skillMatches(sk Skill, lowerQuery string) bool {
+	return strings.Contains(strings.ToLower(sk.Name), lowerQuery) ||
+		strings.Contains(strings.ToLower(sk.Body), lowerQuery) ||
+		strings.Contains(strings.ToLower(strings.Join(sk.Tags, " ")), lowerQuery)
+}
+
+type memMemory struct {
+	mu    sync.Mutex
+	items []MemoryItem
+}
+
+func (m *memMemory) Write(_ context.Context, it MemoryItem) (MemoryItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if it.ID == "" {
+		it.ID = newID()
+	}
+	if it.CreatedAt.IsZero() {
+		it.CreatedAt = time.Now().UTC()
+	}
+	m.items = append(m.items, it)
+	return it, nil
+}
+
+func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	query := strings.ToLower(strings.TrimSpace(q.Query))
+	out := make([]MemoryItem, 0)
+	for _, it := range m.items {
+		if q.Scope != (Scope{}) && it.Scope != q.Scope {
+			continue
+		}
+		if query == "" || strings.Contains(strings.ToLower(it.Content), query) {
+			out = append(out, it)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out, nil
+}
