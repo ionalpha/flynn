@@ -2,10 +2,7 @@ package state_test
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -220,74 +217,6 @@ func TestProp_SessionTurnsAreOrdered(t *testing.T) {
 	})
 }
 
-// --- Targeted units (cover the simple accessors and error paths) -----------
-
-func TestProviderNameAndClose(t *testing.T) {
-	p := state.NewMemory()
-	if p.Name() != "memory" {
-		t.Fatalf("Name() = %q, want memory", p.Name())
-	}
-	if err := p.Close(); err != nil {
-		t.Fatalf("Close() = %v, want nil", err)
-	}
-}
-
-func TestGetNotFound(t *testing.T) {
-	ctx := context.Background()
-	p := state.NewMemory()
-	if _, err := p.Skills().Get(ctx, "missing"); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("Skills.Get = %v, want ErrNotFound", err)
-	}
-	if _, err := p.Sessions().Get(ctx, "missing"); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("Sessions.Get = %v, want ErrNotFound", err)
-	}
-}
-
-func TestSessionsListOldestFirst(t *testing.T) {
-	ctx := context.Background()
-	p := state.NewMemory()
-	for i := 0; i < 3; i++ {
-		if _, err := p.Sessions().Create(ctx, state.Session{Title: fmt.Sprintf("s%d", i)}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	got, err := p.Sessions().List(ctx)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
-	if len(got) != 3 {
-		t.Fatalf("listed %d sessions, want 3", len(got))
-	}
-	for i := 1; i < len(got); i++ {
-		if got[i].CreatedAt.Before(got[i-1].CreatedAt) {
-			t.Fatal("sessions not ordered oldest-first")
-		}
-	}
-}
-
-// --- Concurrency (validates the "safe for concurrent use" contract; -race) --
-
-func TestConcurrentSkillAccessIsSafe(t *testing.T) {
-	ctx := context.Background()
-	p := state.NewMemory()
-	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			_, _ = p.Skills().Upsert(ctx, state.Skill{Slug: fmt.Sprintf("s%d", i%10), Name: "n", Body: "b"})
-			_, _ = p.Skills().Search(ctx, "n", 0)
-			_, _ = p.Skills().List(ctx, state.Scope{})
-		}(i)
-	}
-	wg.Wait()
-
-	// 10 distinct slugs upserted concurrently (each many times) → exactly 10 records.
-	all, err := p.Skills().List(ctx, state.Scope{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(all) != 10 {
-		t.Fatalf("got %d skills, want 10 distinct slugs", len(all))
-	}
-}
+// The provider contract (CRUD, CAS, tombstones, envelope, concurrency, error
+// paths) is covered once by the shared statetest.RunSuite — see
+// conformance_test.go — rather than re-asserted here.
