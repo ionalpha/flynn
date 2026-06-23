@@ -1,0 +1,13 @@
+# Normalize line endings: store text as LF in the repo and check it out as LF
+# on every platform (including Windows), so diffs stay clean and gofmt/gofumpt
+# are consistent everywhere. git auto-detects text vs binary by content.
+* text=auto eol=lf
+
+# Belt-and-suspenders for common binary assets git might otherwise sniff wrong.
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.ico  binary
+*.gz   binary
+*.zip  binary
