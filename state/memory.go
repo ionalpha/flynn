@@ -104,7 +104,7 @@ func (s *memSessions) Get(_ context.Context, id string) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ses, ok := s.byID[id]
-	if !ok {
+	if !ok || ses.Deleted {
 		return Session{}, ErrNotFound
 	}
 	return ses, nil
@@ -115,6 +115,9 @@ func (s *memSessions) List(_ context.Context) ([]Session, error) {
 	defer s.mu.Unlock()
 	out := make([]Session, 0, len(s.byID))
 	for _, ses := range s.byID {
+		if ses.Deleted {
+			continue
+		}
 		out = append(out, ses)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
@@ -125,7 +128,7 @@ func (s *memSessions) AppendTurn(_ context.Context, t Turn) (Turn, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	ses, ok := s.byID[t.SessionID]
-	if !ok {
+	if !ok || ses.Deleted {
 		return Turn{}, ErrNotFound
 	}
 	if t.ID == "" {
@@ -161,6 +164,22 @@ func (s *memSessions) Turns(_ context.Context, sessionID string) ([]Turn, error)
 	return out, nil
 }
 
+func (s *memSessions) Delete(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ses, ok := s.byID[id]
+	if !ok || ses.Deleted {
+		return ErrNotFound
+	}
+	ses.Deleted = true
+	ses.LastWriterID = s.instanceID
+	ses.UpdatedHLC = s.hlc.Now()
+	ses.UpdatedAt = time.Now().UTC()
+	ses.SyncVersion++
+	s.byID[id] = ses
+	return nil
+}
+
 type memSkills struct {
 	instanceID string
 	hlc        *hlc.Clock
@@ -189,7 +208,7 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 		sk.LastWriterID = s.instanceID
 		sk.UpdatedHLC = s.hlc.Now()
 		sk.UpdatedAt = now
-		s.byID[id] = sk
+		s.byID[id] = sk // an upsert over a tombstone resurrects it (Deleted from sk)
 		return sk, nil
 	}
 
@@ -219,11 +238,11 @@ func (s *memSkills) Upsert(_ context.Context, sk Skill) (Skill, error) {
 func (s *memSkills) Get(_ context.Context, idOrSlug string) (Skill, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sk, ok := s.byID[idOrSlug]; ok {
+	if sk, ok := s.byID[idOrSlug]; ok && !sk.Deleted {
 		return sk, nil
 	}
 	for _, sk := range s.byID {
-		if sk.Slug == idOrSlug {
+		if sk.Slug == idOrSlug && !sk.Deleted {
 			return sk, nil
 		}
 	}
@@ -235,7 +254,7 @@ func (s *memSkills) List(_ context.Context, scope Scope) ([]Skill, error) {
 	defer s.mu.Unlock()
 	out := make([]Skill, 0)
 	for _, sk := range s.byID {
-		if sk.Scope == scope {
+		if sk.Scope == scope && !sk.Deleted {
 			out = append(out, sk)
 		}
 	}
@@ -249,6 +268,9 @@ func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill,
 	q := strings.ToLower(strings.TrimSpace(query))
 	out := make([]Skill, 0)
 	for _, sk := range s.byID {
+		if sk.Deleted {
+			continue
+		}
 		if q == "" || skillMatches(sk, q) {
 			out = append(out, sk)
 		}
@@ -258,6 +280,37 @@ func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill,
 		out = out[:limit]
 	}
 	return out, nil
+}
+
+func (s *memSkills) Delete(_ context.Context, idOrSlug string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	id, ok := s.resolve(idOrSlug)
+	if !ok {
+		return ErrNotFound
+	}
+	sk := s.byID[id]
+	sk.Deleted = true
+	sk.Version++
+	sk.SyncVersion++
+	sk.LastWriterID = s.instanceID
+	sk.UpdatedHLC = s.hlc.Now()
+	sk.UpdatedAt = time.Now().UTC()
+	s.byID[id] = sk
+	return nil
+}
+
+// resolve finds a live skill's id by id or slug.
+func (s *memSkills) resolve(idOrSlug string) (string, bool) {
+	if sk, ok := s.byID[idOrSlug]; ok && !sk.Deleted {
+		return idOrSlug, true
+	}
+	for id, sk := range s.byID {
+		if sk.Slug == idOrSlug && !sk.Deleted {
+			return id, true
+		}
+	}
+	return "", false
 }
 
 func skillMatches(sk Skill, lowerQuery string) bool {
@@ -298,6 +351,9 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 	query := strings.ToLower(strings.TrimSpace(q.Query))
 	out := make([]MemoryItem, 0)
 	for _, it := range m.items {
+		if it.Deleted {
+			continue
+		}
 		if q.Scope != (Scope{}) && it.Scope != q.Scope {
 			continue
 		}
@@ -310,4 +366,19 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 		out = out[:q.Limit]
 	}
 	return out, nil
+}
+
+func (m *memMemory) Delete(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.items {
+		if m.items[i].ID == id && !m.items[i].Deleted {
+			m.items[i].Deleted = true
+			m.items[i].LastWriterID = m.instanceID
+			m.items[i].UpdatedHLC = m.hlc.Now()
+			m.items[i].SyncVersion++
+			return nil
+		}
+	}
+	return ErrNotFound
 }
