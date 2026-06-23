@@ -5,12 +5,42 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 	"time"
 
 	"github.com/ionalpha/flynn/internal/sqlitex"
 )
+
+// TestDurabilityPragmas asserts the SSD-friendly event-store configuration is
+// actually applied: WAL journalling and synchronous=NORMAL. These cut fsyncs and
+// write amplification under the agent's append-heavy workload.
+func TestDurabilityPragmas(t *testing.T) {
+	ctx := context.Background()
+	dsn := filepath.Join(t.TempDir(), "x.db")
+	db, err := sqlitex.Open(ctx, dsn, testMigrations)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var journal string
+	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
+		t.Fatalf("journal_mode: %v", err)
+	}
+	if strings.ToLower(journal) != "wal" {
+		t.Fatalf("journal_mode = %q, want wal", journal)
+	}
+
+	var sync int
+	if err := db.QueryRowContext(ctx, "PRAGMA synchronous").Scan(&sync); err != nil {
+		t.Fatalf("synchronous: %v", err)
+	}
+	if sync != 1 { // 1 == NORMAL
+		t.Fatalf("synchronous = %d, want 1 (NORMAL)", sync)
+	}
+}
 
 // testMigrations is a minimal embedded-style migration set under "migrations",
 // matching the layout Open expects (it does fs.Sub(fsys, "migrations")).
