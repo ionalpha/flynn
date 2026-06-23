@@ -22,7 +22,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println(version.String())
+		fmt.Println(version.String()) //nolint:forbidigo // printing the version to stdout is this command's purpose, not logging
 		return
 	}
 
