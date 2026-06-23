@@ -65,6 +65,7 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("OptimisticConcurrency", func(t *testing.T) { testCAS(t, newStore) })
 	t.Run("ListSelector", func(t *testing.T) { testListSelector(t, newStore) })
 	t.Run("ListAllScopes", func(t *testing.T) { testListAll(t, newStore) })
+	t.Run("GenerateName", func(t *testing.T) { testGenerateName(t, newStore) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore) })
 	t.Run("ContentHash", func(t *testing.T) { testContentHash(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
@@ -244,6 +245,71 @@ func testListAll(t *testing.T, newStore func(*resource.Registry) resource.Store)
 	}
 	if rest, _ := s.ListAll(ctx, widgetKind, nil); len(rest) != 2 {
 		t.Fatalf("ListAll after delete = %d, want 2", len(rest))
+	}
+}
+
+// testGenerateName covers server-assigned names for kinds with no natural name:
+// each put is a fresh create named GenerateName + ID, an explicit Name still wins
+// and upserts in place, and a resource with neither is rejected.
+func testGenerateName(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+
+	anon := func() resource.Resource {
+		return resource.Resource{
+			APIVersion:   widgetAPIVersion,
+			Kind:         widgetKind,
+			GenerateName: "w-",
+			Spec:         json.RawMessage(`{"size":"s"}`),
+		}
+	}
+
+	a, err := s.Put(ctx, anon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.ID == "" || a.Name != "w-"+a.ID || a.Version != 1 {
+		t.Fatalf("generateName create = %+v, want Name = w-<id>", a)
+	}
+	if a.GenerateName != "" {
+		t.Fatalf("GenerateName must be consumed on write, got %q", a.GenerateName)
+	}
+	// The assigned name is a first-class address, alongside the id.
+	if got, err := s.Get(ctx, widgetKind, resource.Scope{}, a.Name); err != nil || got.ID != a.ID {
+		t.Fatalf("Get(assigned name) = (%q, %v)", got.ID, err)
+	}
+	if got, err := s.GetByID(ctx, a.ID); err != nil || got.Name != a.Name {
+		t.Fatalf("GetByID = (%q, %v)", got.Name, err)
+	}
+
+	// Each generateName put is a distinct create, never an update of the first.
+	b, err := s.Put(ctx, anon())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.ID == a.ID || b.Name == a.Name || b.Version != 1 {
+		t.Fatalf("second generateName put must be a distinct create: a=%s b=%s", a.Name, b.Name)
+	}
+	if all, _ := s.List(ctx, widgetKind, resource.Scope{}, nil); len(all) != 2 {
+		t.Fatalf("List = %d, want 2 distinct generated records", len(all))
+	}
+
+	// An explicit Name takes precedence and upserts in place over repeated puts.
+	named := anon()
+	named.Name = "fixed"
+	n, err := s.Put(ctx, named)
+	if err != nil || n.Name != "fixed" {
+		t.Fatalf("explicit Name should win: (%q, %v)", n.Name, err)
+	}
+	named.Spec = json.RawMessage(`{"size":"m"}`)
+	if n2, err := s.Put(ctx, named); err != nil || n2.ID != n.ID || n2.Version != 2 {
+		t.Fatalf("named re-put should update in place: %+v (%v)", n2, err)
+	}
+
+	// Neither Name nor GenerateName is an admission failure.
+	if _, err := s.Put(ctx, resource.Resource{APIVersion: widgetAPIVersion, Kind: widgetKind, Spec: json.RawMessage(`{"size":"s"}`)}); !errors.Is(err, resource.ErrInvalid) {
+		t.Fatalf("no name/generateName = %v, want ErrInvalid", err)
 	}
 }
 
