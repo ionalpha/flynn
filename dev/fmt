@@ -1,0 +1,19 @@
+#!/usr/bin/env sh
+# Auto-format the codebase (gofumpt + goimports, per .golangci.yml).
+# Run this to fix the formatting findings that `dev/lint` reports.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+golangci="$(command -v golangci-lint || true)"
+if [ -z "$golangci" ]; then
+  gobin="$(go env GOBIN)"; [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+  [ -x "$gobin/golangci-lint" ] && golangci="$gobin/golangci-lint"
+fi
+if [ -z "$golangci" ]; then
+  echo "golangci-lint not found; falling back to gofmt." >&2
+  gofmt -w .
+  exit 0
+fi
+
+echo "==> golangci-lint fmt"
+"$golangci" fmt
