@@ -7,7 +7,9 @@ linters:
   default: standard
   enable:
     - bodyclose
+    - depguard
     - errcheck
+    - forbidigo
     - gosec
     - govet
     - ineffassign
@@ -17,6 +19,24 @@ linters:
     - staticcheck
     - unconvert
     - unused
+  settings:
+    # Enforce the observability ports: nothing logs through log/slog directly.
+    # slog lives only inside package observe (its adapter and tests). Every other
+    # package depends on the observe.Logger port, so the backend stays swappable.
+    depguard:
+      rules:
+        no-direct-slog:
+          files:
+            - "**/*.go"
+            - "!**/observe/**"
+          deny:
+            - pkg: "log/slog"
+              desc: "log through the observe.Logger port; log/slog is allowed only inside package observe"
+    # No ad-hoc stdout logging; use the observe.Logger port instead.
+    forbidigo:
+      forbid:
+        - pattern: '^fmt\.Print.*$'
+          msg: "use the observe.Logger port, not fmt.Print*"
 
 formatters:
   enable:

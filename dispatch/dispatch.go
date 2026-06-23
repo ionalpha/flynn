@@ -11,7 +11,6 @@ package dispatch
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
@@ -152,20 +151,24 @@ func (d *Dispatcher) Dispatch(ctx context.Context, a Action) (Result, error) {
 	}
 
 	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano()})
-	d.ob.Log.InfoContext(ctx, "dispatch start", slog.String("action", a.Name))
+	d.ob.Log.Info(ctx, "dispatch start", observe.String("action", a.Name))
 
 	r, err := d.handler.Handle(ctx, a)
 
 	end := Event{Type: EventEnd, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano()}
+	outcome := "ok"
 	if err != nil {
 		class := fault.Classify(err)
 		end.Err = string(class)
+		outcome = "error"
 		span.RecordError(err)
-		d.ob.Log.WarnContext(ctx, "dispatch failed",
-			slog.String("action", a.Name), slog.String("class", string(class)))
+		d.ob.Log.Warn(ctx, "dispatch failed",
+			observe.String("action", a.Name), observe.String("class", string(class)))
 	} else {
 		span.SetAttr("tokens", r.Tokens)
+		d.ob.Meter.Counter("dispatch.tokens").Add(ctx, int64(r.Tokens), observe.String("action", a.Name))
 	}
+	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", outcome))
 	d.emit(ctx, end)
 	d.unwind(ctx, a, r, err, entered)
 	return r, err
@@ -178,8 +181,9 @@ func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span obs
 	class := fault.Classify(err)
 	span.RecordError(err)
 	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano(), Err: string(class)})
-	d.ob.Log.WarnContext(ctx, "dispatch rejected",
-		slog.String("action", a.Name), slog.String("class", string(class)))
+	d.ob.Log.Warn(ctx, "dispatch rejected",
+		observe.String("action", a.Name), observe.String("class", string(class)))
+	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))
 	d.unwind(ctx, a, Result{}, err, entered)
 	return Result{}, err
 }
@@ -195,8 +199,8 @@ func (d *Dispatcher) unwind(ctx context.Context, a Action, r Result, err error, 
 // emit appends an event, logging (but not failing the dispatch on) a sink error.
 func (d *Dispatcher) emit(ctx context.Context, e Event) {
 	if err := d.events.Append(ctx, e); err != nil {
-		d.ob.Log.WarnContext(ctx, "event sink append failed",
-			slog.String("event", e.Type), slog.String("action", e.Action))
+		d.ob.Log.Warn(ctx, "event sink append failed",
+			observe.String("event", e.Type), observe.String("action", e.Action))
 	}
 }
 
