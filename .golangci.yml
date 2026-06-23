@@ -63,6 +63,12 @@ linters:
           - forbidigo
         path: '(^|/)(clock|migrate)/'
         source: 'time\.Now'
+      # gosec's file-permission and file-inclusion rules target production code;
+      # test fixtures (temp dirs, reading the module's own sources) are not a
+      # threat surface.
+      - linters:
+          - gosec
+        path: _test\.go
 
 formatters:
   enable:
