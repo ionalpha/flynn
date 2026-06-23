@@ -56,6 +56,10 @@ type Envelope struct {
 	// LastWriterID is the instance that performed the last write (distinct from
 	// OriginInstanceID, the creator). The LWW key is (UpdatedHLC, LastWriterID).
 	LastWriterID string
+	// Deleted marks a tombstone: a soft delete that still carries its envelope so
+	// it propagates in sync, preventing a stale replica from resurrecting the
+	// record. Reads filter tombstones out.
+	Deleted bool
 }
 
 // Provider is the agent's durable backend: the single interface a host
@@ -113,6 +117,8 @@ type SessionStore interface {
 	AppendTurn(ctx context.Context, t Turn) (Turn, error)
 	// Turns returns a session's transcript in Seq order.
 	Turns(ctx context.Context, sessionID string) ([]Turn, error)
+	// Delete tombstones a session by ID (soft delete), or returns ErrNotFound.
+	Delete(ctx context.Context, id string) error
 }
 
 // Skill is a reusable, versioned unit of learned procedure. Slug is unique
@@ -149,6 +155,9 @@ type SkillStore interface {
 	// Search returns skills matching query, ordered by slug, capped at limit
 	// (limit <= 0 means no cap).
 	Search(ctx context.Context, query string, limit int) ([]Skill, error)
+	// Delete tombstones a skill by ID or slug (soft delete), or returns
+	// ErrNotFound.
+	Delete(ctx context.Context, idOrSlug string) error
 }
 
 // MemoryItem is a durable fact the agent has learned, attributable to its
@@ -180,4 +189,7 @@ type MemoryStore interface {
 	Write(ctx context.Context, m MemoryItem) (MemoryItem, error)
 	// Recall returns memory matching the query.
 	Recall(ctx context.Context, q RecallQuery) ([]MemoryItem, error)
+	// Delete tombstones a memory item by ID (soft delete), or returns
+	// ErrNotFound.
+	Delete(ctx context.Context, id string) error
 }
