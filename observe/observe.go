@@ -1,4 +1,4 @@
-// Package obs is the agent's observability seam: structured logging plus
+// Package observe is the agent's observability seam: structured logging plus
 // tracing, both reached through Flynn-owned types so the agent never depends on a
 // concrete backend.
 //
@@ -7,7 +7,7 @@
 // an Ion Alpha instance injects a real slog.Handler (bridging into its logging
 // pipeline) and a Tracer adapter (e.g. OpenTelemetry) without this package ever
 // importing either.
-package obs
+package observe
 
 import (
 	"context"
@@ -81,7 +81,7 @@ func (nopSpan) SetAttr(string, any) {}
 func (nopSpan) RecordError(error)   {}
 func (nopSpan) End()                {}
 
-// Compile-time checks that the no-op types satisfy the obs interfaces.
+// Compile-time checks that the no-op types satisfy the observe interfaces.
 var (
 	_ Tracer = NopTracer{}
 	_ Span   = nopSpan{}

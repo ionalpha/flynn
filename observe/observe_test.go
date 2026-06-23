@@ -1,4 +1,4 @@
-package obs_test
+package observe_test
 
 import (
 	"bytes"
@@ -7,11 +7,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/obs"
+	"github.com/ionalpha/flynn/observe"
 )
 
 func TestDefaultIsUsable(t *testing.T) {
-	o := obs.Default()
+	o := observe.Default()
 	if o.Log == nil || o.Tracer == nil {
 		t.Fatal("Default must populate Log and Tracer")
 	}
@@ -28,7 +28,7 @@ func TestDefaultIsUsable(t *testing.T) {
 
 func TestNewInjectsHandler(t *testing.T) {
 	var buf bytes.Buffer
-	o := obs.New(slog.NewTextHandler(&buf, nil), nil)
+	o := observe.New(slog.NewTextHandler(&buf, nil), nil)
 	if o.Tracer == nil {
 		t.Fatal("nil tracer should fall back to NopTracer")
 	}
