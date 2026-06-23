@@ -1,15 +1,21 @@
-<!-- See AGENTS.md for the contribution contract. -->
+<!-- Keep it short: a reviewer should understand this change in under a minute.
+     CI enforces build, vet, race tests, lint, and govulncheck. AGENTS.md is the full contributor contract. -->
 
-## What and why
+## What
 
-<!-- What does this change do, and why? Link the issue it addresses. -->
+<!-- One or two sentences: what does this PR change? -->
+
+## Why
+
+<!-- The motivation — the problem it solves or the capability it enables. State the why before the how. -->
 
 Closes #
 
-## Checklist
+## How to verify
 
-- [ ] One focused topic; references an open issue
-- [ ] `make ci` passes locally (build, vet, race tests, lint, govulncheck)
-- [ ] Tests added or updated for behavior changes
-- [ ] Conventional Commit title; commits signed off (`git commit -s`)
-- [ ] No secrets, and no dependency on a private host
+<!-- How a reviewer confirms it works: a command to run, a scenario to try, or the test that now covers it.
+     New or changed behavior should come with tests. -->
+
+## Notes for reviewers
+
+<!-- Surface anything important up front: trade-offs, risks, breaking changes, follow-ups, or anything left out on purpose. Delete if nothing applies. -->
