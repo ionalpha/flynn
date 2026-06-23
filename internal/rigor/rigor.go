@@ -55,6 +55,7 @@ func DefaultPolicy() Policy {
 			"spinesink":        true,
 		},
 		FuzzRequired: map[string]bool{
+			"bus":      true,
 			"fault":    true,
 			"spine":    true,
 			"resource": true,
