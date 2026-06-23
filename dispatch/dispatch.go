@@ -15,7 +15,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
-	"github.com/ionalpha/flynn/obs"
+	"github.com/ionalpha/flynn/observe"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -91,7 +91,7 @@ type Dispatcher struct {
 	handler Handler
 	admit   Admitter
 	events  EventSink
-	ob      *obs.Observability
+	ob      *observe.Observability
 	clk     clock.Clock
 	hooks   []Hook
 }
@@ -105,8 +105,8 @@ func WithAdmitter(a Admitter) Option { return func(d *Dispatcher) { d.admit = a 
 // WithEventSink sets the event spine sink (default: DiscardSink).
 func WithEventSink(s EventSink) Option { return func(d *Dispatcher) { d.events = s } }
 
-// WithObservability sets the logger and tracer (default: obs.Default()).
-func WithObservability(o *obs.Observability) Option { return func(d *Dispatcher) { d.ob = o } }
+// WithObservability sets the logger and tracer (default: observe.Default()).
+func WithObservability(o *observe.Observability) Option { return func(d *Dispatcher) { d.ob = o } }
 
 // WithClock sets the time source (default: clock.System).
 func WithClock(c clock.Clock) Option { return func(d *Dispatcher) { d.clk = c } }
@@ -121,7 +121,7 @@ func New(handler Handler, opts ...Option) *Dispatcher {
 		handler: handler,
 		admit:   AllowAll{},
 		events:  DiscardSink{},
-		ob:      obs.Default(),
+		ob:      observe.Default(),
 		clk:     clock.System{},
 	}
 	for _, o := range opts {
@@ -174,7 +174,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, a Action) (Result, error) {
 // rejected records a pre-execution rejection (a Before hook or admission) and
 // unwinds the hooks that already entered. The handler never ran, so the result
 // is zero.
-func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span obs.Span, entered int) (Result, error) {
+func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span observe.Span, entered int) (Result, error) {
 	class := fault.Classify(err)
 	span.RecordError(err)
 	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano(), Err: string(class)})

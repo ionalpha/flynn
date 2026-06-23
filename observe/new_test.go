@@ -1,4 +1,4 @@
-package obs_test
+package observe_test
 
 import (
 	"bytes"
@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/obs"
+	"github.com/ionalpha/flynn/observe"
 )
 
 // New(nil, nil) must fill both defaults: a discarding logger and the no-op
 // tracer. Logging must not panic and must produce no output.
 func TestNewNilHandlerDiscards(t *testing.T) {
-	o := obs.New(nil, nil)
+	o := observe.New(nil, nil)
 	if o.Log == nil || o.Tracer == nil {
 		t.Fatal("New(nil, nil) must populate Log and Tracer")
 	}
@@ -29,8 +29,8 @@ func TestNewNilHandlerDiscards(t *testing.T) {
 // A nil tracer falls back to NopTracer even when a real handler is supplied.
 func TestNewNilTracerFallsBack(t *testing.T) {
 	var buf bytes.Buffer
-	o := obs.New(slog.NewTextHandler(&buf, nil), nil)
-	if _, ok := o.Tracer.(obs.NopTracer); !ok {
+	o := observe.New(slog.NewTextHandler(&buf, nil), nil)
+	if _, ok := o.Tracer.(observe.NopTracer); !ok {
 		t.Fatalf("nil tracer should fall back to NopTracer, got %T", o.Tracer)
 	}
 	o.Log.Info("kept", slog.String("who", "world"))
