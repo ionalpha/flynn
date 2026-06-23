@@ -1,0 +1,20 @@
+#!/usr/bin/env sh
+# Scan for known vulnerabilities in dependencies and stdlib. Mirrors CI.
+# Installs govulncheck on demand if it is not already available.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+govulncheck="$(command -v govulncheck || true)"
+if [ -z "$govulncheck" ]; then
+  gobin="$(go env GOBIN)"; [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+  if [ -x "$gobin/govulncheck" ]; then
+    govulncheck="$gobin/govulncheck"
+  else
+    echo "==> installing govulncheck"
+    go install golang.org/x/vuln/cmd/govulncheck@latest
+    govulncheck="$gobin/govulncheck"
+  fi
+fi
+
+echo "==> govulncheck ./..."
+"$govulncheck" ./...

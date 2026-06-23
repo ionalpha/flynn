@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# The full pre-flight: everything CI gates on, in one command.
+# A green `dev/check` locally means a green CI run. Run this before opening a PR.
+#
+# Steps mirror .github/workflows/ci.yml (which calls these same scripts):
+#   build -> vet -> test (race+coverage) -> lint (mod tidy + golangci-lint) -> vuln
+set -eu
+here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+cd "$here/.."
+
+"$here/build"
+
+echo "==> go vet ./..."
+go vet ./...
+
+"$here/test"
+"$here/lint"
+"$here/vuln"
+
+echo
+echo "OK: all checks passed."

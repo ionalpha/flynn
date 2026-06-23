@@ -1,0 +1,9 @@
+#!/usr/bin/env sh
+# Run the test suite with the race detector and coverage.
+# Identical invocation to CI, so a green run here means a green run there.
+# With no args, tests everything; pass args to scope, e.g. `dev/test ./state/...`.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+if [ "$#" -eq 0 ]; then set -- ./...; fi
+echo "==> go test -race -covermode=atomic -coverprofile=coverage.out $*"
+go test -race -covermode=atomic -coverprofile=coverage.out "$@"
