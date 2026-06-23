@@ -17,6 +17,11 @@ import (
 // ErrNotFound is returned by stores when a requested record does not exist.
 var ErrNotFound = errors.New("state: not found")
 
+// ErrConflict is returned by a write when optimistic concurrency fails: the
+// caller passed a non-zero SyncVersion that no longer matches the stored record
+// (someone else wrote in between). Re-read and retry.
+var ErrConflict = errors.New("state: version conflict")
+
 // Scope locates a resource on the instance/project/workspace axis, so skills and
 // memory can be partitioned and resolved most-specific-first. The zero Scope is
 // the global (instance) scope. Scope is comparable.
@@ -24,6 +29,23 @@ type Scope struct {
 	Instance  string
 	Project   string
 	Workspace string
+}
+
+// Envelope is the sync/concurrency metadata carried by every persisted record.
+// It is embedded into Session, Turn, Skill, and MemoryItem.
+//
+// SyncVersion powers optimistic concurrency: on an update, pass the version you
+// read and the write fails with ErrConflict if the stored version has moved (a
+// zero SyncVersion means "unconditional"). OriginInstanceID identifies the
+// instance that first created the record and is preserved across updates, so
+// multi-instance (fleet/P2P) sync can resolve provenance. Designing these in
+// from the start keeps replay, optimistic concurrency, and fleet merge reachable
+// without a schema migration later.
+type Envelope struct {
+	// SyncVersion is bumped on every write; 1 on create.
+	SyncVersion int64
+	// OriginInstanceID is the instance that first created the record.
+	OriginInstanceID string
 }
 
 // Provider is the agent's durable backend: the single interface a host
@@ -51,6 +73,7 @@ type Session struct {
 	Model     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Envelope
 }
 
 // Turn is one entry in a session's ordered transcript. Seq is assigned by the
@@ -62,6 +85,7 @@ type Turn struct {
 	Role      string // "user", "assistant", "tool", or "system"
 	Content   string
 	CreatedAt time.Time
+	Envelope
 }
 
 // SessionStore persists conversations and their transcripts. Turns are
@@ -73,15 +97,18 @@ type SessionStore interface {
 	Get(ctx context.Context, id string) (Session, error)
 	// List returns all sessions, oldest first.
 	List(ctx context.Context) ([]Session, error)
-	// AppendTurn appends a turn to its session, assigning ID and Seq. It returns
-	// ErrNotFound if the session does not exist.
+	// AppendTurn appends a turn to its session, assigning ID and Seq, and bumps
+	// the session's SyncVersion. It returns ErrNotFound if the session does not
+	// exist.
 	AppendTurn(ctx context.Context, t Turn) (Turn, error)
 	// Turns returns a session's transcript in Seq order.
 	Turns(ctx context.Context, sessionID string) ([]Turn, error)
 }
 
 // Skill is a reusable, versioned unit of learned procedure. Slug is unique
-// within a Scope; Body is the skill content.
+// within a Scope; Body is the skill content. Version is the content revision
+// (for provenance/rollback), distinct from Envelope.SyncVersion (the
+// concurrency/sync token).
 type Skill struct {
 	ID        string
 	Slug      string
@@ -92,6 +119,7 @@ type Skill struct {
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	Envelope
 }
 
 // SkillStore persists scoped skills and searches them. The durable
@@ -99,7 +127,10 @@ type Skill struct {
 // in-memory implementation does a case-insensitive substring scan.
 type SkillStore interface {
 	// Upsert creates or updates a skill keyed by (Scope, Slug). On update the
-	// Version is incremented and CreatedAt preserved.
+	// content Version is incremented, CreatedAt and OriginInstanceID preserved,
+	// and SyncVersion bumped. Optimistic concurrency is opt-in: a non-zero
+	// SyncVersion on the passed skill must match the stored record, else
+	// ErrConflict; a zero SyncVersion writes unconditionally.
 	Upsert(ctx context.Context, sk Skill) (Skill, error)
 	// Get returns a skill by ID or slug, or ErrNotFound.
 	Get(ctx context.Context, idOrSlug string) (Skill, error)
@@ -119,6 +150,7 @@ type MemoryItem struct {
 	Scope     Scope
 	Source    string // provenance: where this memory came from
 	CreatedAt time.Time
+	Envelope
 }
 
 // RecallQuery selects memory for prefetch into context. Query is matched
