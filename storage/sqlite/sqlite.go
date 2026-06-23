@@ -1,11 +1,15 @@
-// Package sqlite is the durable, single-file state.Provider: the standalone
-// agent's persistent backend. It is a pure-Go build (modernc.org/sqlite, no cgo)
-// so the agent stays a single static binary.
+// Package sqlite is the agent's durable, single-file backend. One SQLite database
+// (pure-Go modernc.org/sqlite, no cgo) backs every persistence domain: the state
+// provider (sessions, skills, memory) and the event spine share one file and one
+// connection, so the single static binary keeps all durable data in one place and
+// a future cross-domain write can be one transaction.
 //
-// It passes the same statetest.RunSuite conformance suite as the in-memory
-// provider, so the two are byte-for-byte interchangeable. Each write is a "dual
-// write": the projection table and its FTS5 search index are updated inside one
-// transaction, so search can never drift from the records it indexes.
+// A Store implements state.Provider directly and exposes the event log via Log().
+// Both pass the shared conformance suites (statetest.RunSuite, spinetest.RunSuite),
+// so this backend stays byte-for-byte interchangeable with the in-memory ones.
+// Each state write is a "dual write": the projection table and its FTS5 search
+// index are updated in one transaction, so search can never drift from the
+// records it indexes.
 package sqlite
 
 import (
@@ -15,105 +19,105 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
-
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/ids"
-	"github.com/ionalpha/flynn/migrate"
+	"github.com/ionalpha/flynn/internal/sqlitex"
+	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
 
 //go:embed migrations/*.sql
 var migrations embed.FS
 
-// Option configures the provider.
-type Option func(*Provider)
+// Option configures the Store.
+type Option func(*Store)
 
 // WithInstanceID sets the origin/last-writer instance stamped onto records this
-// provider creates (default "local"), so fleet/P2P merge can attribute writes.
+// backend creates (default "local"), so fleet/P2P merge can attribute writes.
 func WithInstanceID(id string) Option {
-	return func(p *Provider) {
+	return func(s *Store) {
 		if id != "" {
-			p.instanceID = id
+			s.instanceID = id
 		}
 	}
 }
 
-// Provider is the SQLite-backed state.Provider.
-type Provider struct {
+// WithClock sets the time source for event timestamps and the hybrid logical
+// clock (default: clock.System). Tests and deterministic replay pass a
+// clock.Manual.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
+}
+
+// Store is the SQLite backend. It implements state.Provider (sessions, skills,
+// memory) and exposes the event spine via Log(), all over one database and one
+// connection so cross-domain work can share a single file and transaction.
+type Store struct {
 	db         *sql.DB
 	hlc        *hlc.Clock
+	clk        clock.Clock
 	instanceID string
 }
 
-var _ state.Provider = (*Provider)(nil)
+var _ state.Provider = (*Store)(nil)
 
-// Open opens (creating if needed) a SQLite database at dsn and migrates it to
-// the latest schema. dsn is a file path, or ":memory:" for an ephemeral store.
+// Open opens (creating if needed) a SQLite database at dsn and migrates it to the
+// latest schema (the state tables and the event log). dsn is a file path, or
+// ":memory:" for an ephemeral store.
 //
-// The connection pool is capped at a single connection: SQLite serialises
-// writers anyway, and one connection keeps a ":memory:" database alive and makes
-// every operation see a consistent view. A future change can widen reads under
-// WAL; correctness comes first.
-func Open(ctx context.Context, dsn string, opts ...Option) (*Provider, error) {
-	// Apply pragmas per-connection via the DSN so they hold for every connection
-	// the driver opens: enforce foreign keys and wait rather than fail on a lock.
-	conn := dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)"
-	db, err := sql.Open("sqlite", conn)
+// The connection pool is capped at a single connection: SQLite serialises writers
+// anyway, and one connection keeps a ":memory:" database alive with a consistent
+// view. Because every domain shares this one connection, a cross-domain write can
+// be one transaction.
+func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
+	db, err := sqlitex.Open(ctx, dsn, migrations)
 	if err != nil {
-		return nil, fmt.Errorf("sqlite: open: %w", err)
-	}
-	db.SetMaxOpenConns(1)
-
-	sub, err := fs.Sub(migrations, "migrations")
-	if err != nil {
-		_ = db.Close()
 		return nil, err
 	}
-	if err := migrate.Run(ctx, db, sub); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("sqlite: migrate: %w", err)
-	}
-
-	p := &Provider{db: db, hlc: hlc.NewClock(), instanceID: "local"}
+	s := &Store{db: db, clk: clock.System{}, instanceID: "local"}
 	for _, o := range opts {
-		o(p)
+		o(s)
 	}
-	return p, nil
+	s.hlc = hlc.NewClock(hlc.WithPhysical(s.clk))
+	return s, nil
 }
 
 // Name identifies the backend ("sqlite").
-func (p *Provider) Name() string { return "sqlite" }
+func (s *Store) Name() string { return "sqlite" }
 
 // Sessions returns the durable conversation store.
-func (p *Provider) Sessions() state.SessionStore { return &sessions{p} }
+func (s *Store) Sessions() state.SessionStore { return &sessions{s} }
 
 // Skills returns the scoped, FTS5-searchable skill store.
-func (p *Provider) Skills() state.SkillStore { return &skills{p} }
+func (s *Store) Skills() state.SkillStore { return &skills{s} }
 
 // Memory returns the durable memory store.
-func (p *Provider) Memory() state.MemoryStore { return &memory{p} }
+func (s *Store) Memory() state.MemoryStore { return &memory{s} }
 
-// Close closes the underlying database.
-func (p *Provider) Close() error { return p.db.Close() }
+// Log returns the durable event spine backed by the same database, so events and
+// state share one file. The returned Log uses the Store's connection and clock and
+// is valid until the Store is closed.
+func (s *Store) Log() spine.Log { return &eventLog{db: s.db, clk: s.clk} }
+
+// Close closes the underlying database, releasing both the state provider and the
+// event log.
+func (s *Store) Close() error { return s.db.Close() }
 
 // --- shared helpers ---------------------------------------------------------
 
 func newID() string { return ids.New() }
 
-func formatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+func formatTime(t time.Time) string { return sqlitex.FormatTime(t) }
 
-func parseTime(s string) time.Time {
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		return time.Time{}
-	}
-	return t.UTC()
-}
+func parseTime(s string) time.Time { return sqlitex.ParseTime(s) }
 
 // hlcTime reconstructs an hlc.Time from its stored columns. The counter column
 // only ever holds a uint16 written by this package; the mask makes that explicit
@@ -138,7 +142,7 @@ func boolToInt(b bool) int {
 
 // --- sessions ---------------------------------------------------------------
 
-type sessions struct{ p *Provider }
+type sessions struct{ p *Store }
 
 const sessionCols = `id, title, model, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
@@ -310,7 +314,7 @@ func (s *sessions) Delete(ctx context.Context, id string) error {
 
 // --- skills -----------------------------------------------------------------
 
-type skills struct{ p *Provider }
+type skills struct{ p *Store }
 
 // skillCols matches the skills table column order; queries use `SELECT s.*`.
 const skillCols = `id, slug, name, body, tags, scope_instance, scope_project, scope_workspace,
@@ -554,7 +558,7 @@ func marshalTags(tags []string) string {
 
 // --- memory -----------------------------------------------------------------
 
-type memory struct{ p *Provider }
+type memory struct{ p *Store }
 
 const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, source, created_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
@@ -668,19 +672,10 @@ func (m *memory) Delete(ctx context.Context, id string) error {
 
 // --- tx + misc --------------------------------------------------------------
 
-// tx runs fn inside a transaction, committing on success and rolling back on any
-// error (so a failed dual write leaves neither the projection nor its index
-// changed).
-func (p *Provider) tx(ctx context.Context, fn func(*sql.Tx) error) error {
-	t, err := p.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := fn(t); err != nil {
-		_ = t.Rollback()
-		return err
-	}
-	return t.Commit()
+// tx runs fn inside a transaction (so a failed dual write leaves neither the
+// projection nor its index changed). The shared engine owns the commit/rollback.
+func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	return sqlitex.Tx(ctx, s.db, fn)
 }
 
 func notFoundIfNoRows(res sql.Result) error {
