@@ -57,6 +57,7 @@ func DefaultPolicy() Policy {
 		FuzzRequired: map[string]bool{
 			"bus":      true,
 			"fault":    true,
+			"jobs":     true,
 			"spine":    true,
 			"resource": true,
 		},
