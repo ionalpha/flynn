@@ -104,14 +104,27 @@ type Envelope struct {
 // logical name, unique within (Kind, Scope), the handle callers use to upsert and
 // fetch (a Skill's slug, an Agent's name). APIVersion is the kind's group/version,
 // e.g. "skill.ionagent.io/v1".
+//
+// Kinds without a natural name (a memory fact, a turn, a run) set GenerateName
+// instead of Name: the store assigns Name = GenerateName + ID on create, so every
+// such record gets a unique, sortable name from the one deterministic ID source
+// rather than each facade minting its own. See GenerateName.
 type Resource struct {
-	APIVersion  string
-	Kind        string
-	ID          string
-	Name        string
-	Scope       Scope
-	Labels      map[string]string
-	Annotations map[string]string
+	APIVersion string
+	Kind       string
+	ID         string
+	Name       string
+	// GenerateName requests a server-assigned Name for a kind that has no natural
+	// one. When Name is empty and GenerateName is set, a create assigns
+	// Name = GenerateName + ID (e.g. "mem-01J..."); it is a create-only directive,
+	// consumed and cleared on write, never stored. Setting Name takes precedence
+	// and GenerateName is ignored. Mirrors Kubernetes metadata.generateName, but
+	// uses our globally unique, sortable ID as the suffix instead of a random one,
+	// so there is never a name collision to retry.
+	GenerateName string
+	Scope        Scope
+	Labels       map[string]string
+	Annotations  map[string]string
 	// Spec is the desired state (validated against the kind's JSON schema). It is
 	// raw JSON so it embeds readably in events and hashes canonically; nil when
 	// unset.

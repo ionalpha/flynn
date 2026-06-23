@@ -39,8 +39,8 @@ func (s *Stamper) Registry() *Registry { return s.reg }
 // resurrects it) or nil. It admits the spec, enforces opt-in CAS, and recomputes
 // the content hash, returning the canonical resource and the event to append.
 func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInput, error) {
-	if r.APIVersion == "" || r.Kind == "" || r.Name == "" {
-		return Resource{}, spine.AppendInput{}, fmt.Errorf("%w: resource requires APIVersion, Kind and Name", ErrInvalid)
+	if r.APIVersion == "" || r.Kind == "" || (r.Name == "" && r.GenerateName == "") {
+		return Resource{}, spine.AppendInput{}, fmt.Errorf("%w: resource requires APIVersion, Kind and a Name or GenerateName", ErrInvalid)
 	}
 	if err := s.reg.Validate(r.APIVersion, r.Kind, r.Spec); err != nil {
 		return Resource{}, spine.AppendInput{}, err
@@ -63,6 +63,12 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 		if r.ID == "" {
 			r.ID = s.gen.New()
 		}
+		// A nameless kind gets a server-assigned name from the one ID source, so
+		// the record is addressable like any other without a facade inventing its
+		// own ID generator.
+		if r.Name == "" {
+			r.Name = r.GenerateName + r.ID
+		}
 		r.Version = 1
 		r.SyncVersion = 1
 		if r.OriginInstanceID == "" {
@@ -70,6 +76,7 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 		}
 		r.CreatedAt = now
 	}
+	r.GenerateName = "" // consumed: the persisted record is named, never re-generates
 	r.LastWriterID = s.instanceID
 	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = now
