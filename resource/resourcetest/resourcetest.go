@@ -68,6 +68,7 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("ListAllScopes", func(t *testing.T) { testListAll(t, newStore) })
 	t.Run("GenerateName", func(t *testing.T) { testGenerateName(t, newStore) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore) })
+	t.Run("Finalizers", func(t *testing.T) { testFinalizers(t, newStore) })
 	t.Run("ContentHash", func(t *testing.T) { testContentHash(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
 	t.Run("EventSourced", func(t *testing.T) { testEventSourced(t, newStore) })
@@ -523,6 +524,85 @@ func testTombstone(t *testing.T, newStore func(*resource.Registry) resource.Stor
 	}
 	if !orig.UpdatedHLC.Before(revived.UpdatedHLC) {
 		t.Fatal("resurrection must carry a newer HLC")
+	}
+}
+
+// testFinalizers covers the deletion lifecycle: a resource with finalizers is not
+// removed by Delete but marked terminating and kept live, re-delete is idempotent,
+// and the deletion completes only when the last finalizer is cleared via Put.
+func testFinalizers(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+
+	withFinalizers := func(name string, fz ...string) resource.Resource {
+		r := widget(name, "m", nil)
+		r.Finalizers = fz
+		return r
+	}
+
+	created := mustPut(t, s, withFinalizers("g", "worktree", "children"))
+	if created.DeletionTimestamp != nil {
+		t.Fatal("a fresh resource must not be terminating")
+	}
+
+	// Delete does not remove a finalized resource; it marks it terminating and
+	// leaves it live and visible to controllers.
+	if err := s.Delete(ctx, widgetKind, resource.Scope{}, "g"); err != nil {
+		t.Fatalf("delete with finalizers: %v", err)
+	}
+	term, err := s.Get(ctx, widgetKind, resource.Scope{}, "g")
+	if err != nil {
+		t.Fatalf("a terminating resource must still be readable: %v", err)
+	}
+	if term.DeletionTimestamp == nil {
+		t.Fatal("delete did not set DeletionTimestamp")
+	}
+	if len(term.Finalizers) != 2 {
+		t.Fatalf("delete must not drop finalizers: %v", term.Finalizers)
+	}
+	if l, _ := s.List(ctx, widgetKind, resource.Scope{}, nil); len(l) != 1 {
+		t.Fatalf("terminating resource missing from List: %d", len(l))
+	}
+
+	// Re-deleting an already-terminating resource is an idempotent no-op.
+	if err := s.Delete(ctx, widgetKind, resource.Scope{}, "g"); err != nil {
+		t.Fatalf("re-delete of terminating resource = %v, want nil (idempotent)", err)
+	}
+
+	// Removing one of two finalizers keeps it terminating, not yet gone.
+	term.Finalizers = []string{"children"}
+	one, err := s.Put(ctx, term)
+	if err != nil {
+		t.Fatalf("remove one finalizer: %v", err)
+	}
+	if one.Deleted || one.DeletionTimestamp == nil {
+		t.Fatalf("removing one of two finalizers must keep it terminating: %+v", one.Envelope)
+	}
+	if _, err := s.Get(ctx, widgetKind, resource.Scope{}, "g"); err != nil {
+		t.Fatalf("still-finalized resource must be readable: %v", err)
+	}
+
+	// Removing the last finalizer completes the deletion.
+	one.Finalizers = nil
+	gone, err := s.Put(ctx, one)
+	if err != nil {
+		t.Fatalf("remove last finalizer: %v", err)
+	}
+	if !gone.Deleted {
+		t.Fatal("clearing the last finalizer must complete deletion")
+	}
+	if _, err := s.Get(ctx, widgetKind, resource.Scope{}, "g"); !errors.Is(err, resource.ErrNotFound) {
+		t.Fatalf("completed deletion still visible: %v", err)
+	}
+
+	// A resource with no finalizers tombstones immediately (the classic path).
+	mustPut(t, s, widget("plain", "s", nil))
+	if err := s.Delete(ctx, widgetKind, resource.Scope{}, "plain"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, widgetKind, resource.Scope{}, "plain"); !errors.Is(err, resource.ErrNotFound) {
+		t.Fatalf("unfinalized delete should be immediate: %v", err)
 	}
 }
 

@@ -81,7 +81,26 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 	r.WriterActor = writerActor(r.WriterActor) // caller may mark a human write; defaults to the agent
 	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = now
-	r.Deleted = false
+
+	// DeletionTimestamp is system-owned: a Put never sets or clears it. Preserve it
+	// from a live record so a finalizer update keeps the resource terminating;
+	// clear it on a create or on a resurrection over a tombstone (a fresh resource
+	// is not being deleted).
+	if existing != nil && !existing.Deleted {
+		r.DeletionTimestamp = existing.DeletionTimestamp
+	} else {
+		r.DeletionTimestamp = nil
+	}
+
+	// Removing the last finalizer from a terminating resource completes its
+	// deletion (the record tombstones); otherwise the put leaves it live.
+	evType := EvPut
+	if r.DeletionTimestamp != nil && len(r.Finalizers) == 0 {
+		r.Deleted = true
+		evType = EvDeleted
+	} else {
+		r.Deleted = false
+	}
 
 	hash, err := Hash(r)
 	if err != nil {
@@ -89,25 +108,41 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 	}
 	r.ContentHash = hash
 
-	ev, err := s.event(EvPut, r)
+	ev, err := s.event(evType, r)
 	return r, ev, err
 }
 
-// Delete tombstones the given live resource and returns the event.
+// Delete requests deletion of the given live resource. If it has no finalizers it
+// tombstones immediately (EvDeleted). If it has finalizers it is marked
+// terminating instead: DeletionTimestamp is set and the record stays live (EvPut)
+// so its owners can run cleanup and remove their finalizer keys; the deletion
+// completes later, in Put, when the last finalizer is removed.
 func (s *Stamper) Delete(r Resource) (Resource, spine.AppendInput, error) {
-	r.Deleted = true
 	r.Version++
 	r.SyncVersion++
 	r.LastWriterID = s.instanceID
 	r.WriterActor = writerActor(r.WriterActor)
 	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = s.clk.Now()
+
+	evType := EvDeleted
+	if len(r.Finalizers) > 0 {
+		if r.DeletionTimestamp == nil {
+			ts := s.clk.Now()
+			r.DeletionTimestamp = &ts
+		}
+		r.Deleted = false
+		evType = EvPut
+	} else {
+		r.Deleted = true
+	}
+
 	hash, err := Hash(r)
 	if err != nil {
 		return Resource{}, spine.AppendInput{}, err
 	}
 	r.ContentHash = hash
-	ev, err := s.event(EvDeleted, r)
+	ev, err := s.event(evType, r)
 	return r, ev, err
 }
 

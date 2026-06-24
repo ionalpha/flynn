@@ -78,6 +78,24 @@ type Envelope struct {
 	// it propagates in sync and prevents a stale replica from resurrecting it.
 	Deleted bool
 
+	// --- deletion lifecycle (finalizers) ---
+
+	// Finalizers are keys that must be cleared before the resource is actually
+	// removed. While any remain, a Delete does not tombstone the record: it sets
+	// DeletionTimestamp and the resource stays live (still returned by reads) so
+	// each owner can run its cleanup and then remove its own key. When the last
+	// finalizer is removed from a resource that has a DeletionTimestamp, the delete
+	// completes and the record tombstones. This is how external state (a worktree, a
+	// child run) is cleaned up reliably, even across a crash: a controller re-reads
+	// the pending deletion every reconcile until cleanup is done.
+	Finalizers []string
+	// DeletionTimestamp is set when a delete is requested on a resource that still
+	// has finalizers: the resource is terminating but not yet gone. Nil means the
+	// resource is not being deleted. It is system-assigned, never set or cleared by
+	// a Put (only Delete sets it; resurrecting a tombstone clears it), so a caller
+	// cannot fake or cancel a deletion by writing the field.
+	DeletionTimestamp *time.Time
+
 	// --- content provenance ---
 
 	// Version is the content revision (incremented on every content change),
