@@ -58,7 +58,7 @@ func (c *collector) handle(_ context.Context, m bus.Message) error {
 func (c *collector) waitFor(t *testing.T, n int) []bus.Message {
 	t.Helper()
 	deadline := time.After(deliverWait)
-	for i := 0; i < n; i++ {
+	for range n {
 		select {
 		case <-c.recv:
 		case <-deadline:
@@ -167,13 +167,13 @@ func testOrder(t *testing.T, b bus.Bus) {
 	c := newCollector()
 	mustSubscribe(t, b, "seq", c.handle)
 	const n = 50
-	for i := 0; i < n; i++ {
+	for i := range n {
 		mustPublish(t, b, "seq", itoa(i))
 	}
 	got := c.waitFor(t, n)
 	// Payloads were published as ascending indices; delivery to one subscription
 	// must preserve that order exactly.
-	for i := 0; i < len(got); i++ {
+	for i := range got {
 		if pubIndex(got[i].Payload) != i {
 			t.Fatalf("out of order: message %d has index %d (payload %q)", i, pubIndex(got[i].Payload), got[i].Payload)
 		}

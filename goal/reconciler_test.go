@@ -185,7 +185,7 @@ func TestGoalConvergence(t *testing.T) {
 	}
 
 	// Drive three steps to convergence.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		h.completeStep(t)
 		h.reconcile(t, ref)
 	}

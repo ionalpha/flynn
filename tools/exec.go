@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ionalpha/flynn/llm"
@@ -34,7 +35,7 @@ func (t bashTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		return "", err
 	}
 	if in.Command == "" {
-		return "", fmt.Errorf("bash: empty command")
+		return "", errors.New("bash: empty command")
 	}
 	res, err := t.s.sb.Exec(ctx, sandbox.Command{Line: in.Command})
 	if err != nil {

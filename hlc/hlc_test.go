@@ -131,7 +131,7 @@ func TestConcurrentNowProducesUniqueMonotonic(t *testing.T) {
 	const n = 200
 	out := make([]hlc.Time, n)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) { defer wg.Done(); out[i] = c.Now() }(i)
 	}

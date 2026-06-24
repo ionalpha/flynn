@@ -76,7 +76,7 @@ func TestSpinePersistsAcrossReopen(t *testing.T) {
 func TestSpineReopenRerunsMigrationsCleanly(t *testing.T) {
 	ctx := context.Background()
 	dsn := filepath.Join(t.TempDir(), "store.db")
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		s, err := sqlite.Open(ctx, dsn)
 		if err != nil {
 			t.Fatalf("open #%d: %v", i, err)

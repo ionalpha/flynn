@@ -7,14 +7,17 @@ linters:
   default: standard
   enable:
     - bodyclose
+    - copyloopvar
     - depguard
     - errcheck
     - forbidigo
     - gosec
     - govet
     - ineffassign
+    - intrange
     - misspell
     - nilerr
+    - perfsprint
     - revive
     - staticcheck
     - unconvert

@@ -31,7 +31,6 @@ func TestExecutorEnforcesGrant(t *testing.T) {
 		{"allow_all", capability.AllowAll(), 1, false},
 	}
 	for _, tc := range cases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			var runs int32
 			tool := Func(echoDef, func(_ context.Context, in json.RawMessage) (string, error) {

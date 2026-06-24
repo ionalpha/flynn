@@ -58,7 +58,7 @@ func TestProp_SkillUpsertIsIdempotentByKey(t *testing.T) {
 
 		var firstID string
 		var createdAt time.Time
-		for i := 0; i < writes; i++ {
+		for i := range writes {
 			saved, err := p.Skills().Upsert(ctx, sk)
 			if err != nil {
 				rt.Fatalf("upsert %d: %v", i, err)
@@ -193,7 +193,7 @@ func TestProp_SessionTurnsAreOrdered(t *testing.T) {
 			rt.Fatalf("create: %v", err)
 		}
 		n := rapid.IntRange(0, 15).Draw(rt, "n")
-		for i := 0; i < n; i++ {
+		for i := range n {
 			got, err := p.Sessions().AppendTurn(ctx, state.Turn{SessionID: s.ID, Role: "user", Content: rapid.String().Draw(rt, "content")})
 			if err != nil {
 				rt.Fatalf("append %d: %v", i, err)

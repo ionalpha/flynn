@@ -69,7 +69,7 @@ func TestFaultPlanSchedules(t *testing.T) {
 	every2 := testkit.FailEvery(2, boom)
 	w := testkit.FaultyWork(nil, every2)
 	var fails int
-	for i := 0; i < 4; i++ {
+	for range 4 {
 		if _, err := w(context.Background()); err != nil {
 			fails++
 		}

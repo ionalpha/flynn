@@ -88,7 +88,7 @@ func (c *Controller[T]) Run(ctx context.Context) {
 		}
 	}()
 	var wg sync.WaitGroup
-	for i := 0; i < c.workers; i++ {
+	for range c.workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

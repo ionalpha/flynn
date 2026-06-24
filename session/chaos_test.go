@@ -62,7 +62,6 @@ func assertWellFormed(t *testing.T, evs []Event) {
 // stream stays well formed, and Wait returns the final answer.
 func TestSessionStreamSurvivesFlakyExecutor(t *testing.T) {
 	for _, failures := range []int{0, 1, 3} {
-		failures := failures
 		t.Run(fmt.Sprintf("failures_%d", failures), func(t *testing.T) {
 			model := llmtest.NewScripted(
 				llmtest.CallTool("c1", "echo", []byte(`{"v":1}`)),
@@ -163,7 +162,7 @@ func TestStreamToleratesFailingPublish(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if err := s.append(ctx, Event{Kind: KindTurnStarted, Turn: i + 1}); err != nil {
 			t.Fatalf("append %d returned error despite only the publish failing: %v", i, err)
 		}
@@ -190,7 +189,7 @@ func TestStreamToleratesFlakyLog(t *testing.T) {
 
 	const tries = 10
 	landed := 0
-	for i := 0; i < tries; i++ {
+	for i := range tries {
 		if err := s.append(ctx, Event{Kind: KindTurnStarted, Turn: i + 1}); err == nil {
 			landed++
 		}

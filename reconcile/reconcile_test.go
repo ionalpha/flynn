@@ -147,7 +147,7 @@ func fail(err error) Reconciler[string] {
 
 func waitPending(t *testing.T, m *clock.Manual, n int) {
 	t.Helper()
-	for i := 0; i < 2000; i++ {
+	for range 2000 {
 		if m.PendingTimers() >= n {
 			return
 		}

@@ -71,7 +71,7 @@ func TestProp_SkillUpsertIsIdempotentByKey(t *testing.T) {
 		writes := rapid.IntRange(1, 5).Draw(rt, "writes")
 
 		var firstID string
-		for i := 0; i < writes; i++ {
+		for i := range writes {
 			saved, err := p.Skills().Upsert(ctx, sk)
 			if err != nil {
 				rt.Fatalf("upsert %d: %v", i, err)

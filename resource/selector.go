@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -97,7 +98,7 @@ func ParseSelector(s string) (Selector, error) {
 
 func parseRequirement(p string) (Requirement, error) {
 	if p == "" {
-		return Requirement{}, fmt.Errorf("resource: empty selector requirement")
+		return Requirement{}, errors.New("resource: empty selector requirement")
 	}
 	// Set operators: "key in (a, b)" / "key notin (a, b)".
 	if i := strings.Index(p, "("); i >= 0 {

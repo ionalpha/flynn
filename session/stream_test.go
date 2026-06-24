@@ -50,7 +50,7 @@ func assertSeqs(t *testing.T, evs []Event, want ...int64) {
 func TestStreamCatchUp(t *testing.T) {
 	s := newTestStream(t)
 	ctx := context.Background()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := s.append(ctx, Event{Kind: KindTurnStarted, Turn: i + 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -74,7 +74,7 @@ func TestStreamTail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		if err := s.append(context.Background(), Event{Kind: KindTurnStarted, Turn: i + 1}); err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestStreamCatchUpThenTail(t *testing.T) {
 func TestStreamAfterSeq(t *testing.T) {
 	s := newTestStream(t)
 	ctx := context.Background()
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		_ = s.append(ctx, Event{Kind: KindTurnStarted, Turn: i + 1})
 	}
 	subCtx, cancel := context.WithCancel(ctx)
@@ -134,7 +134,7 @@ func TestStreamFanOut(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		_ = s.append(context.Background(), Event{Kind: KindTurnStarted, Turn: i + 1})
 	}
 	assertSeqs(t, collect(t, a, 5), 1, 2, 3, 4, 5)
@@ -154,7 +154,7 @@ func TestStreamBurstNoLoss(t *testing.T) {
 	}
 	const n = 200
 	go func() {
-		for i := 0; i < n; i++ {
+		for i := range n {
 			_ = s.append(context.Background(), Event{Kind: KindTurnStarted, Turn: i + 1})
 		}
 	}()
