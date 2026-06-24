@@ -78,6 +78,7 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 	}
 	r.GenerateName = "" // consumed: the persisted record is named, never re-generates
 	r.LastWriterID = s.instanceID
+	r.WriterActor = writerActor(r.WriterActor) // caller may mark a human write; defaults to the agent
 	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = now
 	r.Deleted = false
@@ -98,6 +99,7 @@ func (s *Stamper) Delete(r Resource) (Resource, spine.AppendInput, error) {
 	r.Version++
 	r.SyncVersion++
 	r.LastWriterID = s.instanceID
+	r.WriterActor = writerActor(r.WriterActor)
 	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = s.clk.Now()
 	hash, err := Hash(r)
@@ -117,8 +119,17 @@ func (s *Stamper) event(typ string, r Resource) (spine.AppendInput, error) {
 	return spine.AppendInput{
 		Stream:           ResourceStream,
 		Type:             typ,
-		Actor:            spine.ActorAgent,
+		Actor:            writerActor(r.WriterActor),
 		Payload:          map[string]any{payloadKey: p},
 		OriginInstanceID: s.instanceID,
 	}, nil
+}
+
+// writerActor normalizes a provenance actor, defaulting the zero value to the
+// agent so every record and event carries a concrete authorship signal.
+func writerActor(a spine.ActorType) spine.ActorType {
+	if a == "" {
+		return spine.ActorAgent
+	}
+	return a
 }

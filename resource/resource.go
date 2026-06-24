@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/hlc"
+	"github.com/ionalpha/flynn/spine"
 )
 
 // ErrNotFound is returned when a requested resource does not exist.
@@ -66,6 +67,13 @@ type Envelope struct {
 	// LastWriterID is the instance that performed the last write (distinct from
 	// OriginInstanceID, the creator).
 	LastWriterID string
+	// WriterActor records who authored the last write: a human, the agent, or the
+	// runtime (system). It is the provenance signal cross-instance Merge uses for
+	// precedence, so a person's correction outranks a later automated write and is
+	// never silently overwritten by the fleet. It is metadata, not content, so it is
+	// excluded from the content hash (identical content authored by different actors
+	// shares a hash). The zero value is treated as the agent.
+	WriterActor spine.ActorType
 	// Deleted marks a tombstone: a soft delete that still carries its envelope so
 	// it propagates in sync and prevents a stale replica from resurrecting it.
 	Deleted bool

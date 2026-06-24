@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -16,7 +17,7 @@ import (
 // order); keep them in lockstep with migration 0003.
 const resourceCols = `id, api_version, kind, name, scope_instance, scope_project, scope_workspace,
 	labels, annotations, spec, status,
-	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted,
+	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, writer_actor, deleted,
 	version, content_hash, valid_from, valid_to, created_at, updated_at`
 
 // Resources returns a durable resource.Store backed by this Store's database, so
@@ -174,6 +175,70 @@ func (s *resourceStore) Delete(ctx context.Context, kind string, scope resource.
 	})
 }
 
+func (s *resourceStore) Merge(ctx context.Context, remote resource.Resource) (resource.MergeResult, error) {
+	if err := resource.ValidateForMerge(remote); err != nil {
+		return resource.MergeResult{}, err
+	}
+	if err := s.st.Registry().Validate(remote.APIVersion, remote.Kind, remote.Spec); err != nil {
+		return resource.MergeResult{}, err
+	}
+	var res resource.MergeResult
+	err := s.p.tx(ctx, func(tx *sql.Tx) error {
+		current, err := getResourceByIDTx(ctx, tx, remote.ID)
+		if err != nil {
+			return err
+		}
+		if current == nil {
+			res = resource.MergeResult{Outcome: resource.MergeApplied, Resource: remote}
+			return appendMergeEvent(ctx, tx, s.p.clk, remote)
+		}
+		winner, take := resource.Resolve(remote, *current)
+		if !take {
+			out := resource.MergeUnchanged
+			if winner.UpdatedHLC != remote.UpdatedHLC || winner.LastWriterID != remote.LastWriterID {
+				out = resource.MergeIgnored
+			}
+			res = resource.MergeResult{Outcome: out, Resource: *current}
+			return nil
+		}
+		res = resource.MergeResult{Outcome: resource.MergeApplied, Resource: winner}
+		return appendMergeEvent(ctx, tx, s.p.clk, winner)
+	})
+	if err != nil {
+		return resource.MergeResult{}, err
+	}
+	return res, nil
+}
+
+// appendMergeEvent records a merge post-image on the spine and projects it, both in
+// tx, so a replicated record lands on the log and into the table exactly like a
+// local write while keeping the remote envelope verbatim.
+func appendMergeEvent(ctx context.Context, tx *sql.Tx, clk clock.Clock, r resource.Resource) error {
+	in, err := resource.MergeEvent(r)
+	if err != nil {
+		return err
+	}
+	e, err := appendTx(ctx, tx, clk, in)
+	if err != nil {
+		return err
+	}
+	return applyResourceEvent(ctx, tx, e)
+}
+
+// getResourceByIDTx loads the stored resource by id within tx, tombstones included
+// (merge resolves against the live-or-tombstoned record), or nil when none exists.
+func getResourceByIDTx(ctx context.Context, tx *sql.Tx, id string) (*resource.Resource, error) {
+	row := tx.QueryRowContext(ctx, `SELECT `+resourceCols+` FROM resources WHERE id = ?`, id)
+	r, err := scanResource(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
 // getResourceByKeyTx loads the stored resource for (kind, scope, name) within tx,
 // tombstones included (so a put can resurrect it), or nil when none exists.
 func getResourceByKeyTx(ctx context.Context, tx *sql.Tx, kind string, scope resource.Scope, name string) (*resource.Resource, error) {
@@ -195,7 +260,7 @@ func getResourceByKeyTx(ctx context.Context, tx *sql.Tx, kind string, scope reso
 // write path (commit) and Rebuild, so a rebuilt table equals a live one.
 func applyResourceEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error {
 	switch e.Type {
-	case resource.EvPut, resource.EvDeleted:
+	case resource.EvPut, resource.EvDeleted, resource.EvMerged:
 		r, err := resource.DecodeResource(e.Payload)
 		if err != nil {
 			return err
@@ -209,20 +274,20 @@ func applyResourceEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error {
 func upsertResourceRow(ctx context.Context, tx *sql.Tx, r resource.Resource) error {
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO resources (`+resourceCols+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			api_version=excluded.api_version, kind=excluded.kind, name=excluded.name,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
 			labels=excluded.labels, annotations=excluded.annotations, spec=excluded.spec, status=excluded.status,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
-			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted,
+			last_writer_id=excluded.last_writer_id, writer_actor=excluded.writer_actor, deleted=excluded.deleted,
 			version=excluded.version, content_hash=excluded.content_hash,
 			valid_from=excluded.valid_from, valid_to=excluded.valid_to,
 			created_at=excluded.created_at, updated_at=excluded.updated_at`,
 		r.ID, r.APIVersion, r.Kind, r.Name, r.Scope.Instance, r.Scope.Project, r.Scope.Workspace,
 		marshalStringMap(r.Labels), marshalStringMap(r.Annotations), rawOrNil(r.Spec), rawOrNil(r.Status),
-		r.SyncVersion, r.OriginInstanceID, r.UpdatedHLC.Wall, int64(r.UpdatedHLC.Counter), r.LastWriterID, boolToInt(r.Deleted),
+		r.SyncVersion, r.OriginInstanceID, r.UpdatedHLC.Wall, int64(r.UpdatedHLC.Counter), r.LastWriterID, string(writerActorOrDefault(r.WriterActor)), boolToInt(r.Deleted),
 		r.Version, r.ContentHash, timeOrNil(r.ValidFrom), timeOrNil(r.ValidTo),
 		formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	return err
@@ -234,6 +299,7 @@ func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error)
 		labels, annots   string
 		spec, status     sql.NullString
 		wall, counter    int64
+		writerActor      string
 		deleted          int
 		validFrom        sql.NullString
 		validTo          sql.NullString
@@ -242,10 +308,11 @@ func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error)
 	if err := sc.Scan(&r.ID, &r.APIVersion, &r.Kind, &r.Name,
 		&r.Scope.Instance, &r.Scope.Project, &r.Scope.Workspace,
 		&labels, &annots, &spec, &status,
-		&r.SyncVersion, &r.OriginInstanceID, &wall, &counter, &r.LastWriterID, &deleted,
+		&r.SyncVersion, &r.OriginInstanceID, &wall, &counter, &r.LastWriterID, &writerActor, &deleted,
 		&r.Version, &r.ContentHash, &validFrom, &validTo, &created, &updated); err != nil {
 		return resource.Resource{}, err
 	}
+	r.WriterActor = spine.ActorType(writerActor)
 	r.Labels = unmarshalStringMap(labels)
 	r.Annotations = unmarshalStringMap(annots)
 	if spec.Valid {
@@ -300,6 +367,15 @@ func timeOrNil(t *time.Time) any {
 		return nil
 	}
 	return formatTime(*t)
+}
+
+// writerActorOrDefault normalizes a provenance actor for storage, defaulting the
+// zero value to the agent so the column never holds an empty string.
+func writerActorOrDefault(a spine.ActorType) spine.ActorType {
+	if a == "" {
+		return spine.ActorAgent
+	}
+	return a
 }
 
 func nullToTimePtr(ns sql.NullString) *time.Time {

@@ -10,6 +10,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -70,6 +71,190 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("ContentHash", func(t *testing.T) { testContentHash(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
 	t.Run("EventSourced", func(t *testing.T) { testEventSourced(t, newStore) })
+	t.Run("Merge", func(t *testing.T) { testMerge(t, newStore) })
+	t.Run("MergeConverges", func(t *testing.T) { testMergeConverges(t, newStore) })
+	t.Run("MergeValidation", func(t *testing.T) { testMergeValidation(t, newStore) })
+}
+
+// remoteWidget builds a Widget as it would arrive replicated from another
+// instance: a fully stamped record carrying its own envelope (a stable ID, an HLC,
+// origin/writer and provenance), the shape Merge consumes. wall is the HLC wall
+// time; later writes use a larger wall.
+func remoteWidget(id, name, size string, wall int64, writer string, actor spine.ActorType) resource.Resource {
+	r := resource.Resource{
+		APIVersion: widgetAPIVersion,
+		Kind:       widgetKind,
+		ID:         id,
+		Name:       name,
+		Spec:       json.RawMessage(`{"size":"` + size + `"}`),
+		Envelope: resource.Envelope{
+			SyncVersion:      1,
+			Version:          1,
+			OriginInstanceID: writer,
+			LastWriterID:     writer,
+			WriterActor:      actor,
+			UpdatedHLC:       hlc.Time{Wall: wall},
+		},
+	}
+	if h, err := resource.Hash(r); err == nil {
+		r.ContentHash = h
+	}
+	return r
+}
+
+// testMerge exercises the cross-instance apply path end to end: first-insert,
+// last-writer-wins by HLC, idempotent re-apply, human-over-agent precedence,
+// tombstone propagation and resurrection, and replay of the merged stream.
+func testMerge(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	reg := NewRegistry(t)
+	s := newStore(reg)
+	defer func() { _ = s.Close() }()
+
+	// Absent locally: the remote is inserted verbatim, envelope preserved.
+	r1 := remoteWidget("rid-1", "alpha", "m", 1000, "B", spine.ActorAgent)
+	res, err := s.Merge(ctx, r1)
+	if err != nil || res.Outcome != resource.MergeApplied {
+		t.Fatalf("first merge = (%v, %v), want applied", res.Outcome, err)
+	}
+	got, err := s.GetByID(ctx, "rid-1")
+	if err != nil || got.OriginInstanceID != "B" || got.LastWriterID != "B" {
+		t.Fatalf("inserted record lost its remote envelope: %+v (%v)", got.Envelope, err)
+	}
+
+	// Re-applying the same write is an idempotent no-op.
+	if res, _ := s.Merge(ctx, r1); res.Outcome != resource.MergeUnchanged {
+		t.Fatalf("re-merge of same write = %v, want unchanged", res.Outcome)
+	}
+
+	// A newer write (higher HLC) wins.
+	r2 := remoteWidget("rid-1", "alpha", "l", 2000, "C", spine.ActorAgent)
+	if res, _ := s.Merge(ctx, r2); res.Outcome != resource.MergeApplied {
+		t.Fatalf("newer merge = %v, want applied", res.Outcome)
+	}
+	if got, _ := s.GetByID(ctx, "rid-1"); got.LastWriterID != "C" || specSize(got) != "l" {
+		t.Fatalf("newer write did not win: writer=%q size=%q", got.LastWriterID, specSize(got))
+	}
+
+	// An older write (lower HLC) is ignored; local state is untouched.
+	old := remoteWidget("rid-1", "alpha", "s", 500, "D", spine.ActorAgent)
+	if res, _ := s.Merge(ctx, old); res.Outcome != resource.MergeIgnored {
+		t.Fatalf("older merge = %v, want ignored", res.Outcome)
+	}
+	if got, _ := s.GetByID(ctx, "rid-1"); got.LastWriterID != "C" || specSize(got) != "l" {
+		t.Fatal("older write must not change local state")
+	}
+
+	// Provenance precedence: a human write wins over an agent write even with a
+	// LOWER clock, and a later agent write does not silently overwrite it.
+	human := remoteWidget("rid-1", "alpha", "s", 100, "E", spine.ActorHuman)
+	if res, _ := s.Merge(ctx, human); res.Outcome != resource.MergeApplied {
+		t.Fatalf("human merge = %v, want applied (precedence over agent)", res.Outcome)
+	}
+	if got, _ := s.GetByID(ctx, "rid-1"); got.WriterActor != spine.ActorHuman || specSize(got) != "s" {
+		t.Fatalf("human write did not win: actor=%q size=%q", got.WriterActor, specSize(got))
+	}
+	agentNewer := remoteWidget("rid-1", "alpha", "m", 9000, "F", spine.ActorAgent)
+	if res, _ := s.Merge(ctx, agentNewer); res.Outcome != resource.MergeIgnored {
+		t.Fatalf("agent-over-human merge = %v, want ignored", res.Outcome)
+	}
+
+	// Tombstone propagates: a delete with a higher HLC removes the record.
+	del := remoteWidget("rid-1", "alpha", "s", 200, "E", spine.ActorHuman)
+	del.Deleted = true
+	if res, _ := s.Merge(ctx, del); res.Outcome != resource.MergeApplied {
+		t.Fatalf("tombstone merge = %v, want applied", res.Outcome)
+	}
+	if _, err := s.GetByID(ctx, "rid-1"); !errors.Is(err, resource.ErrNotFound) {
+		t.Fatalf("merged tombstone still visible: %v", err)
+	}
+	// A later write after the tombstone intentionally resurrects.
+	revive := remoteWidget("rid-1", "alpha", "l", 300, "E", spine.ActorHuman)
+	if res, _ := s.Merge(ctx, revive); res.Outcome != resource.MergeApplied {
+		t.Fatalf("resurrection merge = %v, want applied", res.Outcome)
+	}
+	if got, err := s.GetByID(ctx, "rid-1"); err != nil || got.Deleted || specSize(got) != "l" {
+		t.Fatalf("resurrection failed: %+v (%v)", got, err)
+	}
+
+	// The merged stream is authoritative: a store folded purely from it matches.
+	if el, ok := s.(eventLogged); ok {
+		replayed, err := resource.Replay(ctx, el.Log(), reg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		live, _ := s.GetByID(ctx, "rid-1")
+		rep, err := replayed.GetByID(ctx, "rid-1")
+		if err != nil || rep.ContentHash != live.ContentHash || rep.LastWriterID != live.LastWriterID {
+			t.Fatalf("merged stream did not replay identically: live=%+v rep=%+v (%v)", live.Envelope, rep.Envelope, err)
+		}
+	}
+}
+
+// testMergeConverges asserts the merge is order-independent: two instances that
+// receive the same pair of conflicting writes in opposite orders end identical.
+func testMergeConverges(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	a := newStore(NewRegistry(t))
+	b := newStore(NewRegistry(t))
+	defer func() { _ = a.Close(); _ = b.Close() }()
+
+	x := remoteWidget("rid", "w", "s", 1000, "X", spine.ActorAgent)
+	y := remoteWidget("rid", "w", "l", 1000, "Y", spine.ActorAgent) // same HLC, writer tiebreak
+
+	mustMerge(t, a, x)
+	mustMerge(t, a, y)
+	mustMerge(t, b, y)
+	mustMerge(t, b, x)
+
+	ra, _ := a.GetByID(ctx, "rid")
+	rb, _ := b.GetByID(ctx, "rid")
+	if ra.ContentHash != rb.ContentHash || ra.LastWriterID != rb.LastWriterID {
+		t.Fatalf("merge not convergent: a=%q/%q b=%q/%q", ra.LastWriterID, ra.ContentHash, rb.LastWriterID, rb.ContentHash)
+	}
+	if ra.LastWriterID != "Y" { // equal HLC, higher writer id wins deterministically
+		t.Fatalf("tiebreak winner = %q, want Y", ra.LastWriterID)
+	}
+}
+
+func testMergeValidation(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+
+	// A record without the envelope Merge relies on is rejected, not half-applied.
+	noID := remoteWidget("", "w", "s", 1, "B", spine.ActorAgent)
+	if _, err := s.Merge(ctx, noID); !errors.Is(err, resource.ErrInvalid) {
+		t.Fatalf("merge without ID = %v, want ErrInvalid", err)
+	}
+	noHLC := remoteWidget("rid", "w", "s", 0, "B", spine.ActorAgent)
+	if _, err := s.Merge(ctx, noHLC); !errors.Is(err, resource.ErrInvalid) {
+		t.Fatalf("merge without HLC = %v, want ErrInvalid", err)
+	}
+	// A replicated record of an unregistered kind is rejected (admission still runs).
+	unknown := remoteWidget("rid", "w", "s", 1, "B", spine.ActorAgent)
+	unknown.Kind = "Nope"
+	unknown.APIVersion = "x/v1"
+	if _, err := s.Merge(ctx, unknown); !errors.Is(err, resource.ErrInvalid) {
+		t.Fatalf("merge of unregistered kind = %v, want ErrInvalid", err)
+	}
+}
+
+func specSize(r resource.Resource) string {
+	var m struct {
+		Size string `json:"size"`
+	}
+	_ = json.Unmarshal(r.Spec, &m)
+	return m.Size
+}
+
+func mustMerge(t *testing.T, s resource.Store, r resource.Resource) resource.MergeResult {
+	t.Helper()
+	res, err := s.Merge(context.Background(), r)
+	if err != nil {
+		t.Fatalf("merge %s: %v", r.ID, err)
+	}
+	return res
 }
 
 func testPutGetUpdate(t *testing.T, newStore func(*resource.Registry) resource.Store) {
