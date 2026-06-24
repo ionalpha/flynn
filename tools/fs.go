@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
@@ -39,7 +36,7 @@ func (readTool) Def() llm.Tool {
 	}
 }
 
-func (t readTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
+func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -48,11 +45,7 @@ func (t readTool) Invoke(_ context.Context, input json.RawMessage) (string, erro
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	abs, err := t.s.resolve(in.Path)
-	if err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(abs) //nolint:gosec // abs is confined to the working root by resolve
+	b, err := t.s.sb.ReadFile(ctx, in.Path)
 	if err != nil {
 		return "", err
 	}
@@ -94,7 +87,7 @@ func (writeTool) Def() llm.Tool {
 	}
 }
 
-func (t writeTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
+func (t writeTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
@@ -102,17 +95,10 @@ func (t writeTool) Invoke(_ context.Context, input json.RawMessage) (string, err
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	abs, err := t.s.resolve(in.Path)
-	if err != nil {
+	if err := t.s.sb.WriteFile(ctx, in.Path, []byte(in.Content)); err != nil {
 		return "", err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
-		return "", err
-	}
-	if err := os.WriteFile(abs, []byte(in.Content), 0o644); err != nil { //nolint:gosec // abs is confined to the working root; 0644 is intended for agent-written files
-		return "", err
-	}
-	return fmt.Sprintf("wrote %d bytes to %s", len(in.Content), t.s.rel(abs)), nil
+	return fmt.Sprintf("wrote %d bytes to %s", len(in.Content), in.Path), nil
 }
 
 // --- edit -------------------------------------------------------------------
@@ -136,7 +122,7 @@ func (editTool) Def() llm.Tool {
 	}
 }
 
-func (t editTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
+func (t editTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Path string `json:"path"`
 		Old  string `json:"old"`
@@ -148,25 +134,21 @@ func (t editTool) Invoke(_ context.Context, input json.RawMessage) (string, erro
 	if in.Old == "" {
 		return "", fmt.Errorf("edit: 'old' must not be empty")
 	}
-	abs, err := t.s.resolve(in.Path)
-	if err != nil {
-		return "", err
-	}
-	b, err := os.ReadFile(abs) //nolint:gosec // abs is confined to the working root by resolve
+	b, err := t.s.sb.ReadFile(ctx, in.Path)
 	if err != nil {
 		return "", err
 	}
 	switch n := strings.Count(string(b), in.Old); {
 	case n == 0:
-		return "", fmt.Errorf("edit: 'old' not found in %s", t.s.rel(abs))
+		return "", fmt.Errorf("edit: 'old' not found in %s", in.Path)
 	case n > 1:
-		return "", fmt.Errorf("edit: 'old' occurs %d times in %s; make it unique", n, t.s.rel(abs))
+		return "", fmt.Errorf("edit: 'old' occurs %d times in %s; make it unique", n, in.Path)
 	}
 	updated := strings.Replace(string(b), in.Old, in.New, 1)
-	if err := os.WriteFile(abs, []byte(updated), 0o644); err != nil { //nolint:gosec // abs is confined to the working root; 0644 is intended for agent-written files
+	if err := t.s.sb.WriteFile(ctx, in.Path, []byte(updated)); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s", t.s.rel(abs)), nil
+	return fmt.Sprintf("edited %s", in.Path), nil
 }
 
 // --- glob -------------------------------------------------------------------
@@ -188,28 +170,22 @@ func (globTool) Def() llm.Tool {
 	}
 }
 
-func (t globTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
+func (t globTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Pattern string `json:"pattern"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	matches, err := filepath.Glob(filepath.Join(t.s.root, in.Pattern))
+	matches, err := t.s.sb.Glob(ctx, in.Pattern)
 	if err != nil {
 		return "", err
 	}
-	out := make([]string, 0, len(matches))
-	for _, m := range matches {
-		if within(t.s.root, m) {
-			out = append(out, t.s.rel(m))
-		}
-	}
-	if len(out) == 0 {
+	if len(matches) == 0 {
 		return "no matches", nil
 	}
-	sort.Strings(out)
-	return strings.Join(out, "\n"), nil
+	sort.Strings(matches)
+	return strings.Join(matches, "\n"), nil
 }
 
 // --- grep -------------------------------------------------------------------
@@ -232,7 +208,7 @@ func (grepTool) Def() llm.Tool {
 	}
 }
 
-func (t grepTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
+func (t grepTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Pattern string `json:"pattern"`
 		Path    string `json:"path"`
@@ -244,36 +220,34 @@ func (t grepTool) Invoke(_ context.Context, input json.RawMessage) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("grep: invalid pattern: %w", err)
 	}
-	root := t.s.root
-	if in.Path != "" {
-		if root, err = t.s.resolve(in.Path); err != nil {
-			return "", err
-		}
+	root := in.Path
+	if root == "" {
+		root = "."
+	}
+	files, err := t.s.sb.Walk(ctx, root)
+	if err != nil {
+		return "", err
 	}
 
-	var matches []string
+	matches := make([]string, 0)
 	truncated := false
-	walkErr := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil //nolint:nilerr // unreadable entries are skipped, not fatal
-		}
-		b, err := os.ReadFile(p) //nolint:gosec // p is produced by WalkDir under the confined root
+	for _, f := range files {
+		b, err := t.s.sb.ReadFile(ctx, f)
 		if err != nil || isBinary(b) {
-			return nil //nolint:nilerr // skip unreadable/binary files
+			continue
 		}
 		for i, line := range strings.Split(string(b), "\n") {
 			if re.MatchString(line) {
-				matches = append(matches, fmt.Sprintf("%s:%d:%s", t.s.rel(p), i+1, line))
+				matches = append(matches, fmt.Sprintf("%s:%d:%s", f, i+1, line))
 				if len(matches) >= maxGrepMatches {
 					truncated = true
-					return filepath.SkipAll
+					break
 				}
 			}
 		}
-		return nil
-	})
-	if walkErr != nil {
-		return "", walkErr
+		if truncated {
+			break
+		}
 	}
 	if len(matches) == 0 {
 		return "no matches", nil

@@ -3,12 +3,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"os/exec"
-	"runtime"
 
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 type bashTool struct{ s *Set }
@@ -38,36 +36,18 @@ func (t bashTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if in.Command == "" {
 		return "", fmt.Errorf("bash: empty command")
 	}
-
-	name, args := shell(in.Command)
-	//nolint:gosec // running a model-supplied command is this tool's entire purpose; isolation is the run sandbox, not the arg list
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = t.s.root
-	out, err := cmd.CombinedOutput()
-	result := string(out)
-
+	res, err := t.s.sb.Exec(ctx, sandbox.Command{Line: in.Command})
 	if err != nil {
-		// A command that ran but exited non-zero is not a tool failure: return its
-		// output and exit code so the model can read stderr and react, the same way
-		// a shell would. Only a failure to start (or a cancelled context) is an error.
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			if result != "" {
-				result += "\n"
-			}
-			return result + fmt.Sprintf("[exit status %d]", exit.ExitCode()), nil
+		return res.Output, err
+	}
+	// A non-zero exit is not a tool failure: surface the output and exit code so the
+	// model can read stderr and react, the way a shell would.
+	if res.ExitCode != 0 {
+		out := res.Output
+		if out != "" {
+			out += "\n"
 		}
-		return result, fmt.Errorf("bash: %w", err)
+		return out + fmt.Sprintf("[exit status %d]", res.ExitCode), nil
 	}
-	return result, nil
-}
-
-// shell returns the per-OS command that runs a shell command string: a POSIX
-// shell everywhere except Windows, where cmd.exe is the only one guaranteed to be
-// present.
-func shell(command string) (string, []string) {
-	if runtime.GOOS == "windows" {
-		return "cmd", []string{"/c", command}
-	}
-	return "sh", []string{"-c", command}
+	return res.Output, nil
 }
