@@ -12,9 +12,11 @@ import (
 	"encoding/json"
 	"sync"
 
+	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/spine"
 )
 
 // FaultPlan decides, deterministically, when to inject a fault. Each wrapped
@@ -133,3 +135,89 @@ func (f execFunc) Execute(ctx context.Context, r resource.Resource) (json.RawMes
 }
 
 var _ goal.StepExecutor = execFunc(nil)
+
+// FaultyBus wraps a bus.Bus, injecting plan's faults on Publish before delegating;
+// Subscribe and Close pass through. It proves a publisher tolerates a flaky or
+// dead signal bus: a failed or dropped publish must never corrupt the durable
+// record a subscriber ultimately reads. A nil plan never faults. A nil inner bus
+// models a fully dead bus: Publish is a silent no-op and Subscribe returns an
+// inert subscription that never delivers, so a consumer must make progress some
+// other way (a poll floor).
+func FaultyBus(inner bus.Bus, plan *FaultPlan) bus.Bus {
+	return &faultyBus{inner: inner, plan: plan}
+}
+
+type faultyBus struct {
+	inner bus.Bus
+	plan  *FaultPlan
+}
+
+func (b *faultyBus) Publish(ctx context.Context, m bus.Message) error {
+	if b.plan != nil {
+		if err := b.plan.next(); err != nil {
+			return err
+		}
+	}
+	if b.inner == nil {
+		return nil
+	}
+	return b.inner.Publish(ctx, m)
+}
+
+func (b *faultyBus) Subscribe(ctx context.Context, pattern string, h bus.Handler) (bus.Subscription, error) {
+	if b.inner == nil {
+		return inertSub(pattern), nil
+	}
+	return b.inner.Subscribe(ctx, pattern, h)
+}
+
+func (b *faultyBus) Close() error {
+	if b.inner == nil {
+		return nil
+	}
+	return b.inner.Close()
+}
+
+// inertSub is a live-looking but never-firing subscription, for a dead inner bus.
+type inertSub string
+
+func (s inertSub) Subject() string  { return string(s) }
+func (inertSub) Unsubscribe() error { return nil }
+
+var _ bus.Bus = (*faultyBus)(nil)
+
+// FaultyLog wraps a spine.Log, injecting plan's faults on Append before
+// delegating; Read passes through. It models a flaky durable log: an append that
+// fails records nothing and assigns no Seq, so the stream stays gap-free (a
+// dropped event simply never existed) rather than leaving a hole. A nil plan never
+// faults; a nil inner log returns a zero Event on a non-faulting append and reads
+// back nothing.
+func FaultyLog(inner spine.Log, plan *FaultPlan) spine.Log {
+	return &faultyLog{inner: inner, plan: plan}
+}
+
+type faultyLog struct {
+	inner spine.Log
+	plan  *FaultPlan
+}
+
+func (l *faultyLog) Append(ctx context.Context, in spine.AppendInput) (spine.Event, error) {
+	if l.plan != nil {
+		if err := l.plan.next(); err != nil {
+			return spine.Event{}, err
+		}
+	}
+	if l.inner == nil {
+		return spine.Event{}, nil
+	}
+	return l.inner.Append(ctx, in)
+}
+
+func (l *faultyLog) Read(ctx context.Context, q spine.Query) ([]spine.Event, error) {
+	if l.inner == nil {
+		return nil, nil
+	}
+	return l.inner.Read(ctx, q)
+}
+
+var _ spine.Log = (*faultyLog)(nil)

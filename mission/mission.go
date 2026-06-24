@@ -46,6 +46,7 @@ type Executor struct {
 	defs         []llm.Tool
 	system       string
 	maxTokens    int
+	reporter     Reporter
 	dispatchOpts []dispatch.Option
 	dispatcher   *dispatch.Dispatcher
 }
@@ -85,6 +86,18 @@ func WithSystem(system string) Option {
 	return func(e *Executor) { e.system = system }
 }
 
+// WithObserver streams the mission's conversational events (turns, the model's
+// text, tool calls and results) to r as the loop runs. The default is a no-op, so
+// standalone behaviour is unchanged until an observer is supplied. It is the seam
+// the session/stream front door wires a live event stream onto.
+func WithObserver(r Reporter) Option {
+	return func(e *Executor) {
+		if r != nil {
+			e.reporter = r
+		}
+	}
+}
+
 // WithMaxTokens caps the output length requested of the model per turn.
 func WithMaxTokens(n int) Option {
 	return func(e *Executor) {
@@ -98,7 +111,7 @@ func WithMaxTokens(n int) Option {
 // calls run through a dispatch waist so governance, event recording, and tracing
 // are applied once at the chokepoint rather than scattered across the loop.
 func NewExecutor(model llm.Model, opts ...Option) *Executor {
-	e := &Executor{model: model, tools: map[string]Tool{}}
+	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}}
 	for _, o := range opts {
 		o(e)
 	}
@@ -133,6 +146,11 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Messages = []llm.Message{llm.Text(llm.RoleUser, e.prompt(spec))}
 	}
 
+	// The turn index is the count of model turns taken so far plus this one, derived
+	// from the persisted history so it stays correct across a crash-resumed step.
+	turn := assistantTurns(cp.Messages) + 1
+	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Turn: turn})
+
 	resp, err := e.model.Generate(ctx, llm.Request{
 		System:    e.system,
 		Messages:  cp.Messages,
@@ -144,12 +162,19 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	}
 	cp.Messages = append(cp.Messages, resp.Message)
 
+	if text := resp.Message.TextContent(); text != "" {
+		e.reporter.Report(ctx, Event{Kind: EventAssistantText, Turn: turn, Text: text})
+	}
+	for _, tu := range resp.Message.ToolUses() {
+		e.reporter.Report(ctx, Event{Kind: EventToolCall, Turn: turn, Tool: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
+	}
+
 	switch resp.StopReason {
 	case llm.StopToolUse:
 		// Run the calls and feed their results back for the next turn.
 		cp.Messages = append(cp.Messages, llm.Message{
 			Role:   llm.RoleUser,
-			Blocks: e.runTools(ctx, state.Scope(r.Scope), resp.Message.ToolUses()),
+			Blocks: e.runTools(ctx, state.Scope(r.Scope), turn, resp.Message.ToolUses()),
 		})
 	case llm.StopMaxTokens:
 		// The turn was cut off, not finished: ask the model to continue rather than
@@ -161,7 +186,21 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Done = true
 		cp.Result = resp.Message.TextContent()
 	}
+
+	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Turn: turn, StopReason: string(resp.StopReason)})
 	return encodeCheckpoint(cp)
+}
+
+// assistantTurns counts the model turns already in a conversation (one assistant
+// message per turn), so the next turn's index is one more than this.
+func assistantTurns(msgs []llm.Message) int {
+	n := 0
+	for _, m := range msgs {
+		if m.Role == llm.RoleAssistant {
+			n++
+		}
+	}
+	return n
 }
 
 // runTools dispatches each requested call through the waist and returns the
@@ -169,7 +208,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 // an error result rather than failing the step, so the model can recover on the
 // next turn. scope is the goal's scope, carried on each action for governance and
 // audit.
-func (e *Executor) runTools(ctx context.Context, scope state.Scope, calls []llm.ToolUse) []llm.Block {
+func (e *Executor) runTools(ctx context.Context, scope state.Scope, turn int, calls []llm.ToolUse) []llm.Block {
 	out := make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
 		res := &llm.ToolResult{ToolUseID: c.ID}
@@ -179,6 +218,10 @@ func (e *Executor) runTools(ctx context.Context, scope state.Scope, calls []llm.
 		} else {
 			res.Content = stringOutput(result.Output)
 		}
+		e.reporter.Report(ctx, Event{
+			Kind: EventToolResult, Turn: turn, Tool: c.Name, ToolUseID: c.ID,
+			Result: res.Content, IsError: res.IsError,
+		})
 		out = append(out, llm.Block{Kind: llm.KindToolResult, ToolResult: res})
 	}
 	return out
