@@ -26,10 +26,14 @@ type System struct{}
 func (System) Now() time.Time { return time.Now().UTC() }
 
 // Manual is a deterministic Clock for tests and replay: it returns a fixed time
-// that only changes via Advance or Set. It is safe for concurrent use.
+// that only changes via Advance or Set. It is safe for concurrent use. Manual
+// also implements Timing: timers it hands out fire only when Advance or Set moves
+// the clock past their deadline, so time-based code (the reconciler workqueue)
+// stays fully deterministic with no real sleeping.
 type Manual struct {
-	mu sync.Mutex
-	t  time.Time
+	mu     sync.Mutex
+	t      time.Time
+	timers []*manualTimer
 }
 
 // NewManual returns a Manual clock started at start (normalised to UTC).
@@ -44,18 +48,30 @@ func (m *Manual) Now() time.Time {
 	return m.t
 }
 
-// Advance moves the clock forward by d.
+// Advance moves the clock forward by d, firing any timers now due.
 func (m *Manual) Advance(d time.Duration) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.t = m.t.Add(d)
+	m.fireDueLocked()
 }
 
-// Set moves the clock to t (normalised to UTC).
+// Set moves the clock to t (normalised to UTC), firing any timers now due.
 func (m *Manual) Set(t time.Time) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.t = t.UTC()
+	m.fireDueLocked()
+}
+
+// PendingTimers returns how many timers are armed and not yet fired. It lets a
+// test wait until asynchronously-scheduled work (a queue's backoff timer) has
+// registered before advancing the clock, so time-driven behaviour is
+// deterministic rather than racy.
+func (m *Manual) PendingTimers() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.timers)
 }
 
 // Compile-time checks that the clock types satisfy Clock.
