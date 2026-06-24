@@ -214,6 +214,9 @@ func encodeMessage(m llm.Message) []chatMessage {
 					content := b.ToolResult.Content
 					out = append(out, chatMessage{Role: "tool", ToolCallID: b.ToolResult.ToolUseID, Content: &content})
 				}
+			default:
+				// KindToolUse becomes assistant tool_calls elsewhere; KindOpaque has
+				// no OpenAI mapping.
 			}
 		}
 		if text != "" {
