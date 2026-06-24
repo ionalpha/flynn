@@ -21,7 +21,7 @@ func TestQueueSerializationProperty(t *testing.T) {
 		processing := map[int]bool{}
 
 		n := rapid.IntRange(1, 300).Draw(rt, "ops")
-		for i := 0; i < n; i++ {
+		for range n {
 			switch rapid.SampledFrom([]string{"add", "get", "done"}).Draw(rt, "op") {
 			case "add":
 				q.Add(keyGen.Draw(rt, "k"))

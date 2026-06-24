@@ -48,7 +48,7 @@ func TestHostBoundaryAPISnapshot(t *testing.T) {
 // implement the whole surface, defeating the "embed a minimal host" promise.
 func TestProviderStaysFactoryOfStores(t *testing.T) {
 	pt := reflect.TypeOf((*state.Provider)(nil)).Elem()
-	for i := 0; i < pt.NumMethod(); i++ {
+	for i := range pt.NumMethod() {
 		m := pt.Method(i)
 		switch m.Name {
 		case "Name", "Close": // identity and lifecycle, not store accessors
@@ -66,7 +66,7 @@ func TestProviderStaysFactoryOfStores(t *testing.T) {
 // signatures, a stable textual form of its public surface.
 func methodSet(t reflect.Type) []string {
 	out := make([]string, 0, t.NumMethod())
-	for i := 0; i < t.NumMethod(); i++ {
+	for i := range t.NumMethod() {
 		m := t.Method(i)
 		out = append(out, m.Name+signature(m.Type))
 	}
@@ -77,11 +77,11 @@ func methodSet(t reflect.Type) []string {
 // signature renders a method's func type (interface methods carry no receiver).
 func signature(ft reflect.Type) string {
 	in := make([]string, 0, ft.NumIn())
-	for i := 0; i < ft.NumIn(); i++ {
+	for i := range ft.NumIn() {
 		in = append(in, ft.In(i).String())
 	}
 	out := make([]string, 0, ft.NumOut())
-	for i := 0; i < ft.NumOut(); i++ {
+	for i := range ft.NumOut() {
 		out = append(out, ft.Out(i).String())
 	}
 	return "(" + strings.Join(in, ", ") + ") (" + strings.Join(out, ", ") + ")"

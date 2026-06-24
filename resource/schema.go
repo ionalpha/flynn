@@ -1,6 +1,7 @@
 package resource
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"reflect"
@@ -66,7 +67,7 @@ type schema struct {
 func compileNode(doc any) (*schema, error) {
 	m, ok := doc.(map[string]any)
 	if !ok {
-		return nil, fmt.Errorf("schema must be a JSON object")
+		return nil, errors.New("schema must be a JSON object")
 	}
 	s := &schema{addlAllowed: true}
 

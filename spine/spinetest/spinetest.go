@@ -65,7 +65,7 @@ func testSchemaVersion(t *testing.T, log spine.Log) {
 
 func testMonotonic(t *testing.T, log spine.Log) {
 	ctx := context.Background()
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		e, err := log.Append(ctx, spine.AppendInput{Stream: "run", Type: "tick", Actor: spine.ActorAgent})
 		if err != nil {
 			t.Fatalf("append %d: %v", i, err)
@@ -95,7 +95,7 @@ func testIndependent(t *testing.T, log spine.Log) {
 
 func testReadPaging(t *testing.T, log spine.Log) {
 	ctx := context.Background()
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if _, err := log.Append(ctx, spine.AppendInput{Stream: "s", Type: "e", Actor: spine.ActorSystem}); err != nil {
 			t.Fatal(err)
 		}
@@ -191,7 +191,7 @@ func testEmpty(t *testing.T, log spine.Log) {
 func testConcurrency(t *testing.T, log spine.Log) {
 	ctx := context.Background()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
@@ -200,7 +200,7 @@ func testConcurrency(t *testing.T, log spine.Log) {
 	}
 	wg.Wait()
 
-	for s := 0; s < 10; s++ {
+	for s := range 10 {
 		got, err := log.Read(ctx, spine.Query{Stream: streamName(s)})
 		if err != nil {
 			t.Fatal(err)

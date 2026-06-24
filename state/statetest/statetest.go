@@ -162,7 +162,7 @@ func testSessions(t *testing.T, p state.Provider) {
 		t.Fatalf("Get = (%q, %v)", got.ID, err)
 	}
 
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		tn, err := ss.AppendTurn(ctx, state.Turn{SessionID: s.ID, Role: "user", Content: fmt.Sprintf("c%d", i)})
 		if err != nil {
 			t.Fatalf("append %d: %v", i, err)
@@ -419,7 +419,7 @@ func testConcurrency(t *testing.T, p state.Provider) {
 	ctx := context.Background()
 	sk := p.Skills()
 	var wg sync.WaitGroup
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

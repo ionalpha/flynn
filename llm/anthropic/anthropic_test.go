@@ -174,7 +174,7 @@ func TestBlockMappingProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(0, 5).Draw(rt, "n")
 		blocks := make([]llm.Block, 0, n)
-		for i := 0; i < n; i++ {
+		for range n {
 			switch rapid.IntRange(0, 2).Draw(rt, "kind") {
 			case 0:
 				blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: rapid.StringMatching(`[a-z ]{0,10}`).Draw(rt, "text")})

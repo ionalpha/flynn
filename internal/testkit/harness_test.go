@@ -75,7 +75,7 @@ func TestLifecycleHoldsUnderChaos(t *testing.T) {
 		work := testkit.FaultyWork(nil, testkit.FailEvery(failEvery, fault.New(fault.Transient, "chaos", "x")))
 
 		n := rapid.IntRange(0, 12).Draw(rt, "n")
-		for i := 0; i < n; i++ {
+		for range n {
 			_ = d.Govern(ctx, testkit.ActionGen().Draw(rt, "action"), work)
 		}
 		testkit.RequireLifecycle(rt, sink.Events())

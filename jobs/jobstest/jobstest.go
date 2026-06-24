@@ -146,7 +146,7 @@ func testClaimRunAt(t *testing.T, h Harness) {
 
 func testClaimLimit(t *testing.T, h Harness) {
 	defer func() { _ = h.Queue.Close() }()
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k"})
 	}
 	got, err := h.Queue.Claim(ctx(), jobs.ClaimParams{Limit: 3, LeaseFor: lease})

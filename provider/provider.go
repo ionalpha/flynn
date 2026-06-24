@@ -6,6 +6,7 @@
 package provider
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -26,7 +27,7 @@ func Resolve(spec string) (llm.Model, error) {
 	case "anthropic":
 		key := os.Getenv("ANTHROPIC_API_KEY")
 		if key == "" {
-			return nil, fmt.Errorf("provider: ANTHROPIC_API_KEY is not set")
+			return nil, errors.New("provider: ANTHROPIC_API_KEY is not set")
 		}
 		opts := []anthropic.Option{anthropic.WithModel(model)}
 		if u := os.Getenv("ANTHROPIC_BASE_URL"); u != "" {
@@ -36,7 +37,7 @@ func Resolve(spec string) (llm.Model, error) {
 	case "openai":
 		key := os.Getenv("OPENAI_API_KEY")
 		if key == "" {
-			return nil, fmt.Errorf("provider: OPENAI_API_KEY is not set")
+			return nil, errors.New("provider: OPENAI_API_KEY is not set")
 		}
 		opts := []openai.Option{openai.WithModel(model)}
 		if u := os.Getenv("OPENAI_BASE_URL"); u != "" {
@@ -44,7 +45,7 @@ func Resolve(spec string) (llm.Model, error) {
 		}
 		return openai.New(key, opts...), nil
 	case "":
-		return nil, fmt.Errorf("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
+		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
 	default:
 		return nil, fmt.Errorf("provider: unknown provider %q (want one of %s)", name, strings.Join(Providers(), ", "))
 	}

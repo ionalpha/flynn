@@ -73,7 +73,7 @@ func TestWorkerDrivesConvergence(t *testing.T) {
 	h.clk = m
 	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
 
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		if _, err := h.gr.Reconcile(h.ctx, ref); err != nil {
 			t.Fatalf("reconcile: %v", err)
 		}

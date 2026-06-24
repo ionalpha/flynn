@@ -188,7 +188,7 @@ func TestProp_RemoteFilesRoundTrip(t *testing.T) {
 		want := map[string]string{}
 		r := NewRemote(newFakeTransport())
 		ctx := context.Background()
-		for i := 0; i < n; i++ {
+		for range n {
 			p := pathGen.Draw(rt, "path")
 			content := rapid.String().Draw(rt, "content")
 			if err := r.WriteFile(ctx, p, []byte(content)); err != nil {

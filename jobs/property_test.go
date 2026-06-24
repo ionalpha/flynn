@@ -74,7 +74,7 @@ func TestProp_ClaimNeverDoubleLeases(t *testing.T) {
 		ctx := context.Background()
 
 		n := rapid.IntRange(1, 30).Draw(rt, "jobs")
-		for i := 0; i < n; i++ {
+		for range n {
 			if _, err := q.Enqueue(ctx, jobs.EnqueueParams{Kind: "k"}); err != nil {
 				rt.Fatalf("Enqueue: %v", err)
 			}
