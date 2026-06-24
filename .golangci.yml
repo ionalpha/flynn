@@ -10,18 +10,23 @@ linters:
     - copyloopvar
     - depguard
     - errcheck
+    - errname
+    - errorlint
     - forbidigo
     - gosec
     - govet
     - ineffassign
     - intrange
+    - makezero
     - misspell
     - nilerr
     - perfsprint
+    - predeclared
     - revive
     - staticcheck
     - unconvert
     - unused
+    - wastedassign
   settings:
     # Enforce the observability ports: nothing logs through log/slog directly.
     # slog lives only inside package observe (its adapter and tests). Every other

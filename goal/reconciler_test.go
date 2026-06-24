@@ -38,11 +38,11 @@ func (c *recordingCleaner) Cleanup(context.Context, resource.Resource) error {
 	return nil
 }
 
-var errCleanup = &cleanupErr{}
+var errCleanup = &cleanupError{}
 
-type cleanupErr struct{}
+type cleanupError struct{}
 
-func (*cleanupErr) Error() string { return "cleanup not done" }
+func (*cleanupError) Error() string { return "cleanup not done" }
 
 // --- harness ----------------------------------------------------------------
 

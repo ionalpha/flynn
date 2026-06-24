@@ -79,7 +79,7 @@ func (r *Registry) Register(k Kind) error {
 	if len(k.Schema) > 0 {
 		c, err := r.compiler.Compile(k.Schema)
 		if err != nil {
-			return fmt.Errorf("%w: kind %q schema: %v", ErrInvalid, k.Name, err)
+			return fmt.Errorf("%w: kind %q schema: %w", ErrInvalid, k.Name, err)
 		}
 		compiled = c
 	}
@@ -130,10 +130,10 @@ func (r *Registry) Validate(apiVersion, kind string, spec []byte) error {
 	}
 	inst, err := decodeInstance(spec)
 	if err != nil {
-		return fmt.Errorf("%w: spec is not valid JSON: %v", ErrInvalid, err)
+		return fmt.Errorf("%w: spec is not valid JSON: %w", ErrInvalid, err)
 	}
 	if err := rk.schema.Validate(inst); err != nil {
-		return fmt.Errorf("%w: spec does not satisfy kind %q schema: %v", ErrInvalid, kind, err)
+		return fmt.Errorf("%w: spec does not satisfy kind %q schema: %w", ErrInvalid, kind, err)
 	}
 	return nil
 }
