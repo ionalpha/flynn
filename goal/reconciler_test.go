@@ -106,7 +106,7 @@ func (h *harness) status(t *testing.T, ref reconcile.Ref) Status {
 // completeStep simulates a worker finishing the dispatched step.
 func (h *harness) completeStep(t *testing.T) {
 	t.Helper()
-	claimed, err := h.jobs.Claim(h.ctx, jobs.ClaimParams{Limit: 1, LeaseFor: int64(time.Minute)})
+	claimed, err := h.jobs.Claim(h.ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(time.Minute)})
 	if err != nil || len(claimed) == 0 {
 		t.Fatalf("no step job to claim (err=%v)", err)
 	}
@@ -121,7 +121,7 @@ func (h *harness) completeStep(t *testing.T) {
 // failStepToDeath claims the step and fails it until it goes dead.
 func (h *harness) failStepToDeath(t *testing.T) {
 	t.Helper()
-	claimed, err := h.jobs.Claim(h.ctx, jobs.ClaimParams{Limit: 1, LeaseFor: int64(time.Minute)})
+	claimed, err := h.jobs.Claim(h.ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(time.Minute)})
 	if err != nil || len(claimed) == 0 {
 		t.Fatalf("no step job to claim (err=%v)", err)
 	}
@@ -185,7 +185,7 @@ func TestGoalNeverDispatchesDuplicate(t *testing.T) {
 	if res.RequeueAfter == 0 {
 		t.Fatal("in-flight reconcile should poll (RequeueAfter)")
 	}
-	jobsClaimed, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Limit: 10, LeaseFor: int64(time.Minute)})
+	jobsClaimed, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 10, LeaseFor: int64(time.Minute)})
 	if len(jobsClaimed) != 1 {
 		t.Fatalf("expected exactly 1 step job in flight, got %d (duplicate dispatch)", len(jobsClaimed))
 	}
@@ -236,7 +236,7 @@ func TestGoalNoOpWhenSettled(t *testing.T) {
 	if before.Steps != after.Steps || after.InFlight != nil || after.Phase != PhaseConverged {
 		t.Fatalf("settled goal was disturbed: before=%+v after=%+v", before, after)
 	}
-	if pending, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Limit: 10, LeaseFor: int64(time.Minute)}); len(pending) != 0 {
+	if pending, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 10, LeaseFor: int64(time.Minute)}); len(pending) != 0 {
 		t.Fatalf("settled goal dispatched a new step: %d", len(pending))
 	}
 }

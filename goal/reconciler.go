@@ -178,6 +178,7 @@ func (g *GoalReconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reco
 
 	// Dispatch the next step and record it in flight.
 	job, err := g.jobs.Enqueue(ctx, jobs.EnqueueParams{
+		Queue:       StepQueue,
 		Kind:        StepJobKind,
 		Payload:     []byte(r.ID),
 		Scope:       state.Scope(r.Scope),
