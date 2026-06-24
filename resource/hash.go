@@ -38,6 +38,26 @@ func Hash(r Resource) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+// SpecHash returns a stable hash of a resource's desired state alone (its kind and
+// canonical spec), excluding status and all envelope metadata. It is the agent's
+// equivalent of Kubernetes' metadata.generation: a controller records the SpecHash
+// it last acted on in status, and a reconcile is a no-op while the stored spec hash
+// still matches, so writing status (which changes the full content hash) never
+// re-triggers work. Equal spec yields an equal hash on any machine.
+func SpecHash(r Resource) (string, error) {
+	desired := map[string]any{
+		"apiVersion": r.APIVersion,
+		"kind":       r.Kind,
+		"spec":       canonicalJSON(r.Spec),
+	}
+	b, err := json.Marshal(desired)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:]), nil
+}
+
 // canonicalJSON decodes raw JSON to a generic value so the outer Marshal re-encodes
 // it with sorted object keys (Go marshals map[string]any deterministically). Empty
 // input is null; input that is not valid JSON is hashed as an opaque string.
