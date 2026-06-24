@@ -14,6 +14,7 @@ import (
 
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/learn"
@@ -82,9 +83,7 @@ func regradeSkills(dataDir string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	verifier := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
-		return sandbox.NewLocal(cwd)
-	})
+	verifier := governedVerifier(cwd)
 	res, err := learn.Regrade(ctx, store.Skills(), state.Scope{}, verifier)
 	if err != nil {
 		return err
@@ -144,10 +143,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 	// directory before it is crystallized, so a broken procedure is dropped rather
 	// than learned. Capture failures never fail the run; learning is best effort.
 	if distiller != nil {
-		verifier := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
-			return sandbox.NewLocal(workdir)
-		})
-		curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(verifier))
+		curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(governedVerifier(workdir)))
 		captured, err := curator.Curate(ctx, learn.Outcome{
 			Objective:  objective,
 			Result:     result,
@@ -171,6 +167,19 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		}
 	}
 	return result, nil
+}
+
+// governedVerifier builds the skill-check verifier the CLI uses: a sandbox verifier
+// that runs each check at dir, wrapped so the check is dispatched through the waist.
+// Routing it through dispatch means a verification is admitted against the run's
+// grant and traced like every tool call, rather than executing a model-proposed
+// command on a side channel that bypasses governance. With no grant bound the
+// admitter is permissive, so a standalone run still verifies, just ungoverned.
+func governedVerifier(dir string) learn.Verifier {
+	inner := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
+		return sandbox.NewLocal(dir)
+	})
+	return learn.NewGovernedVerifier(inner, dispatch.WithAdmitter(capability.Admitter{}))
 }
 
 // recallContext queries the durable skills and memory for what is relevant to the
