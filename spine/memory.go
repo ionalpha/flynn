@@ -41,6 +41,10 @@ func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
 	if t.IsZero() {
 		t = l.clk.Now()
 	}
+	version := in.SchemaVersion
+	if version == 0 {
+		version = DefaultSchemaVersion
+	}
 	e := Event{
 		Stream:           in.Stream,
 		Seq:              int64(len(l.streams[in.Stream]) + 1),
@@ -48,6 +52,7 @@ func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
 		Type:             in.Type,
 		Actor:            in.Actor,
 		Payload:          clonePayload(in.Payload),
+		SchemaVersion:    version,
 		TraceID:          in.TraceID,
 		SpanID:           in.SpanID,
 		CausationID:      in.CausationID,

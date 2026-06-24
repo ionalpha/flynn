@@ -61,9 +61,10 @@ func ActionGen() *rapid.Generator[dispatch.Action] {
 func AppendInputGen(stream string) *rapid.Generator[spine.AppendInput] {
 	return rapid.Custom(func(t *rapid.T) spine.AppendInput {
 		return spine.AppendInput{
-			Stream: stream,
-			Type:   rapid.StringMatching(`[a-z][a-z0-9_.]{0,15}`).Draw(t, "type"),
-			Actor:  rapid.SampledFrom([]spine.ActorType{spine.ActorAgent, spine.ActorHuman, spine.ActorSystem}).Draw(t, "actor"),
+			Stream:        stream,
+			Type:          rapid.StringMatching(`[a-z][a-z0-9_.]{0,15}`).Draw(t, "type"),
+			Actor:         rapid.SampledFrom([]spine.ActorType{spine.ActorAgent, spine.ActorHuman, spine.ActorSystem}).Draw(t, "actor"),
+			SchemaVersion: rapid.IntRange(0, 3).Draw(t, "schema_version"),
 		}
 	})
 }
