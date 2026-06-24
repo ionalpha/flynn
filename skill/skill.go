@@ -40,7 +40,8 @@ var specSchema = json.RawMessage(`{
     "body": {"type": "string"},
     "tags": {"type": "array", "items": {"type": "string"}},
     "uses": {"type": "integer", "minimum": 0},
-    "wins": {"type": "integer", "minimum": 0}
+    "wins": {"type": "integer", "minimum": 0},
+    "check": {"type": "string"}
   },
   "additionalProperties": false
 }`)
@@ -63,11 +64,12 @@ func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 // specSchema). Empty fields are omitted so a bare skill hashes and validates as a
 // minimal object.
 type spec struct {
-	Name string   `json:"name,omitempty"`
-	Body string   `json:"body,omitempty"`
-	Tags []string `json:"tags,omitempty"`
-	Uses int      `json:"uses,omitempty"`
-	Wins int      `json:"wins,omitempty"`
+	Name  string   `json:"name,omitempty"`
+	Body  string   `json:"body,omitempty"`
+	Tags  []string `json:"tags,omitempty"`
+	Uses  int      `json:"uses,omitempty"`
+	Wins  int      `json:"wins,omitempty"`
+	Check string   `json:"check,omitempty"`
 }
 
 // Store is the typed skill facade over a resource.Store. It is the SkillStore the
@@ -179,7 +181,7 @@ func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource
 // the scope is the namespace; the sync version is carried through so the substrate
 // enforces the same opt-in optimistic concurrency the skill contract promises.
 func toResource(sk state.Skill) (resource.Resource, error) {
-	body, err := json.Marshal(spec{Name: sk.Name, Body: sk.Body, Tags: sk.Tags, Uses: sk.Uses, Wins: sk.Wins})
+	body, err := json.Marshal(spec{Name: sk.Name, Body: sk.Body, Tags: sk.Tags, Uses: sk.Uses, Wins: sk.Wins, Check: sk.Check})
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("skill: encode spec: %w", err)
 	}
@@ -214,6 +216,7 @@ func toSkill(r resource.Resource) (state.Skill, error) {
 		Tags:      sp.Tags,
 		Uses:      sp.Uses,
 		Wins:      sp.Wins,
+		Check:     sp.Check,
 		Scope:     state.Scope(r.Scope),
 		Version:   int(r.Version),
 		CreatedAt: r.CreatedAt,

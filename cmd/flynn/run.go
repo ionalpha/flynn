@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -47,6 +50,48 @@ func openStore(ctx context.Context, dsn string) (*sqlite.Store, error) {
 		dsn = ":memory:"
 	}
 	return sqlite.Open(ctx, dsn)
+}
+
+// openDataStore opens the durable store under a data directory, creating the
+// directory and resolving the database file inside it. An empty or ":memory:"
+// dataDir opens an ephemeral store.
+func openDataStore(ctx context.Context, dataDir string) (*sqlite.Store, error) {
+	if dataDir != "" && dataDir != ":memory:" {
+		if err := os.MkdirAll(dataDir, 0o750); err != nil {
+			return nil, err
+		}
+		dataDir = filepath.Join(dataDir, "flynn.db")
+	}
+	return openStore(ctx, dataDir)
+}
+
+// regradeSkills re-runs every stored skill's check in a sandbox at the working
+// directory, re-confirming the ones that still pass and retiring the ones that no
+// longer do, then reports the tally.
+func regradeSkills(dataDir string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	verifier := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
+		return sandbox.NewLocal(cwd)
+	})
+	res, err := learn.Regrade(ctx, store.Skills(), state.Scope{}, verifier)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(os.Stdout, "regrade: %d checked, %d reconfirmed, %d retired\n",
+		res.Checked, len(res.Reconfirmed), len(res.Retired))
+	return nil
 }
 
 // missionRegistry builds the resource registry the durable store admits against:
