@@ -33,6 +33,7 @@ to them (`make test` == `./dev/test`); use the scripts directly to pass args.
 ./dev/test      # race + coverage; scope with e.g. ./dev/test ./state/...
 ./dev/lint      # go mod tidy check + golangci-lint (pinned to CI's version)
 ./dev/fmt       # auto-format (gofumpt + goimports)
+./dev/fix       # dev/fmt plus golangci-lint --fix (applies linter autofixes too)
 ./dev/vuln      # govulncheck
 ./dev/pr        # open a PR against main using the template (needs gh)
 ```
