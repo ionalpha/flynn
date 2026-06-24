@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -79,7 +80,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		system += "\n\n" + block
 	}
 
-	result, source, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs())
+	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs())
 	if err != nil {
 		return "", err
 	}
@@ -94,10 +95,11 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		})
 		curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(verifier))
 		captured, err := curator.Curate(ctx, learn.Outcome{
-			Objective: objective,
-			Result:    result,
-			Converged: true,
-			Source:    source,
+			Objective:  objective,
+			Result:     result,
+			Transcript: transcript,
+			Converged:  true,
+			Source:     source,
 		})
 		if err == nil {
 			if n := len(captured.Skills) + len(captured.Memories); n > 0 {
@@ -116,40 +118,18 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 // It returns "" when nothing is on file, so a fresh agent's prompt is unchanged.
 //
 // The store's full-text search matches a query as a single phrase, so recall runs
-// one query per keyword of the objective and unions the hits (deduped, capped).
-// This is intentionally a lexical first cut; ranked and vector recall come later.
+// one query per keyword of the objective, unions the hits, then ranks them by how
+// many of the objective's keywords each one carries, with verified skills boosted
+// above unverified ones. Only the top few survive, since a long, loosely-relevant
+// context hurts the model's use of it more than it helps. This is a lexical first
+// cut; vector recall is a later refinement.
 func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) string {
 	terms := keywords(objective)
 	if len(terms) == 0 {
 		return ""
 	}
-
-	var sk []state.Skill
-	seenSk := map[string]bool{}
-	var mem []state.MemoryItem
-	seenMem := map[string]bool{}
-	for _, term := range terms {
-		if len(sk) < recallLimit {
-			if found, err := skills.Search(ctx, term, recallLimit); err == nil {
-				for _, s := range found {
-					if !seenSk[s.ID] && len(sk) < recallLimit {
-						seenSk[s.ID] = true
-						sk = append(sk, s)
-					}
-				}
-			}
-		}
-		if len(mem) < recallLimit {
-			if found, err := memories.Recall(ctx, state.RecallQuery{Query: term, Limit: recallLimit}); err == nil {
-				for _, m := range found {
-					if !seenMem[m.ID] && len(mem) < recallLimit {
-						seenMem[m.ID] = true
-						mem = append(mem, m)
-					}
-				}
-			}
-		}
-	}
+	sk := rankSkills(terms, gatherSkills(ctx, skills, terms))
+	mem := rankMemory(terms, gatherMemory(ctx, memories, terms))
 	if len(sk) == 0 && len(mem) == 0 {
 		return ""
 	}
@@ -169,6 +149,123 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 		}
 	}
 	return b.String()
+}
+
+// gatherSkills unions the per-keyword full-text hits into a deduped candidate set
+// for ranking.
+func gatherSkills(ctx context.Context, skills state.SkillStore, terms []string) []state.Skill {
+	seen := map[string]bool{}
+	var out []state.Skill
+	for _, term := range terms {
+		found, err := skills.Search(ctx, term, recallLimit)
+		if err != nil {
+			continue
+		}
+		for _, s := range found {
+			if !seen[s.ID] {
+				seen[s.ID] = true
+				out = append(out, s)
+			}
+		}
+	}
+	return out
+}
+
+// gatherMemory unions the per-keyword recall hits into a deduped candidate set.
+func gatherMemory(ctx context.Context, memories state.MemoryStore, terms []string) []state.MemoryItem {
+	seen := map[string]bool{}
+	var out []state.MemoryItem
+	for _, term := range terms {
+		found, err := memories.Recall(ctx, state.RecallQuery{Query: term, Limit: recallLimit})
+		if err != nil {
+			continue
+		}
+		for _, m := range found {
+			if !seen[m.ID] {
+				seen[m.ID] = true
+				out = append(out, m)
+			}
+		}
+	}
+	return out
+}
+
+// rankSkills orders candidate skills by relevance (how many of the objective's
+// keywords each carries) with a boost for verified skills, then caps the result.
+func rankSkills(terms []string, cands []state.Skill) []state.Skill {
+	type scored struct {
+		s     state.Skill
+		score int
+	}
+	ss := make([]scored, len(cands))
+	for i, s := range cands {
+		text := strings.ToLower(s.Name + " " + s.Body + " " + strings.Join(s.Tags, " "))
+		ss[i] = scored{s, matchScore(terms, text) + verifiedBoost(s.Tags)}
+	}
+	sort.SliceStable(ss, func(i, j int) bool {
+		if ss[i].score != ss[j].score {
+			return ss[i].score > ss[j].score
+		}
+		return ss[i].s.Slug < ss[j].s.Slug
+	})
+	out := make([]state.Skill, 0, recallLimit)
+	for _, x := range ss {
+		if len(out) >= recallLimit {
+			break
+		}
+		out = append(out, x.s)
+	}
+	return out
+}
+
+// rankMemory orders candidate memory items by relevance, most-recent first on a
+// tie, then caps the result.
+func rankMemory(terms []string, cands []state.MemoryItem) []state.MemoryItem {
+	type scored struct {
+		m     state.MemoryItem
+		score int
+	}
+	ss := make([]scored, len(cands))
+	for i, m := range cands {
+		ss[i] = scored{m, matchScore(terms, strings.ToLower(m.Content))}
+	}
+	sort.SliceStable(ss, func(i, j int) bool {
+		if ss[i].score != ss[j].score {
+			return ss[i].score > ss[j].score
+		}
+		return ss[i].m.CreatedAt.After(ss[j].m.CreatedAt)
+	})
+	out := make([]state.MemoryItem, 0, recallLimit)
+	for _, x := range ss {
+		if len(out) >= recallLimit {
+			break
+		}
+		out = append(out, x.m)
+	}
+	return out
+}
+
+// matchScore counts how many distinct terms appear in text, the lexical relevance
+// signal recall ranks on.
+func matchScore(terms []string, text string) int {
+	n := 0
+	for _, t := range terms {
+		if strings.Contains(text, t) {
+			n++
+		}
+	}
+	return n
+}
+
+// verifiedBoost nudges a skill whose check passed (tagged verified) above an
+// otherwise equally relevant unverified one, so evidence breaks ties.
+func verifiedBoost(tags []string) int {
+	for _, t := range tags {
+		if t == "verified" {
+			return 1
+		}
+	}
+	return 0
 }
 
 // recallStopwords are common words dropped from an objective before recall, so a
@@ -211,13 +308,14 @@ func truncate(s string, n int) string {
 }
 
 // drive assembles the runtime over the given store and the sandboxed toolset,
-// streams the session live to out, and returns the converged result and the
-// session id (used as learning provenance). The system prompt is supplied so the
-// caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue) (result, source string, err error) {
+// streams the session live to out, and returns the converged result, the session
+// id (used as learning provenance), and the conversation transcript (so the
+// distiller can learn from how the goal was reached, not just the final summary).
+// The system prompt is supplied so the caller can fold recalled knowledge into it.
+func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue) (result, source string, transcript []llm.Message, err error) {
 	sb, err := sandbox.NewLocal(workdir)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	w := &syncWriter{w: out}
 
@@ -245,7 +343,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 		WorkerPoll:   50 * time.Millisecond,
 	})
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -255,39 +353,46 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 
 	events, err := sess.Subscribe(runCtx, 0)
 	if err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 	if _, err := sess.Submit(runCtx, rt, goal.Spec{
 		Objective:     objective,
 		StopCondition: "the objective is fully accomplished",
 	}); err != nil {
-		return "", "", err
+		return "", "", nil, err
 	}
 
-	result, runErr := renderStream(w, events)
+	result, transcript, runErr := renderStream(w, events)
 	cancel()
 	<-done
-	return result, sess.ID(), runErr
+	return result, sess.ID(), transcript, runErr
 }
 
-// renderStream prints the session's events as they arrive and returns once the
-// session reaches a terminal event: the model's summary on convergence, or an
-// error on stall. A closed channel before any terminal event means the run was
-// cancelled.
-func renderStream(out io.Writer, events <-chan session.Event) (string, error) {
+// renderStream prints the session's events as they arrive and accumulates the
+// conversation transcript (the model's text and the tools it called), returning
+// once the session reaches a terminal event: the model's summary on convergence,
+// or an error on stall. A closed channel before any terminal event means the run
+// was cancelled.
+func renderStream(out io.Writer, events <-chan session.Event) (string, []llm.Message, error) {
+	var transcript []llm.Message
 	for ev := range events {
 		switch ev.Kind {
 		case session.KindTurnStarted:
 			_, _ = fmt.Fprintf(out, "  ... turn %d\n", ev.Turn)
+		case session.KindAssistant:
+			transcript = append(transcript, llm.Text(llm.RoleAssistant, ev.Text))
 		case session.KindToolCall:
 			_, _ = fmt.Fprintf(out, "  -> %s\n", ev.Tool)
+			transcript = append(transcript, llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{
+				{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: ev.ToolUseID, Name: ev.Tool, Input: ev.Input}},
+			}})
 		case session.KindConverged:
-			return ev.Text, nil
+			return ev.Text, transcript, nil
 		case session.KindStalled:
-			return "", fmt.Errorf("goal stalled: %s", ev.Err)
+			return "", transcript, fmt.Errorf("goal stalled: %s", ev.Err)
 		}
 	}
-	return "", context.Canceled
+	return "", transcript, context.Canceled
 }
 
 // syncWriter serializes writes, so the stream-rendering goroutine and any other

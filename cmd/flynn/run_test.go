@@ -143,6 +143,77 @@ func TestRunRemembersAcrossRuns(t *testing.T) {
 	}
 }
 
+// TestRecallRanksByRelevanceAndVerification checks that recall orders hits by how
+// many objective keywords they carry, with verified skills boosted above equally
+// relevant unverified ones.
+func TestRecallRanksByRelevanceAndVerification(t *testing.T) {
+	st := memStore(t)
+	ctx := context.Background()
+	mk := func(slug, name, body string, tags ...string) {
+		if _, err := st.Skills().Upsert(ctx, state.Skill{Slug: slug, Name: name, Body: body, Tags: tags}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mk("alpha", "Alpha", "deploy the docker image")             // matches deploy+docker = 2
+	mk("bravo", "Bravo", "deploy the docker image", "verified") // 2 + verified boost = 3
+	mk("charlie", "Charlie", "notes about the service")         // matches service = 1
+
+	block := recallContext(ctx, st.Skills(), st.Memory(), "deploy the docker service")
+	iB, iA, iC := strings.Index(block, "Bravo"), strings.Index(block, "Alpha"), strings.Index(block, "Charlie")
+	if iB < 0 || iA < 0 || iC < 0 {
+		t.Fatalf("recall block missing entries:\n%s", block)
+	}
+	if iB >= iA || iA >= iC {
+		t.Fatalf("recall not ranked (want Bravo<Alpha<Charlie): B=%d A=%d C=%d\n%s", iB, iA, iC, block)
+	}
+}
+
+// recordingDistiller captures the Outcome it was handed, so a test can assert what
+// the run fed it.
+type recordingDistiller struct{ got learn.Outcome }
+
+func (r *recordingDistiller) Distill(_ context.Context, o learn.Outcome) ([]learn.Lesson, error) {
+	r.got = o
+	return nil, nil
+}
+
+// TestRunFeedsTranscriptToDistiller proves the distiller learns from how the goal
+// was reached, not just the final summary: the captured outcome carries the
+// conversation transcript including the tool the agent called.
+func TestRunFeedsTranscriptToDistiller(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+
+	model := llmtest.NewScripted(
+		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"x.txt","content":"hi"}`)),
+		llmtest.SayText("wrote x.txt"),
+	)
+	rec := &recordingDistiller{}
+	if _, err := runLearningMission(ctx, &out, model, rec, dir, "write x.txt", memStore(t)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if rec.got.Objective != "write x.txt" || rec.got.Result != "wrote x.txt" || !rec.got.Converged {
+		t.Fatalf("outcome metadata = %+v", rec.got)
+	}
+	var sawTool, sawText bool
+	for _, m := range rec.got.Transcript {
+		if m.TextContent() == "wrote x.txt" {
+			sawText = true
+		}
+		for _, tu := range m.ToolUses() {
+			if tu.Name == "write" {
+				sawTool = true
+			}
+		}
+	}
+	if !sawTool || !sawText {
+		t.Fatalf("transcript missing the run's steps: sawTool=%v sawText=%v (%d msgs)", sawTool, sawText, len(rec.got.Transcript))
+	}
+}
+
 // TestRunVerifiesCapturedSkill proves the wired path execution-verifies a captured
 // skill in the sandbox: a skill whose check fails is dropped (never stored), while
 // one whose check passes is kept and tagged verified.
