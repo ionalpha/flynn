@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/state"
 )
 
 // Verdict is the outcome of verifying a skill's check. Ran reports whether the
@@ -23,7 +24,11 @@ type Verdict struct {
 // Curator crystallizes a verified skill, drops a proven-broken one, and keeps an
 // unproven one tagged unverified.
 type Verifier interface {
-	Verify(ctx context.Context, l Lesson) (Verdict, error)
+	// Verify runs l's check and reports the verdict. scope is the run the lesson
+	// belongs to: it carries through to governance and the audit trail when the
+	// check is dispatched as an action (see GovernedVerifier), so a verification is
+	// attributed to the same scope as the work that proposed it.
+	Verify(ctx context.Context, l Lesson, scope state.Scope) (Verdict, error)
 }
 
 // SandboxFactory creates the sandbox a single verification runs in. A fresh
@@ -50,7 +55,7 @@ var _ Verifier = (*SandboxVerifier)(nil)
 // (Ran=false), not broken. A sandbox that cannot start the check is unproven too,
 // not an error, so a verification-environment hiccup keeps the skill (tagged
 // unverified) rather than discarding it; only a cancelled context is a hard error.
-func (v *SandboxVerifier) Verify(ctx context.Context, l Lesson) (Verdict, error) {
+func (v *SandboxVerifier) Verify(ctx context.Context, l Lesson, _ state.Scope) (Verdict, error) {
 	check := strings.TrimSpace(l.Check)
 	if l.Kind != LessonSkill || check == "" {
 		return Verdict{Detail: "no check"}, nil

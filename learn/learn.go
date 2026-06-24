@@ -158,7 +158,7 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 		case LessonSkill:
 			tags := withProvenance(l.Tags)
 			if c.verifier != nil {
-				v, err := c.verifier.Verify(ctx, l)
+				v, err := c.verifier.Verify(ctx, l, o.Scope)
 				if err != nil {
 					return captured, err // verification infrastructure failed (e.g. cancelled)
 				}

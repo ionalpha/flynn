@@ -37,7 +37,7 @@ func Regrade(ctx context.Context, skills state.SkillStore, scope state.Scope, v 
 		if sk.Check == "" {
 			continue
 		}
-		verdict, err := v.Verify(ctx, Lesson{Kind: LessonSkill, Check: sk.Check})
+		verdict, err := v.Verify(ctx, Lesson{Kind: LessonSkill, Check: sk.Check}, scope)
 		if err != nil {
 			return res, err
 		}

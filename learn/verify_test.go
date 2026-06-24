@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/state"
 )
 
 // TestSandboxVerifier runs real checks through a local sandbox: a command that
@@ -27,7 +28,7 @@ func TestSandboxVerifier(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := v.Verify(context.Background(), tc.lesson)
+			got, err := v.Verify(context.Background(), tc.lesson, state.Scope{})
 			if err != nil {
 				t.Fatalf("verify: %v", err)
 			}
@@ -46,7 +47,7 @@ func TestSandboxVerifierCancelled(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := v.Verify(ctx, Lesson{Kind: LessonSkill, Check: "exit 0"}); err == nil {
+	if _, err := v.Verify(ctx, Lesson{Kind: LessonSkill, Check: "exit 0"}, state.Scope{}); err == nil {
 		t.Fatal("a cancelled context must surface as an error")
 	}
 }
@@ -58,7 +59,9 @@ type fakeVerifier struct {
 	err error
 }
 
-func (f fakeVerifier) Verify(context.Context, Lesson) (Verdict, error) { return f.v, f.err }
+func (f fakeVerifier) Verify(context.Context, Lesson, state.Scope) (Verdict, error) {
+	return f.v, f.err
+}
 
 // TestCuratorVerificationPolicy checks the three-way gate: a verified skill is kept
 // and tagged verified, a proven-broken one is dropped, and an unproven one is kept
