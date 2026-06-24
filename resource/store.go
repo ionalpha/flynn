@@ -16,6 +16,12 @@ const ResourceStream = "resources"
 const (
 	EvPut     = "resource.put"
 	EvDeleted = "resource.deleted"
+	// EvMerged records a resource applied by cross-instance Merge: its payload is
+	// the winning post-image verbatim (the remote envelope preserved, not
+	// restamped), so every replica that folds the stream converges identically. It
+	// projects exactly like EvPut, but is a distinct type so the log stays auditable
+	// about which records arrived by local write versus fleet sync.
+	EvMerged = "resource.merged"
 )
 
 // payloadKey is the event payload key under which the post-image resource lives.
@@ -49,6 +55,18 @@ type Store interface {
 	// Delete tombstones the resource addressed by (kind, scope, name), or returns
 	// ErrNotFound.
 	Delete(ctx context.Context, kind string, scope Scope, name string) error
+	// Merge applies a resource replicated from another instance, converging the two
+	// without losing a write. Distinct from Put (the local-write command): Merge
+	// trusts the remote envelope (ID, origin, HLC, versions, provenance) and never
+	// restamps it, so all replicas reach byte-identical state regardless of the
+	// order replicas arrive. See Resolve for the conflict rules; the result reports
+	// whether the remote was applied, ignored as stale, or already present.
+	//
+	// Identity is the global ID: a record is merged against the local record with
+	// the same ID. The same (Kind, Scope, Name) created independently on two
+	// instances has two different IDs and so stays two distinct records; resolving
+	// such a name collision is a higher-level concern, not part of the apply path.
+	Merge(ctx context.Context, remote Resource) (MergeResult, error)
 	// Close releases backend resources.
 	Close() error
 }
