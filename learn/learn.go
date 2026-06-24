@@ -10,6 +10,13 @@
 // is what keeps a self-curating skill set from degrading into noise: every stored
 // lesson is traceable to a run that met its goal.
 //
+// A skill can also carry an executable check. When a Verifier is supplied, the
+// Curator runs that check in a sandbox before crystallizing the skill: a skill
+// whose check runs and fails is proven broken and dropped, never stored; one that
+// passes is tagged verified; one with no runnable check is kept but tagged
+// unverified. A captured procedure is thus trusted in proportion to evidence that
+// it actually works, rather than on the model's say-so alone.
+//
 // The Distiller is a port. The model-backed implementation (ModelDistiller) asks a
 // language model to summarize the run; a test supplies a scripted one. The Curator
 // itself contains no model dependency, so its gating, provenance, and persistence
@@ -45,6 +52,10 @@ type Lesson struct {
 	Title string
 	Body  string
 	Tags  []string
+	// Check is an optional shell command that verifies a skill works: it is run in
+	// a sandbox and a zero exit code means the skill is sound. Empty means the skill
+	// has no executable check. Ignored for memory items, which are not executable.
+	Check string
 }
 
 // Outcome is the finished run a Curator learns from: what it set out to do, what it
@@ -67,33 +78,63 @@ type Distiller interface {
 	Distill(ctx context.Context, o Outcome) ([]Lesson, error)
 }
 
-// provenanceTag marks a skill as machine-learned from a run, so the curator
-// lifecycle (and a human) can tell captured skills from authored ones.
-const provenanceTag = "learned"
+// Tags stamped onto a captured skill to record its provenance and how much its
+// soundness was verified, so the curator lifecycle (and a human) can rank and decay
+// skills by evidence rather than treating every capture as equally trustworthy.
+const (
+	// provenanceTag marks a skill as machine-learned from a run, distinct from one
+	// a human authored.
+	provenanceTag = "learned"
+	// verifiedTag marks a skill whose check ran and passed in a sandbox.
+	verifiedTag = "verified"
+	// unverifiedTag marks a skill kept without passing a check (it had none, or the
+	// check could not be run).
+	unverifiedTag = "unverified"
+)
 
 // memoryKind is the memory item kind captured lessons are stored under.
 const memoryKind = "lesson"
 
 // Curator is the capture half of the learning loop: it distills a converged run
 // into lessons and persists them, stamped with provenance. It holds no model
-// dependency of its own; the Distiller supplies that.
+// dependency of its own; the Distiller supplies that. With a Verifier set, a
+// skill's executable check gates whether it is crystallized.
 type Curator struct {
 	distiller Distiller
 	skills    state.SkillStore
 	memories  state.MemoryStore
+	verifier  Verifier
+}
+
+// Option configures a Curator.
+type Option func(*Curator)
+
+// WithVerifier gates skill capture on an executable check: a skill whose check
+// runs and fails is dropped, one that passes is tagged verified, and one with no
+// runnable check is kept tagged unverified. Without a verifier, skills are kept as
+// captured (untagged by verification).
+func WithVerifier(v Verifier) Option {
+	return func(c *Curator) { c.verifier = v }
 }
 
 // NewCurator builds a Curator over a distiller and the skill and memory stores it
 // writes to.
-func NewCurator(d Distiller, skills state.SkillStore, memories state.MemoryStore) *Curator {
-	return &Curator{distiller: d, skills: skills, memories: memories}
+func NewCurator(d Distiller, skills state.SkillStore, memories state.MemoryStore, opts ...Option) *Curator {
+	c := &Curator{distiller: d, skills: skills, memories: memories}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
 }
 
 // Captured is what a Curate call persisted, returned for audit and for the caller
-// to surface ("learned 2 skills, 1 memory from this run").
+// to surface ("learned 2 skills, 1 memory from this run"). Dropped holds skill
+// lessons rejected because their check ran and failed, so a caller can report what
+// was discarded as broken rather than silently losing it.
 type Captured struct {
 	Skills   []state.Skill
 	Memories []state.MemoryItem
+	Dropped  []Lesson
 }
 
 // Curate distills o and persists the resulting lessons, returning what it stored.
@@ -115,11 +156,29 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 		}
 		switch l.Kind {
 		case LessonSkill:
+			tags := withProvenance(l.Tags)
+			if c.verifier != nil {
+				v, err := c.verifier.Verify(ctx, l)
+				if err != nil {
+					return captured, err // verification infrastructure failed (e.g. cancelled)
+				}
+				switch {
+				case v.Verified:
+					tags = append(tags, verifiedTag)
+				case v.Ran:
+					// The check ran and failed: the skill is proven broken, so it is
+					// dropped rather than crystallized.
+					captured.Dropped = append(captured.Dropped, l)
+					continue
+				default:
+					tags = append(tags, unverifiedTag) // no check, or it could not be run
+				}
+			}
 			sk, err := c.skills.Upsert(ctx, state.Skill{
 				Slug:  slugify(l.Title),
 				Name:  strings.TrimSpace(l.Title),
 				Body:  l.Body,
-				Tags:  withProvenance(l.Tags),
+				Tags:  tags,
 				Scope: o.Scope,
 			})
 			if err != nil {
