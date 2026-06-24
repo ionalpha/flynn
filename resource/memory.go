@@ -231,6 +231,9 @@ func (s *memStore) Delete(ctx context.Context, kind string, scope Scope, name st
 	if r.Deleted {
 		return ErrNotFound
 	}
+	if r.DeletionTimestamp != nil {
+		return nil // already terminating; deletion completes when finalizers clear
+	}
 	_, ev, err := c.st.Delete(r)
 	if err != nil {
 		return err

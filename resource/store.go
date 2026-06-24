@@ -52,8 +52,11 @@ type Store interface {
 	// whole kind read through it, the way Kubernetes lists a kind across all
 	// namespaces.
 	ListAll(ctx context.Context, kind string, sel Selector) ([]Resource, error)
-	// Delete tombstones the resource addressed by (kind, scope, name), or returns
-	// ErrNotFound.
+	// Delete requests deletion of the resource addressed by (kind, scope, name), or
+	// returns ErrNotFound. With no finalizers it tombstones immediately; with
+	// finalizers it marks the resource terminating (sets DeletionTimestamp, keeps it
+	// live) and the deletion completes via Put when the last finalizer is removed.
+	// Deleting an already-terminating resource is an idempotent no-op.
 	Delete(ctx context.Context, kind string, scope Scope, name string) error
 	// Merge applies a resource replicated from another instance, converging the two
 	// without losing a write. Distinct from Put (the local-write command): Merge
