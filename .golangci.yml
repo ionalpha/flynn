@@ -46,6 +46,56 @@ linters:
               desc: "use the seeded ids.Generator; direct rand breaks deterministic replay"
             - pkg: "crypto/rand"
               desc: "entropy belongs in package ids; direct crypto/rand breaks deterministic replay"
+        # Layer direction (see ARCHITECTURE.md). The dependency graph is acyclic
+        # and packages only import lower layers. This rule protects the core
+        # (foundation, primitives, core-data) from importing the engine above it:
+        # a primitive that reaches up into a domain package is the inversion that
+        # turns a clean graph into a ball of mud. Test files are exempt so an
+        # integration test in a low package may still exercise the engine.
+        layer-direction:
+          files:
+            - "**/clock/**"
+            - "**/fault/**"
+            - "**/llm/**"
+            - "**/observe/**"
+            - "**/spine/**"
+            - "**/hlc/**"
+            - "**/ids/**"
+            - "**/sandbox/**"
+            - "**/bus/**"
+            - "**/state/**"
+            - "**/resource/**"
+            - "**/provider/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "github.com/ionalpha/flynn/dispatch"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/capability"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/reconcile"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/jobs"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/memory"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/skill"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/spinesink"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/goal"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/learn"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/mission"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/runtime"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/tools"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/session"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
+            - pkg: "github.com/ionalpha/flynn/storage/sqlite"
+              desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
     # No ad-hoc stdout logging, and no wall-clock or randomness outside their
     # seams: time.Now and rand defeat deterministic replay (see clock and ids).
     forbidigo:
