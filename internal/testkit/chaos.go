@@ -9,9 +9,12 @@ package testkit
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/resource"
 )
 
 // FaultPlan decides, deterministically, when to inject a fault. Each wrapped
@@ -104,3 +107,29 @@ type sinkFunc func(context.Context, dispatch.Event) error
 func (f sinkFunc) Append(ctx context.Context, e dispatch.Event) error { return f(ctx, e) }
 
 var _ dispatch.EventSink = sinkFunc(nil)
+
+// FaultyExecutor wraps a goal.StepExecutor, injecting plan's faults before
+// delegating, so a flaky model or tool call (a step that fails a few times then
+// succeeds) is modelled deterministically. A nil inner executor performs no work
+// when not failing, so a plan alone is enough to drive a goal through its retry
+// and recovery path. The checkpoint of a faulting call is dropped: a failed step
+// makes no progress.
+func FaultyExecutor(inner goal.StepExecutor, plan *FaultPlan) goal.StepExecutor {
+	return execFunc(func(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
+		if err := plan.next(); err != nil {
+			return nil, err
+		}
+		if inner == nil {
+			return nil, nil
+		}
+		return inner.Execute(ctx, r)
+	})
+}
+
+type execFunc func(context.Context, resource.Resource) (json.RawMessage, error)
+
+func (f execFunc) Execute(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
+	return f(ctx, r)
+}
+
+var _ goal.StepExecutor = execFunc(nil)
