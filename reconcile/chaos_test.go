@@ -6,9 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"pgregory.net/rapid"
+
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
-	"pgregory.net/rapid"
 )
 
 // TestControllerChaosConverges is the resilience property: no matter how many
