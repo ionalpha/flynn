@@ -1,0 +1,23 @@
+#!/usr/bin/env sh
+# One-command auto-fix: apply every fix the formatters and fixable linters can make.
+# `dev/fmt` only formats (gofumpt + goimports); this also applies golangci-lint's
+# linter autofixes, so it clears the bulk of what `dev/lint` reports in one pass.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+golangci="$(command -v golangci-lint || true)"
+if [ -z "$golangci" ]; then
+  gobin="$(go env GOBIN)"; [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+  [ -x "$gobin/golangci-lint" ] && golangci="$gobin/golangci-lint"
+fi
+if [ -z "$golangci" ]; then
+  echo "golangci-lint not found; install it or run dev/fmt for formatting only." >&2
+  exit 1
+fi
+
+echo "==> golangci-lint fmt"
+"$golangci" fmt
+echo "==> golangci-lint run --fix"
+# --fix applies what it can; remaining findings still need a human, so a non-zero
+# exit here is expected and not a failure of the fix pass.
+"$golangci" run --fix || true
