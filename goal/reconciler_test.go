@@ -141,6 +141,30 @@ func hasCond(st Status, typ, status string) bool {
 
 // --- tests ------------------------------------------------------------------
 
+// TestGoalReconcileMakesProgressInOnePass locks the behaviour the async manager
+// depends on: a single reconcile of a fresh goal both adds the finalizer and
+// dispatches the first step, and asks to be re-run (RequeueAfter). Returning idle
+// after the finalizer write would leave the goal stuck until the next resync,
+// because a self-write does not re-trigger a reconcile.
+func TestGoalReconcileMakesProgressInOnePass(t *testing.T) {
+	h := newHarness(t, stopAfter{at: 5})
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
+
+	res := h.reconcile(t, ref)
+
+	r, _ := h.store.Get(h.ctx, ref.Kind, ref.Scope, ref.Name)
+	if !hasFinalizer(r.Finalizers, Finalizer) {
+		t.Fatal("first reconcile did not add the finalizer")
+	}
+	st := h.status(t, ref)
+	if st.InFlight == nil || st.Phase != PhaseRunning {
+		t.Fatalf("first reconcile did not dispatch a step in the same pass: %+v", st)
+	}
+	if res.RequeueAfter <= 0 {
+		t.Fatal("dispatch should request a follow-up reconcile via RequeueAfter")
+	}
+}
+
 func TestGoalConvergence(t *testing.T) {
 	h := newHarness(t, stopAfter{at: 3})
 	ref := h.createGoal(t, "ship", Spec{Objective: "ship it", StopCondition: "shipped"})
