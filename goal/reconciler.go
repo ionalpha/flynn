@@ -37,12 +37,12 @@ type Cleaner interface {
 	Cleanup(ctx context.Context, r resource.Resource) error
 }
 
-// GoalReconciler drives a Goal toward its stop condition. It never runs the work
+// Reconciler drives a Goal toward its stop condition. It never runs the work
 // itself: it dispatches a step to the durable job queue, records it in flight so a
 // re-reconcile observes rather than relaunches, and re-evaluates when the step
 // completes. That keeps each reconcile quick and idempotent, and because progress
 // is recorded in status, a crash resumes mid-goal instead of restarting.
-type GoalReconciler struct {
+type Reconciler struct {
 	store     resource.Store
 	jobs      jobs.Queue
 	clk       clock.Clock
@@ -52,15 +52,15 @@ type GoalReconciler struct {
 	stepTries int
 }
 
-// Option configures a GoalReconciler.
-type Option func(*GoalReconciler)
+// Option configures a Reconciler.
+type Option func(*Reconciler)
 
 // WithCleaner sets the teardown hook run before a goal's finalizer is removed.
-func WithCleaner(c Cleaner) Option { return func(g *GoalReconciler) { g.cleaner = c } }
+func WithCleaner(c Cleaner) Option { return func(g *Reconciler) { g.cleaner = c } }
 
 // WithPollInterval overrides the in-flight re-check interval.
 func WithPollInterval(d time.Duration) Option {
-	return func(g *GoalReconciler) {
+	return func(g *Reconciler) {
 		if d > 0 {
 			g.poll = d
 		}
@@ -70,27 +70,27 @@ func WithPollInterval(d time.Duration) Option {
 // WithStepMaxAttempts bounds how many times a single dispatched step is retried by
 // the job queue before it goes dead and stalls the goal (0 uses the queue default).
 func WithStepMaxAttempts(n int) Option {
-	return func(g *GoalReconciler) {
+	return func(g *Reconciler) {
 		if n > 0 {
 			g.stepTries = n
 		}
 	}
 }
 
-// NewReconciler builds a GoalReconciler over the given store, job queue, clock and
+// NewReconciler builds a Reconciler over the given store, job queue, clock and
 // stop evaluator.
-func NewReconciler(store resource.Store, q jobs.Queue, clk clock.Clock, stop StopEvaluator, opts ...Option) *GoalReconciler {
-	g := &GoalReconciler{store: store, jobs: q, clk: clk, stop: stop, poll: DefaultPollInterval}
+func NewReconciler(store resource.Store, q jobs.Queue, clk clock.Clock, stop StopEvaluator, opts ...Option) *Reconciler {
+	g := &Reconciler{store: store, jobs: q, clk: clk, stop: stop, poll: DefaultPollInterval}
 	for _, o := range opts {
 		o(g)
 	}
 	return g
 }
 
-var _ reconcile.Reconciler[reconcile.Ref] = (*GoalReconciler)(nil)
+var _ reconcile.Reconciler[reconcile.Ref] = (*Reconciler)(nil)
 
 // Reconcile drives one goal one level-triggered step toward its desired state.
-func (g *GoalReconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcile.Result, error) {
+func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcile.Result, error) {
 	r, err := g.store.Get(ctx, ref.Kind, ref.Scope, ref.Name)
 	if errors.Is(err, resource.ErrNotFound) {
 		return reconcile.Result{}, nil // already gone
@@ -196,7 +196,7 @@ func (g *GoalReconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reco
 // finalize runs cleanup once and then removes our finalizer, letting the store
 // complete the deletion. If cleanup fails the finalizer stays, so the goal remains
 // terminating and the delete is retried, never leaking the owned state.
-func (g *GoalReconciler) finalize(ctx context.Context, r resource.Resource) (reconcile.Result, error) {
+func (g *Reconciler) finalize(ctx context.Context, r resource.Resource) (reconcile.Result, error) {
 	if !hasFinalizer(r.Finalizers, Finalizer) {
 		return reconcile.Result{}, nil // ours already cleared; nothing to do
 	}
@@ -214,7 +214,7 @@ func (g *GoalReconciler) finalize(ctx context.Context, r resource.Resource) (rec
 
 // writeStatus records the observed spec hash and persists the status via the
 // store's optimistic-concurrency Put.
-func (g *GoalReconciler) writeStatus(ctx context.Context, r resource.Resource, status Status, specHash string) (reconcile.Result, error) {
+func (g *Reconciler) writeStatus(ctx context.Context, r resource.Resource, status Status, specHash string) (reconcile.Result, error) {
 	status.ObservedSpecHash = specHash
 	enc, err := status.Encode()
 	if err != nil {
