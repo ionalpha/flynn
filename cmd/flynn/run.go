@@ -85,9 +85,15 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 	}
 
 	// Capture: distill the converged run back into durable, provenance-stamped
-	// knowledge. Capture failures never fail the run; learning is best effort.
+	// knowledge. A captured skill's check is run in a sandbox at the working
+	// directory before it is crystallized, so a broken procedure is dropped rather
+	// than learned. Capture failures never fail the run; learning is best effort.
 	if distiller != nil {
-		captured, err := learn.NewCurator(distiller, skills, memories).Curate(ctx, learn.Outcome{
+		verifier := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
+			return sandbox.NewLocal(workdir)
+		})
+		curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(verifier))
+		captured, err := curator.Curate(ctx, learn.Outcome{
 			Objective: objective,
 			Result:    result,
 			Converged: true,
@@ -96,6 +102,9 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		if err == nil {
 			if n := len(captured.Skills) + len(captured.Memories); n > 0 {
 				_, _ = fmt.Fprintf(out, "  (learned %d skill(s), %d memory item(s))\n", len(captured.Skills), len(captured.Memories))
+			}
+			if d := len(captured.Dropped); d > 0 {
+				_, _ = fmt.Fprintf(out, "  (dropped %d unverified skill(s))\n", d)
 			}
 		}
 	}

@@ -168,6 +168,11 @@ func TestModelDistillerParsesReply(t *testing.T) {
 			[]Lesson{{Kind: LessonMemory, Body: "M"}},
 		},
 		{"unknown kind defaults to memory", `[{"kind":"weird","body":"M"}]`, []Lesson{{Kind: LessonMemory, Body: "M"}}},
+		{
+			"skill with check",
+			`[{"kind":"skill","title":"T","body":"B","check":"go test ./..."}]`,
+			[]Lesson{{Kind: LessonSkill, Title: "T", Body: "B", Check: "go test ./..."}},
+		},
 		{"empty array", `[]`, nil},
 		{"no array at all", `nothing structured here`, nil},
 	}
@@ -229,7 +234,7 @@ func equalLessons(a, b []Lesson) bool {
 	}
 	for i := range a {
 		if a[i].Kind != b[i].Kind || a[i].Title != b[i].Title || a[i].Body != b[i].Body ||
-			strings.Join(a[i].Tags, ",") != strings.Join(b[i].Tags, ",") {
+			a[i].Check != b[i].Check || strings.Join(a[i].Tags, ",") != strings.Join(b[i].Tags, ",") {
 			return false
 		}
 	}

@@ -142,3 +142,40 @@ func TestRunRemembersAcrossRuns(t *testing.T) {
 		t.Fatalf("run 2 did not recall run 1's memory into its prompt; system =\n%s", reqs[0].System)
 	}
 }
+
+// TestRunVerifiesCapturedSkill proves the wired path execution-verifies a captured
+// skill in the sandbox: a skill whose check fails is dropped (never stored), while
+// one whose check passes is kept and tagged verified.
+func TestRunVerifiesCapturedSkill(t *testing.T) {
+	dir := t.TempDir()
+	store := memStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+
+	model := llmtest.NewScripted(llmtest.SayText("did the work"))
+	distiller := &fakeDistiller{lessons: []learn.Lesson{
+		{Kind: learn.LessonSkill, Title: "Broken skill", Body: "does not work", Check: "exit 1"},
+		{Kind: learn.LessonSkill, Title: "Good skill", Body: "works", Check: "exit 0"},
+	}}
+	if _, err := runLearningMission(ctx, &out, model, distiller, dir, "do the work", store); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	if _, err := store.Skills().Get(ctx, "broken-skill"); err == nil {
+		t.Fatal("a skill whose check failed was crystallized; it should have been dropped")
+	}
+	good, err := store.Skills().Get(ctx, "good-skill")
+	if err != nil {
+		t.Fatalf("the verified skill was not stored: %v", err)
+	}
+	var verified bool
+	for _, tag := range good.Tags {
+		if tag == "verified" {
+			verified = true
+		}
+	}
+	if !verified {
+		t.Fatalf("the passing skill is not tagged verified: %v", good.Tags)
+	}
+}

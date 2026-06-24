@@ -14,8 +14,9 @@ import (
 // from a finished run. It asks for strict JSON so the output parses deterministically,
 // and for restraint so the skill set stays signal, not noise.
 const defaultDistillSystem = `You distill durable, reusable lessons from a finished agent run.
-Return ONLY a JSON array (no prose) of lessons, each: {"kind":"skill"|"memory","title":string,"body":string,"tags":[string]}.
+Return ONLY a JSON array (no prose) of lessons, each: {"kind":"skill"|"memory","title":string,"body":string,"tags":[string],"check":string}.
 Use "skill" for a reusable procedure worth applying again, "memory" for a fact or observation worth recalling.
+For a skill, "check" is an OPTIONAL shell command that verifies the skill works, exiting 0 on success (e.g. running a build or test). Provide one only when it is safe and self-contained; omit or leave it empty otherwise. Memory items have no check.
 Be selective: capture only what would genuinely help a future run, and return [] if nothing is worth keeping.`
 
 // ModelDistiller is a Distiller backed by a language model: it summarizes a run
@@ -103,6 +104,7 @@ type lessonJSON struct {
 	Title string   `json:"title"`
 	Body  string   `json:"body"`
 	Tags  []string `json:"tags"`
+	Check string   `json:"check"`
 }
 
 // parseLessons extracts the JSON array from text and maps it to lessons. Text with
@@ -123,6 +125,7 @@ func parseLessons(text string) ([]Lesson, error) {
 			Title: it.Title,
 			Body:  it.Body,
 			Tags:  it.Tags,
+			Check: it.Check,
 		})
 	}
 	return out, nil
