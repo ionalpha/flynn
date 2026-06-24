@@ -129,8 +129,6 @@ Most agents wait to be prompted. Flynn can take initiative.
 - **A wallet and budgets.** The governor enforces hard spend ceilings per goal and
   per mission, in tokens and in real money.
 - **Pays for what it uses.** Tools, compute, and data, with full per-run accounting.
-- **A skill marketplace.** Agents publish, discover, and acquire skills and
-  integrations, so capability spreads without code.
 
 ### Tools and standards
 
@@ -319,7 +317,7 @@ skills/           skill capture, curation, and reinforcement
 router/           cost-aware model routing
 integrations/     data-driven integration and plugin engine
 gateway/          messaging channels and computer use
-economy/          wallet, budgets, and the skill marketplace
+economy/          wallet, budgets, and per-run accounting
 replay/           deterministic record and replay
 mcp/              tool protocol server and client
 internal/         build and runtime internals
