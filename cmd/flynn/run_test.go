@@ -10,48 +10,64 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/state"
+	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
-// TestRunMissionWritesFileThroughSandbox is the full-binary proof: runMission
-// assembles the real runtime, sandbox, and toolset, and a scripted model drives a
-// goal that writes a file through the sandboxed write tool, then converges with a
-// summary. No network: the model is a fake.
-func TestRunMissionWritesFileThroughSandbox(t *testing.T) {
+// memStore opens an ephemeral in-memory durable store for a test. The same handle
+// persists across calls within the test, so two runs over it share state.
+func memStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	st, err := sqlite.Open(context.Background(), ":memory:")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	return st
+}
+
+// fakeDistiller returns fixed lessons, so capture is deterministic without a model.
+type fakeDistiller struct{ lessons []learn.Lesson }
+
+func (f *fakeDistiller) Distill(context.Context, learn.Outcome) ([]learn.Lesson, error) {
+	return f.lessons, nil
+}
+
+// TestRunWritesFileThroughSandbox is the full-binary proof: the run assembles the
+// real runtime, sandbox, and toolset over a durable store, and a scripted model
+// drives a goal that writes a file through the sandboxed write tool, then converges
+// with a summary. No network: the model is a fake; no capture: distiller is nil.
+func TestRunWritesFileThroughSandbox(t *testing.T) {
 	dir := t.TempDir()
 	model := llmtest.NewScripted(
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi from flynn"}`)),
 		llmtest.SayText("Created hello.txt with a greeting."),
 	)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var out bytes.Buffer
 
-	result, err := runMission(ctx, &out, model, dir, "create hello.txt with a greeting")
+	result, err := runLearningMission(ctx, &out, model, nil, dir, "create hello.txt with a greeting", memStore(t))
 	if err != nil {
-		t.Fatalf("runMission: %v", err)
+		t.Fatalf("run: %v", err)
 	}
-
-	// The file was actually written, through the sandboxed tool.
 	b, err := os.ReadFile(filepath.Join(dir, "hello.txt"))
 	if err != nil || string(b) != "hi from flynn" {
 		t.Fatalf("file not written through the sandbox: err=%v content=%q", err, b)
 	}
-	// The final result is the model's summary.
 	if !strings.Contains(result, "Created hello.txt") {
 		t.Fatalf("final result = %q", result)
 	}
-	// Progress showed the tool action.
 	if !strings.Contains(out.String(), "write") {
 		t.Fatalf("progress did not show the tool action:\n%s", out.String())
 	}
 }
 
-// TestRunMissionRejectsSandboxEscape confirms the wired path is confined: a tool
-// call that tries to write outside the working directory is denied, so the agent
-// cannot touch the host beyond its sandbox even end to end.
-func TestRunMissionRejectsSandboxEscape(t *testing.T) {
+// TestRunRejectsSandboxEscape confirms the wired path is confined: a tool call that
+// tries to write outside the working directory is denied end to end.
+func TestRunRejectsSandboxEscape(t *testing.T) {
 	dir := t.TempDir()
 	model := llmtest.NewScripted(
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"../escape.txt","content":"nope"}`)),
@@ -61,10 +77,68 @@ func TestRunMissionRejectsSandboxEscape(t *testing.T) {
 	defer cancel()
 	var out bytes.Buffer
 
-	if _, err := runMission(ctx, &out, model, dir, "try to escape"); err != nil {
-		t.Fatalf("runMission: %v", err)
+	if _, err := runLearningMission(ctx, &out, model, nil, dir, "try to escape", memStore(t)); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape.txt")); !os.IsNotExist(err) {
 		t.Fatal("a tool wrote outside the sandbox working directory")
+	}
+}
+
+// TestRecallContext checks the recall block: it surfaces stored skills and memory
+// that share a keyword with the objective, and is empty when nothing is on file.
+func TestRecallContext(t *testing.T) {
+	st := memStore(t)
+	ctx := context.Background()
+
+	if block := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service"); block != "" {
+		t.Fatalf("empty store should yield no recall block, got %q", block)
+	}
+
+	if _, err := st.Skills().Upsert(ctx, state.Skill{Slug: "deploy-flow", Name: "Deploy flow", Body: "run the deploy script then verify"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.Memory().Write(ctx, state.MemoryItem{Kind: "lesson", Content: "the deploy target is fly.io"}); err != nil {
+		t.Fatal(err)
+	}
+
+	block := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
+	if !strings.Contains(block, "Deploy flow") || !strings.Contains(block, "fly.io") {
+		t.Fatalf("recall block missing learned content:\n%s", block)
+	}
+}
+
+// TestRunRemembersAcrossRuns is the end-to-end proof of the learning loop: a first
+// run captures a memory into the durable store, and a second run over the same
+// store recalls it into the model's system prompt. The agent starts the second run
+// already knowing what the first one learned.
+func TestRunRemembersAcrossRuns(t *testing.T) {
+	dir := t.TempDir()
+	store := memStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+
+	// Run 1: converges, and the (fake) distiller crystallizes a memory.
+	run1 := llmtest.NewScripted(llmtest.SayText("set up the project"))
+	distiller := &fakeDistiller{lessons: []learn.Lesson{
+		{Kind: learn.LessonMemory, Body: "the project uses pnpm for installs"},
+	}}
+	if _, err := runLearningMission(ctx, &out, run1, distiller, dir, "set up the project", store); err != nil {
+		t.Fatalf("run 1: %v", err)
+	}
+
+	// Run 2: shares a keyword ("pnpm") with the stored memory, so recall injects it.
+	run2 := llmtest.NewScripted(llmtest.SayText("installed deps"))
+	if _, err := runLearningMission(ctx, &out, run2, nil, dir, "install deps with pnpm", store); err != nil {
+		t.Fatalf("run 2: %v", err)
+	}
+
+	reqs := run2.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("run 2 never called the model")
+	}
+	if !strings.Contains(reqs[0].System, "pnpm for installs") {
+		t.Fatalf("run 2 did not recall run 1's memory into its prompt; system =\n%s", reqs[0].System)
 	}
 }
