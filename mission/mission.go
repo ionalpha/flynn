@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
@@ -47,6 +48,8 @@ type Executor struct {
 	system       string
 	maxTokens    int
 	reporter     Reporter
+	grant        capability.Grant
+	hasGrant     bool
 	dispatchOpts []dispatch.Option
 	dispatcher   *dispatch.Dispatcher
 }
@@ -55,10 +58,20 @@ type Executor struct {
 type Option func(*Executor)
 
 // WithAdmitter sets the governance gate every tool call is admitted through
-// (capability, budget, approval). The default admits all, so standalone behaviour
-// is unchanged until a governor is supplied.
+// (capability, budget, approval). The default is the capability admitter, which is
+// permissive until a grant is bound (see WithGrant), so standalone behaviour is
+// unchanged until a policy is supplied; a later WithAdmitter overrides it.
 func WithAdmitter(a dispatch.Admitter) Option {
 	return func(e *Executor) { e.dispatchOpts = append(e.dispatchOpts, dispatch.WithAdmitter(a)) }
+}
+
+// WithGrant binds a capability grant to every step the executor runs, so each tool
+// call is admitted only if the grant permits its action. Without a grant the
+// default capability admitter is permissive, so the agent runs unconstrained; with
+// one the posture is default-deny. The grant is carried on the step's context, so
+// it also reaches the sandbox layer below the waist.
+func WithGrant(g capability.Grant) Option {
+	return func(e *Executor) { e.grant, e.hasGrant = g, true }
 }
 
 // WithEventSink records every tool call's lifecycle on the event spine (for audit
@@ -112,6 +125,10 @@ func WithMaxTokens(n int) Option {
 // are applied once at the chokepoint rather than scattered across the loop.
 func NewExecutor(model llm.Model, opts ...Option) *Executor {
 	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}}
+	// Seed the capability admitter as the base governance gate; it is permissive
+	// until a grant is bound, and a caller's WithAdmitter (applied later) overrides
+	// it. Seeding first means a bound grant is enforced with zero extra wiring.
+	e.dispatchOpts = append(e.dispatchOpts, dispatch.WithAdmitter(capability.Admitter{}))
 	for _, o := range opts {
 		o(e)
 	}
@@ -126,6 +143,11 @@ var _ goal.StepExecutor = (*Executor)(nil)
 // appends their results so the next step continues; a turn that ends naturally
 // marks the conversation done, which Convergence then observes.
 func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
+	// Bind the run's capability grant so the admitter at the waist enforces it and
+	// the sandbox layer below reads the same policy from the context.
+	if e.hasGrant {
+		ctx = capability.Into(ctx, e.grant)
+	}
 	spec, err := goal.DecodeSpec(r)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "mission_spec_decode", err)

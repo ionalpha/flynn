@@ -22,6 +22,9 @@ const (
 	NeedsApproval Class = "needs_approval"
 	// BudgetExceeded means the governor's token/cost ceiling was hit.
 	BudgetExceeded Class = "budget_exceeded"
+	// Forbidden means a governance gate denied the action outright: it is outside
+	// the run's capability grant and must not be retried or escalated.
+	Forbidden Class = "forbidden"
 	// Cancelled means the context was cancelled or its deadline passed.
 	Cancelled Class = "cancelled"
 )
