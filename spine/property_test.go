@@ -105,13 +105,13 @@ func TestSinkRecordsScopeAndErrorClass(t *testing.T) {
 	ctx := context.Background()
 	log := spine.NewMemoryLog()
 	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			return dispatch.Result{}, fault.New(fault.Transient, "boom", "x")
-		}),
 		dispatch.WithEventSink(spinesink.New(log, "run")),
 	)
-	if _, err := d.Dispatch(ctx, dispatch.Action{Name: "fetch", Scope: state.Scope{Project: "alpha"}}); err == nil {
-		t.Fatal("expected the handler error to propagate")
+	work := func(context.Context) (dispatch.Metering, error) {
+		return dispatch.Metering{}, fault.New(fault.Transient, "boom", "x")
+	}
+	if err := d.Govern(ctx, dispatch.Action{Name: "fetch", Scope: state.Scope{Project: "alpha"}}, work); err == nil {
+		t.Fatal("expected the work error to propagate")
 	}
 
 	events, err := log.Read(ctx, spine.Query{Stream: "run"})

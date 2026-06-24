@@ -182,6 +182,14 @@ func governedVerifier(dir string) learn.Verifier {
 	return learn.NewGovernedVerifier(inner, dispatch.WithAdmitter(capability.Admitter{}))
 }
 
+// governedDistiller wraps the model distiller so its model call runs through the
+// dispatch waist, like the agent's own model calls and the governed verifier. With
+// no grant bound the admitter is permissive, so a standalone run still distills,
+// just ungoverned.
+func governedDistiller(model llm.Model) learn.Distiller {
+	return learn.NewGovernedDistiller(learn.NewModelDistiller(model), dispatch.WithAdmitter(capability.Admitter{}))
+}
+
 // recallContext queries the durable skills and memory for what is relevant to the
 // objective and renders a compact, bounded block to prepend to the system prompt.
 // It returns "" when nothing is on file, so a fresh agent's prompt is unchanged.
@@ -395,10 +403,14 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 	sess := session.New(spine.NewMemoryLog(), bus.NewMemory())
 
 	toolset := tools.New(sb).Tools()
-	names := make([]string, len(toolset))
-	for i, t := range toolset {
-		names[i] = t.Def().Name
+	// The grant lists every action the run may take: the tools, plus the model call
+	// and the distillation, so each is admitted and the grant stays the complete
+	// record of what this run can do.
+	names := make([]string, 0, len(toolset)+2)
+	for _, t := range toolset {
+		names = append(names, t.Def().Name)
 	}
+	names = append(names, mission.ActionModelGenerate, learn.DistillAction)
 
 	exec := mission.NewExecutor(
 		model,
