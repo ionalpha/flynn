@@ -58,7 +58,7 @@ func workerHarness(t *testing.T, q jobs.Queue, stop StopEvaluator, exec StepExec
 	}
 	store := resource.NewMemory(reg, resource.WithClock(m))
 	gr := NewReconciler(store, q, m, stop)
-	w := NewWorker(store, q, exec, WithLease(lease))
+	w := NewWorker(store, q, m, exec, WithLease(lease))
 	h := &harness{ctx: context.Background(), store: store, jobs: nil, gr: gr, clk: m}
 	return h, w
 }
@@ -111,7 +111,7 @@ func TestWorkerCrashResumesFromCheckpoint(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		return s, NewReconciler(s, q, m, stopAfter{at: 99}), NewWorker(s, q, exec, WithLease(time.Minute)), reconcile.Ref{Kind: Kind, Name: r.Name}
+		return s, NewReconciler(s, q, m, stopAfter{at: 99}), NewWorker(s, q, m, exec, WithLease(time.Minute)), reconcile.Ref{Kind: Kind, Name: r.Name}
 	}()
 	ctx := context.Background()
 
@@ -164,6 +164,61 @@ func TestWorkerSkipsTerminatingGoal(t *testing.T) {
 	}
 	if exec.calls != 0 {
 		t.Fatalf("worker executed a step for a terminating goal: %d", exec.calls)
+	}
+}
+
+// failingExec always errors, modelling a step whose model or tool call keeps
+// failing.
+type failingExec struct{}
+
+func (failingExec) Execute(context.Context, resource.Resource) (json.RawMessage, error) {
+	return nil, errors.New("step boom")
+}
+
+// TestWorkerFailedStepBacksOff verifies a failing step is rescheduled with a
+// backoff delay (RunAt in the future) rather than staying immediately claimable,
+// so a persistently failing step does not hot-loop through its attempt budget and
+// hammer the model and tools it calls.
+func TestWorkerFailedStepBacksOff(t *testing.T) {
+	m := clock.NewManual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	q := jobs.NewMemory(jobs.WithClock(m))
+	reg := resource.NewRegistry()
+	if err := resource.RegisterCoreKinds(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	store := resource.NewMemory(reg, resource.WithClock(m))
+	gr := NewReconciler(store, q, m, stopAfter{at: 99})
+	w := NewWorker(store, q, m, failingExec{}, WithLease(time.Minute), WithBackoff(2*time.Second, time.Minute))
+	ctx := context.Background()
+
+	raw, _ := json.Marshal(Spec{Objective: "o", StopCondition: "c"})
+	r, err := store.Put(ctx, resource.Resource{APIVersion: GroupVersion, Kind: Kind, Name: "g", Spec: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := reconcile.Ref{Kind: Kind, Name: r.Name}
+
+	mustReconcile(t, gr, ctx, ref) // finalizer
+	mustReconcile(t, gr, ctx, ref) // dispatch the step
+
+	// The worker claims and runs the step, which fails and is rescheduled.
+	if processed, err := w.ProcessOnce(ctx); err != nil || !processed {
+		t.Fatalf("expected the step to be claimed and processed: processed=%v err=%v", processed, err)
+	}
+
+	// Immediately after, the step is not claimable: its RunAt sits one backoff
+	// interval in the future.
+	if claimed, _ := q.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(time.Minute)}); len(claimed) != 0 {
+		t.Fatalf("failed step was immediately re-claimable (no backoff): %d", len(claimed))
+	}
+
+	// Once the backoff elapses it becomes claimable again.
+	m.Advance(2 * time.Second)
+	if claimed, _ := q.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(time.Minute)}); len(claimed) != 1 {
+		t.Fatalf("step not claimable after backoff elapsed: %d", len(claimed))
 	}
 }
 

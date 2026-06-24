@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -24,6 +25,16 @@ const StepSubject = "goal.step.done"
 // the step to another worker. That re-lease is the crash-recovery path.
 const DefaultLease = 5 * time.Minute
 
+// DefaultRetryBase and DefaultRetryCeiling bound the exponential backoff a worker
+// applies when a step fails: the first retry waits DefaultRetryBase, each later
+// retry doubles, capped at DefaultRetryCeiling. Backing off matters because a step
+// calls the model and external tools; retrying a persistently failing step with no
+// delay would burn the attempt budget in microseconds and hammer those services.
+const (
+	DefaultRetryBase    = 2 * time.Second
+	DefaultRetryCeiling = 5 * time.Minute
+)
+
 // StepExecutor performs one step of work toward a goal: it is where the model is
 // called, tools are run, and sub-goals are planned. It is handed the goal resource
 // (whose status carries the last Checkpoint) and returns a new checkpoint to
@@ -40,11 +51,14 @@ type StepExecutor interface {
 // reconciler decides a step is needed and enqueues it; the worker performs it,
 // persists progress, and signals completion so the reconciler observes the result.
 type Worker struct {
-	store resource.Store
-	jobs  jobs.Queue
-	exec  StepExecutor
-	bus   bus.Bus // optional; nil disables completion signals
-	lease time.Duration
+	store     resource.Store
+	jobs      jobs.Queue
+	exec      StepExecutor
+	clk       clock.Clock
+	bus       bus.Bus // optional; nil disables completion signals
+	lease     time.Duration
+	retryBase time.Duration
+	retryCeil time.Duration
 }
 
 // WorkerOption configures a Worker.
@@ -62,9 +76,31 @@ func WithLease(d time.Duration) WorkerOption {
 	}
 }
 
-// NewWorker builds a goal-step worker over the store, queue and executor.
-func NewWorker(store resource.Store, q jobs.Queue, exec StepExecutor, opts ...WorkerOption) *Worker {
-	w := &Worker{store: store, jobs: q, exec: exec, lease: DefaultLease}
+// WithBackoff overrides the failed-step retry backoff (base delay and ceiling).
+func WithBackoff(base, ceiling time.Duration) WorkerOption {
+	return func(w *Worker) {
+		if base > 0 {
+			w.retryBase = base
+		}
+		if ceiling > 0 {
+			w.retryCeil = ceiling
+		}
+	}
+}
+
+// NewWorker builds a goal-step worker over the store, queue and executor. The
+// clock is used to schedule retry backoff and must be the same clock the queue
+// uses, so a failed step's RunAt is comparable to the queue's claim time.
+func NewWorker(store resource.Store, q jobs.Queue, clk clock.Clock, exec StepExecutor, opts ...WorkerOption) *Worker {
+	w := &Worker{
+		store:     store,
+		jobs:      q,
+		exec:      exec,
+		clk:       clk,
+		lease:     DefaultLease,
+		retryBase: DefaultRetryBase,
+		retryCeil: DefaultRetryCeiling,
+	}
 	for _, o := range opts {
 		o(w)
 	}
@@ -151,8 +187,13 @@ func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, che
 	_, _ = w.store.Put(ctx, r)
 }
 
+// fail records a failed attempt with an exponential backoff delay. The queue does
+// not back off on its own (it sets RunAt to whatever retryAt the caller computes),
+// so the worker owns the policy: wait longer after each successive failure, capped,
+// rather than re-claiming a failing step immediately and exhausting its attempts.
 func (w *Worker) fail(ctx context.Context, job jobs.Job, cause error) error {
-	retryAt := job.RunAt // queue applies its own backoff via Attempt; immediate is fine here
+	delay := jobs.Backoff(job.Attempt, int64(w.retryBase), int64(w.retryCeil))
+	retryAt := w.clk.Now().UnixNano() + delay
 	return w.jobs.Fail(ctx, job.ID, cause.Error(), retryAt)
 }
 
