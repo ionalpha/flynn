@@ -1,0 +1,32 @@
+{
+  "llm.Model": [
+    "Generate(context.Context, llm.Request) (llm.Response, error)"
+  ],
+  "state.MemoryStore": [
+    "Delete(context.Context, string) (error)",
+    "Recall(context.Context, state.RecallQuery) ([]state.MemoryItem, error)",
+    "Write(context.Context, state.MemoryItem) (state.MemoryItem, error)"
+  ],
+  "state.Provider": [
+    "Close() (error)",
+    "Memory() (state.MemoryStore)",
+    "Name() (string)",
+    "Sessions() (state.SessionStore)",
+    "Skills() (state.SkillStore)"
+  ],
+  "state.SessionStore": [
+    "AppendTurn(context.Context, state.Turn) (state.Turn, error)",
+    "Create(context.Context, state.Session) (state.Session, error)",
+    "Delete(context.Context, string) (error)",
+    "Get(context.Context, string) (state.Session, error)",
+    "List(context.Context) ([]state.Session, error)",
+    "Turns(context.Context, string) ([]state.Turn, error)"
+  ],
+  "state.SkillStore": [
+    "Delete(context.Context, string) (error)",
+    "Get(context.Context, string) (state.Skill, error)",
+    "List(context.Context, state.Scope) ([]state.Skill, error)",
+    "Search(context.Context, string, int) ([]state.Skill, error)",
+    "Upsert(context.Context, state.Skill) (state.Skill, error)"
+  ]
+}
