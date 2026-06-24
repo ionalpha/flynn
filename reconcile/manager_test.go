@@ -10,8 +10,10 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-const taskAPIVersion = "test.ionagent.io/v1"
-const taskKind = "Task"
+const (
+	taskAPIVersion = "test.ionagent.io/v1"
+	taskKind       = "Task"
+)
 
 func newStore(t *testing.T, clk clock.Clock) resource.Store {
 	t.Helper()

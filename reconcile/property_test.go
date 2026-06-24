@@ -3,8 +3,9 @@ package reconcile
 import (
 	"testing"
 
-	"github.com/ionalpha/flynn/clock"
 	"pgregory.net/rapid"
+
+	"github.com/ionalpha/flynn/clock"
 )
 
 // TestQueueSerializationProperty model-checks the load-bearing invariant under
