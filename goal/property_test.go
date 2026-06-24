@@ -34,7 +34,7 @@ func TestGoalReconcileConvergesProperty(t *testing.T) {
 
 			// Invariant: at most one step is ever in flight. Claiming doubles as the
 			// fake worker; complete whatever is claimed.
-			claimed, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Limit: 5, LeaseFor: int64(time.Minute)})
+			claimed, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 5, LeaseFor: int64(time.Minute)})
 			if len(claimed) > 1 {
 				rt.Fatalf("more than one step in flight: %d", len(claimed))
 			}
