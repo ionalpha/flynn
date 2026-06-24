@@ -91,7 +91,7 @@ func TestRecallContext(t *testing.T) {
 	st := memStore(t)
 	ctx := context.Background()
 
-	if block := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service"); block != "" {
+	if block, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service"); block != "" {
 		t.Fatalf("empty store should yield no recall block, got %q", block)
 	}
 
@@ -102,7 +102,7 @@ func TestRecallContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	block := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
+	block, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
 	if !strings.Contains(block, "Deploy flow") || !strings.Contains(block, "fly.io") {
 		t.Fatalf("recall block missing learned content:\n%s", block)
 	}
@@ -158,7 +158,7 @@ func TestRecallRanksByRelevanceAndVerification(t *testing.T) {
 	mk("bravo", "Bravo", "deploy the docker image", "verified") // 2 + verified boost = 3
 	mk("charlie", "Charlie", "notes about the service")         // matches service = 1
 
-	block := recallContext(ctx, st.Skills(), st.Memory(), "deploy the docker service")
+	block, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the docker service")
 	iB, iA, iC := strings.Index(block, "Bravo"), strings.Index(block, "Alpha"), strings.Index(block, "Charlie")
 	if iB < 0 || iA < 0 || iC < 0 {
 		t.Fatalf("recall block missing entries:\n%s", block)
@@ -211,6 +211,32 @@ func TestRunFeedsTranscriptToDistiller(t *testing.T) {
 	}
 	if !sawTool || !sawText {
 		t.Fatalf("transcript missing the run's steps: sawTool=%v sawText=%v (%d msgs)", sawTool, sawText, len(rec.got.Transcript))
+	}
+}
+
+// TestRunReinforcesRecalledSkill proves the outcome loop closes: a skill recalled
+// into a run that converges earns a use and a win.
+func TestRunReinforcesRecalledSkill(t *testing.T) {
+	dir := t.TempDir()
+	store := memStore(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+
+	if _, err := store.Skills().Upsert(ctx, state.Skill{Slug: "docker-deploy", Name: "Docker deploy", Body: "how to deploy with docker"}); err != nil {
+		t.Fatal(err)
+	}
+	model := llmtest.NewScripted(llmtest.SayText("done"))
+	if _, err := runLearningMission(ctx, &out, model, &fakeDistiller{}, dir, "deploy with docker", store); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	sk, err := store.Skills().Get(ctx, "docker-deploy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sk.Uses != 1 || sk.Wins != 1 {
+		t.Fatalf("recalled skill evidence = (%d,%d), want (1,1)", sk.Uses, sk.Wins)
 	}
 }
 

@@ -174,13 +174,19 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 					tags = append(tags, unverifiedTag) // no check, or it could not be run
 				}
 			}
-			sk, err := c.skills.Upsert(ctx, state.Skill{
+			skill := state.Skill{
 				Slug:  slugify(l.Title),
 				Name:  strings.TrimSpace(l.Title),
 				Body:  l.Body,
 				Tags:  tags,
 				Scope: o.Scope,
-			})
+			}
+			// Re-capturing a skill keeps the outcome evidence it has already earned,
+			// so reinforcement is not reset every time the same lesson is learned again.
+			if prev, err := c.skills.Get(ctx, skill.Slug); err == nil && prev.Scope == o.Scope {
+				skill.Uses, skill.Wins = prev.Uses, prev.Wins
+			}
+			sk, err := c.skills.Upsert(ctx, skill)
 			if err != nil {
 				return captured, err
 			}

@@ -432,7 +432,7 @@ func getSessionTx(ctx context.Context, tx *sql.Tx, id string) (state.Session, er
 type skills struct{ p *Store }
 
 // skillCols matches the skills table column order.
-const skillCols = `id, slug, name, body, tags, scope_instance, scope_project, scope_workspace,
+const skillCols = `id, slug, name, body, tags, uses, wins, scope_instance, scope_project, scope_workspace,
 	version, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
@@ -444,7 +444,7 @@ func scanSkill(sc interface{ Scan(...any) error }) (state.Skill, error) {
 		wall, counter    int64
 		deleted          int
 	)
-	if err := sc.Scan(&s.ID, &s.Slug, &s.Name, &s.Body, &tags,
+	if err := sc.Scan(&s.ID, &s.Slug, &s.Name, &s.Body, &tags, &s.Uses, &s.Wins,
 		&s.Scope.Instance, &s.Scope.Project, &s.Scope.Workspace,
 		&s.Version, &created, &updated,
 		&s.SyncVersion, &s.OriginInstanceID, &wall, &counter, &s.LastWriterID, &deleted); err != nil {
@@ -461,15 +461,16 @@ func scanSkill(sc interface{ Scan(...any) error }) (state.Skill, error) {
 
 func upsertSkillRow(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO skills (`+skillCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO skills (`+skillCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			slug=excluded.slug, name=excluded.name, body=excluded.body, tags=excluded.tags,
+			uses=excluded.uses, wins=excluded.wins,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
 			version=excluded.version, created_at=excluded.created_at, updated_at=excluded.updated_at,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
-		sk.ID, sk.Slug, sk.Name, sk.Body, marshalTags(sk.Tags),
+		sk.ID, sk.Slug, sk.Name, sk.Body, marshalTags(sk.Tags), sk.Uses, sk.Wins,
 		sk.Scope.Instance, sk.Scope.Project, sk.Scope.Workspace,
 		sk.Version, formatTime(sk.CreatedAt), formatTime(sk.UpdatedAt),
 		sk.SyncVersion, sk.OriginInstanceID, sk.UpdatedHLC.Wall, int64(sk.UpdatedHLC.Counter), sk.LastWriterID, boolToInt(sk.Deleted))
@@ -537,7 +538,7 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 			rows, err = s.p.db.QueryContext(ctx, sqlStr)
 		}
 	} else {
-		sqlStr := `SELECT s.id, s.slug, s.name, s.body, s.tags, s.scope_instance, s.scope_project, s.scope_workspace,
+		sqlStr := `SELECT s.id, s.slug, s.name, s.body, s.tags, s.uses, s.wins, s.scope_instance, s.scope_project, s.scope_workspace,
 			s.version, s.created_at, s.updated_at,
 			s.sync_version, s.origin_instance_id, s.updated_hlc_wall, s.updated_hlc_counter, s.last_writer_id, s.deleted
 			FROM skills s JOIN skills_fts f ON f.skill_id = s.id

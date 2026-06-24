@@ -38,7 +38,9 @@ var specSchema = json.RawMessage(`{
   "properties": {
     "name": {"type": "string"},
     "body": {"type": "string"},
-    "tags": {"type": "array", "items": {"type": "string"}}
+    "tags": {"type": "array", "items": {"type": "string"}},
+    "uses": {"type": "integer", "minimum": 0},
+    "wins": {"type": "integer", "minimum": 0}
   },
   "additionalProperties": false
 }`)
@@ -64,6 +66,8 @@ type spec struct {
 	Name string   `json:"name,omitempty"`
 	Body string   `json:"body,omitempty"`
 	Tags []string `json:"tags,omitempty"`
+	Uses int      `json:"uses,omitempty"`
+	Wins int      `json:"wins,omitempty"`
 }
 
 // Store is the typed skill facade over a resource.Store. It is the SkillStore the
@@ -175,7 +179,7 @@ func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource
 // the scope is the namespace; the sync version is carried through so the substrate
 // enforces the same opt-in optimistic concurrency the skill contract promises.
 func toResource(sk state.Skill) (resource.Resource, error) {
-	body, err := json.Marshal(spec{Name: sk.Name, Body: sk.Body, Tags: sk.Tags})
+	body, err := json.Marshal(spec{Name: sk.Name, Body: sk.Body, Tags: sk.Tags, Uses: sk.Uses, Wins: sk.Wins})
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("skill: encode spec: %w", err)
 	}
@@ -208,6 +212,8 @@ func toSkill(r resource.Resource) (state.Skill, error) {
 		Name:      sp.Name,
 		Body:      sp.Body,
 		Tags:      sp.Tags,
+		Uses:      sp.Uses,
+		Wins:      sp.Wins,
 		Scope:     state.Scope(r.Scope),
 		Version:   int(r.Version),
 		CreatedAt: r.CreatedAt,

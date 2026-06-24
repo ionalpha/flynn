@@ -74,13 +74,22 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 	}
 	skills, memories := store.Skills(), store.Memory()
 
-	// Recall first: fold what was learned before into the standing instructions.
+	// Recall first: fold what was learned before into the standing instructions, and
+	// remember which skills were surfaced so the run's outcome can reinforce them.
 	system := defaultSystemPrompt
-	if block := recallContext(ctx, skills, memories, objective); block != "" {
+	block, recalled := recallContext(ctx, skills, memories, objective)
+	if block != "" {
 		system += "\n\n" + block
 	}
 
 	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs())
+
+	// Reinforce the recalled skills by the run's outcome: a skill present in a run
+	// that converged earns a win; one in a run that failed earns only a use. This is
+	// gated with capture (a read-only --no-learn run records nothing).
+	if distiller != nil && len(recalled) > 0 {
+		_ = learn.Reinforce(ctx, skills, recalled, err == nil)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -109,6 +118,12 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 				_, _ = fmt.Fprintf(out, "  (dropped %d unverified skill(s))\n", d)
 			}
 		}
+
+		// Retire skills that enough runs have proven unhelpful, so the index stays
+		// high-signal rather than growing without bound.
+		if archived, derr := learn.Decay(ctx, skills, state.Scope{}, learn.DefaultDecay()); derr == nil && len(archived) > 0 {
+			_, _ = fmt.Fprintf(out, "  (retired %d unhelpful skill(s))\n", len(archived))
+		}
 	}
 	return result, nil
 }
@@ -123,15 +138,15 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 // above unverified ones. Only the top few survive, since a long, loosely-relevant
 // context hurts the model's use of it more than it helps. This is a lexical first
 // cut; vector recall is a later refinement.
-func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) string {
+func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string) {
 	terms := keywords(objective)
 	if len(terms) == 0 {
-		return ""
+		return "", nil
 	}
 	sk := rankSkills(terms, gatherSkills(ctx, skills, terms))
 	mem := rankMemory(terms, gatherMemory(ctx, memories, terms))
 	if len(sk) == 0 && len(mem) == 0 {
-		return ""
+		return "", nil
 	}
 
 	var b strings.Builder
@@ -140,6 +155,7 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 		b.WriteString("\nSkills:")
 		for _, s := range sk {
 			fmt.Fprintf(&b, "\n- %s: %s", s.Name, truncate(s.Body, 240))
+			recalled = append(recalled, s.Slug)
 		}
 	}
 	if len(mem) > 0 {
@@ -148,7 +164,7 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 			fmt.Fprintf(&b, "\n- %s", truncate(m.Content, 240))
 		}
 	}
-	return b.String()
+	return b.String(), recalled
 }
 
 // gatherSkills unions the per-keyword full-text hits into a deduped candidate set
@@ -191,16 +207,19 @@ func gatherMemory(ctx context.Context, memories state.MemoryStore, terms []strin
 }
 
 // rankSkills orders candidate skills by relevance (how many of the objective's
-// keywords each carries) with a boost for verified skills, then caps the result.
+// keywords each carries), boosted for verified skills and for those with a strong
+// confirmed track record, then caps the result. Relevance dominates; verification
+// and confidence break ties between similarly relevant skills.
 func rankSkills(terms []string, cands []state.Skill) []state.Skill {
 	type scored struct {
 		s     state.Skill
-		score int
+		score float64
 	}
 	ss := make([]scored, len(cands))
 	for i, s := range cands {
 		text := strings.ToLower(s.Name + " " + s.Body + " " + strings.Join(s.Tags, " "))
-		ss[i] = scored{s, matchScore(terms, text) + verifiedBoost(s.Tags)}
+		score := float64(matchScore(terms, text)+verifiedBoost(s.Tags)) + learn.Confidence(s.Uses, s.Wins)
+		ss[i] = scored{s, score}
 	}
 	sort.SliceStable(ss, func(i, j int) bool {
 		if ss[i].score != ss[j].score {
