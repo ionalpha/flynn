@@ -7,13 +7,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/tools"
 )
 
@@ -26,9 +27,10 @@ Work toward the objective directly: inspect what you need, make the changes, and
 When the objective is fully accomplished, stop and reply with a short summary of what you did.`
 
 // runMission assembles the runtime over model and the sandboxed default toolset,
-// submits objective as a goal, and drives it to completion. Progress is written to
-// out and the model's final summary is returned. The working directory is the
-// sandbox root, so every command and file operation is confined to it.
+// opens a streaming session, submits objective as a goal, and renders the live
+// event stream to out until the goal converges or stalls. The model's final
+// summary is returned. The working directory is the sandbox root, so every command
+// and file operation is confined to it.
 func runMission(ctx context.Context, out io.Writer, model llm.Model, workdir, objective string) (string, error) {
 	sb, err := sandbox.NewLocal(workdir)
 	if err != nil {
@@ -36,11 +38,15 @@ func runMission(ctx context.Context, out io.Writer, model llm.Model, workdir, ob
 	}
 	w := &syncWriter{w: out}
 
+	// The session records the conversation on an in-memory spine and fans it out
+	// over an in-memory bus; the mission reporter feeds it every turn.
+	sess := session.New(spine.NewMemoryLog(), bus.NewMemory())
+
 	exec := mission.NewExecutor(
 		model,
 		mission.WithTools(tools.New(sb).Tools()...),
 		mission.WithSystem(defaultSystemPrompt),
-		mission.WithEventSink(actionPrinter{w}),
+		mission.WithObserver(sess.Reporter()),
 	)
 	rt, err := runtime.New(runtime.Config{
 		Executor:     exec,
@@ -57,66 +63,45 @@ func runMission(ctx context.Context, out io.Writer, model llm.Model, workdir, ob
 	done := make(chan struct{})
 	go func() { _ = rt.Start(runCtx); close(done) }()
 
-	g, err := rt.SubmitGoal(runCtx, "", goal.Spec{
-		Objective:     objective,
-		StopCondition: "the objective is fully accomplished",
-	})
+	events, err := sess.Subscribe(runCtx, 0)
 	if err != nil {
 		return "", err
 	}
-	result, err := waitForResult(runCtx, w, rt, g.Key())
+	if _, err := sess.Submit(runCtx, rt, goal.Spec{
+		Objective:     objective,
+		StopCondition: "the objective is fully accomplished",
+	}); err != nil {
+		return "", err
+	}
+
+	result, runErr := renderStream(w, events)
 	cancel()
 	<-done
-	return result, err
+	return result, runErr
 }
 
-// waitForResult polls the goal until it reaches a terminal phase, printing each new
-// step, and returns the model's final summary on convergence or an error on stall.
-func waitForResult(ctx context.Context, out io.Writer, rt *runtime.Runtime, key resource.Key) (string, error) {
-	ticker := time.NewTicker(50 * time.Millisecond)
-	defer ticker.Stop()
-	last := -1
-	for {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-ticker.C:
-			r, err := rt.Store().Get(context.Background(), key.Kind, key.Scope, key.Name)
-			if err != nil {
-				continue
-			}
-			st, err := goal.DecodeStatus(r)
-			if err != nil {
-				continue
-			}
-			if st.Steps != last {
-				last = st.Steps
-				if st.Steps > 0 {
-					_, _ = fmt.Fprintf(out, "  ... step %d\n", st.Steps)
-				}
-			}
-			switch st.Phase {
-			case goal.PhaseConverged:
-				return st.Message, nil
-			case goal.PhaseStalled:
-				return "", fmt.Errorf("goal stalled: %s", st.Message)
-			}
+// renderStream prints the session's events as they arrive and returns once the
+// session reaches a terminal event: the model's summary on convergence, or an
+// error on stall. A closed channel before any terminal event means the run was
+// cancelled.
+func renderStream(out io.Writer, events <-chan session.Event) (string, error) {
+	for ev := range events {
+		switch ev.Kind {
+		case session.KindTurnStarted:
+			_, _ = fmt.Fprintf(out, "  ... turn %d\n", ev.Turn)
+		case session.KindToolCall:
+			_, _ = fmt.Fprintf(out, "  -> %s\n", ev.Tool)
+		case session.KindConverged:
+			return ev.Text, nil
+		case session.KindStalled:
+			return "", fmt.Errorf("goal stalled: %s", ev.Err)
 		}
 	}
+	return "", context.Canceled
 }
 
-// actionPrinter writes a line per tool action as it starts, so a run shows its work.
-type actionPrinter struct{ out io.Writer }
-
-func (p actionPrinter) Append(_ context.Context, e dispatch.Event) error {
-	if e.Type == dispatch.EventStart {
-		_, _ = fmt.Fprintf(p.out, "  -> %s\n", e.Action)
-	}
-	return nil
-}
-
-// syncWriter serializes writes, so the worker goroutine's tool lines and the main
-// goroutine's step lines never interleave or race on the underlying writer.
+// syncWriter serializes writes, so the stream-rendering goroutine and any other
+// writer never interleave or race on the underlying writer.
 type syncWriter struct {
 	mu sync.Mutex
 	w  io.Writer
