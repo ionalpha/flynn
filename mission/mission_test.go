@@ -9,6 +9,8 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -227,6 +229,79 @@ func TestExecutorNoopWhenDone(t *testing.T) {
 	}
 	if model.Calls() != 1 {
 		t.Fatalf("model called %d times, want 1 (no call once done)", model.Calls())
+	}
+}
+
+// denyTool is an Admitter that rejects a named tool, standing in for a capability
+// or budget gate.
+type denyTool struct{ name string }
+
+func (d denyTool) Admit(_ context.Context, a dispatch.Action) error {
+	if a.Name == d.name {
+		return fault.New(fault.Terminal, "capability_denied", "capability not granted: "+a.Name)
+	}
+	return nil
+}
+
+// TestExecutorAdmitterGovernsToolCalls proves tool calls flow through the
+// governance gate: a rejected call never runs and comes back to the model as an
+// error result it can adapt to.
+func TestExecutorAdmitterGovernsToolCalls(t *testing.T) {
+	calls := 0
+	tool := Func(echoDef, func(_ context.Context, input json.RawMessage) (string, error) {
+		calls++
+		return string(input), nil
+	})
+	model := llmtest.NewScripted(
+		llmtest.CallTool("t1", "echo", json.RawMessage(`{"x":1}`)),
+		llmtest.SayText("ok"),
+	)
+	exec := NewExecutor(model, WithTools(tool), WithAdmitter(denyTool{"echo"}))
+	driveToDone(t, exec, 5)
+
+	if calls != 0 {
+		t.Fatalf("denied tool ran %d times; admission must prevent the side effect", calls)
+	}
+	last := model.Requests()[1].Messages
+	found := false
+	for _, m := range last {
+		for _, b := range m.Blocks {
+			if b.Kind == llm.KindToolResult && b.ToolResult.IsError && strings.Contains(b.ToolResult.Content, "capability not granted") {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("admitter rejection was not surfaced to the model as an error result")
+	}
+}
+
+// TestExecutorRecordsToolDispatchEvents proves every tool call is recorded on the
+// event spine through the waist, which is what makes the run auditable and
+// replayable.
+func TestExecutorRecordsToolDispatchEvents(t *testing.T) {
+	sink := &dispatch.MemorySink{}
+	model := llmtest.NewScripted(
+		llmtest.CallTool("t1", "echo", json.RawMessage(`{}`)),
+		llmtest.SayText("done"),
+	)
+	exec := NewExecutor(model, WithTools(echoTool()), WithEventSink(sink))
+	driveToDone(t, exec, 5)
+
+	var start, end bool
+	for _, e := range sink.Events() {
+		if e.Action != "echo" {
+			continue
+		}
+		switch e.Type {
+		case dispatch.EventStart:
+			start = true
+		case dispatch.EventEnd:
+			end = true
+		}
+	}
+	if !start || !end {
+		t.Fatalf("tool dispatch not bracketed on the event spine: %+v", sink.Events())
 	}
 }
 
