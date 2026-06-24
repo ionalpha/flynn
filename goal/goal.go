@@ -30,6 +30,8 @@ const (
 // conditions (a convenience projection, not the source of truth).
 type Phase string
 
+// The phases a goal moves through, from accepted to a terminal converged or
+// stalled state.
 const (
 	PhasePending   Phase = "Pending"   // accepted, no step run yet
 	PhaseRunning   Phase = "Running"   // a step is in flight or more are queued

@@ -101,7 +101,7 @@ func TestWorkerCrashResumesFromCheckpoint(t *testing.T) {
 	m := clock.NewManual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	q := &failCompleteOnce{MemoryQueue: jobs.NewMemory(jobs.WithClock(m))}
 	exec := &fakeExec{emit: "ckpt-1"}
-	store, gr, w, ref := func() (resource.Store, *GoalReconciler, *Worker, reconcile.Ref) {
+	store, gr, w, ref := func() (resource.Store, *Reconciler, *Worker, reconcile.Ref) {
 		reg := resource.NewRegistry()
 		_ = resource.RegisterCoreKinds(reg)
 		_ = RegisterKind(reg)
@@ -115,8 +115,8 @@ func TestWorkerCrashResumesFromCheckpoint(t *testing.T) {
 	}()
 	ctx := context.Background()
 
-	mustReconcile(t, gr, ctx, ref) // add finalizer
-	mustReconcile(t, gr, ctx, ref) // dispatch step
+	mustReconcile(ctx, t, gr, ref) // add finalizer
+	mustReconcile(ctx, t, gr, ref) // dispatch step
 
 	// First run: executes, persists ckpt-1, then "crashes" on Complete.
 	if _, err := w.ProcessOnce(ctx); err == nil {
@@ -201,8 +201,8 @@ func TestWorkerFailedStepBacksOff(t *testing.T) {
 	}
 	ref := reconcile.Ref{Kind: Kind, Name: r.Name}
 
-	mustReconcile(t, gr, ctx, ref) // finalizer
-	mustReconcile(t, gr, ctx, ref) // dispatch the step
+	mustReconcile(ctx, t, gr, ref) // finalizer
+	mustReconcile(ctx, t, gr, ref) // dispatch the step
 
 	// The worker claims and runs the step, which fails and is rescheduled.
 	if processed, err := w.ProcessOnce(ctx); err != nil || !processed {
@@ -222,7 +222,7 @@ func TestWorkerFailedStepBacksOff(t *testing.T) {
 	}
 }
 
-func mustReconcile(t *testing.T, gr *GoalReconciler, ctx context.Context, ref reconcile.Ref) {
+func mustReconcile(ctx context.Context, t *testing.T, gr *Reconciler, ref reconcile.Ref) {
 	t.Helper()
 	if _, err := gr.Reconcile(ctx, ref); err != nil {
 		t.Fatalf("reconcile: %v", err)
@@ -231,5 +231,5 @@ func mustReconcile(t *testing.T, gr *GoalReconciler, ctx context.Context, ref re
 
 func (h *harness) mustReconcile(t *testing.T, ref reconcile.Ref) {
 	t.Helper()
-	mustReconcile(t, h.gr, h.ctx, ref)
+	mustReconcile(h.ctx, t, h.gr, ref)
 }
