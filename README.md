@@ -1,6 +1,6 @@
 <h1 align="center">Flynn</h1>
 
-<p align="center"><strong>An open-source agent operating system in a single Go binary. Bring your own model, orchestrate many agents toward a goal, give it autonomy you can actually trust, and watch it get better the more you use it.</strong></p>
+<p align="center"><strong>A self-healing, self-improving agent operating system in a single Go binary. Bring your own model, orchestrate many agents toward one goal, govern every action so autonomy is safe to grant, keep token cost low, and watch it compound the more you use it.</strong></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
