@@ -42,16 +42,23 @@ const (
 	KindToolUse BlockKind = "tool_use"
 	// KindToolResult is the outcome of a tool call, fed back to the model.
 	KindToolResult BlockKind = "tool_result"
+	// KindOpaque is provider-specific content the agent does not interpret but must
+	// preserve and replay verbatim, such as a model's reasoning blocks that the
+	// provider requires echoed back unchanged on the next turn. An adapter emits it
+	// when decoding a response and splices its Raw bytes back when encoding a
+	// request; the conversation loop carries it through untouched.
+	KindOpaque BlockKind = "opaque"
 )
 
 // Block is one piece of a message. Exactly one of Text, ToolUse, or ToolResult is
 // meaningful, selected by Kind, so a message is an ordered mix of prose and tool
 // interaction rather than a single string.
 type Block struct {
-	Kind       BlockKind   `json:"kind"`
-	Text       string      `json:"text,omitempty"`
-	ToolUse    *ToolUse    `json:"toolUse,omitempty"`
-	ToolResult *ToolResult `json:"toolResult,omitempty"`
+	Kind       BlockKind       `json:"kind"`
+	Text       string          `json:"text,omitempty"`
+	ToolUse    *ToolUse        `json:"toolUse,omitempty"`
+	ToolResult *ToolResult     `json:"toolResult,omitempty"`
+	Raw        json.RawMessage `json:"raw,omitempty"` // provider-verbatim payload for KindOpaque
 }
 
 // ToolUse is a model's request to invoke a tool. ID correlates this call with the
