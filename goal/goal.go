@@ -81,6 +81,10 @@ type Status struct {
 	InFlight         *InFlight   `json:"inFlight,omitempty"`
 	Conditions       []Condition `json:"conditions,omitempty"`
 	Message          string      `json:"message,omitempty"`
+	// Checkpoint is opaque progress a worker persists mid-step so a step that
+	// crashes resumes from here instead of restarting. It is owned by the step
+	// executor; the reconciler never interprets it.
+	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
 }
 
 // Condition is one standard status condition.
