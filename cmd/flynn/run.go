@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
@@ -42,11 +43,20 @@ func runMission(ctx context.Context, out io.Writer, model llm.Model, workdir, ob
 	// over an in-memory bus; the mission reporter feeds it every turn.
 	sess := session.New(spine.NewMemoryLog(), bus.NewMemory())
 
+	// Grant exactly the tools we install, so the run is least-privilege by
+	// construction: the agent may call these actions and nothing else.
+	toolset := tools.New(sb).Tools()
+	names := make([]string, len(toolset))
+	for i, t := range toolset {
+		names[i] = t.Def().Name
+	}
+
 	exec := mission.NewExecutor(
 		model,
-		mission.WithTools(tools.New(sb).Tools()...),
+		mission.WithTools(toolset...),
 		mission.WithSystem(defaultSystemPrompt),
 		mission.WithObserver(sess.Reporter()),
+		mission.WithGrant(capability.NewGrant(names...)),
 	)
 	rt, err := runtime.New(runtime.Config{
 		Executor:     exec,
