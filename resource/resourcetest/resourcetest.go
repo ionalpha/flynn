@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/resource"
@@ -70,6 +71,7 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore) })
 	t.Run("Finalizers", func(t *testing.T) { testFinalizers(t, newStore) })
 	t.Run("ContentHash", func(t *testing.T) { testContentHash(t, newStore) })
+	t.Run("Bitemporal", func(t *testing.T) { testBitemporal(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
 	t.Run("EventSourced", func(t *testing.T) { testEventSourced(t, newStore) })
 	t.Run("Merge", func(t *testing.T) { testMerge(t, newStore) })
@@ -624,6 +626,68 @@ func testContentHash(t *testing.T, newStore func(*resource.Registry) resource.St
 	c := mustPut(t, s, widget("a", "l", map[string]string{"k": "v"}))
 	if c.ContentHash == a.ContentHash {
 		t.Fatal("different content produced the same hash")
+	}
+}
+
+// widgetValid is a widget carrying an explicit valid-time window.
+func widgetValid(name, size string, from, to *time.Time) resource.Resource {
+	r := widget(name, size, nil)
+	r.ValidFrom = from
+	r.ValidTo = to
+	return r
+}
+
+// testBitemporal proves the valid-time axis is wired end to end through a backend:
+// the envelope fields round-trip (including the SQLite string encoding), the nil
+// default means valid from creation onward, ValidAt honours the half-open window,
+// and valid-time participates in the content hash.
+func testBitemporal(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+
+	from := time.Date(2026, 2, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	// No valid-time set: round-trips as nil/nil and is valid from creation onward.
+	def := mustPut(t, s, widget("plain", "m", nil))
+	if def.ValidFrom != nil || def.ValidTo != nil {
+		t.Fatalf("default valid-time should be nil/nil, got %v/%v", def.ValidFrom, def.ValidTo)
+	}
+	gotDef, err := s.Get(ctx, widgetKind, resource.Scope{}, "plain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDef.ValidFrom != nil || gotDef.ValidTo != nil {
+		t.Fatalf("default valid-time did not round-trip as nil: %v/%v", gotDef.ValidFrom, gotDef.ValidTo)
+	}
+	if !gotDef.ValidAt(gotDef.CreatedAt) || gotDef.ValidAt(gotDef.CreatedAt.Add(-time.Hour)) {
+		t.Fatal("nil valid-time should be valid from creation onward, not before")
+	}
+
+	// Explicit valid-time round-trips exactly, and ValidAt honours the window.
+	mustPut(t, s, widgetValid("dated", "m", &from, &to))
+	got, err := s.Get(ctx, widgetKind, resource.Scope{}, "dated")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ValidFrom == nil || !got.ValidFrom.Equal(from) || got.ValidTo == nil || !got.ValidTo.Equal(to) {
+		t.Fatalf("valid-time did not round-trip: got %v/%v want %v/%v", got.ValidFrom, got.ValidTo, from, to)
+	}
+	if got.ValidAt(from.Add(-time.Hour)) || !got.ValidAt(from) || !got.ValidAt(from.Add(24*time.Hour)) || got.ValidAt(to) {
+		t.Fatal("ValidAt did not honour the round-tripped [from, to) window")
+	}
+
+	// Valid-time is part of the content hash: changing only the window changes the
+	// hash, and re-putting the same window is idempotent.
+	h0 := mustPut(t, s, widget("h", "m", nil))
+	h1 := mustPut(t, s, widgetValid("h", "m", &from, &to))
+	if h1.ContentHash == h0.ContentHash {
+		t.Fatal("adding valid-time did not change the content hash")
+	}
+	h2 := mustPut(t, s, widgetValid("h", "m", &from, &to))
+	if h2.ContentHash != h1.ContentHash {
+		t.Fatal("identical valid-time produced a different content hash")
 	}
 }
 
