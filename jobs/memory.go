@@ -81,8 +81,12 @@ func (q *MemoryQueue) Enqueue(_ context.Context, p EnqueueParams) (Job, error) {
 	now := q.clk.Now().UnixNano()
 	j := BuildJob(p, now, q.gen.New(), q.instanceID)
 
+	// The map keeps its own copy: a later Claim mutates the stored job in place
+	// through this pointer, so the returned value must not alias it, or copying it
+	// out here would race with that mutation.
+	stored := j
 	q.mu.Lock()
-	q.jobs[j.ID] = &j
+	q.jobs[stored.ID] = &stored
 	q.mu.Unlock()
 	return j, nil
 }
