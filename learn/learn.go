@@ -179,6 +179,7 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 				Name:  strings.TrimSpace(l.Title),
 				Body:  l.Body,
 				Tags:  tags,
+				Check: l.Check,
 				Scope: o.Scope,
 			}
 			// Re-capturing a skill keeps the outcome evidence it has already earned,

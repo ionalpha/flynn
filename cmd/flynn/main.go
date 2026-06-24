@@ -50,6 +50,14 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "regrade" {
+		if err := regradeSkills(*dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// No subcommand: the interactive session is not wired in yet.
 	a := agent.New(agent.Config{Model: *model, Out: os.Stdout})
 	if err := a.Run(context.Background()); err != nil {
@@ -84,13 +92,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	if dataDir != "" && dataDir != ":memory:" {
-		if err := os.MkdirAll(dataDir, 0o750); err != nil {
-			return err
-		}
-		dataDir = filepath.Join(dataDir, "flynn.db")
-	}
-	store, err := openStore(ctx, dataDir)
+	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
 		return err
 	}
