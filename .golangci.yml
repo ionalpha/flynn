@@ -12,7 +12,9 @@ linters:
     - errcheck
     - errname
     - errorlint
+    - exhaustive
     - forbidigo
+    - gocyclo
     - gosec
     - govet
     - ineffassign
@@ -28,6 +30,15 @@ linters:
     - unused
     - wastedassign
   settings:
+    exhaustive:
+      # A switch with a default case is exhaustive: the default deliberately covers
+      # the remaining enum values, so code is not forced to enumerate every constant.
+      # Switches without a default are still checked, catching real missing cases.
+      default-signifies-exhaustive: true
+    gocyclo:
+      # The two functions at the current ceiling (a JSON-schema validator and a test
+      # helper) are branchy but clear; this guards against new sprawl past them.
+      min-complexity: 45
     # Enforce the observability ports: nothing logs through log/slog directly.
     # slog lives only inside package observe (its adapter and tests). Every other
     # package depends on the observe.Logger port, so the backend stays swappable.
@@ -126,6 +137,11 @@ linters:
       # threat surface.
       - linters:
           - gosec
+        path: _test\.go
+      # A test switch deliberately handles only the cases that test exercises;
+      # enum exhaustiveness is a production-code concern.
+      - linters:
+          - exhaustive
         path: _test\.go
 
 formatters:
