@@ -24,8 +24,43 @@ func RunSuite(t *testing.T, newLog func() spine.Log) {
 	t.Run("ReadAfterAndLimit", func(t *testing.T) { testReadPaging(t, newLog()) })
 	t.Run("Time", func(t *testing.T) { testTime(t, newLog()) })
 	t.Run("PayloadImmutableAndPreserved", func(t *testing.T) { testPayload(t, newLog()) })
+	t.Run("SchemaVersion", func(t *testing.T) { testSchemaVersion(t, newLog()) })
 	t.Run("EmptyStream", func(t *testing.T) { testEmpty(t, newLog()) })
 	t.Run("Concurrency", func(t *testing.T) { testConcurrency(t, newLog()) })
+}
+
+// testSchemaVersion checks that an unset SchemaVersion defaults to
+// spine.DefaultSchemaVersion and an explicit one round-trips through both Append
+// and Read, so every stored event carries an explicit version.
+func testSchemaVersion(t *testing.T, log spine.Log) {
+	ctx := context.Background()
+
+	def, err := log.Append(ctx, spine.AppendInput{Stream: "s", Type: "e", Actor: spine.ActorAgent})
+	if err != nil {
+		t.Fatalf("append default: %v", err)
+	}
+	if def.SchemaVersion != spine.DefaultSchemaVersion {
+		t.Fatalf("unset SchemaVersion = %d, want default %d", def.SchemaVersion, spine.DefaultSchemaVersion)
+	}
+
+	set, err := log.Append(ctx, spine.AppendInput{Stream: "s", Type: "e", Actor: spine.ActorAgent, SchemaVersion: 2})
+	if err != nil {
+		t.Fatalf("append explicit: %v", err)
+	}
+	if set.SchemaVersion != 2 {
+		t.Fatalf("explicit SchemaVersion not returned: got %d, want 2", set.SchemaVersion)
+	}
+
+	got, err := log.Read(ctx, spine.Query{Stream: "s"})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("read len = %d, want 2", len(got))
+	}
+	if got[0].SchemaVersion != spine.DefaultSchemaVersion || got[1].SchemaVersion != 2 {
+		t.Fatalf("read SchemaVersions = [%d, %d], want [%d, 2]", got[0].SchemaVersion, got[1].SchemaVersion, spine.DefaultSchemaVersion)
+	}
 }
 
 func testMonotonic(t *testing.T, log spine.Log) {

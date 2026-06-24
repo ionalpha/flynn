@@ -27,6 +27,12 @@ const (
 	ActorSystem ActorType = "system"
 )
 
+// DefaultSchemaVersion is the version stamped on an event whose SchemaVersion is
+// left unset (0) at append time. It is the baseline shape every event type starts
+// at, so existing logs and callers that do not yet care about versioning all read
+// as version 1.
+const DefaultSchemaVersion = 1
+
 // Event is one immutable, ordered record on a stream. Seq is monotonic within a
 // stream; events are never mutated or deleted.
 type Event struct {
@@ -36,6 +42,14 @@ type Event struct {
 	Type    string
 	Actor   ActorType
 	Payload map[string]any
+
+	// SchemaVersion is the version of this event's payload shape for its Type.
+	// Because Payload is a map, adding a key is backward compatible, but renaming,
+	// removing, or retyping one is not. The version lets newer code recognise an
+	// older payload and migrate it (see UpcastRegistry) instead of misreading it.
+	// The log stamps an unset (0) version to DefaultSchemaVersion on append, so
+	// every stored event carries an explicit version.
+	SchemaVersion int
 
 	// Trace linkage cross-references the OpenTelemetry span layer so ops traces
 	// and the semantic spine line up. May be empty until the tracing adapter
@@ -50,13 +64,15 @@ type Event struct {
 	OriginInstanceID string
 }
 
-// AppendInput appends one event to a stream. The Log assigns Seq, and assigns
-// Time from its clock when Time is zero.
+// AppendInput appends one event to a stream. The Log assigns Seq, assigns Time
+// from its clock when Time is zero, and stamps SchemaVersion to
+// DefaultSchemaVersion when it is left unset (0).
 type AppendInput struct {
 	Stream           string
 	Type             string
 	Actor            ActorType
 	Payload          map[string]any
+	SchemaVersion    int
 	Time             time.Time
 	TraceID          string
 	SpanID           string
