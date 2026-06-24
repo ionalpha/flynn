@@ -118,6 +118,40 @@ func (s *memStore) Put(ctx context.Context, r Resource) (Resource, error) {
 	return rec, nil
 }
 
+func (s *memStore) Merge(ctx context.Context, remote Resource) (MergeResult, error) {
+	if err := ValidateForMerge(remote); err != nil {
+		return MergeResult{}, err
+	}
+	// Admit the replicated record so a merge can never project a resource of an
+	// unregistered kind or an invalid spec; kind definitions (themselves resources)
+	// replicate before instances of that kind.
+	if err := s.reg.Validate(remote.APIVersion, remote.Kind, remote.Spec); err != nil {
+		return MergeResult{}, err
+	}
+	c := s.core
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, ok := c.byID[remote.ID]
+	if !ok {
+		if err := c.recordMerge(ctx, remote); err != nil {
+			return MergeResult{}, err
+		}
+		return MergeResult{Outcome: MergeApplied, Resource: remote}, nil
+	}
+	winner, take := Resolve(remote, current)
+	if !take {
+		out := MergeUnchanged
+		if winner.UpdatedHLC != remote.UpdatedHLC || winner.LastWriterID != remote.LastWriterID {
+			out = MergeIgnored
+		}
+		return MergeResult{Outcome: out, Resource: current}, nil
+	}
+	if err := c.recordMerge(ctx, winner); err != nil {
+		return MergeResult{}, err
+	}
+	return MergeResult{Outcome: MergeApplied, Resource: winner}, nil
+}
+
 func (s *memStore) Get(_ context.Context, kind string, scope Scope, name string) (Resource, error) {
 	c := s.core
 	c.mu.Lock()
@@ -241,6 +275,17 @@ func newCore(st *Stamper, log spine.Log) *core {
 	return &core{st: st, log: log, byID: map[string]Resource{}, nameIndex: map[Key]string{}}
 }
 
+// recordMerge appends a merge event carrying r verbatim and projects it, so a
+// replicated record lands on the log (and thus into Replay) exactly like a local
+// write, with its remote envelope preserved. Callers hold mu.
+func (c *core) recordMerge(ctx context.Context, r Resource) error {
+	in, err := MergeEvent(r)
+	if err != nil {
+		return err
+	}
+	return c.record(ctx, in)
+}
+
 func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 	e, err := c.log.Append(ctx, in)
 	if err != nil {
@@ -257,7 +302,7 @@ func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 // rebuilt-from-log store is identical to a live one. Callers hold mu.
 func (c *core) apply(e spine.Event) error {
 	switch e.Type {
-	case EvPut, EvDeleted:
+	case EvPut, EvDeleted, EvMerged:
 		r, err := DecodeResource(e.Payload)
 		if err != nil {
 			return err
