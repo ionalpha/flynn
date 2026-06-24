@@ -50,7 +50,7 @@ type harness struct {
 	ctx   context.Context
 	store resource.Store
 	jobs  *jobs.MemoryQueue
-	gr    *GoalReconciler
+	gr    *Reconciler
 	clk   *clock.Manual
 }
 
