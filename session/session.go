@@ -179,6 +179,8 @@ func (s *Session) watch(ctx context.Context, rt *runtime.Runtime, key resource.K
 				s.emit(ctx, Event{Kind: KindStalled, Actor: spine.ActorSystem, Err: st.Message})
 				s.finish("", fmt.Errorf("goal stalled: %s", st.Message))
 				return
+			default:
+				// Pending/Running are not terminal; keep polling for a later phase.
 			}
 		}
 	}

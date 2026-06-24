@@ -475,6 +475,9 @@ func renderStream(out io.Writer, events <-chan session.Event) (string, []llm.Mes
 			return ev.Text, transcript, nil
 		case session.KindStalled:
 			return "", transcript, fmt.Errorf("goal stalled: %s", ev.Err)
+		default:
+			// Other event kinds (session/turn lifecycle, tool results) are not
+			// surfaced in this CLI stream.
 		}
 	}
 	return "", transcript, context.Canceled
