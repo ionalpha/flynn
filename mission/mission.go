@@ -20,10 +20,12 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/state"
 )
 
 // Tool is an executable capability the model may call during a mission. Def is the
@@ -39,15 +41,30 @@ type Tool interface {
 // Executor drives a goal as a conversation with a model. It implements
 // goal.StepExecutor.
 type Executor struct {
-	model     llm.Model
-	tools     map[string]Tool
-	defs      []llm.Tool
-	system    string
-	maxTokens int
+	model        llm.Model
+	tools        map[string]Tool
+	defs         []llm.Tool
+	system       string
+	maxTokens    int
+	dispatchOpts []dispatch.Option
+	dispatcher   *dispatch.Dispatcher
 }
 
 // Option configures an Executor.
 type Option func(*Executor)
+
+// WithAdmitter sets the governance gate every tool call is admitted through
+// (capability, budget, approval). The default admits all, so standalone behaviour
+// is unchanged until a governor is supplied.
+func WithAdmitter(a dispatch.Admitter) Option {
+	return func(e *Executor) { e.dispatchOpts = append(e.dispatchOpts, dispatch.WithAdmitter(a)) }
+}
+
+// WithEventSink records every tool call's lifecycle on the event spine (for audit
+// and replay). The default discards, so standalone behaviour is unchanged.
+func WithEventSink(s dispatch.EventSink) Option {
+	return func(e *Executor) { e.dispatchOpts = append(e.dispatchOpts, dispatch.WithEventSink(s)) }
+}
 
 // WithTools registers the tools the model may call. Later registrations of the
 // same name win, so a caller can override a default tool.
@@ -77,12 +94,15 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
-// NewExecutor builds a mission executor over the given model and options.
+// NewExecutor builds a mission executor over the given model and options. Tool
+// calls run through a dispatch waist so governance, event recording, and tracing
+// are applied once at the chokepoint rather than scattered across the loop.
 func NewExecutor(model llm.Model, opts ...Option) *Executor {
 	e := &Executor{model: model, tools: map[string]Tool{}}
 	for _, o := range opts {
 		o(e)
 	}
+	e.dispatcher = dispatch.New(toolHandler{e.tools}, e.dispatchOpts...)
 	return e
 }
 
@@ -129,7 +149,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		// Run the calls and feed their results back for the next turn.
 		cp.Messages = append(cp.Messages, llm.Message{
 			Role:   llm.RoleUser,
-			Blocks: e.runTools(ctx, resp.Message.ToolUses()),
+			Blocks: e.runTools(ctx, state.Scope(r.Scope), resp.Message.ToolUses()),
 		})
 	case llm.StopMaxTokens:
 		// The turn was cut off, not finished: ask the model to continue rather than
@@ -144,27 +164,74 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	return encodeCheckpoint(cp)
 }
 
-// runTools executes each requested call and returns the matching tool_result
-// blocks. A call to an unregistered tool, or a tool that errors, becomes an error
-// result rather than failing the step, so the model can recover on the next turn.
-func (e *Executor) runTools(ctx context.Context, calls []llm.ToolUse) []llm.Block {
+// runTools dispatches each requested call through the waist and returns the
+// matching tool_result blocks. A rejected, unregistered, or failing call becomes
+// an error result rather than failing the step, so the model can recover on the
+// next turn. scope is the goal's scope, carried on each action for governance and
+// audit.
+func (e *Executor) runTools(ctx context.Context, scope state.Scope, calls []llm.ToolUse) []llm.Block {
 	out := make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
 		res := &llm.ToolResult{ToolUseID: c.ID}
-		switch tool, ok := e.tools[c.Name]; {
-		case !ok:
-			res.IsError, res.Content = true, "unknown tool: "+c.Name
-		default:
-			content, err := tool.Invoke(ctx, c.Input)
-			if err != nil {
-				res.IsError, res.Content = true, err.Error()
-			} else {
-				res.Content = content
-			}
+		result, err := e.dispatcher.Dispatch(ctx, dispatch.Action{Name: c.Name, Input: decodeInput(c.Input), Scope: scope})
+		if err != nil {
+			res.IsError, res.Content = true, err.Error()
+		} else {
+			res.Content = stringOutput(result.Output)
 		}
 		out = append(out, llm.Block{Kind: llm.KindToolResult, ToolResult: res})
 	}
 	return out
+}
+
+// toolHandler is the dispatch.Handler that resolves an action name to a registered
+// tool and runs it. It is the single place tool execution happens, so the sandbox
+// isolation boundary attaches here.
+type toolHandler struct {
+	tools map[string]Tool
+}
+
+func (h toolHandler) Handle(ctx context.Context, a dispatch.Action) (dispatch.Result, error) {
+	tool, ok := h.tools[a.Name]
+	if !ok {
+		return dispatch.Result{}, fault.New(fault.Terminal, "unknown_tool", "unknown tool: "+a.Name)
+	}
+	content, err := tool.Invoke(ctx, encodeInput(a.Input))
+	if err != nil {
+		return dispatch.Result{}, err
+	}
+	return dispatch.Result{Output: map[string]any{"content": content}}, nil
+}
+
+// decodeInput turns a tool call's raw JSON arguments into the dispatch action's
+// map form; a non-object or empty input becomes an empty map.
+func decodeInput(raw json.RawMessage) map[string]any {
+	if len(raw) == 0 {
+		return map[string]any{}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return map[string]any{}
+	}
+	return m
+}
+
+// encodeInput renders a dispatch action's arguments back to the raw JSON a tool
+// expects.
+func encodeInput(m map[string]any) json.RawMessage {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return json.RawMessage("{}")
+	}
+	return b
+}
+
+// stringOutput reads the "content" string a tool handler returns.
+func stringOutput(out map[string]any) string {
+	if s, ok := out["content"].(string); ok {
+		return s
+	}
+	return ""
 }
 
 // prompt renders the goal into the opening user message: the objective, and the
