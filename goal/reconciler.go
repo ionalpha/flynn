@@ -114,13 +114,16 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	}
 
 	// Ensure our finalizer is present before doing anything that creates state we
-	// must later clean up. Adding it is one write; we reconcile again afterwards.
+	// must later clean up, then continue in the same pass using the freshly stamped
+	// record. Returning here instead would leave the goal idle until the next
+	// resync, because a self-write does not re-trigger a reconcile on its own.
 	if !hasFinalizer(r.Finalizers, Finalizer) {
 		r.Finalizers = append(r.Finalizers, Finalizer)
-		if _, err := g.store.Put(ctx, r); err != nil {
+		updated, err := g.store.Put(ctx, r)
+		if err != nil {
 			return reconcile.Result{}, putErr(err)
 		}
-		return reconcile.Result{}, nil
+		r = updated
 	}
 
 	specHash, err := resource.SpecHash(r)
@@ -147,7 +150,7 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 			status.Message = "step failed: " + job.LastError
 			status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "StepFailed", Message: job.LastError}, g.clk.Now())
 			status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "StepFailed"}, g.clk.Now())
-			return g.writeStatus(ctx, r, status, specHash)
+			return g.terminal(ctx, r, status, specHash)
 		default: // StateDone: a step completed.
 			status.InFlight = nil
 			status.Steps++
@@ -164,7 +167,7 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		status.Message = reason
 		status.SetCondition(Condition{Type: CondReady, Status: "True", Reason: "StopConditionMet", Message: reason}, g.clk.Now())
 		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Converged"}, g.clk.Now())
-		return g.writeStatus(ctx, r, status, specHash)
+		return g.terminal(ctx, r, status, specHash)
 	}
 
 	// Budget guard.
@@ -173,7 +176,7 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		status.Message = "step budget exhausted before the stop condition was met"
 		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "BudgetExhausted", Message: status.Message}, g.clk.Now())
 		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
-		return g.writeStatus(ctx, r, status, specHash)
+		return g.terminal(ctx, r, status, specHash)
 	}
 
 	// Dispatch the next step and record it in flight.
@@ -190,7 +193,12 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	status.Phase = PhaseRunning
 	status.InFlight = &InFlight{JobID: job.ID, StartedAt: g.clk.Now()}
 	status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "StepDispatched"}, g.clk.Now())
-	return g.writeStatus(ctx, r, status, specHash)
+	if err := g.persistStatus(ctx, r, status, specHash); err != nil {
+		return reconcile.Result{}, err
+	}
+	// Re-check the dispatched step after poll even if its completion signal is
+	// lost: the worker's bus signal makes observation prompt, this makes it certain.
+	return reconcile.Result{RequeueAfter: g.poll}, nil
 }
 
 // finalize runs cleanup once and then removes our finalizer, letting the store
@@ -212,17 +220,27 @@ func (g *Reconciler) finalize(ctx context.Context, r resource.Resource) (reconci
 	return reconcile.Result{}, nil
 }
 
-// writeStatus records the observed spec hash and persists the status via the
+// persistStatus records the observed spec hash and persists the status via the
 // store's optimistic-concurrency Put.
-func (g *Reconciler) writeStatus(ctx context.Context, r resource.Resource, status Status, specHash string) (reconcile.Result, error) {
+func (g *Reconciler) persistStatus(ctx context.Context, r resource.Resource, status Status, specHash string) error {
 	status.ObservedSpecHash = specHash
 	enc, err := status.Encode()
 	if err != nil {
-		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_status_encode", err)
+		return fault.Wrap(fault.Terminal, "goal_status_encode", err)
 	}
 	r.Status = enc
 	if _, err := g.store.Put(ctx, r); err != nil {
-		return reconcile.Result{}, putErr(err)
+		return putErr(err)
+	}
+	return nil
+}
+
+// terminal persists a settled status (converged or stalled) and requests no
+// requeue: the goal has reached a steady state, so it is only revisited when its
+// spec changes or at the next resync, not on a timer.
+func (g *Reconciler) terminal(ctx context.Context, r resource.Resource, status Status, specHash string) (reconcile.Result, error) {
+	if err := g.persistStatus(ctx, r, status, specHash); err != nil {
+		return reconcile.Result{}, err
 	}
 	return reconcile.Result{}, nil
 }
