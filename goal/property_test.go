@@ -4,8 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ionalpha/flynn/jobs"
 	"pgregory.net/rapid"
+
+	"github.com/ionalpha/flynn/jobs"
 )
 
 // TestGoalReconcileConvergesProperty is the control-loop's behavioural contract
