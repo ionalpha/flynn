@@ -1,8 +1,8 @@
 // Package testkit is shared test infrastructure for the agent: deterministic
 // fault injection and invariant checks that make rigorous tests cheap to write.
 //
-// Chaos engineering falls out of the ports architecture — wrap any port
-// (dispatch.Handler, dispatch.EventSink, …) with a FaultPlan and assert the
+// Chaos engineering falls out of the ports architecture — wrap a unit of work or
+// any port (dispatch work, dispatch.EventSink, …) with a FaultPlan and assert the
 // system degrades and recovers cleanly. Combined with clock.Manual and seeded
 // inputs, the faults are deterministic, so a failing run reproduces exactly.
 package testkit
@@ -74,19 +74,19 @@ func Always(err error) *FaultPlan {
 	return newPlan(func(int) error { return err })
 }
 
-// FaultyHandler wraps a dispatch.Handler, injecting plan's faults before
-// delegating. A nil inner handler returns a zero Result when not failing, so a
-// plan alone is enough to drive a handler in tests.
-func FaultyHandler(inner dispatch.Handler, plan *FaultPlan) dispatch.Handler {
-	return dispatch.HandlerFunc(func(ctx context.Context, a dispatch.Action) (dispatch.Result, error) {
+// FaultyWork wraps a unit of dispatch work, injecting plan's faults before
+// delegating. A nil inner returns zero Metering when not failing, so a plan alone
+// is enough to drive a Dispatcher.Govern call through its retry and recovery path.
+func FaultyWork(inner func(context.Context) (dispatch.Metering, error), plan *FaultPlan) func(context.Context) (dispatch.Metering, error) {
+	return func(ctx context.Context) (dispatch.Metering, error) {
 		if err := plan.next(); err != nil {
-			return dispatch.Result{}, err
+			return dispatch.Metering{}, err
 		}
 		if inner == nil {
-			return dispatch.Result{}, nil
+			return dispatch.Metering{}, nil
 		}
-		return inner.Handle(ctx, a)
-	})
+		return inner(ctx)
+	}
 }
 
 // FaultySink wraps a dispatch.EventSink, injecting plan's faults before

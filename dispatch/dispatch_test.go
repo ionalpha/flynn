@@ -27,7 +27,7 @@ func (h *orderHook) Before(context.Context, dispatch.Action) error {
 	return nil
 }
 
-func (h *orderHook) After(context.Context, dispatch.Action, dispatch.Result, error) {
+func (h *orderHook) After(context.Context, dispatch.Action, dispatch.Metering, error) {
 	*h.log = append(*h.log, h.name+".after")
 }
 
@@ -43,37 +43,37 @@ func (h *recordHook) Before(ctx context.Context, a dispatch.Action) error {
 	return nil
 }
 
-func (h *recordHook) After(context.Context, dispatch.Action, dispatch.Result, error) { h.afters++ }
+func (h *recordHook) After(context.Context, dispatch.Action, dispatch.Metering, error) { h.afters++ }
 
 type denyAdmitter struct{ err error }
 
 func (d denyAdmitter) Admit(context.Context, dispatch.Action) error { return d.err }
 
-func TestDispatchHappyPath(t *testing.T) {
+// okWork is a unit of work that records it ran and reports tokens.
+func okWork(called *bool, tokens int) func(context.Context) (dispatch.Metering, error) {
+	return func(context.Context) (dispatch.Metering, error) {
+		*called = true
+		return dispatch.Metering{Tokens: tokens}, nil
+	}
+}
+
+func TestGovernHappyPath(t *testing.T) {
 	called := false
 	sink := &dispatch.MemorySink{}
 	clk := clock.NewManual(time.Unix(1000, 0))
 	hook := &recordHook{}
 
 	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			called = true
-			return dispatch.Result{Tokens: 7}, nil
-		}),
 		dispatch.WithEventSink(sink),
 		dispatch.WithClock(clk),
 		dispatch.WithHook(hook),
 	)
 
-	r, err := d.Dispatch(context.Background(), dispatch.Action{Name: "echo"})
-	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
+	if err := d.Govern(context.Background(), dispatch.Action{Name: "echo"}, okWork(&called, 7)); err != nil {
+		t.Fatalf("Govern: %v", err)
 	}
 	if !called {
-		t.Fatal("handler was not called")
-	}
-	if r.Tokens != 7 {
-		t.Fatalf("Tokens = %d, want 7", r.Tokens)
+		t.Fatal("work was not called")
 	}
 
 	evs := sink.Events()
@@ -91,27 +91,23 @@ func TestDispatchHappyPath(t *testing.T) {
 	}
 }
 
-func TestDispatchAdmissionRejects(t *testing.T) {
+func TestGovernAdmissionRejects(t *testing.T) {
 	called := false
 	sink := &dispatch.MemorySink{}
 	hook := &recordHook{}
 
 	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			called = true
-			return dispatch.Result{}, nil
-		}),
 		dispatch.WithAdmitter(denyAdmitter{err: fault.New(fault.NeedsApproval, "approval_required", "needs a human")}),
 		dispatch.WithEventSink(sink),
 		dispatch.WithHook(hook),
 	)
 
-	_, err := d.Dispatch(context.Background(), dispatch.Action{Name: "rm-rf"})
+	err := d.Govern(context.Background(), dispatch.Action{Name: "rm-rf"}, okWork(&called, 0))
 	if err == nil {
 		t.Fatal("expected an admission rejection error")
 	}
 	if called {
-		t.Fatal("handler must not run when admission rejects")
+		t.Fatal("work must not run when admission rejects")
 	}
 	evs := sink.Events()
 	if len(evs) != 1 || evs[0].Type != dispatch.EventRejected {
@@ -125,27 +121,23 @@ func TestDispatchAdmissionRejects(t *testing.T) {
 	}
 }
 
-func TestDispatchBeforeHookRejects(t *testing.T) {
+func TestGovernBeforeHookRejects(t *testing.T) {
 	called := false
 	sink := &dispatch.MemorySink{}
 	blocked := errors.New("blocked by policy")
 
 	hook := &recordHook{before: func(context.Context, dispatch.Action) error { return blocked }}
 	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			called = true
-			return dispatch.Result{}, nil
-		}),
 		dispatch.WithEventSink(sink),
 		dispatch.WithHook(hook),
 	)
 
-	_, err := d.Dispatch(context.Background(), dispatch.Action{Name: "deploy"})
+	err := d.Govern(context.Background(), dispatch.Action{Name: "deploy"}, okWork(&called, 0))
 	if !errors.Is(err, blocked) {
 		t.Fatalf("err = %v, want the hook's error", err)
 	}
 	if called {
-		t.Fatal("handler must not run when a Before hook rejects")
+		t.Fatal("work must not run when a Before hook rejects")
 	}
 	if hook.afters != 0 {
 		t.Fatalf("After ran %d times for a hook whose own Before failed, want 0", hook.afters)
@@ -155,23 +147,19 @@ func TestDispatchBeforeHookRejects(t *testing.T) {
 	}
 }
 
-func TestDispatchHookUnwindIsReverseAndOnlyEntered(t *testing.T) {
+func TestGovernHookUnwindIsReverseAndOnlyEntered(t *testing.T) {
 	var order []string
 	called := false
 	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			called = true
-			return dispatch.Result{}, nil
-		}),
 		dispatch.WithHook(&orderHook{name: "h1", log: &order}),
 		dispatch.WithHook(&orderHook{name: "h2", fail: true, log: &order}),
 	)
 
-	if _, err := d.Dispatch(context.Background(), dispatch.Action{Name: "x"}); err == nil {
+	if err := d.Govern(context.Background(), dispatch.Action{Name: "x"}, okWork(&called, 0)); err == nil {
 		t.Fatal("expected h2's Before to reject")
 	}
 	if called {
-		t.Fatal("handler must not run when a Before hook rejects")
+		t.Fatal("work must not run when a Before hook rejects")
 	}
 	// h1 entered (After runs); h2's Before failed (no After). After is reverse.
 	want := []string{"h1.before", "h2.before", "h1.after"}
@@ -180,16 +168,13 @@ func TestDispatchHookUnwindIsReverseAndOnlyEntered(t *testing.T) {
 	}
 }
 
-func TestDispatchHandlerFailureClassified(t *testing.T) {
+func TestGovernWorkFailureClassified(t *testing.T) {
 	sink := &dispatch.MemorySink{}
-	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			return dispatch.Result{}, fault.New(fault.Transient, "upstream_503", "try again")
-		}),
-		dispatch.WithEventSink(sink),
-	)
+	d := dispatch.New(dispatch.WithEventSink(sink))
 
-	_, err := d.Dispatch(context.Background(), dispatch.Action{Name: "fetch"})
+	err := d.Govern(context.Background(), dispatch.Action{Name: "fetch"}, func(context.Context) (dispatch.Metering, error) {
+		return dispatch.Metering{}, fault.New(fault.Transient, "upstream_503", "try again")
+	})
 	if fault.Classify(err) != fault.Transient {
 		t.Fatalf("class = %v, want transient", fault.Classify(err))
 	}
@@ -202,11 +187,13 @@ func TestDispatchHandlerFailureClassified(t *testing.T) {
 	}
 }
 
-func TestDispatchZeroConfig(t *testing.T) {
-	d := dispatch.New(dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-		return dispatch.Result{}, nil
-	}))
-	if _, err := d.Dispatch(context.Background(), dispatch.Action{Name: "noop"}); err != nil {
-		t.Fatalf("zero-config dispatch failed: %v", err)
+func TestGovernZeroConfig(t *testing.T) {
+	called := false
+	d := dispatch.New()
+	if err := d.Govern(context.Background(), dispatch.Action{Name: "noop"}, okWork(&called, 0)); err != nil {
+		t.Fatalf("zero-config govern failed: %v", err)
+	}
+	if !called {
+		t.Fatal("work did not run")
 	}
 }

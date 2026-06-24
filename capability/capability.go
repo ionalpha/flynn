@@ -22,6 +22,11 @@ import (
 // from NewGrant denies everything except the names it lists; AllowAll admits any
 // action, the explicit "trusted run" policy distinct from no policy at all. A
 // Grant is immutable once built and safe to share across goroutines.
+//
+// Nothing is admitted implicitly: calling the model is an action like any other
+// (mission.ActionModelGenerate), so a least-privilege grant lists it explicitly
+// and the grant stays the complete, auditable record of what a run may do. A run
+// that should not call the model simply does not grant the action.
 type Grant struct {
 	actions  map[string]struct{}
 	allowAll bool

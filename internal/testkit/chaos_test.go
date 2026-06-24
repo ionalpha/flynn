@@ -21,15 +21,15 @@ func TestFlakyHandlerDegradesAndRecovers(t *testing.T) {
 	plan := testkit.FailFirst(1, fault.New(fault.Transient, "flaky_dep", "try again"))
 
 	d := dispatch.New(
-		testkit.FaultyHandler(nil, plan),
 		dispatch.WithClock(clock.NewManual(time.Unix(0, 0))),
 		dispatch.WithEventSink(sink),
 	)
+	work := testkit.FaultyWork(nil, plan)
 
-	if _, err := d.Dispatch(ctx, dispatch.Action{Name: "fetch"}); fault.Classify(err) != fault.Transient {
+	if err := d.Govern(ctx, dispatch.Action{Name: "fetch"}, work); fault.Classify(err) != fault.Transient {
 		t.Fatalf("first call class = %v, want transient", fault.Classify(err))
 	}
-	if _, err := d.Dispatch(ctx, dispatch.Action{Name: "fetch"}); err != nil {
+	if err := d.Govern(ctx, dispatch.Action{Name: "fetch"}, work); err != nil {
 		t.Fatalf("second call should recover, got %v", err)
 	}
 
@@ -48,19 +48,18 @@ func TestFaultySinkDoesNotBreakDispatch(t *testing.T) {
 	ctx := context.Background()
 	sink := testkit.FaultySink(nil, testkit.Always(fault.New(fault.Terminal, "sink_down", "no")))
 
-	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			return dispatch.Result{Tokens: 1}, nil
-		}),
-		dispatch.WithEventSink(sink),
-	)
+	d := dispatch.New(dispatch.WithEventSink(sink))
 
-	r, err := d.Dispatch(ctx, dispatch.Action{Name: "noop"})
-	if err != nil {
+	ran := false
+	work := func(context.Context) (dispatch.Metering, error) {
+		ran = true
+		return dispatch.Metering{Tokens: 1}, nil
+	}
+	if err := d.Govern(ctx, dispatch.Action{Name: "noop"}, work); err != nil {
 		t.Fatalf("a failing event sink must not fail the dispatch, got %v", err)
 	}
-	if r.Tokens != 1 {
-		t.Fatalf("result lost: Tokens = %d, want 1", r.Tokens)
+	if !ran {
+		t.Fatal("work did not run despite a failing sink")
 	}
 }
 
@@ -68,10 +67,10 @@ func TestFaultPlanSchedules(t *testing.T) {
 	boom := fault.New(fault.Terminal, "x", "x")
 
 	every2 := testkit.FailEvery(2, boom)
-	h := testkit.FaultyHandler(nil, every2)
+	w := testkit.FaultyWork(nil, every2)
 	var fails int
 	for i := 0; i < 4; i++ {
-		if _, err := h.Handle(context.Background(), dispatch.Action{}); err != nil {
+		if _, err := w(context.Background()); err != nil {
 			fails++
 		}
 	}

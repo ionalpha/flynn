@@ -31,12 +31,13 @@ func newStores(t *testing.T) (state.SkillStore, state.MemoryStore) {
 
 type fakeDistiller struct {
 	lessons []Lesson
+	err     error
 	called  int
 }
 
 func (f *fakeDistiller) Distill(context.Context, Outcome) ([]Lesson, error) {
 	f.called++
-	return f.lessons, nil
+	return f.lessons, f.err
 }
 
 func convergedOutcome() Outcome {

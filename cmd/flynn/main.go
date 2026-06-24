@@ -100,7 +100,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
 
 	var distiller learn.Distiller
 	if learnEnabled {
-		distiller = learn.NewModelDistiller(model)
+		distiller = governedDistiller(model)
 	}
 
 	_, _ = fmt.Fprintf(os.Stdout, "goal: %s\n", objective)
