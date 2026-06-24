@@ -20,15 +20,13 @@ func TestSinkRecordsDispatchOntoSpine(t *testing.T) {
 	log := spine.NewMemoryLog(spine.WithClock(clk))
 
 	d := dispatch.New(
-		dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-			return dispatch.Result{Tokens: 3}, nil
-		}),
 		dispatch.WithClock(clk),
 		dispatch.WithEventSink(spinesink.New(log, "run-1")),
 	)
 
-	if _, err := d.Dispatch(ctx, dispatch.Action{Name: "search"}); err != nil {
-		t.Fatalf("dispatch: %v", err)
+	work := func(context.Context) (dispatch.Metering, error) { return dispatch.Metering{Tokens: 3}, nil }
+	if err := d.Govern(ctx, dispatch.Action{Name: "search"}, work); err != nil {
+		t.Fatalf("govern: %v", err)
 	}
 
 	events, err := log.Read(ctx, spine.Query{Stream: "run-1"})

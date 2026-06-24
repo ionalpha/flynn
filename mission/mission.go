@@ -132,11 +132,18 @@ func NewExecutor(model llm.Model, opts ...Option) *Executor {
 	for _, o := range opts {
 		o(e)
 	}
-	e.dispatcher = dispatch.New(toolHandler{e.tools}, e.dispatchOpts...)
+	e.dispatcher = dispatch.New(e.dispatchOpts...)
 	return e
 }
 
 var _ goal.StepExecutor = (*Executor)(nil)
+
+// ActionModelGenerate is the dispatch action name a model call runs under, so the
+// model call is admitted, traced, metered, and recorded on the spine like any tool
+// call. It is a normal action, not implicitly allowed: a least-privilege grant must
+// list it for the agent to call the model, which keeps the grant the complete record
+// of what a run may do. A run that should not call the model omits it.
+const ActionModelGenerate = "model.generate"
 
 // Execute advances the goal's conversation by one model turn and returns the
 // updated conversation as the checkpoint. A turn that calls tools runs them and
@@ -173,12 +180,22 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	turn := assistantTurns(cp.Messages) + 1
 	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Turn: turn})
 
-	resp, err := e.model.Generate(ctx, llm.Request{
-		System:    e.system,
-		Messages:  cp.Messages,
-		Tools:     e.defs,
-		MaxTokens: e.maxTokens,
-	})
+	// The model call goes through the same waist as tool calls: admitted against
+	// the run grant, metered for tokens, and bracketed with lifecycle events on the
+	// spine. The typed request and response stay here; dispatch sees only the action
+	// name, scope, and token cost.
+	var resp llm.Response
+	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope)},
+		func(ctx context.Context) (dispatch.Metering, error) {
+			var gerr error
+			resp, gerr = e.model.Generate(ctx, llm.Request{
+				System:    e.system,
+				Messages:  cp.Messages,
+				Tools:     e.defs,
+				MaxTokens: e.maxTokens,
+			})
+			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
+		})
 	if err != nil {
 		return nil, err // the model classifies its own errors; the worker retries transient ones
 	}
@@ -234,11 +251,11 @@ func (e *Executor) runTools(ctx context.Context, scope state.Scope, turn int, ca
 	out := make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
 		res := &llm.ToolResult{ToolUseID: c.ID}
-		result, err := e.dispatcher.Dispatch(ctx, dispatch.Action{Name: c.Name, Input: decodeInput(c.Input), Scope: scope})
+		content, err := e.invokeTool(ctx, scope, c)
 		if err != nil {
 			res.IsError, res.Content = true, err.Error()
 		} else {
-			res.Content = stringOutput(result.Output)
+			res.Content = content
 		}
 		e.reporter.Report(ctx, Event{
 			Kind: EventToolResult, Turn: turn, Tool: c.Name, ToolUseID: c.ID,
@@ -249,54 +266,24 @@ func (e *Executor) runTools(ctx context.Context, scope state.Scope, turn int, ca
 	return out
 }
 
-// toolHandler is the dispatch.Handler that resolves an action name to a registered
-// tool and runs it. It is the single place tool execution happens, so the sandbox
-// isolation boundary attaches here.
-type toolHandler struct {
-	tools map[string]Tool
-}
-
-func (h toolHandler) Handle(ctx context.Context, a dispatch.Action) (dispatch.Result, error) {
-	tool, ok := h.tools[a.Name]
-	if !ok {
-		return dispatch.Result{}, fault.New(fault.Terminal, "unknown_tool", "unknown tool: "+a.Name)
-	}
-	content, err := tool.Invoke(ctx, encodeInput(a.Input))
-	if err != nil {
-		return dispatch.Result{}, err
-	}
-	return dispatch.Result{Output: map[string]any{"content": content}}, nil
-}
-
-// decodeInput turns a tool call's raw JSON arguments into the dispatch action's
-// map form; a non-object or empty input becomes an empty map.
-func decodeInput(raw json.RawMessage) map[string]any {
-	if len(raw) == 0 {
-		return map[string]any{}
-	}
-	var m map[string]any
-	if err := json.Unmarshal(raw, &m); err != nil {
-		return map[string]any{}
-	}
-	return m
-}
-
-// encodeInput renders a dispatch action's arguments back to the raw JSON a tool
-// expects.
-func encodeInput(m map[string]any) json.RawMessage {
-	b, err := json.Marshal(m)
-	if err != nil {
-		return json.RawMessage("{}")
-	}
-	return b
-}
-
-// stringOutput reads the "content" string a tool handler returns.
-func stringOutput(out map[string]any) string {
-	if s, ok := out["content"].(string); ok {
-		return s
-	}
-	return ""
+// invokeTool governs one tool call through the waist and returns its text output.
+// Resolving the tool name and running it is the work the dispatcher brackets; the
+// tool's JSON arguments and string result stay here and never reach dispatch. This
+// is the single place tool execution happens, so the sandbox isolation boundary
+// attaches here.
+func (e *Executor) invokeTool(ctx context.Context, scope state.Scope, c llm.ToolUse) (string, error) {
+	var content string
+	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: c.Name, Scope: scope},
+		func(ctx context.Context) (dispatch.Metering, error) {
+			tool, ok := e.tools[c.Name]
+			if !ok {
+				return dispatch.Metering{}, fault.New(fault.Terminal, "unknown_tool", "unknown tool: "+c.Name)
+			}
+			out, err := tool.Invoke(ctx, c.Input)
+			content = out
+			return dispatch.Metering{}, err
+		})
+	return content, err
 }
 
 // prompt renders the goal into the opening user message: the objective, and the

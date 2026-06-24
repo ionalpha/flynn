@@ -48,9 +48,9 @@ func TestFaultConstructorsSchedule(t *testing.T) {
 		{"Always", testkit.Always(boom), []bool{true, true, true, true}},
 	}
 	for _, tc := range cases {
-		h := testkit.FaultyHandler(nil, tc.plan)
+		w := testkit.FaultyWork(nil, tc.plan)
 		for i, want := range tc.want {
-			_, err := h.Handle(context.Background(), dispatch.Action{})
+			_, err := w(context.Background())
 			if (err != nil) != want {
 				t.Fatalf("%s call %d: failed=%v, want %v", tc.name, i+1, err != nil, want)
 			}
@@ -69,14 +69,14 @@ func TestLifecycleHoldsUnderChaos(t *testing.T) {
 		failEvery := rapid.IntRange(0, 3).Draw(rt, "failEvery")
 
 		d := dispatch.New(
-			testkit.FaultyHandler(nil, testkit.FailEvery(failEvery, fault.New(fault.Transient, "chaos", "x"))),
 			dispatch.WithClock(clock.NewManual(time.Unix(0, 0))),
 			dispatch.WithEventSink(sink),
 		)
+		work := testkit.FaultyWork(nil, testkit.FailEvery(failEvery, fault.New(fault.Transient, "chaos", "x")))
 
 		n := rapid.IntRange(0, 12).Draw(rt, "n")
 		for i := 0; i < n; i++ {
-			_, _ = d.Dispatch(ctx, testkit.ActionGen().Draw(rt, "action"))
+			_ = d.Govern(ctx, testkit.ActionGen().Draw(rt, "action"), work)
 		}
 		testkit.RequireLifecycle(rt, sink.Events())
 	})
@@ -88,14 +88,12 @@ func TestDeterministicReplay(t *testing.T) {
 	run := func() []dispatch.Event {
 		sink := &dispatch.MemorySink{}
 		d := dispatch.New(
-			dispatch.HandlerFunc(func(context.Context, dispatch.Action) (dispatch.Result, error) {
-				return dispatch.Result{}, nil
-			}),
 			dispatch.WithClock(clock.NewManual(time.Unix(7, 0))),
 			dispatch.WithEventSink(sink),
 		)
+		work := func(context.Context) (dispatch.Metering, error) { return dispatch.Metering{}, nil }
 		for _, name := range []string{"alpha", "beta"} {
-			_, _ = d.Dispatch(context.Background(), dispatch.Action{Name: name})
+			_ = d.Govern(context.Background(), dispatch.Action{Name: name}, work)
 		}
 		return sink.Events()
 	}

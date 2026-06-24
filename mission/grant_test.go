@@ -23,9 +23,11 @@ func TestExecutorEnforcesGrant(t *testing.T) {
 		wantRuns int32
 		wantErr  bool
 	}{
-		{"granted", capability.NewGrant("echo"), 1, false},
-		{"ungranted", capability.NewGrant("read"), 0, true},
-		{"deny_all", capability.NewGrant(), 0, true},
+		// Each grant lists the model action so the conversation can run; the cases
+		// differ in which tool, if any, they also permit.
+		{"granted", capability.NewGrant("echo", ActionModelGenerate), 1, false},
+		{"ungranted", capability.NewGrant("read", ActionModelGenerate), 0, true},
+		{"tools_denied", capability.NewGrant(ActionModelGenerate), 0, true},
 		{"allow_all", capability.AllowAll(), 1, false},
 	}
 	for _, tc := range cases {
