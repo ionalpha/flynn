@@ -22,7 +22,7 @@ func TestGoalReconcileConvergesProperty(t *testing.T) {
 		h := newHarness(t, stopAfter{at: target}, WithStepMaxAttempts(1))
 		ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", MaxSteps: budget})
 
-		for i := 0; i < 200; i++ {
+		for range 200 {
 			if _, err := h.gr.Reconcile(h.ctx, ref); err != nil {
 				rt.Fatalf("reconcile error: %v", err)
 			}

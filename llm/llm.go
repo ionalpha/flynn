@@ -18,6 +18,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"strings"
 )
 
 // Role identifies who produced a message.
@@ -167,10 +168,12 @@ func (m Message) ToolUses() []ToolUse {
 // with any tool-call blocks dropped.
 func (m Message) TextContent() string {
 	var s string
+	var sSb170 strings.Builder
 	for _, b := range m.Blocks {
 		if b.Kind == KindText {
-			s += b.Text
+			sSb170.WriteString(b.Text)
 		}
 	}
+	s += sSb170.String()
 	return s
 }

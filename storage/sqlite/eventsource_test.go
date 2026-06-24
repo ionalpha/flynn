@@ -20,7 +20,7 @@ func exercise(ctx context.Context, t *testing.T, p state.Provider) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := ss.AppendTurn(ctx, state.Turn{SessionID: s1.ID, Role: "user", Content: "hi"}); err != nil {
 			t.Fatal(err)
 		}

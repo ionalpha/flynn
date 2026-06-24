@@ -316,7 +316,7 @@ func TestMissionConvergesProperty(t *testing.T) {
 		final := rapid.StringMatching(`[a-z ]{1,12}`).Draw(rt, "final")
 
 		turns := make([]llm.Response, 0, toolTurns+1)
-		for i := 0; i < toolTurns; i++ {
+		for range toolTurns {
 			turns = append(turns, llmtest.CallTool("t", "echo", json.RawMessage(`{}`)))
 		}
 		turns = append(turns, llmtest.SayText(final))

@@ -155,7 +155,7 @@ func TestAssistantMappingProperty(t *testing.T) {
 		if text != "" {
 			blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: text})
 		}
-		for i := 0; i < nCalls; i++ {
+		for range nCalls {
 			blocks = append(blocks, llm.Block{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{
 				ID: rapid.StringMatching(`call_[a-z0-9]{1,5}`).Draw(rt, "id"), Name: "echo", Input: json.RawMessage(`{"x":1}`),
 			}})

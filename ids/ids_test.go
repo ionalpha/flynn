@@ -55,7 +55,7 @@ func TestDeterministicUnderInjectedSources(t *testing.T) {
 
 func TestUnique(t *testing.T) {
 	seen := make(map[string]struct{}, 1000)
-	for i := 0; i < 1000; i++ {
+	for range 1000 {
 		id := ids.New()
 		if _, dup := seen[id]; dup {
 			t.Fatalf("duplicate id: %q", id)

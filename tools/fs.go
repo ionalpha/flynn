@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"regexp"
 	"sort"
@@ -132,7 +133,7 @@ func (t editTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		return "", err
 	}
 	if in.Old == "" {
-		return "", fmt.Errorf("edit: 'old' must not be empty")
+		return "", errors.New("edit: 'old' must not be empty")
 	}
 	b, err := t.s.sb.ReadFile(ctx, in.Path)
 	if err != nil {
@@ -148,7 +149,7 @@ func (t editTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if err := t.s.sb.WriteFile(ctx, in.Path, []byte(updated)); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("edited %s", in.Path), nil
+	return "edited " + in.Path, nil
 }
 
 // --- glob -------------------------------------------------------------------

@@ -67,7 +67,7 @@ func TestQueueConcurrentStress(t *testing.T) {
 	var violated int32
 
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -87,7 +87,7 @@ func TestQueueConcurrentStress(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		for i := 0; i < 200000; i++ {
+		for i := range 200000 {
 			q.Add(i % keys)
 		}
 		close(done)
@@ -158,7 +158,7 @@ func TestQueueBackoffGrowsAndCaps(t *testing.T) {
 	if d0 != defaultBaseDelay || d1 != 2*defaultBaseDelay || d2 != 4*defaultBaseDelay {
 		t.Fatalf("backoff sequence = %v,%v,%v, want base,2x,4x", d0, d1, d2)
 	}
-	for i := 0; i < 60; i++ {
+	for range 60 {
 		_ = q.backoff("k")
 	}
 	if d := q.backoff("k"); d != defaultMaxDelay {

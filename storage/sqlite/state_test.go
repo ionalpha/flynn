@@ -111,7 +111,7 @@ func TestStatePersistsAcrossReopen(t *testing.T) {
 func TestStateReopenRerunsMigrationsCleanly(t *testing.T) {
 	ctx := context.Background()
 	dsn := filepath.Join(t.TempDir(), "state.db")
-	for i := 0; i < 3; i++ {
+	for i := range 3 {
 		p, err := sqlite.Open(ctx, dsn)
 		if err != nil {
 			t.Fatalf("open #%d: %v", i, err)

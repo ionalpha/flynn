@@ -73,7 +73,7 @@ func TestProp_StreamDeliversContiguousSuffix(t *testing.T) {
 		defer cancel()
 
 		appendAll := func() {
-			for i := 0; i < n; i++ {
+			for i := range n {
 				if err := s.append(ctx, Event{Kind: KindTurnStarted, Turn: i + 1}); err != nil {
 					rt.Fatalf("append: %v", err)
 				}
@@ -97,7 +97,7 @@ func TestProp_StreamDeliversContiguousSuffix(t *testing.T) {
 		want := n - int(offset) // events with Seq in (offset, n]
 		deadline := time.After(3 * time.Second)
 		prev := offset
-		for got := 0; got < want; got++ {
+		for got := range want {
 			select {
 			case ev, ok := <-ch:
 				if !ok {
@@ -135,10 +135,10 @@ func TestProp_StreamConcurrentAppendersContiguous(t *testing.T) {
 
 		var wg sync.WaitGroup
 		wg.Add(writers)
-		for w := 0; w < writers; w++ {
+		for range writers {
 			go func() {
 				defer wg.Done()
-				for i := 0; i < perWriter; i++ {
+				for range perWriter {
 					_ = s.append(ctx, Event{Kind: KindTurnStarted})
 				}
 			}()
@@ -148,7 +148,7 @@ func TestProp_StreamConcurrentAppendersContiguous(t *testing.T) {
 		seen := make(map[int64]bool, n)
 		deadline := time.After(3 * time.Second)
 		prev := int64(0)
-		for got := 0; got < n; got++ {
+		for got := range n {
 			select {
 			case ev := <-ch:
 				if ev.Seq <= prev {

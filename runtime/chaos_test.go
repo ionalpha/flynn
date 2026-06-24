@@ -59,7 +59,6 @@ func terminal(s goal.Status) bool {
 func TestRuntimeConvergenceMatrix(t *testing.T) {
 	for target := 1; target <= 4; target++ {
 		for budget := 1; budget <= 4; budget++ {
-			target, budget := target, budget
 			t.Run(fmt.Sprintf("target%d_budget%d", target, budget), func(t *testing.T) {
 				t.Parallel()
 				rt, stop := runUntil(t, fastConfig(noopExec{}, stopAfter{at: target}))
@@ -94,7 +93,6 @@ func TestRuntimeConvergenceMatrix(t *testing.T) {
 // make no progress, successful ones advance the goal.
 func TestRuntimeRecoversFromFlakyExecutor(t *testing.T) {
 	for _, failures := range []int{0, 1, 3, 7} {
-		failures := failures
 		t.Run(fmt.Sprintf("failures_%d", failures), func(t *testing.T) {
 			t.Parallel()
 			const target = 3
