@@ -126,12 +126,17 @@ type SessionStore interface {
 // (for provenance/rollback), distinct from Envelope.SyncVersion (the
 // concurrency/sync token).
 type Skill struct {
-	ID        string
-	Slug      string
-	Name      string
-	Body      string
-	Tags      []string
-	Scope     Scope
+	ID    string
+	Slug  string
+	Name  string
+	Body  string
+	Tags  []string
+	Scope Scope
+	// Uses and Wins are outcome evidence: how many runs recalled this skill, and
+	// how many of those runs then succeeded. They let a skill be ranked and retired
+	// by how well it has actually performed, not by recency alone.
+	Uses      int
+	Wins      int
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time
