@@ -135,8 +135,11 @@ type Skill struct {
 	// Uses and Wins are outcome evidence: how many runs recalled this skill, and
 	// how many of those runs then succeeded. They let a skill be ranked and retired
 	// by how well it has actually performed, not by recency alone.
-	Uses      int
-	Wins      int
+	Uses int
+	Wins int
+	// Check is an optional shell command that verifies the skill still works, kept
+	// so the skill can be re-graded later (re-run as the environment changes).
+	Check     string
 	Version   int
 	CreatedAt time.Time
 	UpdatedAt time.Time

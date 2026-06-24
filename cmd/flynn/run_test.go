@@ -12,6 +12,7 @@ import (
 
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -211,6 +212,37 @@ func TestRunFeedsTranscriptToDistiller(t *testing.T) {
 	}
 	if !sawTool || !sawText {
 		t.Fatalf("transcript missing the run's steps: sawTool=%v sawText=%v (%d msgs)", sawTool, sawText, len(rec.got.Transcript))
+	}
+}
+
+// TestRegradeOverDurableStore proves a skill's check persists through SQLite and
+// that re-grading re-confirms a still-passing skill and retires a now-failing one.
+func TestRegradeOverDurableStore(t *testing.T) {
+	store := memStore(t)
+	ctx := context.Background()
+	if _, err := store.Skills().Upsert(ctx, state.Skill{Slug: "keep", Body: "x", Check: "exit 0", Tags: []string{"unverified"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Skills().Upsert(ctx, state.Skill{Slug: "drop", Body: "x", Check: "exit 1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	v := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
+		return sandbox.NewLocal(t.TempDir())
+	})
+	res, err := learn.Regrade(ctx, store.Skills(), state.Scope{}, v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Checked != 2 || len(res.Reconfirmed) != 1 || len(res.Retired) != 1 {
+		t.Fatalf("regrade = %+v, want 2/1/1", res)
+	}
+	keep, err := store.Skills().Get(ctx, "keep")
+	if err != nil || keep.Check != "exit 0" {
+		t.Fatalf("kept skill = %+v, %v (check should persist)", keep, err)
+	}
+	if _, err := store.Skills().Get(ctx, "drop"); err == nil {
+		t.Fatal("the now-failing skill should have been retired")
 	}
 }
 
