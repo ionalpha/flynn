@@ -9,6 +9,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -46,11 +47,12 @@ func (s *Sink) Append(ctx context.Context, e dispatch.Event) error {
 		}
 	}
 	_, err := s.log.Append(ctx, spine.AppendInput{
-		Stream:  s.stream,
-		Type:    e.Type,
-		Actor:   s.actor,
-		Payload: payload,
-		Time:    time.Unix(0, e.At).UTC(),
+		Stream:    s.stream,
+		Type:      e.Type,
+		Actor:     s.actor,
+		Payload:   payload,
+		Time:      time.Unix(0, e.At).UTC(),
+		Principal: capability.PrincipalFromContext(ctx),
 	})
 	return err
 }

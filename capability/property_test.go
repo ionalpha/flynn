@@ -2,6 +2,7 @@ package capability_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -63,6 +64,37 @@ func TestProp_PermissivenessModes(t *testing.T) {
 		}
 		if err := admit.Admit(capability.Into(context.Background(), capability.NewGrant()), a); err == nil {
 			rt.Fatalf("deny-all admitted %q", name)
+		}
+	})
+}
+
+// Property: Narrow is the intersection. An action is allowed by the narrowed grant
+// if and only if both the parent grant and the requested set allow it, so a child
+// run can never exceed its parent's authority (no privilege escalation when
+// delegating), and a narrowed grant is always a concrete set, never AllowAll.
+func TestProp_NarrowIsIntersection(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		nameGen := rapid.StringMatching(`[a-z][a-z0-9_.]{0,8}`)
+		id := func(s string) string { return s }
+		parentActions := rapid.SliceOfDistinct(nameGen, id).Draw(rt, "parent")
+		requested := rapid.SliceOfDistinct(nameGen, id).Draw(rt, "requested")
+
+		parent := capability.NewGrant(parentActions...)
+		if rapid.Bool().Draw(rt, "trustedParent") {
+			parent = capability.AllowAll()
+		}
+		child := parent.Narrow(requested...)
+
+		query := nameGen.Draw(rt, "query")
+		want := parent.Allows(query) && slices.Contains(requested, query)
+		if child.Allows(query) != want {
+			rt.Fatalf("Narrow Allows(%q)=%v, want %v", query, child.Allows(query), want)
+		}
+		if child.Allows(query) && !parent.Allows(query) {
+			rt.Fatalf("delegation escalated: child allows %q but parent does not", query)
+		}
+		if child.Unrestricted() {
+			rt.Fatal("a narrowed grant must be a concrete set, never AllowAll")
 		}
 	})
 }

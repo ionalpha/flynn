@@ -10,7 +10,8 @@
     "TraceID": "",
     "SpanID": "",
     "CausationID": "",
-    "OriginInstanceID": ""
+    "OriginInstanceID": "",
+    "Principal": ""
   },
   {
     "Stream": "run",
@@ -23,7 +24,8 @@
     "TraceID": "",
     "SpanID": "",
     "CausationID": "",
-    "OriginInstanceID": ""
+    "OriginInstanceID": "",
+    "Principal": ""
   },
   {
     "Stream": "run",
@@ -36,6 +38,7 @@
     "TraceID": "",
     "SpanID": "",
     "CausationID": "",
-    "OriginInstanceID": ""
+    "OriginInstanceID": "",
+    "Principal": ""
   }
 ]

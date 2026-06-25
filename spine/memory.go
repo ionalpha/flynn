@@ -58,6 +58,7 @@ func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
 		SpanID:           in.SpanID,
 		CausationID:      in.CausationID,
 		OriginInstanceID: in.OriginInstanceID,
+		Principal:        in.Principal,
 	}
 	l.streams[in.Stream] = append(l.streams[in.Stream], e)
 	return e, nil
