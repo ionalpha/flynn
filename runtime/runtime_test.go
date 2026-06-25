@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -14,6 +15,70 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
+
+// TestResumeDrivesAnUnenqueuedGoal proves the controlled-resume contract: under
+// DriveSubmittedOnly a goal that exists in the store but was never submitted to the
+// runtime is not driven on its own, and Resume is what drives it to convergence.
+// Resuming an unknown id is ErrNotFound.
+func TestResumeDrivesAnUnenqueuedGoal(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	reg := resource.NewRegistry()
+	if err := resource.RegisterCoreKinds(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := goal.RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	st, err := sqlite.Open(ctx, filepath.Join(t.TempDir(), "agent.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	rstore := st.Resources(reg)
+
+	// A goal placed directly in the store (no dispatched step, so nothing in the job
+	// queue can drive it): it exists but was never submitted to a runtime.
+	spec, err := json.Marshal(goal.Spec{Objective: "o", StopCondition: "c", MaxSteps: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parked, err := rstore.Put(ctx, resource.Resource{APIVersion: goal.GroupVersion, Kind: goal.Kind, Name: "parked", Spec: spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rt, err := New(Config{
+		Store: rstore, Jobs: st.Jobs(),
+		Executor: noopExec{}, Stop: stopAfter{at: 1},
+		PollInterval: 15 * time.Millisecond, WorkerPoll: 5 * time.Millisecond,
+		DriveSubmittedOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = rt.Start(ctx) }()
+
+	// Without an explicit resume the goal must not be driven.
+	time.Sleep(80 * time.Millisecond)
+	if s := goalStatus(t, rstore, parked.Key()); s.Phase == goal.PhaseConverged {
+		t.Fatalf("a goal that was never submitted converged without resume: %+v", s)
+	}
+
+	// Resume drives it to convergence.
+	if _, err := rt.Resume(ctx, "parked"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	waitFor(t, rstore, parked.Key(),
+		func(s goal.Status) bool { return s.Phase == goal.PhaseConverged },
+		3*time.Second, "converge after resume")
+
+	// Resuming an unknown run is ErrNotFound.
+	if _, err := rt.Resume(ctx, "ghost"); !errors.Is(err, resource.ErrNotFound) {
+		t.Fatalf("Resume of a missing goal: got %v, want ErrNotFound", err)
+	}
+}
 
 // noopExec is a step that does no real work: enough to drive the loop while the
 // model-backed executor is wired in elsewhere.

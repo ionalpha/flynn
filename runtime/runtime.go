@@ -195,6 +195,21 @@ func (rt *Runtime) SubmitGoal(ctx context.Context, name string, spec goal.Spec) 
 	return saved, nil
 }
 
+// Resume re-drives an existing goal by name: it loads the goal and enqueues it for
+// reconciliation, so a run left non-terminal (parked or interrupted) is driven on
+// toward completion. Unlike SubmitGoal it neither creates nor overwrites the goal,
+// so the goal's recorded progress is preserved and the continuation lands on the
+// same run. It returns the goal, or a store error (resource.ErrNotFound) if no goal
+// of that name exists.
+func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, error) {
+	r, err := rt.store.Get(ctx, goal.Kind, resource.Scope{}, name)
+	if err != nil {
+		return resource.Resource{}, err
+	}
+	rt.manager.Enqueue(r.Key())
+	return r, nil
+}
+
 // Start runs the control plane until ctx is cancelled: it subscribes to step
 // completion signals (waking the reconciler promptly), then runs the manager and
 // the step worker concurrently, blocking until both have stopped. It returns
