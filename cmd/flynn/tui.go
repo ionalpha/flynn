@@ -19,8 +19,8 @@ import (
 // model, so the agent behaviour is identical to the line-based session; only the
 // presentation differs. When the program exits, output is restored to stdout and the
 // session's learning pass runs there.
-func runInteractiveTUI(ctx context.Context, s *replSession) error {
-	p := tea.NewProgram(newTUIModel(ctx, s), tea.WithAltScreen(), tea.WithContext(ctx))
+func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
+	p := tea.NewProgram(newTUIModel(ctx, s, seed), tea.WithAltScreen(), tea.WithContext(ctx))
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
 		err = nil
@@ -59,14 +59,22 @@ type tuiModel struct {
 	turnCancel context.CancelFunc
 
 	width, height int
+	contentWidth  int // transcript wrap width (inner width minus the frame)
 }
 
 const (
 	composerHeight = 3
 	statusHeight   = 1
+	padX           = 2 // left/right breathing room so content is not flush to the edge
+	padTop         = 1 // a blank row above the transcript
+	padBottom      = 1 // a blank row below the composer
 )
 
-func newTUIModel(ctx context.Context, s *replSession) tuiModel {
+// appStyle frames the whole UI with a little padding so nothing sits against the
+// terminal edge. The inner width and height are reduced to match in layout.
+var appStyle = lipgloss.NewStyle().PaddingTop(padTop).PaddingBottom(padBottom).PaddingLeft(padX)
+
+func newTUIModel(ctx context.Context, s *replSession, seed string) tuiModel {
 	ta := textarea.New()
 	ta.Placeholder = "Send a message..."
 	ta.Prompt = "> "
@@ -74,7 +82,9 @@ func newTUIModel(ctx context.Context, s *replSession) tuiModel {
 	ta.CharLimit = 0
 	ta.SetHeight(composerHeight)
 	ta.Focus()
-	return tuiModel{s: s, ctx: ctx, ta: ta}
+	// seed is a resumed run's rendered history, shown above the composer so the user
+	// picks up the conversation with its context already in view.
+	return tuiModel{s: s, ctx: ctx, ta: ta, transcript: seed}
 }
 
 func (m tuiModel) Init() tea.Cmd { return textarea.Blink }
@@ -206,7 +216,7 @@ func (m tuiModel) View() string {
 	if !m.ready {
 		return "starting flynn..."
 	}
-	return strings.Join([]string{m.vp.View(), m.statusLine(), m.ta.View()}, "\n")
+	return appStyle.Render(strings.Join([]string{m.vp.View(), m.statusLine(), m.ta.View()}, "\n"))
 }
 
 var statusStyle = lipgloss.NewStyle().Faint(true)
@@ -223,29 +233,43 @@ func (m tuiModel) statusLine() string {
 // first sight and keeping it pinned to the latest output.
 func (m *tuiModel) layout(w, h int) {
 	m.width, m.height = w, h
-	vpHeight := h - composerHeight - statusHeight
+	innerW := w - 2*padX
+	if innerW < 1 {
+		innerW = 1
+	}
+	m.contentWidth = innerW
+	vpHeight := h - composerHeight - statusHeight - padTop - padBottom
 	if vpHeight < 1 {
 		vpHeight = 1
 	}
 	if !m.ready {
-		m.vp = viewport.New(w, vpHeight)
+		m.vp = viewport.New(innerW, vpHeight)
 		m.ready = true
 	} else {
-		m.vp.Width = w
+		m.vp.Width = innerW
 		m.vp.Height = vpHeight
 	}
-	m.ta.SetWidth(w)
-	m.vp.SetContent(m.transcript)
-	m.vp.GotoBottom()
+	m.ta.SetWidth(innerW)
+	m.refreshViewport()
 }
 
 // appendLine adds one line to the transcript and keeps the viewport at the bottom.
 func (m *tuiModel) appendLine(s string) {
 	m.transcript += s + "\n"
 	if m.ready {
-		m.vp.SetContent(m.transcript)
-		m.vp.GotoBottom()
+		m.refreshViewport()
 	}
+}
+
+// refreshViewport word-wraps the transcript to the content width and pins the view
+// to the latest output, so long lines reflow instead of overflowing the edge.
+func (m *tuiModel) refreshViewport() {
+	content := m.transcript
+	if m.contentWidth > 0 {
+		content = lipgloss.NewStyle().Width(m.contentWidth).Render(m.transcript)
+	}
+	m.vp.SetContent(content)
+	m.vp.GotoBottom()
 }
 
 // lineSink turns the writes a turn makes into per-line messages on ch, so the
