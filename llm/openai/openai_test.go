@@ -146,7 +146,7 @@ func TestErrorClassification(t *testing.T) {
 
 // TestAssistantMappingProperty pins that an assistant turn (text plus tool calls)
 // survives encoding into a Chat Completions message and decoding back, which is the
-// fidelity the conversatflynn replay depends on.
+// fidelity the conversation replay depends on.
 func TestAssistantMappingProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		text := rapid.StringMatching(`[a-z ]{0,10}`).Draw(rt, "text")
