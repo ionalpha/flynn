@@ -70,6 +70,7 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("GenerateName", func(t *testing.T) { testGenerateName(t, newStore) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore) })
 	t.Run("Finalizers", func(t *testing.T) { testFinalizers(t, newStore) })
+	t.Run("OwnerReferences", func(t *testing.T) { testOwnerReferences(t, newStore) })
 	t.Run("ContentHash", func(t *testing.T) { testContentHash(t, newStore) })
 	t.Run("Bitemporal", func(t *testing.T) { testBitemporal(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
@@ -792,4 +793,37 @@ func scopes(rs []resource.Resource) []resource.Scope {
 		out[i] = r.Scope
 	}
 	return out
+}
+
+// testOwnerReferences asserts the ownership graph edge round-trips through any
+// backend: a resource's owner references and its single controller owner survive a
+// write and read back intact, and a resource with no owners has no controller.
+func testOwnerReferences(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+
+	owned := widget("child", "m", nil)
+	owned.OwnerReferences = []resource.OwnerReference{
+		{APIVersion: widgetAPIVersion, Kind: widgetKind, Name: "parent", ID: "parent-id", Controller: true},
+		{APIVersion: widgetAPIVersion, Kind: widgetKind, Name: "sidecar", ID: "sidecar-id"},
+	}
+	mustPut(t, s, owned)
+
+	got, err := s.Get(ctx, widgetKind, resource.Scope{}, "child")
+	if err != nil {
+		t.Fatalf("get owned: %v", err)
+	}
+	if len(got.OwnerReferences) != 2 {
+		t.Fatalf("owner references not round-tripped: %v", got.OwnerReferences)
+	}
+	ctrl, ok := got.Controller()
+	if !ok || ctrl.ID != "parent-id" || !ctrl.Controller {
+		t.Fatalf("controller owner not preserved: %+v ok=%v", ctrl, ok)
+	}
+
+	root := mustPut(t, s, widget("root", "m", nil))
+	if _, ok := root.Controller(); ok {
+		t.Fatal("a resource with no owner references must have no controller")
+	}
 }

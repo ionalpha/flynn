@@ -46,6 +46,26 @@ type Scope struct {
 	Workspace string
 }
 
+// OwnerReference records that a resource is owned by another resource: the parent
+// run or goal that created it. It is the graph edge the garbage collector follows
+// to reap a resource once its owner is gone, so deleting an owner cascades to the
+// subtree it created. Owner references are envelope metadata, excluded from the
+// content hash.
+type OwnerReference struct {
+	// APIVersion and Kind identify the owner's kind.
+	APIVersion string
+	Kind       string
+	// Name and ID address the owner. ID is the stable, unambiguous handle the
+	// collector resolves the owner by; Name is the logical handle for selectors and
+	// debugging.
+	Name string
+	ID   string
+	// Controller marks the one owner that manages this resource's lifecycle. A
+	// resource has at most one controller owner; when that owner is gone or
+	// terminating, the resource is garbage-collected.
+	Controller bool
+}
+
 // Envelope is the universal metadata carried by every resource: sync/concurrency,
 // content provenance, and bitemporal time. Designing the whole envelope in from
 // the first write keeps replay, optimistic concurrency, fleet merge, verifiable
@@ -95,6 +115,13 @@ type Envelope struct {
 	// a Put (only Delete sets it; resurrecting a tombstone clears it), so a caller
 	// cannot fake or cancel a deletion by writing the field.
 	DeletionTimestamp *time.Time
+	// OwnerReferences link this resource to the resources that own it (its parent
+	// run or goal). The controller owner (Controller=true) drives its lifecycle: a
+	// garbage collector reaps the resource once that owner is gone or terminating,
+	// so deleting an owner cascades to the subtree it created. They are metadata,
+	// excluded from the content hash. A resource with none is a root, owned by
+	// nothing, which is the single-run (n=1) case.
+	OwnerReferences []OwnerReference
 
 	// --- content provenance ---
 
@@ -172,3 +199,15 @@ type Key struct {
 
 // Key returns the resource's logical key.
 func (r Resource) Key() Key { return Key{Kind: r.Kind, Scope: r.Scope, Name: r.Name} }
+
+// Controller returns the resource's controller owner reference (the owner that
+// manages its lifecycle) and whether one is set. At most one owner reference is
+// the controller.
+func (r Resource) Controller() (OwnerReference, bool) {
+	for _, o := range r.OwnerReferences {
+		if o.Controller {
+			return o, true
+		}
+	}
+	return OwnerReference{}, false
+}
