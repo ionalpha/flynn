@@ -45,6 +45,34 @@ Four ideas run through everything it does:
 - **Useful inside and outside a larger system.** Run it on its own, or import it
   as a Go module and embed it in your own application.
 
+## Failure modes designed out
+
+A handful of bugs recur across agent implementations: session and message state
+drifting out of sync or going missing, context compaction overwriting earlier work,
+a config change quietly disabling a safety check, a misclassified provider error
+retrying into a long hang, and crashes that loop on restart. Flynn is built so that
+several of these are hard to express in the first place, not because they are caught
+after the fact, but because the structure does not contain the seam they live in.
+
+- **One source of truth for state.** Sessions, messages, skills, and memory are
+  projections of a single append-only event log, so there is no second copy to
+  drift from and nothing is overwritten in place.
+- **No silent loss.** Every change is an ordered, acknowledged, replayable event; a
+  failed write is a retryable event rather than a dropped one, and compaction is a
+  view over the log, so the original is always recoverable.
+- **Deny by default.** Tools are scoped by capability rather than by a blocklist, so
+  a config change can remove access but never accidentally grant it.
+- **Typed failures.** Errors carry a class set at the adapter boundary, so a
+  permanent failure such as a bad key or an unavailable model stops quickly instead
+  of retrying into a hang.
+- **One static binary.** No language runtime and no native add-ons, which removes
+  the install-time and crash-on-startup failure modes that come with them.
+
+This is the project's main bet: the discipline that makes autonomy safe to grant, an
+event-sourced, governed, replayable substrate, is the same discipline that keeps the
+ordinary failure modes from arising. It is a deliberately foundations-first design,
+and several of the capabilities described below are still being built on top of it.
+
 ## Features
 
 ### Agents and capabilities
@@ -259,7 +287,7 @@ submodule, no FFI):
 import agent "github.com/ionalpha/flynn"
 
 a := agent.New(agent.Config{Model: "anthropic:claude-opus-4-8"})
-_ = a.Run(ctx)
+result, err := a.Goal(ctx, "audit the repo for TODOs and summarize them")
 ```
 
 ## Run it anywhere

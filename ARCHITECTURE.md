@@ -38,7 +38,7 @@ package is one plus the highest layer it imports.
 | L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters. |
 | L2 core data | `state`, `resource`, `provider` | The host persistence boundary, the event-sourced resource store, the model-adapter registry. |
 | L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill` | The governance waist, the reconcile loop, the leased job queue, durable memory and skill stores. |
-| L4 governance + domain | `capability`, `spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
+| L4 governance + domain | `capability`, `budget`, `spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
 | L7 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade. |
@@ -74,14 +74,50 @@ without touching the engine. The load-bearing ones:
   router will be a `llm.Model` decorator in front of the registry, so callers
   stay unaware of which model ran.
 - **`spine.Log`** is the append-only event store: monotonic `Seq` per stream,
-  events never mutated or deleted. This is the substrate for replay and audit.
+  events never mutated or deleted. It also keeps stream snapshots (materialized
+  checkpoints) so a rebuild stays bounded as a stream grows. This is the substrate
+  for replay and audit.
 - **`sandbox`** is the isolation boundary every command execution crosses. Local
   today; remote backends (E2B/Daytona/Modal) are intended as additional adapters
   behind the same port.
 - **`observe`** is the logging/tracing port. Nothing else may import `log/slog`
   (enforced); everything logs through `observe.Logger`.
-- **`dispatch.Admitter`** is the governance gate (capability, budget, approval)
-  every action is admitted through.
+- **`dispatch.Admitter`** is the governance gate every action is admitted through;
+  budget enforcement composes alongside it as a `dispatch` hook (charge after,
+  refuse before) rather than a second gate.
+
+## The run and its substrate
+
+A run is the unit the engine governs, and one stable id ties its pieces together:
+that id (a UUIDv7) names the run's event stream, names its goal resource, keys its
+budget, and is the owner a child run points at. Choosing one identity for all of
+them is what lets runs compose into trees later without reshaping the core.
+
+- **Identity.** A run's session, its goal, and its spine stream share one id, so a
+  run is addressable for replay and audit by a single handle, stable across
+  restarts and unique across a fleet.
+- **Ownership.** A resource carries `OwnerReferences`; one controller owner drives
+  its lifecycle. A garbage collector reaps a resource once its owner is gone or
+  terminating, so deleting a parent cascades to the subtree it created. A run with
+  no owner is a root: the single-run case.
+- **Budget.** A run's spend (tokens and cost) is a durable `Budget` resource keyed
+  by the run id. A `dispatch` hook charges every governed action against it and
+  refuses one once the ceiling is reached, so one pool caps a whole run, or a whole
+  fan-out sharing it, with no per-call wiring.
+- **Bounded replay.** State is a fold of the event log, so a rebuild would grow
+  without bound as a stream grows. A snapshot is a materialized checkpoint at a
+  `Seq`; a rebuild resumes from the latest snapshot and folds only the events after
+  it. A snapshot is a derived cache, never a source of truth, so a missing one is
+  only slower.
+- **Attribution.** Every event carries a `Principal`: the identity on whose
+  authority it was produced (which agent in a fan-out, which human in a multi-user
+  host), distinct from the coarse actor kind. `capability.Grant.Narrow` derives a
+  child grant that is a subset of its parent, so delegation never escalates
+  authority.
+
+Each is built so a single run is the n=1 case: an un-owned, un-budgeted,
+single-principal run behaves exactly as before, and the multi-everything features
+(fan-out, fleet, multi-user, replay-to-regrade) insert without reshaping the core.
 
 ## Invariants
 
@@ -113,21 +149,30 @@ not merely encouraged.
 5. **The host boundary is interfaces only.** The engine never imports a concrete
    host. Persistence and observability cross only through `state` and `observe`.
 
+6. **Budgets bound spend.** A run's token and cost pool is charged at the dispatch
+   waist after each action and checked before the next; an action is refused with a
+   `BudgetExceeded` fault once the ceiling is reached. A run with no budget bound is
+   unlimited (the zero-config default). *(Enforcement: the budget hook on the waist;
+   property-tested, including concurrent charges against a shared pool.)*
+
 ## Event evolution
 
 Events are the durable truth and are read back by *newer* code than wrote them
-(replay-to-regrade, crash-resume, audit, future fleet sync). `spine.Event`
-already carries forward-compatible identity fields (`OriginInstanceID` for
-multi-instance sync, `CausationID` for causal replay) chosen so those features
-never force a refactor.
+(replay-to-regrade, crash-resume, audit, future fleet sync). `spine.Event` carries
+forward-compatible identity fields chosen so those features never force a refactor:
+`OriginInstanceID` (which instance produced it), `CausationID` (causal replay),
+`Principal` (on whose authority), and a `SchemaVersion` discriminator.
 
-The payload is `map[string]any`, which is additively forward-compatible: new keys
-are safe. Renaming, removing, or retyping a key is **not** safe, and there is not
-yet a schema-version discriminator to branch on. Adding one (an explicit
-`SchemaVersion` plus a read-time upcaster per event type) is a one-field change
-now and a hard migration once spines are persisted across instances on mixed
-versions, so the field is cheapest to reserve before there is durable data.
-Upcasting, when it exists, must be deterministic (invariant 2).
+The payload is `map[string]any`, additively forward-compatible: new keys are safe,
+but renaming, removing, or retyping a key is not. That is what `SchemaVersion`
+exists to make safe: an upcaster per (type, version) migrates an old payload to the
+current shape at read time so new code recognises an old event instead of
+misreading it. Upcasting must be deterministic (invariant 2).
+
+Snapshots keep replay bounded as the log grows. A `spine.Log` stores materialized
+checkpoints of a stream, and a rebuild resumes from the latest one and folds only
+the events after it. The events stay the immutable source of truth; a snapshot is a
+cache that can always be rebuilt by folding from an earlier point.
 
 ## Stability tiers
 
@@ -161,15 +206,19 @@ is part of CI).
 
 ## Map of the territory
 
-- **`cmd/flynn`** binary, **root `agent`** embedding facade.
+- **`cmd/flynn`** the binary (`flynn goal "..."` drives a goal to a result with the
+  durable store and learning loop); **root `agent`** the embedding facade a host
+  imports, where `Goal(ctx, objective)` assembles the runtime and sandboxed toolset
+  and runs one objective to its answer. The interactive `flynn` session is not
+  wired yet.
 - **`session`** conversational front door and event stream; **`runtime`** wires
   the controller, worker, store, and bus together.
 - **`goal`** the controller + worker; **`mission`** the conversation executor;
   **`reconcile`** the generic loop they run on.
 - **`resource`** event-sourced state of record; **`spine`** the raw event log;
   **`storage/sqlite`** the durable backend; **`state`** the host boundary.
-- **`dispatch`** the governance waist; **`capability`** grants; **`spinesink`**
-  routes dispatched actions onto the spine.
+- **`dispatch`** the governance waist; **`capability`** grants; **`budget`** the
+  per-run spend ceiling; **`spinesink`** routes dispatched actions onto the spine.
 - **`learn`** the closed learning loop (capture, verify, reinforce, regrade);
   **`memory`** and **`skill`** its durable stores.
 - **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
