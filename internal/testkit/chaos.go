@@ -220,4 +220,21 @@ func (l *faultyLog) Read(ctx context.Context, q spine.Query) ([]spine.Event, err
 	return l.inner.Read(ctx, q)
 }
 
+// SaveSnapshot and LatestSnapshot pass through: the fault plan targets appends (the
+// write path under test), and a snapshot is a derived cache, so injecting faults
+// into it would test nothing the append faults do not already cover.
+func (l *faultyLog) SaveSnapshot(ctx context.Context, s spine.Snapshot) error {
+	if l.inner == nil {
+		return nil
+	}
+	return l.inner.SaveSnapshot(ctx, s)
+}
+
+func (l *faultyLog) LatestSnapshot(ctx context.Context, stream string, upToSeq int64) (spine.Snapshot, bool, error) {
+	if l.inner == nil {
+		return spine.Snapshot{}, false, nil
+	}
+	return l.inner.LatestSnapshot(ctx, stream, upToSeq)
+}
+
 var _ spine.Log = (*faultyLog)(nil)
