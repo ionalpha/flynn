@@ -3,7 +3,7 @@
 // — sessions, skills, memory — only through the interfaces here.
 //
 // The open agent ships a local implementation (in-memory in memory.go; a durable
-// SQLite implementation lands in a follow-up). A commercial host such as an Ion
+// SQLite implementation in storage/sqlite). A commercial host such as an Ion
 // Alpha instance can supply its own Provider backed by a knowledge graph and
 // fleet-wide learning, without this package ever importing the host.
 package state

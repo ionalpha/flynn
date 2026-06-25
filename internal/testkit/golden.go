@@ -35,7 +35,7 @@ func DiffEvents(t TB, want, got []dispatch.Event) {
 
 // Golden compares got against testdata/<name>.golden (pretty JSON). Run the
 // tests with -update to (re)write the file. It lets an entire output — a full
-// missflynn replay, a rendered spec, a whole event stream — be a single snapshot
+// mission replay, a rendered spec, a whole event stream — be a single snapshot
 // with no hand-written expected value, which is what keeps large tests small.
 func Golden[T any](t TB, name string, got T) {
 	t.Helper()
