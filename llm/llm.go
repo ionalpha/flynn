@@ -21,6 +21,8 @@ import (
 	"net"
 	"net/url"
 	"strings"
+
+	"github.com/ionalpha/flynn/fault"
 )
 
 // Role identifies who produced a message.
@@ -145,6 +147,26 @@ type Response struct {
 // 5xx-style failures so the caller retries; terminal for malformed requests).
 type Model interface {
 	Generate(ctx context.Context, req Request) (Response, error)
+}
+
+// RetryClass classifies an HTTP status from a model API into a fault.Class that
+// tells the caller whether to retry. 5xx (a server fault) and 429 (rate limited)
+// are transient, so a worker backs off and retries. The exception that matters: a
+// 429 that signals an exhausted quota or a billing problem is permanent, not a
+// "slow down", so it is terminal and must fail fast rather than retry for hours
+// against an account that cannot succeed. quotaExhausted carries the provider's own
+// signal of that case (its error type, code, or message), since the HTTP status
+// alone cannot distinguish a rate limit from an empty wallet. Every other status
+// (the 4xx client errors: bad request, auth, not found) is terminal.
+func RetryClass(status int, quotaExhausted bool) fault.Class {
+	switch {
+	case status == 429 && quotaExhausted:
+		return fault.Terminal
+	case status == 429 || status >= 500:
+		return fault.Transient
+	default:
+		return fault.Terminal
+	}
 }
 
 // SafeBaseURL reports whether a base URL is safe to send a credential to. A model

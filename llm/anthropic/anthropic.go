@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/fault"
@@ -308,9 +309,20 @@ func statusError(code int, body []byte) error {
 	if msg == "" {
 		msg = string(body)
 	}
-	class := fault.Terminal
-	if code == http.StatusTooManyRequests || code == 529 || code >= 500 {
-		class = fault.Transient
+	// A 429 is normally a rate limit (transient), but a billing/credit problem can
+	// also arrive as one; that is permanent, so it must fail fast rather than retry.
+	// Anthropic phrases it "credit balance is too low". The 529 overloaded status is
+	// a server-side transient and is covered by RetryClass's 5xx branch.
+	quota := containsAny(strings.ToLower(msg), "credit", "billing", "quota")
+	return fault.New(llm.RetryClass(code, quota), "anthropic_status", fmt.Sprintf("anthropic: HTTP %d: %s", code, msg))
+}
+
+// containsAny reports whether s contains any of the substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
 	}
-	return fault.New(class, "anthropic_status", fmt.Sprintf("anthropic: HTTP %d: %s", code, msg))
+	return false
 }
