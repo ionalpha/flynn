@@ -2,12 +2,12 @@ package runtime
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"testing"
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/resource"
@@ -96,7 +96,7 @@ func TestRuntimeRecoversFromFlakyExecutor(t *testing.T) {
 		t.Run(fmt.Sprintf("failures_%d", failures), func(t *testing.T) {
 			t.Parallel()
 			const target = 3
-			exec := testkit.FaultyExecutor(nil, testkit.FailFirst(failures, errors.New("flaky step")))
+			exec := testkit.FaultyExecutor(nil, testkit.FailFirst(failures, fault.New(fault.Transient, "flaky_step", "flaky step")))
 
 			cfg := fastConfig(exec, stopAfter{at: target})
 			cfg.WorkerRetryBase = 2 * time.Millisecond
@@ -120,7 +120,7 @@ func TestRuntimeRecoversFromFlakyExecutor(t *testing.T) {
 // step that fails every attempt exhausts its retry budget, goes dead, and stalls
 // the goal rather than spinning forever.
 func TestRuntimeStallsWhenStepDiesPermanently(t *testing.T) {
-	exec := testkit.FaultyExecutor(nil, testkit.Always(errors.New("always fails")))
+	exec := testkit.FaultyExecutor(nil, testkit.Always(fault.New(fault.Transient, "always_fails", "always fails")))
 	cfg := fastConfig(exec, stopAfter{at: 3})
 	cfg.WorkerRetryBase = time.Millisecond
 	cfg.WorkerRetryCeiling = 5 * time.Millisecond

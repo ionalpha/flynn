@@ -41,6 +41,7 @@ func RunSuite(t *testing.T, newQueue func() Harness) {
 	t.Run("ClaimOrdersByRunAt", func(t *testing.T) { testClaimOrdering(t, newQueue()) })
 	t.Run("CompleteMarksDone", func(t *testing.T) { testComplete(t, newQueue()) })
 	t.Run("FailRetriesThenDies", func(t *testing.T) { testFailRetriesThenDies(t, newQueue()) })
+	t.Run("FailPermanentlyDeadsAtOnce", func(t *testing.T) { testFailPermanently(t, newQueue()) })
 	t.Run("CompleteAndFailGuardState", func(t *testing.T) { testGuards(t, newQueue()) })
 	t.Run("GetUnknownIsNotFound", func(t *testing.T) { testGetNotFound(t, newQueue()) })
 }
@@ -287,6 +288,29 @@ func testFailRetriesThenDies(t *testing.T, h Harness) {
 	h.Clock.Advance(2 * time.Minute)
 	if _, ok := claimOne(t, h, ""); ok {
 		t.Fatal("claimed a dead job")
+	}
+}
+
+func testFailPermanently(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	// Plenty of attempts remain, but a negative retryAt marks the cause not
+	// retryable, so the job goes dead at once instead of returning to pending.
+	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", MaxAttempts: 5})
+
+	j, _ := claimOne(t, h, "")
+	if err := h.Queue.Fail(ctx(), j.ID, "model is down", -1); err != nil {
+		t.Fatalf("Fail permanent: %v", err)
+	}
+	got, _ := h.Queue.Get(ctx(), j.ID)
+	if got.State != jobs.StateDead {
+		t.Fatalf("permanent fail State = %q, want dead at once (attempts remained)", got.State)
+	}
+	if got.LastError != "model is down" {
+		t.Errorf("LastError = %q, want the cause recorded", got.LastError)
+	}
+	// A dead job is never reclaimed, even immediately.
+	if _, ok := claimOne(t, h, ""); ok {
+		t.Fatal("claimed a permanently-failed job")
 	}
 }
 

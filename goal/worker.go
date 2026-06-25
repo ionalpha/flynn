@@ -8,6 +8,7 @@ import (
 
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -187,11 +188,16 @@ func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, che
 	_, _ = w.store.Put(ctx, r)
 }
 
-// fail records a failed attempt with an exponential backoff delay. The queue does
-// not back off on its own (it sets RunAt to whatever retryAt the caller computes),
-// so the worker owns the policy: wait longer after each successive failure, capped,
-// rather than re-claiming a failing step immediately and exhausting its attempts.
+// fail records a failed attempt. A transient cause is retried after an exponential
+// backoff (the worker owns that policy, since the queue does not back off on its
+// own); any other class (terminal, forbidden, budget, cancelled) is not retryable,
+// so the step fails permanently at once rather than burning its whole attempt
+// budget on a call that cannot succeed. That is what makes a down model or a bad
+// API key surface as a stalled goal in seconds instead of after every retry.
 func (w *Worker) fail(ctx context.Context, job jobs.Job, cause error) error {
+	if fault.Classify(cause) != fault.Transient {
+		return w.jobs.Fail(ctx, job.ID, cause.Error(), -1)
+	}
 	delay := jobs.Backoff(job.Attempt, int64(w.retryBase), int64(w.retryCeil))
 	retryAt := w.clk.Now().UnixNano() + delay
 	return w.jobs.Fail(ctx, job.ID, cause.Error(), retryAt)
