@@ -89,7 +89,6 @@ func (m *Manager) Enqueue(ref Ref) {
 func (m *Manager) Start(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, c := range m.controllers {
-
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
