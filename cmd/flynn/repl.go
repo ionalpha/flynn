@@ -24,8 +24,9 @@ import (
 // single id for replay and audit. Ctrl-C cancels the in-flight turn without ending
 // the session; Ctrl-D or "exit" leaves, after which a learning pass distills the
 // session (unless learning is disabled). It assumes stdin is a terminal; the caller
-// falls back to usage when it is not.
-func runInteractive(modelSpec, dataDir string, learnEnabled, verbose bool) error {
+// falls back to usage when it is not. By default it runs the full-screen interface;
+// plain (or a non-terminal stdout) selects the line-based interface instead.
+func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
 	model, err := resolveModel(ctx, modelSpec, dataDir)
@@ -61,11 +62,18 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose bool) error
 		reg:       reg,
 	}
 
-	// The terminal reader gives line editing, history, and bracketed paste, entering
-	// raw mode only while reading a line. Ctrl-C cancels the in-flight turn only (the
-	// signal is delivered while a turn runs, when the terminal is back in its normal
-	// mode); the session and loop survive, so a runaway turn is interruptible without
-	// losing the conversation.
+	if plain || !stdoutIsTerminal() {
+		return s.runLineMode(ctx, cwd)
+	}
+	return runInteractiveTUI(ctx, s)
+}
+
+// runLineMode is the line-based session: a terminal reader giving line editing,
+// history, and bracketed paste, entering raw mode only while reading a line. Ctrl-C
+// cancels the in-flight turn only (the signal is delivered while a turn runs, when
+// the terminal is back in its normal mode); the session survives, so a runaway turn
+// is interruptible without losing the conversation.
+func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	in := newTermReader(stdio{os.Stdin, os.Stdout}, int(os.Stdin.Fd()), "flynn> ")
 	defer in.Close()
 
@@ -294,7 +302,18 @@ func isExit(line string) bool {
 // no-subcommand invocation starts a REPL only when there is a human to prompt and
 // falls back to usage when stdin is a pipe or file (a script, a CI step).
 func stdinIsTerminal() bool {
-	fi, err := os.Stdin.Stat()
+	return isCharDevice(os.Stdin)
+}
+
+// stdoutIsTerminal reports whether standard output is an interactive terminal, so
+// the full-screen interface is used only when it can render and the line-based one is
+// chosen when output is redirected.
+func stdoutIsTerminal() bool {
+	return isCharDevice(os.Stdout)
+}
+
+func isCharDevice(f *os.File) bool {
+	fi, err := f.Stat()
 	if err != nil {
 		return false
 	}
