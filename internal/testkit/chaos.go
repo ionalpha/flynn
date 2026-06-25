@@ -10,11 +10,15 @@ package testkit
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/integrations/request"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
@@ -208,6 +212,35 @@ func (s inertSub) Subject() string  { return string(s) }
 func (inertSub) Unsubscribe() error { return nil }
 
 var _ bus.Bus = (*faultyBus)(nil)
+
+// FaultyDoer wraps a request.Doer, injecting plan's faults before delegating, so a
+// flaky network (a few transient failures then recovery, or a hard outage) is
+// modelled deterministically against the shared HTTP transport. The injected error
+// flows through the transport's classification, so a fault.Transient drives the
+// retry path and a fault.Terminal proves a non-retryable failure is not replayed. A
+// nil inner doer returns a minimal 200 response when not faulting, so a plan alone
+// is enough to drive the transport through its retry and recovery path.
+func FaultyDoer(inner request.Doer, plan *FaultPlan) request.Doer {
+	return doerFunc(func(r *http.Request) (*http.Response, error) {
+		if err := plan.next(); err != nil {
+			return nil, err
+		}
+		if inner == nil {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     http.Header{},
+			}, nil
+		}
+		return inner.Do(r)
+	})
+}
+
+type doerFunc func(*http.Request) (*http.Response, error)
+
+func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+var _ request.Doer = doerFunc(nil)
 
 // FaultyLog wraps a spine.Log, injecting plan's faults on Append before
 // delegating; Read passes through. It models a flaky durable log: an append that
