@@ -29,6 +29,7 @@ type Manager struct {
 	store       resource.Store
 	clk         clock.Timing
 	resync      time.Duration
+	skipResync  bool
 	controllers map[string]*Controller[Ref]
 }
 
@@ -50,6 +51,17 @@ func WithClock(c clock.Timing) ManagerOption {
 // reconciles), which is useful in tests that want to control every trigger.
 func WithResync(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.resync = d }
+}
+
+// WithoutResync disables the resync sweep entirely, both the initial pass and the
+// periodic one, so the manager drives only the resources explicitly enqueued (by a
+// completion signal or an Enqueue hint) and never adopts pre-existing resources it
+// finds in the store. A one-shot run uses this so it drives its own submitted work
+// to completion without re-adopting goals left non-terminal by an earlier run; that
+// keeps each run's event stream its own and makes resuming a parked run an explicit
+// act rather than a side effect of starting any run.
+func WithoutResync() ManagerOption {
+	return func(m *Manager) { m.skipResync = true }
 }
 
 // NewManager returns a manager over store. Register kinds before Start.
@@ -106,6 +118,11 @@ func (m *Manager) Start(ctx context.Context) {
 // resyncLoop performs an initial resync, then re-syncs every interval until ctx
 // is cancelled.
 func (m *Manager) resyncLoop(ctx context.Context) {
+	if m.skipResync {
+		// Drive only explicitly-enqueued work; never adopt pre-existing resources.
+		<-ctx.Done()
+		return
+	}
 	m.resyncAll(ctx)
 	if m.resync <= 0 {
 		<-ctx.Done()

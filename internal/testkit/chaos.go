@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -135,6 +136,28 @@ func (f execFunc) Execute(ctx context.Context, r resource.Resource) (json.RawMes
 }
 
 var _ goal.StepExecutor = execFunc(nil)
+
+// FaultyModel wraps an llm.Model, injecting plan's faults on Generate before
+// delegating. It models a flaky provider (a transient API error) so a test can
+// drive the conversation loop's retry path, where the fault lands AFTER a turn has
+// already been announced. That is the case the well-formedness invariant guards:
+// a retried turn must not duplicate its turn.started on the event stream.
+func FaultyModel(inner llm.Model, plan *FaultPlan) llm.Model {
+	return modelFunc(func(ctx context.Context, req llm.Request) (llm.Response, error) {
+		if err := plan.next(); err != nil {
+			return llm.Response{}, err
+		}
+		return inner.Generate(ctx, req)
+	})
+}
+
+type modelFunc func(context.Context, llm.Request) (llm.Response, error)
+
+func (f modelFunc) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	return f(ctx, req)
+}
+
+var _ llm.Model = modelFunc(nil)
 
 // FaultyBus wraps a bus.Bus, injecting plan's faults on Publish before delegating;
 // Subscribe and Close pass through. It proves a publisher tolerates a flaky or
