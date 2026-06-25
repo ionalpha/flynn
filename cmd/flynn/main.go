@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -103,8 +104,30 @@ func main() {
 		return
 	}
 
-	// No subcommand: print usage. The interactive session is not wired in yet.
-	fmt.Fprintln(os.Stderr, `flynn: an autonomous software agent. Usage:
+	if args := flag.Args(); len(args) >= 1 && args[0] == "help" {
+		printUsage(os.Stdout)
+		return
+	}
+
+	// No subcommand: start an interactive session when attached to a terminal, where
+	// each line is a turn of one continuing conversation. With stdin redirected (a
+	// pipe, a file, a CI step) there is no one to prompt, so print usage instead.
+	if len(flag.Args()) == 0 && stdinIsTerminal() {
+		if err := runInteractive(*model, *dataDir, !*noLearn, vrb); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	printUsage(os.Stderr)
+	os.Exit(2)
+}
+
+// printUsage writes the command summary to w.
+func printUsage(w io.Writer) {
+	_, _ = fmt.Fprintln(w, `flynn: an autonomous software agent. Usage:
+  flynn                      start an interactive session (chat turn by turn)
   flynn goal "<objective>"   drive a goal to completion in the current directory
   flynn runs                 list past runs (id, phase, objective)
   flynn resume <run-id>      continue a parked or interrupted run by id
@@ -113,7 +136,6 @@ func main() {
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose (run with --help for details).`)
-	os.Exit(2)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user

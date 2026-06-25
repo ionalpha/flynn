@@ -321,6 +321,41 @@ func (Convergence) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool
 	return true, reason, nil
 }
 
+// ContinueConversation reopens a converged goal for another user turn: it appends
+// text as a new user message onto the recorded conversation and clears the done
+// flag, so re-driving the goal advances the same exchange instead of stopping on
+// the prior turn's convergence. The returned status must be persisted onto the goal
+// and the goal re-enqueued (runtime.Resume) for the turn to run.
+//
+// This is the mechanism behind a multi-turn session: each user line after the first
+// continues one durable goal, so the model is handed the whole history and the run
+// stays addressable, replayable, and auditable by a single id. The phase is reset
+// off its settled value so the reconciler re-evaluates rather than no-op-skipping a
+// converged goal, and the step counter is cleared so the new turn runs with a fresh
+// step budget rather than inheriting the prior turn's spend.
+func ContinueConversation(status goal.Status, text string) (goal.Status, error) {
+	cp, err := decodeCheckpoint(status.Checkpoint)
+	if err != nil {
+		return status, fault.Wrap(fault.Terminal, "mission_checkpoint_decode", err)
+	}
+	cp.Messages = append(cp.Messages, llm.Text(llm.RoleUser, text))
+	cp.Done = false
+	cp.Result = ""
+	raw, err := encodeCheckpoint(cp)
+	if err != nil {
+		return status, fault.Wrap(fault.Terminal, "mission_checkpoint_encode", err)
+	}
+	status.Checkpoint = raw
+	status.Phase = goal.PhasePending
+	status.Message = ""
+	status.Steps = 0
+	// Drop any record of an in-flight step: the prior turn has ended (converged, or
+	// cancelled mid-step), so a fresh turn must dispatch a new step rather than wait
+	// on a job that belongs to a runtime that is gone.
+	status.InFlight = nil
+	return status, nil
+}
+
 // checkpoint is the mission's resumable state: the full conversation, whether the
 // model has finished, and its final answer. It is opaque to the reconciler and
 // owned by this package; the executor writes it and Convergence reads it.
