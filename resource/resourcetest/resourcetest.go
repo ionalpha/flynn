@@ -75,6 +75,7 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("Bitemporal", func(t *testing.T) { testBitemporal(t, newStore) })
 	t.Run("MetaCircularKind", func(t *testing.T) { testMetaCircularKind(t, newStore) })
 	t.Run("EventSourced", func(t *testing.T) { testEventSourced(t, newStore) })
+	t.Run("SnapshotReplay", func(t *testing.T) { testSnapshotReplay(t, newStore) })
 	t.Run("Merge", func(t *testing.T) { testMerge(t, newStore) })
 	t.Run("MergeConverges", func(t *testing.T) { testMergeConverges(t, newStore) })
 	t.Run("MergeValidation", func(t *testing.T) { testMergeValidation(t, newStore) })
@@ -825,5 +826,57 @@ func testOwnerReferences(t *testing.T, newStore func(*resource.Registry) resourc
 	root := mustPut(t, s, widget("root", "m", nil))
 	if _, ok := root.Controller(); ok {
 		t.Fatal("a resource with no owner references must have no controller")
+	}
+}
+
+// testSnapshotReplay holds every backend to the bounded-fold contract: after a
+// store checkpoints its projection, a Replay resumes from that snapshot and folds
+// only the later events, reproducing the live state exactly. Fold-from-snapshot
+// equals fold-from-zero, so a snapshot is a pure performance cache.
+func testSnapshotReplay(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	reg := NewRegistry(t)
+	s := newStore(reg)
+	defer func() { _ = s.Close() }()
+
+	el, ok := s.(eventLogged)
+	if !ok {
+		t.Skip("store does not expose an event log")
+	}
+
+	// History, a checkpoint, then more history including an update and a delete that
+	// land after the snapshot, so Replay must fold them on top of the restored state.
+	mustPut(t, s, widget("a", "s", nil))
+	mustPut(t, s, widget("b", "m", nil))
+	if err := s.Snapshot(ctx); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	mustPut(t, s, widget("c", "l", nil))
+	mustPut(t, s, widget("a", "l", nil)) // update a after the snapshot
+	if err := s.Delete(ctx, widgetKind, resource.Scope{}, "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	snap, found, err := el.Log().LatestSnapshot(ctx, resource.ResourceStream, 0)
+	if err != nil || !found {
+		t.Fatalf("expected a resource snapshot, found=%v err=%v", found, err)
+	}
+	if snap.Seq != 2 {
+		t.Fatalf("snapshot anchored at seq %d, want 2 (taken after two writes)", snap.Seq)
+	}
+
+	replayed, err := resource.Replay(ctx, el.Log(), reg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, _ := s.List(ctx, widgetKind, resource.Scope{}, nil)
+	rep, _ := replayed.List(ctx, widgetKind, resource.Scope{}, nil)
+	if len(live) != len(rep) {
+		t.Fatalf("replay-from-snapshot list len %d != live %d", len(rep), len(live))
+	}
+	for i := range live {
+		if live[i].ID != rep[i].ID || live[i].ContentHash != rep[i].ContentHash {
+			t.Fatalf("replay-from-snapshot resource %d differs from live: %s vs %s", i, rep[i].Name, live[i].Name)
+		}
 	}
 }

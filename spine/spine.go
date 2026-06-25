@@ -88,11 +88,19 @@ type Query struct {
 }
 
 // Log is the append-only event store — the spine port. Append assigns a
-// monotonic Seq within a stream; Read returns events in Seq order. A host
-// supplies a durable implementation; the agent ships MemoryLog.
+// monotonic Seq within a stream; Read returns events in Seq order. It also keeps
+// stream snapshots: materialized checkpoints a Fold resumes from so reading state
+// stays fast as a stream grows without bound (see Snapshot). A host supplies a
+// durable implementation; the agent ships MemoryLog.
 type Log interface {
 	Append(ctx context.Context, in AppendInput) (Event, error)
 	Read(ctx context.Context, q Query) ([]Event, error)
+	// SaveSnapshot stores s, replacing any existing snapshot for (Stream, Seq).
+	SaveSnapshot(ctx context.Context, s Snapshot) error
+	// LatestSnapshot returns the newest snapshot for stream with Seq <= upToSeq and
+	// true, or false when none exists. A non-positive upToSeq returns the newest
+	// snapshot at any Seq.
+	LatestSnapshot(ctx context.Context, stream string, upToSeq int64) (Snapshot, bool, error)
 }
 
 // Fold replays events through a reducer to project state: state is a function of

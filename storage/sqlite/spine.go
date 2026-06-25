@@ -9,6 +9,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/ionalpha/flynn/clock"
@@ -119,6 +120,32 @@ func (l *eventLog) Read(ctx context.Context, q spine.Query) ([]spine.Event, erro
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// SaveSnapshot implements spine.Log: it stores a stream checkpoint, replacing any
+// snapshot already at (stream, seq).
+func (l *eventLog) SaveSnapshot(ctx context.Context, s spine.Snapshot) error {
+	_, err := l.db.ExecContext(ctx,
+		`INSERT INTO snapshots (stream, seq, payload) VALUES (?,?,?)
+		 ON CONFLICT(stream, seq) DO UPDATE SET payload = excluded.payload`,
+		s.Stream, s.Seq, s.Payload)
+	return err
+}
+
+// LatestSnapshot implements spine.Log: the newest snapshot for stream at or before
+// upToSeq (any seq when upToSeq <= 0), and false when none exists.
+func (l *eventLog) LatestSnapshot(ctx context.Context, stream string, upToSeq int64) (spine.Snapshot, bool, error) {
+	s := spine.Snapshot{Stream: stream}
+	err := l.db.QueryRowContext(ctx,
+		`SELECT seq, payload FROM snapshots WHERE stream = ? AND (? <= 0 OR seq <= ?) ORDER BY seq DESC LIMIT 1`,
+		stream, upToSeq, upToSeq).Scan(&s.Seq, &s.Payload)
+	if errors.Is(err, sql.ErrNoRows) {
+		return spine.Snapshot{}, false, nil
+	}
+	if err != nil {
+		return spine.Snapshot{}, false, err
+	}
+	return s, true, nil
 }
 
 // clonePayload shallow-copies a payload map so the returned event is decoupled

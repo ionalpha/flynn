@@ -38,6 +38,41 @@ var _ resource.Store = (*resourceStore)(nil)
 // Close closes the shared database (the resource store and the Store share it).
 func (s *resourceStore) Close() error { return s.p.Close() }
 
+// Snapshot implements resource.Store: it checkpoints every projected resource (live
+// and tombstoned) onto the event log, anchored at the resource stream's head Seq,
+// so a Replay resumes from the snapshot and folds only the events after it instead
+// of replaying the whole stream.
+func (s *resourceStore) Snapshot(ctx context.Context) error {
+	rows, err := s.p.db.QueryContext(ctx, `SELECT `+resourceCols+` FROM resources ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rows.Close() }()
+	var all []resource.Resource
+	for rows.Next() {
+		r, err := scanResource(rows)
+		if err != nil {
+			return err
+		}
+		all = append(all, r)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	var lastSeq int64
+	if err := s.p.db.QueryRowContext(ctx,
+		`SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream = ?`, resource.ResourceStream).Scan(&lastSeq); err != nil {
+		return err
+	}
+
+	payload, err := resource.MarshalSnapshot(all, lastSeq)
+	if err != nil {
+		return err
+	}
+	return s.p.Log().SaveSnapshot(ctx, spine.Snapshot{Stream: resource.ResourceStream, Seq: lastSeq, Payload: payload})
+}
+
 // Log exposes the shared spine so the resource stream can be observed or folded;
 // the event-sourced capability the conformance suite checks.
 func (s *resourceStore) Log() spine.Log { return s.p.Log() }

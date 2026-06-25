@@ -71,6 +71,11 @@ type Store interface {
 	// instances has two different IDs and so stays two distinct records; resolving
 	// such a name collision is a higher-level concern, not part of the apply path.
 	Merge(ctx context.Context, remote Resource) (MergeResult, error)
+	// Snapshot checkpoints the current projection onto the event log, so a later
+	// rebuild resumes from the snapshot and folds only the events after it instead
+	// of replaying the whole stream. A snapshot is a derived cache: it never changes
+	// what a read returns, only how fast a rebuild is.
+	Snapshot(ctx context.Context) error
 	// Close releases backend resources.
 	Close() error
 }
