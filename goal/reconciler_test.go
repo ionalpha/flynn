@@ -310,3 +310,47 @@ func TestGoalFinalizerBlocksOnCleanupFailure(t *testing.T) {
 		t.Fatal("goal not deleted after cleanup eventually succeeded")
 	}
 }
+
+// TestGoalOrphanIsGarbageCollected proves cascade GC over the ownership edge: a
+// child goal whose controller owner has been deleted reaps itself on its next
+// reconcile, so deleting a parent tears down the subtree it created. While the
+// owner is alive the child is untouched.
+func TestGoalOrphanIsGarbageCollected(t *testing.T) {
+	h := newHarness(t, stopAfter{at: 99})
+
+	parent := h.createGoal(t, "parent", Spec{Objective: "o", StopCondition: "c"})
+	pr, err := h.store.Get(h.ctx, parent.Kind, parent.Scope, parent.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	raw, _ := json.Marshal(Spec{Objective: "child", StopCondition: "c"})
+	if _, err := h.store.Put(h.ctx, resource.Resource{
+		APIVersion: GroupVersion, Kind: Kind, Name: "child", Spec: raw,
+		Envelope: resource.Envelope{OwnerReferences: []resource.OwnerReference{
+			{APIVersion: GroupVersion, Kind: Kind, Name: "parent", ID: pr.ID, Controller: true},
+		}},
+	}); err != nil {
+		t.Fatalf("create child: %v", err)
+	}
+	child := reconcile.Ref{Kind: Kind, Name: "child"}
+
+	// While the owner is alive, the child reconciles normally and survives.
+	h.reconcile(t, child)
+	if _, err := h.store.Get(h.ctx, child.Kind, child.Scope, child.Name); err != nil {
+		t.Fatalf("child must survive while its owner is alive: %v", err)
+	}
+
+	// Delete the owner (no finalizer, so it is gone at once).
+	if err := h.store.Delete(h.ctx, parent.Kind, parent.Scope, parent.Name); err != nil {
+		t.Fatal(err)
+	}
+
+	// The child now sees its owner gone and reaps itself: it goes terminating (it
+	// added its own finalizer above), then a finalize pass removes it.
+	h.reconcile(t, child)
+	h.reconcile(t, child)
+	if _, err := h.store.Get(h.ctx, child.Kind, child.Scope, child.Name); err == nil {
+		t.Fatal("orphaned child was not garbage-collected after its owner was deleted")
+	}
+}

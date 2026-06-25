@@ -113,6 +113,20 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return g.finalize(ctx, r)
 	}
 
+	// Garbage-collect an orphan: if a controller owner is gone or terminating, this
+	// goal belongs to a subtree being torn down, so request its own deletion. Its
+	// finalizer then runs cleanup and the reap cascades down the tree. Owner liveness
+	// is resolved by id; the resync re-checks it if an owner vanishes between
+	// reconciles. A root goal (no controller owner) is never orphaned.
+	if gone, err := resource.OwnerGone(ctx, g.store, r); err != nil {
+		return reconcile.Result{}, err
+	} else if gone {
+		if err := g.store.Delete(ctx, r.Kind, r.Scope, r.Name); err != nil {
+			return reconcile.Result{}, putErr(err)
+		}
+		return reconcile.Result{}, nil
+	}
+
 	// Ensure our finalizer is present before doing anything that creates state we
 	// must later clean up, then continue in the same pass using the freshly stamped
 	// record. Returning here instead would leave the goal idle until the next
