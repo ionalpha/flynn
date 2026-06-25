@@ -126,7 +126,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		system += "\n\n" + block
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs())
+	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log())
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -393,14 +393,18 @@ func truncate(s string, n int) string {
 // id (used as learning provenance), and the conversation transcript (so the
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue) (result, source string, transcript []llm.Message, err error) {
+func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log) (result, source string, transcript []llm.Message, err error) {
 	sb, err := sandbox.NewLocal(workdir)
 	if err != nil {
 		return "", "", nil, err
 	}
 	w := &syncWriter{w: out}
 
-	sess := session.New(spine.NewMemoryLog(), bus.NewMemory())
+	// The session records the run on the durable spine, keyed by a stable run id
+	// that also names the goal resource (see session.Submit), so the run survives
+	// the process and is addressable for replay and audit.
+	sess := session.New(log, bus.NewMemory())
+	_, _ = fmt.Fprintf(w, "  run %s\n", sess.ID())
 
 	toolset := tools.New(sb).Tools()
 	// The grant lists every action the run may take: the tools, plus the model call
