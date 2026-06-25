@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
@@ -167,12 +168,20 @@ func TestWorkerSkipsTerminatingGoal(t *testing.T) {
 	}
 }
 
-// failingExec always errors, modelling a step whose model or tool call keeps
-// failing.
+// failingExec always fails transiently, modelling a step whose model or tool call
+// hits a temporary error and should be retried after a backoff.
 type failingExec struct{}
 
 func (failingExec) Execute(context.Context, resource.Resource) (json.RawMessage, error) {
-	return nil, errors.New("step boom")
+	return nil, fault.New(fault.Transient, "step_boom", "step boom (transient)")
+}
+
+// terminalExec fails with a non-retryable error, modelling a down model or a bad
+// API key: the step cannot succeed, so it must fail fast rather than retry.
+type terminalExec struct{}
+
+func (terminalExec) Execute(context.Context, resource.Resource) (json.RawMessage, error) {
+	return nil, fault.New(fault.Terminal, "step_down", "the model is unavailable")
 }
 
 // TestWorkerFailedStepBacksOff verifies a failing step is rescheduled with a
@@ -232,4 +241,60 @@ func mustReconcile(ctx context.Context, t *testing.T, gr *Reconciler, ref reconc
 func (h *harness) mustReconcile(t *testing.T, ref reconcile.Ref) {
 	t.Helper()
 	mustReconcile(h.ctx, t, h.gr, ref)
+}
+
+// TestWorkerTerminalStepFailsFast verifies a step that fails with a non-retryable
+// cause (a down model, a bad key) is failed permanently on the first attempt, so
+// the goal stalls in one pass instead of burning its whole retry budget.
+func TestWorkerTerminalStepFailsFast(t *testing.T) {
+	m := clock.NewManual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	q := jobs.NewMemory(jobs.WithClock(m))
+	reg := resource.NewRegistry()
+	if err := resource.RegisterCoreKinds(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	store := resource.NewMemory(reg, resource.WithClock(m))
+	gr := NewReconciler(store, q, m, stopAfter{at: 99})
+	w := NewWorker(store, q, m, terminalExec{}, WithLease(time.Minute), WithBackoff(2*time.Second, time.Minute))
+	ctx := context.Background()
+
+	raw, _ := json.Marshal(Spec{Objective: "o", StopCondition: "c"})
+	r, err := store.Put(ctx, resource.Resource{APIVersion: GroupVersion, Kind: Kind, Name: "g", Spec: raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := reconcile.Ref{Kind: Kind, Name: r.Name}
+
+	mustReconcile(ctx, t, gr, ref) // finalizer
+	mustReconcile(ctx, t, gr, ref) // dispatch the step
+
+	if processed, err := w.ProcessOnce(ctx); err != nil || !processed {
+		t.Fatalf("step not processed: processed=%v err=%v", processed, err)
+	}
+
+	// The step is dead at once: not claimable even far past any backoff window.
+	m.Advance(10 * time.Minute)
+	if processed, _ := w.ProcessOnce(ctx); processed {
+		t.Fatal("a terminally-failed step was retried; it must fail fast")
+	}
+
+	// The reconciler observes the dead step and stalls the goal.
+	res, err := gr.Reconcile(ctx, ref)
+	if err != nil {
+		t.Fatalf("reconcile after terminal failure: %v", err)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("a stalled goal should not be requeued; got %v", res.RequeueAfter)
+	}
+	gr2, err := store.Get(ctx, ref.Kind, ref.Scope, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := DecodeStatus(gr2)
+	if st.Phase != PhaseStalled {
+		t.Fatalf("goal phase = %q, want Stalled after a terminal step failure", st.Phase)
+	}
 }

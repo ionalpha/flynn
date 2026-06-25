@@ -100,7 +100,9 @@ type Queue interface {
 	// not running.
 	Complete(ctx context.Context, id string) error
 	// Fail records a failed attempt. If attempts remain the job returns to pending
-	// with RunAt = retryAt (the caller computes backoff); otherwise it goes dead.
+	// with RunAt = retryAt (the caller computes backoff); otherwise it goes dead. A
+	// negative retryAt fails the job permanently (dead now, no further attempts),
+	// for a cause the caller knows is not retryable.
 	Fail(ctx context.Context, id, errMsg string, retryAt int64) error
 	// Get returns a job by ID.
 	Get(ctx context.Context, id string) (Job, error)
@@ -227,7 +229,10 @@ func MarkFailed(j *Job, errMsg string, retryAt, now int64) {
 	j.LastError = errMsg
 	j.LeaseExpires = 0
 	j.UpdatedAt = now
-	if j.Attempt >= j.MaxAttempts {
+	// A negative retryAt means the cause is not retryable (a terminal failure): the
+	// job goes dead at once rather than burning attempts on a step that cannot
+	// succeed. Otherwise it deads only once attempts are exhausted.
+	if retryAt < 0 || j.Attempt >= j.MaxAttempts {
 		j.State = StateDead
 		return
 	}
