@@ -20,7 +20,7 @@ import (
 // presentation differs. When the program exits, output is restored to stdout and the
 // session's learning pass runs there.
 func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
-	p := tea.NewProgram(newTUIModel(ctx, s, seed), tea.WithAltScreen(), tea.WithContext(ctx))
+	p := tea.NewProgram(newTUIModel(ctx, s, seed), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
 	_, err := p.Run()
 	if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
 		err = nil
@@ -98,6 +98,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		return m.onKey(msg)
 
+	case tea.MouseMsg:
+		// The wheel always scrolls the transcript, whether a turn is running or the
+		// session is idle, so reading back is never blocked by the composer focus.
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
+
 	case outLineMsg:
 		m.appendLine(string(msg))
 		return m, m.readNext()
@@ -158,6 +165,12 @@ func (m tuiModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		m.ta.Reset()
 		return m.startTurn(text)
+	case tea.KeyPgUp, tea.KeyPgDown:
+		// Page keys always scroll the transcript, idle or busy. They do not conflict
+		// with composing (unlike the arrows, which the textarea needs for the cursor).
+		var cmd tea.Cmd
+		m.vp, cmd = m.vp.Update(msg)
+		return m, cmd
 	default:
 		// Any other key is editing or scrolling, handled below.
 	}

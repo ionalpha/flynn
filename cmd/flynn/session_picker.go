@@ -57,16 +57,12 @@ func pickSession(ctx context.Context, store *sqlite.Store, reg *resource.Registr
 	if err != nil {
 		return "", "", 0, err
 	}
-	choice = strings.TrimSpace(choice)
-	if choice == "" || choice == "0" {
+	n := parseChoice(choice, len(goals))
+	if n == 0 {
+		if t := strings.TrimSpace(choice); t != "" && t != "0" {
+			fmt.Fprintln(os.Stderr, "  not a listed choice; starting a new session.")
+		}
 		return "", "", 0, nil // start a new session
-	}
-	// Anything that is not a listed number falls back to a new session; a bad menu
-	// choice is not an error, so the parse failure is intentionally not propagated.
-	n, _ := strconv.Atoi(choice)
-	if n < 1 || n > len(goals) {
-		fmt.Fprintln(os.Stderr, "  not a listed choice; starting a new session.")
-		return "", "", 0, nil
 	}
 
 	id := goals[n-1].Name
@@ -75,6 +71,22 @@ func pickSession(ctx context.Context, store *sqlite.Store, reg *resource.Registr
 		return "", "", 0, herr
 	}
 	return id, hist, last, nil
+}
+
+// parseChoice maps a menu entry to a 1-based selection in [1, n], or 0 for "new
+// session": an empty line, "0", or anything that is not one of the listed numbers.
+// It never returns an out-of-range index, so a hostile or fat-fingered entry can
+// only start a new session, never select a run that is not on the menu.
+func parseChoice(input string, n int) int {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return 0
+	}
+	v, err := strconv.Atoi(input)
+	if err != nil || v < 1 || v > n {
+		return 0
+	}
+	return v
 }
 
 // renderHistory replays a run's recorded events through the same renderer a live
