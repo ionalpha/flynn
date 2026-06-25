@@ -85,6 +85,13 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
 	if err != nil {
 		return err
 	}
+	// The key is now held inside the model as a secret.Text, so drop it from the
+	// process environment. The sandbox already withholds the parent environment
+	// from commands; unsetting here additionally keeps the raw key out of
+	// os.Environ(), a crash dump, or any future child that reads the parent env.
+	for _, k := range provider.CredentialEnvVars() {
+		_ = os.Unsetenv(k)
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err

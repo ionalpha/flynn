@@ -12,6 +12,7 @@ import (
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // mockTransport returns a canned response and captures the request it was given.
@@ -36,7 +37,7 @@ func (m *mockTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func clientWith(m *mockTransport, opts ...Option) *Client {
 	opts = append([]Option{WithHTTPClient(&http.Client{Transport: m})}, opts...)
-	return New("test-key", opts...)
+	return New(secret.New("test-key"), opts...)
 }
 
 func TestGenerateMapsRequestAndDecodesText(t *testing.T) {

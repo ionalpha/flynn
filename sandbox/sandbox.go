@@ -35,6 +35,13 @@ type ExecResult struct {
 // Sandbox is the execution boundary. All paths are relative to the sandbox root,
 // and an implementation must reject any operation that would reach outside its
 // boundary (default-deny). Implementations must be safe for concurrent use.
+//
+// Environment isolation is part of the contract: an implementation must not pass
+// the agent's process environment through to a command it runs. A command sees
+// only a minimal, credential-free baseline plus variables granted to it
+// explicitly, so a secret the agent holds can never leak into a command's
+// environment by default. This is the execution-boundary half of the project's
+// "secrets are never materialized into the agent's environment" invariant.
 type Sandbox interface {
 	// Exec runs a command inside the sandbox.
 	Exec(ctx context.Context, cmd Command) (ExecResult, error)

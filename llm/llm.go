@@ -18,6 +18,8 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"net"
+	"net/url"
 	"strings"
 )
 
@@ -143,6 +145,36 @@ type Response struct {
 // 5xx-style failures so the caller retries; terminal for malformed requests).
 type Model interface {
 	Generate(ctx context.Context, req Request) (Response, error)
+}
+
+// SafeBaseURL reports whether a base URL is safe to send a credential to. A model
+// request carries the API key in a header, so the transport must be encrypted: the
+// URL must be https, unless it targets the loopback host (a local model server or
+// gateway), where plaintext http is allowed because the traffic never leaves the
+// machine. An empty string means "use the provider default" and is reported safe.
+// Backends and the provider resolver use this to refuse a plaintext remote
+// endpoint, so a credential is never sent where it could be sniffed in transit.
+func SafeBaseURL(raw string) bool {
+	if raw == "" {
+		return true
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	switch u.Scheme {
+	case "https":
+		return true
+	case "http":
+		host := u.Hostname()
+		if host == "localhost" {
+			return true
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && ip.IsLoopback()
+	default:
+		return false
+	}
 }
 
 // --- ergonomic constructors -------------------------------------------------

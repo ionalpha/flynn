@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,6 +25,7 @@ import (
 type Local struct {
 	root        string // absolute, symlinks resolved
 	execTimeout time.Duration
+	granted     map[string]string // env vars explicitly granted into commands
 }
 
 // LocalOption configures a Local sandbox.
@@ -36,6 +38,27 @@ func WithExecTimeout(d time.Duration) LocalOption {
 	return func(l *Local) {
 		if d > 0 {
 			l.execTimeout = d
+		}
+	}
+}
+
+// WithEnv grants additional environment variables into commands the sandbox runs.
+// A command's environment is otherwise a minimal, secret-free baseline (see Exec):
+// the host's environment is never inherited, so the agent's own credentials are
+// withheld by construction. This is the only way a variable beyond the baseline
+// reaches a command, the brokered path a capability grant feeds. A granted value
+// overrides the baseline value for the same key. Secrets must not be granted here;
+// they belong in a request the sandbox never sees, not a child's environment.
+func WithEnv(vars map[string]string) LocalOption {
+	return func(l *Local) {
+		if len(vars) == 0 {
+			return
+		}
+		if l.granted == nil {
+			l.granted = make(map[string]string, len(vars))
+		}
+		for k, v := range vars {
+			l.granted[k] = v
 		}
 	}
 }
@@ -125,6 +148,10 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	//nolint:gosec // running a model-supplied command is the bash tool's purpose; isolation is this sandbox's job, hardened by the stronger tiers
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = l.root
+	// Deny-by-default environment: never inherit the host's, so the agent's API
+	// keys and every other process secret are withheld from a model-run command.
+	// The command sees only a minimal baseline plus what WithEnv explicitly grants.
+	c.Env = l.env()
 	out, err := c.CombinedOutput()
 	res := ExecResult{Output: string(out)}
 	if err != nil {
@@ -189,6 +216,48 @@ func (l *Local) Walk(_ context.Context, root string) ([]string, error) {
 		return nil
 	})
 	return out, walkErr
+}
+
+// env builds the environment a command runs with: the values of the baseline keys
+// that are set on the host, plus any explicitly granted variables (which override
+// a baseline key of the same name). The host environment is never passed through,
+// so no credential the agent holds can reach a command unless it was granted by
+// name. The result is sorted for a stable, testable ordering.
+func (l *Local) env() []string {
+	vals := make(map[string]string, len(baselineEnvKeys)+len(l.granted))
+	for _, k := range baselineEnvKeys {
+		if v, ok := os.LookupEnv(k); ok {
+			vals[k] = v
+		}
+	}
+	for k, v := range l.granted {
+		vals[k] = v
+	}
+	out := make([]string, 0, len(vals))
+	for k, v := range vals {
+		out = append(out, k+"="+v)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// baselineEnvKeys are the only host environment variables a sandboxed command
+// inherits: just enough for a shell to start and find tools, a home, and a temp
+// directory. The list is deliberately tiny and holds no credential-bearing names;
+// anything else a command needs must be granted explicitly with WithEnv. It is
+// platform-split because the two shells need different essentials (cmd.exe will not
+// start without SystemRoot).
+var baselineEnvKeys = baselineKeys()
+
+func baselineKeys() []string {
+	if runtime.GOOS == "windows" {
+		return []string{
+			"SystemRoot", "windir", "ComSpec", "PATHEXT", "PATH",
+			"TEMP", "TMP", "USERPROFILE", "HOMEDRIVE", "HOMEPATH",
+			"NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+		}
+	}
+	return []string{"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM"}
 }
 
 // shell returns the per-OS command that runs a shell command string: a POSIX shell
