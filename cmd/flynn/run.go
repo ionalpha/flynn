@@ -203,30 +203,39 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 	// directory before it is crystallized, so a broken procedure is dropped rather
 	// than learned. Capture failures never fail the run; learning is best effort.
 	if distiller != nil {
-		curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(governedVerifier(workdir)))
-		captured, err := curator.Curate(ctx, learn.Outcome{
+		distillOutcome(ctx, out, distiller, skills, memories, workdir, learn.Outcome{
 			Objective:  objective,
 			Result:     result,
 			Transcript: transcript,
 			Converged:  true,
 			Source:     source,
 		})
-		if err == nil {
-			if n := len(captured.Skills) + len(captured.Memories); n > 0 {
-				_, _ = fmt.Fprintf(out, "  (learned %d skill(s), %d memory item(s))\n", len(captured.Skills), len(captured.Memories))
-			}
-			if d := len(captured.Dropped); d > 0 {
-				_, _ = fmt.Fprintf(out, "  (dropped %d unverified skill(s))\n", d)
-			}
-		}
-
-		// Retire skills that enough runs have proven unhelpful, so the index stays
-		// high-signal rather than growing without bound.
-		if archived, derr := learn.Decay(ctx, skills, state.Scope{}, learn.DefaultDecay()); derr == nil && len(archived) > 0 {
-			_, _ = fmt.Fprintf(out, "  (retired %d unhelpful skill(s))\n", len(archived))
-		}
 	}
 	return result, nil
+}
+
+// distillOutcome distills a converged run into durable skills and memory and retires
+// skills that enough runs have proven unhelpful, reporting the tally to out. It is
+// best effort: a capture or decay failure never fails the run. A captured skill's
+// check is verified in a sandbox at workdir before it is crystallized, so a broken
+// procedure is dropped rather than learned. Shared by the one-shot runner and the
+// interactive session so both capture identically.
+func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distiller, skills state.SkillStore, memories state.MemoryStore, workdir string, outcome learn.Outcome) {
+	curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(governedVerifier(workdir)))
+	if captured, err := curator.Curate(ctx, outcome); err == nil {
+		if n := len(captured.Skills) + len(captured.Memories); n > 0 {
+			_, _ = fmt.Fprintf(out, "  (learned %d skill(s), %d memory item(s))\n", len(captured.Skills), len(captured.Memories))
+		}
+		if d := len(captured.Dropped); d > 0 {
+			_, _ = fmt.Fprintf(out, "  (dropped %d unverified skill(s))\n", d)
+		}
+	}
+
+	// Retire skills that enough runs have proven unhelpful, so the index stays
+	// high-signal rather than growing without bound.
+	if archived, derr := learn.Decay(ctx, skills, state.Scope{}, learn.DefaultDecay()); derr == nil && len(archived) > 0 {
+		_, _ = fmt.Fprintf(out, "  (retired %d unhelpful skill(s))\n", len(archived))
+	}
 }
 
 // governedVerifier builds the skill-check verifier the CLI uses: a sandbox verifier
@@ -454,22 +463,71 @@ func truncate(s string, n int) string {
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
 func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string) (result, source string, transcript []llm.Message, err error) {
-	sb, err := sandbox.NewLocal(workdir)
+	w := &syncWriter{w: out}
+	run, err := assembleMission(model, workdir, system, rstore, jq, log, resumeID)
 	if err != nil {
 		return "", "", nil, err
 	}
-	w := &syncWriter{w: out}
+	_, _ = fmt.Fprintf(w, "  run %s\n", run.sess.ID())
 
-	// The session records the run on the durable spine, keyed by a stable run id
-	// that also names the goal resource (see session.Submit), so the run survives
-	// the process and is addressable for replay and audit. Resuming binds the
-	// session to the existing run's id, so the continuation lands on the same stream.
-	var sopts []session.Option
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = run.rt.Start(runCtx); close(done) }()
+
+	events, err := run.sess.Subscribe(runCtx, 0)
+	if err != nil {
+		return "", "", nil, err
+	}
 	if resumeID != "" {
-		sopts = append(sopts, session.WithID(resumeID))
+		// Continue an existing run: re-drive its goal (preserving its recorded
+		// progress) rather than opening a new one. Subscribe above replays the prior
+		// conversation first, then tails the rest live.
+		g, err := run.rt.Resume(runCtx, resumeID)
+		if err != nil {
+			return "", "", nil, err
+		}
+		run.sess.Resume(runCtx, run.rt, g.Key())
+	} else if _, err := run.sess.Submit(runCtx, run.rt, goal.Spec{
+		Objective:     objective,
+		StopCondition: "the objective is fully accomplished",
+	}); err != nil {
+		return "", "", nil, err
+	}
+
+	result, transcript, _, runErr := renderStream(w, events, verbose)
+	cancel()
+	<-done
+	return result, run.sess.ID(), transcript, runErr
+}
+
+// missionRun is an assembled goal runtime paired with the session that records it
+// onto the spine. The caller starts rt (rt.Start in a goroutine), then submits or
+// resumes a goal through sess; cancelling the context stops the control plane.
+type missionRun struct {
+	rt   *runtime.Runtime
+	sess *session.Session
+}
+
+// assembleMission wires one goal runtime over the durable store ports and the
+// sandboxed toolset at workdir, with a session recording the run onto the spine.
+// runID names both the session's event stream and (via Submit/Resume) its goal
+// resource, so a single id addresses the whole run for replay, audit, and resume; an
+// empty runID gets a fresh one. The system prompt is supplied so the caller can fold
+// recalled knowledge into it. It is the shared assembly behind the one-shot runner,
+// resume, and the interactive session, so none of them reassembles the runtime by
+// hand.
+func assembleMission(model llm.Model, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
+	sb, err := sandbox.NewLocal(workdir)
+	if err != nil {
+		return nil, err
+	}
+
+	var sopts []session.Option
+	if runID != "" {
+		sopts = append(sopts, session.WithID(runID))
 	}
 	sess := session.New(log, bus.NewMemory(), sopts...)
-	_, _ = fmt.Fprintf(w, "  run %s\n", sess.ID())
 
 	toolset := tools.New(sb).Tools()
 	// The grant lists every action the run may take: the tools, plus the model call
@@ -495,54 +553,27 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 		Jobs:         jq,
 		PollInterval: 200 * time.Millisecond,
 		WorkerPoll:   50 * time.Millisecond,
-		// A one-shot CLI run drives only its own goal; it must not adopt a goal an
-		// earlier run left non-terminal (which would contaminate this run's stream
-		// and silently resume unrelated work). Resuming a parked run is explicit.
+		// A CLI run drives only its own goal; it must not adopt a goal an earlier run
+		// left non-terminal (which would contaminate this run's stream and silently
+		// resume unrelated work). Resuming a parked run, or continuing a session turn,
+		// is always explicit.
 		DriveSubmittedOnly: true,
 	})
 	if err != nil {
-		return "", "", nil, err
+		return nil, err
 	}
-
-	runCtx, cancel := context.WithCancel(ctx)
-	defer cancel()
-	done := make(chan struct{})
-	go func() { _ = rt.Start(runCtx); close(done) }()
-
-	events, err := sess.Subscribe(runCtx, 0)
-	if err != nil {
-		return "", "", nil, err
-	}
-	if resumeID != "" {
-		// Continue an existing run: re-drive its goal (preserving its recorded
-		// progress) rather than opening a new one. Subscribe above replays the prior
-		// conversation first, then tails the rest live.
-		g, err := rt.Resume(runCtx, resumeID)
-		if err != nil {
-			return "", "", nil, err
-		}
-		sess.Resume(runCtx, rt, g.Key())
-	} else if _, err := sess.Submit(runCtx, rt, goal.Spec{
-		Objective:     objective,
-		StopCondition: "the objective is fully accomplished",
-	}); err != nil {
-		return "", "", nil, err
-	}
-
-	result, transcript, runErr := renderStream(w, events, verbose)
-	cancel()
-	<-done
-	return result, sess.ID(), transcript, runErr
+	return &missionRun{rt: rt, sess: sess}, nil
 }
 
 // renderStream prints the session's events as they arrive and accumulates the
 // conversation transcript (the model's text and the tools it called), returning
 // once the session reaches a terminal event: the model's summary on convergence,
-// or an error on stall. A closed channel before any terminal event means the run
-// was cancelled.
-func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (string, []llm.Message, error) {
-	var transcript []llm.Message
+// or an error on stall. lastSeq is the sequence of the last event consumed, so a
+// caller tailing the same stream across turns can resume after it. A closed channel
+// before any terminal event means the run was cancelled.
+func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (result string, transcript []llm.Message, lastSeq int64, err error) {
 	for ev := range events {
+		lastSeq = ev.Seq
 		renderEvent(out, ev, verbose)
 		switch ev.Kind {
 		case session.KindAssistant:
@@ -552,15 +583,15 @@ func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (str
 				{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: ev.ToolUseID, Name: ev.Tool, Input: ev.Input}},
 			}})
 		case session.KindConverged:
-			return ev.Text, transcript, nil
+			return ev.Text, transcript, lastSeq, nil
 		case session.KindStalled:
-			return "", transcript, fmt.Errorf("goal stalled: %s", ev.Err)
+			return "", transcript, lastSeq, fmt.Errorf("goal stalled: %s", ev.Err)
 		default:
 			// Already drawn by renderEvent above; only the kinds that build the
 			// transcript or end the stream need handling here.
 		}
 	}
-	return "", transcript, context.Canceled
+	return "", transcript, lastSeq, context.Canceled
 }
 
 // syncWriter serializes writes, so the stream-rendering goroutine and any other
