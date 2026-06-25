@@ -15,6 +15,7 @@ linters:
     - exhaustive
     - forbidigo
     - gocyclo
+    - godot
     - gosec
     - govet
     - ineffassign
@@ -29,6 +30,15 @@ linters:
     - unconvert
     - unused
     - wastedassign
+    - whitespace
+  # Readability linters: whitespace and godot are enabled; nlreturn and wsl are
+  # deliberately not. The code is already gofumpt-formatted and spaced by hand, so
+  # whitespace (strip leading/trailing blank lines in blocks) and godot (period-end
+  # declaration comments) cost ~one line of change across the tree and lock the
+  # existing standard. nlreturn (blank line before every return) and wsl (statement
+  # cuddling rules) were trialled with --fix and rejected: they add ~595 and ~2,700
+  # lines respectively, fighting the hand-tuned spacing and the tight helper funcs
+  # rather than improving them.
   settings:
     exhaustive:
       # A switch with a default case is exhaustive: the default deliberately covers
