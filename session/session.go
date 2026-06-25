@@ -114,6 +114,22 @@ func (s *Session) Subscribe(ctx context.Context, afterSeq int64) (<-chan Event, 
 	return s.stream.Subscribe(ctx, afterSeq)
 }
 
+// History returns every recorded event for the run identified by id, read in order
+// straight from the durable log. Unlike Subscribe it is finite: it does not wait
+// for new events, so it is the primitive for inspecting or replaying a run that has
+// already finished. An unknown id yields an empty slice, not an error.
+func History(ctx context.Context, log spine.Log, id string) ([]Event, error) {
+	recs, err := log.Read(ctx, spine.Query{Stream: id})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]Event, len(recs))
+	for i, se := range recs {
+		out[i] = fromSpine(se)
+	}
+	return out, nil
+}
+
 // Submit opens the session, submits spec as a goal to rt, and starts watching it.
 // The goal is named after the session id, so the run's event stream and its goal
 // resource share one identity: the run is addressable by a single id for replay,
