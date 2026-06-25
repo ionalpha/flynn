@@ -18,7 +18,7 @@ import (
 const resourceCols = `id, api_version, kind, name, scope_instance, scope_project, scope_workspace,
 	labels, annotations, spec, status,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, writer_actor, deleted,
-	finalizers, deletion_timestamp,
+	finalizers, deletion_timestamp, owner_references,
 	version, content_hash, valid_from, valid_to, created_at, updated_at`
 
 // Resources returns a durable resource.Store backed by this Store's database, so
@@ -287,7 +287,7 @@ func applyResourceEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error {
 func upsertResourceRow(ctx context.Context, tx *sql.Tx, r resource.Resource) error {
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO resources (`+resourceCols+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			api_version=excluded.api_version, kind=excluded.kind, name=excluded.name,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
@@ -295,14 +295,14 @@ func upsertResourceRow(ctx context.Context, tx *sql.Tx, r resource.Resource) err
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, writer_actor=excluded.writer_actor, deleted=excluded.deleted,
-			finalizers=excluded.finalizers, deletion_timestamp=excluded.deletion_timestamp,
+			finalizers=excluded.finalizers, deletion_timestamp=excluded.deletion_timestamp, owner_references=excluded.owner_references,
 			version=excluded.version, content_hash=excluded.content_hash,
 			valid_from=excluded.valid_from, valid_to=excluded.valid_to,
 			created_at=excluded.created_at, updated_at=excluded.updated_at`,
 		r.ID, r.APIVersion, r.Kind, r.Name, r.Scope.Instance, r.Scope.Project, r.Scope.Workspace,
 		marshalStringMap(r.Labels), marshalStringMap(r.Annotations), rawOrNil(r.Spec), rawOrNil(r.Status),
 		r.SyncVersion, r.OriginInstanceID, r.UpdatedHLC.Wall, int64(r.UpdatedHLC.Counter), r.LastWriterID, string(writerActorOrDefault(r.WriterActor)), boolToInt(r.Deleted),
-		marshalStringSlice(r.Finalizers), timeOrNil(r.DeletionTimestamp),
+		marshalStringSlice(r.Finalizers), timeOrNil(r.DeletionTimestamp), marshalOwnerRefs(r.OwnerReferences),
 		r.Version, r.ContentHash, timeOrNil(r.ValidFrom), timeOrNil(r.ValidTo),
 		formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	return err
@@ -318,6 +318,7 @@ func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error)
 		deleted          int
 		finalizers       string
 		deletionTS       sql.NullString
+		ownerRefs        string
 		validFrom        sql.NullString
 		validTo          sql.NullString
 		created, updated string
@@ -326,13 +327,14 @@ func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error)
 		&r.Scope.Instance, &r.Scope.Project, &r.Scope.Workspace,
 		&labels, &annots, &spec, &status,
 		&r.SyncVersion, &r.OriginInstanceID, &wall, &counter, &r.LastWriterID, &writerActor, &deleted,
-		&finalizers, &deletionTS,
+		&finalizers, &deletionTS, &ownerRefs,
 		&r.Version, &r.ContentHash, &validFrom, &validTo, &created, &updated); err != nil {
 		return resource.Resource{}, err
 	}
 	r.WriterActor = spine.ActorType(writerActor)
 	r.Finalizers = unmarshalStringSlice(finalizers)
 	r.DeletionTimestamp = nullToTimePtr(deletionTS)
+	r.OwnerReferences = unmarshalOwnerRefs(ownerRefs)
 	r.Labels = unmarshalStringMap(labels)
 	r.Annotations = unmarshalStringMap(annots)
 	if spec.Valid {
@@ -389,6 +391,28 @@ func unmarshalStringSlice(s string) []string {
 		return nil
 	}
 	var out []string
+	if err := json.Unmarshal([]byte(s), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func marshalOwnerRefs(refs []resource.OwnerReference) string {
+	if len(refs) == 0 {
+		return "[]"
+	}
+	b, err := json.Marshal(refs)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func unmarshalOwnerRefs(s string) []resource.OwnerReference {
+	if s == "" || s == "[]" {
+		return nil
+	}
+	var out []resource.OwnerReference
 	if err := json.Unmarshal([]byte(s), &out); err != nil {
 		return nil
 	}

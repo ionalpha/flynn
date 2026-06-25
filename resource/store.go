@@ -3,6 +3,7 @@ package resource
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -72,6 +73,27 @@ type Store interface {
 	Merge(ctx context.Context, remote Resource) (MergeResult, error)
 	// Close releases backend resources.
 	Close() error
+}
+
+// OwnerGone reports whether r's controller owner no longer exists or is itself
+// terminating, which makes r an orphan a garbage collector should reap so an
+// owner's deletion cascades to the subtree it created. A resource with no
+// controller owner is a root and is never orphaned. The owner is resolved by its
+// stable id, so a rename never breaks the link. It is the reusable predicate a
+// kind's reconciler calls to garbage-collect owned resources.
+func OwnerGone(ctx context.Context, store Store, r Resource) (bool, error) {
+	owner, ok := r.Controller()
+	if !ok {
+		return false, nil
+	}
+	o, err := store.GetByID(ctx, owner.ID)
+	if errors.Is(err, ErrNotFound) {
+		return true, nil // the owner is gone: r is an orphan
+	}
+	if err != nil {
+		return false, err
+	}
+	return o.DeletionTimestamp != nil, nil // owner terminating: cascade the reap
 }
 
 // encodeResource serialises a resource to a JSON-compatible value for an event
