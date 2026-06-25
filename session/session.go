@@ -44,10 +44,11 @@ type Session struct {
 	stream *Stream
 	poll   time.Duration
 
-	mu     sync.Mutex
-	result string
-	failed error
-	done   chan struct{}
+	mu             sync.Mutex
+	result         string
+	failed         error
+	done           chan struct{}
+	maxTurnStarted int
 }
 
 // Option configures a Session.
@@ -234,7 +235,27 @@ type reporter struct{ s *Session }
 var _ mission.Reporter = reporter{}
 
 func (r reporter) Report(ctx context.Context, ev mission.Event) {
+	// A step that fails (a transient model error, say) is retried, re-running from
+	// the same turn and re-announcing it. Recording the highest turn started makes
+	// turn.started idempotent, so a retry neither spams the stream nor resets the
+	// turn counter. The dedup is at write time, so a replay of the durable stream is
+	// clean too.
+	if ev.Kind == mission.EventTurnStarted && !r.s.advanceTurn(ev.Turn) {
+		return
+	}
 	r.s.emit(ctx, toSessionEvent(ev))
+}
+
+// advanceTurn records that turn n has started and reports whether this is the
+// first time, so a re-announced turn from a retry is dropped.
+func (s *Session) advanceTurn(n int) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if n <= s.maxTurnStarted {
+		return false
+	}
+	s.maxTurnStarted = n
+	return true
 }
 
 // toSessionEvent maps a mission event to its session event. Every conversational

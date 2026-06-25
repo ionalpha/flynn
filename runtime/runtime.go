@@ -55,6 +55,14 @@ type Config struct {
 
 	// Resync overrides the manager's safety-net interval (0 uses its default).
 	Resync time.Duration
+	// DriveSubmittedOnly makes the runtime drive only the goals it is explicitly
+	// given (via SubmitGoal or a completion signal) and never adopt goals it finds
+	// already in the store. A one-shot command sets this so starting a run does not
+	// silently resume a goal an earlier run left non-terminal: each run keeps its
+	// own event stream, and resuming a parked run is an explicit act. A long-lived
+	// server leaves it false so the resync safety net drives every goal to
+	// convergence after a crash.
+	DriveSubmittedOnly bool
 	// WorkerPoll overrides how often the step worker polls when idle.
 	WorkerPoll time.Duration
 	// PollInterval overrides how often the reconciler re-checks an in-flight step
@@ -138,6 +146,9 @@ func New(cfg Config) (*Runtime, error) {
 	mopts := []reconcile.ManagerOption{reconcile.WithClock(clk)}
 	if cfg.Resync != 0 {
 		mopts = append(mopts, reconcile.WithResync(cfg.Resync))
+	}
+	if cfg.DriveSubmittedOnly {
+		mopts = append(mopts, reconcile.WithoutResync())
 	}
 	mgr := reconcile.NewManager(store, mopts...)
 	mgr.Register(goal.Kind, rec)

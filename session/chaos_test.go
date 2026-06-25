@@ -34,10 +34,19 @@ func assertWellFormed(t *testing.T, evs []Event) {
 		t.Fatalf("last event = %q, want a terminal event", last)
 	}
 	open := map[string]bool{}
+	started := map[int]bool{}
 	lastTurn := 0
 	for i, e := range evs {
 		if e.Seq != int64(i+1) {
 			t.Fatalf("event %d seq = %d, want %d (stream not dense)", i, e.Seq, i+1)
+		}
+		if e.Kind == KindTurnStarted {
+			// A turn is announced exactly once, even if the step that runs it failed
+			// and was retried. A duplicate here is the "...turn N" spam regression.
+			if started[e.Turn] {
+				t.Fatalf("turn %d announced more than once (a retry re-emitted turn.started)", e.Turn)
+			}
+			started[e.Turn] = true
 		}
 		if e.Turn > 0 { // conversation events; session-level events carry turn 0
 			if e.Turn < lastTurn {
@@ -79,6 +88,56 @@ func TestSessionStreamSurvivesFlakyExecutor(t *testing.T) {
 				WorkerRetryBase:    2 * time.Millisecond,
 				WorkerRetryCeiling: 10 * time.Millisecond,
 				StepMaxAttempts:    50, // comfortably above the injected failure run
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			go func() { _ = rt.Start(ctx) }()
+
+			ch, err := sess.Subscribe(ctx, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := sess.Submit(ctx, rt, goal.Spec{Objective: "do it", StopCondition: "done"}); err != nil {
+				t.Fatal(err)
+			}
+
+			evs := collectUntil(t, ch, KindConverged)
+			assertWellFormed(t, evs)
+			result, err := sess.Wait(ctx)
+			if err != nil || result != "done" {
+				t.Fatalf("Wait = (%q, %v), want (\"done\", nil)", result, err)
+			}
+		})
+	}
+}
+
+// TestSessionStreamSurvivesFlakyModel injects transient model failures that land
+// AFTER a turn is announced (the conversation loop calls the model inside a step,
+// so the fault is mid-turn and the step retries). It is the faithful reproduction
+// of the quota-429 hang: a retried turn must not duplicate its turn.started on the
+// stream, and the run still converges once the model recovers.
+func TestSessionStreamSurvivesFlakyModel(t *testing.T) {
+	for _, failures := range []int{1, 3, 5} {
+		t.Run(fmt.Sprintf("failures_%d", failures), func(t *testing.T) {
+			model := llmtest.NewScripted(
+				llmtest.CallTool("c1", "echo", []byte(`{"v":1}`)),
+				llmtest.SayText("done"),
+			)
+			flaky := testkit.FaultyModel(model, testkit.FailFirst(failures, fault.New(fault.Transient, "flaky_model", "rate limited")))
+			sess := New(spine.NewMemoryLog(), bus.NewMemory(), WithPollInterval(5*time.Millisecond))
+			exec := mission.NewExecutor(flaky, mission.WithTools(echoTool()), mission.WithObserver(sess.Reporter()))
+
+			rt, err := runtime.New(runtime.Config{
+				Executor:           exec,
+				Stop:               mission.Convergence{},
+				PollInterval:       15 * time.Millisecond,
+				WorkerPoll:         5 * time.Millisecond,
+				WorkerRetryBase:    2 * time.Millisecond,
+				WorkerRetryCeiling: 10 * time.Millisecond,
+				StepMaxAttempts:    50,
 			})
 			if err != nil {
 				t.Fatal(err)

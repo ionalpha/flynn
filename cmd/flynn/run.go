@@ -455,6 +455,10 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 		Jobs:         jq,
 		PollInterval: 200 * time.Millisecond,
 		WorkerPoll:   50 * time.Millisecond,
+		// A one-shot CLI run drives only its own goal; it must not adopt a goal an
+		// earlier run left non-terminal (which would contaminate this run's stream
+		// and silently resume unrelated work). Resuming a parked run is explicit.
+		DriveSubmittedOnly: true,
 	})
 	if err != nil {
 		return "", "", nil, err
