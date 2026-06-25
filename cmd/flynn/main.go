@@ -157,7 +157,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, err := resolveModel(ctx, modelSpec, dataDir)
+	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
@@ -194,8 +194,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 // environment from commands, so unsetting keeps the raw key out of os.Environ(), a
 // crash dump, or any child that reads the parent env.
 func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, error) {
-	source := secret.Chain(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), secret.EnvSource{})
-	model, err := provider.ResolveWith(ctx, modelSpec, source)
+	model, err := provider.ResolveWith(ctx, modelSpec, credentialSource(dataDir))
 	if err != nil {
 		return nil, err
 	}
@@ -203,6 +202,13 @@ func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, er
 		_ = os.Unsetenv(k)
 	}
 	return model, nil
+}
+
+// credentialSource is the credential lookup order: the vault first (the OS
+// keychain, then the passphrase-sealed file), then the environment. One place
+// builds it so model resolution and provider auto-detection read the same chain.
+func credentialSource(dataDir string) secret.Source {
+	return secret.Chain(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), secret.EnvSource{})
 }
 
 // resumeRun continues an existing run by its id: it re-drives the run's goal from
@@ -215,7 +221,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, err := resolveModel(ctx, modelSpec, dataDir)
+	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}

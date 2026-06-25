@@ -19,7 +19,7 @@ import (
 func newTUIForTest(t *testing.T, model llm.Model) tuiModel {
 	t.Helper()
 	s, _ := newREPL(t, t.TempDir(), memStore(t), model)
-	m := newTUIModel(context.Background(), s)
+	m := newTUIModel(context.Background(), s, "")
 	sized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	return sized.(tuiModel)
 }
@@ -80,7 +80,7 @@ func TestTUIRunsTurnAndShowsTranscript(t *testing.T) {
 func TestTUICancelTurnKeepsSession(t *testing.T) {
 	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
 	s, _ := newREPL(t, t.TempDir(), memStore(t), gm)
-	m := newTUIModel(context.Background(), s)
+	m := newTUIModel(context.Background(), s, "")
 	sized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	started, cmd := sized.(tuiModel).startTurn("long running")
 	cur := started.(tuiModel)

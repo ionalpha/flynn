@@ -29,7 +29,7 @@ import (
 func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
-	model, err := resolveModel(ctx, modelSpec, dataDir)
+	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
@@ -62,10 +62,30 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		reg:       reg,
 	}
 
+	// Front door: when prior runs exist, let the user resume one or start fresh. A
+	// resumed run is seeded so the session continues the same durable conversation.
+	var seed string
+	if stdinIsTerminal() {
+		id, history, lastSeq, perr := pickSession(ctx, store, reg, verbose)
+		if perr != nil {
+			return perr
+		}
+		if id != "" {
+			s.started = true
+			s.runID = id
+			s.system = defaultSystemPrompt
+			s.lastSeq = lastSeq
+			seed = history
+		}
+	}
+
 	if plain || !stdoutIsTerminal() {
+		if seed != "" {
+			_, _ = fmt.Fprint(s.out, seed)
+		}
 		return s.runLineMode(ctx, cwd)
 	}
-	return runInteractiveTUI(ctx, s)
+	return runInteractiveTUI(ctx, s, seed)
 }
 
 // runLineMode is the line-based session: a terminal reader giving line editing,
