@@ -12,7 +12,10 @@ import (
 
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -307,4 +310,86 @@ func TestRunVerifiesCapturedSkill(t *testing.T) {
 	if !verified {
 		t.Fatalf("the passing skill is not tagged verified: %v", good.Tags)
 	}
+}
+
+// runIDFromOutput extracts the run id the binary prints ("  run <id>"), the
+// user-facing handle a later replay or audit addresses the run by.
+func runIDFromOutput(t *testing.T, out string) string {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if id, ok := strings.CutPrefix(strings.TrimSpace(line), "run "); ok {
+			return id
+		}
+	}
+	t.Fatalf("no run id in output:\n%s", out)
+	return ""
+}
+
+// TestRunSpineIsDurableAndAddressable proves the identity keystone end to end and
+// across a process boundary: a run records its conversation on a file-backed spine
+// under a stable id, and after the store is closed and reopened that id still
+// addresses the run's event stream and names its goal resource. One value
+// identifies the whole run, and it survives the process.
+func TestRunSpineIsDurableAndAddressable(t *testing.T) {
+	workdir := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "flynn.db")
+	model := llmtest.NewScripted(llmtest.SayText("done"))
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+
+	// Run a goal over a file-backed store, then close it: the process is "gone".
+	store1, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := runLearningMission(ctx, &out, model, nil, workdir, "do the thing", store1); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	runID := runIDFromOutput(t, out.String())
+	if err := store1.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	// Reopen the same database file: the run must still be addressable by its id.
+	store2, err := sqlite.Open(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer func() { _ = store2.Close() }()
+
+	evs, err := store2.Log().Read(ctx, spine.Query{Stream: runID})
+	if err != nil {
+		t.Fatalf("read run spine %q after reopen: %v", runID, err)
+	}
+	if len(evs) == 0 {
+		t.Fatalf("run %s left no events on the durable spine after reopen", runID)
+	}
+	if evs[0].Type != string(session.KindSessionStarted) {
+		t.Fatalf("first spine event = %q, want %q", evs[0].Type, session.KindSessionStarted)
+	}
+	var converged bool
+	for _, e := range evs {
+		if e.Type == string(session.KindConverged) {
+			converged = true
+		}
+	}
+	if !converged {
+		t.Fatalf("run %s spine has no %q event after reopen", runID, session.KindConverged)
+	}
+
+	// The same id names the run's goal resource on the reopened store.
+	if _, err := store2.Resources(mustRegistry(t)).Get(ctx, "Goal", resource.Scope{}, runID); err != nil {
+		t.Fatalf("run id %q does not name a goal resource after reopen: %v", runID, err)
+	}
+}
+
+// mustRegistry builds the mission resource registry or fails the test.
+func mustRegistry(t *testing.T) *resource.Registry {
+	t.Helper()
+	reg, err := missionRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return reg
 }

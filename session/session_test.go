@@ -165,3 +165,23 @@ func TestSessionEmitsStalled(t *testing.T) {
 		t.Fatal("Wait returned nil error for a stalled goal")
 	}
 }
+
+// TestSubmitNamesGoalAfterSession locks the identity-unification invariant: the
+// goal a session submits is named after the session id, so a single id addresses
+// both the run's event stream and its goal resource. A refactor that re-separates
+// the two fails here.
+func TestSubmitNamesGoalAfterSession(t *testing.T) {
+	sess, rt, ctx, cancel := newSessionRuntime(t, llmtest.NewScripted(llmtest.SayText("ok")))
+	defer cancel()
+
+	key, err := sess.Submit(ctx, rt, goal.Spec{Objective: "do it", StopCondition: "done"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Name != sess.ID() {
+		t.Fatalf("goal name = %q, want it to match the session id %q", key.Name, sess.ID())
+	}
+	if sess.ID() == "" {
+		t.Fatal("session id is empty; the default must be a generated id")
+	}
+}
