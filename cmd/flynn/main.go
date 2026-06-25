@@ -29,9 +29,12 @@ func main() {
 		model       = flag.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
 		dataDir     = flag.String("data-dir", defaultDataDir(), "directory for the durable state database")
 		noLearn     = flag.Bool("no-learn", false, "do not capture skills/memory from this run")
+		verbose     = flag.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
+		verboseLong = flag.Bool("verbose", false, "alias for -v")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
+	vrb := *verbose || *verboseLong
 
 	if *showVersion {
 		_, _ = fmt.Fprintln(os.Stdout, version.String())
@@ -44,7 +47,19 @@ func main() {
 			fmt.Fprintln(os.Stderr, `usage: flynn goal "<objective>"`)
 			os.Exit(2)
 		}
-		if err := runGoal(*model, objective, *dataDir, !*noLearn); err != nil {
+		if err := runGoal(*model, objective, *dataDir, !*noLearn, vrb); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if args := flag.Args(); len(args) >= 1 && (args[0] == "inspect" || args[0] == "replay") {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: flynn inspect <run-id>")
+			os.Exit(2)
+		}
+		if err := inspectRun(*dataDir, args[1], vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -70,10 +85,11 @@ func main() {
 	// No subcommand: print usage. The interactive session is not wired in yet.
 	fmt.Fprintln(os.Stderr, `flynn: an autonomous software agent. Usage:
   flynn goal "<objective>"   drive a goal to completion in the current directory
+  flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
-Flags: --model, --data-dir, --no-learn (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, -v/--verbose (run with --help for details).`)
 	os.Exit(2)
 }
 
@@ -91,7 +107,7 @@ func defaultDataDir() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
+func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -126,11 +142,11 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
 		distiller = governedDistiller(model)
 	}
 
-	_, _ = fmt.Fprintf(os.Stdout, "goal: %s\n", objective)
-	result, err := runLearningMission(ctx, os.Stdout, model, distiller, cwd, objective, store)
-	if err != nil {
+	// The objective and the final answer are rendered from the run's own events
+	// (session.started and session.converged), so the live transcript and a later
+	// `flynn inspect` of the same run read identically.
+	if _, err := runLearningMission(ctx, os.Stdout, model, distiller, cwd, objective, store, verbose); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(os.Stdout, "\n"+result)
 	return nil
 }
