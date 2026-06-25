@@ -2,6 +2,7 @@ package resource
 
 import (
 	"context"
+	"encoding/json"
 	"sort"
 	"sync"
 
@@ -318,16 +319,31 @@ func (c *core) apply(e spine.Event) error {
 	}
 }
 
-// Replay reconstructs an in-memory Store purely by folding a log's resource
-// stream: the running proof that the substrate is a projection of the spine.
+// Replay reconstructs an in-memory Store by folding a log's resource stream: the
+// running proof that the substrate is a projection of the spine. It resumes from
+// the log's latest resource snapshot when one exists and folds only the events
+// after it, so a long-lived stream rebuilds in bounded work instead of from the
+// start. The result is identical either way: a snapshot is a cache, not a source
+// of truth.
 func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (Store, error) {
 	s := NewMemory(reg, append(opts, WithEventLog(log))...).(*memStore)
-	events, err := log.Read(ctx, spine.Query{Stream: ResourceStream})
+	s.core.mu.Lock()
+	defer s.core.mu.Unlock()
+
+	snap, found, err := log.LatestSnapshot(ctx, ResourceStream, 0)
 	if err != nil {
 		return nil, err
 	}
-	s.core.mu.Lock()
-	defer s.core.mu.Unlock()
+	if found {
+		if err := s.core.restore(snap.Payload); err != nil {
+			return nil, err
+		}
+	}
+
+	events, err := log.Read(ctx, spine.Query{Stream: ResourceStream, AfterSeq: s.core.lastSeq})
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range events {
 		if err := s.core.apply(e); err != nil {
 			return nil, err
@@ -335,4 +351,58 @@ func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (
 		s.core.lastSeq = e.Seq
 	}
 	return s, nil
+}
+
+// snapshotPayload is the serialized resource projection at a Seq: every record
+// (live and tombstoned) keyed by id, enough to restore the read model without
+// folding from the start.
+type snapshotPayload struct {
+	Resources []Resource `json:"resources"`
+	LastSeq   int64      `json:"lastSeq"`
+}
+
+// Snapshot checkpoints the store's current projection onto its event log as a
+// spine.Snapshot on the resource stream, anchored at the last applied Seq, so a
+// later Replay resumes from it. It keeps rebuild cost flat as the stream grows.
+func (s *memStore) Snapshot(ctx context.Context) error {
+	s.core.mu.Lock()
+	resources := make([]Resource, 0, len(s.core.byID))
+	for _, r := range s.core.byID {
+		resources = append(resources, r)
+	}
+	lastSeq := s.core.lastSeq
+	s.core.mu.Unlock()
+
+	b, err := MarshalSnapshot(resources, lastSeq)
+	if err != nil {
+		return err
+	}
+	return s.log.SaveSnapshot(ctx, spine.Snapshot{Stream: ResourceStream, Seq: lastSeq, Payload: b})
+}
+
+// MarshalSnapshot serializes a projection (all its records, live and tombstoned,
+// and the Seq it is current as of) into the snapshot payload Replay restores from.
+// A backend builds the record set from its own storage and calls this, so every
+// backend snapshots in one identical format. Records are sorted by id so the
+// payload is deterministic.
+func MarshalSnapshot(resources []Resource, lastSeq int64) ([]byte, error) {
+	sort.Slice(resources, func(i, j int) bool { return resources[i].ID < resources[j].ID })
+	return json.Marshal(snapshotPayload{Resources: resources, LastSeq: lastSeq})
+}
+
+// restore rebuilds the read model from a snapshot payload, reconstructing the
+// name index from the records. Callers hold mu.
+func (c *core) restore(payload []byte) error {
+	var pay snapshotPayload
+	if err := json.Unmarshal(payload, &pay); err != nil {
+		return err
+	}
+	c.byID = make(map[string]Resource, len(pay.Resources))
+	c.nameIndex = make(map[Key]string, len(pay.Resources))
+	for _, r := range pay.Resources {
+		c.byID[r.ID] = r
+		c.nameIndex[r.Key()] = r.ID
+	}
+	c.lastSeq = pay.LastSeq
+	return nil
 }
