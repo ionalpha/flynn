@@ -153,6 +153,16 @@ func (s *Session) Submit(ctx context.Context, rt *runtime.Runtime, spec goal.Spe
 	return key, nil
 }
 
+// Resume attaches the session to an already-submitted goal identified by key and
+// watches it to its terminal phase, without re-opening the session or
+// re-submitting the goal. It is how a run is continued: the caller arranges for the
+// runtime to re-drive the existing goal (see runtime.Resume), and the session
+// streams the rest of the conversation onto the same stream as the original run. It
+// emits no session.started, since the run was already opened.
+func (s *Session) Resume(ctx context.Context, rt *runtime.Runtime, key resource.Key) {
+	go s.watch(ctx, rt, key)
+}
+
 // Wait blocks until the session reaches a terminal state and returns the model's
 // final answer on convergence, or a non-nil error on stall or cancellation.
 func (s *Session) Wait(ctx context.Context) (string, error) {

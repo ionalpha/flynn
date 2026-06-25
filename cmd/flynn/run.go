@@ -66,6 +66,41 @@ func openDataStore(ctx context.Context, dataDir string) (*sqlite.Store, error) {
 	return openStore(ctx, dataDir)
 }
 
+// listRuns prints the runs recorded in the durable store: their id, phase, step
+// count, and objective, newest first, so a run can be found and then inspected or
+// resumed by its id.
+func listRuns(dataDir string) error {
+	ctx := context.Background()
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	reg, err := missionRegistry()
+	if err != nil {
+		return err
+	}
+	goals, err := store.Resources(reg).ListAll(ctx, goal.Kind, nil)
+	if err != nil {
+		return err
+	}
+	if len(goals) == 0 {
+		_, _ = fmt.Fprintln(os.Stdout, "no runs yet")
+		return nil
+	}
+	sort.Slice(goals, func(i, j int) bool { return goals[i].UpdatedHLC.Wall > goals[j].UpdatedHLC.Wall })
+	for _, g := range goals {
+		spec, _ := goal.DecodeSpec(g)
+		st, _ := goal.DecodeStatus(g)
+		phase := st.Phase
+		if phase == "" {
+			phase = goal.PhasePending
+		}
+		_, _ = fmt.Fprintf(os.Stdout, "  %s  %-9s  step %d  %s\n", g.Name, phase, st.Steps, oneLine(spec.Objective, 60))
+	}
+	return nil
+}
+
 // inspectRun replays a past run's recorded events from the durable spine through
 // the same renderer a live run uses, so any run is auditable after the fact by its
 // id (printed when the run starts). verbose shows the tool arguments, outputs, and
@@ -151,7 +186,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		system += "\n\n" + block
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log(), verbose)
+	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log(), verbose, "")
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -418,7 +453,7 @@ func truncate(s string, n int) string {
 // id (used as learning provenance), and the conversation transcript (so the
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool) (result, source string, transcript []llm.Message, err error) {
+func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string) (result, source string, transcript []llm.Message, err error) {
 	sb, err := sandbox.NewLocal(workdir)
 	if err != nil {
 		return "", "", nil, err
@@ -427,8 +462,13 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 
 	// The session records the run on the durable spine, keyed by a stable run id
 	// that also names the goal resource (see session.Submit), so the run survives
-	// the process and is addressable for replay and audit.
-	sess := session.New(log, bus.NewMemory())
+	// the process and is addressable for replay and audit. Resuming binds the
+	// session to the existing run's id, so the continuation lands on the same stream.
+	var sopts []session.Option
+	if resumeID != "" {
+		sopts = append(sopts, session.WithID(resumeID))
+	}
+	sess := session.New(log, bus.NewMemory(), sopts...)
 	_, _ = fmt.Fprintf(w, "  run %s\n", sess.ID())
 
 	toolset := tools.New(sb).Tools()
@@ -473,7 +513,16 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 	if err != nil {
 		return "", "", nil, err
 	}
-	if _, err := sess.Submit(runCtx, rt, goal.Spec{
+	if resumeID != "" {
+		// Continue an existing run: re-drive its goal (preserving its recorded
+		// progress) rather than opening a new one. Subscribe above replays the prior
+		// conversation first, then tails the rest live.
+		g, err := rt.Resume(runCtx, resumeID)
+		if err != nil {
+			return "", "", nil, err
+		}
+		sess.Resume(runCtx, rt, g.Key())
+	} else if _, err := sess.Submit(runCtx, rt, goal.Spec{
 		Objective:     objective,
 		StopCondition: "the objective is fully accomplished",
 	}); err != nil {

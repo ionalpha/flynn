@@ -19,6 +19,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/secret"
 	"github.com/ionalpha/flynn/vault"
@@ -66,6 +67,26 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && (args[0] == "runs" || args[0] == "sessions") {
+		if err := listRuns(*dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if args := flag.Args(); len(args) >= 1 && args[0] == "resume" {
+		if len(args) < 2 {
+			fmt.Fprintln(os.Stderr, "usage: flynn resume <run-id>")
+			os.Exit(2)
+		}
+		if err := resumeRun(*model, args[1], *dataDir, vrb); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "regrade" {
 		if err := regradeSkills(*dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -85,6 +106,8 @@ func main() {
 	// No subcommand: print usage. The interactive session is not wired in yet.
 	fmt.Fprintln(os.Stderr, `flynn: an autonomous software agent. Usage:
   flynn goal "<objective>"   drive a goal to completion in the current directory
+  flynn runs                 list past runs (id, phase, objective)
+  flynn resume <run-id>      continue a parked or interrupted run by id
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn regrade              re-grade learned skills against the working directory
@@ -111,20 +134,9 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	// Resolve the model's credential through the vault first (the OS keychain, then
-	// the passphrase-sealed file), falling back to the environment. So a key stored
-	// once with `flynn auth set` is used automatically and nothing need be exported.
-	source := secret.Chain(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), secret.EnvSource{})
-	model, err := provider.ResolveWith(ctx, modelSpec, source)
+	model, err := resolveModel(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
-	}
-	// The key is now held inside the model as a secret.Text, so drop it from the
-	// process environment. The sandbox already withholds the parent environment
-	// from commands; unsetting here additionally keeps the raw key out of
-	// os.Environ(), a crash dump, or any future child that reads the parent env.
-	for _, k := range provider.CredentialEnvVars() {
-		_ = os.Unsetenv(k)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -149,4 +161,54 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 		return err
 	}
 	return nil
+}
+
+// resolveModel resolves the model's credential through the vault first (the OS
+// keychain, then the passphrase-sealed file), falling back to the environment, so a
+// key stored once with `flynn auth set` is used automatically and nothing need be
+// exported. The key is then dropped from the process environment: it lives inside
+// the model as a secret.Text, and the sandbox already withholds the parent
+// environment from commands, so unsetting keeps the raw key out of os.Environ(), a
+// crash dump, or any child that reads the parent env.
+func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, error) {
+	source := secret.Chain(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), secret.EnvSource{})
+	model, err := provider.ResolveWith(ctx, modelSpec, source)
+	if err != nil {
+		return nil, err
+	}
+	for _, k := range provider.CredentialEnvVars() {
+		_ = os.Unsetenv(k)
+	}
+	return model, nil
+}
+
+// resumeRun continues an existing run by its id: it re-drives the run's goal from
+// where it was left, streaming the rest of the conversation onto the same durable
+// stream. The prior conversation replays first, then the run is driven to its
+// terminal phase. Ctrl-C detaches without losing the run, which can be resumed
+// again. Learning capture is skipped: a resume continues a run, it does not start a
+// fresh one to distill.
+func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	model, err := resolveModel(ctx, modelSpec, dataDir)
+	if err != nil {
+		return err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	reg, err := missionRegistry()
+	if err != nil {
+		return err
+	}
+	_, _, _, err = drive(ctx, os.Stdout, model, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID)
+	return err
 }
