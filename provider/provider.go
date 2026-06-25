@@ -20,6 +20,12 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
+// ErrCredentialNotSet reports that a provider's API key was found in neither the
+// vault nor the environment. It is wrapped (not replaced) so the precise variable
+// name still shows in the message, and a caller can detect the case with errors.Is
+// to start an interactive setup prompt instead of failing outright.
+var ErrCredentialNotSet = errors.New("provider: credential not set")
+
 // Resolve turns a "provider:model" string (e.g. "anthropic:claude-opus-4-8",
 // "openai:gpt-5.5") into an llm.Model, resolving credentials from the process
 // environment. It is the zero-config entry point; ResolveWith supplies a custom
@@ -63,7 +69,7 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 func credentials(ctx context.Context, src secret.Source, keyRef, baseRef string) (secret.Text, string, error) {
 	key, err := src.Lookup(ctx, keyRef)
 	if errors.Is(err, secret.ErrNotFound) {
-		return secret.Text{}, "", fmt.Errorf("provider: %s is not set", keyRef)
+		return secret.Text{}, "", fmt.Errorf("%w (%s)", ErrCredentialNotSet, keyRef)
 	}
 	if err != nil {
 		return secret.Text{}, "", fmt.Errorf("provider: resolve %s: %w", keyRef, err)
