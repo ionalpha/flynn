@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -62,21 +61,21 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose bool) error
 		reg:       reg,
 	}
 
-	// Read input on its own goroutine: a blocking stdin read cannot be cancelled, so
-	// the loop selects between the next line and an interrupt instead of blocking on
-	// the read directly.
-	lines := make(chan string)
-	go readLines(os.Stdin, lines)
+	// The terminal reader gives line editing, history, and bracketed paste, entering
+	// raw mode only while reading a line. Ctrl-C cancels the in-flight turn only (the
+	// signal is delivered while a turn runs, when the terminal is back in its normal
+	// mode); the session and loop survive, so a runaway turn is interruptible without
+	// losing the conversation.
+	in := newTermReader(stdio{os.Stdin, os.Stdout}, int(os.Stdin.Fd()), "flynn> ")
+	defer in.Close()
 
-	// Ctrl-C cancels the in-flight turn only; the session and loop survive, so a
-	// runaway turn is interruptible without losing the conversation.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
 	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s\n", cwd)
 	_, _ = fmt.Fprintln(s.out, `type a message and press enter; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
-	return s.loop(ctx, lines, sigCh)
+	return s.loop(ctx, in, sigCh)
 }
 
 // replSession holds the state of one interactive session across its turns: the
@@ -105,39 +104,34 @@ type replSession struct {
 	lastResult string
 }
 
-// loop is the read-eval-print loop. It prompts, then drives each non-empty line as a
-// turn, until input ends (Ctrl-D), the user types an exit command, or the context is
-// cancelled, at which point it runs the session's learning pass and returns. A turn
+// loop is the read-eval-print loop. It reads a message, then drives it as a turn,
+// until input ends (Ctrl-D or Ctrl-C at the prompt) or the user types an exit
+// command, at which point it runs the session's learning pass and returns. A turn
 // error is reported but does not end the session, so a transient failure or a
 // cancelled turn returns the user to the prompt.
-func (s *replSession) loop(ctx context.Context, lines <-chan string, sigCh <-chan os.Signal) error {
+func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.Signal) error {
 	for {
-		_, _ = fmt.Fprint(s.out, "\nflynn> ")
-		select {
-		case <-ctx.Done():
-			return s.finish(context.WithoutCancel(ctx))
-		case <-sigCh:
-			// Interrupt at the prompt (no turn running): do not throw the session
-			// away on a stray Ctrl-C; point at the deliberate ways to leave.
-			_, _ = fmt.Fprintln(s.out, `(use Ctrl-D or "exit" to leave)`)
-		case line, ok := <-lines:
-			if !ok { // Ctrl-D / EOF
-				_, _ = fmt.Fprintln(s.out)
-				return s.finish(ctx)
-			}
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			if isExit(line) {
-				return s.finish(ctx)
-			}
-			if _, err := s.runTurn(ctx, line, sigCh); err != nil {
-				if errors.Is(err, context.Canceled) {
-					_, _ = fmt.Fprintln(s.out, "  (turn cancelled)")
-				} else {
-					_, _ = fmt.Fprintf(s.out, "  error: %v\n", err)
-				}
+		line, err := in.ReadLine()
+		if errors.Is(err, io.EOF) {
+			_, _ = fmt.Fprintln(s.out)
+			return s.finish(ctx)
+		}
+		if err != nil {
+			_, _ = fmt.Fprintf(s.out, "  input error: %v\n", err)
+			return s.finish(ctx)
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isExit(line) {
+			return s.finish(ctx)
+		}
+		if _, err := s.runTurn(ctx, line, sigCh); err != nil {
+			if errors.Is(err, context.Canceled) {
+				_, _ = fmt.Fprintln(s.out, "  (turn cancelled)")
+			} else {
+				_, _ = fmt.Fprintf(s.out, "  error: %v\n", err)
 			}
 		}
 	}
@@ -285,18 +279,6 @@ func (s *replSession) finish(ctx context.Context) error {
 	}
 	_, _ = fmt.Fprintf(s.out, "\nsession %s ended.\n", s.runID)
 	return nil
-}
-
-// readLines forwards each line read from r onto out, closing it at EOF so the loop
-// observes Ctrl-D. Lines may be long (a pasted objective), so the scanner buffer is
-// generous.
-func readLines(r io.Reader, out chan<- string) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 0, 64*1024), 1<<20)
-	for sc.Scan() {
-		out <- sc.Text()
-	}
-	close(out)
 }
 
 // isExit reports whether a line is a command to leave the session.
