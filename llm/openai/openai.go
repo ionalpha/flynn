@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/fault"
@@ -281,13 +282,18 @@ func mapFinishReason(r string) llm.StopReason {
 
 // --- errors -----------------------------------------------------------------
 
-// statusError maps an HTTP error to a fault-classified error: rate limits and 5xx
-// are transient so the worker retries; client errors are terminal.
+// statusError maps an HTTP error to a fault-classified error: a rate-limit 429 and
+// 5xx are transient so the worker retries; an exhausted-quota 429, and client
+// errors, are terminal so the run fails fast instead of retrying an account that
+// cannot succeed. OpenAI marks the quota case with the error type and code
+// "insufficient_quota"; the message ("exceeded your current quota ... billing") is
+// a fallback signal.
 func statusError(code int, body []byte) error {
 	var e struct {
 		Error struct {
 			Message string `json:"message"`
 			Type    string `json:"type"`
+			Code    string `json:"code"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(body, &e)
@@ -295,9 +301,17 @@ func statusError(code int, body []byte) error {
 	if msg == "" {
 		msg = string(body)
 	}
-	class := fault.Terminal
-	if code == http.StatusTooManyRequests || code >= 500 {
-		class = fault.Transient
+	quota := e.Error.Type == "insufficient_quota" || e.Error.Code == "insufficient_quota" ||
+		containsAny(strings.ToLower(msg), "quota", "billing")
+	return fault.New(llm.RetryClass(code, quota), "openai_status", fmt.Sprintf("openai: HTTP %d: %s", code, msg))
+}
+
+// containsAny reports whether s contains any of the substrings.
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
 	}
-	return fault.New(class, "openai_status", fmt.Sprintf("openai: HTTP %d: %s", code, msg))
+	return false
 }

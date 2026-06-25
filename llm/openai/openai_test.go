@@ -125,23 +125,31 @@ func TestToolResultsExpandToToolMessages(t *testing.T) {
 
 func TestErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
+		name   string
 		status int
+		body   string
 		want   fault.Class
 	}{
-		{429, fault.Transient},
-		{500, fault.Transient},
-		{503, fault.Transient},
-		{400, fault.Terminal},
-		{401, fault.Terminal},
+		{"rate-limit 429 retries", 429, `{"error":{"message":"Rate limit reached for requests","type":"requests","code":"rate_limit_exceeded"}}`, fault.Transient},
+		// The regression: an exhausted-quota 429 must be terminal so the run fails
+		// fast instead of retrying for hours against an unfunded account.
+		{"quota 429 by type is terminal", 429, `{"error":{"message":"You exceeded your current quota.","type":"insufficient_quota","code":"insufficient_quota"}}`, fault.Terminal},
+		{"quota 429 by message is terminal", 429, `{"error":{"message":"You exceeded your current quota, please check your plan and billing details."}}`, fault.Terminal},
+		{"500 retries", 500, `{"error":{"message":"server error"}}`, fault.Transient},
+		{"503 retries", 503, `{"error":{"message":"unavailable"}}`, fault.Transient},
+		{"400 is terminal", 400, `{"error":{"message":"bad request"}}`, fault.Terminal},
+		{"401 auth is terminal", 401, `{"error":{"message":"invalid api key"}}`, fault.Terminal},
 	} {
-		m := &mockTransport{status: tc.status, respBody: `{"error":{"message":"boom","type":"x"}}`}
-		_, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
-		if err == nil {
-			t.Fatalf("status %d: expected error", tc.status)
-		}
-		if got := fault.Classify(err); got != tc.want {
-			t.Fatalf("status %d classified %s, want %s", tc.status, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			m := &mockTransport{status: tc.status, respBody: tc.body}
+			_, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
+			if err == nil {
+				t.Fatalf("status %d: expected error", tc.status)
+			}
+			if got := fault.Classify(err); got != tc.want {
+				t.Fatalf("status %d classified %s, want %s", tc.status, got, tc.want)
+			}
+		})
 	}
 }
 
