@@ -69,10 +69,10 @@ func appendTx(ctx context.Context, tx *sql.Tx, clk clock.Clock, in spine.AppendI
 	}
 	seq := maxSeq + 1
 	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id, schema_version)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		`INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id, schema_version, principal)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
 		in.Stream, seq, sqlitex.FormatTime(t), in.Type, string(in.Actor), string(payload),
-		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version); err != nil {
+		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version, in.Principal); err != nil {
 		return spine.Event{}, err
 	}
 	return spine.Event{
@@ -82,6 +82,7 @@ func appendTx(ctx context.Context, tx *sql.Tx, clk clock.Clock, in spine.AppendI
 		TraceID:       in.TraceID,
 		SpanID:        in.SpanID,
 		CausationID:   in.CausationID, OriginInstanceID: in.OriginInstanceID,
+		Principal: in.Principal,
 	}, nil
 }
 
@@ -109,7 +110,7 @@ func (l *eventLog) Read(ctx context.Context, q spine.Query) ([]spine.Event, erro
 			payload string
 		)
 		if err := rows.Scan(&e.Stream, &e.Seq, &ts, &e.Type, &actor, &payload,
-			&e.TraceID, &e.SpanID, &e.CausationID, &e.OriginInstanceID, &e.SchemaVersion); err != nil {
+			&e.TraceID, &e.SpanID, &e.CausationID, &e.OriginInstanceID, &e.SchemaVersion, &e.Principal); err != nil {
 			return nil, err
 		}
 		e.Time = sqlitex.ParseTime(ts)

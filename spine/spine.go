@@ -62,6 +62,13 @@ type Event struct {
 	// OriginInstanceID is the instance that first produced this event. Set from
 	// the start so multi-instance (fleet/P2P) sync never forces an ID refactor.
 	OriginInstanceID string
+
+	// Principal is the identity on whose authority the event was produced: which
+	// agent in a fan-out, or which human in a multi-user host. It is the audit
+	// "who", distinct from the coarse Actor kind (agent/human/system). Empty means
+	// the standalone agent itself. Carried from the start so multi-agent and
+	// multi-user attribution never forces an event-schema migration.
+	Principal string
 }
 
 // AppendInput appends one event to a stream. The Log assigns Seq, assigns Time
@@ -78,6 +85,7 @@ type AppendInput struct {
 	SpanID           string
 	CausationID      string
 	OriginInstanceID string
+	Principal        string
 }
 
 // Query reads a contiguous slice of a stream in Seq order.
