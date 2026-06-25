@@ -20,11 +20,11 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
@@ -56,7 +56,8 @@ type Option func(*Session)
 // WithID sets the session's identity, which names its spine stream and bus
 // subject. A host embeds its own conversation id here so the stream lines up with
 // its records. The id must be a valid bus subject token (no whitespace, dots, or
-// wildcards). The default is a process-unique generated id.
+// wildcards). The default is a freshly generated UUIDv7, globally unique and
+// stable across restarts so a run's event stream stays addressable.
 func WithID(id string) Option {
 	return func(s *Session) {
 		if id != "" {
@@ -83,12 +84,13 @@ func WithStreamPoll(d time.Duration) Option {
 	return func(s *Session) { s.stream.poll = d }
 }
 
-var idCounter atomic.Int64
-
 // New builds a Session whose events are recorded on log and fanned out over b.
+// Its identity defaults to a fresh UUIDv7 (override with WithID); that id names
+// the run's event stream and, via Submit, its goal resource, so one value
+// addresses the whole run for replay, audit, and sync.
 func New(log spine.Log, b bus.Bus, opts ...Option) *Session {
 	s := &Session{
-		stream: newStream(log, b, fmt.Sprintf("sess-%d", idCounter.Add(1))),
+		stream: newStream(log, b, ids.New()),
 		poll:   DefaultPoll,
 		done:   make(chan struct{}),
 	}
@@ -113,14 +115,16 @@ func (s *Session) Subscribe(ctx context.Context, afterSeq int64) (<-chan Event, 
 }
 
 // Submit opens the session, submits spec as a goal to rt, and starts watching it.
-// It emits the session.started event, returns the goal's key, and from then on the
-// session streams the conversation (via the Reporter the caller wired in) and,
-// when the goal converges or stalls, emits the terminal event and releases Wait.
-// The caller owns rt's lifecycle: rt.Start must be running for the goal to make
-// progress.
+// The goal is named after the session id, so the run's event stream and its goal
+// resource share one identity: the run is addressable by a single id for replay,
+// audit, and (later) ownership and sync. It emits the session.started event,
+// returns the goal's key, and from then on the session streams the conversation
+// (via the Reporter the caller wired in) and, when the goal converges or stalls,
+// emits the terminal event and releases Wait. The caller owns rt's lifecycle:
+// rt.Start must be running for the goal to make progress.
 func (s *Session) Submit(ctx context.Context, rt *runtime.Runtime, spec goal.Spec) (resource.Key, error) {
 	s.emit(ctx, Event{Kind: KindSessionStarted, Actor: spine.ActorSystem, Text: spec.Objective})
-	g, err := rt.SubmitGoal(ctx, "", spec)
+	g, err := rt.SubmitGoal(ctx, s.ID(), spec)
 	if err != nil {
 		// The session opened but never started: release Wait with the failure rather
 		// than leaving it to block until the context is cancelled.
