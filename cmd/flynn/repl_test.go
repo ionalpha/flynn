@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -168,13 +169,27 @@ func TestInteractiveStreamWellFormedAcrossTurns(t *testing.T) {
 	}
 }
 
+// scriptedLines is a lineReader that returns a fixed sequence of messages and then
+// io.EOF, standing in for the terminal so the loop is testable without a tty.
+type scriptedLines struct {
+	lines []string
+	i     int
+}
+
+func (r *scriptedLines) ReadLine() (string, error) {
+	if r.i >= len(r.lines) {
+		return "", io.EOF
+	}
+	line := r.lines[r.i]
+	r.i++
+	return line, nil
+}
+
 // TestInteractiveLoopExitCommand: an exit command leaves the loop cleanly, and a
 // session that ran no turn just says goodbye.
 func TestInteractiveLoopExitCommand(t *testing.T) {
 	s, buf := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted())
-	lines := make(chan string, 1)
-	lines <- "exit"
-	if err := s.loop(context.Background(), lines, nil); err != nil {
+	if err := s.loop(context.Background(), &scriptedLines{lines: []string{"exit"}}, nil); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 	if !strings.Contains(buf.String(), "goodbye") {
@@ -182,16 +197,12 @@ func TestInteractiveLoopExitCommand(t *testing.T) {
 	}
 }
 
-// TestInteractiveLoopEOF: closing input (Ctrl-D) leaves the loop, and blank lines
+// TestInteractiveLoopEOF: input ending (Ctrl-D) leaves the loop, and blank lines
 // before it are skipped without driving a turn (the scripted model has no turns, so
 // a stray drive would error).
 func TestInteractiveLoopEOF(t *testing.T) {
 	s, buf := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted())
-	lines := make(chan string, 3)
-	lines <- ""
-	lines <- "   "
-	close(lines)
-	if err := s.loop(context.Background(), lines, nil); err != nil {
+	if err := s.loop(context.Background(), &scriptedLines{lines: []string{"", "   "}}, nil); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 	if !strings.Contains(buf.String(), "goodbye") {
@@ -206,10 +217,7 @@ func TestInteractiveTurnErrorDoesNotEndSession(t *testing.T) {
 	s, buf := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted())
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	lines := make(chan string, 2)
-	lines <- "do the thing"
-	lines <- "exit"
-	if err := s.loop(ctx, lines, nil); err != nil {
+	if err := s.loop(ctx, &scriptedLines{lines: []string{"do the thing", "exit"}}, nil); err != nil {
 		t.Fatalf("loop: %v", err)
 	}
 	out := buf.String()
