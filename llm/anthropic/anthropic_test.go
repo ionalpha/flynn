@@ -148,23 +148,31 @@ func TestThinkingCanBeDisabled(t *testing.T) {
 
 func TestErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
+		name   string
 		status int
+		body   string
 		want   fault.Class
 	}{
-		{429, fault.Transient},
-		{529, fault.Transient},
-		{500, fault.Transient},
-		{400, fault.Terminal},
-		{401, fault.Terminal},
+		{"rate-limit 429 retries", 429, `{"type":"error","error":{"type":"rate_limit_error","message":"Number of requests has exceeded your rate limit"}}`, fault.Transient},
+		// A billing/credit problem can arrive as a 429; it is permanent, so it must
+		// be terminal and fail fast rather than retry.
+		{"credit 429 is terminal", 429, `{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the API."}}`, fault.Terminal},
+		{"529 overloaded retries", 529, `{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}`, fault.Transient},
+		{"500 retries", 500, `{"type":"error","error":{"type":"api_error","message":"internal"}}`, fault.Transient},
+		{"400 bad request is terminal", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}`, fault.Terminal},
+		{"400 credit balance is terminal", 400, `{"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low"}}`, fault.Terminal},
+		{"401 auth is terminal", 401, `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`, fault.Terminal},
 	} {
-		m := &mockTransport{status: tc.status, respBody: `{"type":"error","error":{"type":"x","message":"boom"}}`}
-		_, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
-		if err == nil {
-			t.Fatalf("status %d: expected error", tc.status)
-		}
-		if got := fault.Classify(err); got != tc.want {
-			t.Fatalf("status %d classified %s, want %s", tc.status, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			m := &mockTransport{status: tc.status, respBody: tc.body}
+			_, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
+			if err == nil {
+				t.Fatalf("status %d: expected error", tc.status)
+			}
+			if got := fault.Classify(err); got != tc.want {
+				t.Fatalf("status %d classified %s, want %s", tc.status, got, tc.want)
+			}
+		})
 	}
 }
 
