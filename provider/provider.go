@@ -81,6 +81,20 @@ func credentials(ctx context.Context, src secret.Source, keyRef, baseRef string)
 // Providers lists the supported provider names.
 func Providers() []string { return []string{"anthropic", "openai"} }
 
+// KeyRef returns the reference a provider's API key is stored under, the same name
+// in the environment and in the vault, and whether the provider is known. The auth
+// command uses it to seal a key under the name Resolve will look it up by.
+func KeyRef(name string) (string, bool) {
+	switch name {
+	case "anthropic":
+		return "ANTHROPIC_API_KEY", true
+	case "openai":
+		return "OPENAI_API_KEY", true
+	default:
+		return "", false
+	}
+}
+
 // CredentialEnvVars are the environment variables the default Resolve reads a
 // provider API key from. A binary can unset these once a model is resolved so the
 // process stops carrying the raw key in its environment, defense in depth on top

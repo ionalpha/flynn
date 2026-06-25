@@ -251,6 +251,14 @@ flynn --model anthropic:claude-opus-4-8     # start an interactive session
 flynn --version
 ```
 
+Store your model API key once. It is encrypted at rest in your OS keychain (or a
+passphrase-sealed file where there is no keychain) and revealed only to call the
+model, never written to a prompt, a log, or a command's environment:
+
+```sh
+flynn auth set openai     # prompts for the key without echoing it
+```
+
 Give it a goal and let it plan, fan out, and report back:
 
 ```sh
@@ -271,6 +279,7 @@ Building from source: `go build -o flynn ./cmd/flynn`.
 | --- | --- |
 | `flynn` | Start an interactive session |
 | `flynn goal "<objective>"` | Plan and run a goal to completion |
+| `flynn auth set <provider>` | Store an API key in the encrypted vault |
 | `flynn watch` | Run proactively against your monitors and signals |
 | `flynn replay <mission>` | Replay or time-travel-debug a past mission |
 | `flynn gateway` | Start the messaging gateway |
