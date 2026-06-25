@@ -6,8 +6,8 @@
 // Generalising the orchestration event spine into this substrate is the single
 // biggest refactor-avoider: checkpoint/replay, rollback, monitoring, and
 // human-in-the-loop approvals all project from one log instead of parallel,
-// drifting ones. The durable (SQLite) Log lands later; MemoryLog defines the
-// semantics it must match.
+// drifting ones. The durable SQLite Log (storage/sqlite) implements these
+// semantics; MemoryLog is the in-memory reference they are matched against.
 package spine
 
 import (

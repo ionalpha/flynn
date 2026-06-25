@@ -1,7 +1,7 @@
 // Package goal is the agent's first desired-state kind: a Goal declares an
 // objective and a stop condition (the desired state), and a reconciler drives it
 // toward that condition by dispatching work steps and observing progress (the
-// observed state). It is the agent's own executflynn model expressed on the generic
+// observed state). It is the agent's own execution model expressed on the generic
 // resource + reconcile substrate: declarative, level-triggered, crash-resumable,
 // and budget-bounded, rather than an imperative do-step-do-step loop that loses
 // the thread on failure.
