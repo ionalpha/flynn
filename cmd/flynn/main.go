@@ -20,6 +20,8 @@ import (
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/provider"
+	"github.com/ionalpha/flynn/secret"
+	"github.com/ionalpha/flynn/vault"
 )
 
 func main() {
@@ -57,9 +59,18 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "auth" {
+		if err := runAuth(args[1:], *dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	// No subcommand: print usage. The interactive session is not wired in yet.
 	fmt.Fprintln(os.Stderr, `flynn: an autonomous software agent. Usage:
   flynn goal "<objective>"   drive a goal to completion in the current directory
+  flynn auth set <provider>  store an API key in the encrypted vault
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn (run with --help for details).`)
@@ -81,7 +92,14 @@ func defaultDataDir() string {
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
 func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
-	model, err := provider.Resolve(modelSpec)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	// Resolve the model's credential through the vault first (the OS keychain, then
+	// the passphrase-sealed file), falling back to the environment. So a key stored
+	// once with `flynn auth set` is used automatically and nothing need be exported.
+	source := secret.Chain(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), secret.EnvSource{})
+	model, err := provider.ResolveWith(ctx, modelSpec, source)
 	if err != nil {
 		return err
 	}
@@ -96,8 +114,6 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled bool) error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
