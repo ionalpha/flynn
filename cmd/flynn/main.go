@@ -33,6 +33,7 @@ func main() {
 		noLearn     = flag.Bool("no-learn", false, "do not capture skills/memory from this run")
 		verbose     = flag.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
 		verboseLong = flag.Bool("verbose", false, "alias for -v")
+		plain       = flag.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -113,7 +114,7 @@ func main() {
 	// each line is a turn of one continuing conversation. With stdin redirected (a
 	// pipe, a file, a CI step) there is no one to prompt, so print usage instead.
 	if len(flag.Args()) == 0 && stdinIsTerminal() {
-		if err := runInteractive(*model, *dataDir, !*noLearn, vrb); err != nil {
+		if err := runInteractive(*model, *dataDir, !*noLearn, vrb, *plain); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -135,7 +136,7 @@ func printUsage(w io.Writer) {
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
-Flags: --model, --data-dir, --no-learn, -v/--verbose (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
