@@ -66,6 +66,31 @@ func openDataStore(ctx context.Context, dataDir string) (*sqlite.Store, error) {
 	return openStore(ctx, dataDir)
 }
 
+// inspectRun replays a past run's recorded events from the durable spine through
+// the same renderer a live run uses, so any run is auditable after the fact by its
+// id (printed when the run starts). verbose shows the tool arguments, outputs, and
+// per-turn detail; the default view shows the shape of the run.
+func inspectRun(dataDir, runID string, verbose bool) error {
+	ctx := context.Background()
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	events, err := session.History(ctx, store.Log(), runID)
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("no run found with id %q under %s", runID, dataDir)
+	}
+	for _, ev := range events {
+		renderEvent(os.Stdout, ev, verbose)
+	}
+	return nil
+}
+
 // regradeSkills re-runs every stored skill's check in a sandbox at the working
 // directory, re-confirming the ones that still pass and retiring the ones that no
 // longer do, then reports the tally.
@@ -111,7 +136,7 @@ func missionRegistry() (*resource.Registry, error) {
 // sandboxed toolset, and (when a distiller is supplied) distills the converged run
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
-func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, distiller learn.Distiller, workdir, objective string, store *sqlite.Store) (string, error) {
+func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, distiller learn.Distiller, workdir, objective string, store *sqlite.Store, verbose bool) (string, error) {
 	reg, err := missionRegistry()
 	if err != nil {
 		return "", err
@@ -126,7 +151,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		system += "\n\n" + block
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log())
+	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log(), verbose)
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -393,7 +418,7 @@ func truncate(s string, n int) string {
 // id (used as learning provenance), and the conversation transcript (so the
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log) (result, source string, transcript []llm.Message, err error) {
+func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool) (result, source string, transcript []llm.Message, err error) {
 	sb, err := sandbox.NewLocal(workdir)
 	if err != nil {
 		return "", "", nil, err
@@ -451,7 +476,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 		return "", "", nil, err
 	}
 
-	result, transcript, runErr := renderStream(w, events)
+	result, transcript, runErr := renderStream(w, events, verbose)
 	cancel()
 	<-done
 	return result, sess.ID(), transcript, runErr
@@ -462,16 +487,14 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objecti
 // once the session reaches a terminal event: the model's summary on convergence,
 // or an error on stall. A closed channel before any terminal event means the run
 // was cancelled.
-func renderStream(out io.Writer, events <-chan session.Event) (string, []llm.Message, error) {
+func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (string, []llm.Message, error) {
 	var transcript []llm.Message
 	for ev := range events {
+		renderEvent(out, ev, verbose)
 		switch ev.Kind {
-		case session.KindTurnStarted:
-			_, _ = fmt.Fprintf(out, "  ... turn %d\n", ev.Turn)
 		case session.KindAssistant:
 			transcript = append(transcript, llm.Text(llm.RoleAssistant, ev.Text))
 		case session.KindToolCall:
-			_, _ = fmt.Fprintf(out, "  -> %s\n", ev.Tool)
 			transcript = append(transcript, llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{
 				{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: ev.ToolUseID, Name: ev.Tool, Input: ev.Input}},
 			}})
@@ -480,8 +503,8 @@ func renderStream(out io.Writer, events <-chan session.Event) (string, []llm.Mes
 		case session.KindStalled:
 			return "", transcript, fmt.Errorf("goal stalled: %s", ev.Err)
 		default:
-			// Other event kinds (session/turn lifecycle, tool results) are not
-			// surfaced in this CLI stream.
+			// Already drawn by renderEvent above; only the kinds that build the
+			// transcript or end the stream need handling here.
 		}
 	}
 	return "", transcript, context.Canceled
