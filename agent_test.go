@@ -1,7 +1,6 @@
 package agent_test
 
 import (
-	"bytes"
 	"context"
 	"strings"
 	"testing"
@@ -9,17 +8,12 @@ import (
 	agent "github.com/ionalpha/flynn"
 )
 
-func TestNewFillsStandaloneDefaults(t *testing.T) {
-	var buf bytes.Buffer
-	a := agent.New(agent.Config{Model: "anthropic:claude-opus-4-8", Out: &buf})
-
-	if err := a.Run(context.Background()); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	// With no State or Obs supplied, New must wire the in-memory provider and the
-	// no-op observability so the agent runs with zero setup.
-	if got := buf.String(); !strings.Contains(got, "store=memory") {
-		t.Fatalf("output %q does not report the default in-memory store", got)
+func TestRunRequiresAnObjective(t *testing.T) {
+	// New is usable from zero config; Run reports a clear error when no objective is
+	// set rather than silently doing nothing.
+	err := agent.New(agent.Config{}).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "objective") {
+		t.Fatalf("Run with no objective = %v, want an objective error", err)
 	}
 }
 

@@ -17,7 +17,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	agent "github.com/ionalpha/flynn"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/provider"
@@ -58,12 +57,13 @@ func main() {
 		return
 	}
 
-	// No subcommand: the interactive session is not wired in yet.
-	a := agent.New(agent.Config{Model: *model, Out: os.Stdout})
-	if err := a.Run(context.Background()); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
-		os.Exit(1)
-	}
+	// No subcommand: print usage. The interactive session is not wired in yet.
+	fmt.Fprintln(os.Stderr, `flynn: an autonomous software agent. Usage:
+  flynn goal "<objective>"   drive a goal to completion in the current directory
+  flynn regrade              re-grade learned skills against the working directory
+  flynn --version            print the version
+Flags: --model, --data-dir, --no-learn (run with --help for details).`)
+	os.Exit(2)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
