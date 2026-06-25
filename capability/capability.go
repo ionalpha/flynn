@@ -72,6 +72,23 @@ func (g Grant) Actions() []string {
 // Unrestricted reports whether the grant admits every action (AllowAll).
 func (g Grant) Unrestricted() bool { return g.allowAll }
 
+// Narrow returns the grant admitting only the actions that both this grant and the
+// requested set allow: the intersection. It is how authority is delegated without
+// escalation. A child run is given parent.Narrow(requested...), so its grant can
+// never exceed the parent's, only equal or shrink it. Narrowing AllowAll yields
+// exactly the requested actions (a trusted parent still hands a child a
+// least-privilege grant, not blanket trust); narrowing with no actions, or with
+// only actions the parent denies, yields deny-all.
+func (g Grant) Narrow(actions ...string) Grant {
+	set := make(map[string]struct{}, len(actions))
+	for _, a := range actions {
+		if a != "" && g.Allows(a) {
+			set[a] = struct{}{}
+		}
+	}
+	return Grant{actions: set}
+}
+
 type ctxKey struct{}
 
 // Into returns a context carrying g, so the dispatch waist's Admitter reads the
@@ -87,4 +104,22 @@ func Into(ctx context.Context, g Grant) context.Context {
 func FromContext(ctx context.Context) (Grant, bool) {
 	g, ok := ctx.Value(ctxKey{}).(Grant)
 	return g, ok
+}
+
+type principalKey struct{}
+
+// WithPrincipal binds the principal a run acts as: the specific identity on whose
+// authority it runs, which agent in a fan-out or which human in a multi-user host.
+// It is distinct from the coarse actor kind (agent/human/system): the actor says
+// what sort of thing acted, the principal says exactly who. Bind it once at the top
+// of a run, alongside the grant, and events the run records carry it for audit.
+// The empty principal is the standalone agent itself, the zero-config default.
+func WithPrincipal(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, principalKey{}, id)
+}
+
+// PrincipalFromContext returns the principal bound to ctx, or "" when none is set.
+func PrincipalFromContext(ctx context.Context) string {
+	id, _ := ctx.Value(principalKey{}).(string)
+	return id
 }

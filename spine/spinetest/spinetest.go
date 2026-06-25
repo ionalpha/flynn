@@ -155,7 +155,7 @@ func testPayload(t *testing.T, log spine.Log) {
 	in := map[string]any{"k": "v", "nested": map[string]any{"a": "b"}}
 	if _, err := log.Append(ctx, spine.AppendInput{
 		Stream: "s", Type: "e", Actor: spine.ActorHuman, Payload: in,
-		TraceID: "tr", SpanID: "sp", CausationID: "cz", OriginInstanceID: "node-1",
+		TraceID: "tr", SpanID: "sp", CausationID: "cz", OriginInstanceID: "node-1", Principal: "agent-7",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -174,6 +174,9 @@ func testPayload(t *testing.T, log spine.Log) {
 	}
 	if e.TraceID != "tr" || e.SpanID != "sp" || e.CausationID != "cz" || e.OriginInstanceID != "node-1" {
 		t.Fatalf("linkage fields not preserved: %+v", e)
+	}
+	if e.Principal != "agent-7" {
+		t.Fatalf("principal not preserved: %q", e.Principal)
 	}
 }
 

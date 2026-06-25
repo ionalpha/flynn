@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/spine"
@@ -48,5 +49,31 @@ func TestSinkRecordsDispatchOntoSpine(t *testing.T) {
 	// The dispatcher's clock time is preserved on the spine.
 	if !events[0].Time.Equal(at.UTC()) {
 		t.Fatalf("event Time = %v, want %v", events[0].Time, at.UTC())
+	}
+}
+
+// TestSinkStampsPrincipal asserts the governed events carry the principal bound to
+// the run's context, the audit "who", and leave it empty when none is bound.
+func TestSinkStampsPrincipal(t *testing.T) {
+	run := func(ctx context.Context) spine.Event {
+		t.Helper()
+		log := spine.NewMemoryLog()
+		d := dispatch.New(dispatch.WithEventSink(spinesink.New(log, "run-1")))
+		work := func(context.Context) (dispatch.Metering, error) { return dispatch.Metering{}, nil }
+		if err := d.Govern(ctx, dispatch.Action{Name: "search"}, work); err != nil {
+			t.Fatalf("govern: %v", err)
+		}
+		events, err := log.Read(ctx, spine.Query{Stream: "run-1"})
+		if err != nil || len(events) == 0 {
+			t.Fatalf("read: %v (%d events)", err, len(events))
+		}
+		return events[0]
+	}
+
+	if got := run(capability.WithPrincipal(context.Background(), "agent-7")).Principal; got != "agent-7" {
+		t.Fatalf("bound principal not stamped: %q", got)
+	}
+	if got := run(context.Background()).Principal; got != "" {
+		t.Fatalf("unbound principal must be empty, got %q", got)
 	}
 }
