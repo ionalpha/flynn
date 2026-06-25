@@ -80,6 +80,38 @@ func TestManagerInitialResyncReconcilesExisting(t *testing.T) {
 	}
 }
 
+// TestManagerWithoutResyncIgnoresExisting is the controlled-resume guarantee: a
+// manager built WithoutResync drives only explicitly-enqueued work and never adopts
+// a resource it finds already in the store, so a one-shot run does not resume a goal
+// an earlier run left behind (which would contaminate its event stream).
+func TestManagerWithoutResyncIgnoresExisting(t *testing.T) {
+	m := clock.NewManual(epoch())
+	store := newStore(t, m)
+	putTask(t, store, "leftover")
+
+	reconciled := make(chan Ref, 16)
+	mgr := NewManager(store, WithClock(m), WithoutResync())
+	mgr.Register(taskKind, ReconcilerFunc[Ref](func(_ context.Context, ref Ref) (Result, error) {
+		reconciled <- ref
+		return Result{}, nil
+	}))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Start(ctx)
+
+	// The pre-existing resource must NOT be adopted.
+	select {
+	case got := <-reconciled:
+		t.Fatalf("WithoutResync adopted a pre-existing resource: %+v", got)
+	case <-time.After(50 * time.Millisecond):
+	}
+	// But explicitly enqueued work is still driven.
+	mgr.Enqueue(Ref{Kind: taskKind, Name: "submitted"})
+	if got := <-reconciled; got.Name != "submitted" {
+		t.Fatalf("Enqueue reconciled %q, want submitted", got.Name)
+	}
+}
+
 func TestManagerEnqueueTriggersReconcile(t *testing.T) {
 	m := clock.NewManual(epoch())
 	store := newStore(t, m)
