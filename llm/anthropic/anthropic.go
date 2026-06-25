@@ -21,6 +21,7 @@ import (
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/secret"
 )
 
 const (
@@ -34,7 +35,7 @@ const (
 
 // Client is an llm.Model backed by the Anthropic Messages API.
 type Client struct {
-	apiKey    string
+	apiKey    secret.Text
 	model     string
 	baseURL   string
 	http      *http.Client
@@ -55,9 +56,12 @@ func WithModel(m string) Option {
 }
 
 // WithBaseURL overrides the API base URL (for a proxy or a compatible endpoint).
+// An unsafe URL (plaintext http to a non-loopback host, where the API key could be
+// sniffed in transit) is rejected and the secure default is kept, so the override
+// can never downgrade the transport. See llm.SafeBaseURL.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
-		if u != "" {
+		if u != "" && llm.SafeBaseURL(u) {
 			c.baseURL = u
 		}
 	}
@@ -87,10 +91,11 @@ func WithThinking(on bool) Option {
 	return func(c *Client) { c.thinking = on }
 }
 
-// New builds a Client authenticating with apiKey. With no HTTP client injected it
-// uses one with a generous timeout, since a single non-streaming turn can run for
-// a while.
-func New(apiKey string, opts ...Option) *Client {
+// New builds a Client authenticating with apiKey. The key is held as a
+// secret.Text, so it cannot leak through logging or formatting of the Client. With
+// no HTTP client injected it uses one with a generous timeout, since a single
+// non-streaming turn can run for a while.
+func New(apiKey secret.Text, opts ...Option) *Client {
 	c := &Client{
 		apiKey:    apiKey,
 		model:     DefaultModel,
@@ -120,7 +125,7 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, e
 		return llm.Response{}, fault.Wrap(fault.Terminal, "anthropic_request", err)
 	}
 	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey)
+	httpReq.Header.Set("x-api-key", c.apiKey.Expose())
 	httpReq.Header.Set("anthropic-version", apiVersion)
 
 	resp, err := c.http.Do(httpReq)
