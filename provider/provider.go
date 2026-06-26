@@ -1,7 +1,7 @@
 // Package provider resolves a "provider:model" string to a concrete llm.Model. It
-// is the small seam where the agent's configured model name becomes a backend,
-// resolving the provider's API key through a secret.Source (the vault seam) and an
-// optional base-URL override for compatible endpoints. The key is carried as a
+// is the small boundary where the agent's configured model name becomes a backend,
+// resolving the provider's API key through a secret.Source (the vault interface) and
+// an optional base-URL override for compatible endpoints. The key is carried as a
 // secret.Text and never as a bare string, and a plaintext remote base URL is
 // refused so a credential is never sent over an unencrypted transport. It is the
 // place the README's cost-aware router grows from: today it dispatches on the
@@ -64,6 +64,13 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 		// Gemini exposes an OpenAI-compatible endpoint, so the same adapter reaches it
 		// by pointing at that base URL; the default model is the fast, low-cost tier.
 		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash")
+	case "llamacpp":
+		// A local model server speaking the OpenAI Chat Completions format. It runs on
+		// the loopback host, so no API key is required and the base URL defaults to the
+		// server's usual address. Tool calls are grammar-constrained at decode time, so
+		// even a small local model can only emit a structurally valid call; the
+		// constraint is local-only because it rides the server's grammar request field.
+		return localOpenAI(ctx, src, model, "LLAMACPP_BASE_URL", "http://localhost:8080/v1")
 	case "":
 		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
 	default:
@@ -91,6 +98,23 @@ func openAICompatible(ctx context.Context, src secret.Source, model, keyRef, bas
 	return openai.New(key, openai.WithModel(model), openai.WithBaseURL(baseURL)), nil
 }
 
+// localOpenAI resolves a local OpenAI-compatible model server: no API key is
+// required (the traffic never leaves the machine), the base URL defaults to the
+// server's usual loopback address and may be overridden by baseRef, and tool calls
+// are grammar-constrained so the model can only emit a structurally valid call. A
+// configured base URL that is not safe to send to (a plaintext non-loopback host)
+// is refused, so the local-only assumption cannot be silently broken.
+func localOpenAI(ctx context.Context, src secret.Source, model, baseRef, defaultBaseURL string) (llm.Model, error) {
+	baseURL := defaultBaseURL
+	if u, err := src.Lookup(ctx, baseRef); err == nil && u.Expose() != "" {
+		baseURL = u.Expose()
+	}
+	if !llm.SafeBaseURL(baseURL) {
+		return nil, fmt.Errorf("provider: %s must be https or http to localhost", baseRef)
+	}
+	return openai.New(secret.Text{}, openai.WithModel(model), openai.WithBaseURL(baseURL), openai.WithToolGrammar()), nil
+}
+
 // credentials resolves a provider's API key (required) and base-URL override
 // (optional) from the Source, refusing a base URL that would send the key in the
 // clear. The base URL is a configuration value, not a secret, so an absent one is
@@ -114,7 +138,7 @@ func credentials(ctx context.Context, src secret.Source, keyRef, baseRef string)
 }
 
 // Providers lists the supported provider names.
-func Providers() []string { return []string{"anthropic", "openai", "deepseek", "gemini"} }
+func Providers() []string { return []string{"anthropic", "openai", "deepseek", "gemini", "llamacpp"} }
 
 // KeyRef returns the reference a provider's API key is stored under, the same name
 // in the environment and in the vault, and whether the provider is known. The auth

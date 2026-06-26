@@ -41,6 +41,30 @@ func TestResolveMissingKey(t *testing.T) {
 	}
 }
 
+// TestResolveLocalProviderNeedsNoKey checks the local model server resolves without
+// any API key (its traffic never leaves the machine) and honors a loopback base-URL
+// override while refusing a plaintext remote one.
+func TestResolveLocalProviderNeedsNoKey(t *testing.T) {
+	t.Setenv("LLAMACPP_BASE_URL", "")
+	m, err := provider.Resolve("llamacpp:my-model")
+	if err != nil {
+		t.Fatalf("local provider should resolve without a key: %v", err)
+	}
+	if m == nil {
+		t.Fatal("local provider returned a nil model")
+	}
+
+	t.Setenv("LLAMACPP_BASE_URL", "http://localhost:9999/v1")
+	if _, err := provider.Resolve("llamacpp"); err != nil {
+		t.Fatalf("loopback base URL override should be allowed: %v", err)
+	}
+
+	t.Setenv("LLAMACPP_BASE_URL", "http://remote.example.com/v1")
+	if _, err := provider.Resolve("llamacpp"); err == nil {
+		t.Fatal("plaintext remote base URL should be refused for the local provider")
+	}
+}
+
 // TestResolveRejectsPlaintextRemoteBaseURL guards the transport: a plaintext http
 // base URL to a non-loopback host must be refused, so the API key is never sent
 // where it could be sniffed. A localhost http override (a local model server) is
@@ -154,12 +178,17 @@ func TestResolveOpenAICompatibleProviders(t *testing.T) {
 	}
 }
 
-// TestKeyRefCoversAllProviders pins that every name Providers() lists has a key
-// reference, so auth setup and resolution agree on the lookup name.
+// TestKeyRefCoversAllProviders pins that every name Providers() lists is usable: a
+// keyed provider has a key reference, so auth setup and resolution agree on the
+// lookup name, and a keyless provider (a local server) resolves with no credential
+// at all rather than silently lacking a setup path.
 func TestKeyRefCoversAllProviders(t *testing.T) {
 	for _, name := range provider.Providers() {
-		if ref, ok := provider.KeyRef(name); !ok || ref == "" {
-			t.Fatalf("provider %q has no key reference", name)
+		if ref, ok := provider.KeyRef(name); ok && ref != "" {
+			continue
+		}
+		if _, err := provider.ResolveWith(context.Background(), name, mapSource{}); err != nil {
+			t.Fatalf("provider %q has no key reference and does not resolve keyless: %v", name, err)
 		}
 	}
 }
