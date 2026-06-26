@@ -224,9 +224,11 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 				// stable and worth caching. Declaring that lets a provider reuse the
 				// work of reading it back on the next turn instead of reprocessing the
 				// entire transcript every call, which is the dominant cost of a long
-				// tool-using loop. The hint is advisory: a backend without caching
-				// ignores it and the result is identical.
-				Cache: llm.CacheHint{Prefix: true, StableMessages: len(reqMessages)},
+				// tool-using loop. The run id keys the cache to this conversation, so a
+				// provider that routes by cache affinity keeps its turns together. The
+				// hint is advisory: a backend without caching ignores it and the result
+				// is identical.
+				Cache: llm.CacheHint{Prefix: true, StableMessages: len(reqMessages), Key: r.Name},
 			})
 			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
 		})

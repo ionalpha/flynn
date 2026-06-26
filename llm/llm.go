@@ -139,6 +139,13 @@ type CacheHint struct {
 	// Zero leaves the message history uncached. A backend places at most one message
 	// boundary, after message StableMessages-1, in addition to the prefix one.
 	StableMessages int `json:"stableMessages,omitempty"`
+	// Key is a stable identifier for the conversation whose prefix this request
+	// shares, for example a run id. It is constant across the turns of one
+	// conversation and distinct between conversations. A backend that routes by cache
+	// affinity uses it to send same-prefix requests to the same place, raising the
+	// hit rate; a backend without that mechanism ignores it. It is a routing hint,
+	// not a secret, and never changes the request's content. Empty opts out.
+	Key string `json:"key,omitempty"`
 }
 
 // StopReason is why the model ended its turn. It drives the conversation loop:

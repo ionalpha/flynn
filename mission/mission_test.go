@@ -356,6 +356,9 @@ func TestExecutorDeclaresCacheHint(t *testing.T) {
 		if !r.Cache.Prefix {
 			t.Fatalf("call %d did not mark the static prefix as cacheable", i)
 		}
+		if r.Cache.Key == "" {
+			t.Fatalf("call %d did not key the cache to the run", i)
+		}
 		if r.Cache.StableMessages != len(r.Messages) {
 			t.Fatalf("call %d: StableMessages=%d, want full history %d", i, r.Cache.StableMessages, len(r.Messages))
 		}
@@ -364,5 +367,10 @@ func TestExecutorDeclaresCacheHint(t *testing.T) {
 	// first (the tool call, its result, and the prompt).
 	if reqs[1].Cache.StableMessages <= reqs[0].Cache.StableMessages {
 		t.Fatalf("rolling boundary did not advance: %d then %d", reqs[0].Cache.StableMessages, reqs[1].Cache.StableMessages)
+	}
+	// The cache key is constant across the conversation's turns, which is what lets a
+	// cache-affinity provider keep them on the same backend.
+	if reqs[0].Cache.Key != reqs[1].Cache.Key {
+		t.Fatalf("cache key changed between turns: %q then %q", reqs[0].Cache.Key, reqs[1].Cache.Key)
 	}
 }
