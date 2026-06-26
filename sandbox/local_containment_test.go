@@ -3,6 +3,7 @@ package sandbox
 import (
 	"context"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -38,6 +39,14 @@ func TestBestEffortConfinementFallsBack(t *testing.T) {
 // (not the default baseline) must fail when it cannot be set up, never silently run
 // unconfined. The caller asked for the confinement, so its absence is an error.
 func TestExplicitConfinementFailsLoud(t *testing.T) {
+	// The selfExe override forces a confinement-setup failure only on the Linux
+	// launcher, which re-executes this binary to build the filesystem confinement.
+	// macOS and Windows apply confinement differently (a sandbox profile, an
+	// AppContainer) and ignore selfExe, so it cannot force a failure there; the
+	// loud-failure path is exercised on Linux.
+	if runtime.GOOS != "linux" {
+		t.Skip("the selfExe setup-failure override only applies to the Linux launcher")
+	}
 	sb, err := NewLocal(t.TempDir(), WithReadOnlyFS())
 	if err != nil {
 		t.Fatal(err)
