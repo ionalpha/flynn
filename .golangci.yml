@@ -147,6 +147,29 @@ linters:
           msg: "use the observe.Logger port, not fmt.Print*"
         - pattern: '^time\.Now$'
           msg: "use the injected clock.Clock, not time.Now (deterministic replay)"
+        # Outbound connections go through netguard, the default-deny egress gate that
+        # blocks SSRF to private, loopback, and cloud-metadata addresses after DNS
+        # resolution. Nothing dials around it: the raw dial primitives and the
+        # unguarded standard clients are forbidden outside netguard (relaxed there and
+        # in _test.go via the exclusions below). A new bypass fails CI.
+        - pattern: '^net\.Dial[a-zA-Z]*$'
+          msg: "open outbound connections through netguard.Client, not a raw net.Dial, which bypasses the egress policy"
+        - pattern: '^net\.Dialer$'
+          msg: "build dialers inside netguard; a raw net.Dialer elsewhere bypasses the egress policy"
+        - pattern: '^tls\.Dial[a-zA-Z]*$'
+          msg: "open outbound TLS connections through netguard.Client, not a raw tls.Dial"
+        - pattern: '^http\.Get$'
+          msg: "use a netguard-backed client; http.Get dials via the unguarded default client"
+        - pattern: '^http\.Post$'
+          msg: "use a netguard-backed client; http.Post dials via the unguarded default client"
+        - pattern: '^http\.Head$'
+          msg: "use a netguard-backed client; http.Head dials via the unguarded default client"
+        - pattern: '^http\.PostForm$'
+          msg: "use a netguard-backed client; http.PostForm dials via the unguarded default client"
+        - pattern: '^http\.DefaultClient$'
+          msg: "the default HTTP client ignores egress policy; dial through netguard.Client"
+        - pattern: '^http\.DefaultTransport$'
+          msg: "the default transport ignores egress policy; dial through netguard.Client"
   exclusions:
     rules:
       # clock is the home of the system time source, and the migration runner
@@ -156,6 +179,20 @@ linters:
           - forbidigo
         path: '(^|/)(clock|migrate)/'
         source: 'time\.Now'
+      # netguard is the egress boundary itself: the one package that may hold the raw
+      # dial primitives and build the hardened client every other package dials
+      # through, so the egress forbids do not apply to it.
+      - linters:
+          - forbidigo
+        path: '(^|/)netguard/'
+        source: '(net\.Dial|net\.Dialer|tls\.Dial|http\.(DefaultClient|DefaultTransport|Get|Post|Head|PostForm))'
+      # The egress boundary protects shipped code, not the test harness: tests may use
+      # httptest and the standard client directly. The no-fmt.Print and no-time.Now
+      # forbids still apply in tests; only the egress ones are relaxed here.
+      - linters:
+          - forbidigo
+        path: _test\.go
+        source: '(net\.Dial|net\.Dialer|tls\.Dial|http\.(DefaultClient|DefaultTransport|Get|Post|Head|PostForm))'
       # gosec's file-permission and file-inclusion rules target production code;
       # test fixtures (temp dirs, reading the module's own sources) are not a
       # threat surface.
