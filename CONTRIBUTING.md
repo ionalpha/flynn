@@ -11,6 +11,9 @@ it is the canonical contribution contract (and what automated triage checks agai
    what CI runs (build, vet, test, lint, vuln).
 4. Open a pull request (`./dev/pr`) that links the issue and follows Conventional Commits.
 5. Sign your commits off with DCO: `git commit -s`.
+6. Sign the Contributor License Agreement. On your first pull request the CLA bot
+   comments with a link to [`CLA.md`](CLA.md); reply with the sign-off phrase it gives.
+   This is a one-time step.
 
 ## What gets merged fast
 
@@ -22,6 +25,13 @@ it is the canonical contribution contract (and what automated triage checks agai
 
 - Unfocused or bundled PRs, unreviewed AI output, or changes with no linked issue.
 - Anything that fails CI and is not being actively fixed.
+
+## Contributor License Agreement
+
+All contributions are accepted under the [Contributor License Agreement](CLA.md). You keep
+ownership of your work and grant the project the rights it needs to distribute it and, if
+necessary, license it under different terms. Signing is a one-time step handled by the CLA
+bot on your first pull request; pull requests that are not signed cannot be merged.
 
 ## Reporting bugs and requesting features
 
