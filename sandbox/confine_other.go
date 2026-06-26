@@ -1,4 +1,4 @@
-//go:build !linux && !darwin
+//go:build !linux && !darwin && !windows
 
 package sandbox
 
@@ -9,9 +9,9 @@ import (
 )
 
 // kernelConfinementSupported reports whether this platform can enforce the network,
-// filesystem, and syscall confinement. Linux and macOS have adapters that do; every
-// other platform (including Windows until its AppContainer adapter lands) does not
-// yet, so it reports false and confinement is refused rather than faked.
+// filesystem, and syscall confinement. Linux, macOS, and Windows have adapters that
+// do; every other platform does not yet, so it reports false and confinement is
+// refused rather than faked.
 func kernelConfinementSupported() bool { return false }
 
 // confine reports that kernel-enforced isolation is not available on this platform.

@@ -265,6 +265,17 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 // confined is true.
 func (l *Local) execOnce(ctx context.Context, cmd Command, confined bool) (ExecResult, error) {
 	name, args := shell(cmd.Line)
+	return l.runShell(ctx, name, args, confined)
+}
+
+// runWithExecCmd runs a command through the standard library in the working directory
+// with the deny-by-default environment, applying this platform's in-process
+// confinement via confine when confined is true. It is the execution path for every
+// platform's unconfined commands and for confinement that can be expressed on an
+// exec.Cmd (the network, filesystem, and syscall isolation on Linux and macOS). A
+// confined command on Windows cannot be expressed this way and takes a different path;
+// see runShell.
+func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, confined bool) (ExecResult, error) {
 	//nolint:gosec // running a model-supplied command is the bash tool's purpose; isolation is this sandbox's job, hardened by the stronger tiers
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = l.root
