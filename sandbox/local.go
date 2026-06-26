@@ -89,6 +89,11 @@ func (l *Local) Root() string { return l.root }
 // Close releases resources (none for the local tier).
 func (l *Local) Close() error { return nil }
 
+// Containment reports that the local tier is a process jail only: it confines paths
+// and scrubs the environment but shares the host kernel, network, and syscalls, so it
+// is trusted-code-only. Untrusted work is refused here until a stronger tier runs it.
+func (l *Local) Containment() Containment { return ContainmentNone }
+
 // resolve confines a caller-supplied path to the root and returns the absolute
 // path to operate on, or ErrDenied. The nearest existing ancestor is
 // symlink-resolved and re-checked so a symlink cannot point the operation outside.
