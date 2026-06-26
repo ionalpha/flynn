@@ -25,16 +25,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
-	"time"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/netguard"
 )
 
 // defaultMaxBytes is the fallback ceiling on a download when the caller does not
@@ -90,68 +88,11 @@ func New(opts ...Option) *Downloader {
 		o(d)
 	}
 	if d.http == nil {
-		d.http = SafeClient()
+		// A download may reach any public source but never a private, loopback, or
+		// metadata address; the policy enforces that at the point of connect.
+		d.http = netguard.Client(netguard.PublicOnly())
 	}
 	return d
-}
-
-// SafeClient is the hardened HTTP client downloads use by default. It refuses to
-// dial a non-public address (so a URL or a redirect cannot reach localhost, a
-// private network, or the cloud metadata endpoint), refuses a non-https redirect,
-// bounds redirects, and does not honor a proxy from the environment so the dial
-// guard is authoritative. The dial guard runs after DNS resolution on the actual
-// address, so a name that resolves to a private IP, including a rebinding attack,
-// is still blocked.
-func SafeClient() *http.Client {
-	dialer := &net.Dialer{Timeout: 30 * time.Second, Control: guardDial}
-	return &http.Client{
-		Transport: &http.Transport{
-			Proxy:                 nil,
-			DialContext:           dialer.DialContext,
-			ForceAttemptHTTP2:     true,
-			TLSHandshakeTimeout:   15 * time.Second,
-			ResponseHeaderTimeout: 60 * time.Second,
-		},
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 5 {
-				return fault.New(fault.Terminal, "fetch_redirects", "fetch: too many redirects")
-			}
-			if req.URL.Scheme != "https" {
-				return fault.New(fault.Forbidden, "fetch_redirect_scheme", "fetch: refusing a non-https redirect to "+req.URL.Host)
-			}
-			return nil
-		},
-	}
-}
-
-// guardDial rejects a connection to any non-public IP, the anti-SSRF check at the
-// point of connect.
-func guardDial(_, address string, _ syscall.RawConn) error {
-	host, _, err := net.SplitHostPort(address)
-	if err != nil {
-		return fault.New(fault.Forbidden, "fetch_addr", "fetch: cannot parse dial address "+address)
-	}
-	if ip := net.ParseIP(host); !isPublicIP(ip) {
-		return fault.New(fault.Forbidden, "fetch_ssrf", "fetch: refusing to connect to non-public address "+host)
-	}
-	return nil
-}
-
-// isPublicIP reports whether ip is a routable public address, rejecting loopback,
-// private (RFC1918 and IPv6 unique-local), link-local (which covers the
-// 169.254.169.254 cloud metadata endpoint), multicast, and the unspecified address.
-func isPublicIP(ip net.IP) bool {
-	if ip == nil {
-		return false
-	}
-	switch {
-	case ip.IsLoopback(), ip.IsPrivate(), ip.IsUnspecified(),
-		ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast(),
-		ip.IsInterfaceLocalMulticast(), ip.IsMulticast():
-		return false
-	default:
-		return true
-	}
 }
 
 // Fetch downloads req.URL, verifies it, and installs it atomically at req.Dest,

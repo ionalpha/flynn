@@ -3,7 +3,6 @@ package fetch
 import (
 	"bytes"
 	"context"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -30,27 +29,6 @@ func FuzzCheckURL(f *testing.F) {
 			u, perr := url.Parse(raw)
 			if perr != nil || u.Scheme != "https" || u.Host == "" {
 				t.Fatalf("checkURL accepted a non-https or hostless URL: %q", raw)
-			}
-		}
-	})
-}
-
-// FuzzGuardDial throws arbitrary dial addresses at the anti-SSRF guard, which sees
-// the address the client is about to connect to (after DNS resolution). Invariants:
-// it never panics, and any address it allows resolves to a public IP, so localhost,
-// a private network, link-local, or the cloud metadata endpoint can never be dialed.
-func FuzzGuardDial(f *testing.F) {
-	for _, s := range []string{
-		"1.2.3.4:443", "127.0.0.1:80", "[::1]:443", "169.254.169.254:80", "10.0.0.1:1",
-		"8.8.8.8:53", "[fd00::1]:443", "garbage", "host:port", ":443", "", "1.2.3.4",
-	} {
-		f.Add(s)
-	}
-	f.Fuzz(func(t *testing.T, addr string) {
-		if err := guardDial("tcp", addr, nil); err == nil {
-			host, _, splitErr := net.SplitHostPort(addr)
-			if splitErr != nil || !isPublicIP(net.ParseIP(host)) {
-				t.Fatalf("guardDial allowed a non-public address: %q", addr)
 			}
 		}
 	})
