@@ -29,9 +29,12 @@ it is the canonical contribution contract (and what automated triage checks agai
 ## Contributor License Agreement
 
 All contributions are accepted under the [Contributor License Agreement](CLA.md). You keep
-ownership of your work and grant the project the rights it needs to distribute it and, if
-necessary, license it under different terms. Signing is a one-time step handled by the CLA
-bot on your first pull request; pull requests that are not signed cannot be merged.
+ownership of your work, and in return the project commits to only ever licensing it under
+terms approved by the Open Source Initiative: it can never be taken proprietary or made
+source-available. The agreement grants the rights the project needs to distribute it and,
+if it is ever needed to keep the project open, to move it to a different open-source
+license. Signing is a one-time step handled by the CLA bot on your first pull request;
+pull requests that are not signed cannot be merged.
 
 ## Reporting bugs and requesting features
 

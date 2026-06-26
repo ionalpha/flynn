@@ -6,6 +6,10 @@ under which You provide contributions to the Project. It protects You, the Maint
 and the Project's users. It does not change Your right to use Your own work for any other
 purpose.
 
+**The project's commitment in return:** Flynn will only ever be licensed under terms
+approved by the Open Source Initiative. It will never be made proprietary or moved to a
+source-available license. The license You grant below is bounded by that commitment.
+
 You accept and agree to these terms for Your present and future Contributions to the
 Project. By signing this Agreement (for example, through the contribution bot on a pull
 request), You agree as follows.
@@ -25,9 +29,14 @@ You retain ownership of Your Contributions. You grant to the Maintainer and to r
 of software distributed by the Maintainer a perpetual, worldwide, non-exclusive,
 royalty-free, irrevocable copyright license to reproduce, prepare derivative works of,
 publicly display, publicly perform, sublicense, and distribute Your Contributions and any
-derivative works, under any license terms the Maintainer chooses, including open-source
-and proprietary licenses. This expressly includes the right to license, and to relicense,
-the Project, in whole or in part, under different terms in the future.
+derivative works.
+
+The Maintainer may license Your Contributions only under the Project's then-current
+license or another license approved by the Open Source Initiative. This preserves the
+ability to move the Project to a different open-source license if that is ever needed to
+keep it open, for example a copyleft license. It does not permit licensing Your
+Contributions under proprietary or source-available terms: the Project will always remain
+available under OSI-approved open-source terms.
 
 ## 3. Patent license
 
