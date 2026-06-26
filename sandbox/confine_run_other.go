@@ -12,3 +12,7 @@ import "context"
 func (l *Local) runShell(ctx context.Context, name string, args []string, confined bool) (ExecResult, error) {
 	return l.runWithExecCmd(ctx, name, args, confined)
 }
+
+// closePlatform releases platform confinement state on Close. No platform but Windows
+// leaves persistent state behind, so this is a no-op here.
+func (l *Local) closePlatform() error { return nil }
