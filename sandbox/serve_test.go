@@ -15,6 +15,15 @@ import (
 // scrubs the environment, so a test grants the variable explicitly with WithEnv; that
 // is also what proves the grant path reaches a backgrounded process.
 func TestMain(m *testing.M) {
+	// The microVM command machine drives an external runtime binary; with the helper
+	// variable set, re-execute this test binary as a stand-in runtime (read the manifest,
+	// run or serve, report a result) so the whole Flynn side is proven against a real child
+	// process without a hypervisor. This is checked first so the child exits before running
+	// the suite.
+	if v := os.Getenv(helperRuntimeEnv); v == "1" || v == "exit" {
+		runHelperRuntime()
+		os.Exit(0)
+	}
 	switch os.Getenv("FLYNN_TEST_SERVE_HELPER") {
 	case "block":
 		// A stand-in server: announce readiness, then run until the parent stops it. A
