@@ -19,7 +19,7 @@ func TestRegistryMatchesModel(t *testing.T) {
 		model := map[string]Record{}
 
 		ops := rapid.IntRange(0, 40).Draw(rt, "ops")
-		for i := 0; i < ops; i++ {
+		for range ops {
 			id := rapid.SampledFrom(ids).Draw(rt, "id")
 			if rapid.Bool().Draw(rt, "delete") {
 				delete(model, id)

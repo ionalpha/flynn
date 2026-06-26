@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/inference/launch"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -112,7 +113,7 @@ func testManager(t *testing.T, l Launcher, probe Prober, kill Killer) (*Manager,
 		l, probe, kill, reg,
 		WithReadyTimeout(2*time.Second),
 		WithPollInterval(2*time.Millisecond),
-		withClock(func() int64 { return 1000 }),
+		withClock(clock.NewManual(time.Unix(1000, 0))),
 	)
 	return m, reg
 }

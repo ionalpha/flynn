@@ -125,7 +125,7 @@ func (r *Registry) loadLocked() ([]Record, error) {
 		// A corrupt registry must not wedge the runtime: treat it as empty so a new
 		// server can be started and the file rewritten clean, rather than failing every
 		// command until a human deletes it.
-		return nil, nil
+		return nil, nil //nolint:nilerr // a malformed registry is intentionally read as empty, not surfaced
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].ModelID < recs[j].ModelID })
 	return recs, nil

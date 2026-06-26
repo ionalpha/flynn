@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/inference/launch"
 	"github.com/ionalpha/flynn/sandbox"
@@ -82,7 +83,7 @@ type Manager struct {
 	probe    Prober
 	kill     Killer
 	reg      *Registry
-	now      func() int64
+	clk      clock.Clock
 	// readyTimeout caps how long Ensure waits for a started server to answer before
 	// giving up and stopping it.
 	readyTimeout time.Duration
@@ -111,11 +112,11 @@ func WithPollInterval(d time.Duration) Option {
 	}
 }
 
-// withClock overrides the wall clock, for deterministic tests.
-func withClock(now func() int64) Option {
+// withClock overrides the time source, for deterministic tests.
+func withClock(c clock.Clock) Option {
 	return func(m *Manager) {
-		if now != nil {
-			m.now = now
+		if c != nil {
+			m.clk = c
 		}
 	}
 }
@@ -127,7 +128,7 @@ func NewManager(l Launcher, probe Prober, kill Killer, reg *Registry, opts ...Op
 		probe:        probe,
 		kill:         kill,
 		reg:          reg,
-		now:          func() int64 { return time.Now().Unix() },
+		clk:          clock.System{},
 		readyTimeout: 90 * time.Second,
 		pollEvery:    250 * time.Millisecond,
 	}
@@ -196,7 +197,7 @@ func (m *Manager) Ensure(ctx context.Context, cfg EnsureConfig) (Endpoint, error
 		Port:      cfg.Plan.Port,
 		BaseURL:   cfg.Plan.BaseURL,
 		Runtime:   cfg.Runtime,
-		StartedAt: m.now(),
+		StartedAt: m.clk.Now().Unix(),
 	}
 	if err := m.reg.Put(rec); err != nil {
 		_ = proc.Stop()
@@ -225,7 +226,7 @@ func (m *Manager) waitReady(ctx context.Context, proc Proc, baseURL string) erro
 			return ctx.Err()
 		case <-proc.Done():
 			return fault.New(fault.Terminal, "serve_exited",
-				fmt.Sprintf("serve: the runtime exited before its endpoint came up:\n%s", proc.Output()))
+				"serve: the runtime exited before its endpoint came up:\n"+proc.Output())
 		case <-deadline.C:
 			return fault.New(fault.Terminal, "serve_timeout",
 				fmt.Sprintf("serve: the runtime did not answer within %s:\n%s", m.readyTimeout, proc.Output()))
