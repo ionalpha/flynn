@@ -284,6 +284,7 @@ Building from source: `go build -o flynn ./cmd/flynn`.
 | `flynn replay <mission>` | Replay or time-travel-debug a past mission |
 | `flynn gateway` | Start the messaging gateway |
 | `flynn model` | Choose the provider and model |
+| `flynn models` | Browse the model catalog and check which fit your hardware |
 | `flynn skills` | List and manage learned skills |
 | `flynn --version` | Print the version |
 

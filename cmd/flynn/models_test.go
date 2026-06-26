@@ -52,3 +52,26 @@ func TestRunModelsFilters(t *testing.T) {
 		t.Fatalf("expected an empty-result message:\n%s", none.String())
 	}
 }
+
+func TestRunModelsFit(t *testing.T) {
+	// An explicit VRAM budget makes fit deterministic without any hardware probe.
+	var b strings.Builder
+	if err := runModels([]string{"--local", "--vram", "24"}, &b); err != nil {
+		t.Fatal(err)
+	}
+	out := b.String()
+	for _, want := range []string{"FIT", "feasible", "24GB budget (given)", "recommended local model"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("fit output missing %q:\n%s", want, out)
+		}
+	}
+
+	// A tiny budget pushes the larger local models over budget.
+	var small strings.Builder
+	if err := runModels([]string{"--local", "--vram", "1"}, &small); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(small.String(), "over-budget") {
+		t.Fatalf("a 1GB budget should leave a model over-budget:\n%s", small.String())
+	}
+}
