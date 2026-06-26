@@ -8,6 +8,10 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
+// kernelConfinementSupported reports whether this platform can enforce the network,
+// filesystem, and syscall confinement, which it cannot yet off Linux.
+func kernelConfinementSupported() bool { return false }
+
 // confine reports that kernel-enforced isolation is not available on this platform.
 // When a Local was configured to deny the network, confine the filesystem, or filter
 // syscalls, it fails rather than running the command without that isolation, so a
