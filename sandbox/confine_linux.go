@@ -77,7 +77,10 @@ func (l *Local) confine(c *exec.Cmd) error {
 // confinements to apply travel across the re-exec in the environment;
 // RunChildLaunchIfRequested picks them up on the other side.
 func (l *Local) reexecConfined(c *exec.Cmd) {
-	const self = "/proc/self/exe"
+	self := "/proc/self/exe"
+	if l.selfExe != "" {
+		self = l.selfExe
+	}
 	c.Env = append(
 		c.Env,
 		envConfine+"=1",
