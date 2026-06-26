@@ -191,6 +191,22 @@ func TestDefaultConfinementConfines(t *testing.T) {
 	}
 }
 
+// TestExplicitConfinementFailsLoudOnSetupFailure proves that an explicitly requested
+// confinement (not the always-on default) reports an error when its setup cannot
+// complete, instead of silently running unconfined. The re-exec target is pointed at a
+// missing path to force the setup to fail; because the request was explicit, there is
+// no fall back to the floor.
+func TestExplicitConfinementFailsLoudOnSetupFailure(t *testing.T) {
+	sb, err := NewLocal(t.TempDir(), WithReadOnlyFS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb.selfExe = filepath.Join(t.TempDir(), "no-such-binary")
+	if _, err := sb.Exec(context.Background(), Command{Line: "echo nope"}); err == nil {
+		t.Fatal("an explicitly requested confinement must fail loudly when its setup fails")
+	}
+}
+
 // TestSeccompBlocksDangerousSyscall proves the syscall filter: a command run under
 // WithSeccomp cannot make a denied syscall (here unshare, which creates new
 // namespaces), while the same command without the filter can. A refused call fails
