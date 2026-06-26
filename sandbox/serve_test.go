@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -94,7 +95,7 @@ func TestServeWaitHonorsContext(t *testing.T) {
 	defer cancel()
 	// The process never exits on its own, so Wait must return the context error and
 	// must not have killed the still-running server.
-	if err := p.Wait(ctx); err != context.DeadlineExceeded {
+	if err := p.Wait(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Wait = %v, want DeadlineExceeded", err)
 	}
 	if !p.Running() {
@@ -120,16 +121,18 @@ func TestServeFailsToStartUnknownBinary(t *testing.T) {
 	}
 }
 
-// waitFor polls cond until it holds or the deadline passes, so a test never sleeps a
-// fixed duration waiting on a background process's output.
+// waitFor polls cond until it holds or the attempts are exhausted, so a test never
+// sleeps a fixed duration waiting on a background process's output. It counts fixed
+// polling steps rather than reading the wall clock, which keeps it deterministic.
 func waitFor(t *testing.T, within time.Duration, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(within)
-	for time.Now().Before(deadline) {
+	const step = 2 * time.Millisecond
+	attempts := int(within/step) + 1
+	for range attempts {
 		if cond() {
 			return
 		}
-		time.Sleep(2 * time.Millisecond)
+		time.Sleep(step)
 	}
 	if !cond() {
 		t.Fatalf("condition not met within %s", within)

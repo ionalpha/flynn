@@ -14,6 +14,33 @@ import (
 	"github.com/ionalpha/flynn/llm"
 )
 
+// dispatchModels routes a `flynn models <sub>` invocation to its handler. The bare
+// `models` command browses the catalog; the named subcommands cover the local model
+// lifecycle from provisioning a runtime through running and stopping a server.
+func dispatchModels(sub []string, dataDir string) error {
+	if len(sub) == 0 {
+		return runModels(sub, os.Stdout)
+	}
+	switch sub[0] {
+	case "fetch":
+		return runModelFetch(sub[1:], dataDir, os.Stdout)
+	case "check":
+		return runRuntimeCheck(os.Stdout)
+	case "install":
+		return runRuntimeInstall(sub[1:], dataDir, os.Stdout)
+	case "run":
+		return runModelRun(sub[1:], dataDir, os.Stdout)
+	case "use":
+		return runModelUse(sub[1:], dataDir, os.Stdout)
+	case "status":
+		return runModelStatus(sub[1:], dataDir, os.Stdout)
+	case "stop":
+		return runModelStop(sub[1:], dataDir, os.Stdout)
+	default:
+		return runModels(sub, os.Stdout)
+	}
+}
+
 // runModelRun implements `flynn models run <id> [prompt...]`: make a local model ready
 // and reachable, then either send a one-shot prompt to it or report that it is up. It
 // provisions the runtime and weights, starts the server inside the sandbox, and reuses an

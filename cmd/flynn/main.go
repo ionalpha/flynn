@@ -106,27 +106,7 @@ func main() {
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "models" {
-		sub := args[1:]
-		var err error
-		switch {
-		case len(sub) >= 1 && sub[0] == "fetch":
-			err = runModelFetch(sub[1:], *dataDir, os.Stdout)
-		case len(sub) >= 1 && sub[0] == "check":
-			err = runRuntimeCheck(os.Stdout)
-		case len(sub) >= 1 && sub[0] == "install":
-			err = runRuntimeInstall(sub[1:], *dataDir, os.Stdout)
-		case len(sub) >= 1 && sub[0] == "run":
-			err = runModelRun(sub[1:], *dataDir, os.Stdout)
-		case len(sub) >= 1 && sub[0] == "use":
-			err = runModelUse(sub[1:], *dataDir, os.Stdout)
-		case len(sub) >= 1 && sub[0] == "status":
-			err = runModelStatus(sub[1:], *dataDir, os.Stdout)
-		case len(sub) >= 1 && sub[0] == "stop":
-			err = runModelStop(sub[1:], *dataDir, os.Stdout)
-		default:
-			err = runModels(sub, os.Stdout)
-		}
-		if err != nil {
+		if err := dispatchModels(args[1:], *dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
