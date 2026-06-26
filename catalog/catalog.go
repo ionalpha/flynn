@@ -135,6 +135,12 @@ type ModelSpec struct {
 	Quants []Quant `json:"quants,omitempty"`
 	// Trust is how far the entry has been vetted.
 	Trust Trust `json:"trust"`
+	// ChatTemplate is the trusted chat template a local model is served with, named so
+	// the runtime applies a known-good prompt contract instead of the template embedded
+	// in the weights (which a hostile model could use to rewrite the contract). It is
+	// the name of a template the runtime recognizes, for example "chatml". Required for
+	// a local model; empty for a hosted API model, which formats prompts server-side.
+	ChatTemplate string `json:"chatTemplate,omitempty"`
 	// Notes is an optional one-line human note (why it is here, caveats).
 	Notes string `json:"notes,omitempty"`
 }
@@ -204,6 +210,8 @@ func (c Catalog) Validate() error {
 			return fault.New(fault.Terminal, "catalog_invalid", "catalog: "+m.ID+" has an unknown kind "+string(m.Kind))
 		case m.Kind == KindLocal && len(m.Quants) == 0:
 			return fault.New(fault.Terminal, "catalog_invalid", "catalog: local model "+m.ID+" has no quantizations")
+		case m.Kind == KindLocal && m.ChatTemplate == "":
+			return fault.New(fault.Terminal, "catalog_invalid", "catalog: local model "+m.ID+" has no chat template (it cannot be served with a trusted prompt contract)")
 		}
 		for _, q := range m.Quants {
 			if q.Format != FormatSafetensors && q.Format != FormatGGUF && q.Format != FormatPickle {
