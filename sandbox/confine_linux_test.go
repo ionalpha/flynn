@@ -154,6 +154,66 @@ func TestReadOnlyFSWithNetworkDenied(t *testing.T) {
 	}
 }
 
+// TestSeccompBlocksDangerousSyscall proves the syscall filter: a command run under
+// WithSeccomp cannot make a denied syscall (here unshare, which creates new
+// namespaces), while the same command without the filter can. A refused call fails
+// rather than killing the command, so a non-zero exit is the pass. The test is a
+// differential so it observes the filter and not a host that forbids the call anyway.
+func TestSeccompBlocksDangerousSyscall(t *testing.T) {
+	ctx := context.Background()
+
+	filtered, err := NewLocal(t.TempDir(), WithSeccomp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := filtered.Exec(ctx, Command{Line: "unshare --user --map-root-user true"})
+	if err != nil {
+		if namespaceUnavailable(err.Error()) {
+			t.Skip("unprivileged user namespaces unavailable on this host")
+		}
+		t.Fatalf("filtered exec: %v", err)
+	}
+	if strings.Contains(res.Output, "not found") {
+		t.Skip("unshare command not available on this host")
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("a denied syscall must fail under the filter, but unshare succeeded:\n%s", res.Output)
+	}
+
+	// Sanity: without the filter the same command succeeds, so the test is observing
+	// the filter and not a host that simply forbids unshare.
+	open, err := NewLocal(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = open.Exec(ctx, Command{Line: "unshare --user --map-root-user true"})
+	if err != nil {
+		t.Fatalf("open exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Skipf("host forbids unshare without the filter, cannot distinguish here:\n%s", res.Output)
+	}
+}
+
+// TestSeccompAllowsOrdinaryCommand confirms the filter does not break normal work: a
+// command using only ordinary syscalls runs and produces its output unaffected.
+func TestSeccompAllowsOrdinaryCommand(t *testing.T) {
+	sb, err := NewLocal(t.TempDir(), WithSeccomp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := sb.Exec(context.Background(), Command{Line: "echo confined && cat /proc/self/status > /dev/null"})
+	if err != nil {
+		if namespaceUnavailable(err.Error()) {
+			t.Skip("unprivileged user namespaces unavailable on this host")
+		}
+		t.Fatalf("exec: %v", err)
+	}
+	if res.ExitCode != 0 || !strings.Contains(res.Output, "confined") {
+		t.Fatalf("an ordinary command must run unaffected under the filter, got exit %d:\n%s", res.ExitCode, res.Output)
+	}
+}
+
 // routeEntries counts route table rows in /proc/net/route, excluding the header, so
 // zero means the namespace has no routes at all.
 func routeEntries(procNetRoute string) int {

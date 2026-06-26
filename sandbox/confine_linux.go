@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 )
@@ -17,9 +18,11 @@ import (
 // and RunChildLaunchIfRequested). They carry the working directory and the real
 // command across the re-exec; the launcher strips them before running the command.
 const (
-	envConfine = "FLYNN_SANDBOX_CONFINE"
-	envDir     = "FLYNN_SANDBOX_DIR"
-	envArgv    = "FLYNN_SANDBOX_ARGV"
+	envConfine  = "FLYNN_SANDBOX_CONFINE"
+	envDir      = "FLYNN_SANDBOX_DIR"
+	envArgv     = "FLYNN_SANDBOX_ARGV"
+	envReadonly = "FLYNN_SANDBOX_READONLY"
+	envSeccomp  = "FLYNN_SANDBOX_SECCOMP"
 )
 
 // confine applies the kernel-enforced isolation a Local was configured for to a
@@ -28,11 +31,13 @@ const (
 // can be made or accepted). Filesystem confinement places it in a mount namespace
 // where the whole host is read-only and only its working directory (plus a private
 // scratch area) is writable, so it cannot modify anything outside its working tree.
-// Both nest inside a user namespace with the caller mapped to root inside it, so an
+// Syscall confinement installs a filter that refuses the syscalls a command has no
+// honest need for and that would let it escalate privilege or escape. All nest
+// inside a user namespace with the caller mapped to root inside it, so an
 // unprivileged agent sets up the isolation without real root and the command gains
 // no privilege on the host.
 func (l *Local) confine(c *exec.Cmd) error {
-	if !l.denyNetwork && !l.readonlyFS {
+	if !l.denyNetwork && !l.readonlyFS && !l.seccomp {
 		return nil
 	}
 	if c.SysProcAttr == nil {
@@ -48,20 +53,25 @@ func (l *Local) confine(c *exec.Cmd) error {
 	if l.denyNetwork {
 		sp.Cloneflags |= syscall.CLONE_NEWNET
 	}
-	if l.readonlyFS {
-		sp.Cloneflags |= syscall.CLONE_NEWNS
+	// Filesystem and syscall confinement have to be set up from inside the new
+	// process, after the clone and before the command runs, which the standard
+	// library does not expose. They go through the re-exec launcher; the mount view
+	// additionally needs its own mount namespace.
+	if l.readonlyFS || l.seccomp {
+		if l.readonlyFS {
+			sp.Cloneflags |= syscall.CLONE_NEWNS
+		}
 		l.reexecConfined(c)
 	}
 	return nil
 }
 
 // reexecConfined rewrites c to run this same binary as a launcher: the binary is
-// re-executed inside the new namespaces, sets up the read-only mount view, and only
-// then executes the real command. The re-exec is necessary because the mount view
-// has to be built from inside the new mount namespace, after the clone and before
-// the command runs, which is a point the standard library does not expose directly.
-// The real command and the working directory travel across the re-exec in the
-// environment; RunChildLaunchIfRequested picks them up on the other side.
+// re-executed inside the new namespaces, applies the filesystem and syscall
+// confinement that can only be set up from inside the new process, and only then
+// executes the real command. The real command, the working directory, and which
+// confinements to apply travel across the re-exec in the environment;
+// RunChildLaunchIfRequested picks them up on the other side.
 func (l *Local) reexecConfined(c *exec.Cmd) {
 	enc := make([]string, len(c.Args))
 	for i, a := range c.Args {
@@ -74,6 +84,12 @@ func (l *Local) reexecConfined(c *exec.Cmd) {
 		envDir+"="+l.root,
 		envArgv+"="+strings.Join(enc, ","),
 	)
+	if l.readonlyFS {
+		c.Env = append(c.Env, envReadonly+"=1")
+	}
+	if l.seccomp {
+		c.Env = append(c.Env, envSeccomp+"=1")
+	}
 	c.Path = self
 	c.Args = []string{self}
 }
@@ -100,9 +116,11 @@ func runConfinedChild() int {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: malformed command")
 		return 126
 	}
-	if err := confineMounts(dir); err != nil {
-		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
-		return 126
+	if os.Getenv(envReadonly) == "1" {
+		if err := confineMounts(dir); err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
+			return 126
+		}
 	}
 	if err := syscall.Chdir(dir); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: chdir:", err)
@@ -113,9 +131,21 @@ func runConfinedChild() int {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: command not found:", argv[0])
 		return 127
 	}
+	// Syscall filtering is installed last, just before the command runs, so it does
+	// not block the launcher's own setup above; it is inherited across the exec. The
+	// filter applies to the installing thread, and a thread carries its filter across
+	// an exec, so the install and the exec have to happen on the same thread: the lock
+	// pins this goroutine to its thread for the rest of its (short) life.
+	if os.Getenv(envSeccomp) == "1" {
+		runtime.LockOSThread()
+		if err := installSeccomp(); err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
+			return 126
+		}
+	}
 	// Exec replaces this process, so on success nothing below runs and the control
 	// variables never reach the command (they are stripped from the environment).
-	//nolint:gosec // running the sandbox's command is the launcher's purpose; it runs inside the confinement just built (read-only host, isolated mounts), which is the point
+	//nolint:gosec // running the sandbox's command is the launcher's purpose; it runs inside the confinement just built (read-only host, isolated mounts, syscall filter), which is the point
 	if err := syscall.Exec(bin, argv, strippedEnv()); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: exec:", err)
 		return 126
@@ -253,7 +283,9 @@ func strippedEnv() []string {
 		switch {
 		case strings.HasPrefix(kv, envConfine+"="),
 			strings.HasPrefix(kv, envDir+"="),
-			strings.HasPrefix(kv, envArgv+"="):
+			strings.HasPrefix(kv, envArgv+"="),
+			strings.HasPrefix(kv, envReadonly+"="),
+			strings.HasPrefix(kv, envSeccomp+"="):
 			continue
 		}
 		out = append(out, kv)

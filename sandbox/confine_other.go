@@ -9,15 +9,15 @@ import (
 )
 
 // confine reports that kernel-enforced isolation is not available on this platform.
-// When a Local was configured to deny the network or confine the filesystem, it
-// fails rather than running the command without that isolation, so a caller that
-// asked for confinement never silently gets an unconfined command. The platform's
-// native isolation (its kernel-confinement adapter) provides the equivalent where it
-// lands.
+// When a Local was configured to deny the network, confine the filesystem, or filter
+// syscalls, it fails rather than running the command without that isolation, so a
+// caller that asked for confinement never silently gets an unconfined command. The
+// platform's native isolation (its kernel-confinement adapter) provides the
+// equivalent where it lands.
 func (l *Local) confine(_ *exec.Cmd) error {
-	if l.denyNetwork || l.readonlyFS {
+	if l.denyNetwork || l.readonlyFS || l.seccomp {
 		return fault.New(fault.Forbidden, "sandbox_confine_unsupported",
-			"sandbox: kernel confinement (network and filesystem isolation) is not supported on this platform yet; refusing rather than running the command unconfined")
+			"sandbox: kernel confinement (network, filesystem, and syscall isolation) is not supported on this platform yet; refusing rather than running the command unconfined")
 	}
 	return nil
 }
