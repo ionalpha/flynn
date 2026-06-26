@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/inference/modelsource"
 	"github.com/ionalpha/flynn/llm"
 )
 
@@ -48,20 +49,37 @@ func dispatchModels(sub []string, dataDir string) error {
 // reuses it; `flynn models stop <id>` ends it.
 func runModelRun(args []string, dataDir string, out io.Writer) error {
 	if len(args) == 0 || args[0] == "" {
-		return errors.New("models run: a model id is required (see `flynn models`)")
+		return errors.New("models run: a model id or source is required (see `flynn models`)")
 	}
 	id := args[0]
 	prompt := strings.TrimSpace(strings.Join(args[1:], " "))
-
-	m, err := findLocalModel(id)
-	if err != nil {
-		return fmt.Errorf("models run: %w", err)
-	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
 	runner := newLocalRunner(dataDir, out)
+
+	// Classify the source, refuse an unsafe weight format, record its provenance, and gate
+	// it against the isolation this host can provide, before anything is fetched or run.
+	src, err := modelsource.Parse(id, isLocalModelID)
+	if err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
+	class, err := runner.admitSource(src)
+	if err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
+	if src.Kind != modelsource.KindCatalog {
+		// The source is admitted by the isolation gate but is not a curated catalog entry.
+		// Serving an arbitrary downloaded model is delivered with the strong isolation tier
+		// it requires; until then the gate above is what refuses an uncontained run.
+		return fmt.Errorf("models run: %s is %s and would run, but serving a non-catalog model is not wired yet; only catalog models serve today", src.Raw, class.Trust)
+	}
+
+	m, err := findLocalModel(id)
+	if err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
 	ep, err := runner.serveModel(ctx, m)
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)

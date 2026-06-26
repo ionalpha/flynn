@@ -13,6 +13,7 @@ import (
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/fetch"
 	"github.com/ionalpha/flynn/inference/launch"
+	"github.com/ionalpha/flynn/inference/modelsource"
 	"github.com/ionalpha/flynn/inference/provision"
 	"github.com/ionalpha/flynn/inference/serve"
 	"github.com/ionalpha/flynn/llm"
@@ -45,6 +46,12 @@ type localRunner struct {
 	manager *serve.Manager
 	// freePort returns a free loopback TCP port for a new server.
 	freePort func() (int, error)
+	// sb is the sandbox the servers run inside; its containment level is what the trust
+	// gate measures a model's required isolation against.
+	sb *sandbox.Local
+	// ledger records the provenance of every model source and pins its integrity on
+	// first use.
+	ledger *modelsource.Ledger
 }
 
 // newLocalRunner builds a runner wired to the real runtime provisioner, weights fetcher,
@@ -72,7 +79,87 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 		ensureWeights: realEnsureWeights(dataDir, out),
 		manager:       mgr,
 		freePort:      freeLoopbackPort,
+		sb:            sb,
+		ledger:        modelsource.NewLedger(filepath.Join(dataDir, "models")),
 	}
+}
+
+// admitSource classifies a model reference, refuses an unsafe weight format, records the
+// source's provenance, and gates it against the isolation the serving sandbox provides.
+// It returns the classification on success, or a refusal that names the trust level and
+// the isolation gap. This is the one gate every run path goes through, so a model from
+// anywhere (a catalog entry, a hub reference, a raw URL, a dropped file) is classified and
+// contained, not just blessed catalog entries. A source whose trust requires stronger
+// isolation than is available here is refused rather than run, which is the security
+// guarantee for a model whose bytes we cannot vouch for.
+func (r *localRunner) admitSource(src modelsource.Source) (modelsource.Classification, error) {
+	class := modelsource.Classify(src, r.knownPublisher)
+
+	// Refuse a code-executing or unrecognized weight format up front, for any source.
+	// Only the file-bearing references name a file to check here; a catalog or bare hub
+	// repo reference is format-checked when its concrete weights file is resolved.
+	if name := sourceFileName(src); name != "" {
+		if err := modelsource.CheckRunnableFormat(name); err != nil {
+			return class, err
+		}
+	}
+
+	if r.ledger != nil {
+		// Record the source and its classification for audit before anything runs. The
+		// digest is filled in later, once the weights are fetched and verified.
+		_ = r.ledger.Record(modelsource.Provenance{
+			Key:   src.Key(),
+			Raw:   src.Raw,
+			Trust: class.Trust.String(),
+		})
+	}
+
+	if err := sandbox.Admit(r.sb, class.Trust); err != nil {
+		return class, fmt.Errorf("%s is %s (%s) and needs %s isolation, but this host provides only %s; refusing to run it unsafely",
+			src.Raw, class.Trust, class.Reason, sandbox.Required(class.Trust), sandbox.ContainmentOf(r.sb))
+	}
+	return class, nil
+}
+
+// knownPublisher reports whether a hub owner is a recognized first-party publisher,
+// counting both the curated set and the publishers named in the embedded catalog, so a
+// publisher a curator already vouched for is recognized.
+func (r *localRunner) knownPublisher(owner string) bool {
+	return modelsource.KnownPublisher(owner, catalogPublishers()...)
+}
+
+// sourceFileName returns the weights file name a source names, for the format guard, or
+// empty when the concrete file is not known from the reference alone.
+func sourceFileName(src modelsource.Source) string {
+	switch src.Kind {
+	case modelsource.KindHuggingFace:
+		return src.File
+	case modelsource.KindURL:
+		return src.URL
+	case modelsource.KindFile:
+		return src.Path
+	default:
+		return ""
+	}
+}
+
+// catalogPublishers returns the distinct publishers named in the embedded catalog, so a
+// hub model from a publisher the catalog already trusts is recognized.
+func catalogPublishers() []string {
+	cat, err := catalog.Load()
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, m := range cat.Models {
+		p := m.Source.Publisher
+		if p != "" && !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // serveModel runs the full lifecycle for a catalog model and returns a running endpoint.
@@ -226,6 +313,15 @@ func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Mode
 		return nil, err
 	}
 	runner := newLocalRunner(dataDir, os.Stderr)
+	// The goal path goes through the same trust gate as `models run`, so no model-run
+	// route skips classification, provenance, and the containment check.
+	src, err := modelsource.Parse(modelSpec, isLocalModelID)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := runner.admitSource(src); err != nil {
+		return nil, err
+	}
 	ep, err := runner.serveModel(ctx, m)
 	if err != nil {
 		return nil, fmt.Errorf("serve local model %s: %w", modelSpec, err)
