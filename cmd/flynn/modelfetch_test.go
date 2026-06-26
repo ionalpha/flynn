@@ -51,3 +51,16 @@ func TestSizeCeiling(t *testing.T) {
 		t.Fatalf("sizeCeiling(1000)=%d, want 1050 (+5%%)", got)
 	}
 }
+
+func TestIsCodeExecWeight(t *testing.T) {
+	// The model layer refuses a code-executing weight format; the generic downloader
+	// stays content-agnostic.
+	if !isCodeExecWeight(catalog.FormatPickle) {
+		t.Fatal("pickle weights must be flagged as code-executing")
+	}
+	for _, safe := range []catalog.Format{catalog.FormatGGUF, catalog.FormatSafetensors, ""} {
+		if isCodeExecWeight(safe) {
+			t.Fatalf("%q must not be flagged as code-executing", safe)
+		}
+	}
+}

@@ -35,7 +35,7 @@ func TestFetchVerifiesAndInstalls(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "model.gguf")
 
 	res, err := d.Fetch(context.Background(), Request{
-		URL: srv.URL, Dest: dest, ExpectSHA256: sha(body), MaxBytes: 1 << 20, Format: "gguf",
+		URL: srv.URL, Dest: dest, ExpectSHA256: sha(body), MaxBytes: 1 << 20,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestFetchVerifiesAndInstalls(t *testing.T) {
 func TestFetchPinOnFetchWhenUnpinned(t *testing.T) {
 	body := []byte("weights")
 	srv, d := serve(t, body)
-	res, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: filepath.Join(t.TempDir(), "m"), Format: "gguf"})
+	res, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: filepath.Join(t.TempDir(), "m")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestFetchRejectsDigestMismatch(t *testing.T) {
 	srv, d := serve(t, []byte("the real bytes"))
 	dest := filepath.Join(t.TempDir(), "m.gguf")
 	_, err := d.Fetch(context.Background(), Request{
-		URL: srv.URL, Dest: dest, ExpectSHA256: sha([]byte("different bytes")), Format: "gguf",
+		URL: srv.URL, Dest: dest, ExpectSHA256: sha([]byte("different bytes")),
 	})
 	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
 		t.Fatalf("expected digest mismatch, got %v", err)
@@ -78,7 +78,7 @@ func TestFetchRejectsDigestMismatch(t *testing.T) {
 func TestFetchRejectsOversizeByHeader(t *testing.T) {
 	srv, d := serve(t, make([]byte, 4096)) // Content-Length advertised
 	dest := filepath.Join(t.TempDir(), "m")
-	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, MaxBytes: 1024, Format: "gguf"})
+	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, MaxBytes: 1024})
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("expected oversize rejection, got %v", err)
 	}
@@ -102,7 +102,7 @@ func TestFetchRejectsOversizeByStream(t *testing.T) {
 	t.Cleanup(srv.Close)
 	d := New(WithHTTPClient(srv.Client()))
 	dest := filepath.Join(t.TempDir(), "m")
-	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, MaxBytes: 1024, Format: "gguf"})
+	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, MaxBytes: 1024})
 	if err == nil || !strings.Contains(err.Error(), "cap") {
 		t.Fatalf("expected stream oversize rejection, got %v", err)
 	}
@@ -111,19 +111,9 @@ func TestFetchRejectsOversizeByStream(t *testing.T) {
 	}
 }
 
-func TestFetchRefusesCodeExecFormat(t *testing.T) {
-	d := New(WithHTTPClient(http.DefaultClient))
-	for _, f := range []string{"pickle", "pt", "pth", "bin", "PICKLE"} {
-		_, err := d.Fetch(context.Background(), Request{URL: "https://example.com/x", Dest: "x", Format: f})
-		if err == nil || !strings.Contains(err.Error(), "code-executing") {
-			t.Fatalf("format %q should be refused, got %v", f, err)
-		}
-	}
-}
-
 func TestFetchRefusesNonHTTPS(t *testing.T) {
 	d := New(WithHTTPClient(http.DefaultClient))
-	_, err := d.Fetch(context.Background(), Request{URL: "http://example.com/x", Dest: "x", Format: "gguf"})
+	_, err := d.Fetch(context.Background(), Request{URL: "http://example.com/x", Dest: "x"})
 	if err == nil || !strings.Contains(err.Error(), "https") {
 		t.Fatalf("non-https should be refused, got %v", err)
 	}
@@ -135,7 +125,7 @@ func TestFetchRejectsNon200(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	d := New(WithHTTPClient(srv.Client()))
-	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: filepath.Join(t.TempDir(), "m"), Format: "gguf"})
+	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: filepath.Join(t.TempDir(), "m")})
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("expected a 404 error, got %v", err)
 	}
@@ -150,7 +140,7 @@ func TestSafeClientBlocksPrivateAddress(t *testing.T) {
 	}))
 	t.Cleanup(srv.Close)
 	dest := filepath.Join(t.TempDir(), "m")
-	_, err := New().Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, Format: "gguf"})
+	_, err := New().Fetch(context.Background(), Request{URL: srv.URL, Dest: dest})
 	if err == nil || !strings.Contains(err.Error(), "non-public") {
 		t.Fatalf("the default client must refuse a non-public address, got %v", err)
 	}
@@ -200,7 +190,7 @@ func TestFetchProperties(t *testing.T) {
 		dir := t.TempDir()
 
 		good := filepath.Join(dir, "good")
-		res, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: good, ExpectSHA256: sha(current), MaxBytes: 1 << 20, Format: "gguf"})
+		res, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: good, ExpectSHA256: sha(current), MaxBytes: 1 << 20})
 		if err != nil {
 			rt.Fatalf("correct digest should verify: %v", err)
 		}
@@ -213,7 +203,7 @@ func TestFetchProperties(t *testing.T) {
 		}
 
 		bad := filepath.Join(dir, "bad")
-		if _, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: bad, ExpectSHA256: sha(append(current, 'x')), MaxBytes: 1 << 20, Format: "gguf"}); err == nil {
+		if _, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: bad, ExpectSHA256: sha(append(current, 'x')), MaxBytes: 1 << 20}); err == nil {
 			rt.Fatal("a wrong digest must be rejected")
 		}
 		if _, statErr := os.Stat(bad); !os.IsNotExist(statErr) {

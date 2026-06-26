@@ -1,17 +1,22 @@
-// Package fetch downloads a model's weights and verifies them before they are
-// installed, the security boundary between an untrusted registry and the local
-// machine. It is download-and-verify ONLY: it never loads, parses, or runs the
-// file. Running an untrusted model is a separate, sandboxed step, because a model
-// file is hostile input to a known-vulnerable parser; the worst a corrupt or
-// malicious download can do here is fail a check and be discarded.
+// Package fetch downloads a file from an untrusted source and verifies it before it
+// is installed: the generic, security-first transport for pulling any file (model
+// weights, a plugin, a dataset) onto the local machine. It is download-and-verify
+// ONLY: it writes a verified file to disk and never parses, loads, or executes it.
+// What to do with the file, and any content policy, is the caller's concern; this
+// package guarantees that the bytes on disk are exactly what was asked for, or that
+// nothing is written at all.
 //
-// Every layer is defensive. The transport refuses anything but https and refuses
-// to connect to a non-public address (anti-SSRF, re-checked on every redirect hop
-// so DNS rebinding cannot slip through). The download is capped on the stream so a
-// hostile server cannot exhaust the disk, hashed as it is written, and verified
-// against a caller-pinned digest so a compromised registry cannot substitute a
-// file. The install is atomic, so a partial or failed download never appears as a
-// usable model. A code-executing weight format is refused outright.
+// It is distinct from the integration request transport, which makes API calls:
+// this one streams a large body, caps and hashes it as it arrives, verifies a
+// digest, and installs atomically.
+//
+// Every layer is defensive. The transport refuses anything but https and refuses to
+// connect to a non-public address (anti-SSRF, re-checked on every redirect hop so
+// DNS rebinding cannot slip through, with no environment proxy to route around it).
+// The download is capped on the stream so a hostile server cannot exhaust the disk,
+// hashed as it is written, and verified against a caller-pinned digest so a
+// compromised source cannot substitute a file. The install is atomic, so a partial,
+// oversized, or mismatched download never appears as a usable file.
 package fetch
 
 import (
@@ -49,8 +54,6 @@ type Request struct {
 	ExpectSHA256 string
 	// MaxBytes is the hard cap on the download size; 0 uses a safe default ceiling.
 	MaxBytes int64
-	// Format is the weight format; a code-executing format (pickle and kin) is refused.
-	Format string
 }
 
 // Result reports a completed, verified download.
@@ -155,10 +158,6 @@ func isPublicIP(ip net.IP) bool {
 // returning what was verified. It never executes the file. Any failure leaves no
 // file at Dest: a partial, oversized, or digest-mismatched download is discarded.
 func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
-	if isCodeExecFormat(req.Format) {
-		return Result{}, fault.New(fault.Forbidden, "fetch_format",
-			"fetch: refusing a code-executing weight format ("+req.Format+"); only tensor formats are fetched")
-	}
 	if err := checkURL(req.URL); err != nil {
 		return Result{}, err
 	}
@@ -245,17 +244,6 @@ func checkURL(raw string) error {
 		return fault.New(fault.Forbidden, "fetch_url_scheme", "fetch: weights must be fetched over https, got "+u.Scheme)
 	}
 	return nil
-}
-
-// isCodeExecFormat reports whether a weight format can execute code when loaded
-// (pickle and its file extensions), which is never fetched.
-func isCodeExecFormat(format string) bool {
-	switch strings.ToLower(strings.TrimSpace(format)) {
-	case "pickle", "pt", "pth", "bin":
-		return true
-	default:
-		return false
-	}
 }
 
 // tooLarge builds the oversize error, the disk-exhaustion guard's verdict.
