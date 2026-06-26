@@ -75,6 +75,18 @@ const (
 	TrustUntrusted
 )
 
+// String names the trust level for logs, errors, and provenance.
+func (t Trust) String() string {
+	switch t {
+	case TrustUntrusted:
+		return "untrusted"
+	case TrustSemi:
+		return "semi-trusted"
+	default:
+		return "trusted"
+	}
+}
+
 // Required is the minimum containment a trust level may run under. Untrusted code
 // requires a hardware boundary by default, the strict posture: a kernel exploit in,
 // say, a model parser must not be able to reach the host. A policy may later relax
@@ -152,13 +164,4 @@ func Select(t Trust, candidates ...Sandbox) (Sandbox, error) {
 }
 
 // trustName labels a trust level for messages.
-func trustName(t Trust) string {
-	switch t {
-	case TrustUntrusted:
-		return "untrusted"
-	case TrustSemi:
-		return "semi-trusted"
-	default:
-		return "trusted"
-	}
-}
+func trustName(t Trust) string { return t.String() }
