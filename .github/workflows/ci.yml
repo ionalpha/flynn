@@ -8,9 +8,13 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on PR branches (a new push makes the old one moot),
+# but never cancel a push to main: every landed commit must get a complete,
+# recorded CI result. Cancelling a main run leaves its "CI success" gate
+# reporting failure for code that was never actually broken.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 # Use bash on every OS (including Windows) so command parsing is identical.
 # Windows runners default `run:` to PowerShell, which mangles native args like
