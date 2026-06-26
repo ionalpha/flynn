@@ -108,9 +108,12 @@ func main() {
 	if args := flag.Args(); len(args) >= 1 && args[0] == "models" {
 		sub := args[1:]
 		var err error
-		if len(sub) >= 1 && sub[0] == "fetch" {
+		switch {
+		case len(sub) >= 1 && sub[0] == "fetch":
 			err = runModelFetch(sub[1:], *dataDir, os.Stdout)
-		} else {
+		case len(sub) >= 1 && sub[0] == "check":
+			err = runRuntimeCheck(os.Stdout)
+		default:
 			err = runModels(sub, os.Stdout)
 		}
 		if err != nil {
@@ -151,6 +154,7 @@ func printUsage(w io.Writer) {
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
   flynn models fetch <id>    download and verify a model's weights (does not run it)
+  flynn models check         report installed local runtimes and any known parser advisories
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)
