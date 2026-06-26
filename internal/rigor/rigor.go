@@ -60,6 +60,7 @@ func DefaultPolicy() Policy {
 			"jobs":     true,
 			"spine":    true,
 			"resource": true,
+			"fetch":    true,
 		},
 	}
 }
