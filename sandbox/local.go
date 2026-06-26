@@ -102,6 +102,19 @@ func WithSeccomp() LocalOption {
 	return func(l *Local) { l.seccomp = true }
 }
 
+// WithKernelConfinement enables the full kernel-confined tier in one call: no
+// network, a read-only host, and the syscall filter together. A Local built with it
+// reports ContainmentKernel where the platform enforces the confinement, the level
+// suitable for semi-trusted, model-authored code. It is the same as passing
+// WithNetworkDenied, WithReadOnlyFS, and WithSeccomp.
+func WithKernelConfinement() LocalOption {
+	return func(l *Local) {
+		l.denyNetwork = true
+		l.readonlyFS = true
+		l.seccomp = true
+	}
+}
+
 // NewLocal builds a Local sandbox rooted at dir. The root is resolved to an
 // absolute, symlink-free path once, so confinement checks compare against a stable
 // base.
@@ -128,10 +141,22 @@ func (l *Local) Root() string { return l.root }
 // Close releases resources (none for the local tier).
 func (l *Local) Close() error { return nil }
 
-// Containment reports that the local tier is a process jail only: it confines paths
-// and scrubs the environment but shares the host kernel, network, and syscalls, so it
-// is trusted-code-only. Untrusted work is refused here until a stronger tier runs it.
-func (l *Local) Containment() Containment { return ContainmentNone }
+// Containment reports how strongly this Local confines the commands it runs. By
+// default it is a process jail (ContainmentNone): it confines paths and scrubs the
+// environment but shares the host kernel, network, and syscalls, so it is for trusted
+// code only. When the network, filesystem, and syscall confinements are all enabled
+// and the platform enforces them, it rises to ContainmentKernel: the command cannot
+// reach the network, change the host filesystem, or make a dangerous syscall, which
+// is the boundary for semi-trusted, model-authored code over a shared kernel. It does
+// not claim ContainmentKernel where the platform cannot enforce that confinement (a
+// command there is refused rather than run), so the reported level never outruns what
+// actually holds.
+func (l *Local) Containment() Containment {
+	if l.denyNetwork && l.readonlyFS && l.seccomp && kernelConfinementSupported() {
+		return ContainmentKernel
+	}
+	return ContainmentNone
+}
 
 // resolve confines a caller-supplied path to the root and returns the absolute
 // path to operate on, or ErrDenied. The nearest existing ancestor is
