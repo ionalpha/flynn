@@ -21,16 +21,22 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/observe"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 )
 
 // Action is the governed unit's identity. It is metadata only: Name resolves the
 // admission policy and labels the lifecycle event; Scope attributes the action on
-// the spine. The work's typed input and output stay with the caller, so dispatch
-// never depends on a tool's or a model's types.
+// the spine; Trust is how far the work is trusted, which sets the containment a gate
+// requires before it runs. The work's typed input and output stay with the caller, so
+// dispatch never depends on a tool's or a model's types.
 type Action struct {
 	Name  string
 	Scope state.Scope
+	// Trust classifies the work so a containment gate can refuse it on a host that
+	// cannot isolate it. The zero value is sandbox.TrustTrusted: an action carries the
+	// agent's own trust unless a call site marks it as model-authored or external.
+	Trust sandbox.Trust
 }
 
 // Metering is what a governed unit reports back for accounting and the end event.
@@ -52,6 +58,7 @@ type Event struct {
 	Type   string // EventStart, EventEnd, or EventRejected
 	Action string
 	Scope  state.Scope
+	Trust  string // the work's trust level, recorded so a run's containment posture is auditable
 	At     int64  // unix nanos, from the dispatcher's clock
 	Err    string // fault class on failure; empty on success
 }
@@ -148,12 +155,12 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 		return d.rejected(ctx, a, err, span, entered)
 	}
 
-	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano()})
-	d.ob.Log.Info(ctx, "dispatch start", observe.String("action", a.Name))
+	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()})
+	d.ob.Log.Info(ctx, "dispatch start", observe.String("action", a.Name), observe.String("trust", a.Trust.String()))
 
 	m, err := work(ctx)
 
-	end := Event{Type: EventEnd, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano()}
+	end := Event{Type: EventEnd, Action: a.Name, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()}
 	outcome := "ok"
 	if err != nil {
 		class := fault.Classify(err)
@@ -178,7 +185,7 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span observe.Span, entered int) error {
 	class := fault.Classify(err)
 	span.RecordError(err)
-	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Scope: a.Scope, At: d.clk.Now().UnixNano(), Err: string(class)})
+	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano(), Err: string(class)})
 	d.ob.Log.Warn(ctx, "dispatch rejected",
 		observe.String("action", a.Name), observe.String("class", string(class)))
 	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))
