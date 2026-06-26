@@ -72,8 +72,34 @@ func TestSafeToRunGatesKnownCVEs(t *testing.T) {
 		t.Fatalf("a newer llama.cpp build must be allowed, got %v", err)
 	}
 
-	// A runtime with no advisory in the list is not gated by version here.
-	if err := SafeToRun("ollama", ParseVersion("0.1.0")); err != nil {
-		t.Fatalf("a runtime with no known advisory must not be refused, got %v", err)
+	// Ollama is gated by its floor even though its model-parser fix carries no CVE: an
+	// old version is refused, a patched one is allowed. This is the case a CVE denylist
+	// would miss entirely.
+	if err := SafeToRun("ollama", ParseVersion("0.6.0")); err == nil {
+		t.Fatal("an ollama version below the parser fix must be refused")
+	}
+	if err := SafeToRun("ollama", ParseVersion("0.7.0")); err != nil {
+		t.Fatalf("a patched ollama version must be allowed, got %v", err)
+	}
+
+	// A runtime Flynn does not know is not judged here.
+	if err := SafeToRun("unknown-runtime", ParseVersion("1.0.0")); err != nil {
+		t.Fatalf("an unknown runtime must not be refused, got %v", err)
+	}
+}
+
+// TestFloorSubsumesAdvisories pins the structural invariant the gate relies on: each
+// runtime's minimum-supported floor is at or above every named advisory's fix for that
+// runtime, so the floor genuinely catches at least everything the named advisories do.
+func TestFloorSubsumesAdvisories(t *testing.T) {
+	for _, a := range Advisories() {
+		floor, ok := MinSupportedFor(a.Runtime)
+		if !ok {
+			t.Errorf("%s has advisory %s but no minimum-supported floor", a.Runtime, a.ID)
+			continue
+		}
+		if floor.Less(a.FixedFrom) {
+			t.Errorf("%s floor %s is below advisory %s fix %s; raise the floor", a.Runtime, floor, a.ID, a.FixedFrom)
+		}
 	}
 }

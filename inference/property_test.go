@@ -27,12 +27,16 @@ func TestProp_VersionOrderAndGate(t *testing.T) {
 			rt.Fatalf("Less is symmetric on %v and %v", a, b)
 		}
 
-		// The gate refuses exactly when there is an exposure, for every runtime.
+		// The gate refuses exactly when the version is below the floor or exposed to a
+		// named advisory, for every runtime. The floor subsumes the named advisories
+		// (asserted separately), so this is the precise refusal condition.
 		for _, runtime := range []string{"llama.cpp", "ollama", "unknown"} {
 			exposed := len(Exposure(runtime, a, Advisories())) > 0
+			floor, hasFloor := MinSupportedFor(runtime)
+			belowFloor := hasFloor && a.Less(floor)
 			refused := SafeToRun(runtime, a) != nil
-			if exposed != refused {
-				rt.Fatalf("%s %v: exposed=%v but refused=%v", runtime, a, exposed, refused)
+			if want := belowFloor || exposed; refused != want {
+				rt.Fatalf("%s %v: belowFloor=%v exposed=%v but refused=%v", runtime, a, belowFloor, exposed, refused)
 			}
 		}
 	})
