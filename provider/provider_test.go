@@ -94,10 +94,12 @@ func TestResolveWithCustomSource(t *testing.T) {
 func TestResolveProperty(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "a-key")
 	t.Setenv("OPENAI_API_KEY", "o-key")
-	supported := map[string]bool{"anthropic": true, "openai": true}
+	t.Setenv("DEEPSEEK_API_KEY", "d-key")
+	t.Setenv("GEMINI_API_KEY", "g-key")
+	supported := map[string]bool{"anthropic": true, "openai": true, "deepseek": true, "gemini": true}
 
 	rapid.Check(t, func(rt *rapid.T) {
-		name := rapid.SampledFrom([]string{"anthropic", "openai", "gemini", "groq", "xyz"}).Draw(rt, "provider")
+		name := rapid.SampledFrom([]string{"anthropic", "openai", "deepseek", "gemini", "groq", "xyz"}).Draw(rt, "provider")
 		withModel := rapid.Bool().Draw(rt, "withModel")
 		spec := name
 		if withModel {
@@ -113,4 +115,51 @@ func TestResolveProperty(t *testing.T) {
 			rt.Fatalf("unsupported %q should error", spec)
 		}
 	})
+}
+
+// TestResolveOpenAICompatibleProviders covers the DeepSeek and Gemini presets: each
+// resolves to a model from a vault-supplied key, and a configured base-URL override
+// is honored while a plaintext remote one is refused (the key must never go in the
+// clear), exactly as for the OpenAI provider they reuse.
+func TestResolveOpenAICompatibleProviders(t *testing.T) {
+	ctx := context.Background()
+	for _, p := range []struct{ name, keyRef, spec string }{
+		{"deepseek", "DEEPSEEK_API_KEY", "deepseek:deepseek-chat"},
+		{"gemini", "GEMINI_API_KEY", "gemini:gemini-2.5-flash"},
+		{"deepseek-default-model", "DEEPSEEK_API_KEY", "deepseek"},
+		{"gemini-default-model", "GEMINI_API_KEY", "gemini"},
+	} {
+		t.Run(p.name, func(t *testing.T) {
+			m, err := provider.ResolveWith(ctx, p.spec, mapSource{p.keyRef: "k"})
+			if err != nil || m == nil {
+				t.Fatalf("resolve %q: model=%v err=%v", p.spec, m, err)
+			}
+		})
+	}
+
+	// A missing key errors, like every other provider.
+	if _, err := provider.ResolveWith(ctx, "deepseek:deepseek-chat", mapSource{}); err == nil {
+		t.Fatal("missing DeepSeek key should error")
+	}
+
+	// A plaintext remote base-URL override is refused; https is allowed.
+	t.Setenv("GEMINI_API_KEY", "g-key")
+	t.Setenv("GEMINI_BASE_URL", "http://gemini.example.com/v1")
+	if _, err := provider.Resolve("gemini:gemini-2.5-flash"); err == nil {
+		t.Fatal("plaintext remote base URL should be refused for gemini")
+	}
+	t.Setenv("GEMINI_BASE_URL", "https://gateway.example.com/v1beta/openai")
+	if _, err := provider.Resolve("gemini:gemini-2.5-flash"); err != nil {
+		t.Fatalf("https base URL override should be allowed: %v", err)
+	}
+}
+
+// TestKeyRefCoversAllProviders pins that every name Providers() lists has a key
+// reference, so auth setup and resolution agree on the lookup name.
+func TestKeyRefCoversAllProviders(t *testing.T) {
+	for _, name := range provider.Providers() {
+		if ref, ok := provider.KeyRef(name); !ok || ref == "" {
+			t.Fatalf("provider %q has no key reference", name)
+		}
+	}
 }

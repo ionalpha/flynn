@@ -253,6 +253,11 @@ type chatResponse struct {
 		PromptTokensDetails struct {
 			CachedTokens int `json:"cached_tokens"`
 		} `json:"prompt_tokens_details"`
+		// PromptCacheHitTokens is the cached-prefix count reported by some
+		// OpenAI-compatible endpoints that do not use prompt_tokens_details (they
+		// report the hit count as a flat field instead). It is the same quantity:
+		// the part of the input served from cache.
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 	} `json:"usage"`
 }
 
@@ -274,14 +279,20 @@ func decodeResponse(cr chatResponse) (llm.Response, error) {
 	// reports prompt_tokens as the total input with the cached portion called out as
 	// a subset. That matches the port directly: InputTokens is the total, and
 	// CacheReadTokens is how much of it was served from cache. There is no separate
-	// cache-write charge to report.
+	// cache-write charge to report. Endpoints differ on where they put the cached
+	// count: take prompt_tokens_details.cached_tokens, falling back to the flat
+	// prompt_cache_hit_tokens some compatible providers use instead.
+	cacheRead := cr.Usage.PromptTokensDetails.CachedTokens
+	if cacheRead == 0 {
+		cacheRead = cr.Usage.PromptCacheHitTokens
+	}
 	return llm.Response{
 		Message:    llm.Message{Role: llm.RoleAssistant, Blocks: blocks},
 		StopReason: mapFinishReason(choice.FinishReason),
 		Usage: llm.Usage{
 			InputTokens:     cr.Usage.PromptTokens,
 			OutputTokens:    cr.Usage.CompletionTokens,
-			CacheReadTokens: cr.Usage.PromptTokensDetails.CachedTokens,
+			CacheReadTokens: cacheRead,
 		},
 	}, nil
 }
