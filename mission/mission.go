@@ -26,6 +26,7 @@ import (
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -37,6 +38,26 @@ import (
 type Tool interface {
 	Def() llm.Tool
 	Invoke(ctx context.Context, input json.RawMessage) (string, error)
+}
+
+// TrustedWork is the optional interface a Tool implements to declare how far its work is
+// trusted, which sets the containment the waist requires before the tool runs. A tool
+// that does not implement it is the agent's own trusted code (it runs at any tier); a
+// tool that executes model-authored content, such as a shell command, declares a lower
+// trust so the waist refuses it on a host that cannot contain it.
+type TrustedWork interface {
+	WorkTrust() sandbox.Trust
+}
+
+// toolTrust returns the trust level a tool's work carries: the level it declares through
+// TrustedWork, or TrustTrusted for a built-in tool that declares none. A missing tool
+// (an unknown name) is treated as trusted here; the unknown-tool error is raised when the
+// work runs.
+func toolTrust(t Tool) sandbox.Trust {
+	if tw, ok := t.(TrustedWork); ok {
+		return tw.WorkTrust()
+	}
+	return sandbox.TrustTrusted
 }
 
 // Executor drives a goal as a conversation with a model. It implements
@@ -73,6 +94,17 @@ func WithAdmitter(a dispatch.Admitter) Option {
 // it also reaches the sandbox layer below the waist.
 func WithGrant(g capability.Grant) Option {
 	return func(e *Executor) { e.grant, e.hasGrant = g, true }
+}
+
+// WithSandbox wires the run's sandbox into the waist so every action is gated on
+// containment sufficiency, alongside the capability grant: a work kind whose trust needs
+// stronger isolation than the sandbox provides is refused before it runs, rather than
+// downgraded. Without it the containment gate is absent and only the grant governs, which
+// keeps the zero-config default permissive.
+func WithSandbox(sb sandbox.Sandbox) Option {
+	return func(e *Executor) {
+		e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(capability.NewContainmentGate(sb)))
+	}
 }
 
 // WithEventSink records every tool call's lifecycle on the event spine (for audit
@@ -211,7 +243,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// spine. The typed request and response stay here; dispatch sees only the action
 	// name, scope, and token cost.
 	var resp llm.Response
-	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope)},
+	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			var gerr error
 			resp, gerr = e.model.Generate(ctx, llm.Request{
@@ -321,7 +353,7 @@ func (e *Executor) runTools(ctx context.Context, scope state.Scope, turn int, ca
 // attaches here.
 func (e *Executor) invokeTool(ctx context.Context, scope state.Scope, c llm.ToolUse) (string, error) {
 	var content string
-	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: c.Name, Scope: scope},
+	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: c.Name, Scope: scope, Trust: toolTrust(e.tools[c.Name])},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			tool, ok := e.tools[c.Name]
 			if !ok {

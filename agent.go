@@ -158,6 +158,9 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 		mission.WithSystem(DefaultSystemPrompt),
 		mission.WithObserver(sess.Reporter()),
 		mission.WithGrant(capability.NewGrant(names...)),
+		// Gate every action on containment too: a model-authored command is refused on a
+		// host that cannot kernel-confine it, rather than run at the process-jail floor.
+		mission.WithSandbox(sb),
 	)
 	// A nil Store makes the runtime build its in-process substrate (store, queue,
 	// bus) over a registry holding the core and Goal kinds.
