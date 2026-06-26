@@ -1,0 +1,8 @@
+# Security contact information for Flynn (https://github.com/ionalpha/flynn).
+# Format: RFC 9116 (https://www.rfc-editor.org/rfc/rfc9116).
+
+Contact: mailto:contact@ionalpha.io
+Contact: https://github.com/ionalpha/flynn/security/advisories
+Expires: 2027-06-30T00:00:00.000Z
+Policy: https://github.com/ionalpha/flynn/blob/main/SECURITY.md
+Preferred-Languages: en
