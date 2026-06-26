@@ -122,6 +122,17 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 - **Escaping the kernel-confined tier through a dangerous syscall.** The syscall filter
   denies the calls a working command has no honest need for and that would let it escalate
   or escape; the containment matrix proves a forbidden syscall is denied under the filter.
+- **A kernel exploit in an untrusted model's runtime reaching the host.** A downloaded
+  model is parsed by a runtime with a history of remote-code-execution flaws, so its worst
+  case is arbitrary code execution that escapes a shared kernel. The hardware-isolation
+  tier runs such work in a guest with its own kernel on hardware virtualization, so a
+  kernel exploit inside cannot reach the host kernel. The tier holds two boundaries: the
+  guest's own kernel boundary, and the monitor-to-host boundary, where the
+  virtual-machine monitor is itself run jailed and least-privilege (dropped privileges, a
+  syscall filter, its own resource limits, a unique uid per guest, and no network device
+  while egress is denied), so a guest escape still does not become a host compromise. The
+  guest runs with egress denied, resources capped, no credentials, and weights mounted
+  read-only; the tier refuses to start a guest whose posture is weaker than that.
 
 ## Coverage: enforced today vs planned
 
