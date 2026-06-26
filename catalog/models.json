@@ -47,6 +47,7 @@
         { "name": "Q4_K_M", "format": "gguf", "sizeBytes": 4700000000, "ref": "qwen2.5-coder:7b" }
       ],
       "trust": "blessed",
+      "chatTemplate": "chatml",
       "notes": "Capable coding model that runs on a single mid-range GPU; good agent daily-driver candidate."
     },
     {
@@ -66,6 +67,7 @@
         { "name": "Q4_K_M", "format": "gguf", "sizeBytes": 986000000, "ref": "qwen2.5-coder:1.5b" }
       ],
       "trust": "blessed",
+      "chatTemplate": "chatml",
       "notes": "Smallest entry; runs on modest hardware and is the target for the end-to-end fetch test."
     },
     {
@@ -85,6 +87,7 @@
         { "name": "Q4_K_M", "format": "gguf", "sizeBytes": 2019000000, "ref": "llama3.2:3b" }
       ],
       "trust": "blessed",
+      "chatTemplate": "llama3",
       "notes": "Long context for its size; community license permits commercial use under its terms."
     }
   ]
