@@ -326,7 +326,7 @@ func (l *Local) WriteFile(_ context.Context, path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil {
+	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil { //nolint:gosec // abs is confined to the sandbox root by resolve
 		return err
 	}
 	return os.WriteFile(abs, data, 0o644) //nolint:gosec // abs is confined to the sandbox root; 0644 is intended for agent-written files
