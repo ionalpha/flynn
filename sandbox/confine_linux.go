@@ -3,25 +3,260 @@
 package sandbox
 
 import (
+	"bufio"
+	"encoding/base64"
+	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"syscall"
 )
 
-// denyNetwork configures cmd to run with no network access: it runs in a new network
-// namespace, which starts with only a down loopback and no routes, so the command
-// cannot make or accept any connection. The network namespace is nested inside a new
-// user namespace and the running user is mapped to root inside it, so an unprivileged
-// agent can create the isolation without real root on the host. The mappings change
-// only what the command sees inside its namespace; it gains no privilege on the host.
-func denyNetwork(c *exec.Cmd) error {
+// Control variables passed to the re-executed launcher child (see reexecConfined
+// and RunChildLaunchIfRequested). They carry the working directory and the real
+// command across the re-exec; the launcher strips them before running the command.
+const (
+	envConfine = "FLYNN_SANDBOX_CONFINE"
+	envDir     = "FLYNN_SANDBOX_DIR"
+	envArgv    = "FLYNN_SANDBOX_ARGV"
+)
+
+// confine applies the kernel-enforced isolation a Local was configured for to a
+// command about to run. With no options it does nothing. Network denial places the
+// command in a fresh network namespace (no interfaces, no routes, so no connection
+// can be made or accepted). Filesystem confinement places it in a mount namespace
+// where the whole host is read-only and only its working directory (plus a private
+// scratch area) is writable, so it cannot modify anything outside its working tree.
+// Both nest inside a user namespace with the caller mapped to root inside it, so an
+// unprivileged agent sets up the isolation without real root and the command gains
+// no privilege on the host.
+func (l *Local) confine(c *exec.Cmd) error {
+	if !l.denyNetwork && !l.readonlyFS {
+		return nil
+	}
 	if c.SysProcAttr == nil {
 		c.SysProcAttr = &syscall.SysProcAttr{}
 	}
-	c.SysProcAttr.Cloneflags |= syscall.CLONE_NEWUSER | syscall.CLONE_NEWNET
-	c.SysProcAttr.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: syscall.Getuid(), Size: 1}}
-	c.SysProcAttr.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: syscall.Getgid(), Size: 1}}
+	sp := c.SysProcAttr
+	sp.Cloneflags |= syscall.CLONE_NEWUSER
+	sp.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+	sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
 	// Writing "deny" to setgroups is required before an unprivileged gid mapping is
 	// accepted; the Go runtime does this when this flag is false.
-	c.SysProcAttr.GidMappingsEnableSetgroups = false
+	sp.GidMappingsEnableSetgroups = false
+	if l.denyNetwork {
+		sp.Cloneflags |= syscall.CLONE_NEWNET
+	}
+	if l.readonlyFS {
+		sp.Cloneflags |= syscall.CLONE_NEWNS
+		l.reexecConfined(c)
+	}
 	return nil
+}
+
+// reexecConfined rewrites c to run this same binary as a launcher: the binary is
+// re-executed inside the new namespaces, sets up the read-only mount view, and only
+// then executes the real command. The re-exec is necessary because the mount view
+// has to be built from inside the new mount namespace, after the clone and before
+// the command runs, which is a point the standard library does not expose directly.
+// The real command and the working directory travel across the re-exec in the
+// environment; RunChildLaunchIfRequested picks them up on the other side.
+func (l *Local) reexecConfined(c *exec.Cmd) {
+	enc := make([]string, len(c.Args))
+	for i, a := range c.Args {
+		enc[i] = base64.StdEncoding.EncodeToString([]byte(a))
+	}
+	const self = "/proc/self/exe"
+	c.Env = append(
+		c.Env,
+		envConfine+"=1",
+		envDir+"="+l.root,
+		envArgv+"="+strings.Join(enc, ","),
+	)
+	c.Path = self
+	c.Args = []string{self}
+}
+
+// RunChildLaunchIfRequested is the other half of filesystem confinement. When this
+// binary is re-executed as a confinement launcher (see reexecConfined), this runs
+// the mount setup and then replaces the process with the real command, so it never
+// returns in that case. In the normal case (not a launcher) it returns immediately
+// and the program continues. The program's entry point must call it before doing any
+// other work, since a launcher process must not run the normal program at all.
+func RunChildLaunchIfRequested() {
+	if os.Getenv(envConfine) != "1" {
+		return
+	}
+	os.Exit(runConfinedChild())
+}
+
+// runConfinedChild builds the confined filesystem view and execs the real command.
+// It returns an exit code only if it fails before the exec replaces the process.
+func runConfinedChild() int {
+	dir := os.Getenv(envDir)
+	argv, err := decodeArgv(os.Getenv(envArgv))
+	if err != nil || len(argv) == 0 {
+		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: malformed command")
+		return 126
+	}
+	if err := confineMounts(dir); err != nil {
+		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
+		return 126
+	}
+	if err := syscall.Chdir(dir); err != nil {
+		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: chdir:", err)
+		return 126
+	}
+	bin, err := exec.LookPath(argv[0])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: command not found:", argv[0])
+		return 127
+	}
+	// Exec replaces this process, so on success nothing below runs and the control
+	// variables never reach the command (they are stripped from the environment).
+	//nolint:gosec // running the sandbox's command is the launcher's purpose; it runs inside the confinement just built (read-only host, isolated mounts), which is the point
+	if err := syscall.Exec(bin, argv, strippedEnv()); err != nil {
+		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: exec:", err)
+		return 126
+	}
+	return 0
+}
+
+// confineMounts turns the launcher's mount namespace into a read-only view of the
+// host with a single writable area: the working directory. It first makes mount
+// changes private to this namespace, then remounts every existing mount read-only,
+// gives the command a fresh private scratch area so ordinary tooling still works
+// (isolated from the host's, and never placed so as to hide the working directory),
+// and finally re-grants write access to the working directory alone.
+func confineMounts(dir string) error {
+	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		return fmt.Errorf("make mounts private: %w", err)
+	}
+	mps, err := mountPoints()
+	if err != nil {
+		return err
+	}
+	for _, mp := range mps {
+		// Best effort: some pseudo-filesystems reject a read-only remount, and the
+		// host stays read-only regardless because its real mounts are covered.
+		_ = syscall.Mount("", mp, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_RDONLY, "")
+	}
+	for _, scratch := range []string{"/dev/shm", "/tmp"} {
+		if pathWithin(dir, scratch) {
+			continue // never shadow the working directory with a scratch mount
+		}
+		_ = syscall.Mount("tmpfs", scratch, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "")
+	}
+	if err := syscall.Mount(dir, dir, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind working directory: %w", err)
+	}
+	if err := syscall.Mount("", dir, "", syscall.MS_REMOUNT|syscall.MS_BIND, ""); err != nil {
+		return fmt.Errorf("make working directory writable: %w", err)
+	}
+	return nil
+}
+
+// mountPoints reads the current mount points from /proc/self/mountinfo. The mount
+// point is the fifth field; paths with spaces or other special characters are octal
+// escaped there, so they are decoded back.
+func mountPoints() ([]string, error) {
+	f, err := os.Open("/proc/self/mountinfo")
+	if err != nil {
+		return nil, fmt.Errorf("read mounts: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	var out []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		fields := strings.Fields(sc.Text())
+		if len(fields) < 5 {
+			continue
+		}
+		out = append(out, unescapeOctal(fields[4]))
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("scan mounts: %w", err)
+	}
+	return out, nil
+}
+
+// unescapeOctal decodes the \NNN octal escapes the kernel uses for special
+// characters in mountinfo paths (space is \040, tab \011, newline \012, backslash
+// \134).
+func unescapeOctal(s string) string {
+	if !strings.Contains(s, `\`) {
+		return s
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\\' && i+3 < len(s) {
+			var v int
+			ok := true
+			for j := 1; j <= 3; j++ {
+				d := s[i+j]
+				if d < '0' || d > '7' {
+					ok = false
+					break
+				}
+				v = v*8 + int(d-'0')
+			}
+			if ok {
+				b.WriteByte(byte(v))
+				i += 3
+				continue
+			}
+		}
+		b.WriteByte(s[i])
+	}
+	return b.String()
+}
+
+// pathWithin reports whether child is parent or a path nested under it, with both
+// already absolute and cleaned.
+func pathWithin(child, parent string) bool {
+	if child == parent {
+		return true
+	}
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+// decodeArgv reverses the base64 comma-joined encoding reexecConfined uses to carry
+// the command across the re-exec.
+func decodeArgv(s string) ([]string, error) {
+	if s == "" {
+		return nil, nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, len(parts))
+	for i, p := range parts {
+		raw, err := base64.StdEncoding.DecodeString(p)
+		if err != nil {
+			return nil, fmt.Errorf("decode argv: %w", err)
+		}
+		out[i] = string(raw)
+	}
+	return out, nil
+}
+
+// strippedEnv returns the process environment with the launcher's control variables
+// removed, so the command runs with the clean environment the sandbox built for it.
+func strippedEnv() []string {
+	env := os.Environ()
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, envConfine+"="),
+			strings.HasPrefix(kv, envDir+"="),
+			strings.HasPrefix(kv, envArgv+"="):
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
