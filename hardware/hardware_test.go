@@ -36,6 +36,62 @@ func TestParseNvidiaSMI(t *testing.T) {
 	}
 }
 
+func TestParseMeminfo(t *testing.T) {
+	cases := []struct {
+		name string
+		in   string
+		want int64
+	}{
+		{"typical", "MemTotal:       16384256 kB\nMemFree:  100 kB", 16384256 * 1024},
+		{"extra spaces", "MemTotal:\t  8192000   kB\n", 8192000 * 1024},
+		{"not first line", "MemFree: 1 kB\nMemTotal: 4096 kB\n", 4096 * 1024},
+		{"no unit suffix", "MemTotal: 4096\n", 4096 * 1024},
+		{"missing", "MemFree: 100 kB\n", 0},
+		{"empty", "", 0},
+		{"garbage value", "MemTotal: lots kB\n", 0},
+		{"zero", "MemTotal: 0 kB\n", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := parseMeminfo(tc.in); got != tc.want {
+				t.Fatalf("parseMeminfo(%q) = %d, want %d", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestParseByteCount(t *testing.T) {
+	cases := []struct {
+		in   string
+		want int64
+	}{
+		{"17179869184", 17179869184},
+		{"  8589934592\n", 8589934592},
+		{"", 0},
+		{"nan", 0},
+		{"0", 0},
+		{"-4", 0},
+	}
+	for _, tc := range cases {
+		if got := parseByteCount(tc.in); got != tc.want {
+			t.Fatalf("parseByteCount(%q) = %d, want %d", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestParseMeminfoProperty checks the parser scales any positive kibibyte total to
+// bytes regardless of the whitespace and unit-suffix variations the kernel may print.
+func TestParseMeminfoProperty(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		kib := rapid.Int64Range(1, 1<<40).Draw(rt, "kib")
+		suffix := rapid.SampledFrom([]string{" kB", "kB", ""}).Draw(rt, "suffix")
+		in := fmt.Sprintf("MemFree: 1 kB\nMemTotal:   %d%s\n", kib, suffix)
+		if got := parseMeminfo(in); got != kib*1024 {
+			rt.Fatalf("parseMeminfo = %d, want %d", got, kib*1024)
+		}
+	})
+}
+
 // TestParseNvidiaSMIProperty checks the parser over any well-formed first row: a
 // positive mebibyte figure scales to bytes and the name is read back trimmed,
 // whatever surrounding whitespace the tool emits.

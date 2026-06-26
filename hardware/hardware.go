@@ -1,9 +1,9 @@
 // Package hardware probes the local machine for the resources that decide which
-// models it can run, today the GPU and its memory. It is a best-effort diagnostic,
-// not part of a governed run: detection shells out to a vendor tool when present and
-// reports nothing rather than guessing when it is absent, so a caller can fall back to
-// an explicit budget. The parsing is pure and tested; only the probe itself touches
-// the machine.
+// models it can run: the GPU and its memory, and the system RAM a CPU-only run draws
+// on. It is a best-effort diagnostic, not part of a governed run: detection shells out
+// to a vendor tool or reads a well-known OS source when present and reports nothing
+// rather than guessing when it is absent, so a caller can fall back to an explicit
+// budget. The parsing is pure and tested; only the probe itself touches the machine.
 package hardware
 
 import (
@@ -21,21 +21,32 @@ type Box struct {
 	GPUName string
 	// VRAMBytes is the detected GPU memory in bytes, 0 if none was found.
 	VRAMBytes int64
+	// RAMBytes is the total system memory in bytes, 0 if it could not be read. A
+	// CPU-only run is bounded by this, not by VRAM, so it decides fit on the common
+	// machine that has no usable GPU.
+	RAMBytes int64
 }
 
 // HasGPU reports whether a GPU with known memory was detected.
 func (b Box) HasGPU() bool { return b.VRAMBytes > 0 }
 
-// Detect probes the machine. It is best-effort: an absent or failing probe yields a
-// zero Box, never an error, so callers degrade to an explicit budget instead of
-// failing. The context bounds the probe so a wedged tool cannot hang the caller.
+// HasRAM reports whether the system memory total was read.
+func (b Box) HasRAM() bool { return b.RAMBytes > 0 }
+
+// Detect probes the machine. It is best-effort: an absent or failing probe leaves the
+// corresponding field zero, never an error, so callers degrade to an explicit budget
+// instead of failing. The two probes are independent: a machine with no GPU still
+// reports its RAM, which is what a CPU-only run is judged against. The context bounds
+// each probe so a wedged tool cannot hang the caller.
 func Detect(ctx context.Context) Box {
+	var b Box
 	if out, ok := runNvidiaSMI(ctx); ok {
-		if b, ok := parseNvidiaSMI(out); ok {
-			return b
+		if gpu, ok := parseNvidiaSMI(out); ok {
+			b.GPUName, b.VRAMBytes = gpu.GPUName, gpu.VRAMBytes
 		}
 	}
-	return Box{}
+	b.RAMBytes = systemRAMBytes(ctx)
+	return b
 }
 
 // runNvidiaSMI queries the NVIDIA management tool for total memory and name, returning
@@ -71,4 +82,35 @@ func parseNvidiaSMI(out string) (Box, bool) {
 		return Box{GPUName: strings.TrimSpace(name), VRAMBytes: mib * 1024 * 1024}, true
 	}
 	return Box{}, false
+}
+
+// parseMeminfo reads the total memory from the contents of /proc/meminfo on Linux. The
+// "MemTotal:" line reports a count in kibibytes ("MemTotal:  16384256 kB"), which is
+// scaled to bytes. It returns 0 when the line is absent or unparseable, so a caller
+// treats the total as unknown rather than zero.
+func parseMeminfo(contents string) int64 {
+	for _, line := range strings.Split(contents, "\n") {
+		rest, ok := strings.CutPrefix(line, "MemTotal:")
+		if !ok {
+			continue
+		}
+		rest = strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(rest), "kB"))
+		kib, err := strconv.ParseInt(strings.TrimSpace(rest), 10, 64)
+		if err != nil || kib <= 0 {
+			return 0
+		}
+		return kib * 1024
+	}
+	return 0
+}
+
+// parseByteCount reads a plain decimal byte total, the form a sysctl query
+// ("hw.memsize") prints. It tolerates surrounding whitespace and returns 0 when the
+// output is not a positive integer.
+func parseByteCount(out string) int64 {
+	n, err := strconv.ParseInt(strings.TrimSpace(out), 10, 64)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
