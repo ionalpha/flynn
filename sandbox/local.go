@@ -19,24 +19,25 @@ import (
 // root (a path that escapes via "..", an absolute path, or a symlink pointing
 // outside is denied) and runs commands in that directory. It is not strong
 // isolation on its own - a command it runs otherwise has the host user's privileges
-// outside the working tree. WithNetworkDenied and WithReadOnlyFS add kernel-enforced
-// network and filesystem isolation where the platform supports it; further syscall
-// confinement, and the container, microVM, and remote tiers, build on the same
-// Sandbox port. Local is always present underneath them as the default-deny FS floor.
+// outside the working tree. WithNetworkDenied, WithReadOnlyFS, and WithSeccomp add
+// kernel-enforced network, filesystem, and syscall isolation where the platform
+// supports it; the container, microVM, and remote tiers build on the same Sandbox
+// port. Local is always present underneath them as the default-deny FS floor.
 type Local struct {
 	root        string // absolute, symlinks resolved
 	execTimeout time.Duration
 	granted     map[string]string // env vars explicitly granted into commands
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
 	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
+	seccomp     bool              // run commands under a syscall filter (see WithSeccomp)
 }
 
 // LocalOption configures a Local sandbox.
 type LocalOption func(*Local)
 
 // WithExecTimeout caps how long a single command may run (0, the default, applies
-// no cap beyond the caller's context). It is the seam the resource-limit and
-// circuit-breaker layer builds on.
+// no cap beyond the caller's context). It is the integration point the
+// resource-limit and circuit-breaker layer builds on.
 func WithExecTimeout(d time.Duration) LocalOption {
 	return func(l *Local) {
 		if d > 0 {
@@ -87,6 +88,18 @@ func WithNetworkDenied() LocalOption {
 // option fails rather than running with the host filesystem silently still writable.
 func WithReadOnlyFS() LocalOption {
 	return func(l *Local) { l.readonlyFS = true }
+}
+
+// WithSeccomp runs commands under a syscall filter that refuses the calls a command
+// working in its own directory has no honest need for and that would let it escalate
+// privilege, escape its confinement, tamper with the kernel, or reach into other
+// processes. Ordinary file, process, memory, and IO calls are left allowed, so normal
+// commands run unaffected; a refused call fails with a permission error rather than
+// killing the command. It is enforced by the kernel and inherited across the exec. On
+// a platform that cannot provide it, a command run under this option fails rather than
+// running with no syscall filter in place.
+func WithSeccomp() LocalOption {
+	return func(l *Local) { l.seccomp = true }
 }
 
 // NewLocal builds a Local sandbox rooted at dir. The root is resolved to an
