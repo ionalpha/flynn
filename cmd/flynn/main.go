@@ -113,6 +113,8 @@ func main() {
 			err = runModelFetch(sub[1:], *dataDir, os.Stdout)
 		case len(sub) >= 1 && sub[0] == "check":
 			err = runRuntimeCheck(os.Stdout)
+		case len(sub) >= 1 && sub[0] == "install":
+			err = runRuntimeInstall(sub[1:], *dataDir, os.Stdout)
 		default:
 			err = runModels(sub, os.Stdout)
 		}
@@ -155,6 +157,7 @@ func printUsage(w io.Writer) {
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
   flynn models fetch <id>    download and verify a model's weights (does not run it)
   flynn models check         report installed local runtimes and any known parser advisories
+  flynn models install [rt]  fetch and verify a pinned local runtime (default: llama.cpp)
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)

@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	gruntime "runtime"
 	"strings"
 
 	"github.com/ionalpha/flynn/inference"
+	"github.com/ionalpha/flynn/inference/provision"
 	"github.com/ionalpha/flynn/sandbox"
 )
 
@@ -32,7 +34,11 @@ func runRuntimeCheck(out io.Writer) error {
 		ver, ok := detectRuntimeVersion(ctx, sb, rt)
 		switch {
 		case !ok:
-			_, _ = fmt.Fprintf(out, "  %-10s not installed\n", rt.Name)
+			if _, can := provision.ReleaseFor(rt.Name, gruntime.GOOS, gruntime.GOARCH); can {
+				_, _ = fmt.Fprintf(out, "  %-10s not installed (run `flynn models install %s` to fetch a pinned build)\n", rt.Name, rt.Name)
+			} else {
+				_, _ = fmt.Fprintf(out, "  %-10s not installed\n", rt.Name)
+			}
 		case inference.SafeToRun(rt.Name, ver) != nil:
 			_, _ = fmt.Fprintf(out, "  %-10s %-8s VULNERABLE: %s (update the runtime)\n", rt.Name, ver, concern(rt.Name, ver))
 		default:
