@@ -43,6 +43,12 @@ When the objective is fully accomplished, stop and reply with a short summary of
 // loosely-relevant context degrades the model's use of it more than it helps.
 const recallLimit = 5
 
+// defaultCompactionBudget is the input-token budget at which the CLI starts eliding
+// the oldest middle turns from a long session. It is a conservative floor for the
+// large hosted models the CLI targets by default (roughly half a 200k window);
+// per-model, window-aware triggering arrives with the model registry.
+const defaultCompactionBudget = 100_000
+
 // openStore opens the durable SQLite store at dsn, or an ephemeral in-memory one
 // when dsn is empty (used by tests and one-off runs). The same store backs the
 // runtime's resources and job queue and the learning loop's skills and memory.
@@ -120,10 +126,24 @@ func inspectRun(dataDir, runID string, verbose bool) error {
 	if len(events) == 0 {
 		return fmt.Errorf("no run found with id %q under %s", runID, dataDir)
 	}
+	var meter usageMeter
 	for _, ev := range events {
 		renderEvent(os.Stdout, ev, verbose)
+		if ev.Usage != nil {
+			meter.add(*ev.Usage)
+		}
 	}
+	renderUsageSummary(os.Stdout, meter)
 	return nil
+}
+
+// renderUsageSummary writes the run's running token total as a final line, when any
+// turn reported usage. It is the cumulative companion to the per-turn lines, so a
+// run ends with one glance at what it cost and how much the prompt cache saved.
+func renderUsageSummary(out io.Writer, meter usageMeter) {
+	if s := meter.summary(); s != "" {
+		_, _ = fmt.Fprintf(out, "%s\n", s)
+	}
 }
 
 // regradeSkills re-runs every stored skill's check in a sandbox at the working
@@ -545,6 +565,11 @@ func assembleMission(model llm.Model, workdir, system string, rstore resource.St
 		mission.WithSystem(system),
 		mission.WithObserver(sess.Reporter()),
 		mission.WithGrant(capability.NewGrant(names...)),
+		// Compact the transcript when it grows past this budget so a long session
+		// stays affordable and clear of the context limit. It is a conservative floor
+		// suited to large hosted models; per-model, window-aware triggering arrives
+		// with the model registry.
+		mission.WithCompactionBudget(defaultCompactionBudget),
 	)
 	rt, err := runtime.New(runtime.Config{
 		Executor:     exec,
@@ -572,9 +597,13 @@ func assembleMission(model llm.Model, workdir, system string, rstore resource.St
 // caller tailing the same stream across turns can resume after it. A closed channel
 // before any terminal event means the run was cancelled.
 func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (result string, transcript []llm.Message, lastSeq int64, err error) {
+	var meter usageMeter
 	for ev := range events {
 		lastSeq = ev.Seq
 		renderEvent(out, ev, verbose)
+		if ev.Usage != nil {
+			meter.add(*ev.Usage)
+		}
 		switch ev.Kind {
 		case session.KindAssistant:
 			transcript = append(transcript, llm.Text(llm.RoleAssistant, ev.Text))
@@ -583,8 +612,12 @@ func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (res
 				{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: ev.ToolUseID, Name: ev.Tool, Input: ev.Input}},
 			}})
 		case session.KindConverged:
+			renderUsageSummary(out, meter)
 			return ev.Text, transcript, lastSeq, nil
 		case session.KindStalled:
+			// Show the spend even on failure: a run that stalled still cost tokens,
+			// and that is exactly when the number is worth seeing.
+			renderUsageSummary(out, meter)
 			return "", transcript, lastSeq, fmt.Errorf("goal stalled: %s", ev.Err)
 		default:
 			// Already drawn by renderEvent above; only the kinds that build the

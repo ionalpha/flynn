@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -197,7 +198,7 @@ func TestBlockMappingProperty(t *testing.T) {
 		}
 
 		// Encode as request content, then decode as if it were a response.
-		decoded, err := decodeResponse(apiResponse{Content: encodeBlocks(blocks)})
+		decoded, err := decodeResponse(apiResponse{Content: encodeBlocks(blocks, false)})
 		if err != nil {
 			rt.Fatalf("decode: %v", err)
 		}
@@ -223,6 +224,257 @@ func TestBlockMappingProperty(t *testing.T) {
 					rt.Fatalf("opaque %s -> %s", blocks[i].Raw, got[i].Raw)
 				}
 			}
+		}
+	})
+}
+
+// --- prompt caching ---------------------------------------------------------
+
+// asMap marshals a built request and reads it back as a generic tree, so a test
+// can assert where cache_control markers landed without depending on the typed
+// request shape.
+func asMap(t *testing.T, req apiRequest) map[string]any {
+	t.Helper()
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+// blockHasCache reports whether a content block (a generic map) carries an
+// ephemeral cache_control marker.
+func blockHasCache(block any) bool {
+	m, ok := block.(map[string]any)
+	if !ok {
+		return false
+	}
+	cc, ok := m["cache_control"].(map[string]any)
+	return ok && cc["type"] == "ephemeral"
+}
+
+func lastContentBlock(t *testing.T, msg any) any {
+	t.Helper()
+	content, ok := msg.(map[string]any)["content"].([]any)
+	if !ok || len(content) == 0 {
+		t.Fatalf("message has no content blocks: %v", msg)
+	}
+	return content[len(content)-1]
+}
+
+func TestCacheHintMarksSystemAndRollingMessage(t *testing.T) {
+	c := New(secret.New("k"))
+	req := llm.Request{
+		System: "be brief",
+		Tools:  []llm.Tool{{Name: "echo", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Messages: []llm.Message{
+			llm.Text(llm.RoleUser, "first"),
+			llm.Text(llm.RoleAssistant, "answer"),
+		},
+		Cache: llm.CacheHint{Prefix: true, StableMessages: 2},
+	}
+	got := asMap(t, c.buildRequest(req))
+
+	// With a system prompt present, the static-prefix marker rides on the system
+	// block (which caches the tools sitting before it too), not on a tool.
+	sys, ok := got["system"].([]any)
+	if !ok || len(sys) != 1 || !blockHasCache(sys[0]) {
+		t.Fatalf("system block not marked for caching: %v", got["system"])
+	}
+	tools := got["tools"].([]any)
+	if blockHasCache(tools[len(tools)-1]) {
+		t.Fatalf("tool should not be marked when system carries the prefix marker: %v", tools)
+	}
+
+	// The rolling boundary marks the last block of message StableMessages-1, and
+	// nothing earlier.
+	msgs := got["messages"].([]any)
+	if blockHasCache(lastContentBlock(t, msgs[0])) {
+		t.Fatalf("message 0 should not be a cache boundary: %v", msgs[0])
+	}
+	if !blockHasCache(lastContentBlock(t, msgs[1])) {
+		t.Fatalf("message 1 (StableMessages-1) should be a cache boundary: %v", msgs[1])
+	}
+}
+
+func TestCacheHintFallsBackToToolWhenNoSystem(t *testing.T) {
+	c := New(secret.New("k"))
+	req := llm.Request{
+		Tools:    []llm.Tool{{Name: "a", InputSchema: json.RawMessage(`{}`)}, {Name: "b", InputSchema: json.RawMessage(`{}`)}},
+		Messages: []llm.Message{llm.Text(llm.RoleUser, "x")},
+		Cache:    llm.CacheHint{Prefix: true},
+	}
+	got := asMap(t, c.buildRequest(req))
+	if _, present := got["system"]; present {
+		t.Fatalf("system should be omitted when empty: %v", got["system"])
+	}
+	tools := got["tools"].([]any)
+	if blockHasCache(tools[0]) {
+		t.Fatalf("only the last tool should carry the prefix marker: %v", tools[0])
+	}
+	if !blockHasCache(tools[1]) {
+		t.Fatalf("last tool should carry the prefix marker when there is no system: %v", tools[1])
+	}
+}
+
+func TestNoCacheHintLeavesRequestUnmarked(t *testing.T) {
+	c := New(secret.New("k"))
+	req := llm.Request{
+		System:   "sys",
+		Tools:    []llm.Tool{{Name: "a", InputSchema: json.RawMessage(`{}`)}},
+		Messages: []llm.Message{llm.Text(llm.RoleUser, "x")},
+	}
+	got := asMap(t, c.buildRequest(req))
+	// Without a hint the system stays a plain string and nothing is marked.
+	if _, isString := got["system"].(string); !isString {
+		t.Fatalf("system should be a plain string without a cache hint: %T", got["system"])
+	}
+	if blockHasCache(got["tools"].([]any)[0]) {
+		t.Fatal("tool marked without a cache hint")
+	}
+	if blockHasCache(lastContentBlock(t, got["messages"].([]any)[0])) {
+		t.Fatal("message marked without a cache hint")
+	}
+}
+
+func TestCacheUsageNormalized(t *testing.T) {
+	// This API reports uncached input only, with cache reads and writes separate.
+	// The port's InputTokens must be the reconstructed total.
+	m := &mockTransport{status: 200, respBody: `{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":4,"cache_creation_input_tokens":20,"cache_read_input_tokens":70}}`}
+	resp, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 100 {
+		t.Fatalf("InputTokens should be total processed (10+20+70=100), got %d", resp.Usage.InputTokens)
+	}
+	if resp.Usage.CacheReadTokens != 70 || resp.Usage.CacheWriteTokens != 20 {
+		t.Fatalf("cache tokens not normalized: %+v", resp.Usage)
+	}
+}
+
+// stripCacheControl removes every cache_control key from a decoded JSON tree and
+// returns how many it removed, so a test can compare a marked build against an
+// unmarked one and separately bound the marker count.
+func stripCacheControl(v any) int {
+	switch t := v.(type) {
+	case map[string]any:
+		n := 0
+		if _, ok := t["cache_control"]; ok {
+			delete(t, "cache_control")
+			n++
+		}
+		for _, child := range t {
+			n += stripCacheControl(child)
+		}
+		return n
+	case []any:
+		n := 0
+		for _, child := range t {
+			n += stripCacheControl(child)
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
+func tree(t *rapid.T, req apiRequest) map[string]any {
+	b, err := json.Marshal(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	return m
+}
+
+// normalizeSystem collapses the structured single-text-block system form back to a
+// plain string. Attaching a cache marker to the system requires the block form, and
+// the API treats a string and a one-text-block array as the same prompt, so the
+// additivity check normalizes that one sanctioned shape change before comparing.
+func normalizeSystem(m map[string]any) {
+	arr, ok := m["system"].([]any)
+	if !ok || len(arr) != 1 {
+		return
+	}
+	blk, ok := arr[0].(map[string]any)
+	if ok && blk["type"] == "text" {
+		m["system"] = blk["text"]
+	}
+}
+
+// TestCacheMarkingIsAdditiveProperty is the load-bearing guarantee of prompt
+// caching: a cache hint may only ADD cache_control markers, never change anything
+// the model is sent. For any system, tools, messages, and hint, the marked request
+// must equal the unmarked request once the markers are stripped, the markers must
+// be bounded (so a request never exceeds the provider's breakpoint budget), and an
+// opaque block (replayed verbatim) must never be marked.
+func TestCacheMarkingIsAdditiveProperty(t *testing.T) {
+	c := New(secret.New("k"))
+	rapid.Check(t, func(rt *rapid.T) {
+		sys := rapid.StringMatching(`[a-z ]{0,12}`).Draw(rt, "system")
+		nTools := rapid.IntRange(0, 3).Draw(rt, "nTools")
+		var toolset []llm.Tool
+		for i := range nTools {
+			toolset = append(toolset, llm.Tool{
+				Name:        rapid.StringMatching(`[a-z]{1,5}`).Draw(rt, "tname"),
+				InputSchema: json.RawMessage(`{"type":"object"}`),
+			})
+			_ = i
+		}
+		nMsg := rapid.IntRange(0, 4).Draw(rt, "nMsg")
+		var msgs []llm.Message
+		for i := range nMsg {
+			role := llm.RoleUser
+			if i%2 == 1 {
+				role = llm.RoleAssistant
+			}
+			nb := rapid.IntRange(1, 3).Draw(rt, "nb")
+			var blocks []llm.Block
+			for range nb {
+				switch rapid.IntRange(0, 2).Draw(rt, "kind") {
+				case 0:
+					blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: rapid.StringMatching(`[a-z ]{0,8}`).Draw(rt, "text")})
+				case 1:
+					blocks = append(blocks, llm.Block{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{
+						ID: rapid.StringMatching(`[a-z0-9]{1,4}`).Draw(rt, "id"), Name: "echo", Input: json.RawMessage(`{"x":1}`),
+					}})
+				default:
+					blocks = append(blocks, llm.Block{Kind: llm.KindOpaque, Raw: json.RawMessage(`{"type":"thinking","thinking":"t"}`)})
+				}
+			}
+			msgs = append(msgs, llm.Message{Role: role, Blocks: blocks})
+		}
+		hint := llm.CacheHint{
+			Prefix:         rapid.Bool().Draw(rt, "prefix"),
+			StableMessages: rapid.IntRange(0, len(msgs)).Draw(rt, "stable"),
+		}
+
+		base := llm.Request{System: sys, Tools: toolset, Messages: msgs}
+		hinted := base
+		hinted.Cache = hint
+
+		marked := tree(rt, c.buildRequest(hinted))
+		plain := tree(rt, c.buildRequest(base))
+
+		// An opaque block is replayed verbatim, so it must never carry a marker. Its
+		// raw bytes have no cache_control, so finding one anywhere proves none landed
+		// on it; combined with the equality below, opaque content is untouched.
+		count := stripCacheControl(marked)
+		if count > 2 {
+			rt.Fatalf("more than 2 cache markers placed (%d): exceeds the breakpoint budget", count)
+		}
+		normalizeSystem(marked)
+		normalizeSystem(plain)
+		if !reflect.DeepEqual(marked, plain) {
+			rt.Fatalf("marking changed request content:\n marked-stripped: %#v\n plain:          %#v", marked, plain)
 		}
 	})
 }

@@ -63,8 +63,24 @@ type Event struct {
 	IsError bool `json:"isError,omitempty"`
 	// StopReason is why the turn ended (turn.completed).
 	StopReason string `json:"stopReason,omitempty"`
+	// Usage is the token cost of a turn (turn.completed), nil for other events. It
+	// is carried on the stream, not just metered internally, so a live UI and a
+	// replay both show per-turn spend and cache effectiveness.
+	Usage *Usage `json:"usage,omitempty"`
 	// Err carries the stall reason (stalled).
 	Err string `json:"error,omitempty"`
+}
+
+// Usage is the token cost of one turn, projected onto the conversation stream. It
+// mirrors the model port's accounting in the chat surface's own terms so a session
+// consumer does not depend on the model package. InputTokens is the total input
+// processed including any served from cache; CacheReadTokens is the cached subset
+// (the discounted win), so cache-hit-rate is CacheReadTokens over InputTokens.
+type Usage struct {
+	InputTokens      int `json:"inputTokens,omitempty"`
+	OutputTokens     int `json:"outputTokens,omitempty"`
+	CacheReadTokens  int `json:"cacheReadTokens,omitempty"`
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 }
 
 // payloadKey is the single spine-payload field the event body is serialized under.

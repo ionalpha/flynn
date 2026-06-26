@@ -99,15 +99,46 @@ type Tool struct {
 }
 
 // Request is one call to a model: standing instructions, the conversation so far,
-// the tools on offer, and a ceiling on output length. Provider-specific knobs
-// (thinking depth, sampling, caching) are intentionally absent from the port; a
-// backend applies its own sensible defaults, and a richer typed surface can be
-// added behind the same interface if a real need appears.
+// the tools on offer, a ceiling on output length, and an optional hint about which
+// of its parts are stable enough to cache. Other provider-specific knobs (thinking
+// depth, sampling) are intentionally absent from the port; a backend applies its
+// own sensible defaults, and a richer typed surface can be added behind the same
+// interface if a real need appears.
 type Request struct {
 	System    string    `json:"system,omitempty"`
 	Messages  []Message `json:"messages"`
 	Tools     []Tool    `json:"tools,omitempty"`
 	MaxTokens int       `json:"maxTokens,omitempty"`
+	Cache     CacheHint `json:"cache,omitempty"`
+}
+
+// CacheHint tells a backend which parts of a request are stable across turns, so a
+// provider that supports prompt caching can reuse the work of processing them
+// instead of re-reading the whole prompt on every call. It is advisory and fully
+// provider-neutral: the caller declares stability, which only it can know from how
+// it assembles the conversation, and each adapter realizes the hint in its own
+// terms. A provider with explicit cache markers places one at each declared
+// boundary; a provider with automatic prefix caching, or one with no caching at
+// all, ignores the hint and loses nothing, because the caller has kept the prefix
+// byte-identical regardless. The hint can only ever save cost: it never changes
+// what the model is asked or what it returns.
+//
+// The boundaries run from most to least stable. The static prefix (the system
+// prompt and tool schemas, identical every turn) is the cheapest large win;
+// marking a count of leading messages adds the append-only conversation prefix on
+// top of it. The zero value caches nothing, so a caller that does not opt in is
+// unaffected.
+type CacheHint struct {
+	// Prefix marks the system prompt and tool schemas as one cacheable boundary.
+	// These are the largest reliably-stable region of a tool-using request.
+	Prefix bool `json:"prefix,omitempty"`
+	// StableMessages is the number of leading messages that are stable across turns.
+	// A tool-using loop appends to its history and never edits an earlier turn, so
+	// this is normally the full message count at call time: the previous turns are
+	// frozen and worth caching, while only the newest content is unique to this call.
+	// Zero leaves the message history uncached. A backend places at most one message
+	// boundary, after message StableMessages-1, in addition to the prefix one.
+	StableMessages int `json:"stableMessages,omitempty"`
 }
 
 // StopReason is why the model ended its turn. It drives the conversation loop:
@@ -127,9 +158,25 @@ const (
 // Usage reports the token cost of a call, so a caller can meter spend and enforce
 // budgets. Zero is a valid "unknown/unreported" value for backends that do not
 // surface counts.
+//
+// The cache fields are defined so they mean the same thing across providers even
+// though providers report them differently. InputTokens is always the total input
+// processed this call, INCLUDING any part served from cache. CacheReadTokens is the
+// subset of InputTokens that the provider served from a prompt cache (billed at a
+// large discount, so it is the win to measure: cache-hit-rate is CacheReadTokens
+// over InputTokens). CacheWriteTokens is input written into the cache this call so a
+// later call can reuse it; it is additional, not part of InputTokens, and on most
+// providers is billed at a small premium. An adapter normalizes its provider's
+// native counters into this shape, so a caller computes hit-rate and cost the same
+// way regardless of which model ran.
 type Usage struct {
-	InputTokens  int `json:"inputTokens"`
-	OutputTokens int `json:"outputTokens"`
+	InputTokens     int `json:"inputTokens"`
+	OutputTokens    int `json:"outputTokens"`
+	CacheReadTokens int `json:"cacheReadTokens,omitempty"`
+	// CacheWriteTokens is tokens written to the cache this call (a one-time cost a
+	// later turn recovers). Providers with automatic prefix caching do not report a
+	// separate write, so this stays zero for them.
+	CacheWriteTokens int `json:"cacheWriteTokens,omitempty"`
 }
 
 // Response is one model turn: the assistant message it produced, why it stopped,

@@ -185,3 +185,39 @@ func TestSubmitNamesGoalAfterSession(t *testing.T) {
 		t.Fatal("session id is empty; the default must be a generated id")
 	}
 }
+
+// TestTurnUsageMapsAndRoundTrips checks a turn's token usage flows from the mission
+// event onto the session stream and survives a durable spine round-trip, so a live
+// UI and a replay both see the same per-turn cost.
+func TestTurnUsageMapsAndRoundTrips(t *testing.T) {
+	mev := mission.Event{
+		Kind: mission.EventTurnCompleted, Turn: 3, StopReason: "end_turn",
+		Usage: llm.Usage{InputTokens: 2000, OutputTokens: 400, CacheReadTokens: 1500, CacheWriteTokens: 100},
+	}
+	sev := toSessionEvent(mev)
+	if sev.Usage == nil {
+		t.Fatal("turn.completed should carry usage")
+	}
+	if sev.Usage.InputTokens != 2000 || sev.Usage.CacheReadTokens != 1500 || sev.Usage.CacheWriteTokens != 100 {
+		t.Fatalf("usage not mapped: %+v", sev.Usage)
+	}
+
+	// The whole event body is serialized under one spine payload field; usage must
+	// survive that round-trip unchanged.
+	back := fromSpine(spine.Event{
+		Type:    string(sev.Kind),
+		Payload: sev.toAppend("s1").Payload,
+	})
+	if back.Usage == nil || *back.Usage != *sev.Usage {
+		t.Fatalf("usage lost in spine round-trip: %+v -> %+v", sev.Usage, back.Usage)
+	}
+}
+
+// TestTurnWithoutUsageOmitsIt confirms a backend that reports no token counts
+// produces no usage object, so the renderer shows nothing rather than a row of zeros.
+func TestTurnWithoutUsageOmitsIt(t *testing.T) {
+	sev := toSessionEvent(mission.Event{Kind: mission.EventTurnCompleted, Turn: 1})
+	if sev.Usage != nil {
+		t.Fatalf("usage should be nil when the model reported none: %+v", sev.Usage)
+	}
+}

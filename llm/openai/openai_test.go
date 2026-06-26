@@ -207,3 +207,17 @@ func TestAssistantMappingProperty(t *testing.T) {
 		}
 	})
 }
+
+// TestCachedPromptTokensSurfaced checks the automatically-cached portion of the
+// prompt is reported as CacheReadTokens, a subset of the total InputTokens, so a
+// caller measures cache-hit-rate the same way it does for any provider.
+func TestCachedPromptTokensSurfaced(t *testing.T) {
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":80}}}`}
+	resp, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 100 || resp.Usage.CacheReadTokens != 80 || resp.Usage.CacheWriteTokens != 0 {
+		t.Fatalf("cached prompt tokens not surfaced: %+v", resp.Usage)
+	}
+}

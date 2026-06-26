@@ -25,6 +25,7 @@ import (
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/ids"
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
@@ -285,6 +286,14 @@ func toSessionEvent(ev mission.Event) Event {
 		out.Result, out.IsError = ev.Result, ev.IsError
 	case mission.EventTurnCompleted:
 		out.Kind, out.StopReason = KindTurnCompleted, ev.StopReason
+		if u := ev.Usage; u != (llm.Usage{}) {
+			out.Usage = &Usage{
+				InputTokens:      u.InputTokens,
+				OutputTokens:     u.OutputTokens,
+				CacheReadTokens:  u.CacheReadTokens,
+				CacheWriteTokens: u.CacheWriteTokens,
+			}
+		}
 	}
 	return out
 }

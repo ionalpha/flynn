@@ -3,6 +3,8 @@ package mission
 import (
 	"context"
 	"encoding/json"
+
+	"github.com/ionalpha/flynn/llm"
 )
 
 // EventKind classifies a conversational event a mission reports as it runs.
@@ -46,6 +48,10 @@ type Event struct {
 	IsError bool
 	// StopReason is why the turn ended (EventTurnCompleted): the llm.StopReason.
 	StopReason string
+	// Usage is the token cost the model reported for the turn (EventTurnCompleted),
+	// including the cache read/write split, so a caller can show live spend and
+	// cache effectiveness without re-deriving it.
+	Usage llm.Usage
 }
 
 // Reporter receives a mission's conversational events as they happen, so a caller

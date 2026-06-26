@@ -196,3 +196,32 @@ func TestEditContractProperty(t *testing.T) {
 		}
 	})
 }
+
+func TestResultSummarizers(t *testing.T) {
+	long := strings.Repeat("line\n", 50)
+	cases := []struct {
+		name string
+		tool interface {
+			SummarizeResult(json.RawMessage, string) string
+		}
+		input  string
+		result string
+		want   []string
+	}{
+		{"bash exit 0", bashTool{}, `{"command":"go test ./..."}`, long, []string{`"go test ./..."`, "exit 0", "50 lines"}},
+		{"bash nonzero", bashTool{}, `{"command":"go build"}`, "boom\n[exit status 2]", []string{"exit status 2"}},
+		{"read", readTool{}, `{"path":"a/b.go"}`, long, []string{"a/b.go", "50 lines"}},
+		{"glob", globTool{}, `{"pattern":"**/*.go"}`, long, []string{`"**/*.go"`, "50 files"}},
+		{"grep", grepTool{}, `{"pattern":"TODO"}`, long, []string{`"TODO"`, "50 matches"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.tool.SummarizeResult(json.RawMessage(tc.input), tc.result)
+			for _, w := range tc.want {
+				if !strings.Contains(got, w) {
+					t.Fatalf("summary %q missing %q", got, w)
+				}
+			}
+		})
+	}
+}
