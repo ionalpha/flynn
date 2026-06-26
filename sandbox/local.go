@@ -30,6 +30,14 @@ type Local struct {
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
 	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
 	seccomp     bool              // run commands under a syscall filter (see WithSeccomp)
+	// confineBestEffort marks confinement as the always-on default (see
+	// WithDefaultConfinement) rather than an explicit request, so a host that cannot
+	// set it up falls back to the floor instead of failing the command.
+	confineBestEffort bool
+	// selfExe overrides the re-exec target used by filesystem confinement; empty means
+	// the running binary (/proc/self/exe). Tests set it to a missing path to force a
+	// confinement start failure and exercise the best-effort fallback deterministically.
+	selfExe string
 }
 
 // LocalOption configures a Local sandbox.
@@ -129,6 +137,7 @@ func WithKernelConfinement() LocalOption {
 // does not, because it is the always-on baseline rather than an explicit request.
 func WithDefaultConfinement() LocalOption {
 	return func(l *Local) {
+		l.confineBestEffort = true
 		if kernelConfinementSupported() {
 			l.readonlyFS = true
 			l.seccomp = true
@@ -228,12 +237,33 @@ func (l *Local) rel(abs string) string {
 // Exec runs a command through a per-OS shell in the working directory. A non-zero
 // exit is returned as a result, not an error; only a failure to start (or a
 // cancelled context) is an error.
+//
+// When confinement was requested as the secure-by-default baseline (see
+// WithDefaultConfinement) and the kernel refuses to set it up on this host, for
+// example where unprivileged user namespaces are restricted, the command is run again
+// at the process-jail floor rather than failing. The default baseline is always-on,
+// so it degrades to the floor it can always provide; an explicitly requested
+// confinement still fails loudly, since the caller asked for it by name.
 func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	if l.execTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, l.execTimeout)
 		defer cancel()
 	}
+	confined := l.denyNetwork || l.readonlyFS || l.seccomp
+	res, err := l.execOnce(ctx, cmd, confined)
+	// A confined run that could not start (an error, not a non-zero exit) under the
+	// always-on baseline falls back to the floor. The failed attempt never ran the
+	// command, so there is nothing to undo before retrying.
+	if err != nil && confined && l.confineBestEffort {
+		return l.execOnce(ctx, cmd, false)
+	}
+	return res, err
+}
+
+// execOnce runs the command once, applying the configured confinement only when
+// confined is true.
+func (l *Local) execOnce(ctx context.Context, cmd Command, confined bool) (ExecResult, error) {
 	name, args := shell(cmd.Line)
 	//nolint:gosec // running a model-supplied command is the bash tool's purpose; isolation is this sandbox's job, hardened by the stronger tiers
 	c := exec.CommandContext(ctx, name, args...)
@@ -242,8 +272,10 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	// keys and every other process secret are withheld from a model-run command.
 	// The command sees only a minimal baseline plus what WithEnv explicitly grants.
 	c.Env = l.env()
-	if err := l.confine(c); err != nil {
-		return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
+	if confined {
+		if err := l.confine(c); err != nil {
+			return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
+		}
 	}
 	out, err := c.CombinedOutput()
 	res := ExecResult{Output: string(out)}
