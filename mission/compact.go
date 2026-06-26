@@ -69,6 +69,14 @@ func compactView(msgs []llm.Message, budgetTokens int) []llm.Message {
 	out := make([]llm.Message, 0, 1+(len(msgs)-cut))
 	out = append(out, withElisionNote(msgs[0], cut-1))
 	out = append(out, msgs[cut:]...)
+
+	// Never hand back a larger view than we were given. When the transcript is already
+	// so small that the elision note costs more than the turns it would replace, there
+	// is nothing to gain, so keep the original. This only triggers for tiny transcripts
+	// against an unusually small budget; a genuinely large transcript always shrinks.
+	if estimateTokens(out) >= estimateTokens(msgs) {
+		return msgs
+	}
 	return out
 }
 
