@@ -61,6 +61,7 @@ func DefaultPolicy() Policy {
 			"spine":    true,
 			"resource": true,
 			"fetch":    true,
+			"netguard": true,
 		},
 	}
 }
