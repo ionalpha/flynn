@@ -2,6 +2,7 @@ package gbnf
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -17,6 +18,9 @@ func FuzzCompileTotality(f *testing.F) {
 	f.Add([]byte(`not json`))
 	f.Add([]byte(`{"type":}`))
 	f.Add([]byte(``))
+	f.Add([]byte(`{"type":"object","required":["x"],"properties":{},"additionalProperties":false}`))
+	f.Add([]byte(strings.Repeat(`{"type":"array","items":`, 200) + `{}` + strings.Repeat(`}`, 200)))
+	f.Add([]byte(`{"type":"string","enum":["a\"b","c\\d"]}`))
 
 	probes := []string{"", "{}", `{"path":"a"}`, "null", "[]", `{"a":{"b":{"c":1}}}`}
 	f.Fuzz(func(t *testing.T, raw []byte) {

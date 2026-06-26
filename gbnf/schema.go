@@ -23,7 +23,7 @@ func Arguments(schema json.RawMessage) (*Grammar, error) {
 		return nil, err
 	}
 	b := newBuilder()
-	root, err := b.compile(s, "root")
+	root, err := b.compile(s, "root", 0)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +182,10 @@ func (b *builder) grammar(root string) (*Grammar, error) {
 // compile builds the rule for one schema node, registers it under name, and returns
 // name. It dispatches on the schema's type, falling back to an enum constraint when
 // type is absent but enum is present.
-func (b *builder) compile(s *schemaNode, name string) (string, error) {
+func (b *builder) compile(s *schemaNode, name string, depth int) (string, error) {
+	if depth > maxSchemaDepth {
+		return "", fmt.Errorf("gbnf: schema nesting exceeds the depth limit of %d", maxSchemaDepth)
+	}
 	if len(s.Enum) > 0 && s.Type == "" {
 		n, err := enumNode(s.Enum)
 		if err != nil {
@@ -193,9 +196,9 @@ func (b *builder) compile(s *schemaNode, name string) (string, error) {
 	}
 	switch s.Type {
 	case "object":
-		return b.compileObject(s, name)
+		return b.compileObject(s, name, depth)
 	case "array":
-		return b.compileArray(s, name)
+		return b.compileArray(s, name, depth)
 	case "string":
 		if len(s.Enum) > 0 {
 			n, err := enumNode(s.Enum)
@@ -243,7 +246,7 @@ func (b *builder) compile(s *schemaNode, name string) (string, error) {
 // property under a different name without letting the declared one be re-admitted
 // untyped, which would silently permit an invalid call. Refusing is sound; guessing
 // is not. This case does not arise for tool argument schemas, which are closed.
-func (b *builder) compileObject(s *schemaNode, name string) (string, error) {
+func (b *builder) compileObject(s *schemaNode, name string, depth int) (string, error) {
 	open := s.AdditionalProperties != nil && *s.AdditionalProperties
 	if open {
 		if len(s.propOrder) > 0 {
@@ -274,7 +277,7 @@ func (b *builder) compileObject(s *schemaNode, name string) (string, error) {
 	memberNodes := make([]node, len(s.propOrder))
 	for i, key := range s.propOrder {
 		ps := s.Properties[key]
-		valName, err := b.compile(&ps, b.fresh("val"))
+		valName, err := b.compile(&ps, b.fresh("val"), depth+1)
 		if err != nil {
 			return "", fmt.Errorf("gbnf: property %q: %w", key, err)
 		}
@@ -333,13 +336,13 @@ func (b *builder) objectTail(base string, keys []string, members []node, require
 // compileArray builds the rule for an array schema: bracket-delimited, comma
 // separated values matching the item schema (or any JSON value when items is
 // absent).
-func (b *builder) compileArray(s *schemaNode, name string) (string, error) {
+func (b *builder) compileArray(s *schemaNode, name string, depth int) (string, error) {
 	b.needWS()
 	itemRef := "json_value"
 	if s.Items != nil {
 		b.needValue()
 		var err error
-		itemRef, err = b.compile(s.Items, b.fresh("item"))
+		itemRef, err = b.compile(s.Items, b.fresh("item"), depth+1)
 		if err != nil {
 			return "", err
 		}
