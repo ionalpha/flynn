@@ -142,7 +142,7 @@ func printUsage(w io.Writer) {
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn auth set <provider>  store an API key in the encrypted vault
-  flynn models               browse the model catalog (filter with --local, --max-size, ...)
+  flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)

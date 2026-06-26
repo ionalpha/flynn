@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/ionalpha/flynn/catalog"
+	"github.com/ionalpha/flynn/hardware"
 )
 
 // runModels implements `flynn models`: browse the curated model catalog and filter
@@ -27,6 +29,8 @@ func runModels(args []string, out io.Writer) error {
 		maxParamB = fs.Float64("max-params", 0, "only models at or below N billion parameters")
 		publisher = fs.String("publisher", "", "only models from this publisher")
 		safeOnly  = fs.Bool("safe", false, "drop models whose only weights use a code-executing format")
+		fit       = fs.Bool("fit", false, "show how each model fits this machine's GPU memory")
+		vramGB    = fs.Float64("vram", 0, "GPU memory budget in GB to judge fit against (default: auto-detect)")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprintln(out, "usage: flynn models [filters]\nShow the model catalog. Filters:")
@@ -60,8 +64,71 @@ func runModels(args []string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "no models match")
 		return nil
 	}
+	if *fit || *vramGB > 0 {
+		renderFit(out, cat, models, resolveBudget(*vramGB))
+		return nil
+	}
 	renderModels(out, cat, models)
 	return nil
+}
+
+// budget is the memory ceiling fit is judged against, and how it was determined.
+type budget struct {
+	bytes  int64
+	source string // human description: "given", a detected GPU, or empty when unknown
+}
+
+// resolveBudget takes an explicit GB budget when given, otherwise probes the machine
+// for a GPU, leaving the budget unknown (zero) when neither is available so fit
+// degrades to "?" rather than a wrong verdict.
+func resolveBudget(vramGB float64) budget {
+	if vramGB > 0 {
+		return budget{bytes: int64(vramGB * 1e9), source: fmt.Sprintf("%.0fGB budget (given)", vramGB)}
+	}
+	box := hardware.Detect(context.Background())
+	if box.HasGPU() {
+		return budget{bytes: box.VRAMBytes, source: fmt.Sprintf("%s, %s VRAM (detected)", box.GPUName, humanBytes(box.VRAMBytes))}
+	}
+	return budget{}
+}
+
+// renderFit lists the models with a fit verdict against the budget and a single
+// recommendation, the "what can this machine actually run" view. When no budget is
+// known it says so and falls back to the plain listing.
+func renderFit(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec, b budget) {
+	if b.bytes <= 0 {
+		_, _ = fmt.Fprintln(out, "could not detect a GPU; pass --vram <GB> to judge fit.")
+		renderModels(out, cat, models)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "fit for %s:\n\n", b.source)
+	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "MODEL\tKIND\tSIZE\tFIT\tCAPABILITIES\tLICENSE")
+	for _, m := range models {
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			m.ID, m.Kind, sizeCol(m), m.FitFor(b.bytes), capsCol(m.Capabilities), m.License)
+	}
+	_ = tw.Flush()
+	if rec, ok := recommend(models, b.bytes); ok {
+		_, _ = fmt.Fprintf(out, "\nrecommended local model: %s\n", rec.ID)
+	}
+}
+
+// recommend picks a single default local model for the budget: the largest one that
+// fits comfortably (more parameters generally means more capable), so the suggestion
+// is the strongest model the machine can run without crowding memory.
+func recommend(models []catalog.ModelSpec, availBytes int64) (catalog.ModelSpec, bool) {
+	var best catalog.ModelSpec
+	found := false
+	for _, m := range models {
+		if !m.Local() || m.FitFor(availBytes) != catalog.FitFeasible {
+			continue
+		}
+		if !found || m.ParamsB > best.ParamsB {
+			best, found = m, true
+		}
+	}
+	return best, found
 }
 
 // withinSize keeps API models (no download) and local models whose smallest quant is
