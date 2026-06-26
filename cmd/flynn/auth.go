@@ -45,6 +45,9 @@ func authSet(ctx context.Context, store *vault.Store, args []string) error {
 	}
 	ref, ok := provider.KeyRef(args[0])
 	if !ok {
+		if isKnownProvider(args[0]) {
+			return fmt.Errorf("auth: provider %q needs no API key", args[0])
+		}
 		return fmt.Errorf("auth: unknown provider %q (want one of %s)", args[0], strings.Join(provider.Providers(), ", "))
 	}
 	key, err := promptHidden(fmt.Sprintf("Enter API key for %s: ", args[0]))
@@ -67,6 +70,9 @@ func authRemove(ctx context.Context, store *vault.Store, args []string) error {
 	}
 	ref, ok := provider.KeyRef(args[0])
 	if !ok {
+		if isKnownProvider(args[0]) {
+			return fmt.Errorf("auth: provider %q needs no API key", args[0])
+		}
 		return fmt.Errorf("auth: unknown provider %q", args[0])
 	}
 	if err := store.Delete(ctx, ref); err != nil {
@@ -76,9 +82,25 @@ func authRemove(ctx context.Context, store *vault.Store, args []string) error {
 	return nil
 }
 
+// isKnownProvider reports whether name is a provider Flynn can resolve, so a
+// keyless provider can be told apart from a genuine typo when there is no key to set.
+func isKnownProvider(name string) bool {
+	for _, p := range provider.Providers() {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 func authList(ctx context.Context, store *vault.Store) error {
 	for _, name := range provider.Providers() {
-		ref, _ := provider.KeyRef(name)
+		ref, ok := provider.KeyRef(name)
+		if !ok {
+			// A keyless provider (a local server) has nothing to store.
+			_, _ = fmt.Fprintf(os.Stdout, "  %-10s no key required\n", name)
+			continue
+		}
 		status := "not set"
 		if _, err := store.Lookup(ctx, ref); err == nil {
 			status = "stored"

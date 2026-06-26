@@ -80,6 +80,18 @@ func configuredProviders(ctx context.Context, src secret.Source) []string {
 	return out
 }
 
+// keyedProviders lists the providers that take an API key, in canonical order, so
+// the credential prompt offers only providers there is actually a key to enter for.
+func keyedProviders() []string {
+	var out []string
+	for _, name := range provider.Providers() {
+		if _, ok := provider.KeyRef(name); ok {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
 // onboardCredential is the first-run setup: it asks which provider to use
 // (defaulting to the one in modelSpec), reads its API key without echoing, and
 // seals it in the vault. It returns the model spec to resolve with: the original
@@ -92,7 +104,8 @@ func onboardCredential(ctx context.Context, modelSpec, dataDir string) (string, 
 	}
 
 	fmt.Fprintln(os.Stderr, "Welcome to Flynn. No model credential is set yet, so let's add one.")
-	fmt.Fprintf(os.Stderr, "Providers: %s\n", strings.Join(provider.Providers(), ", "))
+	keyed := keyedProviders()
+	fmt.Fprintf(os.Stderr, "Providers: %s\n", strings.Join(keyed, ", "))
 
 	in := bufio.NewReader(os.Stdin)
 	name, err := promptVisible(in, fmt.Sprintf("Provider [%s]: ", def))
@@ -104,7 +117,7 @@ func onboardCredential(ctx context.Context, modelSpec, dataDir string) (string, 
 	}
 	ref, ok := provider.KeyRef(name)
 	if !ok {
-		return "", fmt.Errorf("unknown provider %q (want one of %s)", name, strings.Join(provider.Providers(), ", "))
+		return "", fmt.Errorf("provider %q does not take an API key here (want one of %s)", name, strings.Join(keyed, ", "))
 	}
 
 	key, err := promptHidden(fmt.Sprintf("Enter API key for %s: ", name))
