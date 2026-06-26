@@ -173,18 +173,26 @@ func (l *Local) Root() string { return l.root }
 // closePlatform releases that where applicable and is a no-op elsewhere.
 func (l *Local) Close() error { return l.closePlatform() }
 
-// Containment reports how strongly this Local confines the commands it runs. By
-// default it is a process jail (ContainmentNone): it confines paths and scrubs the
-// environment but shares the host kernel, network, and syscalls, so it is for trusted
-// code only. When the network, filesystem, and syscall confinements are all enabled
-// and the platform enforces them, it rises to ContainmentKernel: the command cannot
-// reach the network, change the host filesystem, or make a dangerous syscall, which
-// is the boundary for semi-trusted, model-authored code over a shared kernel. It does
-// not claim ContainmentKernel where the platform cannot enforce that confinement (a
-// command there is refused rather than run), so the reported level never outruns what
-// actually holds.
+// Containment reports how strongly this Local confines the commands it runs. The
+// ordered level measures the load-bearing axis: the kernel-enforced filesystem and
+// syscall confinement that bounds a code-execution exploit, which is what separates a
+// bare process jail from a kernel-confined tier. By default it is a process jail
+// (ContainmentNone): it confines paths and scrubs the environment but shares the host
+// kernel and syscalls, so it is for trusted code only. When the read-only host and the
+// syscall filter are both enabled and the platform enforces them, it rises to
+// ContainmentKernel: the command cannot change the host filesystem or make a dangerous
+// syscall, the boundary for semi-trusted, model-authored code over a shared kernel.
+//
+// Network egress is deliberately not part of the level. It is a separate axis governed
+// by the egress policy (a child network namespace, or the outbound gate the agent's own
+// requests pass through), so a kernel-confined tier that legitimately allows a command
+// to use the network still reports kernel. Folding network into the level would mean the
+// secure default, which leaves egress to the per-run policy rather than denying it
+// wholesale, could never report the tier it actually provides. The level never claims
+// ContainmentKernel where the platform cannot enforce the confinement, so it never
+// outruns what actually holds.
 func (l *Local) Containment() Containment {
-	if l.denyNetwork && l.readonlyFS && l.seccomp && kernelConfinementSupported() {
+	if l.readonlyFS && l.seccomp && kernelConfinementSupported() {
 		return ContainmentKernel
 	}
 	return ContainmentNone

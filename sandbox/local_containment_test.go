@@ -117,6 +117,26 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 		t.Fatalf("WithKernelConfinement must report %v, got %v", wantFull, got)
 	}
 
+	// Network egress is a separate axis, not part of the level: a sandbox with the
+	// read-only host and syscall filter but no network denial still reports the
+	// kernel-confined level, because the level measures the filesystem and syscall
+	// exploit boundary. This is the secure-by-default posture (it leaves egress to the
+	// per-run policy), so it must not be demoted to a bare process jail.
+	netOpen, err := NewLocal(t.TempDir(), WithReadOnlyFS(), WithSeccomp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := netOpen.Containment(); got != wantFull {
+		t.Fatalf("a read-only, syscall-filtered sandbox must report %v regardless of network, got %v", wantFull, got)
+	}
+	deflt, err := NewLocal(t.TempDir(), WithDefaultConfinement())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := deflt.Containment(); got != wantFull {
+		t.Fatalf("the secure-by-default confinement must report %v where the platform enforces it, got %v", wantFull, got)
+	}
+
 	// A partial configuration never claims the kernel-confined level, even where the
 	// platform could enforce the full set.
 	for _, tc := range []struct {
