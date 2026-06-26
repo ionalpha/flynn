@@ -73,16 +73,12 @@ func (l *Local) confine(c *exec.Cmd) error {
 // confinements to apply travel across the re-exec in the environment;
 // RunChildLaunchIfRequested picks them up on the other side.
 func (l *Local) reexecConfined(c *exec.Cmd) {
-	enc := make([]string, len(c.Args))
-	for i, a := range c.Args {
-		enc[i] = base64.StdEncoding.EncodeToString([]byte(a))
-	}
 	const self = "/proc/self/exe"
 	c.Env = append(
 		c.Env,
 		envConfine+"=1",
 		envDir+"="+l.root,
-		envArgv+"="+strings.Join(enc, ","),
+		envArgv+"="+encodeArgv(c.Args),
 	)
 	if l.readonlyFS {
 		c.Env = append(c.Env, envReadonly+"=1")
@@ -256,8 +252,20 @@ func pathWithin(child, parent string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// decodeArgv reverses the base64 comma-joined encoding reexecConfined uses to carry
-// the command across the re-exec.
+// encodeArgv encodes the command so it can travel across the re-exec in an
+// environment variable: each argument is base64-encoded (so it holds no byte that
+// the environment cannot, and no comma), and the arguments are joined with commas,
+// which the base64 alphabet never contains.
+func encodeArgv(args []string) string {
+	enc := make([]string, len(args))
+	for i, a := range args {
+		enc[i] = base64.StdEncoding.EncodeToString([]byte(a))
+	}
+	return strings.Join(enc, ",")
+}
+
+// decodeArgv reverses encodeArgv to recover the command on the other side of the
+// re-exec.
 func decodeArgv(s string) ([]string, error) {
 	if s == "" {
 		return nil, nil
