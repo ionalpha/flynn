@@ -115,6 +115,14 @@ func main() {
 			err = runRuntimeCheck(os.Stdout)
 		case len(sub) >= 1 && sub[0] == "install":
 			err = runRuntimeInstall(sub[1:], *dataDir, os.Stdout)
+		case len(sub) >= 1 && sub[0] == "run":
+			err = runModelRun(sub[1:], *dataDir, os.Stdout)
+		case len(sub) >= 1 && sub[0] == "use":
+			err = runModelUse(sub[1:], *dataDir, os.Stdout)
+		case len(sub) >= 1 && sub[0] == "status":
+			err = runModelStatus(sub[1:], *dataDir, os.Stdout)
+		case len(sub) >= 1 && sub[0] == "stop":
+			err = runModelStop(sub[1:], *dataDir, os.Stdout)
 		default:
 			err = runModels(sub, os.Stdout)
 		}
@@ -158,6 +166,10 @@ func printUsage(w io.Writer) {
   flynn models fetch <id>    download and verify a model's weights (does not run it)
   flynn models check         report installed local runtimes and any known parser advisories
   flynn models install [rt]  fetch and verify a pinned local runtime (default: llama.cpp)
+  flynn models run <id> [q]  provision, serve, and query a local model (q optional)
+  flynn models use <id>      provision a local model and set it as the default
+  flynn models status        list the local model servers that are running
+  flynn models stop <id>     stop a running local model server
   flynn regrade              re-grade learned skills against the working directory
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)
@@ -218,6 +230,13 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 // environment from commands, so unsetting keeps the raw key out of os.Environ(), a
 // crash dump, or any child that reads the parent env.
 func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, error) {
+	// A local catalog model resolves by provisioning and serving it on demand, then
+	// talking to its loopback endpoint, so selecting it is zero-touch: nothing has to be
+	// installed, downloaded, or started by hand. A hosted provider spec falls through to
+	// the credential-backed resolver below.
+	if isLocalModelID(modelSpec) {
+		return resolveLocalModel(ctx, modelSpec, dataDir)
+	}
 	model, err := provider.ResolveWith(ctx, modelSpec, credentialSource(dataDir))
 	if err != nil {
 		return nil, err
