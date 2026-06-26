@@ -42,16 +42,17 @@ type Tool interface {
 // Executor drives a goal as a conversation with a model. It implements
 // goal.StepExecutor.
 type Executor struct {
-	model        llm.Model
-	tools        map[string]Tool
-	defs         []llm.Tool
-	system       string
-	maxTokens    int
-	reporter     Reporter
-	grant        capability.Grant
-	hasGrant     bool
-	dispatchOpts []dispatch.Option
-	dispatcher   *dispatch.Dispatcher
+	model         llm.Model
+	tools         map[string]Tool
+	defs          []llm.Tool
+	system        string
+	maxTokens     int
+	compactBudget int
+	reporter      Reporter
+	grant         capability.Grant
+	hasGrant      bool
+	dispatchOpts  []dispatch.Option
+	dispatcher    *dispatch.Dispatcher
 }
 
 // Option configures an Executor.
@@ -120,6 +121,21 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
+// WithCompactionBudget sets the input-token budget above which the oldest middle
+// turns are elided from the transcript sent to the model (the objective and the
+// recent tail are always kept). Zero, the default, disables compaction, so an
+// embedder that wants the full transcript every turn is unaffected. The elision is a
+// view over the durable checkpoint, never an overwrite, so nothing is lost. Set this
+// to roughly half the model's context window so a long session stays well clear of
+// the limit.
+func WithCompactionBudget(tokens int) Option {
+	return func(e *Executor) {
+		if tokens > 0 {
+			e.compactBudget = tokens
+		}
+	}
+}
+
 // NewExecutor builds a mission executor over the given model and options. Tool
 // calls run through a dispatch waist so governance, event recording, and tracing
 // are applied once at the chokepoint rather than scattered across the loop.
@@ -180,6 +196,16 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	turn := assistantTurns(cp.Messages) + 1
 	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Turn: turn})
 
+	// Send a token-lean view of the transcript: older and duplicate large tool
+	// outputs are replaced by one-line summaries before the call, while the durable
+	// checkpoint (cp.Messages) keeps every result in full. Pruning is deterministic
+	// and preserves the message count, so it does not disturb the cacheable prefix.
+	// Compaction is the coarse fallback beneath it: if even the pruned transcript
+	// would overflow the context budget, the oldest middle turns are elided too. Both
+	// are views over the lossless checkpoint, so nothing is overwritten.
+	reqMessages := pruneTranscript(cp.Messages, e.summarizerFor)
+	reqMessages = compactView(reqMessages, e.compactBudget)
+
 	// The model call goes through the same waist as tool calls: admitted against
 	// the run grant, metered for tokens, and bracketed with lifecycle events on the
 	// spine. The typed request and response stay here; dispatch sees only the action
@@ -190,9 +216,17 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 			var gerr error
 			resp, gerr = e.model.Generate(ctx, llm.Request{
 				System:    e.system,
-				Messages:  cp.Messages,
+				Messages:  reqMessages,
 				Tools:     e.defs,
 				MaxTokens: e.maxTokens,
+				// The conversation only ever grows: the system prompt and tools are
+				// fixed, and an earlier turn is never edited. So the whole prefix is
+				// stable and worth caching. Declaring that lets a provider reuse the
+				// work of reading it back on the next turn instead of reprocessing the
+				// entire transcript every call, which is the dominant cost of a long
+				// tool-using loop. The hint is advisory: a backend without caching
+				// ignores it and the result is identical.
+				Cache: llm.CacheHint{Prefix: true, StableMessages: len(reqMessages)},
 			})
 			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
 		})
@@ -226,7 +260,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Result = resp.Message.TextContent()
 	}
 
-	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Turn: turn, StopReason: string(resp.StopReason)})
+	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
 	return encodeCheckpoint(cp)
 }
 
@@ -240,6 +274,18 @@ func assistantTurns(msgs []llm.Message) int {
 		}
 	}
 	return n
+}
+
+// summarizerFor returns the one-line result summarizer of a registered tool, or nil
+// when the tool is unknown or offers none. Pruning uses it to elide an older large
+// result down to a meaningful line rather than a generic size note.
+func (e *Executor) summarizerFor(tool string) ResultSummarizer {
+	if t, ok := e.tools[tool]; ok {
+		if s, ok := t.(ResultSummarizer); ok {
+			return s
+		}
+	}
+	return nil
 }
 
 // runTools dispatches each requested call through the waist and returns the

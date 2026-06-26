@@ -243,8 +243,11 @@ type chatResponse struct {
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -262,10 +265,19 @@ func decodeResponse(cr chatResponse) (llm.Response, error) {
 			ID: tc.ID, Name: tc.Function.Name, Input: json.RawMessage(tc.Function.Arguments),
 		}})
 	}
+	// This API caches stable prefixes automatically (no request-side marker), and
+	// reports prompt_tokens as the total input with the cached portion called out as
+	// a subset. That matches the port directly: InputTokens is the total, and
+	// CacheReadTokens is how much of it was served from cache. There is no separate
+	// cache-write charge to report.
 	return llm.Response{
 		Message:    llm.Message{Role: llm.RoleAssistant, Blocks: blocks},
 		StopReason: mapFinishReason(choice.FinishReason),
-		Usage:      llm.Usage{InputTokens: cr.Usage.PromptTokens, OutputTokens: cr.Usage.CompletionTokens},
+		Usage: llm.Usage{
+			InputTokens:     cr.Usage.PromptTokens,
+			OutputTokens:    cr.Usage.CompletionTokens,
+			CacheReadTokens: cr.Usage.PromptTokensDetails.CachedTokens,
+		},
 	}, nil
 }
 

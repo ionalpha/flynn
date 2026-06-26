@@ -336,3 +336,33 @@ func TestMissionConvergesProperty(t *testing.T) {
 		}
 	})
 }
+
+// TestExecutorDeclaresCacheHint checks the loop tells the model which prefix is
+// stable: the static prefix every turn, and a message boundary that rolls forward
+// as the conversation grows, so a caching backend reuses the frozen history.
+func TestExecutorDeclaresCacheHint(t *testing.T) {
+	model := llmtest.NewScripted(
+		llmtest.CallTool("t1", "echo", json.RawMessage(`{"msg":"hi"}`)),
+		llmtest.SayText("all done"),
+	)
+	exec := NewExecutor(model, WithTools(echoTool()), WithSystem("be brief"))
+	driveToDone(t, exec, 5)
+
+	reqs := model.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("want 2 model calls, got %d", len(reqs))
+	}
+	for i, r := range reqs {
+		if !r.Cache.Prefix {
+			t.Fatalf("call %d did not mark the static prefix as cacheable", i)
+		}
+		if r.Cache.StableMessages != len(r.Messages) {
+			t.Fatalf("call %d: StableMessages=%d, want full history %d", i, r.Cache.StableMessages, len(r.Messages))
+		}
+	}
+	// The boundary rolls forward: the second call has more stable history than the
+	// first (the tool call, its result, and the prompt).
+	if reqs[1].Cache.StableMessages <= reqs[0].Cache.StableMessages {
+		t.Fatalf("rolling boundary did not advance: %d then %d", reqs[0].Cache.StableMessages, reqs[1].Cache.StableMessages)
+	}
+}
