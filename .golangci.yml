@@ -61,6 +61,20 @@ linters:
           deny:
             - pkg: "log/slog"
               desc: "log through the observe.Logger port; log/slog is allowed only inside package observe"
+        # Process execution goes through the sandbox boundary so it is confined,
+        # governed, and auditable; nothing spawns a process around it. Only the
+        # sandbox (the boundary itself) and the hardware probe (which must read the
+        # real host, so it cannot be sandboxed, and runs a fixed command with no
+        # untrusted input) may spawn a process directly.
+        no-direct-exec:
+          files:
+            - "**/*.go"
+            - "!**/sandbox/**"
+            - "!**/hardware/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "os/exec"
+              desc: "spawn processes only through the sandbox boundary; direct os/exec bypasses isolation, governance, and audit"
         # Randomness is reached through the seeded ids.Generator so a replay
         # re-seeds identically. Only package ids may import a rand source.
         no-direct-rand:
