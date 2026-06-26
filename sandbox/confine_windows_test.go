@@ -169,3 +169,52 @@ func TestAppContainerMonikerStableAndUnique(t *testing.T) {
 		t.Fatalf("moniker %q is not within the allowed name shape", a1)
 	}
 }
+
+// TestMitigationPolicyShape guards the process-mitigation set applied to a confined
+// command: it must include the Win32k system-call lockdown (the headline kernel
+// attack-surface reduction) and must not include the policies that break ordinary
+// developer tools (dynamic-code prohibition, non-Microsoft-binary blocking).
+func TestMitigationPolicyShape(t *testing.T) {
+	if sandboxMitigationPolicy&mitigationWin32kSystemCallDisable == 0 {
+		t.Fatal("the mitigation policy must apply the Win32k system-call lockdown")
+	}
+	for name, bit := range map[string]uint64{
+		"prohibit-dynamic-code":      0x01 << 36,
+		"block-non-microsoft-binary": 0x01 << 44,
+		"strict-handle-checks":       0x01 << 24,
+	} {
+		if sandboxMitigationPolicy&bit != 0 {
+			t.Fatalf("the mitigation policy must not enable %s (it breaks ordinary commands)", name)
+		}
+	}
+}
+
+// TestProfileCleanupOnClose proves the per-working-directory AppContainer profile a
+// confined command registers is removed on Close, so profiles do not accumulate across
+// runs.
+func TestProfileCleanupOnClose(t *testing.T) {
+	root := t.TempDir()
+	sb, err := NewLocal(root, WithKernelConfinement())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sb.Exec(context.Background(), Command{Line: "echo make-profile"}); err != nil {
+		t.Fatalf("confined exec (registers the profile): %v", err)
+	}
+
+	local := os.Getenv("LOCALAPPDATA")
+	if local == "" {
+		t.Skip("LOCALAPPDATA not set; cannot locate the profile folder")
+	}
+	profileDir := filepath.Join(local, "Packages", appContainerMoniker(root))
+	if _, err := os.Stat(profileDir); err != nil {
+		t.Skipf("profile folder not found at the expected location, cannot verify cleanup: %v", err)
+	}
+
+	if err := sb.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if _, err := os.Stat(profileDir); err == nil {
+		t.Fatal("the AppContainer profile folder must be removed after Close")
+	}
+}

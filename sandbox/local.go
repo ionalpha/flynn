@@ -168,8 +168,10 @@ var _ Sandbox = (*Local)(nil)
 // Root returns the absolute working directory the sandbox is confined to.
 func (l *Local) Root() string { return l.root }
 
-// Close releases resources (none for the local tier).
-func (l *Local) Close() error { return nil }
+// Close releases resources. The in-process tier holds none itself, but a platform's
+// confinement may leave persistent state (a registered container profile on Windows);
+// closePlatform releases that where applicable and is a no-op elsewhere.
+func (l *Local) Close() error { return l.closePlatform() }
 
 // Containment reports how strongly this Local confines the commands it runs. By
 // default it is a process jail (ContainmentNone): it confines paths and scrubs the

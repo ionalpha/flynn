@@ -27,6 +27,16 @@ func kernelConfinementSupported() bool { return true }
 // requested.
 func (l *Local) confine(_ *exec.Cmd) error { return nil }
 
+// closePlatform removes the per-working-directory AppContainer profile registered for
+// confined commands, so profiles do not accumulate across runs. It is best-effort: the
+// container's temporary directory is redirected into the working tree, so the profile
+// folder holds no command output, and a profile still in use by another sandbox on the
+// same directory is simply left in place.
+func (l *Local) closePlatform() error {
+	deleteAppContainerProfile(appContainerMoniker(l.root))
+	return nil
+}
+
 // runShell runs a shell command, choosing the execution path by whether confinement
 // was requested. Unconfined, it runs through the standard library exactly like the
 // other platforms. Confined, it runs inside an AppContainer: filesystem default-deny

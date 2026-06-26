@@ -25,6 +25,42 @@ const procThreadAttributeSecurityCapabilities = 0x00020009
 // profile for this moniker already exists, in which case the SID is derived instead.
 const errAlreadyExists = 0x800700B7
 
+// procThreadAttributeMitigationPolicy (PROC_THREAD_ATTRIBUTE_MITIGATION_POLICY) applies
+// a set of process-mitigation policies to the child at creation time. It is not
+// exported by the syscall bindings, so it is defined here.
+const procThreadAttributeMitigationPolicy = 0x00020007
+
+// The process-mitigation policy bits applied to every confined command, hardening the
+// child beyond the AppContainer boundary. The headline is the Win32k system-call
+// disable, which removes the kernel's window-manager and graphics syscall surface (a
+// large, historically exploited attack surface) from a command that has no legitimate
+// need for it. The rest deny code-injection and DLL-planting avenues and enable the
+// standard exploit mitigations. Policies that would break ordinary developer commands
+// are deliberately excluded: prohibit-dynamic-code (breaks just-in-time compilers),
+// block-non-Microsoft-binaries (breaks ordinary third-party tools), and
+// strict-handle-checks (terminates a process on a double-close some tools do benignly).
+const (
+	mitigationDEPEnable               = 0x01
+	mitigationSEHOPEnable             = 0x04
+	mitigationBottomUpASLR            = 0x01 << 16
+	mitigationHighEntropyASLR         = 0x01 << 20
+	mitigationWin32kSystemCallDisable = 0x01 << 28
+	mitigationExtensionPointDisable   = 0x01 << 32
+	mitigationImageLoadNoRemote       = 0x01 << 52
+	mitigationImageLoadNoLowLabel     = 0x01 << 56
+	mitigationImageLoadPreferSystem32 = 0x01 << 60
+)
+
+const sandboxMitigationPolicy = mitigationDEPEnable |
+	mitigationSEHOPEnable |
+	mitigationBottomUpASLR |
+	mitigationHighEntropyASLR |
+	mitigationWin32kSystemCallDisable |
+	mitigationExtensionPointDisable |
+	mitigationImageLoadNoRemote |
+	mitigationImageLoadNoLowLabel |
+	mitigationImageLoadPreferSystem32
+
 // securityCapabilities mirrors the Win32 SECURITY_CAPABILITIES structure, which is not
 // exported by the syscall bindings. It carries the container's package SID and the
 // capability SIDs granted to it.
@@ -38,6 +74,7 @@ type securityCapabilities struct {
 var (
 	userenv                           = windows.NewLazySystemDLL("userenv.dll")
 	procCreateAppContainerProfile     = userenv.NewProc("CreateAppContainerProfile")
+	procDeleteAppContainerProfile     = userenv.NewProc("DeleteAppContainerProfile")
 	procDeriveAppContainerSidFromName = userenv.NewProc("DeriveAppContainerSidFromAppContainerName")
 
 	kernelbase                       = windows.NewLazySystemDLL("kernelbase.dll")
@@ -83,6 +120,17 @@ func deriveACSID(moniker string) (*windows.SID, error) {
 		return nil, fmt.Errorf("DeriveAppContainerSidFromAppContainerName: hresult=0x%x", uint32(r))
 	}
 	return sid, nil
+}
+
+// deleteAppContainerProfile removes the registered AppContainer profile for a moniker
+// and its on-disk folder. It is best-effort: a profile that was never created, or is
+// in use by another sandbox on the same working directory, is left as is.
+func deleteAppContainerProfile(moniker string) {
+	m, err := windows.UTF16PtrFromString(moniker)
+	if err != nil {
+		return
+	}
+	_, _, _ = procDeleteAppContainerProfile.Call(uintptr(unsafe.Pointer(m)))
 }
 
 // capabilitySID returns the capability SID for a well-known capability name (for
@@ -184,7 +232,7 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 		return ExecResult{}, fmt.Errorf("sandbox: handle info: %w", err)
 	}
 
-	al, err := windows.NewProcThreadAttributeList(2)
+	al, err := windows.NewProcThreadAttributeList(3)
 	if err != nil {
 		windows.CloseHandle(wr)
 		return ExecResult{}, fmt.Errorf("sandbox: attribute list: %w", err)
@@ -200,6 +248,13 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	if err := al.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
 		windows.CloseHandle(wr)
 		return ExecResult{}, fmt.Errorf("sandbox: handle list: %w", err)
+	}
+	// Harden the child with process-mitigation policies (Win32k lockdown, no code
+	// injection or DLL planting, standard exploit mitigations) on top of the container.
+	policy := uint64(sandboxMitigationPolicy)
+	if err := al.Update(procThreadAttributeMitigationPolicy, unsafe.Pointer(&policy), unsafe.Sizeof(policy)); err != nil {
+		windows.CloseHandle(wr)
+		return ExecResult{}, fmt.Errorf("sandbox: mitigation policy: %w", err)
 	}
 
 	si := new(windows.StartupInfoEx)
