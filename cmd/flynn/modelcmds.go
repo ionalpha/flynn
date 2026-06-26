@@ -29,6 +29,8 @@ func dispatchModels(sub []string, dataDir string) error {
 		return runRuntimeCheck(os.Stdout)
 	case "install":
 		return runRuntimeInstall(sub[1:], dataDir, os.Stdout)
+	case "inspect":
+		return runModelInspect(sub[1:], dataDir, os.Stdout)
 	case "run":
 		return runModelRun(sub[1:], dataDir, os.Stdout)
 	case "use":
@@ -48,6 +50,7 @@ func dispatchModels(sub []string, dataDir string) error {
 // already-running server. The server is left running so a later run, or `flynn goal`,
 // reuses it; `flynn models stop <id>` ends it.
 func runModelRun(args []string, dataDir string, out io.Writer) error {
+	autoApprove, args := takeFlag(args, "--yes", "-y")
 	if len(args) == 0 || args[0] == "" {
 		return errors.New("models run: a model id or source is required (see `flynn models`)")
 	}
@@ -65,14 +68,31 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)
 	}
-	class, err := runner.admitSource(src)
+	class, err := runner.classifySource(src)
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)
 	}
+
+	// Surface the trust, isolation, integrity, and network posture in plain language
+	// before anything happens, so a refusal below is explained rather than bare, and gate
+	// the run on the isolation this host can provide.
+	rs := runner.riskSurface(src, class)
+	printRiskSurface(out, rs)
+	if err := runner.admitOnly(class.Trust); err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
+
+	// Require explicit consent for anything that is not a vetted catalog model. The safe
+	// answer is the default, and a non-interactive session refuses rather than assumes yes.
+	if err := requireConsent(rs, stdinIsTerminal(), autoApprove, os.Stdin, out); err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
+
 	if src.Kind != modelsource.KindCatalog {
-		// The source is admitted by the isolation gate but is not a curated catalog entry.
-		// Serving an arbitrary downloaded model is delivered with the strong isolation tier
-		// it requires; until then the gate above is what refuses an uncontained run.
+		// The source is admitted by the isolation gate and consented to, but is not a
+		// curated catalog entry. Serving an arbitrary downloaded model is delivered with the
+		// strong isolation tier it requires; until then the gate above refuses an
+		// uncontained run.
 		return fmt.Errorf("models run: %s is %s and would run, but serving a non-catalog model is not wired yet; only catalog models serve today", src.Raw, class.Trust)
 	}
 
@@ -105,6 +125,69 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintln(out, strings.TrimSpace(resp.Message.TextContent()))
 	return nil
+}
+
+// runModelInspect implements `flynn models inspect <id-or-source>`: classify any model
+// reference and show, in plain language, how far it is trusted, the isolation a run
+// requires, what is known about its integrity, its network posture, and whether this host
+// could run it. It never fetches or runs anything, so a user can understand the risk of a
+// model before committing to it.
+func runModelInspect(args []string, dataDir string, out io.Writer) error {
+	if len(args) == 0 || args[0] == "" {
+		return errors.New("models inspect: a model id or source is required")
+	}
+	ref := args[0]
+	runner := newLocalRunner(dataDir, out)
+
+	src, err := modelsource.Parse(ref, isLocalModelID)
+	if err != nil {
+		return fmt.Errorf("models inspect: %w", err)
+	}
+	class := modelsource.Classify(src, runner.knownPublisher)
+	rs := runner.riskSurface(src, class)
+	printRiskSurface(out, rs)
+
+	// Name the weight-format verdict where a concrete file is known.
+	if name := sourceFileName(src); name != "" {
+		if err := modelsource.CheckRunnableFormat(name); err != nil {
+			_, _ = fmt.Fprintln(out, "format:    refused ("+err.Error()+")")
+		} else {
+			_, _ = fmt.Fprintln(out, "format:    a safe-parse weight format")
+		}
+	}
+
+	// State whether this host could run it, without running it.
+	if err := runner.admitOnly(class.Trust); err != nil {
+		_, _ = fmt.Fprintln(out, "this host: would REFUSE to run it ("+err.Error()+")")
+	} else if rs.Risky() {
+		_, _ = fmt.Fprintln(out, "this host: could run it, but only after explicit consent (it is not a vetted catalog model)")
+	} else {
+		_, _ = fmt.Fprintln(out, "this host: runs it (a vetted catalog model)")
+	}
+	return nil
+}
+
+// takeFlag removes the first occurrence of any of the given flag spellings from args and
+// reports whether it was present, so a boolean flag can appear anywhere in the argument
+// list without a full flag parser reordering the positional model id and prompt.
+func takeFlag(args []string, names ...string) (bool, []string) {
+	out := args[:0:0]
+	found := false
+	for _, a := range args {
+		isFlag := false
+		for _, n := range names {
+			if a == n {
+				isFlag = true
+				break
+			}
+		}
+		if isFlag {
+			found = true
+			continue
+		}
+		out = append(out, a)
+	}
+	return found, out
 }
 
 // runModelUse implements `flynn models use <id>`: provision a local model's runtime and

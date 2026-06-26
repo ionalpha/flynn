@@ -93,6 +93,21 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 // isolation than is available here is refused rather than run, which is the security
 // guarantee for a model whose bytes we cannot vouch for.
 func (r *localRunner) admitSource(src modelsource.Source) (modelsource.Classification, error) {
+	class, err := r.classifySource(src)
+	if err != nil {
+		return class, err
+	}
+	if err := r.admitOnly(class.Trust); err != nil {
+		return class, err
+	}
+	return class, nil
+}
+
+// classifySource classifies a source, refuses an unsafe weight format, and records the
+// source's provenance, without gating it. Splitting the classification from the gate lets
+// a command show the risk in plain language before it refuses, so a refusal is explained
+// rather than bare.
+func (r *localRunner) classifySource(src modelsource.Source) (modelsource.Classification, error) {
 	class := modelsource.Classify(src, r.knownPublisher)
 
 	// Refuse a code-executing or unrecognized weight format up front, for any source.
@@ -113,12 +128,36 @@ func (r *localRunner) admitSource(src modelsource.Source) (modelsource.Classific
 			Trust: class.Trust.String(),
 		})
 	}
-
-	if err := sandbox.Admit(r.sb, class.Trust); err != nil {
-		return class, fmt.Errorf("%s is %s (%s) and needs %s isolation, but this host provides only %s; refusing to run it unsafely",
-			src.Raw, class.Trust, class.Reason, sandbox.Required(class.Trust), sandbox.ContainmentOf(r.sb))
-	}
 	return class, nil
+}
+
+// admitOnly applies just the containment gate for a trust level against the serving
+// sandbox, returning a plain-language refusal that names the trust, the isolation it
+// needs, and what the host provides. It has no side effects, so it is also used to report
+// whether a model could run without running or recording anything.
+func (r *localRunner) admitOnly(trust sandbox.Trust) error {
+	if err := sandbox.Admit(r.sb, trust); err != nil {
+		return fmt.Errorf("%s work needs %s isolation, but this host provides only %s; refusing to run it unsafely",
+			trust, sandbox.Required(trust), sandbox.ContainmentOf(r.sb))
+	}
+	return nil
+}
+
+// riskSurface builds the plain-language risk summary for a classified source, filling in
+// the integrity from what is known about its bytes: a catalog entry is pinned ahead of
+// time, a source whose digest was pinned on first use is trust-on-first-use, and anything
+// else is unverified.
+func (r *localRunner) riskSurface(src modelsource.Source, class modelsource.Classification) modelsource.RiskSurface {
+	integ := modelsource.IntegrityUnverified
+	switch {
+	case src.Kind == modelsource.KindCatalog:
+		integ = modelsource.IntegrityPinned
+	case r.ledger != nil:
+		if d, ok, _ := r.ledger.PinnedDigest(src.Key()); ok && d != "" {
+			integ = modelsource.IntegrityTOFU
+		}
+	}
+	return modelsource.DescribeRisk(src, class, integ)
 }
 
 // knownPublisher reports whether a hub owner is a recognized first-party publisher,
