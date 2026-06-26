@@ -130,7 +130,10 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 		}
 		workdir = cwd
 	}
-	sb, err := sandbox.NewLocal(workdir)
+	// Secure by default: a model-authored command runs kernel-confined where the
+	// platform enforces it (read-only host, syscall-filtered), and at the process-jail
+	// floor elsewhere.
+	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
 		return "", err
 	}
@@ -149,7 +152,8 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 	}
 	names = append(names, mission.ActionModelGenerate)
 
-	exec := mission.NewExecutor(model,
+	exec := mission.NewExecutor(
+		model,
 		mission.WithTools(toolset...),
 		mission.WithSystem(DefaultSystemPrompt),
 		mission.WithObserver(sess.Reporter()),

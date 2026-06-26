@@ -266,7 +266,7 @@ func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distille
 // admitter is permissive, so a standalone run still verifies, just ungoverned.
 func governedVerifier(dir string) learn.Verifier {
 	inner := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
-		return sandbox.NewLocal(dir)
+		return sandbox.NewLocal(dir, sandbox.WithDefaultConfinement())
 	})
 	return learn.NewGovernedVerifier(inner, dispatch.WithAdmitter(capability.Admitter{}))
 }
@@ -538,7 +538,7 @@ type missionRun struct {
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
 func assembleMission(model llm.Model, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
-	sb, err := sandbox.NewLocal(workdir)
+	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
 		return nil, err
 	}
