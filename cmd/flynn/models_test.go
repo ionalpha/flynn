@@ -75,3 +75,26 @@ func TestRunModelsFit(t *testing.T) {
 		t.Fatalf("a 1GB budget should leave a model over-budget:\n%s", small.String())
 	}
 }
+
+func TestCPUInferenceBudget(t *testing.T) {
+	cases := []struct {
+		name string
+		ram  int64
+		want int64
+	}{
+		// A quarter reserve dominates above 8GB: 32GB - 8GB = 24GB.
+		{"large reserves a quarter", 32_000_000_000, 24_000_000_000},
+		// Below 8GB the 2GB floor dominates: 6GB - 2GB = 4GB.
+		{"small reserves the floor", 6_000_000_000, 4_000_000_000},
+		// The floor must not exceed the total: a tiny machine yields nothing usable.
+		{"tiny yields zero", 1_500_000_000, 0},
+		{"zero stays zero", 0, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cpuInferenceBudget(tc.ram); got != tc.want {
+				t.Fatalf("cpuInferenceBudget(%d) = %d, want %d", tc.ram, got, tc.want)
+			}
+		})
+	}
+}
