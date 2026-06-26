@@ -30,11 +30,12 @@ const (
 
 // Client is an llm.Model backed by the OpenAI Chat Completions API.
 type Client struct {
-	apiKey    secret.Text
-	model     string
-	baseURL   string
-	http      *http.Client
-	maxTokens int
+	apiKey      secret.Text
+	model       string
+	baseURL     string
+	http        *http.Client
+	maxTokens   int
+	toolGrammar bool
 }
 
 // Option configures a Client.
@@ -79,6 +80,18 @@ func WithMaxTokens(n int) Option {
 			c.maxTokens = n
 		}
 	}
+}
+
+// WithToolGrammar makes the client constrain a tool-using request to a grammar
+// compiled from the offered tools, so the backend can only sample a structurally
+// valid tool call: a real tool name bound to arguments that satisfy that tool's
+// schema. It targets a local runtime that honors the grammar request field (a local
+// model server), which is where a weaker model needs the structural guarantee most;
+// a hosted endpoint that does not recognize the field simply ignores it. The
+// constraint is attached only when every offered tool's schema can be compiled, so
+// a request never advertises a tool the grammar would forbid. Off by default.
+func WithToolGrammar() Option {
+	return func(c *Client) { c.toolGrammar = true }
 }
 
 // New builds a Client authenticating with apiKey. The key is held as a
@@ -141,6 +154,11 @@ type chatRequest struct {
 	// hit rate. It is omitted when empty, so a request that opts out, or an endpoint
 	// that does not recognize the field, is unaffected.
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+	// Grammar constrains decoding to a formal grammar so only permitted tokens are
+	// sampled. A local model server applies it as a decode-time mask; an endpoint
+	// that does not recognize the field ignores it, so it is safe to send anywhere.
+	// It is set only when tool-call constraining is enabled (see WithToolGrammar).
+	Grammar string `json:"grammar,omitempty"`
 }
 
 type chatMessage struct {
@@ -187,6 +205,14 @@ func (c *Client) buildRequest(req llm.Request) chatRequest {
 			Type:     "function",
 			Function: chatFuncDef{Name: t.Name, Description: t.Description, Parameters: t.InputSchema},
 		})
+	}
+	if c.toolGrammar && len(req.Tools) > 0 {
+		if g, err := toolCallGrammar(req.Tools); err == nil {
+			out.Grammar = g
+		}
+		// A tool whose schema cannot be compiled leaves the request unconstrained
+		// rather than constrained to a subset of the tools, so the model is never
+		// blocked from calling an offered tool.
 	}
 	for _, m := range req.Messages {
 		out.Messages = append(out.Messages, encodeMessage(m)...)
