@@ -50,7 +50,7 @@ func ToolCall(tools []ToolSchema) (*Grammar, error) {
 		if err != nil {
 			return nil, fmt.Errorf("gbnf: tool %q: %w", t.Name, err)
 		}
-		argsRule, err := b.compile(s, b.fresh("args"))
+		argsRule, err := b.compile(s, b.fresh("args"), 0)
 		if err != nil {
 			return nil, fmt.Errorf("gbnf: tool %q: %w", t.Name, err)
 		}
@@ -96,14 +96,30 @@ func callEnvelope(name, argsRule string) node {
 	}}
 }
 
+// maxSchemaBytes bounds the size of a raw argument schema. A schema can be supplied
+// by a semi-trusted source (an external tool server), so an unbounded one is a
+// denial-of-service vector: parsing and compiling it costs time and memory, and a
+// pathologically nested one could exhaust the stack. Real tool schemas are far
+// smaller than this; an oversized one is refused rather than processed.
+const maxSchemaBytes = 1 << 18 // 256 KiB
+
+// maxSchemaDepth bounds how deeply schema compilation may recurse through nested
+// objects and arrays, so a deeply nested schema is refused with an error instead of
+// overflowing the stack. Tool argument schemas are shallow; this is generous.
+const maxSchemaDepth = 64
+
 // decodeSchema parses a raw argument schema into the internal node. An empty raw
-// schema is a tool that takes no arguments: a closed, empty object. Malformed JSON
-// is an error rather than a silently permissive grammar, so every entry point
-// refuses a schema it cannot read instead of admitting any call.
+// schema is a tool that takes no arguments: a closed, empty object. Malformed JSON,
+// or a schema larger than maxSchemaBytes, is an error rather than a silently
+// permissive grammar, so every entry point refuses a schema it cannot safely read
+// instead of admitting any call.
 func decodeSchema(raw json.RawMessage) (*schemaNode, error) {
 	if len(raw) == 0 {
 		closed := false
 		return &schemaNode{Type: "object", AdditionalProperties: &closed}, nil
+	}
+	if len(raw) > maxSchemaBytes {
+		return nil, fmt.Errorf("gbnf: schema is %d bytes, over the %d-byte limit", len(raw), maxSchemaBytes)
 	}
 	var s schemaNode
 	if err := json.Unmarshal(raw, &s); err != nil {

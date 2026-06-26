@@ -233,3 +233,72 @@ func TestToolCallRejectsEmptySet(t *testing.T) {
 		t.Fatal("expected error for empty tool set")
 	}
 }
+
+// TestAdversarialToolNameEscaped checks that a tool name carrying GBNF and JSON
+// metacharacters cannot break out of its literal: the grammar stays well-formed and
+// matches only the exact, properly-escaped name, never a crafted variant.
+func TestAdversarialToolNameEscaped(t *testing.T) {
+	name := "ev\"il\\\nbreak"
+	g, err := ToolCall([]ToolSchema{{Name: name, Schema: json.RawMessage(`{"type":"object","additionalProperties":false}`)}})
+	if err != nil {
+		t.Fatalf("ToolCall: %v", err)
+	}
+	if err := WellFormed(g.String(), g.Root()); err != nil {
+		t.Fatalf("adversarial name produced malformed grammar: %v\n%s", err, g.String())
+	}
+	nameJSON, _ := json.Marshal(name)
+	good := `{"name":` + string(nameJSON) + `,"arguments":{}}`
+	if !g.Accepts(good) {
+		t.Errorf("should accept the exact escaped name: %s", good)
+	}
+	if g.Accepts(`{"name":"evil","arguments":{}}`) {
+		t.Error("must not accept a different name")
+	}
+}
+
+// TestEnumWithMetacharacters checks enum values containing quotes and backslashes
+// are matched by their canonical JSON form, not by a grammar that mis-escapes them.
+func TestEnumWithMetacharacters(t *testing.T) {
+	g := mustArguments(t, `{
+      "type": "object",
+      "required": ["q"],
+      "properties": {"q": {"type": "string", "enum": ["a\"b", "c\\d"]}},
+      "additionalProperties": false
+    }`)
+	if !g.Accepts(`{"q":"a\"b"}`) {
+		t.Error(`should accept the enum value a"b`)
+	}
+	if !g.Accepts(`{"q":"c\\d"}`) {
+		t.Error(`should accept the enum value c\d`)
+	}
+	if g.Accepts(`{"q":"ab"}`) {
+		t.Error("must reject a value that is not in the enum")
+	}
+}
+
+// TestDeeplyNestedSchemaRefused checks a schema nested past the depth limit is
+// refused with an error rather than overflowing the stack. A semi-trusted tool
+// source could otherwise supply one as a denial-of-service input.
+func TestDeeplyNestedSchemaRefused(t *testing.T) {
+	var sb strings.Builder
+	const depth = maxSchemaDepth + 50
+	for range depth {
+		sb.WriteString(`{"type":"array","items":`)
+	}
+	sb.WriteString(`{"type":"string"}`)
+	for range depth {
+		sb.WriteString(`}`)
+	}
+	if _, err := Arguments(json.RawMessage(sb.String())); err == nil {
+		t.Fatal("expected refusal of a schema nested past the depth limit")
+	}
+}
+
+// TestOversizedSchemaRefused checks a schema larger than the byte limit is refused
+// before it is parsed or compiled.
+func TestOversizedSchemaRefused(t *testing.T) {
+	big := `{"type":"string","description":"` + strings.Repeat("x", maxSchemaBytes) + `"}`
+	if _, err := Arguments(json.RawMessage(big)); err == nil {
+		t.Fatal("expected refusal of an oversized schema")
+	}
+}
