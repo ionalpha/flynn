@@ -41,3 +41,20 @@ func TestReadOnlyFSFailsLoudWhereUnsupported(t *testing.T) {
 		t.Fatalf("want an unsupported-platform error, got %v", err)
 	}
 }
+
+// TestSeccompFailsLoudWhereUnsupported proves the same safety default for syscall
+// filtering: a command asked to run under a filter must fail where the kernel
+// isolation is unavailable, not run with no filter in place.
+func TestSeccompFailsLoudWhereUnsupported(t *testing.T) {
+	sb, err := NewLocal(t.TempDir(), WithSeccomp())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = sb.Exec(context.Background(), Command{Line: "echo should-not-run"})
+	if err == nil {
+		t.Fatal("a syscall-filtered command on an unsupported platform must fail, not run unfiltered")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("want an unsupported-platform error, got %v", err)
+	}
+}
