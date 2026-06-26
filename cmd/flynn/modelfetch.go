@@ -13,6 +13,7 @@ import (
 
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/fetch"
+	"github.com/ionalpha/flynn/inference/launch"
 )
 
 // runModelFetch implements `flynn models fetch <id>`: download a catalog model's
@@ -85,8 +86,36 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 		trust = "pinned on first fetch (the catalog entry had no digest, lower trust)"
 	}
 	_, _ = fmt.Fprintf(out, "fetched and verified: %s\n  %s, sha256:%s, %s\n", res.Path, humanBytes(res.Bytes), res.SHA256[:12], trust)
-	_, _ = fmt.Fprintln(out, "not started: a downloaded model is run only inside the isolation sandbox, which is not wired yet. The weights are verified on disk, not executed.")
+
+	// Read the weights with the hardened GGUF reader, never the runtime's parser, and
+	// settle the chat template before the model is ever run. This catches a file our own
+	// reader cannot parse (so the runtime's CVE-prone parser is never handed something
+	// malformed) and surfaces whether the model ships its own template, which is
+	// overridden by the trusted one at serve time regardless.
+	_, _ = fmt.Fprintln(out, inspectWeights(res.Path, m.ChatTemplate))
+
+	_, _ = fmt.Fprintln(out, "not started: a downloaded model is run only inside the isolation sandbox. Start it with `flynn models run "+id+"`.")
 	return nil
+}
+
+// inspectWeights parses the fetched weights with the hardened GGUF reader and returns a
+// human line describing the chat-template decision. It never returns an error: a parse
+// failure is reported as a caution (the file stays on disk, already digest-verified)
+// rather than aborting, because the security value is exactly that the hardened reader,
+// not the runtime, is what first reads the untrusted file. An empty trusted template is
+// reported, since a local model must carry one to be served.
+func inspectWeights(path, trusted string) string {
+	if trusted == "" {
+		return "  template: this model has no trusted chat template in the catalog; it cannot be served until one is set"
+	}
+	decision, err := launch.InspectTemplate(path, trusted)
+	if err != nil {
+		return "  template: caution: the hardened GGUF reader could not parse these weights (" + err.Error() + "); the runtime will not be handed this file until it can be read safely"
+	}
+	if decision.ModelSupplied {
+		return "  template: the model ships its own chat template; it will be overridden with the trusted \"" + trusted + "\" template at serve time"
+	}
+	return "  template: will be served with the trusted \"" + trusted + "\" template"
 }
 
 // findModel looks up a catalog entry by its exact id.
