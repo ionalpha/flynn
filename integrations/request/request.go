@@ -22,6 +22,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/netguard"
 )
 
 // Doer performs a single HTTP round trip. *http.Client satisfies it. The transport
@@ -46,8 +47,10 @@ type Transport struct {
 // Option configures a Transport.
 type Option func(*Transport)
 
-// WithDoer sets the underlying HTTP doer. The default is http.DefaultClient. Tests
-// and chaos adapters use this to substitute the network.
+// WithDoer sets the underlying HTTP doer. The default dials through netguard
+// (anti-SSRF: public addresses only, private/loopback/metadata denied). Tests and
+// chaos adapters use this to substitute the network, and a caller that must reach a
+// specific private host injects its own netguard.Client with a matching policy.
 func WithDoer(d Doer) Option {
 	return func(t *Transport) {
 		if d != nil {
@@ -118,12 +121,14 @@ func WithRateLimit(perSecond float64) Option {
 	}
 }
 
-// New builds a Transport. Defaults: http.DefaultClient, clock.System, three
-// attempts, 200ms base backoff capped at 10s, no jitter (deterministic schedule),
-// no rate limit. Enable jitter with WithJitterEntropy.
+// New builds a Transport. Defaults: a netguard client (public addresses only,
+// anti-SSRF) so a freshly-built transport cannot be steered into dialing a private,
+// loopback, or cloud-metadata address; clock.System; three attempts; 200ms base
+// backoff capped at 10s; no jitter (deterministic schedule); no rate limit. Enable
+// jitter with WithJitterEntropy.
 func New(opts ...Option) *Transport {
 	t := &Transport{
-		doer:        http.DefaultClient,
+		doer:        netguard.Client(netguard.PublicOnly()),
 		clk:         clock.System{},
 		maxAttempts: 3,
 		baseBackoff: 200 * time.Millisecond,
