@@ -155,6 +155,14 @@ not merely encouraged.
    unlimited (the zero-config default). *(Enforcement: the budget hook on the waist;
    property-tested, including concurrent charges against a shared pool.)*
 
+7. **Process execution routes through the sandbox boundary.** Every command and
+   subprocess runs through the `sandbox` port, never `os/exec` directly, so execution
+   is confined, governed, and auditable, and a single change to the boundary applies
+   everywhere. The one exception is the host hardware probe, which must read the real
+   host (so it cannot be sandboxed) and runs a fixed command with no untrusted input.
+   *(Enforcement: `depguard` forbids importing `os/exec` outside `sandbox` and
+   `hardware`, so a new bypass fails CI.)*
+
 ## Event evolution
 
 Events are the durable truth and are read back by *newer* code than wrote them
