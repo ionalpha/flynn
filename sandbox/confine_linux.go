@@ -25,6 +25,10 @@ const (
 	envSeccomp  = "FLYNN_SANDBOX_SECCOMP"
 )
 
+// kernelConfinementSupported reports whether this platform can enforce the network,
+// filesystem, and syscall confinement, which it can on Linux.
+func kernelConfinementSupported() bool { return true }
+
 // confine applies the kernel-enforced isolation a Local was configured for to a
 // command about to run. With no options it does nothing. Network denial places the
 // command in a fresh network namespace (no interfaces, no routes, so no connection
