@@ -206,11 +206,12 @@ is part of CI).
 
 ## Map of the territory
 
-- **`cmd/flynn`** the binary (`flynn goal "..."` drives a goal to a result with the
-  durable store and learning loop); **root `agent`** the embedding facade a host
-  imports, where `Goal(ctx, objective)` assembles the runtime and sandboxed toolset
-  and runs one objective to its answer. The interactive `flynn` session is not
-  wired yet.
+- **`cmd/flynn`** the binary: `flynn` with no arguments starts an interactive
+  session (chat turn by turn), `flynn goal "..."` drives a single objective to a
+  result, and `flynn inspect`/`runs`/`resume` replay, list, and continue past runs,
+  all over the durable store and learning loop. **root `agent`** the embedding facade
+  a host imports, where `Goal(ctx, objective)` assembles the runtime and sandboxed
+  toolset and runs one objective to its answer.
 - **`session`** conversational front door and event stream; **`runtime`** wires
   the controller, worker, store, and bus together.
 - **`goal`** the controller + worker; **`mission`** the conversation executor;
