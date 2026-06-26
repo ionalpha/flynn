@@ -61,7 +61,7 @@ func TestFetchMidStreamFailureInstallsNothing(t *testing.T) {
 	d := New(WithHTTPClient(&http.Client{Transport: faultyTransport{data: full, failAfter: 1000}}))
 	dest := filepath.Join(t.TempDir(), "m.gguf")
 
-	_, err := d.Fetch(context.Background(), Request{URL: "https://example.com/w", Dest: dest, ExpectSHA256: sha(full), MaxBytes: 1 << 20, Format: "gguf"})
+	_, err := d.Fetch(context.Background(), Request{URL: "https://example.com/w", Dest: dest, ExpectSHA256: sha(full), MaxBytes: 1 << 20})
 	if err == nil {
 		t.Fatal("a mid-stream failure must error")
 	}
@@ -82,7 +82,7 @@ func TestFetchTruncatedBodyInstallsNothing(t *testing.T) {
 	d := New(WithHTTPClient(srv.Client()))
 	dest := filepath.Join(t.TempDir(), "m.gguf")
 
-	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, MaxBytes: 1 << 20, Format: "gguf"})
+	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, MaxBytes: 1 << 20})
 	if err == nil {
 		t.Fatal("a truncated body must error")
 	}
@@ -103,7 +103,7 @@ func TestFetchCancelledInstallsNothing(t *testing.T) {
 	defer cancel()
 	dest := filepath.Join(t.TempDir(), "m.gguf")
 
-	_, err := d.Fetch(ctx, Request{URL: srv.URL, Dest: dest, MaxBytes: 1 << 20, Format: "gguf"})
+	_, err := d.Fetch(ctx, Request{URL: srv.URL, Dest: dest, MaxBytes: 1 << 20})
 	if err == nil {
 		t.Fatal("a cancelled download must error")
 	}

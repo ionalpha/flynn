@@ -97,7 +97,7 @@ func FuzzFetch(f *testing.F) {
 			digest = sha(append(append([]byte(nil), content...), 0))
 		}
 		res, err := d.Fetch(context.Background(), Request{
-			URL: srv.URL, Dest: dest, ExpectSHA256: digest, MaxBytes: 1 << 20, Format: "gguf",
+			URL: srv.URL, Dest: dest, ExpectSHA256: digest, MaxBytes: 1 << 20,
 		})
 		_, statErr := os.Stat(dest)
 		installed := statErr == nil
