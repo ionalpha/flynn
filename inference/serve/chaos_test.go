@@ -17,14 +17,13 @@ func TestRegistryConcurrentAccessStaysConsistent(t *testing.T) {
 	reg := NewRegistry(t.TempDir())
 	ids := []string{"a", "b", "c", "d", "e"}
 
+	const iterations = 200
 	var wg sync.WaitGroup
-	deadline := time.Now().Add(300 * time.Millisecond)
-	for g := 0; g < 8; g++ {
+	for g := range 8 {
 		wg.Add(1)
 		go func(g int) {
 			defer wg.Done()
-			i := 0
-			for time.Now().Before(deadline) {
+			for i := range iterations {
 				id := ids[(g+i)%len(ids)]
 				switch i % 4 {
 				case 0:
@@ -48,7 +47,6 @@ func TestRegistryConcurrentAccessStaysConsistent(t *testing.T) {
 						return
 					}
 				}
-				i++
 			}
 		}(g)
 	}
@@ -83,7 +81,7 @@ func TestEnsureConcurrentSameModelStartsCleanly(t *testing.T) {
 
 	var wg sync.WaitGroup
 	errs := make(chan error, 6)
-	for i := 0; i < 6; i++ {
+	for range 6 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

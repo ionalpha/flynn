@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"sync"
@@ -57,7 +58,7 @@ const tailBufferCap = 16 << 10 // 16 KiB
 // blocking launch that does not yield a backgroundable handle.
 func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
-		return nil, fmt.Errorf("sandbox: serve: no command")
+		return nil, errors.New("sandbox: serve: no command")
 	}
 	confine := spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp)
 	p, err := l.startProcess(spec.Argv, confine)
