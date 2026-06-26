@@ -78,9 +78,12 @@ type budget struct {
 	source string // human description: "given", a detected GPU, or empty when unknown
 }
 
-// resolveBudget takes an explicit GB budget when given, otherwise probes the machine
-// for a GPU, leaving the budget unknown (zero) when neither is available so fit
-// degrades to "?" rather than a wrong verdict.
+// resolveBudget takes an explicit GB budget when given, otherwise probes the machine. A
+// detected GPU sets the budget to its VRAM (a GPU run is bound by it). With no usable
+// GPU it falls back to system RAM, the bound on a CPU-only run, reserving headroom for
+// the OS and the runtime so the verdict reflects what is actually free to a model. The
+// budget is left unknown (zero) only when nothing could be detected, so fit degrades to
+// "?" rather than a wrong verdict.
 func resolveBudget(vramGB float64) budget {
 	if vramGB > 0 {
 		return budget{bytes: int64(vramGB * 1e9), source: fmt.Sprintf("%.0fGB budget (given)", vramGB)}
@@ -89,7 +92,26 @@ func resolveBudget(vramGB float64) budget {
 	if box.HasGPU() {
 		return budget{bytes: box.VRAMBytes, source: fmt.Sprintf("%s, %s VRAM (detected)", box.GPUName, humanBytes(box.VRAMBytes))}
 	}
+	if box.HasRAM() {
+		avail := cpuInferenceBudget(box.RAMBytes)
+		return budget{bytes: avail, source: fmt.Sprintf("%s system RAM (detected, CPU inference, %s usable)", humanBytes(box.RAMBytes), humanBytes(avail))}
+	}
 	return budget{}
+}
+
+// cpuInferenceBudget is the share of system RAM a CPU-only model run can claim. The OS,
+// other processes, and the runtime's own working set need room, so a fixed reserve is
+// held back (the larger of 2GB or a quarter of RAM) rather than offering the whole
+// total to the weights. The result never goes below zero.
+func cpuInferenceBudget(ramBytes int64) int64 {
+	reserve := ramBytes / 4
+	if floor := int64(2_000_000_000); reserve < floor {
+		reserve = floor
+	}
+	if reserve >= ramBytes {
+		return 0
+	}
+	return ramBytes - reserve
 }
 
 // renderFit lists the models with a fit verdict against the budget and a single
@@ -97,7 +119,7 @@ func resolveBudget(vramGB float64) budget {
 // known it says so and falls back to the plain listing.
 func renderFit(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec, b budget) {
 	if b.bytes <= 0 {
-		_, _ = fmt.Fprintln(out, "could not detect a GPU; pass --vram <GB> to judge fit.")
+		_, _ = fmt.Fprintln(out, "could not detect GPU or system memory; pass --vram <GB> to judge fit.")
 		renderModels(out, cat, models)
 		return
 	}
