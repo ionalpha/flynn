@@ -89,6 +89,11 @@ type Quant struct {
 	// Ref is the pull reference a runtime fetches this quantization by (a registry tag
 	// or a file path).
 	Ref string `json:"ref"`
+	// URL is the direct https location of the weights file, when the quantization can
+	// be downloaded and verified directly. Empty means there is no pinned direct
+	// download yet, so the verified fetch path treats the entry as not downloadable
+	// rather than reaching for an unverified source.
+	URL string `json:"url,omitempty"`
 	// Digest is the content hash (e.g. "sha256:...") the download is verified against.
 	// Empty means unpinned: the fetcher pins it from the registry's own manifest at
 	// pull time and still verifies the bytes, so an unpinned entry is never trusted
