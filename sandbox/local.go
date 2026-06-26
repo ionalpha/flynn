@@ -18,14 +18,16 @@ import (
 // host support required. It confines all file operations to a working-directory
 // root (a path that escapes via "..", an absolute path, or a symlink pointing
 // outside is denied) and runs commands in that directory. It is not strong
-// isolation on its own - a command it runs has the host user's privileges outside
-// the working tree. The container, microVM, and remote tiers implement the same
-// Sandbox port for that; Landlock/seccomp/cgroups hardening of this tier is a
-// follow-up. Local is always present underneath them as the default-deny FS floor.
+// isolation on its own - a command it runs otherwise has the host user's privileges
+// outside the working tree. WithNetworkDenied adds kernel-enforced network isolation
+// where the platform supports it; further filesystem and syscall confinement, and the
+// container, microVM, and remote tiers, build on the same Sandbox port. Local is
+// always present underneath them as the default-deny FS floor.
 type Local struct {
 	root        string // absolute, symlinks resolved
 	execTimeout time.Duration
 	granted     map[string]string // env vars explicitly granted into commands
+	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
 }
 
 // LocalOption configures a Local sandbox.
@@ -61,6 +63,17 @@ func WithEnv(vars map[string]string) LocalOption {
 			l.granted[k] = v
 		}
 	}
+}
+
+// WithNetworkDenied runs commands with no network access, the OS counterpart of the
+// in-process egress policy: a command the sandbox runs cannot reach out (no exfil, no
+// command-and-control), which matters most for code we do not fully trust. It is
+// enforced by the kernel, by running the command in a network namespace with no
+// interfaces, so the command sees only a down loopback and no routes. On a platform
+// or host that cannot provide it, a command run under this option fails rather than
+// running with the network silently still open.
+func WithNetworkDenied() LocalOption {
+	return func(l *Local) { l.denyNetwork = true }
 }
 
 // NewLocal builds a Local sandbox rooted at dir. The root is resolved to an
@@ -157,6 +170,11 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	// keys and every other process secret are withheld from a model-run command.
 	// The command sees only a minimal baseline plus what WithEnv explicitly grants.
 	c.Env = l.env()
+	if l.denyNetwork {
+		if err := denyNetwork(c); err != nil {
+			return ExecResult{}, fmt.Errorf("sandbox: deny network: %w", err)
+		}
+	}
 	out, err := c.CombinedOutput()
 	res := ExecResult{Output: string(out)}
 	if err != nil {
