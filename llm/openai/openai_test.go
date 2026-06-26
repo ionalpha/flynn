@@ -245,3 +245,18 @@ func TestPromptCacheKeySentOnlyWhenSet(t *testing.T) {
 		t.Fatalf("prompt_cache_key should be omitted when unset: %s", m2.gotBody)
 	}
 }
+
+// TestCacheHitTokensFallback covers an OpenAI-compatible endpoint that reports its
+// cached-prefix count as a flat prompt_cache_hit_tokens field instead of inside
+// prompt_tokens_details. It must surface the same way, so cache-hit-rate is
+// measurable across all compatible providers, not just OpenAI itself.
+func TestCacheHitTokensFallback(t *testing.T) {
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2000,"completion_tokens":40,"prompt_cache_hit_tokens":1920,"prompt_cache_miss_tokens":80}}`}
+	resp, err := clientWith(m).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 2000 || resp.Usage.CacheReadTokens != 1920 {
+		t.Fatalf("flat cache-hit field not surfaced: %+v", resp.Usage)
+	}
+}
