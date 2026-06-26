@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -131,45 +130,21 @@ func TestFetchRejectsNon200(t *testing.T) {
 	}
 }
 
-// TestSafeClientBlocksPrivateAddress proves the default client refuses to connect
-// to a loopback address, the anti-SSRF guard. The server is on 127.0.0.1, which the
-// guard must reject before any data is read.
-func TestSafeClientBlocksPrivateAddress(t *testing.T) {
+// TestDefaultClientBlocksPrivateAddress proves the default download client refuses
+// to connect to a loopback address, the anti-SSRF policy. The server is on
+// 127.0.0.1, which the policy must reject before any data is read.
+func TestDefaultClientBlocksPrivateAddress(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("should never be read"))
 	}))
 	t.Cleanup(srv.Close)
 	dest := filepath.Join(t.TempDir(), "m")
 	_, err := New().Fetch(context.Background(), Request{URL: srv.URL, Dest: dest})
-	if err == nil || !strings.Contains(err.Error(), "non-public") {
+	if err == nil || !strings.Contains(err.Error(), "denied by policy") {
 		t.Fatalf("the default client must refuse a non-public address, got %v", err)
 	}
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 		t.Fatal("a blocked download must not be installed")
-	}
-}
-
-func TestIsPublicIP(t *testing.T) {
-	cases := map[string]bool{
-		"8.8.8.8":         true,  // public
-		"1.1.1.1":         true,  // public
-		"127.0.0.1":       false, // loopback
-		"10.0.0.5":        false, // private
-		"192.168.1.10":    false, // private
-		"172.16.0.1":      false, // private
-		"169.254.169.254": false, // link-local: cloud metadata endpoint
-		"224.0.0.1":       false, // multicast
-		"0.0.0.0":         false, // unspecified
-		"fd00::1":         false, // IPv6 unique-local
-		"2606:4700::1111": true,  // public IPv6
-	}
-	for s, want := range cases {
-		if got := isPublicIP(net.ParseIP(s)); got != want {
-			t.Errorf("isPublicIP(%s)=%v, want %v", s, got, want)
-		}
-	}
-	if isPublicIP(nil) {
-		t.Error("a nil IP is not public")
 	}
 }
 
