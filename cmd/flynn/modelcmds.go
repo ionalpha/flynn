@@ -1,0 +1,166 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/ionalpha/flynn/llm"
+)
+
+// runModelRun implements `flynn models run <id> [prompt...]`: make a local model ready
+// and reachable, then either send a one-shot prompt to it or report that it is up. It
+// provisions the runtime and weights, starts the server inside the sandbox, and reuses an
+// already-running server. The server is left running so a later run, or `flynn goal`,
+// reuses it; `flynn models stop <id>` ends it.
+func runModelRun(args []string, dataDir string, out io.Writer) error {
+	if len(args) == 0 || args[0] == "" {
+		return errors.New("models run: a model id is required (see `flynn models`)")
+	}
+	id := args[0]
+	prompt := strings.TrimSpace(strings.Join(args[1:], " "))
+
+	m, err := findLocalModel(id)
+	if err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runner := newLocalRunner(dataDir, out)
+	ep, err := runner.serveModel(ctx, m)
+	if err != nil {
+		return fmt.Errorf("models run: %w", err)
+	}
+	if ep.Reused {
+		_, _ = fmt.Fprintf(out, "reusing the running server for %s at %s\n", id, ep.BaseURL)
+	} else {
+		_, _ = fmt.Fprintf(out, "serving %s at %s (pid %d), confined to the sandbox\n", id, ep.BaseURL, ep.PID)
+	}
+
+	if prompt == "" {
+		_, _ = fmt.Fprintf(out, "the model is ready. Send a prompt with `flynn models run %s \"your question\"`, or stop it with `flynn models stop %s`.\n", id, id)
+		return nil
+	}
+
+	client := localModelClient(ep, m.ID)
+	resp, err := client.Generate(ctx, llm.Request{
+		Messages:  []llm.Message{llm.Text(llm.RoleUser, prompt)},
+		MaxTokens: 1024,
+	})
+	if err != nil {
+		return fmt.Errorf("models run: the model failed to answer: %w", err)
+	}
+	_, _ = fmt.Fprintln(out, strings.TrimSpace(resp.Message.TextContent()))
+	return nil
+}
+
+// runModelUse implements `flynn models use <id>`: provision a local model's runtime and
+// weights and record it as the default, without starting it. A later `flynn goal` with no
+// explicit model uses the recorded selection and starts it on demand.
+func runModelUse(args []string, dataDir string, out io.Writer) error {
+	if len(args) == 0 || args[0] == "" {
+		return errors.New("models use: a model id is required (see `flynn models`)")
+	}
+	id := args[0]
+	m, err := findLocalModel(id)
+	if err != nil {
+		return fmt.Errorf("models use: %w", err)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runner := newLocalRunner(dataDir, out)
+	q, _ := m.SmallestQuant()
+	if q.URL == "" {
+		return fmt.Errorf("models use: %q has no pinned direct download, so it cannot be provisioned for local serving yet", id)
+	}
+	if _, err := runner.ensureRuntime(ctx, selfProvisionedRuntime); err != nil {
+		return fmt.Errorf("models use: %w", err)
+	}
+	if _, err := runner.ensureWeights(ctx, m, q); err != nil {
+		return fmt.Errorf("models use: %w", err)
+	}
+	if err := writeActiveModel(dataDir, id); err != nil {
+		return fmt.Errorf("models use: record selection: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "%s is provisioned and set as the default model. `flynn goal` will use it.\n", id)
+	return nil
+}
+
+// runModelStatus implements `flynn models status`: list the local model servers that are
+// currently running and answering, pruning any stale record on the way.
+func runModelStatus(_ []string, dataDir string, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	runner := newLocalRunner(dataDir, out)
+	live, err := runner.manager.Status(ctx)
+	if err != nil {
+		return fmt.Errorf("models status: %w", err)
+	}
+	if len(live) == 0 {
+		_, _ = fmt.Fprintln(out, "no local model servers are running.")
+		if active, ok := readActiveModel(dataDir); ok {
+			_, _ = fmt.Fprintf(out, "default model: %s (start it with `flynn models run %s`)\n", active, active)
+		}
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "%-32s %-10s %-26s %s\n", "MODEL", "RUNTIME", "ENDPOINT", "PID")
+	for _, rec := range live {
+		_, _ = fmt.Fprintf(out, "%-32s %-10s %-26s %d\n", rec.ModelID, rec.Runtime, rec.BaseURL, rec.PID)
+	}
+	return nil
+}
+
+// runModelStop implements `flynn models stop <id>`: stop a running local model server and
+// drop its record.
+func runModelStop(args []string, dataDir string, out io.Writer) error {
+	if len(args) == 0 || args[0] == "" {
+		return errors.New("models stop: a model id is required")
+	}
+	id := args[0]
+	runner := newLocalRunner(dataDir, out)
+	stopped, err := runner.manager.Stop(id)
+	if err != nil {
+		return fmt.Errorf("models stop: %w", err)
+	}
+	if !stopped {
+		_, _ = fmt.Fprintf(out, "no running server found for %s.\n", id)
+		return nil
+	}
+	_, _ = fmt.Fprintf(out, "stopped the server for %s.\n", id)
+	return nil
+}
+
+// activeModelPath is where the default local model selection is recorded, a single line
+// under the data directory.
+func activeModelPath(dataDir string) string {
+	return filepath.Join(dataDir, "active-model")
+}
+
+// writeActiveModel records the default model id.
+func writeActiveModel(dataDir, id string) error {
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		return err
+	}
+	return os.WriteFile(activeModelPath(dataDir), []byte(id+"\n"), 0o600)
+}
+
+// readActiveModel returns the recorded default model id, and whether one is set.
+func readActiveModel(dataDir string) (string, bool) {
+	data, err := os.ReadFile(activeModelPath(dataDir))
+	if err != nil {
+		return "", false
+	}
+	id := strings.TrimSpace(string(data))
+	return id, id != ""
+}

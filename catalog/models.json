@@ -89,6 +89,33 @@
       "trust": "blessed",
       "chatTemplate": "llama3",
       "notes": "Long context for its size; community license permits commercial use under its terms."
+    },
+    {
+      "id": "qwen2.5:0.5b-instruct",
+      "name": "Qwen2.5 0.5B Instruct",
+      "kind": "local",
+      "source": {
+        "publisher": "Qwen",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 0.5,
+      "contextTokens": 32768,
+      "capabilities": { "tools": true, "vision": false, "reasoning": false },
+      "quants": [
+        {
+          "name": "Q4_K_M",
+          "format": "gguf",
+          "sizeBytes": 491400032,
+          "ref": "qwen2.5-0.5b-instruct-q4_k_m.gguf",
+          "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf",
+          "digest": "sha256:74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "Small instruct model with a directly downloadable, digest-verified GGUF; serves on CPU with no GPU."
     }
   ]
 }
