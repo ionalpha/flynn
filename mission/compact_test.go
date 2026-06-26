@@ -136,3 +136,17 @@ func TestCompactProperties(t *testing.T) {
 		}
 	})
 }
+
+// TestCompactTinyTranscriptDoesNotGrow is the regression for a rapid-found case: when
+// the transcript is small enough that the elision note costs more than the turns it
+// would replace, compaction must keep the original rather than produce a larger view.
+func TestCompactTinyTranscriptDoesNotGrow(t *testing.T) {
+	msgs := []llm.Message{userText("hi")}
+	for range 4 {
+		msgs = append(msgs, asstText("thinking"), userText("ok"))
+	}
+	out := compactView(msgs, 20) // a tiny budget the tiny transcript still exceeds
+	if estimateTokens(out) > estimateTokens(msgs) {
+		t.Fatalf("compaction grew a tiny transcript: %d -> %d", estimateTokens(msgs), estimateTokens(out))
+	}
+}
