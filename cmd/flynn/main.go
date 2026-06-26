@@ -22,18 +22,11 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
 	"github.com/ionalpha/flynn/vault"
 )
 
 func main() {
-	// When the sandbox confines a command's filesystem it re-executes this binary
-	// inside the new namespaces to build the read-only mount view and then exec the
-	// real command. That launcher path must run before any normal startup work, so it
-	// is the first thing main does; in the ordinary case it returns immediately.
-	sandbox.RunChildLaunchIfRequested()
-
 	var (
 		model       = flag.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
 		dataDir     = flag.String("data-dir", defaultDataDir(), "directory for the durable state database")

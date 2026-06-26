@@ -154,6 +154,40 @@ func TestReadOnlyFSWithNetworkDenied(t *testing.T) {
 	}
 }
 
+// TestDefaultConfinementConfines proves the secure-by-default baseline actually
+// confines on a platform that enforces it: without the caller naming any option, a
+// command cannot write outside its working tree and cannot make a denied syscall, the
+// same protection the explicit options give.
+func TestDefaultConfinementConfines(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	sb, err := NewLocal(root, WithDefaultConfinement())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := sb.Exec(ctx, Command{Line: "echo x > " + filepath.Join(outside, "escape.txt")})
+	if err != nil {
+		if namespaceUnavailable(err.Error()) {
+			t.Skip("unprivileged user/mount namespaces unavailable on this host")
+		}
+		t.Fatalf("exec: %v", err)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("the default confinement must block a write outside the working tree:\n%s", res.Output)
+	}
+
+	res, err = sb.Exec(ctx, Command{Line: "unshare --user --map-root-user true"})
+	if err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	if !strings.Contains(res.Output, "not found") && res.ExitCode == 0 {
+		t.Fatalf("the default confinement must filter a dangerous syscall:\n%s", res.Output)
+	}
+}
+
 // TestSeccompBlocksDangerousSyscall proves the syscall filter: a command run under
 // WithSeccomp cannot make a denied syscall (here unshare, which creates new
 // namespaces), while the same command without the filter can. A refused call fails
