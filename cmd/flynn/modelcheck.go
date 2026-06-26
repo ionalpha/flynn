@@ -34,8 +34,7 @@ func runRuntimeCheck(out io.Writer) error {
 		case !ok:
 			_, _ = fmt.Fprintf(out, "  %-10s not installed\n", rt.Name)
 		case inference.SafeToRun(rt.Name, ver) != nil:
-			ids := advisoryIDs(rt.Name, ver)
-			_, _ = fmt.Fprintf(out, "  %-10s %-8s VULNERABLE: %s (update the runtime)\n", rt.Name, ver, ids)
+			_, _ = fmt.Fprintf(out, "  %-10s %-8s VULNERABLE: %s (update the runtime)\n", rt.Name, ver, concern(rt.Name, ver))
 		default:
 			_, _ = fmt.Fprintf(out, "  %-10s %-8s ok\n", rt.Name, ver)
 		}
@@ -62,13 +61,20 @@ func detectRuntimeVersion(ctx context.Context, sb sandbox.Sandbox, rt inference.
 	return nil, false
 }
 
-// advisoryIDs lists the advisory identifiers a runtime version is exposed to, for the
-// vulnerable-runtime report.
-func advisoryIDs(runtime string, v inference.Version) string {
+// concern explains why a runtime version is unsafe, for the report: the named
+// advisories it is exposed to, or, when it is below the floor with no named advisory,
+// that it predates the minimum supported version.
+func concern(runtime string, v inference.Version) string {
 	ex := inference.Exposure(runtime, v, inference.Advisories())
-	ids := make([]string, len(ex))
-	for i, a := range ex {
-		ids[i] = a.ID
+	if len(ex) > 0 {
+		ids := make([]string, len(ex))
+		for i, a := range ex {
+			ids[i] = a.ID
+		}
+		return strings.Join(ids, ", ")
 	}
-	return strings.Join(ids, ", ")
+	if floor, ok := inference.MinSupportedFor(runtime); ok {
+		return "older than minimum supported " + floor.String()
+	}
+	return "unsafe"
 }

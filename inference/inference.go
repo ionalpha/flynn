@@ -12,6 +12,16 @@
 // It performs no process execution itself, so it stays pure and testable. A caller
 // obtains a runtime's raw version output (through the sandbox boundary) and passes it
 // here to parse and gate.
+//
+// The gate is a minimum-version floor, not a list of individual CVEs. A floor catches
+// every flaw fixed before it, which matters because most of these parser flaws ship
+// with no CVE at all (six llama.cpp GGUF-parser bugs were disclosed at once in May 2026
+// with none assigned, and the Ollama parser fix below has none either). A CVE denylist
+// would miss all of those; a version floor does not. The named advisories exist only to
+// make a refusal concrete. And no version gate can speak to a flaw with no fix yet:
+// that residual risk is carried by running the runtime inside the sandbox, which
+// contains an exploit whether or not the bug is known. The two compose: the gate lowers
+// the chance of an exploit firing, the sandbox contains it when one does.
 package inference
 
 import (
@@ -32,23 +42,46 @@ type Runtime struct {
 	// which carries build noise (commit hashes, build dates, compiler versions) around
 	// the one number that matters. The first capture group is the token to parse.
 	versionRE *regexp.Regexp
+	// MinSupported is the oldest version of this runtime considered safe to run a model
+	// on: the most recent version that fixed a known model-parser flaw. A version below
+	// it is refused. This is the part that catches a whole class rather than one bug:
+	// it covers every issue fixed before it, including the many runtime-parser flaws
+	// that ship without a CVE number, not only the advisories named below. It is raised
+	// as new fixes land. It does not cover an issue with no fix yet (an unpatched or
+	// unknown flaw); that is the sandbox's job, which contains an exploit regardless.
+	MinSupported Version
 }
 
 // The runtimes Flynn knows how to drive. Ollama is the default local runner; llama.cpp
 // is the lower-level engine many runtimes build on and is supported directly.
 var (
-	// Ollama prints "ollama version is 0.3.14".
+	// Ollama prints "ollama version is 0.3.14". Floor 0.7.0 removed the unsafe C++
+	// model-file parser (the mllama out-of-bounds-write code execution), so earlier
+	// versions are refused.
 	Ollama = Runtime{
 		Name: "ollama", Binaries: []string{"ollama"}, VersionArgs: []string{"--version"},
-		versionRE: regexp.MustCompile(`(?i)version[^\d]*(\d+\.\d+(?:\.\d+)?)`),
+		versionRE:    regexp.MustCompile(`(?i)version[^\d]*(\d+\.\d+(?:\.\d+)?)`),
+		MinSupported: Version{0, 7, 0},
 	}
 	// llama.cpp prints "version: 5662 (a1b2c3d)"; the build number is what advisories
-	// are pinned to.
+	// are pinned to. Floor b8146 is the most recent GGUF-parser fix.
 	LlamaCpp = Runtime{
 		Name: "llama.cpp", Binaries: []string{"llama-server", "llama-cli"}, VersionArgs: []string{"--version"},
-		versionRE: regexp.MustCompile(`(?i)version[^\d]*b?(\d+)`),
+		versionRE:    regexp.MustCompile(`(?i)version[^\d]*b?(\d+)`),
+		MinSupported: Version{8146},
 	}
 )
+
+// MinSupportedFor returns the minimum safe version for a runtime by name, and whether
+// one is known.
+func MinSupportedFor(name string) (Version, bool) {
+	for _, r := range Runtimes() {
+		if r.Name == name {
+			return r.MinSupported, len(r.MinSupported) > 0
+		}
+	}
+	return nil, false
+}
 
 // ParseVersion extracts this runtime's version from its raw --version output, using
 // the runtime's known format to pick the version token out of the surrounding build
