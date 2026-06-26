@@ -160,6 +160,12 @@ func TestReadOnlyFSWithNetworkDenied(t *testing.T) {
 // same protection the explicit options give.
 func TestDefaultConfinementConfines(t *testing.T) {
 	ctx := context.Background()
+	// The default baseline falls back to the floor where the kernel will not enforce
+	// the confinement, so there is nothing to assert there; skip unless it is
+	// enforceable on this host.
+	if !confinementEnforceable(t) {
+		t.Skip("kernel confinement is not enforceable on this host; the default falls back to the floor")
+	}
 	root := t.TempDir()
 	outside := t.TempDir()
 
@@ -170,9 +176,6 @@ func TestDefaultConfinementConfines(t *testing.T) {
 
 	res, err := sb.Exec(ctx, Command{Line: "echo x > " + filepath.Join(outside, "escape.txt")})
 	if err != nil {
-		if namespaceUnavailable(err.Error()) {
-			t.Skip("unprivileged user/mount namespaces unavailable on this host")
-		}
 		t.Fatalf("exec: %v", err)
 	}
 	if res.ExitCode == 0 {
@@ -267,4 +270,19 @@ func namespaceUnavailable(msg string) bool {
 		strings.Contains(msg, "invalid argument") ||
 		strings.Contains(msg, "no such") ||
 		strings.Contains(msg, "clone")
+}
+
+// confinementEnforceable reports whether this host actually sets up the kernel
+// confinement. It makes an explicit request, which fails loudly when the kernel will
+// not provide it (for example where unprivileged user namespaces are restricted), and
+// reports whether the command ran. Tests of the always-on default use it to skip
+// where the default would fall back to the floor.
+func confinementEnforceable(t *testing.T) bool {
+	t.Helper()
+	sb, err := NewLocal(t.TempDir(), WithReadOnlyFS())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = sb.Exec(context.Background(), Command{Line: "true"})
+	return err == nil
 }
