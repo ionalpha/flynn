@@ -221,3 +221,27 @@ func TestCachedPromptTokensSurfaced(t *testing.T) {
 		t.Fatalf("cached prompt tokens not surfaced: %+v", resp.Usage)
 	}
 }
+
+func TestPromptCacheKeySentOnlyWhenSet(t *testing.T) {
+	// With a cache key, the request carries prompt_cache_key as a routing hint.
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`}
+	if _, err := clientWith(m).Generate(context.Background(), llm.Request{
+		Messages: []llm.Message{llm.Text(llm.RoleUser, "x")},
+		Cache:    llm.CacheHint{Key: "run-123"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(m.gotBody), `"prompt_cache_key":"run-123"`) {
+		t.Fatalf("prompt_cache_key not sent: %s", m.gotBody)
+	}
+
+	// Without one, the field is omitted, so an endpoint that does not know it is
+	// unaffected.
+	m2 := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`}
+	if _, err := clientWith(m2).Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "x")}}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(m2.gotBody), "prompt_cache_key") {
+		t.Fatalf("prompt_cache_key should be omitted when unset: %s", m2.gotBody)
+	}
+}

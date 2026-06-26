@@ -136,6 +136,11 @@ type chatRequest struct {
 	Messages            []chatMessage `json:"messages"`
 	Tools               []chatTool    `json:"tools,omitempty"`
 	MaxCompletionTokens int           `json:"max_completion_tokens,omitempty"`
+	// PromptCacheKey is an optional routing hint: requests carrying the same key and
+	// a shared prefix are steered to the same backend, which raises the prompt-cache
+	// hit rate. It is omitted when empty, so a request that opts out, or an endpoint
+	// that does not recognize the field, is unaffected.
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
 }
 
 type chatMessage struct {
@@ -172,7 +177,7 @@ func (c *Client) buildRequest(req llm.Request) chatRequest {
 	if maxTokens <= 0 {
 		maxTokens = c.maxTokens
 	}
-	out := chatRequest{Model: c.model, MaxCompletionTokens: maxTokens}
+	out := chatRequest{Model: c.model, MaxCompletionTokens: maxTokens, PromptCacheKey: req.Cache.Key}
 	if req.System != "" {
 		sys := req.System
 		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: &sys})
