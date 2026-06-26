@@ -201,6 +201,10 @@ Flynn is built to be handed real authority over untrusted input and real tools.
 - **Secrets stay out of context.** Credentials live in a vault and are applied at
   call time, never placed in prompts or logs.
 
+The [threat model](docs/THREAT_MODEL.md) sets out the trust boundaries and which defense
+covers each class of attack, marking what is enforced today versus planned. To report a
+vulnerability, see the [security policy](SECURITY.md).
+
 ## Reproducible by design
 
 Because the mission event spine is ordered and immutable, a run is not a black box.
