@@ -12,6 +12,12 @@ import (
 
 type bashTool struct{ s *Set }
 
+// WorkTrust marks a shell command as semi-trusted: the command text is authored by the
+// model, not the agent, so the waist requires kernel-confined isolation before it runs
+// and refuses it on a host that cannot provide that. The other tools are the agent's own
+// vetted code and stay trusted by not declaring a level.
+func (bashTool) WorkTrust() sandbox.Trust { return sandbox.TrustSemi }
+
 func (bashTool) Def() llm.Tool {
 	return llm.Tool{
 		Name:        "bash",
