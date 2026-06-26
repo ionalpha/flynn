@@ -115,6 +115,27 @@ func WithKernelConfinement() LocalOption {
 	}
 }
 
+// WithDefaultConfinement is the secure-by-default baseline: it enables the kernel
+// confinements the current platform can enforce, and nothing where it cannot, so it
+// is safe to apply unconditionally. A command is confined where the OS supports it and
+// runs at the process-jail floor elsewhere, never refused merely for the default
+// asking. It enables the read-only host and the syscall filter, the two confinements
+// that hold for ordinary commands without breaking them: a command still reads the
+// host and works in its directory, it just cannot change the host or make a dangerous
+// syscall. Network denial is deliberately not part of the default, since a blanket
+// no-network policy would break commands a run is legitimately allowed to make; that
+// is governed per run instead. Explicit options (WithReadOnlyFS, WithSeccomp,
+// WithNetworkDenied) still fail loudly on a platform that cannot honor them; this one
+// does not, because it is the always-on baseline rather than an explicit request.
+func WithDefaultConfinement() LocalOption {
+	return func(l *Local) {
+		if kernelConfinementSupported() {
+			l.readonlyFS = true
+			l.seccomp = true
+		}
+	}
+}
+
 // NewLocal builds a Local sandbox rooted at dir. The root is resolved to an
 // absolute, symlink-free path once, so confinement checks compare against a stable
 // base.
