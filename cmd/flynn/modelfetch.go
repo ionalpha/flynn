@@ -55,6 +55,11 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 	if !ok {
 		return fmt.Errorf("models fetch: %q has no quantization %q", id, *quantName)
 	}
+	// Model policy (not the generic downloader's concern): never fetch weights in a
+	// format that executes code when a runtime loads them.
+	if isCodeExecWeight(q.Format) {
+		return fmt.Errorf("models fetch: %q quant %q uses a code-executing weight format and will not be fetched", id, q.Name)
+	}
 	if q.URL == "" {
 		_, _ = fmt.Fprintf(out, "%s (%s) has no pinned download URL yet, so it cannot be fetched and verified.\nThe catalog records this model but a direct, digest-pinned source has not been added.\n", id, q.Name)
 		return nil
@@ -70,7 +75,6 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 		Dest:         dest,
 		ExpectSHA256: q.Digest,
 		MaxBytes:     sizeCeiling(q.SizeBytes),
-		Format:       string(q.Format),
 	})
 	if err != nil {
 		return fmt.Errorf("models fetch: %w", err)
@@ -106,6 +110,13 @@ func pickQuant(m catalog.ModelSpec, name string) (catalog.Quant, bool) {
 		return catalog.Quant{}, false
 	}
 	return m.SmallestQuant()
+}
+
+// isCodeExecWeight reports whether a weight format executes code when a runtime
+// loads it (pickle), which the model layer refuses to fetch even though the generic
+// downloader is content-agnostic.
+func isCodeExecWeight(f catalog.Format) bool {
+	return f == catalog.FormatPickle
 }
 
 // sizeCeiling caps a download at the quantization's declared size plus a small
