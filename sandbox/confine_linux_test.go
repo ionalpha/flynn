@@ -4,6 +4,8 @@ package sandbox
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -64,6 +66,91 @@ func TestNetworkDeniedBlocksConnect(t *testing.T) {
 	}
 	if res.ExitCode == 0 {
 		t.Fatalf("an outbound connect must fail under network deny, but it succeeded:\n%s", res.Output)
+	}
+}
+
+// TestReadOnlyFSWritesOnlyWorkdir proves the filesystem confinement: a command run
+// under WithReadOnlyFS can write its own working directory but cannot write anywhere
+// else on the host, even to a directory the running user owns (which a plain user
+// namespace would leave writable). It also confirms the host stays readable, so the
+// confinement restricts writes without blinding the command.
+func TestReadOnlyFSWritesOnlyWorkdir(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	outside := t.TempDir() // a sibling the test user owns, outside the sandbox root
+
+	sb, err := NewLocal(root, WithReadOnlyFS())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A write inside the working directory succeeds and lands on disk.
+	res, err := sb.Exec(ctx, Command{Line: "echo inside > made.txt"})
+	if err != nil {
+		if namespaceUnavailable(err.Error()) {
+			t.Skip("unprivileged user/mount namespaces unavailable on this host")
+		}
+		t.Fatalf("workdir write exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("a write to the working directory must succeed, got exit %d:\n%s", res.ExitCode, res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(root, "made.txt")); err != nil {
+		t.Fatalf("the working-directory write did not land: %v", err)
+	}
+
+	// A write to a user-owned directory outside the working tree is refused: the
+	// host is read-only, so this is the gap a plain user namespace would leave open.
+	res, err = sb.Exec(ctx, Command{Line: "echo escape > " + filepath.Join(outside, "escape.txt")})
+	if err != nil {
+		t.Fatalf("outside write exec: %v", err)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("a write outside the working tree must fail under a read-only host, but it succeeded:\n%s", res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(outside, "escape.txt")); err == nil {
+		t.Fatal("a file was written outside the working tree under a read-only host")
+	}
+
+	// Reads still work: confinement restricts writes, it does not blind the command.
+	res, err = sb.Exec(ctx, Command{Line: "cat /proc/self/status > /dev/null"})
+	if err != nil {
+		t.Fatalf("read exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("a read of a host file must still succeed, got exit %d:\n%s", res.ExitCode, res.Output)
+	}
+}
+
+// TestReadOnlyFSWithNetworkDenied confirms the two kernel confinements compose: a
+// command run under both sees no routes and cannot write outside its working tree.
+func TestReadOnlyFSWithNetworkDenied(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	outside := t.TempDir()
+
+	sb, err := NewLocal(root, WithReadOnlyFS(), WithNetworkDenied())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := sb.Exec(ctx, Command{Line: "cat /proc/net/route"})
+	if err != nil {
+		if namespaceUnavailable(err.Error()) {
+			t.Skip("unprivileged user/mount/network namespaces unavailable on this host")
+		}
+		t.Fatalf("exec: %v", err)
+	}
+	if n := routeEntries(res.Output); n != 0 {
+		t.Fatalf("a network-denied command must see no routes, saw %d:\n%s", n, res.Output)
+	}
+
+	res, err = sb.Exec(ctx, Command{Line: "echo escape > " + filepath.Join(outside, "escape.txt")})
+	if err != nil {
+		t.Fatalf("outside write exec: %v", err)
+	}
+	if res.ExitCode == 0 {
+		t.Fatalf("a write outside the working tree must fail when the host is read-only:\n%s", res.Output)
 	}
 }
 

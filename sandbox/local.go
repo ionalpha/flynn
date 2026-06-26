@@ -19,15 +19,16 @@ import (
 // root (a path that escapes via "..", an absolute path, or a symlink pointing
 // outside is denied) and runs commands in that directory. It is not strong
 // isolation on its own - a command it runs otherwise has the host user's privileges
-// outside the working tree. WithNetworkDenied adds kernel-enforced network isolation
-// where the platform supports it; further filesystem and syscall confinement, and the
-// container, microVM, and remote tiers, build on the same Sandbox port. Local is
-// always present underneath them as the default-deny FS floor.
+// outside the working tree. WithNetworkDenied and WithReadOnlyFS add kernel-enforced
+// network and filesystem isolation where the platform supports it; further syscall
+// confinement, and the container, microVM, and remote tiers, build on the same
+// Sandbox port. Local is always present underneath them as the default-deny FS floor.
 type Local struct {
 	root        string // absolute, symlinks resolved
 	execTimeout time.Duration
 	granted     map[string]string // env vars explicitly granted into commands
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
+	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
 }
 
 // LocalOption configures a Local sandbox.
@@ -74,6 +75,18 @@ func WithEnv(vars map[string]string) LocalOption {
 // running with the network silently still open.
 func WithNetworkDenied() LocalOption {
 	return func(l *Local) { l.denyNetwork = true }
+}
+
+// WithReadOnlyFS runs commands against a read-only view of the host: the command can
+// read what the host user can, but the only thing it can write is its own working
+// directory (and a private scratch area). A command we do not fully trust therefore
+// cannot tamper with host files, plant a persistent change outside the working tree,
+// or modify another project. It is enforced by the kernel, by running the command in
+// a mount namespace where every host mount is read-only and only the working tree is
+// remounted writable. On a platform that cannot provide it, a command run under this
+// option fails rather than running with the host filesystem silently still writable.
+func WithReadOnlyFS() LocalOption {
+	return func(l *Local) { l.readonlyFS = true }
 }
 
 // NewLocal builds a Local sandbox rooted at dir. The root is resolved to an
@@ -170,10 +183,8 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	// keys and every other process secret are withheld from a model-run command.
 	// The command sees only a minimal baseline plus what WithEnv explicitly grants.
 	c.Env = l.env()
-	if l.denyNetwork {
-		if err := denyNetwork(c); err != nil {
-			return ExecResult{}, fmt.Errorf("sandbox: deny network: %w", err)
-		}
+	if err := l.confine(c); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
 	}
 	out, err := c.CombinedOutput()
 	res := ExecResult{Output: string(out)}
