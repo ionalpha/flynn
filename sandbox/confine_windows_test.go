@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestConfinedCommandRuns proves a command launches and produces output inside the
@@ -216,5 +218,17 @@ func TestProfileCleanupOnClose(t *testing.T) {
 	}
 	if _, err := os.Stat(profileDir); err == nil {
 		t.Fatal("the AppContainer profile folder must be removed after Close")
+	}
+}
+
+// TestJobLimitFlags guards the containment limits set on a confined command's job: the
+// process tree must be killed when the run ends (no surviving orphans) and the process
+// count must be capped (fork-bomb backstop).
+func TestJobLimitFlags(t *testing.T) {
+	if jobLimitFlags&windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE == 0 {
+		t.Fatal("the job must kill its process tree when the run ends")
+	}
+	if jobLimitFlags&windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS == 0 || jobActiveProcessLimit == 0 {
+		t.Fatal("the job must cap the number of processes as a fork-bomb backstop")
 	}
 }
