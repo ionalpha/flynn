@@ -159,6 +159,12 @@ type chatRequest struct {
 	// that does not recognize the field ignores it, so it is safe to send anywhere.
 	// It is set only when tool-call constraining is enabled (see WithToolGrammar).
 	Grammar string `json:"grammar,omitempty"`
+	// Temperature, TopP, and Seed pin decoding for a reproducible run. They are sent only
+	// when the request asks for pinned sampling, so a free-running request is unchanged. All
+	// three are standard fields a hosted or local OpenAI-compatible server understands.
+	Temperature *float64 `json:"temperature,omitempty"`
+	TopP        *float64 `json:"top_p,omitempty"`
+	Seed        *int64   `json:"seed,omitempty"`
 }
 
 type chatMessage struct {
@@ -196,6 +202,17 @@ func (c *Client) buildRequest(req llm.Request) chatRequest {
 		maxTokens = c.maxTokens
 	}
 	out := chatRequest{Model: c.model, MaxCompletionTokens: maxTokens, PromptCacheKey: req.Cache.Key}
+	if req.Sampling != nil {
+		// Pin decoding for a reproducible run. Temperature and seed are always sent (zero is
+		// greedy, a valid and maximally reproducible choice); top-p is sent only when set, so
+		// the degenerate value zero never reaches the server.
+		s := req.Sampling.Normalized()
+		out.Temperature = &s.Temperature
+		out.Seed = &s.Seed
+		if s.TopP > 0 {
+			out.TopP = &s.TopP
+		}
+	}
 	if req.System != "" {
 		sys := req.System
 		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: &sys})
