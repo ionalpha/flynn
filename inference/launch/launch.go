@@ -81,6 +81,27 @@ var knownKVCacheTypes = map[string]bool{
 	"f16": true, "q8_0": true, "q4_0": true, "q4_1": true, "q5_0": true, "q5_1": true,
 }
 
+// knownVLLMQuant is the set of quantization schemes a vLLM plan may pass to
+// --quantization. The list is restricted for the same reason the chat template is: an
+// unrecognized scheme could make the runtime guess or fall back, so only schemes known
+// to map to a real vLLM kernel are allowed. NVFP4 checkpoints are served through the
+// modelopt path ("modelopt_fp4"); add a scheme here once it is known good.
+var knownVLLMQuant = map[string]bool{
+	"awq": true, "awq_marlin": true, "gptq": true, "gptq_marlin": true, "marlin": true,
+	"fp8": true, "modelopt": true, "modelopt_fp4": true, "compressed-tensors": true,
+	"bitsandbytes": true,
+}
+
+// KnownVLLMQuant reports whether scheme is a vLLM quantization a plan may request.
+func KnownVLLMQuant(scheme string) bool { return knownVLLMQuant[scheme] }
+
+// knownVLLMKVCacheDtype is the set of KV-cache element types a vLLM plan may request via
+// --kv-cache-dtype. vLLM names these differently from llama.cpp, so it has its own set;
+// "auto" keeps the model's native dtype, the fp8 forms trade a little accuracy for room.
+var knownVLLMKVCacheDtype = map[string]bool{
+	"auto": true, "fp8": true, "fp8_e4m3": true, "fp8_e5m2": true,
+}
+
 // Config is everything needed to build a serve command for one local model.
 type Config struct {
 	// BinPath is the gated runtime server executable to run (an installed build).
@@ -122,6 +143,21 @@ type Config struct {
 	// the runtime default.
 	DraftMax int
 	DraftMin int
+	// Quantization, when set, names the on-disk quantization scheme the vLLM engine loads
+	// the weights with (vLLM --quantization), for example "awq", "fp8", or "modelopt_fp4"
+	// for an NVFP4 checkpoint. It must be a recognized scheme or the plan is refused. It
+	// applies only to the vLLM engine; the llama.cpp engine reads the quantization from
+	// the GGUF file itself.
+	Quantization string
+	// GPUMemoryUtilization, when positive, is the fraction of GPU memory vLLM may reserve
+	// for weights and the KV cache (vLLM --gpu-memory-utilization), a value in (0,1]. Zero
+	// leaves vLLM's default. vLLM engine only.
+	GPUMemoryUtilization float64
+	// KVCacheDtype, when set, quantizes the vLLM KV cache to this element type (vLLM
+	// --kv-cache-dtype), for example "fp8". It must be a recognized vLLM type or the plan
+	// is refused. This is the vLLM counterpart to KVCacheType, which is llama.cpp's; a plan
+	// uses whichever matches its engine. vLLM engine only.
+	KVCacheDtype string
 	// APIKey, when set, is required by the server on every request, so even a local
 	// process cannot reach the model without the token the caller holds. Optional.
 	APIKey string
@@ -178,6 +214,15 @@ func BuildPlan(cfg Config) (Plan, error) {
 	if cfg.DraftMax < 0 || cfg.DraftMin < 0 || (cfg.DraftMax > 0 && cfg.DraftMin > cfg.DraftMax) {
 		return Plan{}, fault.New(fault.Terminal, "launch_bad_draft", "launch: draft token bounds are out of range")
 	}
+	if cfg.Quantization != "" && !knownVLLMQuant[cfg.Quantization] {
+		return Plan{}, fault.New(fault.Terminal, "launch_bad_quant", "launch: "+cfg.Quantization+" is not a recognized vLLM quantization scheme")
+	}
+	if cfg.KVCacheDtype != "" && !knownVLLMKVCacheDtype[cfg.KVCacheDtype] {
+		return Plan{}, fault.New(fault.Terminal, "launch_bad_kv_dtype", "launch: "+cfg.KVCacheDtype+" is not a recognized vLLM KV-cache dtype")
+	}
+	if cfg.GPUMemoryUtilization < 0 || cfg.GPUMemoryUtilization > 1 {
+		return Plan{}, fault.New(fault.Terminal, "launch_bad_gpu_util", "launch: GPU memory utilization must be in (0,1]")
+	}
 
 	engine, ok := EngineForFormat(cfg.Format)
 	if !ok {
@@ -188,9 +233,11 @@ func BuildPlan(cfg Config) (Plan, error) {
 	switch engine {
 	case EngineLlamaCpp:
 		argv = buildLlamaCppArgv(cfg, tmpl)
+	case EngineVLLM:
+		argv = buildVLLMArgv(cfg)
 	default:
-		// The format selects a runtime whose command builder is not wired yet (the GPU
-		// vLLM path). Refuse rather than serve it on the wrong engine.
+		// The format selects a runtime whose command builder is not wired here. Refuse
+		// rather than serve it on the wrong engine.
 		return Plan{}, fault.New(fault.Terminal, "launch_engine_unavailable", "launch: serving "+cfg.Model.ID+" needs the "+string(engine)+" runtime, which is not available yet")
 	}
 
@@ -247,6 +294,49 @@ func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 		if cfg.DraftMin > 0 {
 			argv = append(argv, "--draft-min", strconv.Itoa(cfg.DraftMin))
 		}
+	}
+	if cfg.APIKey != "" {
+		argv = append(argv, "--api-key", cfg.APIKey)
+	}
+	return argv
+}
+
+// buildVLLMArgv builds the vLLM serve command for cfg. The common safety invariants are
+// already enforced by BuildPlan; this only translates the configuration into vLLM's flag
+// vocabulary. The server is the same loopback-bound, optionally API-key-gated endpoint the
+// llama.cpp path produces, so a client reaches it the same way; only the engine differs.
+//
+// The model is served under its catalog id rather than its on-disk path, the on-disk
+// quantization scheme is passed through (an NVFP4 checkpoint loads via "modelopt_fp4"),
+// and the GPU-resident levers vLLM exposes (memory utilization, max model length, KV-cache
+// dtype) are set when requested. The first element is the runtime command: an absolute
+// path for a host process, or the in-image command when this argv is run as a container's
+// command through the container tier.
+//
+// It does not emit a chat-template flag. vLLM applies the model's own tokenizer template,
+// whose vocabulary differs from llama.cpp's named templates; forcing a trusted template on
+// the vLLM path needs a shipped template file and is tracked separately. The catalog entry
+// is still required to name a recognized trusted template (BuildPlan checks it), so an
+// entry with no vetted prompt contract is refused on either engine.
+func buildVLLMArgv(cfg Config) []string {
+	argv := []string{
+		cfg.BinPath, "serve", cfg.WeightsPath,
+		"--host", loopbackHost,
+		"--port", strconv.Itoa(cfg.Port),
+		"--served-model-name", cfg.Model.ID,
+	}
+	if cfg.Quantization != "" {
+		argv = append(argv, "--quantization", cfg.Quantization)
+	}
+	if cfg.GPUMemoryUtilization > 0 {
+		argv = append(argv, "--gpu-memory-utilization", strconv.FormatFloat(cfg.GPUMemoryUtilization, 'f', -1, 64))
+	}
+	if cfg.CtxSize > 0 {
+		// vLLM expresses the context window as the maximum model length.
+		argv = append(argv, "--max-model-len", strconv.Itoa(cfg.CtxSize))
+	}
+	if cfg.KVCacheDtype != "" {
+		argv = append(argv, "--kv-cache-dtype", cfg.KVCacheDtype)
 	}
 	if cfg.APIKey != "" {
 		argv = append(argv, "--api-key", cfg.APIKey)
