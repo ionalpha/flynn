@@ -23,7 +23,7 @@ issues against it. Read it before opening anything.
 
 ## Local development
 
-The `dev/` scripts are the single source of truth — **CI runs these same
+The `dev/` scripts are the single source of truth: **CI runs these same
 scripts**, so a green run locally is a green run in CI. `make` targets forward
 to them (`make test` == `./dev/test`); use the scripts directly to pass args.
 

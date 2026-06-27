@@ -20,7 +20,7 @@ desired state; `goal` is the first such controller and `mission` is the executor
 it runs, advancing a goal as a tool-using conversation through the `llm` port.
 Every model call and tool call passes through one chokepoint, `dispatch`, which
 admits it against a capability grant, traces it, and brackets it with events on
-the spine. Time, identity, and randomness come only from injected seams
+the spine. Time, identity, and randomness come only from injected ports
 (`clock`, `ids`), so a run is deterministically replayable. Persistence and
 observability are reached only through interfaces, so the open agent runs
 standalone and a richer host can supply its own backends without the engine
@@ -34,7 +34,7 @@ package is one plus the highest layer it imports.
 
 | Layer | Packages | Role |
 |-------|----------|------|
-| L0 foundation | `clock`, `fault`, `llm`, `observe` | Pure seams: time source, error taxonomy, the model port, the logging/tracing port. No internal imports. |
+| L0 foundation | `clock`, `fault`, `llm`, `observe` | Pure ports: time source, error taxonomy, the model port, the logging/tracing port. No internal imports. |
 | L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters. |
 | L2 core data | `state`, `resource`, `provider` | The host persistence boundary, the event-sourced resource store, the model-adapter registry. |
 | L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill` | The governance waist, the reconcile loop, the leased job queue, durable memory and skill stores. |
@@ -59,7 +59,7 @@ top level stays scannable. The two adapter families that genuinely cluster
 (`llm/*`, `storage/*`) are the only nesting, because they are alternative
 implementations of one port.
 
-## Ports (the seams that keep it swappable)
+## Ports (the interfaces that keep it swappable)
 
 A port is an interface the engine depends on so the thing behind it can change
 without touching the engine. The load-bearing ones:
@@ -232,6 +232,6 @@ is part of CI).
   **`memory`** and **`skill`** its durable stores.
 - **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
   adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation.
-- **`clock`**, **`ids`**, **`hlc`** the determinism seams; **`fault`** the error
+- **`clock`**, **`ids`**, **`hlc`** the determinism ports; **`fault`** the error
   taxonomy; **`observe`** logging/tracing; **`bus`** the in-process event bus;
   **`jobs`** the leased job queue.

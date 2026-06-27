@@ -7,7 +7,7 @@
 
 ## Why
 
-<!-- The motivation — the problem it solves or the capability it enables. State the why before the how. -->
+<!-- The motivation: the problem it solves or the capability it enables. State the why before the how. -->
 
 Closes #
 

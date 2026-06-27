@@ -1,6 +1,6 @@
 <h1 align="center">Flynn</h1>
 
-<p align="center"><strong>A self-healing, self-improving agent operating system in a single Go binary. Bring your own model, orchestrate many agents toward one goal, govern every action so autonomy is safe to grant, keep token cost low, and watch it compound the more you use it.</strong></p>
+<p align="center"><strong>A self-healing, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real autonomy, because every action is governed, reversible, and replayable.</strong></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
@@ -46,6 +46,44 @@ Four ideas run through everything it does:
 - **Useful inside and outside a larger system.** Run it on its own, or import it
   as a Go module and embed it in your own application.
 
+## Install
+
+```sh
+# With the Go toolchain
+go install github.com/ionalpha/flynn/cmd/flynn@latest
+
+# Or download a prebuilt binary for Windows, macOS, Linux, or ARM from Releases
+```
+
+## Quick start
+
+```sh
+flynn --model anthropic:claude-opus-4-8     # start an interactive session
+flynn --version
+```
+
+Store your model API key once. It is encrypted at rest in your OS keychain (or a
+passphrase-sealed file where there is no keychain) and revealed only to call the
+model, never written to a prompt, a log, or a command's environment:
+
+```sh
+flynn auth set openai     # prompts for the key without echoing it
+```
+
+Give it a goal and let it work the problem and report back:
+
+```sh
+flynn goal "audit the repo for security issues and open a PR with the fixes"
+```
+
+Run it as a long-lived service that answers messages from your chat channels:
+
+```sh
+flynn serve     # answers Telegram and Signal messages, triaged and driven as goals
+```
+
+Building from source: `go build -o flynn ./cmd/flynn`.
+
 ## Failure modes designed out
 
 A handful of bugs recur across agent implementations: session and message state
@@ -53,7 +91,7 @@ drifting out of sync or going missing, context compaction overwriting earlier wo
 a config change quietly disabling a safety check, a misclassified provider error
 retrying into a long hang, and crashes that loop on restart. Flynn is built so that
 several of these are hard to express in the first place, not because they are caught
-after the fact, but because the structure does not contain the seam they live in.
+after the fact, but because the structure does not contain the boundary they live in.
 
 - **One source of truth for state.** Sessions, messages, skills, and memory are
   projections of a single append-only event log, so there is no second copy to
@@ -71,10 +109,13 @@ after the fact, but because the structure does not contain the seam they live in
 
 This is the project's main bet: the discipline that makes autonomy safe to grant, an
 event-sourced, governed, replayable substrate, is the same discipline that keeps the
-ordinary failure modes from arising. It is a deliberately foundations-first design,
-and several of the capabilities described below are still being built on top of it.
+ordinary failure modes from arising. The foundation comes first, and every capability
+below is built as a typed resource on top of it.
 
 ## Features
+
+The sections below describe Flynn's capabilities by area. For what runs today
+versus what is in progress or planned, see [Status and roadmap](#status-and-roadmap).
 
 ### Agents and capabilities
 
@@ -240,57 +281,18 @@ methods used for systems people depend on.
 - **Enforced invariants.** Budgets are never exceeded, no action runs without a
   capability, and the concurrent orchestrator is checked under the race detector.
 
-## Install
-
-```sh
-# With the Go toolchain
-go install github.com/ionalpha/flynn/cmd/flynn@latest
-
-# Or download a prebuilt binary for Windows, macOS, Linux, or ARM from Releases
-```
-
-## Quick start
-
-```sh
-flynn --model anthropic:claude-opus-4-8     # start an interactive session
-flynn --version
-```
-
-Store your model API key once. It is encrypted at rest in your OS keychain (or a
-passphrase-sealed file where there is no keychain) and revealed only to call the
-model, never written to a prompt, a log, or a command's environment:
-
-```sh
-flynn auth set openai     # prompts for the key without echoing it
-```
-
-Give it a goal and let it plan, fan out, and report back:
-
-```sh
-flynn goal "audit the repo for security issues and open a PR with the fixes"
-```
-
-Talk to it from your chat apps:
-
-```sh
-flynn gateway     # starts the Telegram, Discord, Slack, and Signal gateway
-```
-
-Building from source: `go build -o flynn ./cmd/flynn`.
-
 ## Command reference
 
 | Command | What it does |
 | --- | --- |
 | `flynn` | Start an interactive session |
-| `flynn goal "<objective>"` | Plan and run a goal to completion |
+| `flynn goal "<objective>"` | Run a goal to completion |
+| `flynn serve` | Run as a service that answers Telegram and Signal messages |
 | `flynn auth set <provider>` | Store an API key in the encrypted vault |
-| `flynn watch` | Run proactively against your monitors and signals |
-| `flynn replay <mission>` | Replay or time-travel-debug a past mission |
-| `flynn gateway` | Start the messaging gateway |
-| `flynn model` | Choose the provider and model |
 | `flynn models` | Browse the model catalog and check which fit your hardware |
-| `flynn skills` | List and manage learned skills |
+| `flynn runs` | List past runs and sessions |
+| `flynn resume <run>` | Continue a past run |
+| `flynn replay <run>` | Replay a recorded run |
 | `flynn --version` | Print the version |
 
 ## Use it as a library
@@ -346,25 +348,33 @@ latency, and outcome.
 
 ```
 cmd/flynn/          standalone binary entry point
-agent.go          core runtime (Config, Agent, Run)
-state/            persistence interfaces (the host boundary)
-observe/          logging and tracing seam (slog + tracer, no-op default)
-dispatch/         the action chokepoint: governance, tracing, events, hooks
-spine/            the canonical ordered event log (source of truth, replay)
-clock/            deterministic time source (replay and tests)
-hlc/              hybrid logical clock (cross-instance write ordering)
-ids/              time-sortable unique identifiers (UUIDv7, injectable)
-fault/            canonical error model (typed, classified)
-orchestration/    goals, missions, dispatcher, and the governor
-skills/           skill capture, curation, and reinforcement
-router/           cost-aware model routing
-integrations/     data-driven integration and plugin engine
-gateway/          messaging channels and computer use
-economy/          wallet, budgets, and per-run accounting
-replay/           deterministic record and replay
-mcp/              tool protocol server and client
-internal/         build and runtime internals
+agent.go            embedding facade (Config, Agent, Goal)
+state/              persistence interfaces (the host boundary)
+observe/            logging and tracing port (slog + tracer, no-op default)
+dispatch/           the action chokepoint: governance, tracing, events
+capability/         capability grants, admitted at the dispatch waist
+budget/             per-run token and cost ceiling
+spine/              the canonical ordered event log (source of truth, replay)
+resource/           event-sourced resources materialized from the log
+reconcile/          the level-triggered controller loop
+goal/               the goal controller and worker
+mission/            the conversation executor that advances a goal
+learn/              the closed learning loop (capture, verify, reinforce)
+skill/, memory/     durable skill and memory stores
+llm/, provider/     the model port and concrete adapters
+tools/              the default agentic toolset
+sandbox/            the isolation boundary for command execution
+integrations/       data-driven integration and plugin engine
+clock/, ids/, hlc/  determinism: time source, sortable ids, write ordering
+fault/              typed, classified error model
+runtime/            wires controller, worker, store, and bus together
+session/            conversational front door and event stream
+storage/sqlite/     the durable SQLite backend
+internal/           build and runtime internals
 ```
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full layer map, the ports a host
+implements, and the invariants the engine enforces.
 
 The agent depends only on the interfaces in `state/` (persistence) and
 `observe/` (observability). Local implementations and no-op defaults ship in this
@@ -389,10 +399,48 @@ budgets and autonomy defaults. See the documentation for the full reference.
 Issues and pull requests are welcome. See the open issues for the current roadmap
 and good first tasks.
 
-## Status
+## Status and roadmap
 
-Flynn is actively being extracted from a much larger system. Follow
+Flynn is being extracted from a much larger system and moves fast. The
+foundations are in place and a real agent loop runs today; the breadth described
+above is filling in on top of that substrate. Follow
 [@ionalpha_](https://x.com/ionalpha_) for progress.
+
+**Running today**
+
+- A single static Go binary, cross-compiled for Windows, macOS, Linux, and ARM.
+- An event-sourced spine with materialized resources and a self-healing reconcile loop.
+- The dispatch waist: every model and tool call admitted against a capability grant, traced, and bracketed by spine events.
+- Per-run token and cost budgets with hard ceilings.
+- Deterministic replay, with golden missions guarding behavior in CI.
+- A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
+- Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
+- Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
+- The learning loop: skills and memory captured from work, curated in the background, and reinforced by outcomes.
+- Credentials sealed in an OS keychain or a passphrase vault, kept out of prompts and logs.
+- Local and git-worktree isolation for runs.
+- Inbound over the terminal, Telegram, and Signal.
+- SQLite-durable state, and importable as a Go module.
+- A published threat model, an OpenSSF Scorecard, and property, chaos, and fuzz test tiers.
+
+**In progress**
+
+- Multi-agent goal-graph orchestration: fan-out across a dependency graph and missions that outlive a single session.
+- A cost-aware model router in front of the registry.
+- Default-deny network egress and remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
+- User-facing replay and time-travel: `flynn replay`, fork-from-event, and run diff, plus re-grading captured skills by re-folding the spine.
+- An upgraded interactive REPL and TUI, and a pluggable embeddings port for stronger local semantic recall.
+
+**On the roadmap**
+
+- Standards: MCP server and client, A2A, Zed ACP, and `agentskills.io` import.
+- More reach: Discord, Slack, voice, a built-in browser, desktop GUI, and mobile control.
+- Proactive operation: monitors, drives, and self-formed goals within an autonomy level.
+- The agent authoring and sandbox-testing its own tools and integrations.
+- A cross-machine control plane and Kubernetes pod fan-out.
+- OpenTelemetry export to agent-eval tools and Grafana dashboards.
+- A Postgres backend and federated, fleet-wide learning.
+- Stronger isolation tiers (gVisor, Firecracker/Kata microVM).
 
 ## License
 
