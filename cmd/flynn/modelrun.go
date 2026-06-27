@@ -4,12 +4,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 
+	"github.com/ionalpha/flynn/bindguard"
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/fetch"
 	"github.com/ionalpha/flynn/harness"
@@ -82,7 +82,7 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 		ensureRuntime: realEnsureRuntime(dataDir, out),
 		ensureWeights: realEnsureWeights(dataDir, out),
 		manager:       mgr,
-		freePort:      freeLoopbackPort,
+		freePort:      bindguard.FreeLoopbackPort,
 		sb:            sb,
 		ledger:        modelsource.NewLedger(filepath.Join(dataDir, "models")),
 	}
@@ -324,18 +324,6 @@ func localModelClient(ep serve.Endpoint, modelID string, plan harness.Plan) llm.
 		opts = append(opts, openai.WithToolGrammar())
 	}
 	return openai.New(secret.Text{}, opts...)
-}
-
-// freeLoopbackPort asks the OS for an unused loopback TCP port by binding port 0 and
-// reading back the assignment, then releasing it for the server to claim. The brief gap
-// between release and the server binding is the standard, accepted way to choose a port.
-func freeLoopbackPort() (int, error) {
-	l, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return 0, err
-	}
-	defer func() { _ = l.Close() }()
-	return l.Addr().(*net.TCPAddr).Port, nil
 }
 
 // findLocalModel resolves a catalog id to a local model spec, with a clear error when the

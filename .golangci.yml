@@ -170,6 +170,23 @@ linters:
           msg: "the default HTTP client ignores egress policy; dial through netguard.Client"
         - pattern: '^http\.DefaultTransport$'
           msg: "the default transport ignores egress policy; dial through netguard.Client"
+        # Inbound listeners go through bindguard, the bind-safe inbound gate that
+        # refuses a wildcard bind and a non-loopback bind without an explicit opt-in.
+        # Nothing binds around it: the raw listen primitives and the standard library's
+        # one-call serve helpers are forbidden outside bindguard (relaxed there and in
+        # _test.go via the exclusions below). A new ungoverned listener fails CI.
+        - pattern: '^net\.Listen$'
+          msg: "open listeners through bindguard.Listen, not a raw net.Listen, which bypasses the bind-safe inbound policy"
+        - pattern: '^net\.ListenTCP$'
+          msg: "open listeners through bindguard.Listen, not net.ListenTCP, which bypasses the bind-safe inbound policy"
+        - pattern: '^net\.ListenPacket$'
+          msg: "open listeners through bindguard, not net.ListenPacket, which bypasses the bind-safe inbound policy"
+        - pattern: '^tls\.Listen$'
+          msg: "open TLS listeners through bindguard, not a raw tls.Listen"
+        - pattern: '\.ListenAndServe(TLS)?$'
+          msg: "bind through bindguard.Listen and call (*http.Server).Serve(ln); ListenAndServe binds the address ungoverned"
+        - pattern: '^http\.ListenAndServe(TLS)?$'
+          msg: "bind through bindguard.Listen and call (*http.Server).Serve(ln); http.ListenAndServe binds the address ungoverned"
   exclusions:
     rules:
       # clock is the home of the system time source, and the migration runner
@@ -186,6 +203,13 @@ linters:
           - forbidigo
         path: '(^|/)netguard/'
         source: '(net\.Dial|net\.Dialer|tls\.Dial|http\.(DefaultClient|DefaultTransport|Get|Post|Head|PostForm))'
+      # bindguard is the inbound boundary itself: the one package that may hold the raw
+      # listen primitive every other package binds through, so the inbound forbids do
+      # not apply to it.
+      - linters:
+          - forbidigo
+        path: '(^|/)bindguard/'
+        source: '(net\.Listen|net\.ListenTCP|net\.ListenPacket|tls\.Listen|ListenAndServe)'
       # The egress boundary protects shipped code, not the test harness: tests may use
       # httptest and the standard client directly. The no-fmt.Print and no-time.Now
       # forbids still apply in tests; only the egress ones are relaxed here.
@@ -193,6 +217,13 @@ linters:
           - forbidigo
         path: _test\.go
         source: '(net\.Dial|net\.Dialer|tls\.Dial|http\.(DefaultClient|DefaultTransport|Get|Post|Head|PostForm))'
+      # The inbound boundary protects shipped code, not the test harness: tests may open
+      # a listener (httptest, a local probe) directly. Only the inbound listen forbids
+      # are relaxed here; the no-fmt.Print and no-time.Now forbids still apply.
+      - linters:
+          - forbidigo
+        path: _test\.go
+        source: '(net\.Listen|net\.ListenTCP|net\.ListenPacket|tls\.Listen|ListenAndServe)'
       # gosec's file-permission and file-inclusion rules target production code;
       # test fixtures (temp dirs, reading the module's own sources) are not a
       # threat surface.

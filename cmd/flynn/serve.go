@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"time"
 
+	"github.com/ionalpha/flynn/bindguard"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
@@ -36,6 +37,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
 	apiAddr := fs.String("api-addr", "", "expose the read-only control-plane API here, loopback recommended, e.g. 127.0.0.1:7575")
 	apiToken := fs.String("api-token", "", "bearer token for the control-plane API (or set FLYNN_API_TOKEN)")
+	apiExpose := fs.Bool("api-expose", false, "allow --api-addr to bind a non-loopback interface (off by default; prefer a tunnel to a loopback bind, never a wildcard)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -98,7 +100,19 @@ func runServe(args []string, modelSpec, dataDir string) error {
 			apiTok: {ID: "operator", Scope: controlplane.ScopeRead},
 		})
 		api := controlplane.NewServer(rstore, store.Log(), auth)
-		httpSrv := &http.Server{Addr: *apiAddr, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+		// Bind-safe by default: the listener is opened through the inbound gate, which
+		// refuses a wildcard bind outright and a non-loopback bind unless --api-expose
+		// was passed. The bind is checked before the socket opens, so an unsafe address
+		// fails closed.
+		exposure := bindguard.Loopback()
+		if *apiExpose {
+			exposure = bindguard.Exposed()
+		}
+		ln, err := bindguard.Listen("tcp", *apiAddr, exposure)
+		if err != nil {
+			return fmt.Errorf("serve: api: %w", err)
+		}
+		httpSrv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
 		go func() {
 			<-ctx.Done()
 			sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -106,11 +120,11 @@ func runServe(args []string, modelSpec, dataDir string) error {
 			_ = httpSrv.Shutdown(sc)
 		}()
 		go func() {
-			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				fmt.Fprintln(os.Stderr, "serve: api:", err)
 			}
 		}()
-		fmt.Fprintln(os.Stderr, "flynn serve: control-plane API (read-only) on", *apiAddr)
+		fmt.Fprintln(os.Stderr, "flynn serve: control-plane API (read-only) on", ln.Addr())
 	}
 
 	// With no channels this is a monitor-only daemon: just hold the API open.
