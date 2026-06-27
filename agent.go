@@ -20,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
@@ -59,6 +60,10 @@ type Config struct {
 	// WorkDir is the sandbox root every tool is confined to. Defaults to the current
 	// working directory.
 	WorkDir string
+	// Driver selects the run loop by name from the built-in registry (e.g.
+	// "single-shot"). Empty uses the default general-purpose software loop, so a
+	// zero-config agent is unchanged. An unknown name fails closed at run start.
+	Driver string
 	// State is the durable backend for sessions, skills, and memory. If nil, an
 	// in-memory provider is used so the agent runs with zero setup.
 	State state.Provider
@@ -158,27 +163,36 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 	}
 	names = append(names, mission.ActionModelGenerate)
 
-	exec := mission.NewExecutor(
-		model,
-		mission.WithTools(toolset...),
-		mission.WithSystem(DefaultSystemPrompt),
-		mission.WithObserver(sess.Reporter()),
-		mission.WithGrant(capability.NewGrant(names...)),
-		// Gate every action on containment too: a model-authored command is refused on a
-		// host that cannot kernel-confine it, rather than run at the process-jail floor.
-		mission.WithSandbox(sb),
+	// Resolve the run loop by name from the driver registry, fail-closed on an
+	// unknown driver, and build it from the run's ingredients. The default is the
+	// general-purpose software loop, so a zero-config run is unchanged; selecting a
+	// different driver swaps the loop shape while the grant, sandbox gate, and brake
+	// below still apply to it.
+	drv, err := driver.Default().Resolve(a.cfg.Driver)
+	if err != nil {
+		return "", err
+	}
+	exec, stop, err := drv.Build(driver.Spec{
+		Model:    model,
+		Tools:    toolset,
+		System:   DefaultSystemPrompt,
+		Grant:    capability.NewGrant(names...),
+		HasGrant: true,
+		Sandbox:  sb,
+		Reporter: sess.Reporter(),
 		// Halt a runaway from outside the model loop. The default is a generous rate
 		// backstop: a real run dispatches far fewer than this per minute, so the breaker
-		// fires only on a degenerate tight loop, never on legitimate tool use. A host that
-		// wants tighter behavioural limits or an operator kill-switch builds its own brake
-		// hook and passes it here.
-		mission.WithBrakes(brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil)),
-	)
+		// fires only on a degenerate tight loop, never on legitimate tool use.
+		Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+	})
+	if err != nil {
+		return "", err
+	}
 	// A nil Store makes the runtime build its in-process substrate (store, queue,
 	// bus) over a registry holding the core and Goal kinds.
 	rt, err := runtime.New(runtime.Config{
 		Executor:     exec,
-		Stop:         mission.Convergence{},
+		Stop:         stop,
 		PollInterval: 200 * time.Millisecond,
 		WorkerPoll:   50 * time.Millisecond,
 	})
