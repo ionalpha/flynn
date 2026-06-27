@@ -243,7 +243,12 @@ func (m *Manager) waitReady(ctx context.Context, proc Proc, baseURL string) erro
 }
 
 // Status returns the recorded servers whose endpoint currently answers, pruning any
-// record that no longer does so the report reflects reality rather than stale claims.
+// record that no longer does so the report reflects reality rather than stale claims. A
+// pruned server's process is reclaimed: a record is only written after the server became
+// ready, so an endpoint that has stopped answering means the runtime died or wedged, and a
+// wedged runtime left running would keep holding device memory after the manager has
+// forgotten it. Killing it before dropping the record prevents that leak; killing an
+// already-exited process is a no-op.
 func (m *Manager) Status(ctx context.Context) ([]Record, error) {
 	recs, err := m.reg.List()
 	if err != nil {
@@ -254,6 +259,9 @@ func (m *Manager) Status(ctx context.Context) ([]Record, error) {
 		if m.probe(ctx, rec.BaseURL) == nil {
 			live = append(live, rec)
 			continue
+		}
+		if rec.PID > 0 {
+			_ = m.kill(rec.PID) // best-effort reclaim; a dead pid is already gone
 		}
 		if err := m.reg.Delete(rec.ModelID); err != nil {
 			return nil, err
