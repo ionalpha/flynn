@@ -69,6 +69,7 @@ type Executor struct {
 	system        string
 	maxTokens     int
 	compactBudget int
+	sampling      *llm.Sampling
 	reporter      Reporter
 	grant         capability.Grant
 	hasGrant      bool
@@ -168,6 +169,13 @@ func WithCompactionBudget(tokens int) Option {
 	}
 }
 
+// WithSampling pins the decoding parameters for every model call, so a run can be made
+// reproducible. The default is nil, which leaves each call free-running on the server's
+// defaults; setting it sends a fixed seed and sampler on every turn.
+func WithSampling(s *llm.Sampling) Option {
+	return func(e *Executor) { e.sampling = s }
+}
+
 // NewExecutor builds a mission executor over the given model and options. Tool
 // calls run through a dispatch waist so governance, event recording, and tracing
 // are applied once at the chokepoint rather than scattered across the loop.
@@ -261,6 +269,9 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 				// hint is advisory: a backend without caching ignores it and the result
 				// is identical.
 				Cache: llm.CacheHint{Prefix: true, StableMessages: len(reqMessages), Key: r.Name},
+				// Pin decoding when the run asks for it, so a deterministic run sends the same
+				// seed and sampler on every turn; nil leaves the call free-running.
+				Sampling: e.sampling,
 			})
 			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
 		})
