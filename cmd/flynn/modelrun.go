@@ -246,6 +246,7 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 		BinPath:             binPath,
 		WeightsPath:         weightsPath,
 		Model:               m,
+		Format:              q.Format,
 		Port:                port,
 		CtxSize:             ctxSize,
 		CPUOnly:             cpuOnly,
