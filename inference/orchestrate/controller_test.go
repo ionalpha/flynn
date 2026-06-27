@@ -56,14 +56,10 @@ func (s *recordingServer) Resident(context.Context) ([]Resident, error) {
 	return out, nil
 }
 
-func (s *recordingServer) Launch(_ context.Context, id string, degraded bool) error {
+func (s *recordingServer) Launch(_ context.Context, id string, level LaunchLevel) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	tag := "launch:"
-	if degraded {
-		tag = "launch-degraded:"
-	}
-	s.order = append(s.order, tag+id)
+	s.order = append(s.order, launchTag(level)+id)
 	if s.failLaunch > 0 {
 		s.failLaunch--
 		if s.launchErr != nil {
@@ -75,13 +71,25 @@ func (s *recordingServer) Launch(_ context.Context, id string, degraded bool) er
 	return nil
 }
 
-// degradedLaunches counts how many launches were asked for in degraded mode.
-func (s *recordingServer) degradedLaunches() int {
+// launchTag names a launch by its level, so a test can assert which footprint was requested.
+func launchTag(level LaunchLevel) string {
+	switch level {
+	case LaunchDegraded:
+		return "launch-degraded:"
+	case LaunchMinimal:
+		return "launch-minimal:"
+	default:
+		return "launch:"
+	}
+}
+
+// countLaunches counts launches recorded at a given level.
+func (s *recordingServer) countLaunches(level LaunchLevel) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	n := 0
 	for _, a := range s.order {
-		if strings.HasPrefix(a, "launch-degraded:") {
+		if strings.HasPrefix(a, launchTag(level)) {
 			n++
 		}
 	}

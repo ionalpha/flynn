@@ -19,11 +19,12 @@ func oomClassifier(err error) FailureKind {
 	return FailureCrash
 }
 
-// TestRecoveryDegradesThenQuarantinesOnOOM asserts the controller's response to a model that
-// keeps running out of memory: the first failure retries unchanged, the second relaunches
-// degraded (smaller footprint), and once the policy escalates past degrade the model is no
-// longer launched, so an out-of-memory model is never hammered with the same doomed launch.
-func TestRecoveryDegradesThenQuarantinesOnOOM(t *testing.T) {
+// TestRecoveryClimbsTheLadderOnOOM asserts the controller's response to a model that keeps
+// running out of memory: the first attempt is full size, the second is degraded, the third
+// falls back to the minimal (CPU) footprint, and only then is the model quarantined. An
+// out-of-memory model is shrunk through every rung before it is given up on, and is never
+// hammered with the same doomed launch.
+func TestRecoveryClimbsTheLadderOnOOM(t *testing.T) {
 	srv := newRecordingServer()
 	srv.failLaunch = 1 << 30 // every launch runs out of memory
 	srv.launchErr = errTestOOM
@@ -34,22 +35,25 @@ func TestRecoveryDegradesThenQuarantinesOnOOM(t *testing.T) {
 		WithClassifier(oomClassifier),
 	)
 
-	// Pass 1: first OOM, recorded. The launch was attempted at full size.
-	mustReconcile(t, c)
-	if srv.degradedLaunches() != 0 {
-		t.Fatalf("first attempt must be full-size, got %d degraded", srv.degradedLaunches())
+	mustReconcile(t, c) // full
+	mustReconcile(t, c) // degraded
+	mustReconcile(t, c) // minimal (fallback)
+	if got := srv.countLaunches(LaunchFull); got != 1 {
+		t.Fatalf("want exactly one full-size attempt, got %d", got)
 	}
-	// Pass 2: the policy degrades, so the relaunch is at a smaller footprint.
-	mustReconcile(t, c)
-	if srv.degradedLaunches() != 1 {
-		t.Fatalf("second attempt must be degraded, got %d degraded launches", srv.degradedLaunches())
+	if got := srv.countLaunches(LaunchDegraded); got != 1 {
+		t.Fatalf("want exactly one degraded attempt, got %d", got)
 	}
-	// Pass 3+: escalated past degrade; the model is no longer launched.
+	if got := srv.countLaunches(LaunchMinimal); got != 1 {
+		t.Fatalf("want exactly one minimal (CPU) attempt, got %d", got)
+	}
+
+	// Past the ladder, the model is quarantined: further passes launch nothing new.
 	before := len(srv.actions())
 	mustReconcile(t, c)
 	mustReconcile(t, c)
 	if len(srv.actions()) != before {
-		t.Fatalf("an escalated OOM model must not be launched again, new actions: %v", srv.actions()[before:])
+		t.Fatalf("an exhausted OOM model must be quarantined, new actions: %v", srv.actions()[before:])
 	}
 	if srv.isResident("big") {
 		t.Fatal("the model never started, so it must not be resident")
