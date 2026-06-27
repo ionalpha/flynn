@@ -107,6 +107,33 @@ func TestBuildContainerArgvIsolatedWhenNotPublishing(t *testing.T) {
 	}
 }
 
+func TestBuildContainerArgvAppendsCommandAfterImage(t *testing.T) {
+	spec := servingSpec()
+	spec.Command = []string{"vllm", "serve", "/weights", "--port", "8000"}
+	argv := buildContainerArgv(EngineDocker, spec)
+	img := spec.Image.pinnedRef()
+	idx := -1
+	for i, a := range argv {
+		if a == img {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("image ref not found in argv: %v", argv)
+	}
+	// The command must be the tail of the argv, immediately after the image, in order.
+	tail := argv[idx+1:]
+	if len(tail) != len(spec.Command) {
+		t.Fatalf("command should be the argv tail after the image, got %v", tail)
+	}
+	for i := range spec.Command {
+		if tail[i] != spec.Command[i] {
+			t.Fatalf("command not appended verbatim after the image: %v", tail)
+		}
+	}
+}
+
 func TestContainerImageValidate(t *testing.T) {
 	cases := map[string]struct {
 		img ContainerImage
