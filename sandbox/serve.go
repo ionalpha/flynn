@@ -89,6 +89,14 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 			return nil, fmt.Errorf("sandbox: serve: confine: %w", err)
 		}
 	}
+	// Govern the server's outbound egress through the policy proxy (a server we run
+	// should not be able to reach out past its policy). A platform without an
+	// enforcement leg refuses rather than starting it with direct egress open.
+	if l.egressActive() {
+		if err := l.applyEgress(c); err != nil {
+			return nil, fmt.Errorf("sandbox: serve: egress: %w", err)
+		}
+	}
 	if err := c.Start(); err != nil {
 		return nil, fmt.Errorf("sandbox: serve: start: %w", err)
 	}
