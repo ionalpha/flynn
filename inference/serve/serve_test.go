@@ -283,6 +283,44 @@ func TestStatusPrunesDeadReturnsLive(t *testing.T) {
 	}
 }
 
+func TestStatusReclaimsWedgedServer(t *testing.T) {
+	reg := NewRegistry(t.TempDir())
+	// A recorded server that no longer answers but whose process is still alive (wedged): its
+	// memory must be reclaimed, not leaked, when the stale record is pruned.
+	_ = reg.Put(Record{ModelID: "wedged", PID: 4321, BaseURL: "http://127.0.0.1:1/v1"})
+	var killed int
+	kill := func(pid int) error { killed = pid; return nil }
+	m := NewManager(&fakeLauncher{proc: newFakeProc(1)}, neverHealthy, kill, reg)
+
+	live, err := m.Status(context.Background())
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if len(live) != 0 {
+		t.Fatalf("a non-answering server must not be reported live, got %+v", live)
+	}
+	if killed != 4321 {
+		t.Fatalf("expected the wedged server's pid 4321 to be reclaimed, killed %d", killed)
+	}
+	if _, ok, _ := reg.Get("wedged"); ok {
+		t.Fatal("Status must drop the wedged record")
+	}
+}
+
+func TestStatusDoesNotKillWithoutPID(t *testing.T) {
+	reg := NewRegistry(t.TempDir())
+	_ = reg.Put(Record{ModelID: "dead", BaseURL: "http://127.0.0.1:1/v1"}) // no pid recorded
+	killed := false
+	kill := func(int) error { killed = true; return nil }
+	m := NewManager(&fakeLauncher{proc: newFakeProc(1)}, neverHealthy, kill, reg)
+	if _, err := m.Status(context.Background()); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if killed {
+		t.Fatal("a record without a pid must not trigger a kill")
+	}
+}
+
 func TestStopKillsByPIDAndRemoves(t *testing.T) {
 	reg := NewRegistry(t.TempDir())
 	_ = reg.Put(Record{ModelID: "m", PID: 12345, BaseURL: "http://127.0.0.1:1/v1"})
