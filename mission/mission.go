@@ -95,13 +95,29 @@ func WithAdmitter(a dispatch.Admitter) Option {
 	return func(e *Executor) { e.dispatchOpts = append(e.dispatchOpts, dispatch.WithAdmitter(a)) }
 }
 
-// WithGrant binds a capability grant to every step the executor runs, so each tool
-// call is admitted only if the grant permits its action. Without a grant the
-// default capability admitter is permissive, so the agent runs unconstrained; with
-// one the posture is default-deny. The grant is carried on the step's context, so
-// it also reaches the sandbox layer below the waist.
+// WithGrant binds a default capability grant for goals that do not carry their own
+// (see goal.Spec.Grant), so each tool call is admitted only if the grant permits
+// its action. Without a grant the default capability admitter is permissive, so the
+// agent runs unconstrained; with one the posture is default-deny. The grant is
+// carried on the step's context, so it also reaches the sandbox layer below the
+// waist. A goal that carries its own grant is governed by that grant instead, so a
+// single executor can drive goals of differing authority.
 func WithGrant(g capability.Grant) Option {
 	return func(e *Executor) { e.grant, e.hasGrant = g, true }
+}
+
+// grantFor resolves the capability grant a goal runs under: the grant carried on
+// the goal itself takes precedence (authority travels with the work, so a delegated
+// child runs narrowed), falling back to the executor's default grant, and finally
+// to no grant (permissive) for an ungoverned standalone run.
+func (e *Executor) grantFor(spec goal.Spec) (capability.Grant, bool) {
+	if len(spec.Grant) > 0 {
+		return capability.NewGrant(spec.Grant...), true
+	}
+	if e.hasGrant {
+		return e.grant, true
+	}
+	return capability.Grant{}, false
 }
 
 // WithSandbox wires the run's sandbox into the waist so every action is gated on
@@ -297,20 +313,23 @@ const verifyPrompt = "Before finishing, re-check that the objective is fully acc
 // appends their results so the next step continues; a turn that ends naturally
 // marks the conversation done, which Convergence then observes.
 func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
-	// Bind the run's capability grant so the admitter at the waist enforces it and
-	// the sandbox layer below reads the same policy from the context.
-	if e.hasGrant {
-		ctx = capability.Into(ctx, e.grant)
+	spec, err := goal.DecodeSpec(r)
+	if err != nil {
+		return nil, fault.Wrap(fault.Terminal, "mission_spec_decode", err)
+	}
+	// Bind the capability grant the waist enforces (and the sandbox below reads). The
+	// grant carried on the goal authorizes that goal specifically, so one executor
+	// drives goals of differing authority; it falls back to the executor's default
+	// grant for a goal that carries none, leaving an ungoverned standalone run
+	// unchanged.
+	if g, ok := e.grantFor(spec); ok {
+		ctx = capability.Into(ctx, g)
 	}
 	// Scope the safety brake to this run, so its breakers track behaviour per run
 	// and the kill-switch halts the right one. The run id is the resource name, the
 	// same identity the conversation cache and budget key on.
 	if e.brakes {
 		ctx = brakes.Into(ctx, r.Name)
-	}
-	spec, err := goal.DecodeSpec(r)
-	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, "mission_spec_decode", err)
 	}
 	status, err := goal.DecodeStatus(r)
 	if err != nil {
