@@ -46,7 +46,6 @@ type Policy struct {
 func DefaultPolicy() Policy {
 	return Policy{
 		Grandfathered: map[string]bool{
-			"":                 true, // root agent package
 			"clock":            true,
 			"dispatch":         true,
 			"ids":              true,
