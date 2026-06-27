@@ -11,6 +11,9 @@
 coverage.out
 results.sarif
 
+# rapid property-test failure reproductions (regenerated on failure, not committed)
+testdata/rapid/
+
 # Local config / secrets
 .env
 *.local
