@@ -113,6 +113,14 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
+		if err := runServe(args[1:], *model, *dataDir, !*noLearn, vrb); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "help" {
 		printUsage(os.Stdout)
 		return
@@ -152,6 +160,7 @@ func printUsage(w io.Writer) {
   flynn models status        list the local model servers that are running
   flynn models stop <id>     stop a running local model server
   flynn regrade              re-grade learned skills against the working directory
+  flynn serve [--telegram-token T]  answer chat messages as a service (Telegram)
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)
 }
