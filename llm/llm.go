@@ -110,6 +110,10 @@ type Request struct {
 	Tools     []Tool    `json:"tools,omitempty"`
 	MaxTokens int       `json:"maxTokens,omitempty"`
 	Cache     CacheHint `json:"cache,omitempty"`
+	// Sampling pins the decoding parameters for a reproducible run. Nil takes the server's
+	// defaults (free-running); setting it sends a fixed seed and sampler so a local
+	// generation can be recorded and replayed.
+	Sampling *Sampling `json:"sampling,omitempty"`
 }
 
 // CacheHint tells a backend which parts of a request are stable across turns, so a
