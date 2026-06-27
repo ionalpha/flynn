@@ -1,0 +1,50 @@
+{
+  "events": [
+    {
+      "Kind": "turn.started",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "assistant.text",
+      "Turn": 1,
+      "Text": "The answer is 42.",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "end_turn",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    }
+  ],
+  "result": "The answer is 42."
+}

@@ -1,0 +1,116 @@
+{
+  "events": [
+    {
+      "Kind": "turn.started",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.call",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "write",
+      "ToolUseID": "c1",
+      "Input": {
+        "path": "out.txt",
+        "content": "hi from flynn"
+      },
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.result",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "write",
+      "ToolUseID": "c1",
+      "Input": null,
+      "Result": "wrote 13 bytes to out.txt",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "tool_use",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.started",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "assistant.text",
+      "Turn": 2,
+      "Text": "Created out.txt.",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "end_turn",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    }
+  ],
+  "result": "Created out.txt.",
+  "files": {
+    "out.txt": "hi from flynn"
+  }
+}
