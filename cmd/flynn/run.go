@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -181,6 +182,9 @@ func missionRegistry() (*resource.Registry, error) {
 		return nil, err
 	}
 	if err := goal.RegisterKind(reg); err != nil {
+		return nil, err
+	}
+	if err := inbox.RegisterKind(reg); err != nil {
 		return nil, err
 	}
 	return reg, nil

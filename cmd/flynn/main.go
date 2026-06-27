@@ -114,7 +114,7 @@ func main() {
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
-		if err := runServe(args[1:], *model, *dataDir, !*noLearn, vrb); err != nil {
+		if err := runServe(args[1:], *model, *dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
