@@ -39,6 +39,8 @@ func dispatchModels(sub []string, dataDir string) error {
 		return runModelStatus(sub[1:], dataDir, os.Stdout)
 	case "stop":
 		return runModelStop(sub[1:], dataDir, os.Stdout)
+	case "pool":
+		return runModelPool(sub[1:], dataDir, os.Stdout)
 	default:
 		return runModels(sub, os.Stdout)
 	}
