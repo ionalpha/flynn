@@ -53,17 +53,27 @@ var specSchema = json.RawMessage(`{
   "properties": {
     "objective": {"type": "string", "minLength": 1},
     "stopCondition": {"type": "string", "minLength": 1},
-    "maxSteps": {"type": "integer", "minimum": 0}
+    "maxSteps": {"type": "integer", "minimum": 0},
+    "grant": {"type": "array", "items": {"type": "string"}}
   },
   "additionalProperties": false
 }`)
 
 // Spec is a goal's desired state: what to achieve, the condition that means it is
-// done, and an optional ceiling on how many steps may be spent trying.
+// done, an optional ceiling on how many steps may be spent trying, and the
+// capabilities the goal is authorized to use.
 type Spec struct {
 	Objective     string `json:"objective"`
 	StopCondition string `json:"stopCondition"`
 	MaxSteps      int    `json:"maxSteps,omitempty"`
+	// Grant is the exact set of action names this goal may take, carried on the goal
+	// itself so authority travels with the work rather than being fixed at the
+	// executor. One executor can then drive goals of differing authority (a parent at
+	// full grant, a delegated child narrowed to a subset), and a child's grant is set
+	// to a subset of its parent's so a delegation can never widen authority. Empty
+	// defers to the executor's default grant, so an ungoverned standalone run is
+	// unchanged.
+	Grant []string `json:"grant,omitempty"`
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile
