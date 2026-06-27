@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
@@ -133,6 +134,21 @@ func WithBrakes(h *brakes.Hook) Option {
 		if h != nil {
 			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(h))
 			e.brakes = true
+		}
+	}
+}
+
+// WithApproval wires a cryptographic approval gate into the waist, so a privileged
+// action the gate's policy lists is refused unless a sufficient quorum of valid
+// signed approvals is presented on the run's context. It composes above the
+// capability grant: the grant decides an action is allowed in principle, the gate
+// requires a fresh authorization for the specific privileged instance. Without it
+// no approval is required, which keeps the standalone agent zero-config. A nil gate
+// is ignored.
+func WithApproval(g *approval.Gate) Option {
+	return func(e *Executor) {
+		if g != nil {
+			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(g))
 		}
 	}
 }
