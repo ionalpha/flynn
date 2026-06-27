@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -183,7 +184,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
@@ -206,7 +207,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 	// The objective and the final answer are rendered from the run's own events
 	// (session.started and session.converged), so the live transcript and a later
 	// `flynn inspect` of the same run read identically.
-	if _, err := runLearningMission(ctx, os.Stdout, model, distiller, cwd, objective, store, verbose); err != nil {
+	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, store, verbose); err != nil {
 		return err
 	}
 	return nil
@@ -219,7 +220,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 // the model as a secret.Text, and the sandbox already withholds the parent
 // environment from commands, so unsetting keeps the raw key out of os.Environ(), a
 // crash dump, or any child that reads the parent env.
-func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, error) {
+func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
 	// A local catalog model resolves by provisioning and serving it on demand, then
 	// talking to its loopback endpoint, so selecting it is zero-touch: nothing has to be
 	// installed, downloaded, or started by hand. A hosted provider spec falls through to
@@ -229,12 +230,14 @@ func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, er
 	}
 	model, err := provider.ResolveWith(ctx, modelSpec, credentialSource(dataDir))
 	if err != nil {
-		return nil, err
+		return nil, harness.Plan{}, err
 	}
 	for _, k := range provider.CredentialEnvVars() {
 		_ = os.Unsetenv(k)
 	}
-	return model, nil
+	// A hosted frontier model is driven leanly: the zero plan applies no scaffolding,
+	// preserving its full schemas and single-pass convergence.
+	return model, harness.Plan{}, nil
 }
 
 // credentialSource is the credential lookup order: the vault first (the OS
@@ -254,7 +257,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
@@ -271,6 +274,6 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = drive(ctx, os.Stdout, model, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID)
+	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID)
 	return err
 }

@@ -117,7 +117,7 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 
-	client := localModelClient(ep, m.ID)
+	client := localModelClient(ep, m.ID, localModelPlan(m))
 	resp, err := client.Generate(ctx, llm.Request{
 		Messages:  []llm.Message{llm.Text(llm.RoleUser, prompt)},
 		MaxTokens: 1024,

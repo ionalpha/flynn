@@ -10,6 +10,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/secret"
@@ -22,10 +23,10 @@ import (
 // asking), and only when none is configured and a terminal is attached does it run
 // the first-run setup that stores a key. Without a terminal and with nothing
 // configured, the original error is returned for the caller to surface.
-func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.Model, error) {
-	model, err := resolveModel(ctx, modelSpec, dataDir)
+func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
+	model, plan, err := resolveModel(ctx, modelSpec, dataDir)
 	if !errors.Is(err, provider.ErrCredentialNotSet) {
-		return model, err
+		return model, plan, err
 	}
 
 	// The requested provider has no key. If another provider is already configured,
@@ -41,7 +42,7 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.
 		fmt.Fprintf(os.Stderr, "Configured providers: %s\n", strings.Join(configured, ", "))
 		name, perr := promptVisible(in, fmt.Sprintf("Provider [%s]: ", configured[0]))
 		if perr != nil {
-			return nil, perr
+			return nil, harness.Plan{}, perr
 		}
 		if name == "" {
 			name = configured[0]
@@ -54,11 +55,11 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.
 
 	// Nothing configured at all.
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return nil, err
+		return nil, harness.Plan{}, err
 	}
 	spec, oerr := onboardCredential(ctx, modelSpec, dataDir)
 	if oerr != nil {
-		return nil, oerr
+		return nil, harness.Plan{}, oerr
 	}
 	return resolveModel(ctx, spec, dataDir)
 }
