@@ -70,6 +70,7 @@ type Executor struct {
 	maxTokens     int
 	compactBudget int
 	sampling      *llm.Sampling
+	recorder      GenerationRecorder
 	reporter      Reporter
 	grant         capability.Grant
 	hasGrant      bool
@@ -176,11 +177,22 @@ func WithSampling(s *llm.Sampling) Option {
 	return func(e *Executor) { e.sampling = s }
 }
 
+// WithGenerationRecorder records the decoding envelope of every model call, so a run's
+// reproducibility parameters become part of its durable history. The default discards them; a
+// host wires this to the event spine.
+func WithGenerationRecorder(r GenerationRecorder) Option {
+	return func(e *Executor) {
+		if r != nil {
+			e.recorder = r
+		}
+	}
+}
+
 // NewExecutor builds a mission executor over the given model and options. Tool
 // calls run through a dispatch waist so governance, event recording, and tracing
 // are applied once at the chokepoint rather than scattered across the loop.
 func NewExecutor(model llm.Model, opts ...Option) *Executor {
-	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}}
+	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}, recorder: nopGenerationRecorder{}}
 	// Seed the capability admitter as the base governance gate; it is permissive
 	// until a grant is bound, and a caller's WithAdmitter (applied later) overrides
 	// it. Seeding first means a bound grant is enforced with zero extra wiring.
@@ -253,6 +265,10 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	var resp llm.Response
 	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted},
 		func(ctx context.Context) (dispatch.Metering, error) {
+			// Record the decoding identity of this generation on the durable history, within the
+			// dispatch span, so a run's reproducibility parameters are kept alongside its
+			// lifecycle without putting typed model input on the payload-agnostic waist.
+			e.recorder.RecordGeneration(ctx, envelopeOf(e.sampling))
 			var gerr error
 			resp, gerr = e.model.Generate(ctx, llm.Request{
 				System:    e.system,
