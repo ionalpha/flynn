@@ -137,18 +137,24 @@ func (q *Queue[T]) Len() int {
 // item are harmless: each fires an Add, and Add dedups. The timer is created
 // synchronously (registered on the clock before AddAfter returns) so a Manual
 // clock advanced past d fires it deterministically.
+//
+// The timer goroutine is registered under q.mu and gated on shuttingDown, which
+// ShutDown also sets under q.mu before it waits on the timer WaitGroup. That
+// ordering guarantees every wg.Add happens before ShutDown observes the flag, so
+// a wg.Add can never run concurrently with (or after) the wg.Wait in ShutDown.
 func (q *Queue[T]) AddAfter(item T, d time.Duration) {
 	if d <= 0 {
 		q.Add(item)
 		return
 	}
-	select {
-	case <-q.shutdownCh:
+	q.mu.Lock()
+	if q.shuttingDown {
+		q.mu.Unlock()
 		return
-	default:
 	}
 	t := q.clk.NewTimer(d)
 	q.wg.Add(1)
+	q.mu.Unlock()
 	go func() {
 		defer q.wg.Done()
 		defer t.Stop()
