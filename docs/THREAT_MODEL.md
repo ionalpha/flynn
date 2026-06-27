@@ -143,6 +143,14 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   grant by name at the dispatch boundary; an action the grant does not permit is refused
   before any side effect, and with no grant bound the agent is unconstrained only in the
   standalone default.
+- **A delegated sub-task gaining authority its parent did not hold.** A run can fan out into
+  child runs, and a child must never exceed the authority of the run that spawned it.
+  Delegation is itself a capability-gated action, admitted against the parent's grant at the
+  dispatch boundary, so a run whose grant omits it cannot spawn at all. The mechanism requires
+  a child's grant to be the parent's grant narrowed to the actions requested for it, a strict
+  subset, so authority only shrinks down the tree; the children draw on the parent's single
+  budget, so a fan-out cannot spend past the run's ceiling; and each child is a resource owned
+  by the parent, reaped when the parent is cancelled or removed.
 - **Running model-authored or untrusted code on a host that cannot contain it.** Each work
   kind carries a trust level, and the containment gate refuses work whose trust needs
   stronger isolation than the host provides, rather than silently running it at a weaker
@@ -202,6 +210,10 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   either open or denied as a whole, not host-allowlisted).
 - A signed, capability-scoped plugin sandbox.
 - Runtime anomaly detection and deception tripwires.
+- The run-creation wiring behind fan-out: spawning a child run is gated as a capability today,
+  while the code that materializes each child run under the narrowed grant and the parent's
+  shared budget is being landed, so the narrowing and budget guarantees above are a contract of
+  the delegation interface rather than a property to rely on in a deployed run yet.
 
 ## Reporting
 
