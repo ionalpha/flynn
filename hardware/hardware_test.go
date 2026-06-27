@@ -36,6 +36,100 @@ func TestParseNvidiaSMI(t *testing.T) {
 	}
 }
 
+func TestParseNvidiaSMICapability(t *testing.T) {
+	cases := []struct {
+		name       string
+		out        string
+		wantCC     string
+		wantArch   string
+		wantDriver string
+		wantNVFP4  bool
+	}{
+		{"ada 4070ti", "12282, NVIDIA GeForce RTX 4070 Ti, 8.9, 550.54.14", "8.9", "Ada Lovelace", "550.54.14", false},
+		{"blackwell consumer", "32607, NVIDIA GeForce RTX 5090, 12.0, 570.00.00", "12.0", "Blackwell", "570.00.00", true},
+		{"blackwell datacenter", "183359, NVIDIA B200, 10.0, 560.00.00", "10.0", "Blackwell", "560.00.00", true},
+		{"hopper", "81559, NVIDIA H100, 9.0, 555.00.00", "9.0", "Hopper", "555.00.00", false},
+		{"ampere consumer", "24564, NVIDIA GeForce RTX 3090, 8.6, 535.00.00", "8.6", "Ampere", "535.00.00", false},
+		{"capability not available", "8192, Old Card, [N/A], 470.00.00", "", "", "470.00.00", false},
+		{"only memory and name", "16384, A", "", "", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, ok := parseNvidiaSMI(tc.out)
+			if !ok {
+				t.Fatalf("should parse %q", tc.out)
+			}
+			b.GPUArch = archForComputeCap(b.ComputeCapability)
+			if b.ComputeCapability != tc.wantCC || b.GPUArch != tc.wantArch || b.DriverVersion != tc.wantDriver {
+				t.Fatalf("got cc=%q arch=%q driver=%q; want %q/%q/%q", b.ComputeCapability, b.GPUArch, b.DriverVersion, tc.wantCC, tc.wantArch, tc.wantDriver)
+			}
+			if b.SupportsNVFP4() != tc.wantNVFP4 {
+				t.Fatalf("SupportsNVFP4()=%v want %v for %q", b.SupportsNVFP4(), tc.wantNVFP4, tc.wantCC)
+			}
+		})
+	}
+}
+
+func TestArchForComputeCap(t *testing.T) {
+	cases := map[string]string{
+		"":     "",
+		"8.9":  "Ada Lovelace",
+		"9.0":  "Hopper",
+		"10.0": "Blackwell",
+		"12.0": "Blackwell",
+		"8.6":  "Ampere",
+		"8.0":  "Ampere",
+		"7.5":  "Turing",
+		"6.1":  "",
+		"junk": "",
+	}
+	for cc, want := range cases {
+		if got := archForComputeCap(cc); got != want {
+			t.Fatalf("archForComputeCap(%q) = %q, want %q", cc, got, want)
+		}
+	}
+}
+
+func TestParseCUDAVersion(t *testing.T) {
+	cases := []struct {
+		in   string
+		want string
+	}{
+		{"| NVIDIA-SMI 550.54.14   Driver Version: 550.54.14   CUDA Version: 12.4 |", "12.4"},
+		{"CUDA Version: 13.0\n", "13.0"},
+		{"CUDA Version: 12 ", "12"},
+		{"no cuda banner here", ""},
+		{"CUDA Version: N/A", ""},
+	}
+	for _, tc := range cases {
+		if got := parseCUDAVersion(tc.in); got != tc.want {
+			t.Fatalf("parseCUDAVersion(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestContainerSupport(t *testing.T) {
+	cases := []struct {
+		name        string
+		c           ContainerSupport
+		available   bool
+		passthrough bool
+	}{
+		{"nothing", ContainerSupport{}, false, false},
+		{"docker only", ContainerSupport{Docker: true}, true, false},
+		{"docker + toolkit", ContainerSupport{Docker: true, NVIDIAToolkit: true}, true, true},
+		{"podman + toolkit", ContainerSupport{Podman: true, NVIDIAToolkit: true}, true, true},
+		{"toolkit but no runtime", ContainerSupport{NVIDIAToolkit: true}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.c.Available() != tc.available || tc.c.GPUPassthrough() != tc.passthrough {
+				t.Fatalf("%+v: available=%v passthrough=%v; want %v/%v", tc.c, tc.c.Available(), tc.c.GPUPassthrough(), tc.available, tc.passthrough)
+			}
+		})
+	}
+}
+
 func TestParseMeminfo(t *testing.T) {
 	cases := []struct {
 		name string
