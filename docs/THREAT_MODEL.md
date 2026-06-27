@@ -52,6 +52,12 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 5. **The credential boundary.** Credentials live in a vault and are applied at call time;
    the sandbox runs commands with a scrubbed environment, so a secret is never placed in a
    child process's environment, a prompt, or a log.
+6. **The inbound boundary.** Every listener Flynn opens is bound through a bind-safe gate
+   (`bindguard`) that is loopback-only by default, refuses a wildcard bind (every
+   interface) unconditionally, and refuses a non-loopback bind without an explicit
+   operator opt-in; a lint rule forbids opening a listener outside that gate. It is the
+   inbound mirror of the egress boundary: where egress controls where the agent may
+   connect, this controls who may reach what the agent exposes.
 
 ## STRIDE analysis
 
@@ -100,6 +106,14 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   and cloud-metadata addresses and is re-checked on every redirect hop, closing the SSRF
   and metadata-endpoint class. A local model server is bound to the loopback interface
   only, so it is never exposed off the machine.
+- **An agent service silently reachable off-host.** A listener Flynn opens (the
+  control-plane API, a local model server, a future served endpoint) is bound through the
+  inbound gate (`bindguard`), which binds the loopback interface by default, refuses a
+  wildcard bind that would expose every interface, and refuses any non-loopback bind unless
+  the operator explicitly opts in. The recommended way to reach a service from off the
+  machine is a tunnel to its loopback bind, so the safe shape is the default and exposure
+  is always a deliberate, auditable choice rather than an accident. The control-plane API
+  additionally fails closed without a bearer token.
 
 ### Denial of service (exhausting a resource)
 
@@ -147,6 +161,9 @@ Enforced and tested today:
   filesystem-write, network, and syscall escapes it claims to.
 - Default-deny outbound egress for the agent's own requests, with anti-SSRF and
   metadata-endpoint blocking, plus lint rules against raw dials and unguarded HTTP clients.
+- Bind-safe inbound listeners: every listener is opened through a loopback-by-default gate
+  that refuses a wildcard bind and a non-loopback bind without an explicit opt-in, plus a
+  lint rule against opening a listener outside that gate.
 - The full model-source trust pipeline: classification, code-executing-format refusal,
   digest verification with pin-on-first-use, runtime version-floor gating, hardened
   file parsing, a forced trusted chat template, loopback-only serving, and explicit
