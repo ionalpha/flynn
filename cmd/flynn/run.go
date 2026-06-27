@@ -22,6 +22,7 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/profilestore"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
@@ -176,7 +177,8 @@ func regradeSkills(dataDir string) error {
 }
 
 // missionRegistry builds the resource registry the durable store admits against:
-// the core kinds plus the Goal kind the runtime drives.
+// the core kinds plus the Goal kind the runtime drives and the ModelProfile kind a
+// reliability measurement is recorded under.
 func missionRegistry() (*resource.Registry, error) {
 	reg := resource.NewRegistry()
 	if err := resource.RegisterCoreKinds(reg); err != nil {
@@ -186,6 +188,9 @@ func missionRegistry() (*resource.Registry, error) {
 		return nil, err
 	}
 	if err := inbox.RegisterKind(reg); err != nil {
+		return nil, err
+	}
+	if err := profilestore.RegisterKind(reg); err != nil {
 		return nil, err
 	}
 	return reg, nil
