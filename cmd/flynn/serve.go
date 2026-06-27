@@ -13,6 +13,7 @@ import (
 	"github.com/ionalpha/flynn/bindguard"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/exposure"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/inbox"
@@ -115,12 +116,15 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		// Bind-safe by default: the listener is opened through the inbound gate, which
 		// refuses a wildcard bind outright and a non-loopback bind unless --api-expose
 		// was passed. The bind is checked before the socket opens, so an unsafe address
-		// fails closed.
-		exposure := bindguard.Loopback()
+		// fails closed. It is opened through the exposure registry so the listener is
+		// recorded and visible (nothing stays exposed silently); the API is long-lived,
+		// so it carries no TTL.
+		reach := bindguard.Loopback()
 		if *apiExpose {
-			exposure = bindguard.Exposed()
+			reach = bindguard.Exposed()
 		}
-		ln, err := bindguard.Listen("tcp", *apiAddr, exposure)
+		exposures := exposure.New(clock.System{}, nil)
+		ln, err := exposures.Listen("tcp", *apiAddr, reach, exposure.Meta{Purpose: "control-plane API", Exposed: *apiExpose})
 		if err != nil {
 			return fmt.Errorf("serve: api: %w", err)
 		}
