@@ -84,6 +84,9 @@ type Manager struct {
 	kill     Killer
 	reg      *Registry
 	clk      clock.Clock
+	// stats reads how loaded a running server is, one source per runtime name. Empty by
+	// default so the standalone path stays zero-setup and reports load as unknown.
+	stats map[string]StatsSource
 	// readyTimeout caps how long Ensure waits for a started server to answer before
 	// giving up and stopping it.
 	readyTimeout time.Duration
@@ -129,6 +132,7 @@ func NewManager(l Launcher, probe Prober, kill Killer, reg *Registry, opts ...Op
 		kill:         kill,
 		reg:          reg,
 		clk:          clock.System{},
+		stats:        map[string]StatsSource{},
 		readyTimeout: 90 * time.Second,
 		pollEvery:    250 * time.Millisecond,
 	}

@@ -71,6 +71,9 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 		serve.HTTPProbe(nil),
 		serve.OSKiller,
 		serve.NewRegistry(runDir),
+		// The self-provisioned runtime exposes a Prometheus endpoint, so its load can be
+		// read back to drive scheduling and reporting.
+		serve.WithStatsSource(selfProvisionedRuntime, serve.LlamaCppStatsSource(nil)),
 	)
 	return &localRunner{
 		dataDir:       dataDir,
