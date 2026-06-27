@@ -6,11 +6,27 @@ import (
 	"github.com/ionalpha/flynn/inference/serve"
 )
 
+// LaunchLevel is how aggressively a launch shrinks a model's footprint to make it fit. It
+// climbs as recovery escalates, so a model that keeps running out of memory is retried
+// smaller before it is given up on.
+type LaunchLevel int
+
+const (
+	// LaunchFull serves the model at its normal footprint.
+	LaunchFull LaunchLevel = iota
+	// LaunchDegraded serves with a reduced footprint (a smaller context window), the first
+	// response to a memory or wedged-load failure.
+	LaunchDegraded
+	// LaunchMinimal serves at the smallest viable footprint, including running on the CPU, the
+	// last resort for a model that will not fit in device memory.
+	LaunchMinimal
+)
+
 // LaunchFunc starts a model by id, resolving and serving it. It is injected because launching
 // a catalog model (resolve, provision, build a plan, serve) is wired above this package; the
-// orchestrator only needs the verb. The degraded flag asks for a smaller footprint, the
-// recovery response to a model that ran out of memory or wedged at its full size.
-type LaunchFunc func(ctx context.Context, modelID string, degraded bool) error
+// orchestrator only needs the verb. The level asks for a smaller footprint as recovery
+// escalates.
+type LaunchFunc func(ctx context.Context, modelID string, level LaunchLevel) error
 
 // FootprintFunc returns the device memory a model occupies when resident, in bytes. It is
 // injected from the model catalog, the source of a model's known size.
@@ -65,13 +81,13 @@ func (a *ServeAdapter) footprintOf(id string) int64 {
 	return a.footprint(id)
 }
 
-// Launch starts a model by id through the injected launcher, passing the degraded request
-// down so a recovery relaunch can ask for a smaller footprint.
-func (a *ServeAdapter) Launch(ctx context.Context, modelID string, degraded bool) error {
+// Launch starts a model by id through the injected launcher, passing the launch level down so
+// a recovery relaunch can ask for a smaller footprint.
+func (a *ServeAdapter) Launch(ctx context.Context, modelID string, level LaunchLevel) error {
 	if a.launch == nil {
 		return nil
 	}
-	return a.launch(ctx, modelID, degraded)
+	return a.launch(ctx, modelID, level)
 }
 
 // Evict stops the model's server. Stopping a model that is not running is not an error, so a
