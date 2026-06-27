@@ -17,8 +17,16 @@ import (
 type Record struct {
 	// ModelID is the catalog id the server runs, the key a reuse or stop looks up.
 	ModelID string `json:"modelID"`
-	// PID is the operating-system process id, so a separate process can stop the server.
+	// PID is the operating-system process id, so a separate process can stop the server. It
+	// is set for a process-backed server (the runtime runs as a host process); a
+	// container-backed server has no host pid and carries ContainerID instead.
 	PID int `json:"pid"`
+	// ContainerID and Engine identify a container-backed server, so a later, separate Flynn
+	// process can stop it by driving the engine (a container has no host pid to signal).
+	// They are empty for a process-backed server. Exactly one of PID or ContainerID
+	// identifies a given server.
+	ContainerID string `json:"containerID,omitempty"`
+	Engine      string `json:"engine,omitempty"`
 	// Port and BaseURL are the loopback coordinates a client targets.
 	Port    int    `json:"port"`
 	BaseURL string `json:"baseURL"`

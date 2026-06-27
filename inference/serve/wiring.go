@@ -120,6 +120,13 @@ func HTTPProbe(client *http.Client) Prober {
 	}
 }
 
+// EngineStopper stops a container-backed server by driving the OCI engine, the production
+// ContainerStopper. It bounds the stop with its own timeout inside the sandbox helper, so a
+// `models stop` for a vLLM container tears it down the same way OSKiller stops a process.
+func EngineStopper(engine, id string) error {
+	return sandbox.StopContainer(context.Background(), sandbox.OCIEngine(engine), id)
+}
+
 // OSKiller stops a process by pid through the operating system, the production Killer.
 // It is used to stop a server a previous Flynn invocation started, where only the pid
 // survives in the registry. Killing an already-gone process is reported by the OS and
