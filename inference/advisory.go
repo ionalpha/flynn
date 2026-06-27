@@ -44,6 +44,18 @@ var advisories = []Advisory{
 		Summary:   "an out-of-bounds write while parsing a malicious model file allowed remote code execution; the unsafe C++ model handling was rewritten in 0.7.0",
 		FixedFrom: Version{0, 7, 0},
 	},
+	{
+		Runtime:   "vllm",
+		ID:        "CVE-2025-62164",
+		Summary:   "the completions API deserialized a user-supplied prompt-embeddings tensor with torch.load without validation, so a crafted request could corrupt memory and run code; the input is now parsed safely",
+		FixedFrom: Version{0, 11, 1},
+	},
+	{
+		Runtime:   "vllm",
+		ID:        "CVE-2025-9141",
+		Summary:   "the Qwen3-Coder tool-call parser passed an attacker-influenced argument into an unsafe evaluation, letting an authenticated request execute arbitrary code",
+		FixedFrom: Version{0, 10, 1, 1},
+	},
 }
 
 // Advisories returns a copy of the named advisory list.

@@ -216,12 +216,62 @@ func TestEngineForFormat(t *testing.T) {
 	}
 }
 
-func TestBuildPlanRefusesUnwiredEngine(t *testing.T) {
-	// A safetensors model selects the vLLM engine, whose builder is not wired yet, so the
-	// plan is refused rather than served on llama.cpp with the wrong command.
-	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Format: catalog.FormatSafetensors, Port: 9000}
-	if _, err := BuildPlan(cfg); err == nil {
-		t.Fatal("serving a safetensors model should be refused until the vLLM runtime is wired")
+func TestBuildPlanBuildsVLLMServeCommand(t *testing.T) {
+	// A safetensors model selects the vLLM engine and produces a vllm serve command bound
+	// to the same loopback endpoint the llama.cpp path uses.
+	cfg := Config{
+		BinPath: "vllm", WeightsPath: "/w/model", Model: localModel("chatml"),
+		Format: catalog.FormatSafetensors, Port: 9000, CtxSize: 8192, APIKey: "tok",
+		Quantization: "modelopt_fp4", GPUMemoryUtilization: 0.9, KVCacheDtype: "fp8",
+	}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Host != "127.0.0.1" || plan.Port != 9000 || plan.BaseURL != "http://127.0.0.1:9000/v1" {
+		t.Fatalf("vLLM plan should bind the loopback endpoint, got %s:%d %s", plan.Host, plan.Port, plan.BaseURL)
+	}
+	if plan.Argv[0] != "vllm" || plan.Argv[1] != "serve" || plan.Argv[2] != "/w/model" {
+		t.Fatalf("argv must be `vllm serve <model>`, got %v", plan.Argv[:3])
+	}
+	for _, want := range [][2]string{
+		{"--host", "127.0.0.1"},
+		{"--port", "9000"},
+		{"--served-model-name", "ollama:test:1b"},
+		{"--quantization", "modelopt_fp4"},
+		{"--gpu-memory-utilization", "0.9"},
+		{"--max-model-len", "8192"},
+		{"--kv-cache-dtype", "fp8"},
+		{"--api-key", "tok"},
+	} {
+		if !argvHasFlag(plan.Argv, want[0], want[1]) {
+			t.Fatalf("argv missing %s %s: %v", want[0], want[1], plan.Argv)
+		}
+	}
+	// vLLM gets no llama.cpp-only flags.
+	if contains(plan.Argv, "--no-webui") || contains(plan.Argv, "--model") {
+		t.Fatalf("vLLM argv must not carry llama.cpp flags: %v", plan.Argv)
+	}
+}
+
+func TestBuildPlanVLLMRefusesBadKnobs(t *testing.T) {
+	base := func() Config {
+		return Config{BinPath: "vllm", WeightsPath: "/w/model", Model: localModel("chatml"), Format: catalog.FormatSafetensors, Port: 9000}
+	}
+	cases := map[string]func(*Config){
+		"bad quant":     func(c *Config) { c.Quantization = "made-up" },
+		"bad kv dtype":  func(c *Config) { c.KVCacheDtype = "q4_0" }, // a llama.cpp type, not a vLLM one
+		"util over 1":   func(c *Config) { c.GPUMemoryUtilization = 1.5 },
+		"util negative": func(c *Config) { c.GPUMemoryUtilization = -0.1 },
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base()
+			mut(&cfg)
+			if _, err := BuildPlan(cfg); err == nil {
+				t.Fatalf("expected %s to be refused", name)
+			}
+		})
 	}
 }
 

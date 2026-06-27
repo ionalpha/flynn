@@ -70,6 +70,18 @@ var (
 		versionRE:    regexp.MustCompile(`(?i)version[^\d]*b?(\d+)`),
 		MinSupported: Version{8146},
 	}
+	// vLLM prints a semver like "0.11.1"; its server deserializes request fields, so an
+	// older build is exposed to a remote-code-execution class through that path. Floor
+	// 0.11.1 is the fix for the prompt-embeddings torch.load deserialization, and it is
+	// at or above the earlier tool-parser and ZeroMQ deserialization fixes, so the floor
+	// catches the whole class. Unlike Ollama/llama.cpp, the exposed surface here is the
+	// running server's request handling rather than only the model-file parser, which is
+	// why the floor and the sandbox both apply.
+	VLLM = Runtime{
+		Name: "vllm", Binaries: []string{"vllm"}, VersionArgs: []string{"--version"},
+		versionRE:    regexp.MustCompile(`(\d+\.\d+\.\d+(?:\.\d+)?)`),
+		MinSupported: Version{0, 11, 1},
+	}
 )
 
 // MinSupportedFor returns the minimum safe version for a runtime by name, and whether
@@ -96,7 +108,7 @@ func (r Runtime) ParseVersion(raw string) Version {
 }
 
 // Runtimes returns the known runtimes.
-func Runtimes() []Runtime { return []Runtime{Ollama, LlamaCpp} }
+func Runtimes() []Runtime { return []Runtime{Ollama, LlamaCpp, VLLM} }
 
 // Version is a runtime version as an ordered sequence of numeric components, so the
 // many shapes runtimes print (semver like 0.3.14, a build number like b3008, a tag
