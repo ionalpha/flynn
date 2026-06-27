@@ -71,6 +71,7 @@ type Executor struct {
 	compactBudget   int
 	verifyPasses    int
 	simplifySchemas bool
+	fanout          Fanout
 	sampling        *llm.Sampling
 	recorder        GenerationRecorder
 	reporter        Reporter
@@ -226,6 +227,11 @@ func NewExecutor(model llm.Model, opts ...Option) *Executor {
 	for _, o := range opts {
 		o(e)
 	}
+	// Offer the spawn tool when fan-out is enabled, so the model can delegate sub-goals. It is a
+	// normal tool definition, governed by the run's grant like any other action.
+	if e.fanout != nil {
+		e.defs = append(e.defs, spawnToolDef)
+	}
 	if e.simplifySchemas {
 		for i := range e.defs {
 			e.defs[i] = simplifyTool(e.defs[i])
@@ -275,6 +281,13 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	}
 	if cp.Done {
 		return status.Checkpoint, nil // already complete; nothing to advance
+	}
+
+	// A goal waiting on a fan-out folds its children in before it does anything else: poll them,
+	// and either fold their results into the conversation (all finished) or wait (some still
+	// running). No model call happens while waiting, so a fan-out parent is cheap to re-reconcile.
+	if len(cp.Pending) > 0 {
+		return e.advanceFanout(ctx, r, cp)
 	}
 
 	if len(cp.Messages) == 0 {
@@ -343,11 +356,19 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 
 	switch resp.StopReason {
 	case llm.StopToolUse:
-		// Run the calls and feed their results back for the next turn.
-		cp.Messages = append(cp.Messages, llm.Message{
-			Role:   llm.RoleUser,
-			Blocks: e.runTools(ctx, state.Scope(r.Scope), turn, resp.Message.ToolUses()),
-		})
+		// Run the calls and feed their results back for the next turn. A spawn call does not
+		// return immediately: it launches a child goal whose result is folded in once the child
+		// finishes, so a turn that spawns children leaves the goal waiting rather than appending
+		// results now.
+		blocks, pending, err := e.dispatchToolUses(ctx, r, turn, resp.Message.ToolUses())
+		if err != nil {
+			return nil, err
+		}
+		if len(pending) > 0 {
+			cp.Pending = pending
+			break // wait for the children; advanceFanout folds them in on a later step
+		}
+		cp.Messages = append(cp.Messages, llm.Message{Role: llm.RoleUser, Blocks: blocks})
 	case llm.StopMaxTokens:
 		// The turn was cut off, not finished: ask the model to continue rather than
 		// converge on a truncated answer. The reconciler's step budget bounds how
@@ -521,6 +542,11 @@ type checkpoint struct {
 	// WithVerifyPasses). It is carried on the durable checkpoint so the budget is
 	// honored across a crash-resume rather than reset.
 	VerifyUsed int `json:"verifyUsed,omitempty"`
+	// Pending holds the tool-result slots a fan-out turn owes the model while its spawned
+	// children run. Non-empty means the goal is waiting on children: the next step folds their
+	// results in once they finish rather than calling the model. It lives on the durable
+	// checkpoint so a crash mid-fan-out resumes waiting instead of re-spawning.
+	Pending []resultSlot `json:"pending,omitempty"`
 }
 
 func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
