@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
@@ -64,6 +65,12 @@ type Config struct {
 	// "single-shot"). Empty uses the default general-purpose software loop, so a
 	// zero-config agent is unchanged. An unknown name fails closed at run start.
 	Driver string
+	// Agent, when set, runs the goal as a specific Agent archetype: its system
+	// prompt frames the run and its declared capabilities become the run's grant, so
+	// a tool the archetype does not list is refused at the waist even though the host
+	// offers it. Nil runs the default generalist (all tools granted). The model call
+	// is always permitted.
+	Agent *archetype.Spec
 	// State is the durable backend for sessions, skills, and memory. If nil, an
 	// in-memory provider is used so the agent runs with zero setup.
 	State state.Provider
@@ -157,17 +164,29 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 	// so every action is admitted against it and the grant stays the complete record
 	// of what this run can reach.
 	toolset := tools.New(sb).Tools()
+	// By default a generalist run may use every offered tool plus the model call.
+	// Running as an Agent narrows authority to exactly that archetype's declared
+	// capabilities (plus the always-permitted model call), and frames the run with
+	// its system prompt, so the Agent resource is the least-privilege boundary.
+	system := DefaultSystemPrompt
 	names := make([]string, 0, len(toolset)+1)
 	for _, t := range toolset {
 		names = append(names, t.Def().Name)
 	}
 	names = append(names, mission.ActionModelGenerate)
+	if a.cfg.Agent != nil {
+		if a.cfg.Agent.System != "" {
+			system = a.cfg.Agent.System
+		}
+		names = append(append([]string{}, a.cfg.Agent.Capabilities...), mission.ActionModelGenerate)
+	}
 
 	// Resolve the run loop by name from the driver registry, fail-closed on an
-	// unknown driver, and build it from the run's ingredients. The default is the
-	// general-purpose software loop, so a zero-config run is unchanged; selecting a
+	// unknown driver, and build it from the run's ingredients (its system prompt and
+	// grant derived above, narrowed to the archetype when running as one). The default
+	// is the general-purpose software loop, so a zero-config run is unchanged; a
 	// different driver swaps the loop shape while the grant, sandbox gate, and brake
-	// below still apply to it.
+	// still apply to it.
 	drv, err := driver.Default().Resolve(a.cfg.Driver)
 	if err != nil {
 		return "", err
@@ -175,7 +194,7 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 	exec, stop, err := drv.Build(driver.Spec{
 		Model:    model,
 		Tools:    toolset,
-		System:   DefaultSystemPrompt,
+		System:   system,
 		Grant:    capability.NewGrant(names...),
 		HasGrant: true,
 		Sandbox:  sb,
