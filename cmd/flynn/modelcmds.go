@@ -25,7 +25,7 @@ import (
 // lifecycle from provisioning a runtime through running and stopping a server.
 func dispatchModels(sub []string, dataDir string) error {
 	if len(sub) == 0 {
-		return runModels(sub, os.Stdout)
+		return runModels(sub, dataDir, os.Stdout)
 	}
 	switch sub[0] {
 	case "fetch":
@@ -49,7 +49,7 @@ func dispatchModels(sub []string, dataDir string) error {
 	case "pool":
 		return runModelPool(sub[1:], dataDir, os.Stdout)
 	default:
-		return runModels(sub, os.Stdout)
+		return runModels(sub, dataDir, os.Stdout)
 	}
 }
 

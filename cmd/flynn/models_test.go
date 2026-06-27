@@ -7,7 +7,7 @@ import (
 
 func TestRunModelsLists(t *testing.T) {
 	var b strings.Builder
-	if err := runModels(nil, &b); err != nil {
+	if err := runModels(nil, "", &b); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
@@ -21,7 +21,7 @@ func TestRunModelsLists(t *testing.T) {
 func TestRunModelsFilters(t *testing.T) {
 	// --local drops API models.
 	var local strings.Builder
-	if err := runModels([]string{"--local"}, &local); err != nil {
+	if err := runModels([]string{"--local"}, "", &local); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(local.String(), "anthropic:claude-opus-4-8") {
@@ -33,7 +33,7 @@ func TestRunModelsFilters(t *testing.T) {
 
 	// --max-size keeps only the small local model.
 	var small strings.Builder
-	if err := runModels([]string{"--local", "--max-size", "2"}, &small); err != nil {
+	if err := runModels([]string{"--local", "--max-size", "2"}, "", &small); err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(small.String(), "qwen2.5-coder:7b") {
@@ -45,7 +45,7 @@ func TestRunModelsFilters(t *testing.T) {
 
 	// A filter that matches nothing says so rather than printing an empty table.
 	var none strings.Builder
-	if err := runModels([]string{"--publisher", "nobody"}, &none); err != nil {
+	if err := runModels([]string{"--publisher", "nobody"}, "", &none); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(none.String(), "no models match") {
@@ -56,7 +56,7 @@ func TestRunModelsFilters(t *testing.T) {
 func TestRunModelsFit(t *testing.T) {
 	// An explicit VRAM budget makes fit deterministic without any hardware probe.
 	var b strings.Builder
-	if err := runModels([]string{"--local", "--vram", "24"}, &b); err != nil {
+	if err := runModels([]string{"--local", "--vram", "24"}, "", &b); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
@@ -68,7 +68,7 @@ func TestRunModelsFit(t *testing.T) {
 
 	// A tiny budget pushes the larger local models over budget.
 	var small strings.Builder
-	if err := runModels([]string{"--local", "--vram", "1"}, &small); err != nil {
+	if err := runModels([]string{"--local", "--vram", "1"}, "", &small); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(small.String(), "over-budget") {

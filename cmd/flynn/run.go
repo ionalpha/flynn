@@ -62,17 +62,27 @@ func openStore(ctx context.Context, dsn string) (*sqlite.Store, error) {
 	return sqlite.Open(ctx, dsn)
 }
 
+// dataStoreFile is the path of the durable database file under a data directory, or empty
+// for an ephemeral ("" or ":memory:") data dir that has no file on disk. It is the single
+// definition of where the store lives, so opening it and checking whether it exists agree.
+func dataStoreFile(dataDir string) string {
+	if dataDir == "" || dataDir == ":memory:" {
+		return ""
+	}
+	return filepath.Join(dataDir, "flynn.db")
+}
+
 // openDataStore opens the durable store under a data directory, creating the
 // directory and resolving the database file inside it. An empty or ":memory:"
 // dataDir opens an ephemeral store.
 func openDataStore(ctx context.Context, dataDir string) (*sqlite.Store, error) {
-	if dataDir != "" && dataDir != ":memory:" {
+	dsn := dataStoreFile(dataDir)
+	if dsn != "" {
 		if err := os.MkdirAll(dataDir, 0o750); err != nil {
 			return nil, err
 		}
-		dataDir = filepath.Join(dataDir, "flynn.db")
 	}
-	return openStore(ctx, dataDir)
+	return openStore(ctx, dsn)
 }
 
 // listRuns prints the runs recorded in the durable store: their id, phase, step
