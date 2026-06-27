@@ -113,6 +113,11 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   the operator explicitly opts in. The recommended way to reach a service from off the
   machine is a tunnel to its loopback bind, so the safe shape is the default and exposure
   is always a deliberate, auditable choice rather than an accident.
+- **An exposure that lingers after it is no longer needed.** Every listener opened through
+  the inbound path is recorded in an exposure registry: logged on open and on close, and
+  enumerable, so nothing is exposed silently. An exposure given a time-to-live is torn down
+  automatically when its lease ends rather than living until the process dies, so an
+  ephemeral opening (a preview server, a temporary tunnel) is bounded by construction.
 - **An unauthenticated service reachable by anyone.** Authentication is on by default, by
   construction. The control-plane API resolves every request to a scoped principal through
   an authenticator; a server built without one fails closed (it denies every request)
@@ -177,6 +182,8 @@ Enforced and tested today:
 - Auth on by default for the control-plane API: requests resolve to a scoped principal, a
   server built without an authenticator fails closed, and a missing operator credential is
   generated rather than dropped to open access.
+- An exposure registry that records every opened listener (logged and enumerable) and
+  tears down a leased exposure when its TTL expires, so nothing stays exposed silently.
 - The full model-source trust pipeline: classification, code-executing-format refusal,
   digest verification with pin-on-first-use, runtime version-floor gating, hardened
   file parsing, a forced trusted chat template, loopback-only serving, and explicit
