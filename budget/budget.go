@@ -54,16 +54,48 @@ type Spent struct {
 	Cost   float64 `json:"cost,omitempty"`
 }
 
+// plus returns the element-wise sum of two Spent values.
+func (s Spent) plus(o Spent) Spent {
+	return Spent{Tokens: s.Tokens + o.Tokens, Cost: s.Cost + o.Cost}
+}
+
+// minusFloored returns s - o on each axis, never below zero, so releasing a
+// reservation can never drive the reserved total negative under a lost race.
+func (s Spent) minusFloored(o Spent) Spent {
+	out := Spent{Tokens: s.Tokens - o.Tokens, Cost: s.Cost - o.Cost}
+	if out.Tokens < 0 {
+		out.Tokens = 0
+	}
+	if out.Cost < 0 {
+		out.Cost = 0
+	}
+	return out
+}
+
+// IsZero reports whether the value consumes nothing on any axis.
+func (s Spent) IsZero() bool { return s.Tokens == 0 && s.Cost == 0 }
+
 // Spec is a budget's desired state: the ceiling the run may spend up to.
 type Spec struct {
 	Limits Limits `json:"limits"`
 }
 
-// Status is a budget's observed state: what the run has spent. The ledger
-// accumulates it under optimistic concurrency as actions are charged.
+// Status is a budget's observed state: what the run has spent, and what it has
+// reserved but not yet spent. The ledger accumulates both under optimistic
+// concurrency. Reserved is the in-flight commitment a reserve-before-dispatch
+// holds against the pool so concurrent actions (a fan-out of children sharing one
+// budget) admit against one consistent view and cannot all pass an under-budget
+// check and then overshoot together. An action settles its reservation into Spent
+// when it finishes.
 type Status struct {
-	Spent Spent `json:"spent"`
+	Spent    Spent `json:"spent"`
+	Reserved Spent `json:"reserved,omitempty"`
 }
+
+// committed is the total a budget has promised: spent plus still-reserved. The
+// ceiling is enforced against this, so an admitted-but-unfinished action counts
+// against the pool until it settles.
+func (s Status) committed() Spent { return s.Spent.plus(s.Reserved) }
 
 var specSchema = json.RawMessage(`{
   "type": "object",
