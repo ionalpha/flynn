@@ -13,9 +13,9 @@
 
 Flynn is a lightweight agent runtime and operating system written in Go. It
 runs standalone as a single static binary on anything from a $5 VPS to a
-Kubernetes cluster, works with any model provider, and can optionally connect to
-an [Ion Alpha](https://x.com/ionalpha_) instance for a shared knowledge graph and
-fleet-wide learning.
+Kubernetes cluster, works with any model provider, and stores its state locally
+by default, with an optional managed [Ion Alpha](https://x.com/ionalpha_) host
+for teams and organizations.
 
 Four ideas run through everything it does:
 
@@ -209,22 +209,6 @@ Most agents wait to be prompted. Flynn can take initiative.
 - **Editor integration.** Run as a Zed Agent Client Protocol (ACP) server inside
   editors.
 
-### Optional: connect to Ion Alpha
-
-On its own, Flynn stores state locally in SQLite. Point it at an
-[Ion Alpha](https://x.com/ionalpha_) instance and it gains a richer substrate
-without any change to how you use it:
-
-- A **typed knowledge graph** as its memory, able to connect facts and surface
-  contradictions, instead of flat recall.
-- A **fleet brain**: many agents sharing one permissioned, compounding pool of
-  skills and knowledge, so every agent learns from every other agent's verified
-  experience.
-- Team workspaces, cross-project context, and full audit and backup.
-
-The boundary is clean: the agent depends only on interfaces, and the host
-implements them. The agent always builds and runs standalone.
-
 ## Trust and safety
 
 Flynn is built to be handed real authority over untrusted input and real tools.
@@ -378,9 +362,9 @@ implements, and the invariants the engine enforces.
 
 The agent depends only on the interfaces in `state/` (persistence) and
 `observe/` (observability). Local implementations and no-op defaults ship in this
-repository; a host such as an Ion Alpha instance can supply a richer one backed
-by a knowledge graph and fleet-wide learning, without this repository ever
-depending on the host.
+repository; a host such as an Ion Alpha instance can supply a richer one (for
+example a graph-backed store or a hosted, multi-tenant backend), without this
+repository ever depending on the host.
 
 ## Own your agent
 
@@ -393,6 +377,24 @@ with a local model and no external calls when you need sovereignty.
 Configuration lives in a single file plus environment variables for secrets. Set
 your model and provider, choose which tools and channels are enabled, and set
 budgets and autonomy defaults. See the documentation for the full reference.
+
+## Optional: connect to Ion Alpha
+
+Flynn runs standalone and stores its state locally in SQLite, and it is gaining
+graph-backed memory and federated, fleet-wide learning in its own right (see the
+roadmap). [Ion Alpha](https://x.com/ionalpha_) is the optional managed host that
+delivers those at team and organization scale, turnkey, with no change to how you
+use the agent:
+
+- A hosted, multi-tenant substrate: one permissioned, compounding pool of skills
+  and knowledge shared across people and projects, so every agent can build on
+  every other agent's verified experience.
+- A typed knowledge graph as memory, able to connect facts and surface
+  contradictions, instead of flat recall.
+- Team workspaces, cross-project context, SSO, and full audit and backup.
+
+The boundary is clean: the agent depends only on interfaces, the host implements
+them, and the agent always builds and runs standalone.
 
 ## Contributing
 
