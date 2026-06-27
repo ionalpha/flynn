@@ -1,6 +1,9 @@
 package sandbox
 
-import "strings"
+import (
+	"net"
+	"strings"
+)
 
 // seatbeltProfile builds the sandbox profile (SBPL) that the macOS adapter applies
 // to a command, from the same confinement options the Linux adapter reads. The
@@ -21,12 +24,27 @@ import "strings"
 // Profile rules are last-match-wins, so a later rule overrides an earlier one: the
 // blanket write denial comes first and the working-directory and scratch re-grants
 // follow it.
-func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool) string {
+// When proxyAddr is non-empty, the profile governs egress instead of denying it
+// outright: all network is denied except an outbound connection to the loopback proxy at
+// proxyAddr, so the command can reach only the policy-enforcing proxy and nothing else.
+// This is the macOS leg of governed child egress: the kernel, not the cooperation of the
+// child, makes the proxy the single way out.
+func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, proxyAddr string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
 	b.WriteString("(allow default)\n")
 
-	if denyNetwork {
+	switch {
+	case proxyAddr != "":
+		// Deny all network, then allow only an outbound connection to the loopback proxy
+		// port (last-match-wins). The child therefore cannot reach any host or port but
+		// the proxy, which enforces the egress policy; it cannot bypass the proxy by
+		// dialing directly, because the kernel refuses every other outbound connection.
+		b.WriteString("(deny network*)\n")
+		if _, port, err := net.SplitHostPort(proxyAddr); err == nil && port != "" {
+			b.WriteString("(allow network-outbound (remote ip " + sbplString("localhost:"+port) + "))\n")
+		}
+	case denyNetwork:
 		// No outbound or inbound socket: the command cannot exfiltrate, phone home, or
 		// accept a connection, the macOS counterpart of the empty network namespace.
 		b.WriteString("(deny network*)\n")

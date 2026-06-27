@@ -18,6 +18,23 @@ const sandboxExec = "/usr/bin/sandbox-exec"
 // profile applied by confine.
 func kernelConfinementSupported() bool { return true }
 
+// egressEnforceable reports whether governed child egress can be enforced here. On macOS
+// the seatbelt profile allows outbound only to the loopback proxy and denies the rest, so
+// it can.
+func egressEnforceable() bool { return true }
+
+// egressAddr returns the running proxy's address for the seatbelt allow-only-proxy rule,
+// or "" when egress is not configured. It reads under the egress lock, which the launch
+// path has already released after starting the proxy.
+func (l *Local) egressAddr() string {
+	if l.egress == nil {
+		return ""
+	}
+	l.egress.mu.Lock()
+	defer l.egress.mu.Unlock()
+	return l.egress.addr
+}
+
 // confine applies the kernel-enforced isolation a Local was configured for to a
 // command about to run, by wrapping it in the macOS sandbox launcher with a profile
 // built from the same options the Linux adapter reads. With no options it does
@@ -30,14 +47,16 @@ func kernelConfinementSupported() bool { return true }
 // If the launcher is missing the command is refused rather than run unconfined, so a
 // caller that asked for confinement never silently gets an unconfined command.
 func (l *Local) confine(c *exec.Cmd) error {
-	if !l.denyNetwork && !l.readonlyFS && !l.seccomp {
+	if !l.denyNetwork && !l.readonlyFS && !l.seccomp && l.egress == nil {
 		return nil
 	}
 	if _, err := os.Stat(sandboxExec); err != nil {
 		return fault.New(fault.Forbidden, "sandbox_confine_unsupported",
 			"sandbox: the macOS sandbox launcher is not available; refusing rather than running the command unconfined")
 	}
-	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp)
+	// When egress is governed, the profile allows outbound only to the loopback proxy,
+	// composed into this single profile rather than a second sandbox-exec wrapping.
+	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp, l.egressAddr())
 	// Wrap the existing command: the launcher applies the profile, then execs the real
 	// command (still c.Args from here on) under it. c.Path points at the launcher; the
 	// original program name stays as the launcher's first non-flag argument.

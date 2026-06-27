@@ -60,13 +60,19 @@ func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return nil, errors.New("sandbox: serve: no command")
 	}
-	confine := spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp)
+	// Governed egress fails closed on a platform without an enforcement leg.
+	if err := l.guardEgress(); err != nil {
+		return nil, err
+	}
+	// Egress requires the confined path (its OS-level denial composes into confine)
+	// whenever it is configured, regardless of spec.Confine, and like Exec is never
+	// weakened by the best-effort fallback.
+	confine := l.egress != nil || (spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp))
 	p, err := l.startProcess(spec.Argv, confine)
 	// A confined server that could not start under the always-on baseline falls back to
 	// the directory-jail floor, exactly as Exec does: the failed attempt never ran, so
-	// there is nothing to undo. An explicitly requested confinement that is not the
-	// always-on default still surfaces the error.
-	if err != nil && confine && l.confineBestEffort {
+	// there is nothing to undo. Egress is excluded: it must not drop to an open-egress run.
+	if err != nil && confine && l.confineBestEffort && l.egress == nil {
 		return l.startProcess(spec.Argv, false)
 	}
 	return p, err
@@ -84,17 +90,16 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 	tail := newTailBuffer(tailBufferCap)
 	c.Stdout = tail
 	c.Stderr = tail
+	// Start the egress proxy and inject its variables before confine, so confine can
+	// compose the allow-only-proxy rule into the same enforcement action.
+	if l.egressActive() {
+		if err := l.startEgress(c); err != nil {
+			return nil, fmt.Errorf("sandbox: serve: egress: %w", err)
+		}
+	}
 	if confined {
 		if err := l.confine(c); err != nil {
 			return nil, fmt.Errorf("sandbox: serve: confine: %w", err)
-		}
-	}
-	// Govern the server's outbound egress through the policy proxy (a server we run
-	// should not be able to reach out past its policy). A platform without an
-	// enforcement leg refuses rather than starting it with direct egress open.
-	if l.egressActive() {
-		if err := l.applyEgress(c); err != nil {
-			return nil, fmt.Errorf("sandbox: serve: egress: %w", err)
 		}
 	}
 	if err := c.Start(); err != nil {

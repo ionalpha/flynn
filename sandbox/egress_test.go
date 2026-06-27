@@ -52,11 +52,11 @@ func TestEnsureProxyStartsOnceOnLoopback(t *testing.T) {
 	}
 }
 
-// With no platform enforcement leg registered, a governed-egress launch must refuse
-// rather than run the child with its direct egress open (refuse-rather-than-weaken).
+// On a platform with no enforcement leg, a governed-egress launch must refuse rather than
+// run the child with its direct egress open (refuse-rather-than-weaken).
 func TestGovernedEgressRefusesWithoutPlatformLeg(t *testing.T) {
-	if platformEgressConfiner != nil {
-		t.Skip("a platform egress leg is registered; refusal path not applicable")
+	if egressEnforceable() {
+		t.Skip("this platform enforces egress; the refusal path is exercised elsewhere")
 	}
 	dir := t.TempDir()
 	l, err := NewLocal(dir, WithEgress(netguard.PublicOnly()))
