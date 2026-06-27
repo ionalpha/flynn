@@ -133,8 +133,10 @@ func (a *Agent) Goal(ctx context.Context, objective string) (string, error) {
 
 // runGoal assembles the in-process runtime over model and drives one goal to a
 // terminal result. The model is injected so the assembly is exercised end to end in
-// tests with a scripted backend, without a network or an API key.
-func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) (string, error) {
+// tests with a scripted backend, without a network or an API key. An optional
+// reporter lets a test observe the run's events through the same assembly it is
+// meant to guard, rather than forking it; when omitted the session reporter is used.
+func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, obs ...mission.Reporter) (string, error) {
 	objective = strings.TrimSpace(objective)
 	if objective == "" {
 		return "", errors.New("agent: empty objective")
@@ -181,6 +183,12 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 		names = append(append([]string{}, a.cfg.Agent.Capabilities...), mission.ActionModelGenerate)
 	}
 
+	// A test may supply its own reporter to capture the run's events directly;
+	// otherwise the session's reporter records them onto the spine.
+	reporter := sess.Reporter()
+	if len(obs) > 0 && obs[0] != nil {
+		reporter = obs[0]
+	}
 	// Resolve the run loop by name from the driver registry, fail-closed on an
 	// unknown driver, and build it from the run's ingredients (its system prompt and
 	// grant derived above, narrowed to the archetype when running as one). The default
@@ -198,7 +206,7 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 		Grant:    capability.NewGrant(names...),
 		HasGrant: true,
 		Sandbox:  sb,
-		Reporter: sess.Reporter(),
+		Reporter: reporter,
 		// Halt a runaway from outside the model loop. The default is a generous rate
 		// backstop: a real run dispatches far fewer than this per minute, so the breaker
 		// fires only on a degenerate tight loop, never on legitimate tool use.

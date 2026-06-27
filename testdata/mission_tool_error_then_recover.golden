@@ -1,0 +1,176 @@
+{
+  "events": [
+    {
+      "Kind": "turn.started",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.call",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "frobnicate",
+      "ToolUseID": "c1",
+      "Input": {},
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.result",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "frobnicate",
+      "ToolUseID": "c1",
+      "Input": null,
+      "Result": "capability_denied: action frobnicate is not in the run's capability grant",
+      "IsError": true,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "tool_use",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.started",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.call",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "write",
+      "ToolUseID": "c2",
+      "Input": {
+        "path": "recovered.txt",
+        "content": "ok"
+      },
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.result",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "write",
+      "ToolUseID": "c2",
+      "Input": null,
+      "Result": "wrote 2 bytes to recovered.txt",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "tool_use",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.started",
+      "Turn": 3,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "assistant.text",
+      "Turn": 3,
+      "Text": "Recovered and wrote the file.",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 3,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "end_turn",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    }
+  ],
+  "result": "Recovered and wrote the file.",
+  "files": {
+    "recovered.txt": "ok"
+  }
+}
