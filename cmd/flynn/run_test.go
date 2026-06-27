@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
@@ -53,7 +54,7 @@ func TestRunWritesFileThroughSandbox(t *testing.T) {
 	defer cancel()
 	var out bytes.Buffer
 
-	result, err := runLearningMission(ctx, &out, model, nil, dir, "create hello.txt with a greeting", memStore(t), false)
+	result, err := runLearningMission(ctx, &out, model, harness.Plan{}, nil, dir, "create hello.txt with a greeting", memStore(t), false)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestRunRejectsSandboxEscape(t *testing.T) {
 	defer cancel()
 	var out bytes.Buffer
 
-	if _, err := runLearningMission(ctx, &out, model, nil, dir, "try to escape", memStore(t), false); err != nil {
+	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, nil, dir, "try to escape", memStore(t), false); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(filepath.Dir(dir), "escape.txt")); !os.IsNotExist(err) {
@@ -128,13 +129,13 @@ func TestRunRemembersAcrossRuns(t *testing.T) {
 	distiller := &fakeDistiller{lessons: []learn.Lesson{
 		{Kind: learn.LessonMemory, Body: "the project uses pnpm for installs"},
 	}}
-	if _, err := runLearningMission(ctx, &out, run1, distiller, dir, "set up the project", store, false); err != nil {
+	if _, err := runLearningMission(ctx, &out, run1, harness.Plan{}, distiller, dir, "set up the project", store, false); err != nil {
 		t.Fatalf("run 1: %v", err)
 	}
 
 	// Run 2: shares a keyword ("pnpm") with the stored memory, so recall injects it.
 	run2 := llmtest.NewScripted(llmtest.SayText("installed deps"))
-	if _, err := runLearningMission(ctx, &out, run2, nil, dir, "install deps with pnpm", store, false); err != nil {
+	if _, err := runLearningMission(ctx, &out, run2, harness.Plan{}, nil, dir, "install deps with pnpm", store, false); err != nil {
 		t.Fatalf("run 2: %v", err)
 	}
 
@@ -195,7 +196,7 @@ func TestRunFeedsTranscriptToDistiller(t *testing.T) {
 		llmtest.SayText("wrote x.txt"),
 	)
 	rec := &recordingDistiller{}
-	if _, err := runLearningMission(ctx, &out, model, rec, dir, "write x.txt", memStore(t), false); err != nil {
+	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, rec, dir, "write x.txt", memStore(t), false); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestRunReinforcesRecalledSkill(t *testing.T) {
 		t.Fatal(err)
 	}
 	model := llmtest.NewScripted(llmtest.SayText("done"))
-	if _, err := runLearningMission(ctx, &out, model, &fakeDistiller{}, dir, "deploy with docker", store, false); err != nil {
+	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, &fakeDistiller{}, dir, "deploy with docker", store, false); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -290,7 +291,7 @@ func TestRunVerifiesCapturedSkill(t *testing.T) {
 		{Kind: learn.LessonSkill, Title: "Broken skill", Body: "does not work", Check: "exit 1"},
 		{Kind: learn.LessonSkill, Title: "Good skill", Body: "works", Check: "exit 0"},
 	}}
-	if _, err := runLearningMission(ctx, &out, model, distiller, dir, "do the work", store, false); err != nil {
+	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, distiller, dir, "do the work", store, false); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
@@ -343,7 +344,7 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	if _, err := runLearningMission(ctx, &out, model, nil, workdir, "do the thing", store1, false); err != nil {
+	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, nil, workdir, "do the thing", store1, false); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	runID := runIDFromOutput(t, out.String())

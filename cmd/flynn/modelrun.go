@@ -12,6 +12,7 @@ import (
 
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/fetch"
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/inference/launch"
 	"github.com/ionalpha/flynn/inference/modelsource"
 	"github.com/ionalpha/flynn/inference/provision"
@@ -314,8 +315,15 @@ func realEnsureWeights(dataDir string, out io.Writer) func(context.Context, cata
 // endpoint is loopback-only, and SafeBaseURL permits plaintext http there. The model
 // name is the catalog id, which the runtime echoes back but does not route on, since it
 // serves the single loaded model.
-func localModelClient(ep serve.Endpoint, modelID string) llm.Model {
-	return openai.New(secret.Text{}, openai.WithBaseURL(ep.BaseURL), openai.WithModel(modelID))
+func localModelClient(ep serve.Endpoint, modelID string, plan harness.Plan) llm.Model {
+	opts := []openai.Option{openai.WithBaseURL(ep.BaseURL), openai.WithModel(modelID)}
+	// A model whose tool-call reliability the plan does not trust is constrained to a
+	// grammar so a malformed call is structurally impossible. The local runtime honors the
+	// grammar request field; the option is a no-op against a backend that does not.
+	if plan.ConstrainToolCalls {
+		opts = append(opts, openai.WithToolGrammar())
+	}
+	return openai.New(secret.Text{}, opts...)
 }
 
 // freeLoopbackPort asks the OS for an unused loopback TCP port by binding port 0 and
@@ -352,26 +360,49 @@ func findLocalModel(id string) (catalog.ModelSpec, error) {
 // local selection: a machine with nothing installed ends up talking to a running, gated,
 // sandboxed model with no manual step. Progress is reported to stderr so it does not
 // corrupt a piped run transcript on stdout.
-func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, error) {
+func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
 	m, err := findLocalModel(modelSpec)
 	if err != nil {
-		return nil, err
+		return nil, harness.Plan{}, err
 	}
 	runner := newLocalRunner(dataDir, os.Stderr)
 	// The goal path goes through the same trust gate as `models run`, so no model-run
 	// route skips classification, provenance, and the containment check.
 	src, err := modelsource.Parse(modelSpec, isLocalModelID)
 	if err != nil {
-		return nil, err
+		return nil, harness.Plan{}, err
 	}
 	if _, err := runner.admitSource(src); err != nil {
-		return nil, err
+		return nil, harness.Plan{}, err
 	}
 	ep, err := runner.serveModel(ctx, m, 0, false)
 	if err != nil {
-		return nil, fmt.Errorf("serve local model %s: %w", modelSpec, err)
+		return nil, harness.Plan{}, fmt.Errorf("serve local model %s: %w", modelSpec, err)
 	}
-	return localModelClient(ep, m.ID), nil
+	plan := localModelPlan(m)
+	logPlan(os.Stderr, m.ID, plan)
+	return localModelClient(ep, m.ID, plan), plan, nil
+}
+
+// localModelPlan decides how much scaffolding a local model is driven with. Until an evaluation
+// has measured this model, it has no profile, so it is treated as unknown and given the most
+// conservative plan: the safe default is automatic, and a local model earns the lean path only by
+// measuring as reliable, never on assumption. The advertised context window bounds the plan's
+// context cap.
+func localModelPlan(m catalog.ModelSpec) harness.Plan {
+	return harness.PlanFor(localProfiles, m.ID, m.ContextTokens)
+}
+
+// localProfiles is the read side of the local-model capability store. It is empty until an
+// evaluation harness records measured profiles, so every local model currently resolves as
+// unmeasured and conservatively scaffolded.
+var localProfiles harness.ProfileSource = harness.StaticProfiles{}
+
+// logPlan reports the scaffolding a model is driven with, so a run records why it was helped (or
+// not). It is written to the progress stream, alongside the serve and provision lines.
+func logPlan(w io.Writer, modelID string, plan harness.Plan) {
+	_, _ = fmt.Fprintf(w, "harness plan for %s: constrain=%t simplify=%t verify=%d maxContext=%d\n",
+		modelID, plan.ConstrainToolCalls, plan.SimplifyToolSchemas, plan.VerifyPasses, plan.MaxContext)
 }
 
 // isLocalModelID reports whether a model spec string names a local catalog model, so the

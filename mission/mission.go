@@ -63,19 +63,21 @@ func toolTrust(t Tool) sandbox.Trust {
 // Executor drives a goal as a conversation with a model. It implements
 // goal.StepExecutor.
 type Executor struct {
-	model         llm.Model
-	tools         map[string]Tool
-	defs          []llm.Tool
-	system        string
-	maxTokens     int
-	compactBudget int
-	sampling      *llm.Sampling
-	recorder      GenerationRecorder
-	reporter      Reporter
-	grant         capability.Grant
-	hasGrant      bool
-	dispatchOpts  []dispatch.Option
-	dispatcher    *dispatch.Dispatcher
+	model           llm.Model
+	tools           map[string]Tool
+	defs            []llm.Tool
+	system          string
+	maxTokens       int
+	compactBudget   int
+	verifyPasses    int
+	simplifySchemas bool
+	sampling        *llm.Sampling
+	recorder        GenerationRecorder
+	reporter        Reporter
+	grant           capability.Grant
+	hasGrant        bool
+	dispatchOpts    []dispatch.Option
+	dispatcher      *dispatch.Dispatcher
 }
 
 // Option configures an Executor.
@@ -170,6 +172,30 @@ func WithCompactionBudget(tokens int) Option {
 	}
 }
 
+// WithVerifyPasses adds up to n self-check passes before a turn is allowed to converge.
+// When the model signals it is finished, it is instead asked to re-examine its work against
+// the objective and fix anything incomplete; only after the passes are spent (or the model
+// keeps the conversation going of its own accord) does the run conclude. Zero, the default,
+// trusts the model's first claim of completion, which suits a reliable model; a weaker model
+// gets the extra scrutiny. Each pass is a normal turn, so it stays bounded by the reconciler's
+// step budget and survives a crash-resume like any other.
+func WithVerifyPasses(n int) Option {
+	return func(e *Executor) {
+		if n > 0 {
+			e.verifyPasses = n
+		}
+	}
+}
+
+// WithSimplifiedSchemas trims each tool definition before it is offered to the model: prose
+// descriptions are shortened and per-field documentation and examples are dropped from the
+// input schema, while the callable surface (every property and which are required) is left
+// intact. A weaker, instruction-following-limited model is given a smaller surface to reason
+// over without changing what it can call. The default leaves the full schemas in place.
+func WithSimplifiedSchemas() Option {
+	return func(e *Executor) { e.simplifySchemas = true }
+}
+
 // WithSampling pins the decoding parameters for every model call, so a run can be made
 // reproducible. The default is nil, which leaves each call free-running on the server's
 // defaults; setting it sends a fixed seed and sampler on every turn.
@@ -200,6 +226,11 @@ func NewExecutor(model llm.Model, opts ...Option) *Executor {
 	for _, o := range opts {
 		o(e)
 	}
+	if e.simplifySchemas {
+		for i := range e.defs {
+			e.defs[i] = simplifyTool(e.defs[i])
+		}
+	}
 	e.dispatcher = dispatch.New(e.dispatchOpts...)
 	return e
 }
@@ -212,6 +243,13 @@ var _ goal.StepExecutor = (*Executor)(nil)
 // list it for the agent to call the model, which keeps the grant the complete record
 // of what a run may do. A run that should not call the model omits it.
 const ActionModelGenerate = "model.generate"
+
+// verifyPrompt is the self-check a verify pass injects when the model claims completion. It
+// asks the model to re-examine its work with the tools and repair anything incomplete before
+// concluding (see WithVerifyPasses).
+const verifyPrompt = "Before finishing, re-check that the objective is fully accomplished. " +
+	"Inspect your work with the tools rather than assuming. If anything is incomplete or " +
+	"incorrect, fix it now. If everything is correct and complete, briefly confirm and stop."
 
 // Execute advances the goal's conversation by one model turn and returns the
 // updated conversation as the checkpoint. A turn that calls tools runs them and
@@ -316,9 +354,18 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		// long a turn that keeps truncating may run before the goal stalls.
 		cp.Messages = append(cp.Messages, llm.Text(llm.RoleUser, "Continue."))
 	default:
-		// EndTurn (or any provider-specific terminal reason): the model is done.
-		cp.Done = true
-		cp.Result = resp.Message.TextContent()
+		// EndTurn (or any provider-specific terminal reason): the model claims it is done.
+		// With verify passes remaining, do not take that claim at face value: ask the model
+		// to re-examine its work against the objective and repair anything incomplete, and
+		// let the next turn run. Only once the passes are spent does the run converge. The
+		// count lives on the checkpoint so the budget survives a crash-resume.
+		if cp.VerifyUsed < e.verifyPasses {
+			cp.VerifyUsed++
+			cp.Messages = append(cp.Messages, llm.Text(llm.RoleUser, verifyPrompt))
+		} else {
+			cp.Done = true
+			cp.Result = resp.Message.TextContent()
+		}
 	}
 
 	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
@@ -470,6 +517,10 @@ type checkpoint struct {
 	Messages []llm.Message `json:"messages"`
 	Done     bool          `json:"done"`
 	Result   string        `json:"result,omitempty"`
+	// VerifyUsed counts the self-check passes already taken on this run (see
+	// WithVerifyPasses). It is carried on the durable checkpoint so the budget is
+	// honored across a crash-resume rather than reset.
+	VerifyUsed int `json:"verifyUsed,omitempty"`
 }
 
 func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {

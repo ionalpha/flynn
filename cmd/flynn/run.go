@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/learn"
@@ -195,7 +196,7 @@ func missionRegistry() (*resource.Registry, error) {
 // sandboxed toolset, and (when a distiller is supplied) distills the converged run
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
-func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, distiller learn.Distiller, workdir, objective string, store *sqlite.Store, verbose bool) (string, error) {
+func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective string, store *sqlite.Store, verbose bool) (string, error) {
 	reg, err := missionRegistry()
 	if err != nil {
 		return "", err
@@ -210,7 +211,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, dis
 		system += "\n\n" + block
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log(), verbose, "")
+	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log(), verbose, "")
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -486,9 +487,9 @@ func truncate(s string, n int) string {
 // id (used as learning provenance), and the conversation transcript (so the
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string) (result, source string, transcript []llm.Message, err error) {
+func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string) (result, source string, transcript []llm.Message, err error) {
 	w := &syncWriter{w: out}
-	run, err := assembleMission(model, workdir, system, rstore, jq, log, resumeID)
+	run, err := assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID)
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -541,7 +542,7 @@ type missionRun struct {
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
 		return nil, err
@@ -563,18 +564,22 @@ func assembleMission(model llm.Model, workdir, system string, rstore resource.St
 	}
 	names = append(names, mission.ActionModelGenerate, learn.DistillAction)
 
-	exec := mission.NewExecutor(
-		model,
+	opts := []mission.Option{
 		mission.WithTools(toolset...),
 		mission.WithSystem(system),
 		mission.WithObserver(sess.Reporter()),
 		mission.WithGrant(capability.NewGrant(names...)),
 		// Compact the transcript when it grows past this budget so a long session
 		// stays affordable and clear of the context limit. It is a conservative floor
-		// suited to large hosted models; per-model, window-aware triggering arrives
-		// with the model registry.
+		// for a model whose window is unknown; the plan below tightens it to a model
+		// with a measured, narrower effective context.
 		mission.WithCompactionBudget(defaultCompactionBudget),
-	)
+	}
+	// Apply the model's scaffolding plan last so a present field (a tighter context
+	// budget, simplified schemas, verify passes) overrides the lean defaults, while an
+	// absent one (the zero plan of a strong model) leaves them in place.
+	opts = append(opts, mission.PlanOptions(plan)...)
+	exec := mission.NewExecutor(model, opts...)
 	rt, err := runtime.New(runtime.Config{
 		Executor:     exec,
 		Stop:         mission.Convergence{},
