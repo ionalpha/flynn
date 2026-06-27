@@ -189,7 +189,7 @@ func TestAssistantMappingProperty(t *testing.T) {
 		}
 		cr.Choices[0].Message.ToolCalls = enc[0].ToolCalls
 
-		dec, err := decodeResponse(cr)
+		dec, err := decodeResponse(cr, nil)
 		if err != nil {
 			rt.Fatalf("decode: %v", err)
 		}
