@@ -41,14 +41,22 @@ func TestToolGrammarOffByDefault(t *testing.T) {
 }
 
 func TestToolGrammarAttachedWhenEnabled(t *testing.T) {
-	raw, ok := sentBody(t, WithToolGrammar())["grammar"].(string)
+	body := sentBody(t, WithToolGrammar())
+	raw, ok := body["grammar"].(string)
 	if !ok || raw == "" {
 		t.Fatal("expected a non-empty grammar on the request")
 	}
+	// A custom grammar and a tools list cannot both be sent: a local server rejects
+	// that combination, and the grammar already names every callable tool. So when the
+	// grammar is attached, the tools field must be absent.
+	if _, ok := body["tools"]; ok {
+		t.Fatal("tools must not be sent alongside a tool-call grammar")
+	}
 	// The grammar on the wire must mean what the tool requires: the well-formed
 	// envelope binds the tool name to schema-valid arguments and rejects an invalid
-	// call. Recompiling from the same tools gives the recognizer to check that.
-	g, err := gbnf.ToolCall([]gbnf.ToolSchema{{Name: "read", Schema: grammarToolReq.Tools[0].InputSchema}})
+	// call, while still admitting a free-text final answer. Recompiling from the same
+	// tools gives the recognizer to check that.
+	g, err := gbnf.ToolCallOrText([]gbnf.ToolSchema{{Name: "read", Schema: grammarToolReq.Tools[0].InputSchema}})
 	if err != nil {
 		t.Fatalf("recompile: %v", err)
 	}
@@ -60,6 +68,60 @@ func TestToolGrammarAttachedWhenEnabled(t *testing.T) {
 	}
 	if g.Accepts(`{"name":"read","arguments":{}}`) {
 		t.Error("grammar should reject a call missing the required path")
+	}
+	if !g.Accepts("All three files are present.") {
+		t.Error("grammar should accept a free-text final answer")
+	}
+}
+
+// decodeRaw unmarshals a Chat Completions response body and decodes it the way
+// Generate does, so a test can drive decoding from the exact JSON a server returns.
+func decodeRaw(t *testing.T, raw string, grammarTools map[string]bool) llm.Response {
+	t.Helper()
+	var cr chatResponse
+	if err := json.Unmarshal([]byte(raw), &cr); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	dec, err := decodeResponse(cr, grammarTools)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	return dec
+}
+
+func TestDecodeGrammarToolCallFromContent(t *testing.T) {
+	// A grammar-constrained server returns the single tool call as message content,
+	// not as a structured tool_calls entry. Decoding must recover it as a tool use.
+	raw := `{"choices":[{"message":{"role":"assistant","content":"{\"name\":\"read\",\"arguments\":{\"path\":\"a.go\"}}"},"finish_reason":"stop"}]}`
+	dec := decodeRaw(t, raw, map[string]bool{"read": true})
+	if dec.StopReason != llm.StopToolUse {
+		t.Fatalf("a recovered tool call must stop for tool use, got %q", dec.StopReason)
+	}
+	uses := dec.Message.ToolUses()
+	if len(uses) != 1 || uses[0].Name != "read" {
+		t.Fatalf("want one read tool use, got %+v", uses)
+	}
+	if uses[0].ID == "" {
+		t.Error("a recovered tool call must be given an id")
+	}
+	if string(uses[0].Input) != `{"path":"a.go"}` {
+		t.Errorf("arguments not preserved: %s", uses[0].Input)
+	}
+}
+
+func TestDecodeGrammarFreeTextIsFinalAnswer(t *testing.T) {
+	// Under the same grammar, a reply that is not a tool call is the model's final
+	// answer and must decode as ordinary end-of-turn text, not a tool use.
+	raw := `{"choices":[{"message":{"role":"assistant","content":"All three files are present."},"finish_reason":"stop"}]}`
+	dec := decodeRaw(t, raw, map[string]bool{"read": true})
+	if dec.StopReason != llm.StopEndTurn {
+		t.Fatalf("a free-text answer must end the turn, got %q", dec.StopReason)
+	}
+	if len(dec.Message.ToolUses()) != 0 {
+		t.Fatal("a free-text answer must not become a tool use")
+	}
+	if dec.Message.TextContent() != "All three files are present." {
+		t.Errorf("text not preserved: %q", dec.Message.TextContent())
 	}
 }
 

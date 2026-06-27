@@ -19,6 +19,7 @@
 package gbnf
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 )
@@ -79,13 +80,20 @@ func (g *Grammar) String() string {
 		if i > 0 {
 			b.WriteByte('\n')
 		}
-		b.WriteString(name)
+		b.WriteString(ruleName(name))
 		b.WriteString(" ::= ")
 		b.WriteString(render(g.rules[name]))
 	}
 	b.WriteByte('\n')
 	return b.String()
 }
+
+// ruleName renders an internal rule name for the grammar text. The grammar dialect
+// admits only letters, digits, and hyphens in a rule name, so the underscores used to
+// build readable internal names are rewritten to hyphens. Internal names never contain
+// a hyphen, so the rewrite is unambiguous, and only the emitted text is affected: the
+// in-process recognizer keeps using the original names.
+func ruleName(s string) string { return strings.ReplaceAll(s, "_", "-") }
 
 // Root returns the name of the grammar's start rule.
 func (g *Grammar) Root() string { return g.root }
@@ -97,7 +105,7 @@ func render(n node) string {
 	case lit:
 		return quote(v.s)
 	case ref:
-		return v.name
+		return ruleName(v.name)
 	case class:
 		var b strings.Builder
 		b.WriteByte('[')
@@ -116,6 +124,12 @@ func render(n node) string {
 		b.WriteByte(']')
 		return b.String()
 	case seq:
+		// An empty sequence matches the empty string. The grammar dialect has no bare
+		// empty production (a rule with nothing after "::="), so it is written as the
+		// explicit empty-string literal, which is what an empty object tail needs.
+		if len(v.items) == 0 {
+			return `""`
+		}
 		parts := make([]string, len(v.items))
 		for i, it := range v.items {
 			parts[i] = renderInSeq(it)
@@ -200,7 +214,20 @@ func classEscape(r rune) string {
 	case '\t':
 		return `\t`
 	default:
-		return string(r)
+		// A control character or a rune outside printable ASCII is emitted as a GBNF
+		// numeric escape rather than written raw, so a wide range such as "any text
+		// character" renders to valid, portable grammar text. Printable ASCII is left
+		// as-is. Existing classes use only printable ASCII, so their output is unchanged.
+		switch {
+		case r < 0x20 || r == 0x7f:
+			return fmt.Sprintf(`\x%02X`, r)
+		case r > 0x7f && r <= 0xffff:
+			return fmt.Sprintf(`\u%04X`, r)
+		case r > 0xffff:
+			return fmt.Sprintf(`\U%08X`, r)
+		default:
+			return string(r)
+		}
 	}
 }
 

@@ -12,13 +12,13 @@ func TestBuildRequestSampling(t *testing.T) {
 	msg := []llm.Message{llm.Text(llm.RoleUser, "hi")}
 
 	// Free-running: a request with no sampling sends no sampler fields.
-	r := c.buildRequest(llm.Request{Messages: msg})
+	r, _ := c.buildRequest(llm.Request{Messages: msg})
 	if r.Temperature != nil || r.TopP != nil || r.Seed != nil {
 		t.Fatalf("a free-running request must not pin sampling: %+v", r)
 	}
 
 	// Pinned greedy decoding with a seed and a top-p: all three are sent.
-	r = c.buildRequest(llm.Request{Messages: msg, Sampling: &llm.Sampling{Seed: 42, Temperature: 0, TopP: 0.9}})
+	r, _ = c.buildRequest(llm.Request{Messages: msg, Sampling: &llm.Sampling{Seed: 42, Temperature: 0, TopP: 0.9}})
 	if r.Temperature == nil || *r.Temperature != 0 {
 		t.Fatalf("greedy temperature 0 must be sent, got %v", r.Temperature)
 	}
@@ -30,7 +30,7 @@ func TestBuildRequestSampling(t *testing.T) {
 	}
 
 	// A degenerate top-p of zero is omitted, while temperature and seed still send.
-	r = c.buildRequest(llm.Request{Messages: msg, Sampling: &llm.Sampling{Seed: 1, Temperature: 0.5, TopP: 0}})
+	r, _ = c.buildRequest(llm.Request{Messages: msg, Sampling: &llm.Sampling{Seed: 1, Temperature: 0.5, TopP: 0}})
 	if r.TopP != nil {
 		t.Fatalf("a zero top-p must be omitted, got %v", *r.TopP)
 	}
@@ -39,7 +39,7 @@ func TestBuildRequestSampling(t *testing.T) {
 	}
 
 	// Out-of-range sampling is normalized before it is sent.
-	r = c.buildRequest(llm.Request{Messages: msg, Sampling: &llm.Sampling{Temperature: -3, TopP: 9}})
+	r, _ = c.buildRequest(llm.Request{Messages: msg, Sampling: &llm.Sampling{Temperature: -3, TopP: 9}})
 	if r.Temperature == nil || *r.Temperature != 0 {
 		t.Fatalf("negative temperature must normalize to 0, got %v", r.Temperature)
 	}
