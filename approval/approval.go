@@ -27,7 +27,9 @@ package approval
 import (
 	"encoding/binary"
 	"encoding/json"
+	"math"
 
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -77,6 +79,13 @@ func (e Envelope) signingBytes() ([]byte, error) {
 		return nil, err
 	}
 	const domain = "flynn/approval/v1\n"
+	// Refuse an envelope so large the length-prefixed allocation would overflow.
+	// This cannot happen for a real approval (the body is a small JSON object), but
+	// bounding it keeps the size computation provably safe.
+	if len(body) > math.MaxInt-len(domain)-8 {
+		return nil, fault.New(fault.Terminal, "approval_envelope_too_large",
+			"approval: envelope too large to encode")
+	}
 	out := make([]byte, 0, len(domain)+8+len(body))
 	out = append(out, domain...)
 	var n [8]byte
