@@ -159,6 +159,14 @@ func newContainerServing(engine OCIEngine, id, addr string, run Runner) *contain
 	return s
 }
 
+// ContainerID is the engine's id for the running container, so a caller that records a
+// server across invocations can stop it later by id (a container has no host pid to signal).
+func (s *containerServing) ContainerID() string { return s.id }
+
+// EngineName is the OCI engine the container runs on, recorded alongside the id so a later,
+// separate process knows which engine to drive to stop it.
+func (s *containerServing) EngineName() string { return string(s.engine) }
+
 // reap blocks on `engine wait <id>`, which returns when the container exits, and closes done
 // so callers waiting on the lifecycle are released. It carries no deadline: a server
 // container runs until it exits or is stopped. A `--rm` container is removed once wait
@@ -251,4 +259,26 @@ func firstArg(argv []string) string {
 		return argv[1]
 	}
 	return ""
+}
+
+// StopContainer stops a container by id on the given engine, the cross-invocation teardown
+// for a container a record names but no Serving handle is held for (a later `models stop`).
+// It drives the same trusted engine CLI; the container is the boundary, not this call.
+func StopContainer(ctx context.Context, engine OCIEngine, id string) error {
+	_, err := execRunner(ctx, []string{string(engine), "stop", id})
+	return err
+}
+
+// PullImage ensures a digest-pinned image is present, pulling it by its ref@digest (or the
+// bare digest when no ref is given). The engine resolves the reference to the pinned digest
+// and verifies the bytes against it, so the pull is tamper-evident: a moved tag cannot
+// substitute different content. It is the production ImagePuller the container provisioner
+// drives.
+func PullImage(ctx context.Context, engine OCIEngine, ref, digest string) error {
+	target := digest
+	if ref != "" {
+		target = ref + "@" + digest
+	}
+	_, err := execRunner(ctx, []string{string(engine), "pull", target})
+	return err
 }
