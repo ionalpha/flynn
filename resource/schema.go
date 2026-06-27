@@ -34,6 +34,11 @@ type builtinCompiler struct{}
 
 func newBuiltinCompiler() SchemaCompiler { return builtinCompiler{} }
 
+// NewSchemaCompiler returns the built-in, dependency-free schema compiler, so a caller
+// outside this package can validate an instance against a JSON Schema with the same engine
+// the resource store uses. The semantics match registered-kind validation exactly.
+func NewSchemaCompiler() SchemaCompiler { return newBuiltinCompiler() }
+
 // Compile parses a schema document into a Validator.
 func (builtinCompiler) Compile(doc []byte) (Validator, error) {
 	v, err := decodeInstance(doc)
