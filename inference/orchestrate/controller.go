@@ -26,12 +26,12 @@ type Provider interface {
 // Server is the orchestrator's view of the running model servers: the resident set it can
 // observe, and the launch and evict it can drive. Launch and evict must be idempotent
 // (launching a running model and evicting an absent one are no-ops), which is what lets a
-// reconcile re-run safely. Launch takes a degraded flag: when the recovery policy has
-// decided a model keeps running out of memory or wedging, the controller asks for a smaller
-// footprint instead of repeating the launch that failed.
+// reconcile re-run safely. Launch takes a level: when the recovery policy has decided a model
+// keeps running out of memory or wedging, the controller asks for a smaller footprint, down to
+// a CPU-only run, instead of repeating the launch that failed.
 type Server interface {
 	Resident(ctx context.Context) ([]Resident, error)
-	Launch(ctx context.Context, modelID string, degraded bool) error
+	Launch(ctx context.Context, modelID string, level LaunchLevel) error
 	Evict(ctx context.Context, modelID string) error
 }
 
@@ -176,20 +176,22 @@ func (c *Controller) apply(ctx context.Context, p Plan) error {
 		}
 	}
 	for _, id := range p.Launch {
-		degraded := false
+		level := LaunchFull
 		if st, failing := c.failures[id]; failing {
 			switch Recover(st) {
-			case RecoverQuarantine, RecoverFallback:
-				// Stop launching this model for now. Falling back to a different model is not
-				// wired yet, so it is treated as quarantine. A skip is not an apply failure.
+			case RecoverQuarantine:
+				// Stop launching this model until its desired state changes; a skip is not an
+				// apply failure.
 				continue
+			case RecoverFallback:
+				level = LaunchMinimal
 			case RecoverDegrade:
-				degraded = true
+				level = LaunchDegraded
 			case RecoverRetry:
-				degraded = false
+				level = LaunchFull
 			}
 		}
-		if err := c.server.Launch(ctx, id, degraded); err != nil {
+		if err := c.server.Launch(ctx, id, level); err != nil {
 			c.recordFailure(id, err)
 			failed++
 			if first == nil {
