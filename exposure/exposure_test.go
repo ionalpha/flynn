@@ -1,8 +1,11 @@
 package exposure
 
 import (
+	"net"
 	"testing"
 	"time"
+
+	"pgregory.net/rapid"
 
 	"github.com/ionalpha/flynn/bindguard"
 	"github.com/ionalpha/flynn/clock"
@@ -106,4 +109,42 @@ func TestExposedFlagRecorded(t *testing.T) {
 	if !r.List()[0].Exposed {
 		t.Error("Exposed flag should be recorded on the entry")
 	}
+}
+
+// Property: across any interleaving of opens and closes, the registry's live count
+// equals opens-minus-closes, never leaks or double-counts, and closing the same
+// exposure twice is safe.
+func TestRegistryBalanceProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		r := New(clock.System{}, nil)
+		var open []net.Listener
+		ops := rapid.IntRange(1, 40).Draw(t, "ops")
+		for range ops {
+			if len(open) > 0 && rapid.Bool().Draw(t, "close") {
+				i := rapid.IntRange(0, len(open)-1).Draw(t, "which")
+				ln := open[i]
+				open = append(open[:i], open[i+1:]...)
+				if err := ln.Close(); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+				// Closing again must be safe (no panic, no negative count).
+				_ = ln.Close()
+			} else {
+				ln, err := r.Listen("tcp", "127.0.0.1:0", bindguard.Loopback(), Meta{Purpose: "p"})
+				if err != nil {
+					t.Fatalf("listen: %v", err)
+				}
+				open = append(open, ln)
+			}
+			if got := len(r.List()); got != len(open) {
+				t.Fatalf("live count = %d, want %d", got, len(open))
+			}
+		}
+		for _, ln := range open {
+			_ = ln.Close()
+		}
+		if got := len(r.List()); got != 0 {
+			t.Fatalf("after closing all, live count = %d, want 0", got)
+		}
+	})
 }
