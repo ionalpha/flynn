@@ -29,6 +29,7 @@ const (
 // disposition, then a terminal acted or dropped.
 type Phase string
 
+// The phases an entry moves through, from received to a terminal acted or dropped.
 const (
 	PhaseReceived Phase = "Received" // recorded, not yet triaged
 	PhaseTriaged  Phase = "Triaged"  // a disposition was chosen, action in progress
@@ -40,6 +41,7 @@ const (
 // triaged.
 type Disposition string
 
+// The dispositions triage can choose for an entry.
 const (
 	DispositionReply  Disposition = "Reply"  // answer in the originating conversation
 	DispositionGoal   Disposition = "Goal"   // run it as a goal
