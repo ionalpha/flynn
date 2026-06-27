@@ -209,6 +209,13 @@ func probeAndStore(ctx context.Context, model llm.Model, m catalog.ModelSpec, ru
 	}
 	prof := rep.Profile()
 
+	// Measure the usable context window separately: how far the model stays coherent, which is
+	// often shorter than its advertised window and is the cap the harness applies.
+	effCtx, err := reliability.MeasureEffectiveContext(ctx, model, reliability.ContextCandidates(m.ContextTokens))
+	if err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+
 	quant := ""
 	if q, ok := m.SmallestQuant(); ok {
 		quant = q.Name
@@ -221,7 +228,7 @@ func probeAndStore(ctx context.Context, model llm.Model, m catalog.ModelSpec, ru
 		ToolCallReliability:  prof.ToolCallReliability,
 		StructuredOutput:     prof.StructuredOutput,
 		InstructionFollowing: prof.InstructionFollowing,
-		EffectiveContext:     prof.EffectiveContext,
+		EffectiveContext:     effCtx,
 	}
 	if err := profilestore.Write(ctx, rs, spec); err != nil {
 		return err
@@ -231,6 +238,7 @@ func probeAndStore(ctx context.Context, model llm.Model, m catalog.ModelSpec, ru
 	_, _ = fmt.Fprintf(out, "  tool calls:   %3.0f%%\n", prof.ToolCallReliability*100)
 	_, _ = fmt.Fprintf(out, "  schema:       %3.0f%%\n", prof.StructuredOutput*100)
 	_, _ = fmt.Fprintf(out, "  instructions: %3.0f%%\n", prof.InstructionFollowing*100)
+	_, _ = fmt.Fprintf(out, "  context:      %s\n", reliability.DescribeContext(effCtx, m.ContextTokens))
 	if below, reason := reliability.QuantFloor(quant, m.ParamsB); reason != "" {
 		mark := "note"
 		if below {
