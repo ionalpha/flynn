@@ -31,7 +31,8 @@ type recordingServer struct {
 	order       []string
 	residentErr error
 	evictErr    error
-	failLaunch  int // fail the first N launches, then succeed
+	launchErr   error // the error returned by a failed launch (default: a generic one)
+	failLaunch  int   // fail the first N launches, then succeed
 }
 
 func newRecordingServer(resident ...Resident) *recordingServer {
@@ -55,16 +56,36 @@ func (s *recordingServer) Resident(context.Context) ([]Resident, error) {
 	return out, nil
 }
 
-func (s *recordingServer) Launch(_ context.Context, id string) error {
+func (s *recordingServer) Launch(_ context.Context, id string, degraded bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.order = append(s.order, "launch:"+id)
+	tag := "launch:"
+	if degraded {
+		tag = "launch-degraded:"
+	}
+	s.order = append(s.order, tag+id)
 	if s.failLaunch > 0 {
 		s.failLaunch--
+		if s.launchErr != nil {
+			return s.launchErr
+		}
 		return errors.New("runtime failed to start")
 	}
 	s.resident[id] = Resident{ModelID: id}
 	return nil
+}
+
+// degradedLaunches counts how many launches were asked for in degraded mode.
+func (s *recordingServer) degradedLaunches() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	n := 0
+	for _, a := range s.order {
+		if strings.HasPrefix(a, "launch-degraded:") {
+			n++
+		}
+	}
+	return n
 }
 
 func (s *recordingServer) Evict(_ context.Context, id string) error {

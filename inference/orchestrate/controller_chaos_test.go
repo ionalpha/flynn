@@ -23,12 +23,13 @@ func driveToConvergence(t *testing.T, c *Controller, maxPasses int) int {
 	return 0
 }
 
-// TestConvergesDespiteFlakyLaunch asserts that a runtime which fails to start a few times is
-// retried until the model is resident, and that once converged the loop takes no further
-// action. Each failed launch surfaces as a transient error, the signal the queue backs off on.
+// TestConvergesDespiteFlakyLaunch asserts that a runtime which fails to start within the crash
+// retry bound is retried until the model is resident, and that once converged the loop takes no
+// further action. Each failed launch surfaces as a transient error, the signal the queue backs
+// off on. (Failing past the bound quarantines instead; that is covered separately.)
 func TestConvergesDespiteFlakyLaunch(t *testing.T) {
 	srv := newRecordingServer()
-	srv.failLaunch = 3
+	srv.failLaunch = 2
 	c := newTestController(
 		fakeProvider{ds: DesiredState{Models: []Desired{{ModelID: "a", Footprint: 10}}, Budget: 100}},
 		srv,

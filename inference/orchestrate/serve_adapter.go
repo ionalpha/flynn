@@ -8,8 +8,9 @@ import (
 
 // LaunchFunc starts a model by id, resolving and serving it. It is injected because launching
 // a catalog model (resolve, provision, build a plan, serve) is wired above this package; the
-// orchestrator only needs the verb.
-type LaunchFunc func(ctx context.Context, modelID string) error
+// orchestrator only needs the verb. The degraded flag asks for a smaller footprint, the
+// recovery response to a model that ran out of memory or wedged at its full size.
+type LaunchFunc func(ctx context.Context, modelID string, degraded bool) error
 
 // FootprintFunc returns the device memory a model occupies when resident, in bytes. It is
 // injected from the model catalog, the source of a model's known size.
@@ -64,12 +65,13 @@ func (a *ServeAdapter) footprintOf(id string) int64 {
 	return a.footprint(id)
 }
 
-// Launch starts a model by id through the injected launcher.
-func (a *ServeAdapter) Launch(ctx context.Context, modelID string) error {
+// Launch starts a model by id through the injected launcher, passing the degraded request
+// down so a recovery relaunch can ask for a smaller footprint.
+func (a *ServeAdapter) Launch(ctx context.Context, modelID string, degraded bool) error {
 	if a.launch == nil {
 		return nil
 	}
-	return a.launch(ctx, modelID)
+	return a.launch(ctx, modelID, degraded)
 }
 
 // Evict stops the model's server. Stopping a model that is not running is not an error, so a

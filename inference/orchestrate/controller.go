@@ -26,10 +26,12 @@ type Provider interface {
 // Server is the orchestrator's view of the running model servers: the resident set it can
 // observe, and the launch and evict it can drive. Launch and evict must be idempotent
 // (launching a running model and evicting an absent one are no-ops), which is what lets a
-// reconcile re-run safely.
+// reconcile re-run safely. Launch takes a degraded flag: when the recovery policy has
+// decided a model keeps running out of memory or wedging, the controller asks for a smaller
+// footprint instead of repeating the launch that failed.
 type Server interface {
 	Resident(ctx context.Context) ([]Resident, error)
-	Launch(ctx context.Context, modelID string) error
+	Launch(ctx context.Context, modelID string, degraded bool) error
 	Evict(ctx context.Context, modelID string) error
 }
 
@@ -49,6 +51,12 @@ type Controller struct {
 	server   Server
 	ctrl     *reconcile.Controller[serveKey]
 	resync   time.Duration
+	// classify maps a launch error to a failure kind, so recovery can react to the cause.
+	classify func(error) FailureKind
+	// failures is the per-model recovery memory consulted before a relaunch. It is only read
+	// or written inside reconcile, which the work queue runs one-at-a-time for the single
+	// serving key, so it needs no lock.
+	failures map[string]RecoveryState
 }
 
 // Option configures a Controller.
@@ -61,10 +69,32 @@ func WithResync(d time.Duration) Option {
 	return func(c *Controller) { c.resync = d }
 }
 
+// WithClassifier sets how a launch error is mapped to a failure kind, which drives the
+// recovery response. Without one, every launch error is treated as a crash (retried a
+// bounded number of times, then quarantined); the serve layer injects a classifier that
+// recognizes out-of-memory and wedged-load failures so they degrade instead of repeating.
+func WithClassifier(f func(error) FailureKind) Option {
+	return func(c *Controller) {
+		if f != nil {
+			c.classify = f
+		}
+	}
+}
+
+// defaultClassify treats any launch error as a crash, the conservative default that retries
+// a bounded number of times and then quarantines, without assuming a memory cause.
+func defaultClassify(error) FailureKind { return FailureCrash }
+
 // NewController builds a controller that reconciles server toward what provider wants,
 // scheduling its retries and resync on clk.
 func NewController(provider Provider, server Server, clk clock.Timing, opts ...Option) *Controller {
-	c := &Controller{provider: provider, server: server, resync: 15 * time.Second}
+	c := &Controller{
+		provider: provider,
+		server:   server,
+		resync:   15 * time.Second,
+		classify: defaultClassify,
+		failures: map[string]RecoveryState{},
+	}
 	for _, o := range opts {
 		o(c)
 	}
@@ -97,6 +127,7 @@ func (c *Controller) reconcile(ctx context.Context, _ serveKey) (reconcile.Resul
 	if err != nil {
 		return res, fault.Wrap(fault.Transient, "orchestrate_observe", err)
 	}
+	c.forgetUndesired(ds.Models)
 	plan := Schedule(ds.Models, resident, ds.Budget)
 	if err := c.apply(ctx, plan); err != nil {
 		return res, err
@@ -108,10 +139,31 @@ func (c *Controller) reconcile(ctx context.Context, _ serveKey) (reconcile.Resul
 	return res, nil
 }
 
+// forgetUndesired clears the recovery memory of any model no longer in the desired set, so a
+// model that is removed and later wanted again starts with a clean slate rather than staying
+// quarantined from a previous life.
+func (c *Controller) forgetUndesired(desired []Desired) {
+	if len(c.failures) == 0 {
+		return
+	}
+	wanted := make(map[string]bool, len(desired))
+	for _, d := range desired {
+		wanted[d.ModelID] = true
+	}
+	for id := range c.failures {
+		if !wanted[id] {
+			delete(c.failures, id)
+		}
+	}
+}
+
 // apply carries out a plan, evicting before launching so freed memory is available to the new
-// models, and collecting failures into one transient error so a partial apply is retried
-// rather than abandoned. Every action is attempted even if an earlier one fails, so one stuck
-// model does not block the rest of the convergence.
+// models. Each launch is shaped by the model's recovery state: a model with no recent failure
+// launches normally, a memory or wedge failure launches degraded, and a model the policy has
+// quarantined is skipped (which is not an apply failure). A launch error is classified and
+// recorded so the next pass escalates; a clean launch clears the model's failure history.
+// Failures are collected into one transient error so a partial apply is retried rather than
+// abandoned, and every action is attempted even if an earlier one fails.
 func (c *Controller) apply(ctx context.Context, p Plan) error {
 	var failed int
 	var first error
@@ -124,15 +176,40 @@ func (c *Controller) apply(ctx context.Context, p Plan) error {
 		}
 	}
 	for _, id := range p.Launch {
-		if err := c.server.Launch(ctx, id); err != nil {
+		degraded := false
+		if st, failing := c.failures[id]; failing {
+			switch Recover(st) {
+			case RecoverQuarantine, RecoverFallback:
+				// Stop launching this model for now. Falling back to a different model is not
+				// wired yet, so it is treated as quarantine. A skip is not an apply failure.
+				continue
+			case RecoverDegrade:
+				degraded = true
+			case RecoverRetry:
+				degraded = false
+			}
+		}
+		if err := c.server.Launch(ctx, id, degraded); err != nil {
+			c.recordFailure(id, err)
 			failed++
 			if first == nil {
 				first = err
 			}
+			continue
 		}
+		delete(c.failures, id) // launched cleanly; forget any past failures
 	}
 	if failed > 0 {
 		return fault.Wrap(fault.Transient, "orchestrate_apply", first)
 	}
 	return nil
+}
+
+// recordFailure classifies a launch error and advances the model's recovery state, so the
+// next pass escalates the response per the recovery ladder.
+func (c *Controller) recordFailure(id string, err error) {
+	st := c.failures[id]
+	st.Kind = c.classify(err)
+	st.Attempts++
+	c.failures[id] = st
 }
