@@ -2,11 +2,31 @@ package main
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/inference/orchestrate"
 )
+
+func TestClassifyLaunchFailure(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want orchestrate.FailureKind
+	}{
+		{"nil", nil, orchestrate.FailureNone},
+		{"cuda oom", errors.New("serve: the runtime exited:\nggml_cuda error: out of memory"), orchestrate.FailureOOM},
+		{"alloc", errors.New("CUDA error: failed to allocate device buffer"), orchestrate.FailureOOM},
+		{"timeout", errors.New("serve: the runtime did not answer within 90s"), orchestrate.FailureHang},
+		{"crash", errors.New("serve: the runtime exited:\nfailed to load model: bad magic"), orchestrate.FailureCrash},
+	}
+	for _, tc := range cases {
+		if got := classifyLaunchFailure(tc.err); got != tc.want {
+			t.Errorf("%s: classifyLaunchFailure = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
 
 // firstLocalModel returns a local catalog model to exercise the pool builder against, skipping
 // the test if the embedded catalog has none.
