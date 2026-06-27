@@ -123,6 +123,15 @@ func DialControl(p Policy) func(network, address string, c syscall.RawConn) erro
 	}
 }
 
+// Dialer returns a net.Dialer that gates every connection through p, for raw
+// socket protocols that are not HTTP (a line-delimited or JSON-RPC service, say).
+// It is the raw-socket counterpart of Client: a caller reaching a local,
+// operator-supplied service over a loopback port grants exactly that address in p,
+// and the policy still blocks anything else, including an address a name rebinds to.
+func Dialer(p Policy) *net.Dialer {
+	return &net.Dialer{Timeout: 30 * time.Second, Control: DialControl(p)}
+}
+
 // Client builds a hardened HTTP client that dials only where p allows, follows a
 // bounded number of redirects (re-applying the policy on each hop through the dial
 // control) and refuses a non-https redirect, and honors no environment proxy so the

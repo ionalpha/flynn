@@ -14,14 +14,15 @@ import (
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
+	"github.com/ionalpha/flynn/source/signalcli"
 	"github.com/ionalpha/flynn/source/telegram"
 )
 
 // runServe runs the agent as a long-lived service that answers messages from chat
 // channels. Inbound messages are recorded as entries and triaged: each is driven as
 // a goal in the working directory and the agent's final answer is sent back on the
-// same conversation. Telegram is the available channel today; the triage boundary
-// accepts more sources as adapters are added. Goals run with the full sandboxed
+// same conversation. Telegram and Signal are the available channels today; the
+// triage boundary accepts more sources as adapters are added. Goals run with the full sandboxed
 // toolset under the run's budget; the learning loop is not yet wired into the served
 // path, so a message is answered but not distilled into skills.
 //
@@ -29,6 +30,7 @@ import (
 func runServe(args []string, modelSpec, dataDir string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
+	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -36,9 +38,6 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	token := *tgToken
 	if token == "" {
 		token = os.Getenv("TELEGRAM_BOT_TOKEN")
-	}
-	if token == "" {
-		return errors.New("serve: no channel configured; pass --telegram-token or set TELEGRAM_BOT_TOKEN")
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -71,19 +70,38 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	}
 	rt := mr.rt
 
-	bot, err := telegram.New(token)
-	if err != nil {
-		return err
+	// Assemble the configured channels as inbox sources and sinks.
+	var sources []inbox.Source
+	var sinks []inbox.Sink
+	if token != "" {
+		bot, err := telegram.New(token)
+		if err != nil {
+			return err
+		}
+		sources = append(sources, bot)
+		sinks = append(sinks, bot)
+	}
+	if *signalTCP != "" {
+		sig, err := signalcli.New(*signalTCP)
+		if err != nil {
+			return err
+		}
+		sources = append(sources, sig)
+		sinks = append(sinks, sig)
+	}
+	if len(sources) == 0 {
+		return errors.New("serve: no channel configured; pass --telegram-token (or TELEGRAM_BOT_TOKEN) and/or --signal-tcp")
 	}
 
-	// Triage turns each recorded entry into a goal and replies with its answer.
+	// Triage turns each recorded entry into a goal and replies with its answer on the
+	// channel it arrived from.
 	worker := &goalWorker{rt: rt, store: rstore}
-	triage := inbox.NewTriage(rstore, worker, inbox.NewSinks(bot), clock.System{})
+	triage := inbox.NewTriage(rstore, worker, inbox.NewSinks(sinks...), clock.System{})
 	mgr := reconcile.NewManager(rstore)
 	mgr.Register(inbox.Kind, triage)
 
-	// Ingest records inbound messages from the bot and enqueues them for triage.
-	ingest := inbox.NewIngest(rstore, mgr, clock.System{}, []inbox.Source{bot},
+	// Ingest records inbound messages from every source and enqueues them for triage.
+	ingest := inbox.NewIngest(rstore, mgr, clock.System{}, sources,
 		inbox.WithIngestErrorHandler(func(e error) { fmt.Fprintln(os.Stderr, "serve:", e) }))
 
 	// Run the goal runtime, the triage manager, and ingest together. Ingest blocks
@@ -91,7 +109,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	go func() { _ = rt.Start(ctx) }()
 	go func() { mgr.Start(ctx) }()
 
-	fmt.Fprintln(os.Stderr, "flynn serve: answering Telegram messages; press Ctrl-C to stop")
+	fmt.Fprintln(os.Stderr, "flynn serve: answering messages; press Ctrl-C to stop")
 	if err := ingest.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
 		return err
 	}
