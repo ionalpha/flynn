@@ -30,6 +30,7 @@ type Local struct {
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
 	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
 	seccomp     bool              // run commands under a syscall filter (see WithSeccomp)
+	egress      *egressConfig     // govern child egress through a netguard proxy (see WithEgress)
 	// confineBestEffort marks confinement as the always-on default (see
 	// WithDefaultConfinement) rather than an explicit request, so a host that cannot
 	// set it up falls back to the floor instead of failing the command.
@@ -169,9 +170,15 @@ var _ Sandbox = (*Local)(nil)
 func (l *Local) Root() string { return l.root }
 
 // Close releases resources. The in-process tier holds none itself, but a platform's
-// confinement may leave persistent state (a registered container profile on Windows);
-// closePlatform releases that where applicable and is a no-op elsewhere.
-func (l *Local) Close() error { return l.closePlatform() }
+// confinement may leave persistent state (a registered container profile on Windows),
+// and a governed-egress sandbox holds a running proxy; both are released here.
+// closePlatform is a no-op where there is nothing to release.
+func (l *Local) Close() error {
+	if l.egress != nil {
+		l.egress.close()
+	}
+	return l.closePlatform()
+}
 
 // Containment reports how strongly this Local confines the commands it runs. The
 // ordered level measures the load-bearing axis: the kernel-enforced filesystem and
@@ -296,6 +303,14 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 	if confined {
 		if err := l.confine(c); err != nil {
 			return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
+		}
+	}
+	// Govern outbound egress through the policy proxy, denying direct egress at the OS
+	// level. It is a separate axis from confine and is never weakened by the best-effort
+	// fallback: a platform without an enforcement leg refuses rather than running open.
+	if l.egressActive() {
+		if err := l.applyEgress(c); err != nil {
+			return ExecResult{}, err
 		}
 	}
 	out, err := c.CombinedOutput()
