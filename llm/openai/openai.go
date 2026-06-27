@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/secret"
 )
@@ -111,7 +112,8 @@ var _ llm.Model = (*Client)(nil)
 
 // Generate implements llm.Model.
 func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
-	body, err := json.Marshal(c.buildRequest(req))
+	chatReq, grammarActive := c.buildRequest(req)
+	body, err := json.Marshal(chatReq)
 	if err != nil {
 		return llm.Response{}, fault.Wrap(fault.Terminal, "openai_encode", err)
 	}
@@ -139,7 +141,14 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, e
 	if err := json.Unmarshal(raw, &cr); err != nil {
 		return llm.Response{}, fault.Wrap(fault.Terminal, "openai_decode", err)
 	}
-	return decodeResponse(cr)
+	var grammarTools map[string]bool
+	if grammarActive {
+		grammarTools = make(map[string]bool, len(req.Tools))
+		for _, t := range req.Tools {
+			grammarTools[t.Name] = true
+		}
+	}
+	return decodeResponse(cr, grammarTools)
 }
 
 // --- request building -------------------------------------------------------
@@ -196,7 +205,14 @@ type chatFuncDef struct {
 	Parameters  json.RawMessage `json:"parameters,omitempty"`
 }
 
-func (c *Client) buildRequest(req llm.Request) chatRequest {
+// buildRequest encodes a neutral request into the Chat Completions body and reports
+// whether tool-call grammar constraining is active for it. When it is, the tool list
+// is carried as a decode-time grammar instead of the tools field: a local server
+// rejects a request that sets both a custom grammar and tools, and a grammar already
+// names every callable tool, so the schemas are not sent twice. The caller uses the
+// returned flag to decode a grammar-constrained reply, where the single tool call
+// arrives as the message content rather than as a structured tool_calls entry.
+func (c *Client) buildRequest(req llm.Request) (chatRequest, bool) {
 	maxTokens := req.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = c.maxTokens
@@ -217,24 +233,28 @@ func (c *Client) buildRequest(req llm.Request) chatRequest {
 		sys := req.System
 		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: &sys})
 	}
-	for _, t := range req.Tools {
-		out.Tools = append(out.Tools, chatTool{
-			Type:     "function",
-			Function: chatFuncDef{Name: t.Name, Description: t.Description, Parameters: t.InputSchema},
-		})
-	}
+	grammarActive := false
 	if c.toolGrammar && len(req.Tools) > 0 {
 		if g, err := toolCallGrammar(req.Tools); err == nil {
 			out.Grammar = g
+			grammarActive = true
 		}
-		// A tool whose schema cannot be compiled leaves the request unconstrained
-		// rather than constrained to a subset of the tools, so the model is never
-		// blocked from calling an offered tool.
+		// A tool whose schema cannot be compiled leaves the request unconstrained and
+		// falls back to advertising the tools below, so the model is never blocked from
+		// calling an offered tool.
+	}
+	if !grammarActive {
+		for _, t := range req.Tools {
+			out.Tools = append(out.Tools, chatTool{
+				Type:     "function",
+				Function: chatFuncDef{Name: t.Name, Description: t.Description, Parameters: t.InputSchema},
+			})
+		}
 	}
 	for _, m := range req.Messages {
 		out.Messages = append(out.Messages, encodeMessage(m)...)
 	}
-	return out
+	return out, grammarActive
 }
 
 // encodeMessage maps one neutral message to one or more Chat Completions messages.
@@ -304,11 +324,28 @@ type chatResponse struct {
 	} `json:"usage"`
 }
 
-func decodeResponse(cr chatResponse) (llm.Response, error) {
+func decodeResponse(cr chatResponse, grammarTools map[string]bool) (llm.Response, error) {
 	if len(cr.Choices) == 0 {
 		return llm.Response{}, fault.New(fault.Terminal, "openai_no_choice", "openai: response had no choices")
 	}
 	choice := cr.Choices[0]
+
+	// Under a tool-call grammar the tool list is not advertised, so the server returns
+	// the single grammar-constrained call as message content rather than a structured
+	// tool_calls entry. A reply that begins with "{" is a tool call by construction (the
+	// grammar's other branch, a free-text answer, cannot start with "{"); decode it into
+	// a tool use so the rest of the pipeline sees a uniform call regardless of provider.
+	if len(grammarTools) > 0 && len(choice.Message.ToolCalls) == 0 {
+		if call, ok := parseGrammarToolCall(choice.Message.Content, grammarTools); ok {
+			return llm.Response{
+				Message:    llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{{Kind: llm.KindToolUse, ToolUse: call}}},
+				StopReason: llm.StopToolUse,
+				Usage:      decodeUsage(cr),
+			}, nil
+		}
+		// Not a tool call: a free-text final answer falls through to the text path below.
+	}
+
 	blocks := make([]llm.Block, 0, 1+len(choice.Message.ToolCalls))
 	if choice.Message.Content != "" {
 		blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: choice.Message.Content})
@@ -318,26 +355,59 @@ func decodeResponse(cr chatResponse) (llm.Response, error) {
 			ID: tc.ID, Name: tc.Function.Name, Input: json.RawMessage(tc.Function.Arguments),
 		}})
 	}
-	// This API caches stable prefixes automatically (no request-side marker), and
-	// reports prompt_tokens as the total input with the cached portion called out as
-	// a subset. That matches the port directly: InputTokens is the total, and
-	// CacheReadTokens is how much of it was served from cache. There is no separate
-	// cache-write charge to report. Endpoints differ on where they put the cached
-	// count: take prompt_tokens_details.cached_tokens, falling back to the flat
-	// prompt_cache_hit_tokens some compatible providers use instead.
+	return llm.Response{
+		Message:    llm.Message{Role: llm.RoleAssistant, Blocks: blocks},
+		StopReason: mapFinishReason(choice.FinishReason),
+		Usage:      decodeUsage(cr),
+	}, nil
+}
+
+// decodeUsage maps the response's token accounting onto the neutral usage. This API
+// caches stable prefixes automatically (no request-side marker) and reports
+// prompt_tokens as the total input with the cached portion called out as a subset:
+// InputTokens is the total and CacheReadTokens is how much of it was served from
+// cache, with no separate cache-write charge. Endpoints differ on where they put the
+// cached count, so take prompt_tokens_details.cached_tokens, falling back to the flat
+// prompt_cache_hit_tokens some compatible providers use instead.
+func decodeUsage(cr chatResponse) llm.Usage {
 	cacheRead := cr.Usage.PromptTokensDetails.CachedTokens
 	if cacheRead == 0 {
 		cacheRead = cr.Usage.PromptCacheHitTokens
 	}
-	return llm.Response{
-		Message:    llm.Message{Role: llm.RoleAssistant, Blocks: blocks},
-		StopReason: mapFinishReason(choice.FinishReason),
-		Usage: llm.Usage{
-			InputTokens:     cr.Usage.PromptTokens,
-			OutputTokens:    cr.Usage.CompletionTokens,
-			CacheReadTokens: cacheRead,
-		},
-	}, nil
+	return llm.Usage{
+		InputTokens:     cr.Usage.PromptTokens,
+		OutputTokens:    cr.Usage.CompletionTokens,
+		CacheReadTokens: cacheRead,
+	}
+}
+
+// parseGrammarToolCall decodes a grammar-constrained tool call from the model's
+// message content. The tool-call grammar admits exactly an object of the form
+// {"name": <tool>, "arguments": <object>}, so a content string whose first
+// non-whitespace byte is "{" is parsed as that object. The call is accepted only when
+// it names one of the constrained tools; anything else is reported as not a tool call
+// so the caller can treat the reply as a free-text answer. A fresh call id is minted
+// because a grammar-constrained reply carries none of its own.
+func parseGrammarToolCall(content string, grammarTools map[string]bool) (*llm.ToolUse, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "{") {
+		return nil, false
+	}
+	var call struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &call); err != nil {
+		return nil, false
+	}
+	if !grammarTools[call.Name] {
+		return nil, false
+	}
+	args := call.Arguments
+	if len(args) == 0 {
+		args = json.RawMessage("{}")
+	}
+	return &llm.ToolUse{ID: ids.New(), Name: call.Name, Input: args}, true
 }
 
 func mapFinishReason(r string) llm.StopReason {
