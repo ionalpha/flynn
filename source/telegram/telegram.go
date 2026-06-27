@@ -1,7 +1,7 @@
-// Package telegram adapts the Telegram Bot API to the channel.Channel port. It
-// receives messages by long-polling getUpdates and replies with sendMessage, using
-// only the standard library so it ships in the single static binary with no extra
-// dependencies.
+// Package telegram adapts the Telegram Bot API to the inbox Source and Sink ports.
+// It receives messages by long-polling getUpdates and replies with sendMessage,
+// using only the standard library so it ships in the single static binary with no
+// extra dependencies.
 package telegram
 
 import (
@@ -16,10 +16,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/ionalpha/flynn/channel"
+	"github.com/ionalpha/flynn/inbox"
 )
 
-// name is the adapter's stable identity within a gateway.
+// name is the source's stable identity, matching the Sink so replies route back.
 const name = "telegram"
 
 // defaultAPIBase is the Telegram Bot API root. Override it in tests with
@@ -34,72 +34,78 @@ const defaultPollTimeout = 30 * time.Second
 // retryBackoff paces reconnection after a transient getUpdates failure.
 const retryBackoff = 2 * time.Second
 
-// Channel is a Telegram bot adapted to the gateway. Construct it with New.
-type Channel struct {
+// maxMessageLen keeps each sendMessage under Telegram's per-message limit. A longer
+// reply is split across messages rather than rejected.
+const maxMessageLen = 4000
+
+// Bot is a Telegram bot adapted to the inbox ports: it is both a Source (inbound
+// messages) and a Sink (outbound replies). Construct it with New.
+type Bot struct {
 	token   string
 	baseURL string
 	http    *http.Client
 	poll    time.Duration
 }
 
-// Option configures a Channel.
-type Option func(*Channel)
+// Option configures a Bot.
+type Option func(*Bot)
 
-// WithHTTPClient sets the HTTP client used for API calls. The default client has
-// no timeout because getUpdates long-polls; per-request deadlines are applied
+// WithHTTPClient sets the HTTP client used for API calls. The default client has no
+// timeout because getUpdates long-polls; per-request deadlines are applied
 // internally instead.
 func WithHTTPClient(c *http.Client) Option {
-	return func(ch *Channel) {
+	return func(b *Bot) {
 		if c != nil {
-			ch.http = c
+			b.http = c
 		}
 	}
 }
 
 // WithBaseURL overrides the API root (for tests).
 func WithBaseURL(u string) Option {
-	return func(ch *Channel) {
+	return func(b *Bot) {
 		if u != "" {
-			ch.baseURL = u
+			b.baseURL = u
 		}
 	}
 }
 
 // WithPollTimeout overrides how long each getUpdates call waits for a message.
 func WithPollTimeout(d time.Duration) Option {
-	return func(ch *Channel) {
+	return func(b *Bot) {
 		if d > 0 {
-			ch.poll = d
+			b.poll = d
 		}
 	}
 }
 
-// New builds a Telegram channel for the given bot token. The token is required and
-// is never logged or wrapped into an error.
-func New(token string, opts ...Option) (*Channel, error) {
+// New builds a Telegram bot for the given token. The token is required and is never
+// logged or wrapped into an error.
+func New(token string, opts ...Option) (*Bot, error) {
 	if token == "" {
 		return nil, errors.New("telegram: empty bot token")
 	}
-	ch := &Channel{
+	b := &Bot{
 		token:   token,
 		baseURL: defaultAPIBase,
 		http:    &http.Client{},
 		poll:    defaultPollTimeout,
 	}
 	for _, o := range opts {
-		o(ch)
+		o(b)
 	}
-	return ch, nil
+	return b, nil
 }
 
-// Name identifies the adapter.
-func (c *Channel) Name() string { return name }
+// Name identifies the source and its paired sink.
+func (b *Bot) Name() string { return name }
 
-// Receive long-polls getUpdates and streams each text message as a channel.Inbound
+// Receive long-polls getUpdates and streams each text message as an inbox.Spec
 // until ctx is cancelled, then closes the returned channel. Transient request
-// failures are retried after a short backoff rather than ending the stream.
-func (c *Channel) Receive(ctx context.Context) (<-chan channel.Inbound, error) {
-	out := make(chan channel.Inbound)
+// failures are retried after a short backoff rather than ending the stream. The
+// Spec's Source is left for the ingester to stamp.
+func (b *Bot) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
+	out := make(chan inbox.Spec)
 	go func() {
 		defer close(out)
 		var offset int64
@@ -107,7 +113,7 @@ func (c *Channel) Receive(ctx context.Context) (<-chan channel.Inbound, error) {
 			if ctx.Err() != nil {
 				return
 			}
-			updates, err := c.getUpdates(ctx, offset)
+			updates, err := b.getUpdates(ctx, offset)
 			if err != nil {
 				if ctx.Err() != nil {
 					return
@@ -125,13 +131,14 @@ func (c *Channel) Receive(ctx context.Context) (<-chan channel.Inbound, error) {
 				if msg == nil || msg.Text == "" {
 					continue // non-text updates are out of scope for this adapter
 				}
-				in := channel.Inbound{
-					Chat: strconv.FormatInt(msg.Chat.ID, 10),
-					User: msg.sender(),
-					Text: msg.Text,
+				spec := inbox.Spec{
+					Conversation: strconv.FormatInt(msg.Chat.ID, 10),
+					Sender:       msg.sender(),
+					Type:         "message",
+					Content:      msg.Text,
 				}
 				select {
-				case out <- in:
+				case out <- spec:
 				case <-ctx.Done():
 					return
 				}
@@ -141,17 +148,13 @@ func (c *Channel) Receive(ctx context.Context) (<-chan channel.Inbound, error) {
 	return out, nil
 }
 
-// maxMessageLen keeps each sendMessage under Telegram's per-message limit. A
-// longer reply is split across several messages rather than rejected.
-const maxMessageLen = 4000
-
-// Send delivers a reply with sendMessage, splitting an over-long reply into
-// several messages so a large agent answer is delivered in full.
-func (c *Channel) Send(ctx context.Context, out channel.Outbound) error {
-	for _, part := range splitMessage(out.Text, maxMessageLen) {
-		body := map[string]string{"chat_id": out.Chat, "text": part}
+// Send delivers a reply to a conversation with sendMessage, splitting an over-long
+// reply into several messages so a large answer is delivered in full.
+func (b *Bot) Send(ctx context.Context, conversation, text string) error {
+	for _, part := range splitMessage(text, maxMessageLen) {
+		body := map[string]string{"chat_id": conversation, "text": part}
 		var ignored json.RawMessage
-		if err := c.post(ctx, "sendMessage", body, &ignored); err != nil {
+		if err := b.post(ctx, "sendMessage", body, &ignored); err != nil {
 			return err
 		}
 	}
@@ -181,45 +184,45 @@ func splitMessage(s string, limit int) []string {
 // getUpdates fetches the next batch of updates at or after offset, asking the
 // server to hold the request open for the poll timeout. The request deadline sits
 // above the poll timeout so the client never cancels a poll the server is honoring.
-func (c *Channel) getUpdates(ctx context.Context, offset int64) ([]update, error) {
-	pollSecs := int(c.poll / time.Second)
+func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
+	pollSecs := int(b.poll / time.Second)
 	q := url.Values{}
 	q.Set("timeout", strconv.Itoa(pollSecs))
 	q.Set("offset", strconv.FormatInt(offset, 10))
 	q.Set("allowed_updates", `["message"]`)
 
-	reqCtx, cancel := context.WithTimeout(ctx, c.poll+10*time.Second)
+	reqCtx, cancel := context.WithTimeout(ctx, b.poll+10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.method("getUpdates")+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, b.method("getUpdates")+"?"+q.Encode(), nil)
 	if err != nil {
 		return nil, err
 	}
 	var updates []update
-	if err := c.do(req, &updates); err != nil {
+	if err := b.do(req, &updates); err != nil {
 		return nil, err
 	}
 	return updates, nil
 }
 
 // post calls an API method with a JSON body and decodes result into out.
-func (c *Channel) post(ctx context.Context, method string, body, out any) error {
+func (b *Bot) post(ctx context.Context, method string, body, out any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.method(method), bytes.NewReader(buf))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.method(method), bytes.NewReader(buf))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.do(req, out)
+	return b.do(req, out)
 }
 
 // do executes req and decodes the Telegram envelope, returning an error when the
-// transport fails, the HTTP status is not 200, or the API reports ok=false. The
-// bot token is never included in an error.
-func (c *Channel) do(req *http.Request, out any) error {
-	resp, err := c.http.Do(req)
+// transport fails, the HTTP status is not 200, or the API reports ok=false. The bot
+// token is never included in an error.
+func (b *Bot) do(req *http.Request, out any) error {
+	resp, err := b.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("telegram: %s: %w", req.Method, err)
 	}
@@ -254,8 +257,8 @@ func (c *Channel) do(req *http.Request, out any) error {
 
 // method builds the API URL for a bot method. The token lives in the path, as the
 // Bot API requires; callers must keep it out of logs.
-func (c *Channel) method(m string) string {
-	return c.baseURL + "/bot" + c.token + "/" + m
+func (b *Bot) method(m string) string {
+	return b.baseURL + "/bot" + b.token + "/" + m
 }
 
 // update is one Telegram update; only text messages are consumed.
@@ -291,5 +294,8 @@ type user struct {
 	Username string `json:"username"`
 }
 
-// guard: a *Channel is a channel.Channel.
-var _ channel.Channel = (*Channel)(nil)
+// guards: a *Bot is both an inbox Source and an inbox Sink.
+var (
+	_ inbox.Source = (*Bot)(nil)
+	_ inbox.Sink   = (*Bot)(nil)
+)

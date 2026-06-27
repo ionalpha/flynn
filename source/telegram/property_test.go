@@ -9,8 +9,8 @@ import (
 
 // TestSplitMessageProperty is the rigor property: for any text and any positive
 // limit, the chunks rejoin to exactly the original (nothing is lost, added, or
-// reordered), every chunk is within the limit, and no empty chunk is produced. So
-// a reply of any length and any unicode content is delivered faithfully in pieces.
+// reordered), every chunk is within the limit, and no empty chunk is produced, so a
+// reply of any length and any unicode content is delivered faithfully in pieces.
 func TestSplitMessageProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		s := rapid.String().Draw(rt, "s")
