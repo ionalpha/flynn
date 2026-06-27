@@ -126,6 +126,113 @@ func TestBuildPlanRecordsTemplateOverride(t *testing.T) {
 	}
 }
 
+func TestBuildPlanEfficiencyFlags(t *testing.T) {
+	cfg := Config{
+		BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000,
+		GPULayers: 99, MoECPULayers: 24, KVCacheType: "q8_0",
+		DraftWeightsPath: "/w/draft.gguf", DraftMax: 16, DraftMin: 2,
+	}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range [][2]string{
+		{"--n-gpu-layers", "99"},
+		{"--n-cpu-moe", "24"},
+		{"--cache-type-k", "q8_0"},
+		{"--cache-type-v", "q8_0"},
+		{"--model-draft", "/w/draft.gguf"},
+		{"--draft-max", "16"},
+		{"--draft-min", "2"},
+	} {
+		if !argvHasFlag(plan.Argv, want[0], want[1]) {
+			t.Fatalf("argv missing %s %s: %v", want[0], want[1], plan.Argv)
+		}
+	}
+}
+
+func TestBuildPlanCPUOnlyOverridesOffload(t *testing.T) {
+	// CPU-only must win over GPU/expert offload, forcing every layer onto the CPU.
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, CPUOnly: true, GPULayers: 99, MoECPULayers: 24}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !argvHasFlag(plan.Argv, "--n-gpu-layers", "0") {
+		t.Fatalf("CPU-only must force zero GPU layers: %v", plan.Argv)
+	}
+	if contains(plan.Argv, "--n-cpu-moe") {
+		t.Fatalf("CPU-only must not also emit an expert-offload flag: %v", plan.Argv)
+	}
+}
+
+func TestBuildPlanDraftBoundsNeedDraftModel(t *testing.T) {
+	// Draft bounds without a draft model emit nothing, never a dangling flag.
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, DraftMax: 8}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contains(plan.Argv, "--draft-max") || contains(plan.Argv, "--model-draft") {
+		t.Fatalf("draft flags must not appear without a draft model: %v", plan.Argv)
+	}
+}
+
+func TestBuildPlanRefusesBadEfficiencyConfig(t *testing.T) {
+	base := func() Config {
+		return Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000}
+	}
+	cases := map[string]func(*Config){
+		"unknown kv cache type": func(c *Config) { c.KVCacheType = "q3_garbage" },
+		"negative draft max":    func(c *Config) { c.DraftMax = -1 },
+		"min above max":         func(c *Config) { c.DraftWeightsPath = "d"; c.DraftMax = 4; c.DraftMin = 8 },
+	}
+	for name, mut := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := base()
+			mut(&cfg)
+			if _, err := BuildPlan(cfg); err == nil {
+				t.Fatalf("expected %s to be refused", name)
+			}
+		})
+	}
+}
+
+func TestEngineForFormat(t *testing.T) {
+	for _, c := range []struct {
+		format catalog.Format
+		engine Engine
+		ok     bool
+	}{
+		{"", EngineLlamaCpp, true},
+		{catalog.FormatGGUF, EngineLlamaCpp, true},
+		{catalog.FormatSafetensors, EngineVLLM, true},
+		{catalog.FormatPickle, "", false},
+	} {
+		got, ok := EngineForFormat(c.format)
+		if ok != c.ok || got != c.engine {
+			t.Fatalf("EngineForFormat(%q) = %q,%v; want %q,%v", c.format, got, ok, c.engine, c.ok)
+		}
+	}
+}
+
+func TestBuildPlanRefusesUnwiredEngine(t *testing.T) {
+	// A safetensors model selects the vLLM engine, whose builder is not wired yet, so the
+	// plan is refused rather than served on llama.cpp with the wrong command.
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Format: catalog.FormatSafetensors, Port: 9000}
+	if _, err := BuildPlan(cfg); err == nil {
+		t.Fatal("serving a safetensors model should be refused until the vLLM runtime is wired")
+	}
+}
+
+func TestBuildPlanGGUFFormatStillServes(t *testing.T) {
+	// An explicit GGUF format takes the llama.cpp path exactly as the empty default does.
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Format: catalog.FormatGGUF, Port: 9000}
+	if _, err := BuildPlan(cfg); err != nil {
+		t.Fatalf("an explicit GGUF format must still serve: %v", err)
+	}
+}
+
 // buildMiniGGUF encodes a minimal valid GGUF header carrying the given string metadata,
 // enough for the reader to extract the chat template.
 func buildMiniGGUF(kvs map[string]string) []byte {
