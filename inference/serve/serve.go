@@ -49,6 +49,13 @@ type Prober func(ctx context.Context, baseURL string) error
 // killer signals the OS process; a test killer records the pid.
 type Killer func(pid int) error
 
+// ContainerStopper stops a container-backed server by its engine and id, the container
+// counterpart to Killer: a container has no host pid, so a separate Flynn process stops it
+// by driving the engine. The real stopper runs the engine CLI; a test stopper records the
+// call. A nil stopper means container-backed records cannot be stopped across invocations,
+// so the production wiring always supplies one.
+type ContainerStopper func(engine, id string) error
+
 // Endpoint is a running local model server reachable over loopback.
 type Endpoint struct {
 	// ModelID is the catalog id being served.
@@ -82,8 +89,15 @@ type Manager struct {
 	launcher Launcher
 	probe    Prober
 	kill     Killer
-	reg      *Registry
-	clk      clock.Clock
+	// stopContainer stops a container-backed server across invocations. Nil until the
+	// production wiring supplies one, since the standalone process path never needs it.
+	stopContainer ContainerStopper
+	// runContainer starts a container under the tier's guarantees. It defaults to
+	// sandbox.RunContainer and is injected in tests so the container lifecycle is exercised
+	// without a real engine.
+	runContainer func(context.Context, sandbox.ContainerSpec) (sandbox.Serving, error)
+	reg          *Registry
+	clk          clock.Clock
 	// stats reads how loaded a running server is, one source per runtime name. Empty by
 	// default so the standalone path stays zero-setup and reports load as unknown.
 	stats map[string]StatsSource
@@ -115,11 +129,33 @@ func WithPollInterval(d time.Duration) Option {
 	}
 }
 
+// WithContainerStopper sets how a container-backed server is stopped across invocations, so
+// `models stop` and the scheduler's evict can tear down a vLLM container the same way they
+// kill a process-backed server. Without one, a container record cannot be stopped by a later
+// process, so the production wiring always supplies it.
+func WithContainerStopper(s ContainerStopper) Option {
+	return func(m *Manager) {
+		if s != nil {
+			m.stopContainer = s
+		}
+	}
+}
+
 // withClock overrides the time source, for deterministic tests.
 func withClock(c clock.Clock) Option {
 	return func(m *Manager) {
 		if c != nil {
 			m.clk = c
+		}
+	}
+}
+
+// withContainerRunner overrides how a container is started, so the container lifecycle is
+// tested without a real engine.
+func withContainerRunner(run func(context.Context, sandbox.ContainerSpec) (sandbox.Serving, error)) Option {
+	return func(m *Manager) {
+		if run != nil {
+			m.runContainer = run
 		}
 	}
 }
@@ -130,6 +166,7 @@ func NewManager(l Launcher, probe Prober, kill Killer, reg *Registry, opts ...Op
 		launcher:     l,
 		probe:        probe,
 		kill:         kill,
+		runContainer: sandbox.RunContainer,
 		reg:          reg,
 		clk:          clock.System{},
 		stats:        map[string]StatsSource{},
@@ -171,18 +208,10 @@ func (m *Manager) Ensure(ctx context.Context, cfg EnsureConfig) (Endpoint, error
 		return Endpoint{}, fault.New(fault.Terminal, "serve_bad_plan", "serve: plan is missing a command or endpoint")
 	}
 
-	// Reuse an already-running server when its endpoint actually answers.
-	if rec, ok, err := m.reg.Get(cfg.ModelID); err != nil {
+	if ep, ok, err := m.reuseRunning(ctx, cfg.ModelID); err != nil {
 		return Endpoint{}, err
 	} else if ok {
-		if m.probe(ctx, rec.BaseURL) == nil {
-			return Endpoint{ModelID: rec.ModelID, BaseURL: rec.BaseURL, Port: rec.Port, PID: rec.PID, Reused: true}, nil
-		}
-		// The record names a server that no longer answers; drop it before starting a
-		// fresh one so the registry never points at a dead endpoint.
-		if err := m.reg.Delete(cfg.ModelID); err != nil {
-			return Endpoint{}, err
-		}
+		return ep, nil
 	}
 
 	proc, err := m.launcher.Serve(ctx, sandbox.ServeSpec{Argv: cfg.Plan.Argv, Confine: cfg.Confine})
@@ -210,11 +239,122 @@ func (m *Manager) Ensure(ctx context.Context, cfg EnsureConfig) (Endpoint, error
 	return Endpoint{ModelID: cfg.ModelID, BaseURL: cfg.Plan.BaseURL, Port: cfg.Plan.Port, PID: proc.PID(), proc: proc}, nil
 }
 
-// waitReady polls the endpoint until it answers, the process exits, the deadline
-// passes, or ctx is cancelled. A process that exits while starting is the common
+// ContainerEnsureConfig is the input to EnsureContainer: which model, the validated
+// container request, and the loopback endpoint to probe. The Spec's Command is the server
+// invocation (the vLLM serve argv), built by the caller from the launch plan.
+type ContainerEnsureConfig struct {
+	// ModelID is the catalog id, the registry key.
+	ModelID string
+	// Runtime names the runtime, recorded for display (for example "vllm").
+	Runtime string
+	// Spec is the validated container request: the digest-pinned image, the untrusted
+	// guarantees, the GPU grant, the published loopback port, and the server command.
+	Spec sandbox.ContainerSpec
+	// BaseURL and Port are the loopback endpoint the served model answers on, the same
+	// OpenAI-compatible coordinates a process-backed server reports.
+	BaseURL string
+	Port    int
+}
+
+// EnsureContainer returns a running endpoint for a container-backed model, the container
+// counterpart to Ensure. It reuses an already-running server when its endpoint answers,
+// otherwise runs the container under the tier's guarantees, waits for the endpoint to come
+// up, records it with its container identity (so a later process can stop it), and returns
+// it. A container that starts but never becomes ready, or exits while starting, is stopped
+// and reported with its captured output, so a launch never leaks a container. It drives the
+// same registry and reuse path as Ensure, so the scheduler and `models status`/`stop` see
+// process- and container-backed servers uniformly: one supervisor, two runtime shapes.
+func (m *Manager) EnsureContainer(ctx context.Context, cfg ContainerEnsureConfig) (Endpoint, error) {
+	if cfg.ModelID == "" {
+		return Endpoint{}, fault.New(fault.Terminal, "serve_no_model", "serve: no model id")
+	}
+	if cfg.BaseURL == "" {
+		return Endpoint{}, fault.New(fault.Terminal, "serve_bad_plan", "serve: container plan is missing an endpoint")
+	}
+
+	if ep, ok, err := m.reuseRunning(ctx, cfg.ModelID); err != nil {
+		return Endpoint{}, err
+	} else if ok {
+		return ep, nil
+	}
+
+	serving, err := m.runContainer(ctx, cfg.Spec)
+	if err != nil {
+		return Endpoint{}, fault.Wrap(fault.Terminal, "serve_container_start", err)
+	}
+	proc := servingProc{serving}
+
+	if err := m.waitReady(ctx, proc, cfg.BaseURL); err != nil {
+		_ = serving.Stop()
+		return Endpoint{}, err
+	}
+
+	rec := Record{
+		ModelID:   cfg.ModelID,
+		Port:      cfg.Port,
+		BaseURL:   cfg.BaseURL,
+		Runtime:   cfg.Runtime,
+		StartedAt: m.clk.Now().Unix(),
+	}
+	if ci, ok := serving.(containerIdentified); ok {
+		rec.ContainerID = ci.ContainerID()
+		rec.Engine = ci.EngineName()
+	}
+	if err := m.reg.Put(rec); err != nil {
+		_ = serving.Stop()
+		return Endpoint{}, err
+	}
+	return Endpoint{ModelID: cfg.ModelID, BaseURL: cfg.BaseURL, Port: cfg.Port, proc: proc}, nil
+}
+
+// reuseRunning returns an endpoint for an already-running server when its recorded endpoint
+// still answers a health probe, adopting it as Reused. A record whose server no longer
+// answers is dropped before the caller starts a fresh one, so the registry never points at a
+// dead endpoint. It is the shared reuse path for both the process and container launches.
+func (m *Manager) reuseRunning(ctx context.Context, modelID string) (Endpoint, bool, error) {
+	rec, ok, err := m.reg.Get(modelID)
+	if err != nil || !ok {
+		return Endpoint{}, false, err
+	}
+	if m.probe(ctx, rec.BaseURL) == nil {
+		return Endpoint{ModelID: rec.ModelID, BaseURL: rec.BaseURL, Port: rec.Port, PID: rec.PID, Reused: true}, true, nil
+	}
+	if err := m.reg.Delete(modelID); err != nil {
+		return Endpoint{}, false, err
+	}
+	return Endpoint{}, false, nil
+}
+
+// containerIdentified is the optional interface a container-backed Serving implements to
+// report the engine and id a later process needs to stop it.
+type containerIdentified interface {
+	ContainerID() string
+	EngineName() string
+}
+
+// servingProc adapts a sandbox.Serving to the Proc the manager's wait and endpoint use. A
+// container has no host pid, so PID is 0; identity travels in the registry record instead.
+type servingProc struct{ s sandbox.Serving }
+
+func (p servingProc) PID() int              { return 0 }
+func (p servingProc) Running() bool         { return p.s.Running() }
+func (p servingProc) Output() string        { return p.s.Output() }
+func (p servingProc) Done() <-chan struct{} { return p.s.Done() }
+func (p servingProc) Stop() error           { return p.s.Stop() }
+
+// waitable is the minimal view of a starting server waitReady needs: a signal for the
+// server exiting and its captured output for a failure message. Both a process Proc and a
+// container servingProc satisfy it.
+type waitable interface {
+	Done() <-chan struct{}
+	Output() string
+}
+
+// waitReady polls the endpoint until it answers, the server exits, the deadline
+// passes, or ctx is cancelled. A server that exits while starting is the common
 // real-world failure (a bad runtime flag, a refused weights file), so it is reported
 // with the server's own output rather than as a bare timeout.
-func (m *Manager) waitReady(ctx context.Context, proc Proc, baseURL string) error {
+func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string) error {
 	deadline := time.NewTimer(m.readyTimeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(m.pollEvery)
@@ -260,9 +400,7 @@ func (m *Manager) Status(ctx context.Context) ([]Record, error) {
 			live = append(live, rec)
 			continue
 		}
-		if rec.PID > 0 {
-			_ = m.kill(rec.PID) // best-effort reclaim; a dead pid is already gone
-		}
+		_ = m.teardown(rec) // best-effort reclaim; an already-gone server is a no-op
 		if err := m.reg.Delete(rec.ModelID); err != nil {
 			return nil, err
 		}
@@ -281,13 +419,28 @@ func (m *Manager) Stop(modelID string) (bool, error) {
 	if !ok {
 		return false, nil
 	}
-	if rec.PID > 0 {
-		if err := m.kill(rec.PID); err != nil {
-			return false, fault.Wrap(fault.Terminal, "serve_kill", err)
-		}
+	if err := m.teardown(rec); err != nil {
+		return false, fault.Wrap(fault.Terminal, "serve_stop", err)
 	}
 	if err := m.reg.Delete(modelID); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// teardown stops the server a record names, routing to the engine for a container-backed
+// record and to the OS for a process-backed one. A container record with no stopper wired, or
+// a record with neither identity, is a no-op so a reclaim or stop never errors on a server it
+// cannot signal.
+func (m *Manager) teardown(rec Record) error {
+	if rec.ContainerID != "" {
+		if m.stopContainer == nil {
+			return nil
+		}
+		return m.stopContainer(rec.Engine, rec.ContainerID)
+	}
+	if rec.PID > 0 {
+		return m.kill(rec.PID)
+	}
+	return nil
 }
