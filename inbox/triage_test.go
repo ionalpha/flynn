@@ -66,8 +66,8 @@ func (s *fakeSink) sends() [][2]string {
 	return append([][2]string(nil), s.sent...)
 }
 
-// putSignal stores a signal with the given spec and returns its key.
-func putSignal(t *testing.T, store resource.Store, spec inbox.Spec) resource.Key {
+// putEntry stores an entry with the given spec and returns its key.
+func putEntry(t *testing.T, store resource.Store, spec inbox.Spec) resource.Key {
 	t.Helper()
 	raw, err := json.Marshal(spec)
 	if err != nil {
@@ -76,7 +76,7 @@ func putSignal(t *testing.T, store resource.Store, spec inbox.Spec) resource.Key
 	saved, err := store.Put(context.Background(), resource.Resource{
 		APIVersion:   inbox.GroupVersion,
 		Kind:         inbox.Kind,
-		GenerateName: "sig-",
+		GenerateName: "entry-",
 		Spec:         raw,
 	})
 	if err != nil {
@@ -105,7 +105,7 @@ func TestTriageRepliesOnConvergedWork(t *testing.T) {
 	sink := &fakeSink{name: "telegram"}
 	tri := inbox.NewTriage(store, worker, inbox.NewSinks(sink), clock.NewManual(time.Unix(1, 0)))
 
-	key := putSignal(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
+	key := putEntry(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
 
 	// First reconcile: triage and start the work.
 	res, err := tri.Reconcile(ctx, key)
@@ -142,7 +142,7 @@ func TestTriageWaitsWhileWorkInFlight(t *testing.T) {
 	worker := &fakeWorker{} // never completes
 	sink := &fakeSink{name: "telegram"}
 	tri := inbox.NewTriage(store, worker, inbox.NewSinks(sink), clock.NewManual(time.Unix(1, 0)))
-	key := putSignal(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
+	key := putEntry(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
 
 	if _, err := tri.Reconcile(ctx, key); err != nil { // triage + start
 		t.Fatal(err)
@@ -162,18 +162,18 @@ func TestTriageWaitsWhileWorkInFlight(t *testing.T) {
 	}
 }
 
-func TestTriageDropsNonConversationalSignal(t *testing.T) {
+func TestTriageDropsNonConversationalEntry(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 	worker := &fakeWorker{}
 	tri := inbox.NewTriage(store, worker, inbox.NewSinks(), clock.NewManual(time.Unix(1, 0)))
-	key := putSignal(t, store, inbox.Spec{Source: "monitor", Content: "an alert with no conversation"})
+	key := putEntry(t, store, inbox.Spec{Source: "monitor", Content: "an alert with no conversation"})
 
 	if _, err := tri.Reconcile(ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	if worker.starts != 0 {
-		t.Fatal("a dropped signal must not start work")
+		t.Fatal("a dropped entry must not start work")
 	}
 	if st := statusOf(t, store, key); st.Phase != inbox.PhaseDropped || st.Disposition != inbox.DispositionDrop {
 		t.Fatalf("status = %+v, want Dropped/Drop", st)
@@ -186,7 +186,7 @@ func TestTriageSettledIsNoOp(t *testing.T) {
 	worker := &fakeWorker{done: true, answer: "x"}
 	sink := &fakeSink{name: "telegram"}
 	tri := inbox.NewTriage(store, worker, inbox.NewSinks(sink), clock.NewManual(time.Unix(1, 0)))
-	key := putSignal(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
+	key := putEntry(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
 
 	// Drive to Acted.
 	worker.complete("x", false)
@@ -194,12 +194,12 @@ func TestTriageSettledIsNoOp(t *testing.T) {
 	_, _ = tri.Reconcile(ctx, key)
 	before := len(sink.sends())
 
-	// A further reconcile of a settled signal does nothing.
+	// A further reconcile of a settled entry does nothing.
 	if _, err := tri.Reconcile(ctx, key); err != nil {
 		t.Fatal(err)
 	}
 	if len(sink.sends()) != before {
-		t.Fatal("a settled signal must not be acted on again")
+		t.Fatal("a settled entry must not be acted on again")
 	}
 }
 
@@ -209,7 +209,7 @@ func TestTriageFailedWorkSendsFailureReply(t *testing.T) {
 	worker := &fakeWorker{}
 	sink := &fakeSink{name: "telegram"}
 	tri := inbox.NewTriage(store, worker, inbox.NewSinks(sink), clock.NewManual(time.Unix(1, 0)))
-	key := putSignal(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
+	key := putEntry(t, store, inbox.Spec{Source: "telegram", Conversation: "c1", Content: "hi"})
 
 	_, _ = tri.Reconcile(ctx, key) // triage + start
 	worker.complete("", true)      // work failed

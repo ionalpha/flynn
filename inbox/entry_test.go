@@ -12,7 +12,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// newStore returns an in-memory resource store with the Signal kind registered.
+// newStore returns an in-memory resource store with the Entry kind registered.
 func newStore(t *testing.T) resource.Store {
 	t.Helper()
 	reg := resource.NewRegistry()
@@ -25,9 +25,9 @@ func newStore(t *testing.T) resource.Store {
 	return resource.NewMemory(reg)
 }
 
-// TestSignalIsAFirstClassResource proves a Signal is stored and read back through
+// TestEntryIsAFirstClassResource proves an Entry is stored and read back through
 // the generic resource store like any other kind, with its spec intact.
-func TestSignalIsAFirstClassResource(t *testing.T) {
+func TestEntryIsAFirstClassResource(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 
@@ -47,7 +47,7 @@ func TestSignalIsAFirstClassResource(t *testing.T) {
 	saved, err := s.Put(ctx, resource.Resource{
 		APIVersion:   inbox.GroupVersion,
 		Kind:         inbox.Kind,
-		GenerateName: "sig-",
+		GenerateName: "entry-",
 		Spec:         raw,
 	})
 	if err != nil {
@@ -69,13 +69,13 @@ func TestSignalIsAFirstClassResource(t *testing.T) {
 	}
 }
 
-// TestPutRejectsSignalWithoutSource confirms the kind's schema is enforced: a
-// signal must name the source it arrived on (the reply-routing key).
-func TestPutRejectsSignalWithoutSource(t *testing.T) {
+// TestPutRejectsEntryWithoutSource confirms the kind's schema is enforced: a
+// entry must name the source it arrived on (the reply-routing key).
+func TestPutRejectsEntryWithoutSource(t *testing.T) {
 	ctx := context.Background()
 	s := newStore(t)
 	raw, _ := json.Marshal(inbox.Spec{Content: "orphan"})
-	if _, err := s.Put(ctx, resource.Resource{APIVersion: inbox.GroupVersion, Kind: inbox.Kind, GenerateName: "sig-", Spec: raw}); err == nil {
+	if _, err := s.Put(ctx, resource.Resource{APIVersion: inbox.GroupVersion, Kind: inbox.Kind, GenerateName: "entry-", Spec: raw}); err == nil {
 		t.Fatal("put with no source = nil error, want schema rejection")
 	}
 }

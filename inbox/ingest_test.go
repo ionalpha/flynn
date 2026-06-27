@@ -15,7 +15,7 @@ import (
 )
 
 // batchSource emits a fixed set of specs and then closes its channel, so an Ingest
-// run terminates on its own once every signal is recorded.
+// run terminates on its own once every entry is recorded.
 type batchSource struct {
 	name  string
 	specs []inbox.Spec
@@ -56,7 +56,7 @@ func (q *recordingQueue) count() int {
 	return len(q.keys)
 }
 
-func TestIngestRecordsSignalsStampedWithSourceAndTime(t *testing.T) {
+func TestIngestRecordsEntriesStampedWithSourceAndTime(t *testing.T) {
 	ctx := context.Background()
 	store := newStore(t)
 	q := &recordingQueue{}
@@ -76,7 +76,7 @@ func TestIngestRecordsSignalsStampedWithSourceAndTime(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(got) != 2 {
-		t.Fatalf("signals stored = %d, want 2", len(got))
+		t.Fatalf("entries stored = %d, want 2", len(got))
 	}
 	if q.count() != 2 {
 		t.Fatalf("enqueued = %d, want 2", q.count())
@@ -101,10 +101,10 @@ func TestIngestNoSourcesErrors(t *testing.T) {
 	}
 }
 
-// TestIngestRecordsEverySignalProperty is a property: across any set of sources
-// each emitting any number of signals, every signal is recorded exactly once and
+// TestIngestRecordsEveryEntryProperty is a property: across any set of sources
+// each emitting any number of entries, every entry is recorded exactly once and
 // stamped with the source it arrived on, so no inbound item is lost or misrouted.
-func TestIngestRecordsEverySignalProperty(t *testing.T) {
+func TestIngestRecordsEveryEntryProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
 		store := newStore(t)

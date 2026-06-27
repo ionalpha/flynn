@@ -18,7 +18,7 @@ import (
 )
 
 // runServe runs the agent as a long-lived service that answers messages from chat
-// channels. Inbound messages are recorded as signals and triaged: each is driven as
+// channels. Inbound messages are recorded as entries and triaged: each is driven as
 // a goal in the working directory and the agent's final answer is sent back on the
 // same conversation. Telegram is the available channel today; the triage boundary
 // accepts more sources as adapters are added. Goals run with the full sandboxed
@@ -64,7 +64,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	}
 	rstore := store.Resources(reg)
 
-	// The goal runtime executes the work a triaged signal implies.
+	// The goal runtime executes the work a triaged entry implies.
 	mr, err := assembleMission(model, workdir, "", rstore, store.Jobs(), store.Log(), "")
 	if err != nil {
 		return err
@@ -76,7 +76,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		return err
 	}
 
-	// Triage turns each recorded signal into a goal and replies with its answer.
+	// Triage turns each recorded entry into a goal and replies with its answer.
 	worker := &goalWorker{rt: rt, store: rstore}
 	triage := inbox.NewTriage(rstore, worker, inbox.NewSinks(bot), clock.System{})
 	mgr := reconcile.NewManager(rstore)
@@ -98,7 +98,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	return nil
 }
 
-// goalWorker adapts the goal runtime to the inbox.Worker port: it submits a signal's
+// goalWorker adapts the goal runtime to the inbox.Worker port: it submits an entry's
 // content as a goal and reports the goal's outcome by reading its status.
 type goalWorker struct {
 	rt    *runtime.Runtime
