@@ -121,7 +121,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	}
 
 	// Channels need a model and the goal runtime that executes a triaged entry.
-	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
@@ -129,7 +129,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	mr, err := assembleMission(model, workdir, "", rstore, store.Jobs(), store.Log(), "")
+	mr, err := assembleMission(model, plan, workdir, "", rstore, store.Jobs(), store.Log(), "")
 	if err != nil {
 		return err
 	}

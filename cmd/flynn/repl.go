@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
@@ -29,7 +30,7 @@ import (
 func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
-	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
@@ -55,6 +56,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	s := &replSession{
 		out:       &syncWriter{w: os.Stdout},
 		model:     model,
+		plan:      plan,
 		distiller: distiller,
 		verbose:   verbose,
 		cwd:       cwd,
@@ -113,6 +115,7 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 type replSession struct {
 	out       io.Writer
 	model     llm.Model
+	plan      harness.Plan
 	distiller learn.Distiller
 	verbose   bool
 	cwd       string
@@ -201,7 +204,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, sigCh <-chan
 		return "", err
 	}
 
-	run, err := assembleMission(s.model, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID)
+	run, err := assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID)
 	if err != nil {
 		return "", err
 	}
