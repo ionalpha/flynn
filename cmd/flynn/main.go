@@ -160,7 +160,7 @@ func printUsage(w io.Writer) {
   flynn models status        list the local model servers that are running
   flynn models stop <id>     stop a running local model server
   flynn regrade              re-grade learned skills against the working directory
-  flynn serve [--telegram-token T] [--signal-tcp ADDR]  answer chat messages as a service (Telegram, Signal)
+  flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)
 }
