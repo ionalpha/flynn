@@ -8,8 +8,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/ionalpha/flynn/channel"
 )
 
 func TestNewRejectsEmptyToken(t *testing.T) {
@@ -23,8 +21,6 @@ func TestReceiveDeliversTextMessages(t *testing.T) {
 		if !strings.Contains(r.URL.Path, "/getUpdates") {
 			t.Errorf("unexpected path %q", r.URL.Path)
 		}
-		// First poll (offset 0) returns one message; later polls block like a real
-		// long poll until the client cancels, so the adapter does not busy-spin.
 		if r.URL.Query().Get("offset") == "0" {
 			writeOK(w, `[{"update_id":10,"message":{"text":"hello","chat":{"id":4242},"from":{"id":7,"username":"ada"}}}]`)
 			return
@@ -46,10 +42,9 @@ func TestReceiveDeliversTextMessages(t *testing.T) {
 	}
 
 	select {
-	case msg := <-in:
-		want := channel.Inbound{Chat: "4242", User: "ada", Text: "hello"}
-		if msg != want {
-			t.Fatalf("inbound = %+v, want %+v", msg, want)
+	case spec := <-in:
+		if spec.Conversation != "4242" || spec.Sender != "ada" || spec.Type != "message" || spec.Content != "hello" {
+			t.Fatalf("spec = %+v, want {Conversation:4242 Sender:ada Type:message Content:hello}", spec)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the message")
@@ -61,8 +56,6 @@ func TestReceiveSkipsNonTextAndAdvancesOffset(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Query().Get("offset") {
 		case "0":
-			// A non-text update (e.g. a photo) carries no Text and must be skipped,
-			// but its id must still advance the offset so it is not re-fetched.
 			writeOK(w, `[{"update_id":99,"message":{"chat":{"id":1}}}]`)
 		case "100":
 			sawSecondPoll = true
@@ -79,9 +72,9 @@ func TestReceiveSkipsNonTextAndAdvancesOffset(t *testing.T) {
 	in, _ := c.Receive(ctx)
 
 	select {
-	case msg := <-in:
-		if msg.Text != "hi" {
-			t.Fatalf("text = %q, want hi", msg.Text)
+	case spec := <-in:
+		if spec.Content != "hi" {
+			t.Fatalf("content = %q, want hi", spec.Content)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out")
@@ -111,7 +104,7 @@ func TestSendPostsMessage(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New("tok", WithBaseURL(srv.URL))
-	if err := c.Send(context.Background(), channel.Outbound{Chat: "4242", Text: "yo"}); err != nil {
+	if err := c.Send(context.Background(), "4242", "yo"); err != nil {
 		t.Fatalf("Send: %v", err)
 	}
 	s := <-got
@@ -127,31 +120,9 @@ func TestSendSurfacesAPIError(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New("tok", WithBaseURL(srv.URL))
-	err := c.Send(context.Background(), channel.Outbound{Chat: "x", Text: "y"})
+	err := c.Send(context.Background(), "x", "y")
 	if err == nil || !strings.Contains(err.Error(), "chat not found") {
 		t.Fatalf("Send err = %v, want it to carry the API description", err)
-	}
-}
-
-func TestSplitMessage(t *testing.T) {
-	if got := splitMessage("", 10); got != nil {
-		t.Errorf("splitMessage(\"\") = %v, want nil", got)
-	}
-	if got := splitMessage("hi", 10); len(got) != 1 || got[0] != "hi" {
-		t.Errorf("short = %v, want [hi]", got)
-	}
-	long := strings.Repeat("a", 9001)
-	parts := splitMessage(long, 4000)
-	if len(parts) != 3 {
-		t.Fatalf("chunks = %d, want 3", len(parts))
-	}
-	if strings.Join(parts, "") != long {
-		t.Error("rejoined chunks do not equal the original")
-	}
-	for i, p := range parts {
-		if len([]rune(p)) > 4000 {
-			t.Errorf("chunk %d exceeds the limit", i)
-		}
 	}
 }
 
@@ -164,7 +135,7 @@ func TestSendChunksLongReply(t *testing.T) {
 	defer srv.Close()
 
 	c, _ := New("tok", WithBaseURL(srv.URL))
-	if err := c.Send(context.Background(), channel.Outbound{Chat: "1", Text: strings.Repeat("x", 9001)}); err != nil {
+	if err := c.Send(context.Background(), "1", strings.Repeat("x", 9001)); err != nil {
 		t.Fatal(err)
 	}
 	if calls != 3 {
