@@ -115,6 +115,12 @@ type ContainerSpec struct {
 	// ContainerPort 0 means the container publishes nothing and runs network-isolated.
 	HostPort      int
 	ContainerPort int
+	// Command, when set, is the argv run inside the container, appended after the image so
+	// it overrides the image's default command (the engine runs `run <opts> <image>
+	// <command...>`). For a serving runtime it is the server invocation, for example the
+	// vLLM serve arguments. It is argv, never a shell string, so nothing in it is
+	// interpreted by a shell. Empty runs the image's own entrypoint and command.
+	Command []string
 }
 
 // publishes reports whether the spec exposes a server port.
@@ -205,6 +211,9 @@ func buildContainerArgv(engine OCIEngine, spec ContainerSpec) []string {
 			fmt.Sprintf("127.0.0.1:%d:%d", spec.HostPort, spec.ContainerPort))
 	}
 	argv = append(argv, spec.Image.pinnedRef())
+	// The command to run inside the container, appended after the image so it overrides the
+	// image default. It is argv, never a shell string.
+	argv = append(argv, spec.Command...)
 	return argv
 }
 
