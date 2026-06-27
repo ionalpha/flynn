@@ -133,6 +133,34 @@ func FuzzDialControl(f *testing.F) {
 	})
 }
 
+func TestDialerEnforcesPolicy(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = ln.Close() }()
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	loopback := Policy{Allow: []netip.Prefix{netip.MustParsePrefix("127.0.0.1/32")}}
+	conn, err := Dialer(loopback).DialContext(context.Background(), "tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("loopback-allowed dial failed: %v", err)
+	}
+	_ = conn.Close()
+
+	if _, err := Dialer(DenyAll()).DialContext(context.Background(), "tcp", ln.Addr().String()); err == nil {
+		t.Fatal("DenyAll dial succeeded, want it blocked by policy")
+	}
+}
+
 // TestAllowsProperty checks the policy contract over random addresses: PublicOnly
 // allows an address exactly when it is public, and DenyAll allows nothing.
 func TestAllowsProperty(t *testing.T) {
