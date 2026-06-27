@@ -166,6 +166,31 @@ func TestQueueBackoffGrowsAndCaps(t *testing.T) {
 	}
 }
 
+// TestQueueAddAfterRaceWithShutDown guards a WaitGroup ordering invariant:
+// AddAfter registers its timer goroutine on the same WaitGroup that ShutDown
+// waits on, so the two must never run wg.Add concurrently with wg.Wait. Without
+// the lock-gated registration, AddAfter could pass its shutdown check, ShutDown
+// could then close out with the counter at zero so Wait returned, and the late
+// wg.Add would panic with "WaitGroup is reused before previous Wait has
+// returned". Many iterations of AddAfter racing a concurrent ShutDown make the
+// interleaving reliable; run under -race to also flag the unsynchronized access.
+func TestQueueAddAfterRaceWithShutDown(t *testing.T) {
+	for range 2000 {
+		q := NewQueue[string](clock.System{})
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			q.AddAfter("a", 5*time.Millisecond)
+		}()
+		go func() {
+			defer wg.Done()
+			q.ShutDown()
+		}()
+		wg.Wait()
+	}
+}
+
 func TestQueueShutDown(t *testing.T) {
 	q := NewQueue[string](clock.System{})
 	q.ShutDown()
