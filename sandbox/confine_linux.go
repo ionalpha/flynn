@@ -29,6 +29,11 @@ const (
 // filesystem, and syscall confinement, which it can on Linux.
 func kernelConfinementSupported() bool { return true }
 
+// egressEnforceable reports whether governed child egress can be enforced here. The Linux
+// leg (a network namespace plus a userspace stack that admits only the proxy) is not built
+// yet, so a governed-egress launch refuses rather than running with direct egress open.
+func egressEnforceable() bool { return false }
+
 // confine applies the kernel-enforced isolation a Local was configured for to a
 // command about to run. With no options it does nothing. Network denial places the
 // command in a fresh network namespace (no interfaces, no routes, so no connection

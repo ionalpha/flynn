@@ -9,11 +9,11 @@ import (
 // and the no-network option does not, so a command is cut off from the network only
 // when the caller asked for it.
 func TestSeatbeltProfileNetworkDeny(t *testing.T) {
-	with := seatbeltProfile("/work", true, false, false)
+	with := seatbeltProfile("/work", true, false, false, "")
 	if !strings.Contains(with, "(deny network*)") {
 		t.Fatalf("network-denied profile must deny the network, got:\n%s", with)
 	}
-	without := seatbeltProfile("/work", false, true, false)
+	without := seatbeltProfile("/work", false, true, false, "")
 	if strings.Contains(without, "(deny network*)") {
 		t.Fatalf("a profile without network denial must not deny the network, got:\n%s", without)
 	}
@@ -23,7 +23,7 @@ func TestSeatbeltProfileNetworkDeny(t *testing.T) {
 // writes first and then re-grants the working directory, and that the denial comes
 // before the grant so the last-match-wins ordering leaves the working tree writable.
 func TestSeatbeltProfileReadOnlyGrantsWorkingDir(t *testing.T) {
-	p := seatbeltProfile("/work/proj", false, true, false)
+	p := seatbeltProfile("/work/proj", false, true, false, "")
 	denyAt := strings.Index(p, "(deny file-write*)")
 	grantAt := strings.Index(p, `(subpath "/work/proj")`)
 	if denyAt < 0 {
@@ -50,7 +50,7 @@ func TestSeatbeltProfileReadOnlyGrantsWorkingDir(t *testing.T) {
 // TestSeatbeltProfileNoWriteDenialWithoutReadOnly proves writes are only denied under
 // the read-only option, so a command not asked to run read-only keeps writing.
 func TestSeatbeltProfileNoWriteDenialWithoutReadOnly(t *testing.T) {
-	p := seatbeltProfile("/work", true, false, true)
+	p := seatbeltProfile("/work", true, false, true, "")
 	if strings.Contains(p, "(deny file-write*)") {
 		t.Fatalf("a profile without the read-only option must not deny writes, got:\n%s", p)
 	}
@@ -59,13 +59,13 @@ func TestSeatbeltProfileNoWriteDenialWithoutReadOnly(t *testing.T) {
 // TestSeatbeltProfileSyscallHardening proves the syscall option refuses the privileged
 // operations a confined command never needs, and that the option is required for them.
 func TestSeatbeltProfileSyscallHardening(t *testing.T) {
-	p := seatbeltProfile("/work", false, false, true)
+	p := seatbeltProfile("/work", false, false, true, "")
 	for _, op := range []string{"file-write-setugid", "system-acct", "system-reboot", "system-set-time"} {
 		if !strings.Contains(p, "(deny "+op+")") {
 			t.Fatalf("hardened profile must deny %q, got:\n%s", op, p)
 		}
 	}
-	off := seatbeltProfile("/work", true, true, false)
+	off := seatbeltProfile("/work", true, true, false, "")
 	if strings.Contains(off, "file-write-setugid") {
 		t.Fatalf("a profile without the syscall option must not add the privileged-op denials, got:\n%s", off)
 	}
@@ -75,7 +75,7 @@ func TestSeatbeltProfileSyscallHardening(t *testing.T) {
 // or backslash cannot break out of the SBPL string literal and inject profile rules:
 // the dangerous characters are escaped, not passed through raw.
 func TestSeatbeltProfileEscapesPath(t *testing.T) {
-	p := seatbeltProfile(`/work/a"b\c`, false, true, false)
+	p := seatbeltProfile(`/work/a"b\c`, false, true, false, "")
 	if strings.Contains(p, `"/work/a"b\c"`) {
 		t.Fatalf("a raw quote or backslash must not survive into the profile, got:\n%s", p)
 	}
@@ -87,7 +87,7 @@ func TestSeatbeltProfileEscapesPath(t *testing.T) {
 // TestSeatbeltProfileWellFormed proves the profile always opens with the version and
 // allow-default header the launcher requires, regardless of which options are set.
 func TestSeatbeltProfileWellFormed(t *testing.T) {
-	p := seatbeltProfile("/work", true, true, true)
+	p := seatbeltProfile("/work", true, true, true, "")
 	if !strings.HasPrefix(p, "(version 1)\n(allow default)\n") {
 		t.Fatalf("profile must open with the version and allow-default header, got:\n%s", p)
 	}
@@ -106,5 +106,28 @@ func TestSBPLStringEscaping(t *testing.T) {
 		if got := sbplString(in); got != want {
 			t.Fatalf("sbplString(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// TestSeatbeltProfileEgressAllowsOnlyProxy proves the egress mode denies all network and
+// then re-grants only an outbound connection to the loopback proxy port (last-match-wins),
+// so the child can reach the policy proxy and nothing else.
+func TestSeatbeltProfileEgressAllowsOnlyProxy(t *testing.T) {
+	p := seatbeltProfile("/work", false, false, false, "127.0.0.1:7575")
+	denyAt := strings.Index(p, "(deny network*)")
+	allowAt := strings.Index(p, `(allow network-outbound (remote ip "localhost:7575"))`)
+	if denyAt < 0 {
+		t.Fatalf("egress profile must deny the network first, got:\n%s", p)
+	}
+	if allowAt < 0 {
+		t.Fatalf("egress profile must allow outbound to the loopback proxy, got:\n%s", p)
+	}
+	if denyAt > allowAt {
+		t.Fatalf("the network denial must come before the proxy allow (last match wins), got:\n%s", p)
+	}
+	// The allow must be port-specific: no blanket localhost or wildcard allow that would
+	// let the child reach other local services or hosts.
+	if strings.Contains(p, `(remote ip "localhost:*")`) || strings.Contains(p, "(allow network*)") {
+		t.Fatalf("egress profile must not broaden the allow beyond the proxy port, got:\n%s", p)
 	}
 }

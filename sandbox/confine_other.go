@@ -14,6 +14,11 @@ import (
 // refused rather than faked.
 func kernelConfinementSupported() bool { return false }
 
+// egressEnforceable reports whether governed child egress can be enforced here. This
+// platform has no enforcement leg, so a governed-egress launch refuses rather than
+// running with direct egress open.
+func egressEnforceable() bool { return false }
+
 // confine reports that kernel-enforced isolation is not available on this platform.
 // When a Local was configured to deny the network, confine the filesystem, or filter
 // syscalls, it fails rather than running the command without that isolation, so a

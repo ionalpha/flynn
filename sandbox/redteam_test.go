@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ionalpha/flynn/netguard"
 )
 
 // This file is the red-team containment matrix: it proves that each isolation tier
@@ -69,6 +71,16 @@ func redteamTiers() []redteamTier {
 			name:     "kernel-confined+egress-denied",
 			opts:     []LocalOption{WithReadOnlyFS(), WithSeccomp(), WithNetworkDenied()},
 			confines: map[containAxis]bool{axisFSWrite: true, axisSyscall: true, axisEgress: true},
+		},
+		{
+			// Governed egress: the child may reach only the policy proxy, and a DenyAll
+			// policy admits nothing, so an outbound connection is contained at the proxy
+			// and a direct dial is blocked by the OS. The tier is enforceable only where a
+			// platform egress leg exists; elsewhere tierEnforceable skips it (the launch
+			// refuses), so this never misjudges a platform without the leg.
+			name:     "egress-governed",
+			opts:     []LocalOption{WithEgress(netguard.DenyAll())},
+			confines: map[containAxis]bool{axisEgress: true},
 		},
 	}
 }

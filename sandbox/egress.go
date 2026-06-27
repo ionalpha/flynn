@@ -2,7 +2,6 @@ package sandbox
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os/exec"
@@ -11,15 +10,16 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/bindguard"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/netguard"
 )
 
 // errEgressUnsupported is returned when a governed-egress launch is requested on a
 // platform whose enforcement leg is not present. The caller refuses the launch rather
-// than running the child with its direct egress open, so a missing leg fails closed.
-var errEgressUnsupported = errors.New(
-	"sandbox: governed egress is not enforceable on this platform yet; refusing rather than running with the child's direct egress open",
-)
+// than running the child with its direct egress open, so a missing leg fails closed. It
+// is a governance refusal (Forbidden), like the other confinement-unsupported refusals.
+var errEgressUnsupported = fault.New(fault.Forbidden, "sandbox_egress_unsupported",
+	"sandbox: governed egress is not enforceable on this platform yet; refusing rather than running with the child's direct egress open")
 
 // egressConfig is the outbound policy for the children a Local launches. When set, a
 // child is launched with its direct egress denied at the OS level and pointed at a
@@ -100,12 +100,18 @@ func proxyEnvVars(addr string) map[string]string {
 	}
 }
 
-// applyEgress prepares c to run under the egress policy: it starts the proxy (if not
-// already running), injects the proxy variables into c's environment, and denies the
-// child's direct egress at the OS level so the proxy cannot be bypassed. It returns
-// errEgressUnsupported when the platform has no enforcement leg, so the caller refuses
-// the launch. A nil egress config is a no-op.
-func (l *Local) applyEgress(c *exec.Cmd) error {
+// startEgress starts the egress proxy (once) and injects the proxy variables into c's
+// environment so the child routes its outbound through the proxy. The OS-level denial of
+// the child's direct egress is applied by the platform's confine, which reads the proxy
+// address from the egress config; egress and confinement compose into one enforcement
+// action (one seatbelt profile, one network namespace) rather than two independent
+// wrappings. A nil egress config is a no-op.
+//
+// The caller gates this on egressEnforceable: a launch with egress requested on a
+// platform whose enforcement leg is not present refuses (errEgressUnsupported) before
+// reaching here, so the proxy env is never injected without the OS-level denial behind
+// it (which would be cooperative-only, i.e. bypassable).
+func (l *Local) startEgress(c *exec.Cmd) error {
 	if l.egress == nil {
 		return nil
 	}
@@ -114,22 +120,19 @@ func (l *Local) applyEgress(c *exec.Cmd) error {
 		return err
 	}
 	c.Env = mergeEnv(c.Env, proxyEnvVars(addr))
-	return l.denyDirectEgress(c, addr)
+	return nil
 }
 
-// platformEgressConfiner denies a child's direct network egress except to the loopback
-// proxy at proxyAddr, enforced by the platform's kernel mechanism (a network namespace
-// plus a userspace stack on Linux, a seatbelt rule on macOS, an AppContainer filter on
-// Windows). It is nil until a platform leg registers one in init, so until then a
-// governed-egress launch refuses.
-var platformEgressConfiner func(c *exec.Cmd, l *Local, proxyAddr string) error
-
-// denyDirectEgress applies the platform leg, or refuses when none is registered.
-func (l *Local) denyDirectEgress(c *exec.Cmd, proxyAddr string) error {
-	if platformEgressConfiner == nil {
+// guardEgress refuses a governed-egress launch on a platform whose enforcement leg is
+// not present, so egress fails closed (refuse-rather-than-weaken) rather than running
+// the child with its direct egress open. It is called at the launch entry points (Exec,
+// Serve) before any dispatch, since the Windows command path does not run through
+// confine.
+func (l *Local) guardEgress() error {
+	if l.egress != nil && !egressEnforceable() {
 		return errEgressUnsupported
 	}
-	return platformEgressConfiner(c, l, proxyAddr)
+	return nil
 }
 
 // mergeEnv overlays vars onto a KEY=VALUE environment, replacing any existing entry for
