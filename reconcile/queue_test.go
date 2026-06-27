@@ -175,17 +175,27 @@ func TestQueueBackoffGrowsAndCaps(t *testing.T) {
 // returned". Many iterations of AddAfter racing a concurrent ShutDown make the
 // interleaving reliable; run under -race to also flag the unsynchronized access.
 func TestQueueAddAfterRaceWithShutDown(t *testing.T) {
+	guard := func(op string, fn func()) func() {
+		return func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s panicked racing the other: %v", op, r)
+				}
+			}()
+			fn()
+		}
+	}
 	for range 2000 {
 		q := NewQueue[string](clock.System{})
 		var wg sync.WaitGroup
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			q.AddAfter("a", 5*time.Millisecond)
+			guard("AddAfter", func() { q.AddAfter("a", 5*time.Millisecond) })()
 		}()
 		go func() {
 			defer wg.Done()
-			q.ShutDown()
+			guard("ShutDown", q.ShutDown)()
 		}()
 		wg.Wait()
 	}
