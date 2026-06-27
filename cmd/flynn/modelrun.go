@@ -207,9 +207,9 @@ func catalogPublishers() []string {
 // serveModel runs the full lifecycle for a catalog model and returns a running endpoint.
 // Provisioning a runtime or weights that are already present is a no-op, and a server
 // that is already up is reused, so calling it repeatedly is cheap and idempotent. ctxSize
-// caps the context window (0 leaves the runtime's default); a smaller value is the recovery
-// path for a model that ran out of memory at full size.
-func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSize int) (serve.Endpoint, error) {
+// caps the context window (0 leaves the runtime's default) and cpuOnly forces a CPU run; both
+// are the recovery path for a model that ran out of memory at full size.
+func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSize int, cpuOnly bool) (serve.Endpoint, error) {
 	if !m.Local() {
 		return serve.Endpoint{}, fmt.Errorf("%q is a hosted API model, not a local one", m.ID)
 	}
@@ -246,6 +246,7 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 		Model:               m,
 		Port:                port,
 		CtxSize:             ctxSize,
+		CPUOnly:             cpuOnly,
 		ModelEmbedsTemplate: decision.ModelSupplied,
 	})
 	if err != nil {
@@ -366,7 +367,7 @@ func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Mode
 	if _, err := runner.admitSource(src); err != nil {
 		return nil, err
 	}
-	ep, err := runner.serveModel(ctx, m, 0)
+	ep, err := runner.serveModel(ctx, m, 0, false)
 	if err != nil {
 		return nil, fmt.Errorf("serve local model %s: %w", modelSpec, err)
 	}

@@ -85,7 +85,7 @@ func TestServeModelHappyPath(t *testing.T) {
 	weights := writeMinimalGGUF(t, map[string]string{"general.architecture": "qwen2"})
 	r, launcher := newFakeRunner(t, weights)
 
-	ep, err := r.serveModel(context.Background(), localTestModel(), 0)
+	ep, err := r.serveModel(context.Background(), localTestModel(), 0, false)
 	if err != nil {
 		t.Fatalf("serveModel: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestServeModelHappyPath(t *testing.T) {
 
 func TestServeModelRejectsHostedModel(t *testing.T) {
 	r, _ := newFakeRunner(t, "")
-	_, err := r.serveModel(context.Background(), catalog.ModelSpec{ID: "openai:gpt-5.5", Kind: catalog.KindAPI}, 0)
+	_, err := r.serveModel(context.Background(), catalog.ModelSpec{ID: "openai:gpt-5.5", Kind: catalog.KindAPI}, 0, false)
 	if err == nil {
 		t.Fatal("expected an error serving a hosted API model locally")
 	}
@@ -118,7 +118,7 @@ func TestServeModelRejectsNoDirectDownload(t *testing.T) {
 	r, _ := newFakeRunner(t, "")
 	m := localTestModel()
 	m.Quants[0].URL = "" // ollama-style ref with no pinned direct download
-	_, err := r.serveModel(context.Background(), m, 0)
+	_, err := r.serveModel(context.Background(), m, 0, false)
 	if err == nil || !contains(err.Error(), "no pinned direct download") {
 		t.Fatalf("expected a no-direct-download error, got %v", err)
 	}
@@ -128,7 +128,7 @@ func TestServeModelPropagatesProvisionError(t *testing.T) {
 	weights := writeMinimalGGUF(t, nil)
 	r, _ := newFakeRunner(t, weights)
 	r.ensureRuntime = func(context.Context, string) (string, error) { return "", errors.New("gate refused vulnerable build") }
-	_, err := r.serveModel(context.Background(), localTestModel(), 0)
+	_, err := r.serveModel(context.Background(), localTestModel(), 0, false)
 	if err == nil || !contains(err.Error(), "gate refused") {
 		t.Fatalf("expected the provision error to propagate, got %v", err)
 	}
