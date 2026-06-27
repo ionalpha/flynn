@@ -67,3 +67,46 @@ func TestScopeAllowsProperty(t *testing.T) {
 		}
 	})
 }
+
+func TestDenyAllRefusesEverything(t *testing.T) {
+	var a Authenticator = DenyAll{}
+	// A valid-looking bearer, an empty one: both refused.
+	for _, tok := range []string{"", "anything", "Bearer-shaped"} {
+		if _, err := a.Authenticate(req(tok)); err == nil {
+			t.Errorf("DenyAll authenticated token %q; must refuse all", tok)
+		}
+	}
+}
+
+func TestGeneratedOperatorMintsAcceptedToken(t *testing.T) {
+	mintCalls := 0
+	mint := func() (string, error) { mintCalls++; return "minted-secret-token", nil }
+	auth, tok, err := GeneratedOperator("operator", ScopeRead, mint)
+	if err != nil {
+		t.Fatalf("GeneratedOperator: %v", err)
+	}
+	if mintCalls != 1 {
+		t.Errorf("mint called %d times, want 1", mintCalls)
+	}
+	if tok != "minted-secret-token" {
+		t.Errorf("returned token %q, want the minted one", tok)
+	}
+	// The minted token authenticates as a read-scoped operator.
+	p, err := auth.Authenticate(req(tok))
+	if err != nil {
+		t.Fatalf("minted token should authenticate: %v", err)
+	}
+	if p.ID != "operator" || p.Scope != ScopeRead {
+		t.Errorf("principal = %+v, want operator/read", p)
+	}
+	// A different token does not.
+	if _, err := auth.Authenticate(req("wrong")); err == nil {
+		t.Error("a non-minted token must be refused")
+	}
+}
+
+func TestGeneratedOperatorRejectsEmptyMint(t *testing.T) {
+	if _, _, err := GeneratedOperator("operator", ScopeRead, func() (string, error) { return "", nil }); err == nil {
+		t.Error("an empty generated token must be refused, not accepted as no-auth")
+	}
+}

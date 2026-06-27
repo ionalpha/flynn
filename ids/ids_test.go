@@ -63,3 +63,57 @@ func TestUnique(t *testing.T) {
 		seen[id] = struct{}{}
 	}
 }
+
+func TestTokenEntropyAndEncoding(t *testing.T) {
+	tok, err := ids.Token()
+	if err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	// 256 bits -> 32 bytes -> 43 chars of raw (unpadded) URL-safe base64.
+	if len(tok) != 43 {
+		t.Errorf("default token len = %d, want 43", len(tok))
+	}
+	// URL-safe, no padding: only [A-Za-z0-9_-], never '+', '/', or '='.
+	if strings.ContainsAny(tok, "+/=") {
+		t.Errorf("token %q is not URL-safe/unpadded", tok)
+	}
+}
+
+func TestTokenUnique(t *testing.T) {
+	seen := make(map[string]struct{}, 1000)
+	for range 1000 {
+		tok, err := ids.Token()
+		if err != nil {
+			t.Fatalf("Token: %v", err)
+		}
+		if _, dup := seen[tok]; dup {
+			t.Fatalf("duplicate token: %q", tok)
+		}
+		seen[tok] = struct{}{}
+	}
+}
+
+func TestTokenDeterministicUnderInjectedEntropy(t *testing.T) {
+	seed := bytes.Repeat([]byte("entropy!"), 16)
+	a, err := ids.NewGenerator(ids.WithEntropy(bytes.NewReader(seed))).Token(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ids.NewGenerator(ids.WithEntropy(bytes.NewReader(seed))).Token(32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatalf("same entropy must reproduce the same token: %q vs %q", a, b)
+	}
+}
+
+func TestTokenNonPositiveSizeUsesDefault(t *testing.T) {
+	tok, err := ids.NewGenerator(ids.WithEntropy(bytes.NewReader(bytes.Repeat([]byte("x"), 64)))).Token(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tok) != 43 {
+		t.Errorf("non-positive size should fall back to 256-bit token, got len %d", len(tok))
+	}
+}

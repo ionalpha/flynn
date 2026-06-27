@@ -117,6 +117,21 @@ func TestAuthGate(t *testing.T) {
 	}
 }
 
+// A server built with a nil authenticator must fail closed: every request, even one
+// with no token at all, is refused. Auth on by default is a construction guarantee, so
+// an unauthenticated API cannot be created by omission.
+func TestNilAuthFailsClosed(t *testing.T) {
+	store, log := newStore(t)
+	putWidget(t, store, "w1")
+	h := NewServer(store, log, nil, WithWatchPoll(20*time.Millisecond)).Handler()
+
+	for _, tok := range []string{"", "anything", "readtok"} {
+		if rec := do(t, h, "/v1/Widget", tok); rec.Code != http.StatusUnauthorized {
+			t.Errorf("nil-auth server with token %q = %d, want 401", tok, rec.Code)
+		}
+	}
+}
+
 func TestWatchStreamsNewResource(t *testing.T) {
 	store, log := newStore(t)
 	auth := NewTokenAuthenticator(map[string]Principal{"readtok": {ID: "r", Scope: ScopeRead}})

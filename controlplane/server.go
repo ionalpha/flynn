@@ -52,8 +52,13 @@ func WithWatchPoll(d time.Duration) Option {
 }
 
 // NewServer builds the read/watch API over store, tailing log (the store's resource
-// stream) for watch, authenticated by auth.
+// stream) for watch, authenticated by auth. A nil auth fails closed: the server denies
+// every request rather than serving openly, so an unauthenticated API cannot be created
+// by omission.
 func NewServer(store resource.Store, log spine.Log, auth Authenticator, opts ...Option) *Server {
+	if auth == nil {
+		auth = DenyAll{}
+	}
 	s := &Server{
 		store: store,
 		log:   log,

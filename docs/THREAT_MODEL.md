@@ -112,8 +112,18 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   wildcard bind that would expose every interface, and refuses any non-loopback bind unless
   the operator explicitly opts in. The recommended way to reach a service from off the
   machine is a tunnel to its loopback bind, so the safe shape is the default and exposure
-  is always a deliberate, auditable choice rather than an accident. The control-plane API
-  additionally fails closed without a bearer token.
+  is always a deliberate, auditable choice rather than an accident.
+- **An unauthenticated service reachable by anyone.** Authentication is on by default, by
+  construction. The control-plane API resolves every request to a scoped principal through
+  an authenticator; a server built without one fails closed (it denies every request)
+  rather than serving openly, so an unauthenticated API is not representable by omission.
+  When no operator credential is supplied, a strong bearer token is generated and shown
+  once rather than the API running open, so the secured path is the zero-config default and
+  there is no reason to fall back to an unauthenticated one. A service the agent itself
+  stands up as a child process (one whose internals Flynn cannot add auth to) is contained
+  at the network boundary instead: bound loopback by default and, where the sandbox
+  enforces it, run with its network confined, so an unauthenticated service it brings up is
+  not reachable off-host regardless.
 
 ### Denial of service (exhausting a resource)
 
@@ -164,6 +174,9 @@ Enforced and tested today:
 - Bind-safe inbound listeners: every listener is opened through a loopback-by-default gate
   that refuses a wildcard bind and a non-loopback bind without an explicit opt-in, plus a
   lint rule against opening a listener outside that gate.
+- Auth on by default for the control-plane API: requests resolve to a scoped principal, a
+  server built without an authenticator fails closed, and a missing operator credential is
+  generated rather than dropped to open access.
 - The full model-source trust pipeline: classification, code-executing-format refusal,
   digest verification with pin-on-first-use, runtime version-floor gating, hardened
   file parsing, a forced trusted chat template, loopback-only serving, and explicit

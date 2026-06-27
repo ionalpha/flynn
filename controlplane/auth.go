@@ -68,6 +68,34 @@ type Authenticator interface {
 // ErrUnauthenticated means no valid credential was presented.
 var ErrUnauthenticated = errors.New("controlplane: unauthenticated")
 
+// DenyAll is an authenticator that refuses every request. It is the fail-closed
+// default: a server constructed without an explicit authenticator gets this, so a
+// forgotten or misconfigured auth setup locks the door rather than serving openly.
+// An unauthenticated API surface is therefore not representable: there is no "no auth"
+// mode, only "deny everything" or a real authenticator.
+type DenyAll struct{}
+
+// Authenticate always refuses.
+func (DenyAll) Authenticate(*http.Request) (Principal, error) { return Principal{}, ErrUnauthenticated }
+
+// GeneratedOperator mints a fresh, cryptographically-random bearer token and returns
+// an authenticator that accepts exactly that token as a single operator-scoped
+// principal, along with the token so the caller can present it to the operator once.
+// It is the auth-on-by-default path: bringing up the API with no operator-supplied
+// credential yields a secured-by-default endpoint with zero configuration, so there is
+// never a reason to fall back to an open one. The provided mint is the entropy source
+// (ids.Token in production); a test can inject a deterministic one.
+func GeneratedOperator(id string, scope Scope, mint func() (string, error)) (*TokenAuthenticator, string, error) {
+	tok, err := mint()
+	if err != nil {
+		return nil, "", err
+	}
+	if tok == "" {
+		return nil, "", errors.New("controlplane: refusing an empty generated token")
+	}
+	return NewTokenAuthenticator(map[string]Principal{tok: {ID: id, Scope: scope}}), tok, nil
+}
+
 // TokenAuthenticator authenticates a bearer token against a fixed table. It
 // compares in constant time and scans every entry regardless of an early match, so
 // neither a token's value nor which tokens exist leaks through timing.
