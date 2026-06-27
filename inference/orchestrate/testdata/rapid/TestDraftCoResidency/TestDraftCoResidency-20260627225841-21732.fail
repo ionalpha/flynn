@@ -1,0 +1,51 @@
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw want:a: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw want:b: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw want:c: true
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw dfp:c: 0
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw prio:c: 0
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw pin:c: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw draft:c: true
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw dffp:c: 0
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw res:a: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw res:b: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw res:c: true
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw rfp:c: 0
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw act:c: true
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw lru:c: 0
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw res:da: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw res:db: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw res:dc: false
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] [rapid] draw budget: 0
+# 2026/06/27 22:58:41.065432 [TestDraftCoResidency] pair "c"/"dc" half-resident: primary kept=true draft kept=false (plan {Launch:[] Evict:[] Unschedulable:[]})
+# 
+v0.4.8#12044710424161924000
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
