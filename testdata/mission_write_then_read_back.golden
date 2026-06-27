@@ -1,0 +1,178 @@
+{
+  "events": [
+    {
+      "Kind": "turn.started",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.call",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "write",
+      "ToolUseID": "c1",
+      "Input": {
+        "path": "greeting.txt",
+        "content": "hello"
+      },
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.result",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "write",
+      "ToolUseID": "c1",
+      "Input": null,
+      "Result": "wrote 5 bytes to greeting.txt",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 1,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "tool_use",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.started",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.call",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "read",
+      "ToolUseID": "c2",
+      "Input": {
+        "path": "greeting.txt"
+      },
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "tool.result",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "read",
+      "ToolUseID": "c2",
+      "Input": null,
+      "Result": "hello",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 2,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "tool_use",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.started",
+      "Turn": 3,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "assistant.text",
+      "Turn": 3,
+      "Text": "The file says hello.",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    },
+    {
+      "Kind": "turn.completed",
+      "Turn": 3,
+      "Text": "",
+      "Tool": "",
+      "ToolUseID": "",
+      "Input": null,
+      "Result": "",
+      "IsError": false,
+      "StopReason": "end_turn",
+      "Usage": {
+        "inputTokens": 0,
+        "outputTokens": 0
+      }
+    }
+  ],
+  "result": "The file says hello.",
+  "files": {
+    "greeting.txt": "hello"
+  }
+}
