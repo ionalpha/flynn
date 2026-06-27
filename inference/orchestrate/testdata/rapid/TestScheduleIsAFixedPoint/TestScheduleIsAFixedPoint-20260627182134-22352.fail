@@ -1,0 +1,49 @@
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw want:a: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw want:b: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw want:c: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw want:d: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw want:e: true
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw dfp:e: 0
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw prio:e: 0
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw dpin:e: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw res:a: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw res:b: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw res:c: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw res:d: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw res:e: true
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw rfp:e: 1
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw rpin:e: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw act:e: false
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw lru:e: 0
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] [rapid] draw budget: 0
+# 2026/06/27 18:21:34.115216 [TestScheduleIsAFixedPoint] not a fixed point: second plan launches [e] evicts []
+# 
+v0.4.8#5542589497295632773
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
+0x0
+0x0
+0x1
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
+0x0
