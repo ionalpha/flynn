@@ -13,9 +13,8 @@
 
 Flynn is a lightweight agent runtime and operating system written in Go. It
 runs standalone as a single static binary on anything from a $5 VPS to a
-Kubernetes cluster, works with any model provider, and stores its state locally
-by default, with an optional managed [Ion Alpha](https://x.com/ionalpha_) host
-for teams and organizations.
+Kubernetes cluster, works with any model provider, and stores all of its state
+locally, so you own it.
 
 Four ideas run through everything it does:
 
