@@ -267,12 +267,20 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 		ctx, cancel = context.WithTimeout(ctx, l.execTimeout)
 		defer cancel()
 	}
-	confined := l.denyNetwork || l.readonlyFS || l.seccomp
+	// Governed egress fails closed on a platform without an enforcement leg, before any
+	// dispatch (the Windows command path does not run through confine).
+	if err := l.guardEgress(); err != nil {
+		return ExecResult{}, err
+	}
+	// Egress, like the other confinement axes, requires the confined path so its OS-level
+	// denial is applied; unlike them it is never weakened by the best-effort fallback.
+	confined := l.denyNetwork || l.readonlyFS || l.seccomp || l.egress != nil
 	res, err := l.execOnce(ctx, cmd, confined)
 	// A confined run that could not start (an error, not a non-zero exit) under the
 	// always-on baseline falls back to the floor. The failed attempt never ran the
-	// command, so there is nothing to undo before retrying.
-	if err != nil && confined && l.confineBestEffort {
+	// command, so there is nothing to undo before retrying. Egress is excluded: it must
+	// not silently drop to an unconfined (open-egress) run.
+	if err != nil && confined && l.confineBestEffort && l.egress == nil {
 		return l.execOnce(ctx, cmd, false)
 	}
 	return res, err
@@ -300,17 +308,17 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 	// keys and every other process secret are withheld from a model-run command.
 	// The command sees only a minimal baseline plus what WithEnv explicitly grants.
 	c.Env = l.env()
+	// Start the egress proxy and inject its variables before confine, so the platform's
+	// confine can read the proxy address and compose the allow-only-proxy network rule
+	// into the same enforcement action (one seatbelt profile / one namespace).
+	if l.egressActive() {
+		if err := l.startEgress(c); err != nil {
+			return ExecResult{}, err
+		}
+	}
 	if confined {
 		if err := l.confine(c); err != nil {
 			return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
-		}
-	}
-	// Govern outbound egress through the policy proxy, denying direct egress at the OS
-	// level. It is a separate axis from confine and is never weakened by the best-effort
-	// fallback: a platform without an enforcement leg refuses rather than running open.
-	if l.egressActive() {
-		if err := l.applyEgress(c); err != nil {
-			return ExecResult{}, err
 		}
 	}
 	out, err := c.CombinedOutput()

@@ -19,6 +19,12 @@ import (
 // filesystem, and syscall confinement, which it can on Windows through AppContainer.
 func kernelConfinementSupported() bool { return true }
 
+// egressEnforceable reports whether governed child egress can be enforced here. The
+// Windows leg (an AppContainer plus a Windows Filtering Platform rule that admits only the
+// proxy) is not built yet, so a governed-egress launch refuses rather than running with
+// direct egress open.
+func egressEnforceable() bool { return false }
+
 // confine is a no-op on Windows. Kernel confinement here is an AppContainer, which is
 // applied at process creation through security attributes that an exec.Cmd cannot
 // carry, so a confined command runs through runAppContainer rather than the standard
