@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
@@ -90,15 +91,26 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		return errors.New("serve: nothing to do; configure a channel (--telegram-token / --signal-tcp) and/or the API (--api-addr)")
 	}
 
-	// Read-only control-plane API (optional). It requires a token so exposing it is
-	// fail-closed: no token, no API.
+	// Read-only control-plane API (optional). Auth is on by default: a supplied token
+	// authenticates the operator, and when none is supplied one is generated and printed
+	// once rather than serving openly, so the API is secured-by-default with zero config
+	// and there is never a reason to run it unauthenticated.
 	if *apiAddr != "" {
-		if apiTok == "" {
-			return errors.New("serve: --api-addr requires a token (--api-token or FLYNN_API_TOKEN)")
+		var auth controlplane.Authenticator
+		if apiTok != "" {
+			auth = controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
+				apiTok: {ID: "operator", Scope: controlplane.ScopeRead},
+			})
+		} else {
+			gen, tok, err := controlplane.GeneratedOperator("operator", controlplane.ScopeRead, ids.Token)
+			if err != nil {
+				return fmt.Errorf("serve: api: generate token: %w", err)
+			}
+			auth = gen
+			fmt.Fprintln(os.Stderr, "flynn serve: no --api-token given; generated one for this run:")
+			fmt.Fprintln(os.Stderr, "  FLYNN_API_TOKEN="+tok)
+			fmt.Fprintln(os.Stderr, "  present it as: Authorization: Bearer "+tok)
 		}
-		auth := controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
-			apiTok: {ID: "operator", Scope: controlplane.ScopeRead},
-		})
 		api := controlplane.NewServer(rstore, store.Log(), auth)
 		// Bind-safe by default: the listener is opened through the inbound gate, which
 		// refuses a wildcard bind outright and a non-loopback bind unless --api-expose

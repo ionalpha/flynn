@@ -10,6 +10,7 @@ package ids
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"io"
 	"sync"
@@ -93,8 +94,35 @@ func format(b [16]byte) string {
 	return string(dst[:])
 }
 
+// defaultTokenBytes is the entropy of a Token when no size is given: 256 bits,
+// well past the brute-force horizon for a bearer secret.
+const defaultTokenBytes = 32
+
+// Token returns an opaque, cryptographically-random secret with nBytes of entropy,
+// URL-safe base64 without padding. Unlike New, it carries no timestamp and is not an
+// identifier: it is a bearer secret (an API token, say), so it is all entropy and
+// reveals nothing about when it was made. A non-positive nBytes uses 256 bits. The
+// entropy comes from the generator's source, so a deterministic source reproduces the
+// token for a replay just as it does for an ID.
+func (g *Generator) Token(nBytes int) (string, error) {
+	if nBytes <= 0 {
+		nBytes = defaultTokenBytes
+	}
+	b := make([]byte, nBytes)
+	g.mu.Lock()
+	_, err := io.ReadFull(g.rand, b)
+	g.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
 // def is the package default generator (system clock, crypto/rand).
 var def = NewGenerator()
 
 // New returns a new UUIDv7 from the default generator.
 func New() string { return def.New() }
+
+// Token returns an opaque 256-bit bearer secret from the default generator.
+func Token() (string, error) { return def.Token(defaultTokenBytes) }
