@@ -5,10 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/reconcile"
@@ -18,19 +21,21 @@ import (
 	"github.com/ionalpha/flynn/source/telegram"
 )
 
-// runServe runs the agent as a long-lived service that answers messages from chat
-// channels. Inbound messages are recorded as entries and triaged: each is driven as
-// a goal in the working directory and the agent's final answer is sent back on the
-// same conversation. Telegram and Signal are the available channels today; the
-// triage boundary accepts more sources as adapters are added. Goals run with the full sandboxed
-// toolset under the run's budget; the learning loop is not yet wired into the served
-// path, so a message is answered but not distilled into skills.
+// runServe runs the agent as a long-lived service. It answers messages from chat
+// channels (each inbound message is recorded as an entry, triaged, driven as a goal
+// in the working directory, and answered on the same conversation) and/or exposes
+// the read-only control-plane API for remote monitoring. Telegram and Signal are
+// the available channels today; the triage boundary accepts more sources as
+// adapters are added. Goals run with the full sandboxed toolset under the run's
+// budget; the learning loop is not yet wired into the served path.
 //
 // It blocks until interrupted (Ctrl-C), then stops the control loops.
 func runServe(args []string, modelSpec, dataDir string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
 	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
+	apiAddr := fs.String("api-addr", "", "expose the read-only control-plane API here, loopback recommended, e.g. 127.0.0.1:7575")
+	apiToken := fs.String("api-token", "", "bearer token for the control-plane API (or set FLYNN_API_TOKEN)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -39,18 +44,14 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if token == "" {
 		token = os.Getenv("TELEGRAM_BOT_TOKEN")
 	}
+	apiTok := *apiToken
+	if apiTok == "" {
+		apiTok = os.Getenv("FLYNN_API_TOKEN")
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
-	if err != nil {
-		return err
-	}
-	workdir, err := os.Getwd()
-	if err != nil {
-		return err
-	}
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
 		return err
@@ -62,13 +63,6 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		return err
 	}
 	rstore := store.Resources(reg)
-
-	// The goal runtime executes the work a triaged entry implies.
-	mr, err := assembleMission(model, workdir, "", rstore, store.Jobs(), store.Log(), "")
-	if err != nil {
-		return err
-	}
-	rt := mr.rt
 
 	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source
@@ -89,9 +83,57 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		sources = append(sources, sig)
 		sinks = append(sinks, sig)
 	}
-	if len(sources) == 0 {
-		return errors.New("serve: no channel configured; pass --telegram-token (or TELEGRAM_BOT_TOKEN) and/or --signal-tcp")
+
+	if len(sources) == 0 && *apiAddr == "" {
+		return errors.New("serve: nothing to do; configure a channel (--telegram-token / --signal-tcp) and/or the API (--api-addr)")
 	}
+
+	// Read-only control-plane API (optional). It requires a token so exposing it is
+	// fail-closed: no token, no API.
+	if *apiAddr != "" {
+		if apiTok == "" {
+			return errors.New("serve: --api-addr requires a token (--api-token or FLYNN_API_TOKEN)")
+		}
+		auth := controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
+			apiTok: {ID: "operator", Scope: controlplane.ScopeRead},
+		})
+		api := controlplane.NewServer(rstore, store.Log(), auth)
+		httpSrv := &http.Server{Addr: *apiAddr, Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+		go func() {
+			<-ctx.Done()
+			sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = httpSrv.Shutdown(sc)
+		}()
+		go func() {
+			if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				fmt.Fprintln(os.Stderr, "serve: api:", err)
+			}
+		}()
+		fmt.Fprintln(os.Stderr, "flynn serve: control-plane API (read-only) on", *apiAddr)
+	}
+
+	// With no channels this is a monitor-only daemon: just hold the API open.
+	if len(sources) == 0 {
+		fmt.Fprintln(os.Stderr, "flynn serve: monitor-only; press Ctrl-C to stop")
+		<-ctx.Done()
+		return nil
+	}
+
+	// Channels need a model and the goal runtime that executes a triaged entry.
+	model, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	if err != nil {
+		return err
+	}
+	workdir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	mr, err := assembleMission(model, workdir, "", rstore, store.Jobs(), store.Log(), "")
+	if err != nil {
+		return err
+	}
+	rt := mr.rt
 
 	// Triage turns each recorded entry into a goal and replies with its answer on the
 	// channel it arrived from.
@@ -104,8 +146,6 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	ingest := inbox.NewIngest(rstore, mgr, clock.System{}, sources,
 		inbox.WithIngestErrorHandler(func(e error) { fmt.Fprintln(os.Stderr, "serve:", e) }))
 
-	// Run the goal runtime, the triage manager, and ingest together. Ingest blocks
-	// until ctx is cancelled; the others stop with it.
 	go func() { _ = rt.Start(ctx) }()
 	go func() { mgr.Start(ctx) }()
 
