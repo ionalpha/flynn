@@ -388,6 +388,13 @@ func localModelPlan(ctx context.Context, m catalog.ModelSpec, dataDir string) ha
 // or read yields an empty source, which resolves every model as unknown: a profile lookup must
 // only inform a run, never block it, so any failure falls back to the conservative default.
 func localProfileSource(ctx context.Context, dataDir string) harness.ProfileSource {
+	// No store on disk yet means nothing has been measured, so report every model as unknown
+	// without creating a database: a read-only lookup must not have a side effect.
+	if dsn := dataStoreFile(dataDir); dsn == "" {
+		return harness.StaticProfiles{}
+	} else if _, err := os.Stat(dsn); err != nil {
+		return harness.StaticProfiles{}
+	}
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
 		return harness.StaticProfiles{}

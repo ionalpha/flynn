@@ -12,13 +12,15 @@ import (
 
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/hardware"
+	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/reliability"
 )
 
 // runModels implements `flynn models`: browse the curated model catalog and filter
 // it, so a user can see which models exist, what they cost in size and context, what
 // they can do, and where they came from, before choosing or fetching one. It reads
 // the embedded catalog only; it makes no network call.
-func runModels(args []string, out io.Writer) error {
+func runModels(args []string, dataDir string, out io.Writer) error {
 	fs := flag.NewFlagSet("models", flag.ContinueOnError)
 	fs.SetOutput(out)
 	var (
@@ -65,7 +67,11 @@ func runModels(args []string, out io.Writer) error {
 		return nil
 	}
 	if *fit || *vramGB > 0 {
-		renderFit(out, cat, models, resolveBudget(*vramGB))
+		// The fit view is two-axis: whether the model fits this machine, and whether it clears
+		// the agentic-reliability bar. The reliability axis reads a measured profile when one
+		// has been recorded, so the lookup is best-effort and never blocks the listing.
+		profiles := localProfileSource(context.Background(), dataDir)
+		renderFit(out, cat, models, resolveBudget(*vramGB), profiles)
 		return nil
 	}
 	renderModels(out, cat, models)
@@ -117,7 +123,7 @@ func cpuInferenceBudget(ramBytes int64) int64 {
 // renderFit lists the models with a fit verdict against the budget and a single
 // recommendation, the "what can this machine actually run" view. When no budget is
 // known it says so and falls back to the plain listing.
-func renderFit(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec, b budget) {
+func renderFit(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec, b budget, profiles harness.ProfileSource) {
 	if b.bytes <= 0 {
 		_, _ = fmt.Fprintln(out, "could not detect GPU or system memory; pass --vram <GB> to judge fit.")
 		renderModels(out, cat, models)
@@ -125,14 +131,41 @@ func renderFit(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec, b
 	}
 	_, _ = fmt.Fprintf(out, "fit for %s:\n\n", b.source)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "MODEL\tKIND\tSIZE\tFIT\tCAPABILITIES\tLICENSE")
+	_, _ = fmt.Fprintln(tw, "MODEL\tKIND\tSIZE\tFIT\tRELIABILITY\tCAPABILITIES\tLICENSE")
 	for _, m := range models {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.ID, m.Kind, sizeCol(m), m.FitFor(b.bytes), capsCol(m.Capabilities), m.License)
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			m.ID, m.Kind, sizeCol(m), m.FitFor(b.bytes), reliabilityCol(m, profiles), capsCol(m.Capabilities), m.License)
 	}
 	_ = tw.Flush()
 	if rec, ok := recommend(models, b.bytes); ok {
 		_, _ = fmt.Fprintf(out, "\nrecommended local model: %s\n", rec.ID)
+	}
+	_, _ = fmt.Fprintln(out, "\nreliability: a measured score where the model has been probed, otherwise a quant-floor estimate; run `flynn models probe <id>` to measure.")
+}
+
+// reliabilityCol renders a local model's standing on the agentic-reliability axis: the measured
+// tool-call reliability when the model has been probed, otherwise the a-priori reading from its
+// smallest quant against the quant floor. A hosted API model is not probed locally, so it shows a
+// dash rather than a verdict it has not earned.
+func reliabilityCol(m catalog.ModelSpec, profiles harness.ProfileSource) string {
+	if !m.Local() {
+		return "-"
+	}
+	if p, ok := profiles.Profile(m.ID); ok {
+		return fmt.Sprintf("%.0f%% measured", p.ToolCallReliability*100)
+	}
+	q, ok := m.SmallestQuant()
+	if !ok {
+		return "unprobed"
+	}
+	below, reason := reliability.QuantFloor(q.Name, m.ParamsB)
+	switch {
+	case below:
+		return "below floor"
+	case reason != "":
+		return "borderline"
+	default:
+		return "unprobed"
 	}
 }
 
