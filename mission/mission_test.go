@@ -79,6 +79,33 @@ func driveToDone(t *testing.T, exec *Executor, maxSteps int) (steps int, cp chec
 
 // TestExecutorDrivesToolThenText is the core loop: the model calls a tool, the
 // executor runs it and feeds the result back, and the next turn ends the mission.
+func TestExecutorPinsSamplingWhenConfigured(t *testing.T) {
+	model := llmtest.NewScripted(llmtest.SayText("done"))
+	want := &llm.Sampling{Seed: 99, Temperature: 0, TopP: 0.9}
+	exec := NewExecutor(model, WithSampling(want))
+
+	driveToDone(t, exec, 3)
+
+	reqs := model.Requests()
+	if len(reqs) == 0 || reqs[0].Sampling == nil {
+		t.Fatalf("the model call did not carry pinned sampling: %+v", reqs)
+	}
+	if *reqs[0].Sampling != *want {
+		t.Fatalf("sampling = %+v, want %+v", reqs[0].Sampling, want)
+	}
+}
+
+func TestExecutorFreeRunningByDefault(t *testing.T) {
+	model := llmtest.NewScripted(llmtest.SayText("done"))
+	exec := NewExecutor(model)
+
+	driveToDone(t, exec, 3)
+
+	if reqs := model.Requests(); len(reqs) == 0 || reqs[0].Sampling != nil {
+		t.Fatalf("a run without WithSampling must be free-running (nil sampling), got %+v", reqs)
+	}
+}
+
 func TestExecutorDrivesToolThenText(t *testing.T) {
 	model := llmtest.NewScripted(
 		llmtest.CallTool("t1", "echo", json.RawMessage(`{"msg":"hi"}`)),
