@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/goal"
@@ -39,6 +40,11 @@ const DefaultSystemPrompt = `You are Flynn, an autonomous software agent working
 You have tools to run shell commands and to read, write, edit, glob, and grep files; every command and file path is confined to the working directory.
 Work toward the objective directly: inspect what you need, make the changes, and verify them with the tools rather than guessing.
 When the objective is fully accomplished, stop and reply with a short summary of what you did.`
+
+// defaultMaxActionsPerMinute is the rate the default safety brake halts a run at.
+// It is set well above any real run's pace so it catches only a degenerate tight
+// loop, not legitimate tool use.
+const defaultMaxActionsPerMinute = 600
 
 // Config configures an Agent. The zero value is usable: New fills in safe,
 // standalone defaults so the agent always runs without external services.
@@ -161,6 +167,12 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string) 
 		// Gate every action on containment too: a model-authored command is refused on a
 		// host that cannot kernel-confine it, rather than run at the process-jail floor.
 		mission.WithSandbox(sb),
+		// Halt a runaway from outside the model loop. The default is a generous rate
+		// backstop: a real run dispatches far fewer than this per minute, so the breaker
+		// fires only on a degenerate tight loop, never on legitimate tool use. A host that
+		// wants tighter behavioural limits or an operator kill-switch builds its own brake
+		// hook and passes it here.
+		mission.WithBrakes(brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil)),
 	)
 	// A nil Store makes the runtime build its in-process substrate (store, queue,
 	// bus) over a registry holding the core and Goal kinds.
