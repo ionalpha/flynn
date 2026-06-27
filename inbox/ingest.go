@@ -11,16 +11,16 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Enqueuer hands a newly recorded signal's key to the triage controller's work
+// Enqueuer hands a newly recorded entry's key to the triage controller's work
 // queue so it is reconciled promptly. reconcile.Manager.Enqueue satisfies it; the
 // resync sweep is the safety net if a hint is ever missed.
 type Enqueuer interface {
 	Enqueue(resource.Key)
 }
 
-// Ingest records inbound signals from a set of Sources as Signal resources and
+// Ingest records inbound entries from a set of Sources as Entry resources and
 // enqueues each for triage. It is the inbound half of the boundary: it decides
-// only that a signal is durably recorded, never what to do with it. That decision
+// only that an entry is durably recorded, never what to do with it. That decision
 // is the triage controller's, which keeps every disposition behind one governed
 // waist rather than scattered across adapters.
 type Ingest struct {
@@ -45,7 +45,7 @@ func WithIngestErrorHandler(fn func(error)) IngestOption {
 	}
 }
 
-// NewIngest builds an ingester that records signals from sources onto store and
+// NewIngest builds an ingester that records entries from sources onto store and
 // enqueues each for triage on queue. The clock stamps the receipt time when a
 // source leaves it unset.
 func NewIngest(store resource.Store, queue Enqueuer, clk clock.Timing, sources []Source, opts ...IngestOption) *Ingest {
@@ -62,7 +62,7 @@ func NewIngest(store resource.Store, queue Enqueuer, clk clock.Timing, sources [
 	return in
 }
 
-// Run starts every source and records signals until ctx is cancelled, then waits
+// Run starts every source and records entries until ctx is cancelled, then waits
 // for the source readers to stop. A source that fails to start is reported and
 // skipped; if none start, Run returns an error rather than blocking forever.
 func (in *Ingest) Run(ctx context.Context) error {
@@ -97,7 +97,7 @@ func (in *Ingest) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// record stamps the source and (when unset) the receipt time, writes the signal as
+// record stamps the source and (when unset) the receipt time, writes the entry as
 // a resource, and enqueues its key for triage. The source is stamped here, not
 // trusted from the adapter, so the reply-routing key is always authoritative.
 func (in *Ingest) record(ctx context.Context, source string, spec Spec) (resource.Key, error) {
@@ -112,7 +112,7 @@ func (in *Ingest) record(ctx context.Context, source string, spec Spec) (resourc
 	saved, err := in.store.Put(ctx, resource.Resource{
 		APIVersion:   GroupVersion,
 		Kind:         Kind,
-		GenerateName: "sig-",
+		GenerateName: "entry-",
 		Spec:         raw,
 	})
 	if err != nil {

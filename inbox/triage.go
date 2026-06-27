@@ -11,30 +11,30 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// defaultTriagePoll is how often triage re-checks in-flight work for a signal it
+// defaultTriagePoll is how often triage re-checks in-flight work for an entry it
 // is replying to.
 const defaultTriagePoll = 200 * time.Millisecond
 
-// replyFailureText is sent when the work for a Reply signal fails, so the user is
+// replyFailureText is sent when the work for a Reply entry fails, so the user is
 // told rather than left waiting.
 const replyFailureText = "Sorry, I could not complete that request."
 
 // Worker carries out the action a Reply or Goal disposition implies: it starts work
-// for a signal and reports the outcome. Triage depends on this rather than the goal
+// for an entry and reports the outcome. Triage depends on this rather than the goal
 // engine, so the inbound boundary stays independent of the execution model. The
-// signal id is passed so an implementation can make Start idempotent per signal.
+// entry id is passed so an implementation can make Start idempotent per entry.
 type Worker interface {
-	Start(ctx context.Context, signal, objective string) (handle string, err error)
+	Start(ctx context.Context, entry, objective string) (handle string, err error)
 	Poll(ctx context.Context, handle string) (done bool, answer string, failed bool, err error)
 }
 
-// Policy chooses what to do with a signal from its content alone. The default
-// replies to any conversational signal and drops the rest. A host can supply its
+// Policy chooses what to do with an entry from its content alone. The default
+// replies to any conversational entry and drops the rest. A host can supply its
 // own to add routing, allow-lists, or autonomy rules.
 type Policy func(Spec) Disposition
 
-// DefaultPolicy replies to a signal that names a conversation and drops one that
-// does not (a signal with nowhere to answer is not actioned by default).
+// DefaultPolicy replies to an entry that names a conversation and drops one that
+// does not (an entry with nowhere to answer is not actioned by default).
 func DefaultPolicy(s Spec) Disposition {
 	if s.Conversation != "" {
 		return DispositionReply
@@ -42,7 +42,7 @@ func DefaultPolicy(s Spec) Disposition {
 	return DispositionDrop
 }
 
-// Sinks routes a reply to the Sink registered for a signal's source.
+// Sinks routes a reply to the Sink registered for an entry's source.
 type Sinks struct {
 	byName map[string]Sink
 }
@@ -66,8 +66,8 @@ func (s *Sinks) Send(ctx context.Context, source, conversation, text string) err
 	return sink.Send(ctx, conversation, text)
 }
 
-// Triage is the reconciler that turns a recorded Signal into an action. It is
-// level-triggered: each call re-reads the live signal and advances it one step,
+// Triage is the reconciler that turns a recorded Entry into an action. It is
+// level-triggered: each call re-reads the live entry and advances it one step,
 // from received to a disposition, then (for a reply) waits on the work and sends
 // the answer back. It never runs the work itself; that is the Worker's job, so a
 // long task does not block the reconcile loop.
@@ -119,7 +119,7 @@ func NewTriage(store resource.Store, worker Worker, sinks *Sinks, clk clock.Timi
 	return t
 }
 
-// Reconcile advances one signal. Only Reply, Goal, and Drop are acted on today;
+// Reconcile advances one entry. Only Reply, Goal, and Drop are acted on today;
 // Store and Notify are reserved and currently treated as Drop.
 func (t *Triage) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcile.Result, error) {
 	r, err := t.store.Get(ctx, ref.Kind, ref.Scope, ref.Name)
@@ -166,7 +166,7 @@ func (t *Triage) triage(ctx context.Context, r resource.Resource, spec Spec, st 
 	}
 
 	// Start the work, then record the handle. If recording fails the work may be
-	// started again on retry (at-least-once); the Worker is given the signal id so
+	// started again on retry (at-least-once); the Worker is given the entry id so
 	// it can dedupe when that matters.
 	handle, err := t.worker.Start(ctx, r.Name, spec.Content)
 	if err != nil {
@@ -183,10 +183,10 @@ func (t *Triage) triage(ctx context.Context, r resource.Resource, spec Spec, st 
 }
 
 // act polls the in-flight work and, once done, replies (for a Reply disposition)
-// and marks the signal acted.
+// and marks the entry acted.
 func (t *Triage) act(ctx context.Context, r resource.Resource, spec Spec, st Status) (reconcile.Result, error) {
 	if st.GoalName == "" {
-		return reconcile.Result{}, errors.New("inbox: triaged signal has no work handle")
+		return reconcile.Result{}, errors.New("inbox: triaged entry has no work handle")
 	}
 	done, answer, failed, err := t.worker.Poll(ctx, st.GoalName)
 	if err != nil {
@@ -201,7 +201,7 @@ func (t *Triage) act(ctx context.Context, r resource.Resource, spec Spec, st Sta
 		text = replyFailureText
 	}
 	// A Reply sends the answer back on the originating conversation. A Goal is
-	// fire-and-forget. The send is at-least-once: on a send error the signal is left
+	// fire-and-forget. The send is at-least-once: on a send error the entry is left
 	// un-acted so the next reconcile retries, which may resend on a flaky sink.
 	if st.Disposition == DispositionReply && text != "" {
 		if err := t.sinks.Send(ctx, spec.Source, spec.Conversation, text); err != nil {
@@ -219,7 +219,7 @@ func (t *Triage) act(ctx context.Context, r resource.Resource, spec Spec, st Sta
 	return reconcile.Result{}, t.persist(ctx, r, st)
 }
 
-// persist writes the updated status back onto the signal resource.
+// persist writes the updated status back onto the entry resource.
 func (t *Triage) persist(ctx context.Context, r resource.Resource, st Status) error {
 	raw, err := st.Encode()
 	if err != nil {
