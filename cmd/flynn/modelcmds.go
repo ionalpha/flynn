@@ -11,8 +11,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/catalog"
+	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/inference/modelsource"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/profilestore"
+	"github.com/ionalpha/flynn/reliability"
+	"github.com/ionalpha/flynn/resource"
 )
 
 // dispatchModels routes a `flynn models <sub>` invocation to its handler. The bare
@@ -33,6 +38,8 @@ func dispatchModels(sub []string, dataDir string) error {
 		return runModelInspect(sub[1:], dataDir, os.Stdout)
 	case "run":
 		return runModelRun(sub[1:], dataDir, os.Stdout)
+	case "probe":
+		return runModelProbe(sub[1:], dataDir, os.Stdout)
 	case "use":
 		return runModelUse(sub[1:], dataDir, os.Stdout)
 	case "status":
@@ -117,7 +124,7 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 
-	client := localModelClient(ep, m.ID, localModelPlan(m))
+	client := localModelClient(ep, m.ID, localModelPlan(ctx, m, dataDir))
 	resp, err := client.Generate(ctx, llm.Request{
 		Messages:  []llm.Message{llm.Text(llm.RoleUser, prompt)},
 		MaxTokens: 1024,
@@ -127,6 +134,121 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintln(out, strings.TrimSpace(resp.Message.TextContent()))
 	return nil
+}
+
+// runModelProbe implements `flynn models probe <id>`: measure whether a local model is dependable
+// enough to drive an agent loop, and record the result so later runs scaffold it accordingly. It
+// serves the model through the same gated, sandboxed path as `models run`, runs the reliability
+// battery against the raw model (no harness scaffolding, so the score reflects the model itself),
+// and writes the measured profile to the durable store keyed by the model, quant, and runtime.
+func runModelProbe(args []string, dataDir string, out io.Writer) error {
+	autoApprove, args := takeFlag(args, "--yes", "-y")
+	if len(args) == 0 || args[0] == "" {
+		return errors.New("models probe: a model id is required (see `flynn models`)")
+	}
+	id := args[0]
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runner := newLocalRunner(dataDir, out)
+	src, err := modelsource.Parse(id, isLocalModelID)
+	if err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	class, err := runner.classifySource(src)
+	if err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	rs := runner.riskSurface(src, class)
+	printRiskSurface(out, rs)
+	if err := runner.admitOnly(class.Trust); err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	if err := requireConsent(rs, stdinIsTerminal(), autoApprove, os.Stdin, out); err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	if src.Kind != modelsource.KindCatalog {
+		return fmt.Errorf("models probe: %s is %s; only catalog models can be probed today", src.Raw, class.Trust)
+	}
+
+	m, err := findLocalModel(id)
+	if err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	ep, err := runner.serveModel(ctx, m, 0, false)
+	if err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "probing %s at %s; this runs a fixed battery of tool-call, schema, and instruction probes\n", id, ep.BaseURL)
+
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+	reg, err := missionRegistry()
+	if err != nil {
+		return err
+	}
+
+	// Probe the raw model: no plan, so no grammar or other scaffolding shapes the answer and the
+	// score measures the model's own reliability.
+	client := localModelClient(ep, m.ID, harness.Plan{})
+	return probeAndStore(ctx, client, m, selfProvisionedRuntime, store.Resources(reg), out)
+}
+
+// probeAndStore runs the reliability battery against a served model, records the resulting profile
+// for the model, quant, and runtime under test, and reports the scores with the quant-floor
+// caveat. It is the core of `flynn models probe`, separated from the serving setup so it is
+// exercised directly with a scripted model and an in-memory store.
+func probeAndStore(ctx context.Context, model llm.Model, m catalog.ModelSpec, runtimeName string, rs resource.Store, out io.Writer) error {
+	rep, err := reliability.Score(ctx, model)
+	if err != nil {
+		return fmt.Errorf("models probe: %w", err)
+	}
+	prof := rep.Profile()
+
+	quant := ""
+	if q, ok := m.SmallestQuant(); ok {
+		quant = q.Name
+	}
+	spec := profilestore.Spec{
+		ModelID:              m.ID,
+		Quant:                quant,
+		Runtime:              runtimeName,
+		BatteryVersion:       rep.Version,
+		ToolCallReliability:  prof.ToolCallReliability,
+		StructuredOutput:     prof.StructuredOutput,
+		InstructionFollowing: prof.InstructionFollowing,
+		EffectiveContext:     prof.EffectiveContext,
+	}
+	if err := profilestore.Write(ctx, rs, spec); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "reliability for %s (%s, battery %s):\n", m.ID, quantLabel(quant), rep.Version)
+	_, _ = fmt.Fprintf(out, "  tool calls:   %3.0f%%\n", prof.ToolCallReliability*100)
+	_, _ = fmt.Fprintf(out, "  schema:       %3.0f%%\n", prof.StructuredOutput*100)
+	_, _ = fmt.Fprintf(out, "  instructions: %3.0f%%\n", prof.InstructionFollowing*100)
+	if below, reason := reliability.QuantFloor(quant, m.ParamsB); reason != "" {
+		mark := "note"
+		if below {
+			mark = "warning"
+		}
+		_, _ = fmt.Fprintf(out, "  %s: %s\n", mark, reason)
+	}
+	_, _ = fmt.Fprintln(out, "recorded; future runs of this model are scaffolded from this measurement.")
+	return nil
+}
+
+// quantLabel renders a quantization for display, naming an unrecorded one rather than printing a
+// blank.
+func quantLabel(quant string) string {
+	if quant == "" {
+		return "default quant"
+	}
+	return quant
 }
 
 // runModelInspect implements `flynn models inspect <id-or-source>`: classify any model

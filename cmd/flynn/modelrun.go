@@ -19,6 +19,7 @@ import (
 	"github.com/ionalpha/flynn/inference/serve"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/openai"
+	"github.com/ionalpha/flynn/profilestore"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
 )
@@ -367,7 +368,7 @@ func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Mode
 	if err != nil {
 		return nil, harness.Plan{}, fmt.Errorf("serve local model %s: %w", modelSpec, err)
 	}
-	plan := localModelPlan(m)
+	plan := localModelPlan(ctx, m, dataDir)
 	logPlan(os.Stderr, m.ID, plan)
 	return localModelClient(ep, m.ID, plan), plan, nil
 }
@@ -377,14 +378,31 @@ func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Mode
 // conservative plan: the safe default is automatic, and a local model earns the lean path only by
 // measuring as reliable, never on assumption. The advertised context window bounds the plan's
 // context cap.
-func localModelPlan(m catalog.ModelSpec) harness.Plan {
-	return harness.PlanFor(localProfiles, m.ID, m.ContextTokens)
+func localModelPlan(ctx context.Context, m catalog.ModelSpec, dataDir string) harness.Plan {
+	return harness.PlanFor(localProfileSource(ctx, dataDir), m.ID, m.ContextTokens)
 }
 
-// localProfiles is the read side of the local-model capability store. It is empty until an
-// evaluation harness records measured profiles, so every local model currently resolves as
-// unmeasured and conservatively scaffolded.
-var localProfiles harness.ProfileSource = harness.StaticProfiles{}
+// localProfileSource loads the recorded model profiles from the durable store, so a local model's
+// plan is driven by what `flynn models probe` measured rather than by assumption. It reads a
+// snapshot and closes the store, so the lookup holds nothing open. A store that cannot be opened
+// or read yields an empty source, which resolves every model as unknown: a profile lookup must
+// only inform a run, never block it, so any failure falls back to the conservative default.
+func localProfileSource(ctx context.Context, dataDir string) harness.ProfileSource {
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return harness.StaticProfiles{}
+	}
+	defer func() { _ = store.Close() }()
+	reg, err := missionRegistry()
+	if err != nil {
+		return harness.StaticProfiles{}
+	}
+	src, err := profilestore.NewSource(ctx, store.Resources(reg))
+	if err != nil {
+		return harness.StaticProfiles{}
+	}
+	return src
+}
 
 // logPlan reports the scaffolding a model is driven with, so a run records why it was helped (or
 // not). It is written to the progress stream, alongside the serve and provision lines.

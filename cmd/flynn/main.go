@@ -157,6 +157,7 @@ func printUsage(w io.Writer) {
   flynn models install [rt]  fetch and verify a pinned local runtime (default: llama.cpp)
   flynn models inspect <id>  show a model source's trust, isolation, and integrity (no run)
   flynn models run <id> [q]  provision, serve, and query a local model (q optional)
+  flynn models probe <id>    measure a local model's agentic reliability and record its profile
   flynn models use <id>      provision a local model and set it as the default
   flynn models status        list the local model servers that are running
   flynn models stop <id>     stop a running local model server
