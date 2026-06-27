@@ -56,6 +56,10 @@ type Config struct {
 	Port int
 	// CtxSize is the context window to run with; 0 lets the runtime use the model default.
 	CtxSize int
+	// CPUOnly forces the model to run entirely on the CPU with no GPU offload, the last-resort
+	// footprint for a model that will not fit in device memory. The default offloads to the GPU
+	// as the runtime sees fit.
+	CPUOnly bool
 	// APIKey, when set, is required by the server on every request, so even a local
 	// process cannot reach the model without the token the caller holds. Optional.
 	APIKey string
@@ -116,6 +120,11 @@ func BuildPlan(cfg Config) (Plan, error) {
 	}
 	if cfg.CtxSize > 0 {
 		argv = append(argv, "--ctx-size", strconv.Itoa(cfg.CtxSize))
+	}
+	if cfg.CPUOnly {
+		// Keep every layer on the CPU, so a model whose weights do not fit in device memory
+		// can still serve rather than failing to start.
+		argv = append(argv, "--n-gpu-layers", "0")
 	}
 	if cfg.APIKey != "" {
 		argv = append(argv, "--api-key", cfg.APIKey)
