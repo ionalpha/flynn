@@ -102,7 +102,7 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)
 	}
-	ep, err := runner.serveModel(ctx, m, 0)
+	ep, err := runner.serveModel(ctx, m, 0, false)
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)
 	}

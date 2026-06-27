@@ -122,17 +122,21 @@ func buildPool(cat catalog.Catalog, ids []string, pinned map[string]bool) (poolP
 	return pp, nil
 }
 
-// degradedContextTokens is the smaller context window a degraded launch requests. A model
-// that ran out of memory at its default context is retried with a tighter one, which shrinks
-// the key/value cache that dominates a run's memory beyond the weights.
-const degradedContextTokens = 2048
+// Context windows for the degraded recovery launches: a degraded launch tightens the window,
+// and a minimal launch tightens it further. A smaller window shrinks the key/value cache that
+// dominates a run's memory beyond the weights.
+const (
+	degradedContextTokens = 2048
+	minimalContextTokens  = 1024
+)
 
 // poolLauncher returns a launch function that serves a managed model by id, taking it through
 // the same source-trust and containment gate as `models run` before it is started. A launch is
-// idempotent: serving an already-running model reuses it. A degraded launch serves the model
-// with a smaller context window, the recovery response to an out-of-memory or wedged start.
+// idempotent: serving an already-running model reuses it. The level shapes the footprint: a
+// degraded launch uses a smaller context, and a minimal launch uses a smaller context and runs
+// on the CPU, the recovery response as an out-of-memory model is shrunk to make it fit.
 func poolLauncher(runner *localRunner, specs map[string]catalog.ModelSpec) orchestrate.LaunchFunc {
-	return func(ctx context.Context, id string, degraded bool) error {
+	return func(ctx context.Context, id string, level orchestrate.LaunchLevel) error {
 		m, ok := specs[id]
 		if !ok {
 			return fmt.Errorf("model %q is not in the pool", id)
@@ -144,12 +148,23 @@ func poolLauncher(runner *localRunner, specs map[string]catalog.ModelSpec) orche
 		if _, err := runner.admitSource(src); err != nil {
 			return err
 		}
-		ctxSize := 0
-		if degraded {
-			ctxSize = degradedContextTokens
-		}
-		_, err = runner.serveModel(ctx, m, ctxSize)
+		ctxSize, cpuOnly := launchProfile(level)
+		_, err = runner.serveModel(ctx, m, ctxSize, cpuOnly)
 		return err
+	}
+}
+
+// launchProfile maps a recovery launch level onto serve parameters: a degraded launch tightens
+// the context window, and a minimal launch tightens it further and runs on the CPU, the last
+// resort for a model that will not fit in device memory.
+func launchProfile(level orchestrate.LaunchLevel) (ctxSize int, cpuOnly bool) {
+	switch level {
+	case orchestrate.LaunchDegraded:
+		return degradedContextTokens, false
+	case orchestrate.LaunchMinimal:
+		return minimalContextTokens, true
+	default:
+		return 0, false
 	}
 }
 
