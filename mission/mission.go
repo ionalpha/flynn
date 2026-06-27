@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
@@ -77,6 +78,7 @@ type Executor struct {
 	reporter        Reporter
 	grant           capability.Grant
 	hasGrant        bool
+	brakes          bool
 	dispatchOpts    []dispatch.Option
 	dispatcher      *dispatch.Dispatcher
 }
@@ -116,6 +118,23 @@ func WithSandbox(sb sandbox.Sandbox) Option {
 // and replay). The default discards, so standalone behaviour is unchanged.
 func WithEventSink(s dispatch.EventSink) Option {
 	return func(e *Executor) { e.dispatchOpts = append(e.dispatchOpts, dispatch.WithEventSink(s)) }
+}
+
+// WithBrakes wires a safety brake into the waist so the run is halted from outside
+// the model loop when its observed behaviour trips a breaker or the kill-switch is
+// engaged. The brake hook observes every action the run dispatches and refuses
+// further work once halted; the caller keeps the hook so it can engage the
+// kill-switch (h.Switch()) out of band. The run id is bound on the step context so
+// the brake tracks behaviour per run, the same identity the conversation cache and
+// budget key on. Without it no brake is applied, which keeps the standalone agent
+// zero-config. A nil hook is ignored.
+func WithBrakes(h *brakes.Hook) Option {
+	return func(e *Executor) {
+		if h != nil {
+			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(h))
+			e.brakes = true
+		}
+	}
 }
 
 // WithTools registers the tools the model may call. Later registrations of the
@@ -266,6 +285,12 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// the sandbox layer below reads the same policy from the context.
 	if e.hasGrant {
 		ctx = capability.Into(ctx, e.grant)
+	}
+	// Scope the safety brake to this run, so its breakers track behaviour per run
+	// and the kill-switch halts the right one. The run id is the resource name, the
+	// same identity the conversation cache and budget key on.
+	if e.brakes {
+		ctx = brakes.Into(ctx, r.Name)
 	}
 	spec, err := goal.DecodeSpec(r)
 	if err != nil {
