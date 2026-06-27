@@ -68,6 +68,30 @@ func TestBuildPlanOptionalFlags(t *testing.T) {
 	}
 }
 
+func TestBuildPlanCPUOnlyForcesNoGPULayers(t *testing.T) {
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, CPUOnly: true}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !argvHasFlag(plan.Argv, "--n-gpu-layers", "0") {
+		t.Fatalf("a CPU-only run must force zero GPU layers: %v", plan.Argv)
+	}
+}
+
+func TestBuildPlanDefaultDoesNotForceGPULayers(t *testing.T) {
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range plan.Argv {
+		if a == "--n-gpu-layers" {
+			t.Fatalf("a default run must leave GPU offload to the runtime: %v", plan.Argv)
+		}
+	}
+}
+
 func TestBuildPlanRefuses(t *testing.T) {
 	base := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 8000}
 	apiModel := catalog.ModelSpec{ID: "anthropic:x", Kind: catalog.KindAPI}
