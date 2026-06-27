@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
@@ -21,7 +22,7 @@ func (bashTool) WorkTrust() sandbox.Trust { return sandbox.TrustSemi }
 func (bashTool) Def() llm.Tool {
 	return llm.Tool{
 		Name:        "bash",
-		Description: "Run a shell command in the working directory and return its combined stdout and stderr. A non-zero exit is reported with the output, not hidden.",
+		Description: shellToolDescription(),
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "required": ["command"],
@@ -31,6 +32,18 @@ func (bashTool) Def() llm.Tool {
   "additionalProperties": false
 }`),
 	}
+}
+
+// shellToolDescription names the interpreter the command actually runs in, which
+// depends on the host. Stating it keeps the model from writing for the wrong shell:
+// on Windows commands run through `cmd.exe`, so POSIX constructs (pipelines into
+// `while`, heredocs, and POSIX-only utilities) are not available, while elsewhere a
+// POSIX shell is used.
+func shellToolDescription() string {
+	if runtime.GOOS == "windows" {
+		return "Run a command in the working directory through the Windows command interpreter (cmd.exe) and return its combined stdout and stderr. Use cmd.exe syntax, not POSIX shell syntax: there is no bash, so heredocs, pipelines into while, and POSIX-only tools are unavailable. For listing, finding, reading, writing, or editing files, prefer the dedicated glob, grep, read, write, and edit tools rather than shell commands. A non-zero exit is reported with the output, not hidden."
+	}
+	return "Run a shell command in the working directory through the POSIX shell (/bin/sh) and return its combined stdout and stderr. A non-zero exit is reported with the output, not hidden."
 }
 
 func (t bashTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
