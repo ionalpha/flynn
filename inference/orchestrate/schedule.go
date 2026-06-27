@@ -24,6 +24,21 @@ type Desired struct {
 	// Pinned keeps a model resident regardless of priority or budget, for a model that must
 	// stay hot (a small default model, or a draft model for speculative decoding).
 	Pinned bool
+	// Draft, when set, is a small companion model paired with this one for speculative
+	// decoding. It must be resident whenever its primary is, so the policy keeps and budgets
+	// the two together: the primary is admitted only if both fit, and evicting the primary
+	// evicts the draft. A nil Draft means the model serves on its own.
+	Draft *Draft
+}
+
+// Draft is the companion model paired with a primary for speculative decoding. It is identified
+// and budgeted on its own, but it is never scheduled independently: it rides with its primary.
+type Draft struct {
+	// ModelID is the draft model's catalog id.
+	ModelID string
+	// Footprint is the device memory it occupies when resident, in bytes. A negative value is
+	// treated as zero.
+	Footprint int64
 }
 
 // Resident is a model the serve manager currently runs.
@@ -62,27 +77,36 @@ type Plan struct {
 // remaining desired models in priority order (preferring those already resident, and the
 // more-recently-used among ties, to avoid churn) for as long as they fit the budget. A
 // resident model that is neither kept nor pinned nor active is evicted; a desired model that
-// does not fit is reported as unschedulable. The result is deterministic and idempotent: the
-// chosen set is a fixed point, so applying the plan and scheduling again yields no further
-// launches or evictions.
+// does not fit is reported as unschedulable. A model paired with a draft is admitted only if both
+// fit, and a kept model's draft is kept with it, so a speculative-decoding pair is resident
+// together or not at all. The result is deterministic and idempotent: the chosen set is a fixed
+// point, so applying the plan and scheduling again yields no further launches or evictions.
 func Schedule(desired []Desired, resident []Resident, budget int64) Plan {
 	residentByID := make(map[string]Resident, len(resident))
 	for _, r := range resident {
 		residentByID[r.ModelID] = r
 	}
 	desiredByID := make(map[string]Desired, len(desired))
+	draftFootByID := make(map[string]int64)
 	for _, d := range desired {
 		desiredByID[d.ModelID] = d
+		if d.Draft != nil {
+			draftFootByID[d.Draft.ModelID] = footprint(d.Draft.Footprint)
+		}
 	}
 
 	// A model costs the same to keep whether it is already resident or about to be launched,
 	// so it is budgeted by a single footprint: a desired model at its declared estimate, a
-	// resident-only model at its observed size. Budgeting a resident model at its own
-	// declared estimate (not the runtime's measurement) is what makes the plan a stable
-	// fixed point: a model cannot be evicted as too big and then re-launched as small enough.
+	// paired draft at its declared estimate, and a resident-only model at its observed size.
+	// Budgeting a desired or draft model at its own declared estimate (not the runtime's
+	// measurement) is what makes the plan a stable fixed point: a model cannot be evicted as
+	// too big and then re-launched as small enough.
 	footOf := func(id string) int64 {
 		if d, ok := desiredByID[id]; ok {
 			return footprint(d.Footprint)
+		}
+		if f, ok := draftFootByID[id]; ok {
+			return f
 		}
 		return footprint(residentByID[id].Footprint)
 	}
@@ -99,14 +123,27 @@ func Schedule(desired []Desired, resident []Resident, budget int64) Plan {
 			used += footOf(id)
 		}
 	}
+	// keepPair keeps a desired model and, if it has one, its paired draft, so the two are always
+	// resident together and budgeted together.
+	keepPair := func(d Desired) {
+		force(d.ModelID)
+		if d.Draft != nil {
+			force(d.Draft.ModelID)
+		}
+	}
 	for _, d := range desired {
 		if d.Pinned {
-			force(d.ModelID)
+			keepPair(d)
 		}
 	}
 	for _, r := range resident {
 		if r.Pinned || r.Active {
 			force(r.ModelID)
+			// A forced resident that is a desired model with a draft keeps its draft too, so an
+			// actively-decoding or pinned primary is never left without the draft it pairs with.
+			if d, ok := desiredByID[r.ModelID]; ok && d.Draft != nil {
+				force(d.Draft.ModelID)
+			}
 		}
 	}
 
@@ -140,10 +177,15 @@ func Schedule(desired []Desired, resident []Resident, budget int64) Plan {
 
 	var unschedulable []string
 	for _, d := range candidates {
-		fp := footOf(d.ModelID)
-		if used+fp <= budget {
-			kept[d.ModelID] = true
-			used += fp
+		// A model and its draft are admitted together: the cost is the primary plus the draft,
+		// counting the draft only if it is not already kept, so a primary that cannot fit both is
+		// reported unschedulable rather than launched without the draft it needs.
+		cost := footOf(d.ModelID)
+		if d.Draft != nil && !kept[d.Draft.ModelID] {
+			cost += footOf(d.Draft.ModelID)
+		}
+		if used+cost <= budget {
+			keepPair(d)
 		} else {
 			unschedulable = append(unschedulable, d.ModelID)
 		}
