@@ -65,7 +65,7 @@ func runModelPool(args []string, dataDir string, out io.Writer) error {
 	runner := newLocalRunner(dataDir, out)
 	adapter := orchestrate.NewServeAdapter(runner.manager, poolLauncher(runner, pp.specs), pp.footprint)
 	provider := staticPoolProvider{ds: orchestrate.DesiredState{Models: pp.desired, Budget: b.bytes}}
-	ctrl := orchestrate.NewController(provider, adapter, clock.System{})
+	ctrl := orchestrate.NewController(provider, adapter, clock.System{}, orchestrate.WithClassifier(classifyLaunchFailure))
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -122,11 +122,17 @@ func buildPool(cat catalog.Catalog, ids []string, pinned map[string]bool) (poolP
 	return pp, nil
 }
 
+// degradedContextTokens is the smaller context window a degraded launch requests. A model
+// that ran out of memory at its default context is retried with a tighter one, which shrinks
+// the key/value cache that dominates a run's memory beyond the weights.
+const degradedContextTokens = 2048
+
 // poolLauncher returns a launch function that serves a managed model by id, taking it through
 // the same source-trust and containment gate as `models run` before it is started. A launch is
-// idempotent: serving an already-running model reuses it.
+// idempotent: serving an already-running model reuses it. A degraded launch serves the model
+// with a smaller context window, the recovery response to an out-of-memory or wedged start.
 func poolLauncher(runner *localRunner, specs map[string]catalog.ModelSpec) orchestrate.LaunchFunc {
-	return func(ctx context.Context, id string) error {
+	return func(ctx context.Context, id string, degraded bool) error {
 		m, ok := specs[id]
 		if !ok {
 			return fmt.Errorf("model %q is not in the pool", id)
@@ -138,9 +144,40 @@ func poolLauncher(runner *localRunner, specs map[string]catalog.ModelSpec) orche
 		if _, err := runner.admitSource(src); err != nil {
 			return err
 		}
-		_, err = runner.serveModel(ctx, m)
+		ctxSize := 0
+		if degraded {
+			ctxSize = degradedContextTokens
+		}
+		_, err = runner.serveModel(ctx, m, ctxSize)
 		return err
 	}
+}
+
+// classifyLaunchFailure maps a serve error to a recovery failure kind by reading the runtime's
+// reported cause: an out-of-memory message means the next launch must shrink or fall back, a
+// readiness timeout is a wedged load (a hang), and anything else is treated as a crash.
+func classifyLaunchFailure(err error) orchestrate.FailureKind {
+	if err == nil {
+		return orchestrate.FailureNone
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case containsAny(msg, "out of memory", "cuda error", "failed to allocate", "cudamalloc", "ggml_cuda", "oom"):
+		return orchestrate.FailureOOM
+	case containsAny(msg, "did not answer within", "timed out", "timeout"):
+		return orchestrate.FailureHang
+	default:
+		return orchestrate.FailureCrash
+	}
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }
 
 // staticPoolProvider serves a fixed desired state, the explicit set of models named on the
