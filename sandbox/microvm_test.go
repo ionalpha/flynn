@@ -465,6 +465,47 @@ func TestCommandMachineExec(t *testing.T) {
 	}
 }
 
+// TestCommandMachineExecConcurrent runs many Exec calls on one machine at once and
+// checks each receives its own command's output and exit code. With shared manifest
+// and result filenames the calls would clobber each other and cross-deliver
+// results; per-call private files keep each invocation isolated.
+func TestCommandMachineExecConcurrent(t *testing.T) {
+	root := t.TempDir()
+	spec := untrustedSpec(root)
+	cm, err := newCommandMachine(os.Args[0], spec)
+	if err != nil {
+		t.Fatalf("new machine: %v", err)
+	}
+	defer func() { _ = cm.Close() }()
+	t.Setenv(helperRuntimeEnv, "1")
+
+	const n = 8
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	outs := make([]string, n)
+	codes := make([]int, n)
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			res, err := cm.Exec(context.Background(), fmt.Sprintf("echo run-%d EXIT=%d", i, i))
+			errs[i], outs[i], codes[i] = err, res.Output, res.ExitCode
+		}(i)
+	}
+	wg.Wait()
+	for i := range n {
+		if errs[i] != nil {
+			t.Fatalf("run %d: %v", i, errs[i])
+		}
+		if !strings.Contains(outs[i], fmt.Sprintf("run-%d ", i)) {
+			t.Fatalf("run %d saw another call's output: %q", i, outs[i])
+		}
+		if codes[i] != i {
+			t.Fatalf("run %d exit = %d, want %d (cross-call result contamination)", i, codes[i], i)
+		}
+	}
+}
+
 func TestCommandMachineServeHandshake(t *testing.T) {
 	root := t.TempDir()
 	cm, err := newCommandMachine(os.Args[0], untrustedSpec(root))
