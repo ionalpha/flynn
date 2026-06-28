@@ -1,0 +1,23 @@
+# Keep the build context small and free of local state. The build passes
+# -buildvcs=false, so the .git directory is not needed.
+.git
+.gitignore
+.githooks
+
+# Built binaries and test artifacts.
+*.exe
+*.test
+/out
+/dist
+flynn
+flynn_test
+
+# Local data, logs, and editor cruft.
+*.log
+.codex
+.idea
+.vscode
+.DS_Store
+
+# Deploy configs and docs are not needed inside the build.
+deploy/
