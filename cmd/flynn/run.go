@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/credential"
+	"github.com/ionalpha/flynn/dependency"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/goal"
@@ -221,6 +222,9 @@ func missionRegistry() (*resource.Registry, error) {
 		return nil, err
 	}
 	if err := service.RegisterKind(reg); err != nil {
+		return nil, err
+	}
+	if err := dependency.RegisterKind(reg); err != nil {
 		return nil, err
 	}
 	return reg, nil
