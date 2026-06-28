@@ -8,6 +8,7 @@ import (
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
 	"github.com/ionalpha/flynn/integrations"
+	"github.com/ionalpha/flynn/ops"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -33,10 +34,15 @@ func validateSpec(t *testing.T, name string, raw json.RawMessage) error {
 		return err
 	}
 
-	// Deep validation: load through the integration handler.
+	// Deep validation: load through the same handler set the runtime registers, so a
+	// spec using any shipped surface (an API integration or a hosting ops provider) is
+	// validated exactly as it will load in production.
 	ereg := extension.NewRegistry()
 	if err := ereg.Register(integrations.NewHandler()); err != nil {
 		t.Fatalf("register handler: %v", err)
+	}
+	if err := ops.RegisterWith(ereg); err != nil {
+		t.Fatalf("register ops handler: %v", err)
 	}
 	loader := extension.NewLoader(ereg)
 	_, err := loader.Load(ctx, resource.Resource{
