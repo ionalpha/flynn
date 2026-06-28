@@ -20,9 +20,11 @@ import (
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/version"
+	"github.com/ionalpha/flynn/ops"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
+	"github.com/ionalpha/flynn/service"
 	"github.com/ionalpha/flynn/source/signalcli"
 	"github.com/ionalpha/flynn/source/telegram"
 )
@@ -84,6 +86,20 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		instanceReporter(rstore, store.InstanceID()), clock.System{},
 		instance.WithErrorHandler(func(err error) { fmt.Fprintln(os.Stderr, "serve: heartbeat:", err) }))
 	go func() { _ = hb.Run(ctx) }()
+
+	// Supervise deployed workloads. A Service registered by `flynn deploy` is held in
+	// its desired state by a level-triggered loop: a running service is re-observed
+	// through its provider and a service marked stopped is torn down and retired. This
+	// runs in every mode, channels or monitor-only, because a deployed app must be
+	// supervised regardless of whether this process also answers messages.
+	_, opsLoader, err := wireExtensions(rstore, dataDir)
+	if err != nil {
+		return err
+	}
+	supervisor := service.NewSupervisor(service.NewStore(rstore), ops.NewDriver(rstore, opsLoader))
+	svcMgr := reconcile.NewManager(rstore)
+	svcMgr.Register(service.Kind, supervisor)
+	go func() { svcMgr.Start(ctx) }()
 
 	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source

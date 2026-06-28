@@ -96,7 +96,7 @@ func runDeploy(args []string, dataDir string) error {
 		provider = extName
 	}
 
-	url, externalID := extractDeployResult(out)
+	url, externalID, address := extractDeployResult(out)
 	svcSpec := service.Spec{
 		Provider:     provider,
 		Target:       tgt,
@@ -104,6 +104,7 @@ func runDeploy(args []string, dataDir string) error {
 		URL:          url,
 		DesiredState: service.StateRunning,
 		Credential:   spec.Auth.CredentialRef,
+		Address:      address,
 	}
 	status := service.Status{
 		Phase:       "deployed",
@@ -140,26 +141,39 @@ func firstTarget(spec extension.Spec) service.Target {
 	return ""
 }
 
-// extractDeployResult best-effort reads the live URL and the provider's external id
-// from a deploy operation's result. Providers return varied shapes, so it scans the
-// common field names; anything it cannot find is left empty, and the full result is
-// always printed for the operator. The result may be a bare object or wrapped under a
-// "result" key (the shape Cloudflare and others use).
-func extractDeployResult(raw string) (url, id string) {
+// extractDeployResult best-effort reads the live URL, the provider's external id, and
+// any provider-opaque addressing from a deploy operation's result. Providers return
+// varied shapes, so it scans the common field names; anything it cannot find is left
+// empty, and the full result is always printed for the operator. The result may be a
+// bare object or wrapped under a "result" key (the shape Cloudflare and others use).
+// An "address" object, when present, is recorded verbatim so a later status or teardown
+// can re-find the workload (e.g. the account id and project name a Pages deploy used).
+func extractDeployResult(raw string) (url, id string, address map[string]string) {
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
-		return "", ""
+		return "", "", nil
 	}
 	m, ok := v.(map[string]any)
 	if !ok {
-		return "", ""
+		return "", "", nil
 	}
 	if inner, ok := m["result"].(map[string]any); ok {
 		m = inner
 	}
 	url = firstString(m, "url", "deployment_url", "live_url", "subdomain")
 	id = firstString(m, "id", "deployment_id", "external_id", "uid")
-	return url, id
+	if addr, ok := m["address"].(map[string]any); ok {
+		address = map[string]string{}
+		for k, val := range addr {
+			if s, ok := val.(string); ok && s != "" {
+				address[k] = s
+			}
+		}
+		if len(address) == 0 {
+			address = nil
+		}
+	}
+	return url, id, address
 }
 
 // firstString returns the first key in m whose value is a non-empty string.

@@ -82,6 +82,12 @@ type Spec struct {
 	// Credential names the credential used to deploy and supervise this workload, so a
 	// later status/teardown resolves the same one. The value stays in the vault.
 	Credential string `json:"credential,omitempty"`
+	// Address is provider-opaque addressing the deploy recorded so a later status or
+	// teardown can re-find the same workload (e.g. a Pages account id and project name).
+	// The supervisor never interprets these: it replays them verbatim into the
+	// provider's status/teardown operation, so the provider alone decides what it needs
+	// to address its own workload. Never a secret; the credential stays in the vault.
+	Address map[string]string `json:"address,omitempty"`
 }
 
 // Status is a service's observed state, set by the deploy/teardown path and (later) a
@@ -112,7 +118,8 @@ var specSchema = json.RawMessage(`{
     "externalID": {"type": "string"},
     "url": {"type": "string"},
     "desiredState": {"type": "string", "enum": ["", "running", "stopped"]},
-    "credential": {"type": "string"}
+    "credential": {"type": "string"},
+    "address": {"type": "object", "additionalProperties": {"type": "string"}}
   },
   "required": ["provider"],
   "additionalProperties": false

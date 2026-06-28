@@ -140,6 +140,59 @@
           }
         }
       ]
+    },
+    "ops": {
+      "targets": ["static-site"],
+      "operations": [
+        {
+          "name": "deploy",
+          "description": "Trigger a Cloudflare Pages deployment for a git-connected project and return its live URL. This triggers a build from the project's connected production branch; it does not upload raw local files (direct upload requires a multipart manifest the declarative engine does not perform).",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}, "project_name": {"type": "string"}}, "required": ["account_id", "project_name"]},
+          "flow": {
+            "steps": [
+              {"id": "dep", "op": "http", "http": {"method": "POST", "url": "/accounts/{{config.account_id}}/pages/projects/{{config.project_name}}/deployments", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": {"id": "{{steps.dep.body.result.id}}", "url": "{{steps.dep.body.result.url}}", "address": {"account_id": "{{config.account_id}}", "project_name": "{{config.project_name}}"}}}}
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "description": "Report a Cloudflare Pages project's current state and canonical URL, used to supervise a deployed workload.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}, "project_name": {"type": "string"}}, "required": ["account_id", "project_name"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/accounts/{{config.account_id}}/pages/projects/{{config.project_name}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": {"phase": "running", "url": "{{steps.r.body.result.subdomain}}"}}}
+            ]
+          }
+        },
+        {
+          "name": "teardown",
+          "description": "Delete a Cloudflare Pages project, removing the deployed workload.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}, "project_name": {"type": "string"}}, "required": ["account_id", "project_name"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "DELETE", "url": "/accounts/{{config.account_id}}/pages/projects/{{config.project_name}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": {"deleted": true}}}
+            ]
+          }
+        },
+        {
+          "name": "list",
+          "description": "List the Cloudflare Pages projects deployed in an account.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}}, "required": ["account_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/accounts/{{config.account_id}}/pages/projects", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        }
+      ]
     }
   }
 }
