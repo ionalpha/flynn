@@ -37,6 +37,21 @@ const (
 	saltLen        = 16
 )
 
+// Bounds on the KDF parameters read back from a sealed blob. The parameters are
+// self-describing so a vault still opens after the defaults are tuned, but open
+// reads them before the AEAD can authenticate anything, so an attacker who edits
+// the blob controls them. Without bounds a crafted blob could request a multi
+// gigabyte Argon2id allocation (a memory-exhaustion denial of service) or a zero
+// time/parallelism that makes the KDF panic, both before the authentication step
+// would reject it. These ceilings are generous around the defaults yet refuse a
+// hostile blob; the default memory cost (64 MiB) sits well under the 1 GiB cap.
+const (
+	maxArgonTime      = 16
+	maxArgonMemoryKiB = 1 << 20 // 1 GiB
+	maxArgonThreads   = 64
+	maxSaltLen        = 1 << 10 // 1 KiB; the default salt is 16 bytes
+)
+
 // seal encrypts plaintext under a key derived from passphrase with Argon2id, using
 // XChaCha20-Poly1305 for authenticated encryption. The result is a JSON envelope
 // carrying everything open needs except the passphrase.
@@ -77,6 +92,13 @@ func open(blob, passphrase []byte) ([]byte, error) {
 	if f.Version != sealVersion {
 		return nil, fmt.Errorf("vault: unsupported seal version %d", f.Version)
 	}
+	// Reject out-of-bounds KDF parameters before deriving the key. A tampered blob
+	// is indistinguishable from a wrong passphrase to the caller, and this check
+	// runs before any allocation, so a hostile blob cannot exhaust memory or panic
+	// the KDF on its way to the authentication failure it would hit anyway.
+	if !f.validKDFParams() {
+		return nil, ErrBadPassphrase
+	}
 	key := argon2.IDKey(passphrase, f.Salt, f.Time, f.MemoryKiB, f.Threads, argonKeyLen)
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
@@ -90,4 +112,25 @@ func open(blob, passphrase []byte) ([]byte, error) {
 		return nil, ErrBadPassphrase
 	}
 	return plaintext, nil
+}
+
+// validKDFParams reports whether the Argon2id parameters from a sealed blob are
+// within the accepted bounds. Argon2id requires a time cost and parallelism of at
+// least one and at least eight memory blocks per lane; the upper bounds cap
+// resource use so a crafted blob cannot exhaust memory or stall before the AEAD
+// rejects it. The salt must be present and bounded for the same reason.
+func (f sealFormat) validKDFParams() bool {
+	if f.Time < 1 || f.Time > maxArgonTime {
+		return false
+	}
+	if f.Threads < 1 || f.Threads > maxArgonThreads {
+		return false
+	}
+	if f.MemoryKiB > maxArgonMemoryKiB || f.MemoryKiB < 8*uint32(f.Threads) {
+		return false
+	}
+	if len(f.Salt) < 8 || len(f.Salt) > maxSaltLen {
+		return false
+	}
+	return true
 }

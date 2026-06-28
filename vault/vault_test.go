@@ -2,6 +2,7 @@ package vault
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -64,6 +65,37 @@ func TestOpenTamperedBlobFails(t *testing.T) {
 	blob[len(blob)-3] ^= 0xff // flip a ciphertext byte
 	if _, err := open(blob, []byte("pass")); err == nil {
 		t.Fatal("tampered blob should not open")
+	}
+}
+
+func TestOpenRejectsHostileKDFParams(t *testing.T) {
+	// Seal a valid blob, then mutate only the self-describing KDF parameters to
+	// hostile values. open must reject each as ErrBadPassphrase before deriving the
+	// key, never attempt a giant allocation or panic on a zero parameter.
+	base, _ := seal([]byte("x"), []byte("pass"))
+	var f sealFormat
+	if err := json.Unmarshal(base, &f); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]func(*sealFormat){
+		"giant memory": func(s *sealFormat) { s.MemoryKiB = 1 << 30 }, // ~1 TiB
+		"zero memory":  func(s *sealFormat) { s.MemoryKiB = 0 },
+		"zero time":    func(s *sealFormat) { s.Time = 0 },
+		"zero threads": func(s *sealFormat) { s.Threads = 0 },
+		"empty salt":   func(s *sealFormat) { s.Salt = nil },
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			bad := f
+			mutate(&bad)
+			blob, err := json.Marshal(bad)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := open(blob, []byte("pass")); !errors.Is(err, ErrBadPassphrase) {
+				t.Fatalf("hostile params: got %v, want ErrBadPassphrase", err)
+			}
+		})
 	}
 }
 
