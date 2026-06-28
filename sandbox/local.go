@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -382,16 +383,26 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 	return res, nil
 }
 
-// ReadFile reads a confined file.
+// ReadFile reads a confined file. The open is symlink-safe (see confinedOpen): a path
+// component swapped to an escaping symlink after the resolve check cannot redirect the
+// read outside the root.
 func (l *Local) ReadFile(_ context.Context, path string) ([]byte, error) {
 	abs, err := l.resolve(path)
 	if err != nil {
 		return nil, err
 	}
-	return os.ReadFile(abs) //nolint:gosec // abs is confined to the sandbox root by resolve
+	f, err := l.confinedOpen(abs, os.O_RDONLY, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	return io.ReadAll(f)
 }
 
-// WriteFile writes a confined file, creating parent directories.
+// WriteFile writes a confined file, creating parent directories. The open is symlink-safe
+// (see confinedOpen): a symlink swapped into the target path after the resolve check
+// cannot redirect the write outside the root, and a terminal symlink is refused rather
+// than written through.
 func (l *Local) WriteFile(_ context.Context, path string, data []byte) error {
 	abs, err := l.resolve(path)
 	if err != nil {
@@ -400,7 +411,15 @@ func (l *Local) WriteFile(_ context.Context, path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil { //nolint:gosec // abs is confined to the sandbox root by resolve
 		return err
 	}
-	return os.WriteFile(abs, data, 0o644) //nolint:gosec // abs is confined to the sandbox root; 0644 is intended for agent-written files
+	f, err := l.confinedOpen(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return err
+	}
+	return f.Close()
 }
 
 // Glob lists confined paths matching a shell pattern, relative to the root.
