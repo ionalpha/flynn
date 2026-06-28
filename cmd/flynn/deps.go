@@ -9,6 +9,7 @@ import (
 
 	"github.com/ionalpha/flynn/dependency"
 	"github.com/ionalpha/flynn/fetch"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runDeps implements `flynn deps <ls|check|install>`: the external command-line programs
@@ -60,7 +61,19 @@ func openDepsRuntime(ctx context.Context, dataDir string) (*depsRuntime, error) 
 		_ = durable.Close()
 		return nil, err
 	}
-	mgr := dependency.NewManager(store, fetch.New(), dataDir, dependency.WithProber(dependency.SystemProber{}))
+	// The version probe runs a present program through the sandbox at the working directory,
+	// so detection is confined like any other command rather than spawning a process directly.
+	cwd, err := os.Getwd()
+	if err != nil {
+		_ = durable.Close()
+		return nil, err
+	}
+	sb, err := sandbox.NewLocal(cwd)
+	if err != nil {
+		_ = durable.Close()
+		return nil, err
+	}
+	mgr := dependency.NewManager(store, fetch.New(), dataDir, dependency.WithProber(dependency.NewSandboxProber(sb)))
 	return &depsRuntime{store: store, mgr: mgr, closer: durable.Close}, nil
 }
 
