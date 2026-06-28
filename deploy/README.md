@@ -52,8 +52,19 @@ docker compose logs -f flynn
 
 ### Fly.io
 
-See the header of `fly.toml` for the create-volume, set-secrets, and deploy steps. Run
-them from the repository root.
+`fly.toml` runs Flynn as one always-on machine bound to one persistent volume at
+`/data`, which is what 24/7 durable self-hosting needs. The header of `fly.toml` has the
+exact create-app, create-volume, set-secrets, and deploy steps; run them from the
+repository root.
+
+Two things are specific to Fly. First, it runs the container as root: Fly mounts the
+volume root-owned and the distroless image has no shell to adjust ownership at boot, so
+`fly.toml` builds the image with `APP_USER=root`. This is safe on Fly because each app
+is its own isolated Firecracker microVM, which is the isolation boundary; every other
+host here keeps the non-root default. Second, the durable state is a single-writer
+SQLite store, so the app must run exactly one machine: do not `fly scale count` above 1
+and do not add a second region. Two machines would each get their own volume and split
+the store.
 
 ### Any other container host
 
@@ -68,6 +79,7 @@ inbound port is required for the agent to answer messages.
 | `ANTHROPIC_API_KEY` | Model provider key. Required once a channel is configured so the agent can run goals. |
 | `TELEGRAM_BOT_TOKEN` | Telegram channel. Set it to answer Telegram messages; omit for a monitor-only daemon. |
 | `FLYNN_API_TOKEN` | Bearer token for the control-plane API. If unset, Flynn generates one and prints it to the logs at startup. |
+| `FLYNN_VAULT_PASSPHRASE` | Unseals the sealed credential vault non-interactively, so configured integrations work without a TTY prompt. Needed once you store an integration credential. Keep it stable: losing it makes stored credentials unrecoverable. |
 
 The default command is `serve --data-dir=/data --api-addr=127.0.0.1:7575`. Add
 `--signal-tcp` for a Signal channel, or drop `--api-addr` entirely if you do not want
