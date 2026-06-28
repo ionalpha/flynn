@@ -57,7 +57,9 @@ var specSchema = json.RawMessage(`{
     "grant": {"type": "array", "items": {"type": "string"}},
     "depth": {"type": "integer", "minimum": 0},
     "budgetPool": {"type": "string"},
-    "system": {"type": "string"}
+    "system": {"type": "string"},
+    "driver": {"type": "string"},
+    "model": {"type": "string"}
   },
   "additionalProperties": false
 }`)
@@ -92,6 +94,13 @@ type Spec struct {
 	// baked in by the spawner from the bound Agent). Empty defers to the executor's
 	// default prompt, so a standalone run is unchanged.
 	System string `json:"system,omitempty"`
+	// Driver names the run loop this goal uses (resolved from the driver registry), and
+	// Model names the model it runs on. They are carried on the goal so a delegated
+	// child can run a different loop and model than its parent (set by the spawner from
+	// the bound Agent). Empty defers to the host default loop and model, so a standalone
+	// run is unchanged.
+	Driver string `json:"driver,omitempty"`
+	Model  string `json:"model,omitempty"`
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile

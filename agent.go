@@ -216,39 +216,42 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 	if len(obs) > 0 && obs[0] != nil {
 		reporter = obs[0]
 	}
-	// Resolve the run loop by name from the driver registry, fail-closed on an
-	// unknown driver, and build it from the run's ingredients (its system prompt and
-	// grant derived above, narrowed to the archetype when running as one). The default
-	// is the general-purpose software loop, so a zero-config run is unchanged; a
-	// different driver swaps the loop shape while the grant, sandbox gate, and brake
-	// still apply to it.
-	drv, err := driver.Default().Resolve(a.cfg.Driver)
-	if err != nil {
+	// Fail closed at run start on an unknown default driver, rather than only when the
+	// first step routes to it.
+	if _, err := driver.Default().Resolve(a.cfg.Driver); err != nil {
 		return "", err
 	}
-	exec, stop, err := drv.Build(driver.Spec{
-		Model:    model,
-		Tools:    toolset,
-		System:   system,
-		Grant:    capability.NewGrant(names...),
-		HasGrant: true,
-		Sandbox:  sb,
-		Reporter: reporter,
-		// Let the run delegate sub-goals to concurrent, governed child runs.
-		Fanout: spawner,
-		// Halt a runaway from outside the model loop. The default is a generous rate
-		// backstop: a real run dispatches far fewer than this per minute, so the breaker
-		// fires only on a degenerate tight loop, never on legitimate tool use.
-		Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+	// The router drives each goal through the loop and model its spec selects: the
+	// default loop for the root and the bound loop for a delegated child, each with its
+	// own convergence test. A goal naming no driver/model uses the host defaults, so a
+	// single-loop run is unchanged. The shared ingredients (tools, default prompt and
+	// grant, sandbox gate, brake, fan-out) apply to every loop; the per-goal prompt and
+	// grant are applied inside the loop from the goal.
+	router := driver.NewRouter(driver.RouterConfig{
+		Registry:      driver.Default(),
+		DefaultModel:  model,
+		DefaultDriver: a.cfg.Driver,
+		ResolveModel:  provider.Resolve,
+		Base: driver.Spec{
+			Tools:    toolset,
+			System:   system,
+			Grant:    capability.NewGrant(names...),
+			HasGrant: true,
+			Sandbox:  sb,
+			Reporter: reporter,
+			// Let the run delegate sub-goals to concurrent, governed child runs.
+			Fanout: spawner,
+			// Halt a runaway from outside the model loop. The default is a generous rate
+			// backstop: a real run dispatches far fewer than this per minute, so the
+			// breaker fires only on a degenerate tight loop, never on legitimate tool use.
+			Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+		},
 	})
-	if err != nil {
-		return "", err
-	}
 	rt, err := runtime.New(runtime.Config{
 		Store:        store,
 		Jobs:         q,
-		Executor:     exec,
-		Stop:         stop,
+		Executor:     router,
+		Stop:         router,
 		PollInterval: 200 * time.Millisecond,
 		WorkerPoll:   50 * time.Millisecond,
 	})
