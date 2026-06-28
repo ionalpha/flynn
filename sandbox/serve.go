@@ -71,8 +71,11 @@ func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	p, err := l.startProcess(spec.Argv, confine)
 	// A confined server that could not start under the always-on baseline falls back to
 	// the directory-jail floor, exactly as Exec does: the failed attempt never ran, so
-	// there is nothing to undo. Egress is excluded: it must not drop to an open-egress run.
-	if err != nil && confine && l.confineBestEffort && l.egress == nil {
+	// there is nothing to undo. The same controls Exec refuses to weaken are excluded:
+	// egress and an explicit network denial must not drop to an open-network run, and a
+	// sandbox reporting the kernel-confined tier must fail closed rather than serve a
+	// process unconfined under a guarantee the trust gate already relied on.
+	if err != nil && confine && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() {
 		return l.startProcess(spec.Argv, false)
 	}
 	return p, err
