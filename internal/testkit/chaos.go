@@ -21,6 +21,7 @@ import (
 	"github.com/ionalpha/flynn/integrations/request"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/secret"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -241,6 +242,32 @@ type doerFunc func(*http.Request) (*http.Response, error)
 func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
 var _ request.Doer = doerFunc(nil)
+
+// FaultySource wraps a secret.Source, injecting plan's faults on Lookup before delegating,
+// so a flaky or unreachable credential store (a locked OS keychain, an unreachable vault or
+// broker) is modelled deterministically. It proves a credential consumer fails closed on a
+// resolve failure: a step that needs a secret must stop, never proceed without it or act on
+// a partial value. A nil inner source resolves every reference to an empty value when not
+// faulting, so a plan alone drives the consumer's failure path.
+func FaultySource(inner secret.Source, plan *FaultPlan) secret.Source {
+	return sourceFunc(func(ctx context.Context, ref string) (secret.Text, error) {
+		if err := plan.next(); err != nil {
+			return secret.Text{}, err
+		}
+		if inner == nil {
+			return secret.Text{}, nil
+		}
+		return inner.Lookup(ctx, ref)
+	})
+}
+
+type sourceFunc func(context.Context, string) (secret.Text, error)
+
+func (f sourceFunc) Lookup(ctx context.Context, ref string) (secret.Text, error) {
+	return f(ctx, ref)
+}
+
+var _ secret.Source = sourceFunc(nil)
 
 // FaultyLog wraps a spine.Log, injecting plan's faults on Append before
 // delegating; Read passes through. It models a flaky durable log: an append that
