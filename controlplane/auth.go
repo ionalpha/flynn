@@ -16,6 +16,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+
+	"github.com/ionalpha/flynn/capability"
 )
 
 // Scope is the access level behind a request. Scopes are ordered: Admin contains
@@ -51,12 +53,23 @@ func (s Scope) String() string {
 	}
 }
 
-// Principal is the authenticated identity behind a request, with the scope it is
-// granted. It is recorded with every action so the audit trail attributes who did
+// Principal is the authenticated identity behind a request, with the authority it
+// carries. It is recorded with every action so the audit trail attributes who did
 // what.
+//
+// Authority is two-axis. Scope is the coarse access level (read/operator/admin) a
+// handler requires. Grant is the fine-grained action authority the principal holds:
+// a local operator token carries capability.AllowAll (scope is its only limit),
+// while a delegated principal carries the verified, monotonically attenuated Grant
+// its capability token proved. The action gate at the dispatch waist intersects
+// this Grant with the target's own local grant, so a narrowed remote grant can
+// never act beyond what the target would do locally. The zero Grant denies every
+// action; an empty principal (an unauthenticated attempt) therefore carries no
+// authority by construction.
 type Principal struct {
 	ID    string
 	Scope Scope
+	Grant capability.Grant
 }
 
 // Authenticator resolves a request to a Principal, or an error if it cannot be
@@ -93,7 +106,11 @@ func GeneratedOperator(id string, scope Scope, mint func() (string, error)) (*To
 	if tok == "" {
 		return nil, "", errors.New("controlplane: refusing an empty generated token")
 	}
-	return NewTokenAuthenticator(map[string]Principal{tok: {ID: id, Scope: scope}}), tok, nil
+	// A local operator token is not grant-attenuated: it carries full action
+	// authority and is bounded only by its scope. AllowAll is the explicit
+	// "trusted local principal" policy, distinct from the zero Grant (deny-all),
+	// so the action gate reduces to the target's own local grant for this caller.
+	return NewTokenAuthenticator(map[string]Principal{tok: {ID: id, Scope: scope, Grant: capability.AllowAll()}}), tok, nil
 }
 
 // TokenAuthenticator authenticates a bearer token against a fixed table. It

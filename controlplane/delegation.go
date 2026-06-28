@@ -27,10 +27,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"time"
 
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/ids"
 )
 
@@ -234,6 +236,50 @@ func Verify(tok string, issuer ed25519.PublicKey, now time.Time) (Authority, err
 		prevAud = blk.Audience
 	}
 	return Authority{Subject: PrincipalID(prevAud), Scope: effScope, Grant: effGrant}, nil
+}
+
+// DelegationAuthenticator resolves a presented capability token to a Principal,
+// implementing the Authenticator boundary the server already gates every request
+// through. It is the bridge from the cryptographic delegation layer to the request
+// model: a bearer token is verified offline against the trusted issuer key, and the
+// authority it proves (subject, scope, and the monotonically attenuated Grant)
+// becomes the Principal the action gate later checks. Because Verify fails closed on
+// any forged, widened, expired, or malformed chain, an unverifiable token is simply
+// unauthenticated; nothing here can mint authority the token did not already carry.
+type DelegationAuthenticator struct {
+	issuer ed25519.PublicKey
+	clk    clock.Clock
+}
+
+// NewDelegationAuthenticator builds an authenticator that accepts tokens issued (and
+// transitively delegated) under issuer, reading the current time from clk so expiry
+// is checked against the same clock the rest of the system uses (System in
+// production, Manual in tests). A nil clock falls back to the system clock; an issuer
+// of the wrong size makes every token fail to verify, which is the fail-closed
+// outcome.
+func NewDelegationAuthenticator(issuer ed25519.PublicKey, clk clock.Clock) *DelegationAuthenticator {
+	if clk == nil {
+		clk = clock.System{}
+	}
+	return &DelegationAuthenticator{issuer: issuer, clk: clk}
+}
+
+// Authenticate verifies the request's bearer token and resolves it to a Principal
+// carrying the verified Grant. A missing or unverifiable token is ErrUnauthenticated,
+// never a partial or escalated authority.
+func (a *DelegationAuthenticator) Authenticate(r *http.Request) (Principal, error) {
+	tok := bearerToken(r)
+	if tok == "" {
+		return Principal{}, ErrUnauthenticated
+	}
+	auth, err := Verify(tok, a.issuer, a.clk.Now())
+	if err != nil {
+		// A token that does not verify is indistinguishable from no credential: the
+		// caller learns only that it was refused, not why, so a probing client cannot
+		// tell a tampered chain from an expired one from an unknown issuer.
+		return Principal{}, ErrUnauthenticated
+	}
+	return Principal{ID: auth.Subject, Scope: auth.Scope, Grant: auth.Grant}, nil
 }
 
 // verifyBlock checks one block's signature against the signer that must have produced it
