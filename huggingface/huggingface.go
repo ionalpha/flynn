@@ -1,8 +1,9 @@
 // Package huggingface is a read-only client for the Hugging Face Hub HTTP API: it
-// lists the files in a model repository and reads a model's card metadata over the
-// same hardened, public-only transport the file downloader uses. It is the upstream
-// half of turning a hub reference into a verified catalog entry, and the foundation a
-// discovery surface (search, list, view) is built on.
+// searches the Hub for models, lists the files in a model repository, and reads a
+// model's card metadata, all over the same hardened, public-only transport the file
+// downloader uses. It is the upstream half of turning a hub reference into a verified
+// catalog entry, and the discovery surface (search, then list and view a candidate)
+// that finds the reference in the first place.
 //
 // It reads metadata only. It never downloads weights or executes anything: a file's
 // bytes are fetched and verified separately through the download path. The value it
@@ -19,6 +20,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
@@ -184,6 +186,133 @@ func (c *Client) Info(ctx context.Context, repo string) (Info, error) {
 		info.Gated = g != "" && g != "false"
 	}
 	return info, nil
+}
+
+// SearchQuery selects and orders models on the Hub. The zero value is a valid query
+// that returns the most-downloaded models; every field narrows or reorders it.
+type SearchQuery struct {
+	// Text matches free-form against a repo id and its card. Empty matches everything.
+	Text string
+	// Filters are model-card tags that are all required (ANDed), for example
+	// "text-generation" or "safetensors". A result carries every filter it is matched on.
+	Filters []string
+	// Author restricts results to a single publishing namespace, for example "Qwen".
+	Author string
+	// Sort orders the results: "downloads" (default), "likes", or "modified". An
+	// unknown value falls back to downloads so a typo never returns an unordered page.
+	Sort string
+	// Limit caps the number of results. It is clamped to a sane range so a caller can
+	// neither ask for zero nor pull an unbounded page.
+	Limit int
+}
+
+// SearchResult is one model returned by a Hub search: enough to judge a candidate and
+// hand its id straight to bless, without yet fetching its tree or card.
+type SearchResult struct {
+	// ID is the canonical "owner/name" identifier, the reference bless and run accept.
+	ID string
+	// Downloads is the last-30-day download count, the Hub's popularity signal.
+	Downloads int64
+	// Likes is the number of users who have starred the repo.
+	Likes int64
+	// Pipeline is the model-card pipeline tag, for example "text-generation".
+	Pipeline string
+	// Library is the declared base library, for example "transformers" or "gguf".
+	Library string
+	// Tags are the model-card tags, which carry the weight-format signal (a repo with
+	// safetensors weights is tagged "safetensors", a GGUF repo "gguf").
+	Tags []string
+}
+
+// searchEntry mirrors one element of the Hub's model-list response.
+type searchEntry struct {
+	ID        string   `json:"id"`
+	Downloads int64    `json:"downloads"`
+	Likes     int64    `json:"likes"`
+	Pipeline  string   `json:"pipeline_tag"`
+	Library   string   `json:"library_name"`
+	Tags      []string `json:"tags"`
+}
+
+// searchLimitDefault is the page size when none is asked; searchLimitMax bounds a single
+// page so a caller cannot pull an unbounded list over the metadata transport.
+const (
+	searchLimitDefault = 20
+	searchLimitMax     = 100
+)
+
+// Search lists models on the Hub ranked by the query's sort order, returning each
+// candidate's id and the signals needed to judge it. It reads metadata only, over the
+// same hardened transport the rest of the client uses, and never fetches a tree or
+// weights: a returned id is what bless and run consume next.
+func (c *Client) Search(ctx context.Context, q SearchQuery) ([]SearchResult, error) {
+	params := url.Values{}
+	if t := strings.TrimSpace(q.Text); t != "" {
+		params.Set("search", t)
+	}
+	if a := strings.TrimSpace(q.Author); a != "" {
+		params.Set("author", a)
+	}
+	for _, f := range q.Filters {
+		if f = strings.TrimSpace(f); f != "" {
+			params.Add("filter", f)
+		}
+	}
+	sortKey, direction := searchSort(q.Sort)
+	params.Set("sort", sortKey)
+	params.Set("direction", direction)
+	params.Set("limit", strconv.Itoa(searchLimit(q.Limit)))
+
+	endpoint := c.base + "/api/models?" + params.Encode()
+	var entries []searchEntry
+	if err := c.getJSON(ctx, endpoint, &entries); err != nil {
+		return nil, err
+	}
+	results := make([]SearchResult, 0, len(entries))
+	for _, e := range entries {
+		results = append(results, SearchResult(e))
+	}
+	return results, nil
+}
+
+// searchSort maps a friendly sort name onto the Hub's sort key and direction. Every
+// supported order is descending (most first); an unknown name falls back to downloads.
+func searchSort(name string) (key, direction string) {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "likes":
+		return "likes", "-1"
+	case "modified", "lastmodified", "updated":
+		return "lastModified", "-1"
+	default:
+		return "downloads", "-1"
+	}
+}
+
+// searchLimit clamps a requested page size into the supported range, substituting the
+// default for a non-positive request.
+func searchLimit(n int) int {
+	switch {
+	case n <= 0:
+		return searchLimitDefault
+	case n > searchLimitMax:
+		return searchLimitMax
+	default:
+		return n
+	}
+}
+
+// SafeFormat reports whether a search result advertises a weight format a runtime can
+// load without executing repository code: safetensors or GGUF. A repo without either
+// (for example a PyTorch-pickle-only repo) is flagged so a caller does not chase a
+// model that bless would refuse.
+func (r SearchResult) SafeFormat() bool {
+	for _, t := range r.Tags {
+		switch strings.ToLower(t) {
+		case "safetensors", "gguf":
+			return true
+		}
+	}
+	return false
 }
 
 // FileURL is the direct https location a file is downloaded and verified from. It
