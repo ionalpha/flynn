@@ -28,6 +28,8 @@ func dispatchModels(sub []string, dataDir string) error {
 		return runModels(sub, dataDir, os.Stdout)
 	}
 	switch sub[0] {
+	case "bless":
+		return runModelBless(sub[1:], dataDir, os.Stdout)
 	case "fetch":
 		return runModelFetch(sub[1:], dataDir, os.Stdout)
 	case "check":
