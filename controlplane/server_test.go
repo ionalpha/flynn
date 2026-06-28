@@ -100,6 +100,35 @@ func TestListAndGet(t *testing.T) {
 	}
 }
 
+func TestGetResolvesNonGlobalScope(t *testing.T) {
+	store, log := newStore(t)
+	// A resource in a non-global scope is listable; a by-name get must reach it too,
+	// not 404 just because it is not in the global scope.
+	if _, err := store.Put(context.Background(), resource.Resource{
+		APIVersion: "test.flynn/v1", Kind: "Widget", Name: "scoped",
+		Scope: resource.Scope{Instance: "node-b"}, Spec: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	auth := NewTokenAuthenticator(map[string]Principal{"readtok": {ID: "r", Scope: ScopeRead}})
+	h := NewServer(store, log, auth, WithWatchPoll(20*time.Millisecond)).Handler()
+
+	rec := do(t, h, "/v1/Widget/scoped", "readtok")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get scoped status = %d, want 200 (a listable resource must be gettable)", rec.Code)
+	}
+	var got resource.Resource
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "scoped" || got.Scope.Instance != "node-b" {
+		t.Fatalf("got = %s scope %+v, want scoped/node-b", got.Name, got.Scope)
+	}
+	if rec := do(t, h, "/v1/Widget/ghost", "readtok"); rec.Code != http.StatusNotFound {
+		t.Fatalf("get absent status = %d, want 404", rec.Code)
+	}
+}
+
 func TestAuthGate(t *testing.T) {
 	h := readServer(t).Handler()
 
