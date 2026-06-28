@@ -1,0 +1,24 @@
+{
+  "displayName": "HTTP test (httpbin)",
+  "provider": "httpbin",
+  "baseURL": "https://httpbin.org",
+  "capabilities": ["httpbin.read"],
+  "auth": {"type": "none"},
+  "safety": {"readOnly": true},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "get",
+          "description": "Return the request data echoed by httpbin, for verifying connectivity.",
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/get"}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
