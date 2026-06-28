@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/ionalpha/flynn/acquire"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/fetch"
 )
@@ -53,9 +54,9 @@ func FetchModelDir(ctx context.Context, dl *fetch.Downloader, files []ModelFile,
 		return "", fault.Wrap(fault.Terminal, "provision_model_dir", err)
 	}
 	for _, f := range files {
-		dst, ok := safeJoin(destDir, f.Name)
+		dst, ok := acquire.SafeJoin(destDir, f.Name)
 		if !ok {
-			return "", traversalError(f.Name)
+			return "", acquire.TraversalError(f.Name)
 		}
 		if _, err := os.Stat(dst); err == nil {
 			continue // already fetched and verified on a previous run
@@ -84,7 +85,7 @@ func ModelDirPresent(files []ModelFile, destDir string) bool {
 		return false
 	}
 	for _, f := range files {
-		dst, ok := safeJoin(destDir, f.Name)
+		dst, ok := acquire.SafeJoin(destDir, f.Name)
 		if !ok {
 			return false
 		}

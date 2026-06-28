@@ -1,4 +1,4 @@
-package provision
+package acquire
 
 import (
 	"os"
@@ -29,8 +29,8 @@ func FuzzExtract(f *testing.F) {
 		_ = extract(ArchiveZip, src, dest)
 		_ = extract(ArchiveTarGz, src, dest)
 
-		// Whatever was written must stay under dest; nothing may appear in parent
-		// outside the install directory and the input file.
+		// Whatever was written must stay under dest; nothing may appear in parent outside
+		// the install directory and the input file.
 		entries, err := os.ReadDir(parent)
 		if err != nil {
 			t.Fatal(err)
@@ -46,7 +46,7 @@ func FuzzExtract(f *testing.F) {
 // FuzzSafeJoin asserts the containment boundary holds for any base and entry name: an
 // accepted result is always within base, and the function never panics.
 func FuzzSafeJoin(f *testing.F) {
-	f.Add("/base", "bin/llama-server")
+	f.Add("/base", "bin/flyctl")
 	f.Add("/base", "../escape")
 	f.Add("/base", `..\..\escape`)
 	f.Add("/base", "/abs")
@@ -55,13 +55,13 @@ func FuzzSafeJoin(f *testing.F) {
 			base = "/base"
 		}
 		base = filepath.Clean(base)
-		dst, ok := safeJoin(base, name)
+		dst, ok := SafeJoin(base, name)
 		if !ok {
 			return
 		}
 		rel, err := filepath.Rel(base, dst)
 		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
-			t.Fatalf("safeJoin(%q,%q)=%q escaped base (rel=%q,err=%v)", base, name, dst, rel, err)
+			t.Fatalf("SafeJoin(%q,%q)=%q escaped base (rel=%q,err=%v)", base, name, dst, rel, err)
 		}
 	})
 }
