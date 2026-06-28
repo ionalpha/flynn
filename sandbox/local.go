@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -39,6 +40,12 @@ type Local struct {
 	// the running binary (/proc/self/exe). Tests set it to a missing path to force a
 	// confinement start failure and exercise the best-effort fallback deterministically.
 	selfExe string
+	// probeOnce guards the one-time runtime probe of whether kernel confinement can
+	// actually be established under this Local's configuration on this host, and
+	// probeOK caches its result. The platform predicate (kernelConfinementSupported) is
+	// a compile-time optimism; the probe is the runtime truth the trust gate relies on.
+	probeOnce sync.Once
+	probeOK   bool
 }
 
 // LocalOption configures a Local sandbox.
@@ -199,10 +206,45 @@ func (l *Local) Close() error {
 // ContainmentKernel where the platform cannot enforce the confinement, so it never
 // outruns what actually holds.
 func (l *Local) Containment() Containment {
-	if l.readonlyFS && l.seccomp && kernelConfinementSupported() {
+	if l.kernelConfinementEnforceable() {
 		return ContainmentKernel
 	}
 	return ContainmentNone
+}
+
+// kernelConfinementEnforceable reports whether this Local both is configured for the
+// kernel-confined tier and can actually establish it on this host right now, probed
+// once and cached. It is the honest input to the trust gate: kernelConfinementSupported
+// is a compile-time platform predicate that says only that the OS has the mechanism,
+// but a host can have the mechanism and still refuse it at run time (unprivileged user
+// namespaces disabled, a missing re-exec target). Because the gate admits semi-trusted,
+// model-authored code on the reported level, the report has to reflect what the host
+// will actually enforce, or the gate admits work on a guarantee that does not hold and
+// the best-effort fallback then runs it unconfined. A sandbox not configured for the
+// tier (it lacks the read-only host or the syscall filter) is never the kernel tier and
+// is not probed.
+func (l *Local) kernelConfinementEnforceable() bool {
+	if !l.readonlyFS || !l.seccomp || !kernelConfinementSupported() {
+		return false
+	}
+	l.probeOnce.Do(func() { l.probeOK = l.probeConfinement() })
+	return l.probeOK
+}
+
+// probeConfinement runs a trivial no-op command under this Local's confinement, with
+// the best-effort fallback bypassed, and reports whether the confinement could be
+// established. Where the host refuses the setup the confined attempt fails to start and
+// the probe reports false, so Containment never claims a tier the host will not enforce.
+// The probe is a real confined launch (the only faithful test of whether the setup
+// works), run once per sandbox and cached; it is a no-op command in the sandbox root
+// with the secret-free environment, so it has no side effects beyond a short-lived
+// process.
+func (l *Local) probeConfinement() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	name, args := shell("exit 0")
+	_, err := l.runShell(ctx, name, args, true)
+	return err == nil
 }
 
 // resolve confines a caller-supplied path to the root and returns the absolute
@@ -281,7 +323,12 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	// command, so there is nothing to undo before retrying. A requested network
 	// control is excluded: neither the egress gate nor an explicit network denial may
 	// silently drop to an unconfined (open-network) run, so both fail loudly instead.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork {
+	// A sandbox that reports the kernel-confined tier is also excluded: the trust gate
+	// has already admitted semi-trusted code on that guarantee, so if confinement
+	// nonetheless cannot start here the run must fail closed rather than silently drop
+	// to the floor. The probe makes this rare, but a transient setup failure after a
+	// passing probe must not reopen the bypass.
+	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() {
 		return l.execOnce(ctx, cmd, false)
 	}
 	return res, err
