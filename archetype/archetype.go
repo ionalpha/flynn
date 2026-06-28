@@ -45,6 +45,19 @@ type Spec struct {
 	// means the host default scope.
 	SkillScope  string `json:"skillScope,omitempty"`
 	MemoryScope string `json:"memoryScope,omitempty"`
+	// Tools and Knowledge name the tool implementations and knowledge sources this
+	// agent is built with, beyond the capability grant (which is the authority to
+	// call them). They are carried on the bundle so an Agent fully describes itself;
+	// resolving them to concrete implementations is the host's job.
+	Tools     []string `json:"tools,omitempty"`
+	Knowledge []string `json:"knowledge,omitempty"`
+	// Extends names base Agents this one composes from (mixins). The effective Agent
+	// is the bases merged in order, then this Agent on top: scalar fields (system,
+	// model, driver, scopes) take the most-derived non-empty value, and the set
+	// fields (capabilities, tools, knowledge) are the union. Composition lets a
+	// specialist be "a base plus overrides" rather than a duplicated full spec, so
+	// the archetype set scales without spec sprawl. See Resolve.
+	Extends []string `json:"extends,omitempty"`
 }
 
 // Grant builds the capability grant for a run as this agent from its declared
@@ -70,7 +83,10 @@ var specSchema = json.RawMessage(`{
     "model": {"type": "string"},
     "driver": {"type": "string"},
     "skillScope": {"type": "string"},
-    "memoryScope": {"type": "string"}
+    "memoryScope": {"type": "string"},
+    "tools": {"type": "array", "items": {"type": "string"}},
+    "knowledge": {"type": "array", "items": {"type": "string"}},
+    "extends": {"type": "array", "items": {"type": "string"}}
   },
   "additionalProperties": false
 }`)
