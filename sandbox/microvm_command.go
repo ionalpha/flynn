@@ -136,7 +136,16 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	if c.isClosed() {
 		return ExecResult{}, fault.New(fault.Terminal, "microvm_closed", "microvm: machine is closed")
 	}
-	resultPath := filepath.Join(c.control, "result.json")
+	// Each Exec gets its own result file so concurrent calls on the same machine
+	// cannot overwrite each other's manifest or read back another call's result. The
+	// files live in the private control directory and are removed when the call ends.
+	resultFile, err := os.CreateTemp(c.control, "result-*.json")
+	if err != nil {
+		return ExecResult{}, fault.Wrap(fault.Terminal, "microvm_result", err)
+	}
+	resultPath := resultFile.Name()
+	_ = resultFile.Close()
+	defer func() { _ = os.Remove(resultPath) }() //nolint:gosec // resultPath is from os.CreateTemp under the private control dir, not caller-controlled
 	man, err := buildManifest(c.spec, []string{"/bin/sh", "-c", line}, false, resultPath)
 	if err != nil {
 		return ExecResult{}, err
@@ -145,6 +154,7 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	if err != nil {
 		return ExecResult{}, err
 	}
+	defer func() { _ = os.Remove(manPath) }()           //nolint:gosec // manPath is from os.CreateTemp under the private control dir, not caller-controlled
 	cmd := exec.CommandContext(ctx, c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path; the guest, not this exec, is the boundary
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -289,18 +299,27 @@ func (c *commandMachine) track(s *cmdServing) bool {
 	return true
 }
 
-// writeManifest serializes a manifest to a uniquely named file in the control directory
-// and returns its path.
+// writeManifest serializes a manifest to a uniquely named file in the control
+// directory and returns its path. The name is unique per call (os.CreateTemp), so
+// concurrent Exec or Serve calls on the same machine never share a manifest path
+// and cannot overwrite each other's boot request.
 func (c *commandMachine) writeManifest(kind string, man manifest) (string, error) {
 	data, err := json.Marshal(man)
 	if err != nil {
 		return "", fault.Wrap(fault.Terminal, "microvm_manifest", err)
 	}
-	p := filepath.Join(c.control, kind+"-manifest.json")
-	if err := os.WriteFile(p, data, 0o600); err != nil { //nolint:gosec // p is under c.control, the private temp dir this machine owns
+	f, err := os.CreateTemp(c.control, kind+"-manifest-*.json") //nolint:gosec // c.control is the private temp dir this machine owns
+	if err != nil {
 		return "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
 	}
-	return p, nil
+	if _, err := f.Write(data); err != nil {
+		_ = f.Close()
+		return "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
+	}
+	if err := f.Close(); err != nil {
+		return "", fault.Wrap(fault.Terminal, "microvm_manifest_write", err)
+	}
+	return f.Name(), nil
 }
 
 // cmdServing is the handle to a background guest server started by a commandMachine.
