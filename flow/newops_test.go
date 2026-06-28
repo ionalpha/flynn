@@ -43,6 +43,21 @@ func (c *fakeConfirmer) Confirm(_ context.Context, message string) error {
 	return c.err
 }
 
+// fakeSink records what a secret step asked it to materialize, so a test can assert the
+// flow passed only a reference, a sink, and a target, never a value (the flow never holds
+// the value at all).
+type fakeSink struct {
+	gotSink   string
+	gotRef    string
+	gotTarget map[string]string
+	err       error
+}
+
+func (s *fakeSink) Put(_ context.Context, sink, ref string, target map[string]string) error {
+	s.gotSink, s.gotRef, s.gotTarget = sink, ref, target
+	return s.err
+}
+
 func runFlow(t *testing.T, src string, config map[string]any, opts ...Option) (any, error) {
 	t.Helper()
 	f, err := Decode([]byte(src))
@@ -172,6 +187,51 @@ func TestExecAllowNonzero(t *testing.T) {
 	}
 	if n, ok := out.(float64); !ok || n != 3 {
 		t.Fatalf("expected exit code 3, got %v", out)
+	}
+}
+
+// TestSecretOpRoutesToSinkWithoutValue proves a secret step passes only the rendered
+// reference, sink, and target to the credential sink, and that the observer reports the
+// step by sink and reference name only. The flow never carries the value: it names which
+// secret goes where, and the host resolves and delivers it inside the sink.
+func TestSecretOpRoutesToSinkWithoutValue(t *testing.T) {
+	sink := &fakeSink{}
+	obs := &recordingObserver{}
+	_, err := runFlow(t, `{"steps":[
+		{"op":"secret","secret":{"ref":"flynn/{{config.name}}","sink":"fly","target":{"app":"{{config.app}}","key":"FLYNN_VAULT_PASSPHRASE"}}},
+		{"op":"return","return":{"value":"ok"}}
+	]}`, map[string]any{"name": "vault", "app": "myapp"}, WithCredentialSink(sink), WithObserver(obs))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if sink.gotSink != "fly" || sink.gotRef != "flynn/vault" {
+		t.Fatalf("sink got sink=%q ref=%q", sink.gotSink, sink.gotRef)
+	}
+	if sink.gotTarget["app"] != "myapp" || sink.gotTarget["key"] != "FLYNN_VAULT_PASSPHRASE" {
+		t.Fatalf("sink target = %+v", sink.gotTarget)
+	}
+	var sawBegin bool
+	for _, ev := range obs.events {
+		if ev.Op == OpSecret && ev.Phase == StepBegin {
+			sawBegin = true
+			if ev.Detail != "fly:flynn/vault" {
+				t.Fatalf("secret step reported by something other than sink:ref: %q", ev.Detail)
+			}
+		}
+	}
+	if !sawBegin {
+		t.Fatal("expected the secret step to be reported to the observer")
+	}
+}
+
+// TestSecretOpFailsClosedWithoutSink proves a secret step with no sink configured fails
+// rather than silently doing nothing, so a missing sink can never drop a credential step.
+func TestSecretOpFailsClosedWithoutSink(t *testing.T) {
+	_, err := runFlow(t, `{"steps":[
+		{"op":"secret","secret":{"ref":"r","sink":"fly"}}
+	]}`, nil)
+	if err == nil {
+		t.Fatal("a secret step with no credential sink must fail closed")
 	}
 }
 

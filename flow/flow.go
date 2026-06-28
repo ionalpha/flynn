@@ -38,6 +38,11 @@ const (
 	// before continuing, so an interactive step (a browser login, a destructive action)
 	// is surfaced and consented to rather than happening silently.
 	OpConfirm Op = "confirm"
+	// OpSecret materializes a secret into a target's secret store (a provider's secrets,
+	// a deployed workload's environment) by reference. The step names only the reference,
+	// the sink, and the target; the host resolves the reference to its value and delivers
+	// it, so the secret value never enters the flow as data, a rendered command, or a log.
+	OpSecret Op = "secret"
 )
 
 // Flow is a declarative procedure: an ordered list of steps the interpreter runs to
@@ -66,6 +71,7 @@ type Step struct {
 	Exec       *ExecAction       `json:"exec,omitempty"`
 	Dependency *DependencyAction `json:"dependency,omitempty"`
 	Confirm    *ConfirmAction    `json:"confirm,omitempty"`
+	Secret     *SecretAction     `json:"secret,omitempty"`
 }
 
 // HTTPAction is a single request. Method, URL, and the values of Headers and Query
@@ -159,6 +165,18 @@ type ConfirmAction struct {
 	Message string `json:"message"`
 }
 
+// SecretAction materializes the secret named by Ref into Sink's secret store, with Target
+// carrying the sink's parameters (for a hosting provider: the app and the key name). Ref,
+// Sink, and every Target value are templated, so the reference and target are built from
+// config and prior steps. The host resolves Ref to its value and hands it to the sink, so
+// the value never appears in the flow's expressions, the rendered command, or a log: a
+// step declares WHICH secret goes WHERE, never the secret itself. It produces no output.
+type SecretAction struct {
+	Ref    string            `json:"ref"`
+	Sink   string            `json:"sink"`
+	Target map[string]string `json:"target,omitempty"`
+}
+
 // Decode parses a Flow from JSON and validates it. A flow that does not validate is
 // never returned, so the interpreter only ever runs well-formed flows.
 func Decode(raw []byte) (Flow, error) {
@@ -229,6 +247,8 @@ func validateStep(s Step, seen map[string]bool) error {
 		return validateDependency(s.Dependency)
 	case OpConfirm:
 		return validateConfirm(s.Confirm)
+	case OpSecret:
+		return validateSecret(s.Secret)
 	default:
 		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(s.Op))
 	}
@@ -253,6 +273,7 @@ func actionBlocks(s Step) (total int, matchesOp bool) {
 		{s.Exec != nil, OpExec},
 		{s.Dependency != nil, OpDependency},
 		{s.Confirm != nil, OpConfirm},
+		{s.Secret != nil, OpSecret},
 	} {
 		if b.present {
 			total++
@@ -399,6 +420,27 @@ func validateConfirm(a *ConfirmAction) error {
 		return fault.New(fault.Terminal, "flow_confirm_no_message", "flow: confirm step needs a message")
 	}
 	return checkTemplate(a.Message)
+}
+
+func validateSecret(a *SecretAction) error {
+	if a.Ref == "" {
+		return fault.New(fault.Terminal, "flow_secret_no_ref", "flow: secret step needs a ref")
+	}
+	if a.Sink == "" {
+		return fault.New(fault.Terminal, "flow_secret_no_sink", "flow: secret step needs a sink")
+	}
+	if err := checkTemplate(a.Ref); err != nil {
+		return err
+	}
+	if err := checkTemplate(a.Sink); err != nil {
+		return err
+	}
+	for _, v := range a.Target {
+		if err := checkTemplate(v); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // checkExpr parses an expression and discards it, reporting a parse error as a

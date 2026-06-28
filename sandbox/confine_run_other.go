@@ -9,8 +9,8 @@ import "context"
 // Windows can express its confinement on an exec.Cmd, so the standard library runs the
 // command directly. Windows confines a command by launching it inside an AppContainer,
 // which cannot be expressed on an exec.Cmd, so it overrides this with its own path.
-func (l *Local) runShell(ctx context.Context, name string, args []string, confined bool) (ExecResult, error) {
-	return l.runWithExecCmd(ctx, name, args, confined)
+func (l *Local) runShell(ctx context.Context, name string, args []string, stdin []byte, confined bool) (ExecResult, error) {
+	return l.runWithExecCmd(ctx, name, args, stdin, confined)
 }
 
 // closePlatform releases platform confinement state on Close. No platform but Windows

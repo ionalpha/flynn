@@ -28,6 +28,7 @@ type Runner struct {
 	exec     flow.Execer
 	deps     flow.DependencyResolver
 	confirm  flow.Confirmer
+	sink     flow.CredentialSink
 	observer flow.Observer
 	svc      *service.Store
 	clk      clock.Timing
@@ -59,6 +60,12 @@ func WithObserver(o flow.Observer) RunnerOption {
 	return func(r *Runner) { r.observer = o }
 }
 
+// WithCredentialSink sets the port that materializes a playbook's secret steps into a
+// provider's secret store. Without it, a secret step fails closed.
+func WithCredentialSink(s flow.CredentialSink) RunnerOption {
+	return func(r *Runner) { r.sink = s }
+}
+
 // NewRunner builds a playbook runner. exec runs the flow's exec steps (through the
 // sandbox); deps resolves its dependency steps (through the dependency manager); svc is the
 // service store a successful run registers its workload in (nil disables registration).
@@ -79,7 +86,8 @@ func (r *Runner) Run(ctx context.Context, pb Playbook, config map[string]any) (R
 	if err != nil {
 		return Result{}, err
 	}
-	interp := flow.New(flow.WithExec(r.exec), flow.WithDependencies(r.deps), flow.WithConfirm(r.confirm), flow.WithObserver(r.observer))
+	interp := flow.New(flow.WithExec(r.exec), flow.WithDependencies(r.deps), flow.WithConfirm(r.confirm),
+		flow.WithCredentialSink(r.sink), flow.WithObserver(r.observer))
 	out, err := interp.Run(ctx, f, config)
 	if err != nil {
 		return Result{}, err
