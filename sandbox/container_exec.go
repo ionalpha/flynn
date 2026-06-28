@@ -282,3 +282,24 @@ func PullImage(ctx context.Context, engine OCIEngine, ref, digest string) error 
 	_, err := execRunner(ctx, []string{string(engine), "pull", target})
 	return err
 }
+
+// EnsureContainerNetwork makes sure a named network exists for a published serving container
+// to join, so the container has a stable named network rather than the engine's shared
+// default bridge. It is idempotent: a network that already exists is reused, not recreated.
+//
+// This names the network the published container attaches to; it does not by itself block the
+// container's outbound traffic. An engine-internal network would deny egress but also disables
+// the port forwarding a served model needs, so egress is instead kept closed by the runtime's
+// own configuration (it is run offline) and, where required, a governed loopback proxy on this
+// network, not by isolating the network from the host.
+func EnsureContainerNetwork(ctx context.Context, engine OCIEngine, name string) error {
+	if name == "" {
+		return fault.New(fault.Terminal, "container_no_network_name", "container: a serving network needs a name")
+	}
+	// `network inspect` succeeds only when the network already exists; create it otherwise.
+	if _, err := execRunner(ctx, []string{string(engine), "network", "inspect", name}); err == nil {
+		return nil
+	}
+	_, err := execRunner(ctx, []string{string(engine), "network", "create", name})
+	return err
+}
