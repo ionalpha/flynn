@@ -27,6 +27,7 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/playbook"
 	"github.com/ionalpha/flynn/profilestore"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
@@ -225,6 +226,9 @@ func missionRegistry() (*resource.Registry, error) {
 		return nil, err
 	}
 	if err := dependency.RegisterKind(reg); err != nil {
+		return nil, err
+	}
+	if err := playbook.RegisterKind(reg); err != nil {
 		return nil, err
 	}
 	return reg, nil

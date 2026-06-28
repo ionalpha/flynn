@@ -33,6 +33,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"auth":         runAuth,
 	"integrations": runIntegrations,
 	"deps":         runDeps,
+	"playbook":     runPlaybook,
 	"deploy":       runDeploy,
 	"services":     runServices,
 	"models":       dispatchModels,
