@@ -22,6 +22,7 @@ func TestResolveKindKnownAndFallbackAndUnknown(t *testing.T) {
 	for _, alias := range []string{
 		"instances", "instance", "agents", "runs", "goal",
 		"entries", "credentials", "creds", "profiles", "modelprofile",
+		"services", "service", "svc",
 	} {
 		ck, ok := resolveKind(reg, alias)
 		if !ok {
