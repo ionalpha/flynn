@@ -320,14 +320,15 @@ func (b *binding) run(ctx context.Context, f flow.Flow, required credential.Role
 	return interp.Run(ctx, f, config)
 }
 
-// resolveProvider builds the auth provider for a call. Without a credential store the
-// auth spec's credential reference is used directly as a vault reference and no role
-// is checked. With a store, the reference selects a credential by name or default,
-// the credential's role must permit the operation's required role (a refusal is
-// audited and returned as a Forbidden fault), and the provider is built against the
-// resolved credential's vault reference.
+// resolveProvider builds the auth provider for a call. With no credential store, or
+// for an integration that references no credential (a public API authenticating with
+// "none"), the auth spec is used directly and no role is checked. Otherwise the
+// reference selects a credential by name or default, the credential's role must
+// permit the operation's required role (a refusal is audited and returned as a
+// Forbidden fault), and the provider is built against the resolved credential's vault
+// reference.
 func (b *binding) resolveProvider(ctx context.Context, required credential.Role) (auth.Provider, error) {
-	if b.creds == nil {
+	if b.creds == nil || b.auth.CredentialRef == "" {
 		return providerFor(b.auth, b.transport, b.clk)
 	}
 	cred, err := b.creds.Resolve(ctx, b.auth.CredentialRef)
