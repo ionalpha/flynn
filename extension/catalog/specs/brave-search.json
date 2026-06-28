@@ -1,0 +1,26 @@
+{
+  "displayName": "Brave Search",
+  "provider": "brave",
+  "baseURL": "https://api.search.brave.com",
+  "capabilities": ["websearch"],
+  "auth": {"type": "api_key", "in": "header", "name": "X-Subscription-Token", "credentialRef": "brave-search"},
+  "safety": {"readOnly": true},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "search",
+          "description": "Search the web with Brave and return ranked results (title, url, description).",
+          "role": "read",
+          "input": {"type": "object", "properties": {"query": {"type": "string"}, "count": {"type": "integer"}}, "required": ["query"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/res/v1/web/search", "query": {"q": "{{config.query}}", "count": "{{default(config.count, 10)}}"}, "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.web.results}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
