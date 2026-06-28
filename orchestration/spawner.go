@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/fault"
@@ -175,12 +176,27 @@ func (s *Spawner) Spawn(ctx context.Context, parent resource.Resource, sub missi
 // owner, for cascade teardown), with a grant narrowed to the subset of the parent's
 // authority the sub-goal asked for, at the next depth, sharing the pool.
 func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSpec goal.Spec, sub mission.SubGoal, depth int, pool string) (resource.Resource, error) {
+	// A named Agent configures the child from its resolved bundle: its capabilities
+	// (intersected with the parent's authority, never widened) and its system prompt.
+	// An ad-hoc child takes its authority from the requested actions. An unknown Agent
+	// fails the spawn closed.
+	childGrant := narrowGrant(parentSpec.Grant, sub.Actions)
+	childSystem := ""
+	if sub.Agent != "" {
+		resolved, err := archetype.Resolve(ctx, s.store, parent.Scope, sub.Agent)
+		if err != nil {
+			return resource.Resource{}, fault.Wrap(fault.Forbidden, "spawn_agent_resolve", err)
+		}
+		childGrant = narrowGrant(parentSpec.Grant, resolved.Capabilities)
+		childSystem = resolved.System
+	}
 	childSpec := goal.Spec{
 		Objective:     sub.Objective,
 		StopCondition: "the delegated sub-goal is accomplished",
-		Grant:         narrowGrant(parentSpec.Grant, sub.Actions),
+		Grant:         childGrant,
 		Depth:         depth,
 		BudgetPool:    pool,
+		System:        childSystem,
 	}
 	raw, err := json.Marshal(childSpec)
 	if err != nil {
