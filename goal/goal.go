@@ -54,7 +54,9 @@ var specSchema = json.RawMessage(`{
     "objective": {"type": "string", "minLength": 1},
     "stopCondition": {"type": "string", "minLength": 1},
     "maxSteps": {"type": "integer", "minimum": 0},
-    "grant": {"type": "array", "items": {"type": "string"}}
+    "grant": {"type": "array", "items": {"type": "string"}},
+    "depth": {"type": "integer", "minimum": 0},
+    "budgetPool": {"type": "string"}
   },
   "additionalProperties": false
 }`)
@@ -74,6 +76,16 @@ type Spec struct {
 	// defers to the executor's default grant, so an ungoverned standalone run is
 	// unchanged.
 	Grant []string `json:"grant,omitempty"`
+	// Depth is how many delegation hops separate this goal from a root goal: a root
+	// is 0 and a spawned child is its parent's depth plus one. A fan-out spawner
+	// refuses to create a child past a maximum depth, so a chain of agents spawning
+	// agents cannot recurse without bound.
+	Depth int `json:"depth,omitempty"`
+	// BudgetPool is the run id whose budget this goal charges and reserves against.
+	// A fan-out shares one pool: every descendant inherits the root's pool, so the
+	// whole graph is bounded by a single ceiling rather than a budget per goal. Empty
+	// means the goal is its own pool (a standalone root).
+	BudgetPool string `json:"budgetPool,omitempty"`
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile
