@@ -11,6 +11,36 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
+func TestGrantIntersect(t *testing.T) {
+	ab := capability.NewGrant("a", "b")
+	bc := capability.NewGrant("b", "c")
+	all := capability.AllowAll()
+
+	// Two listed grants intersect to exactly the shared actions.
+	if got := ab.Intersect(bc).Actions(); !reflect.DeepEqual(got, []string{"b"}) {
+		t.Fatalf("{a,b} intersect {b,c} = %v, want [b]", got)
+	}
+	// AllowAll is the identity: it never widens the other operand.
+	if got := all.Intersect(ab).Actions(); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("AllowAll intersect {a,b} = %v, want [a b]", got)
+	}
+	if got := ab.Intersect(all).Actions(); !reflect.DeepEqual(got, []string{"a", "b"}) {
+		t.Fatalf("{a,b} intersect AllowAll = %v, want [a b]", got)
+	}
+	if !all.Intersect(all).Unrestricted() {
+		t.Fatal("AllowAll intersect AllowAll should stay unrestricted")
+	}
+	// Intersection is the floor of both: an action only one side allows is denied.
+	eff := ab.Intersect(bc)
+	if eff.Allows("a") || eff.Allows("c") || !eff.Allows("b") {
+		t.Fatalf("intersection should admit only b, got %v", eff.Actions())
+	}
+	// Disjoint grants intersect to deny-all.
+	if got := capability.NewGrant("x").Intersect(capability.NewGrant("y")); len(got.Actions()) != 0 || got.Unrestricted() {
+		t.Fatalf("disjoint grants should intersect to deny-all, got %v", got.Actions())
+	}
+}
+
 func TestGrantAllows(t *testing.T) {
 	g := capability.NewGrant("read", "write", "", "read") // empties and dups ignored
 	for _, a := range []string{"read", "write"} {
