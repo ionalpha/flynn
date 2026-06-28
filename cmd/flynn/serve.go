@@ -17,6 +17,8 @@ import (
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/inbox"
+	"github.com/ionalpha/flynn/instance"
+	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
@@ -67,6 +69,20 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		return err
 	}
 	rstore := store.Resources(reg)
+
+	// Keep this process's Instance record live for the read surface. The heartbeat
+	// registers the process on start and rewrites its state and active runs on an
+	// interval, so flynn ps/status, the API, and the dashboard show a real,
+	// heartbeat-tracked process rather than a record that only updates when observed
+	// and always reads Idle. A stopped process records a terminal Done; a crashed one
+	// stops beating and the effective-state rule reports it Unknown. It runs for both
+	// the monitor-only and channel modes below, so it is started here once.
+	hostname, _ := os.Hostname()
+	hb := instance.NewHeartbeat(rstore, resource.Scope{}, store.InstanceID(),
+		instance.Spec{Host: hostname, Version: version.String()},
+		instanceReporter(rstore, store.InstanceID()), clock.System{},
+		instance.WithErrorHandler(func(err error) { fmt.Fprintln(os.Stderr, "serve: heartbeat:", err) }))
+	go func() { _ = hb.Run(ctx) }()
 
 	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source
@@ -184,6 +200,44 @@ func runServe(args []string, modelSpec, dataDir string) error {
 		return err
 	}
 	return nil
+}
+
+// instanceReporter derives this process's live run-state from the goals it owns. A
+// goal still Pending or Running counts as active work, so any active goal makes the
+// instance Working and its names are the active runs; with none the instance is
+// Idle. Ownership is the goal's creator (OriginInstanceID), so on a multi-instance
+// store each process reports only its own runs; a blank origin (single-instance or
+// an older record) is treated as local so nothing is dropped on one box. A store
+// read error reports Unknown rather than guessing Idle, which would hide live work.
+// Blocked is reserved for a future waiting signal (a run halted on approval or
+// input); goals expose no such phase today, so the reporter never invents it.
+func instanceReporter(store resource.Store, instanceID string) instance.Reporter {
+	return func(ctx context.Context) (instance.State, []string) {
+		rs, err := store.ListAll(ctx, goal.Kind, nil)
+		if err != nil {
+			return instance.StateUnknown, nil
+		}
+		var active []string
+		for _, r := range rs {
+			if r.OriginInstanceID != "" && r.OriginInstanceID != instanceID {
+				continue
+			}
+			st, err := goal.DecodeStatus(r)
+			if err != nil {
+				continue
+			}
+			switch st.Phase {
+			case goal.PhasePending, goal.PhaseRunning:
+				active = append(active, r.Name)
+			case goal.PhaseConverged, goal.PhaseStalled:
+				// Terminal: the goal is finished, so it is not active work.
+			}
+		}
+		if len(active) > 0 {
+			return instance.StateWorking, active
+		}
+		return instance.StateIdle, nil
+	}
 }
 
 // goalWorker adapts the goal runtime to the inbox.Worker port: it submits an entry's
