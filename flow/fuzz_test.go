@@ -1,6 +1,30 @@
 package flow
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
+
+// FuzzExecFailedFault asserts the failure built for a command that exited nonzero never
+// panics, stays bounded however large the command output is, and always names the command
+// so the failure is diagnosable. The output a real command produces is unbounded and
+// attacker-influenced, so the bound and the no-panic guarantee matter.
+func FuzzExecFailedFault(f *testing.F) {
+	f.Add("flyctl deploy", "Error: boom", 1)
+	f.Add("", "", 0)
+	f.Add("x", strings.Repeat("A", 9000), 137)
+	f.Fuzz(func(t *testing.T, cmd, output string, exit int) {
+		msg := execFailedFault(cmd, ExecResult{ExitCode: exit, Output: output}).Error()
+		// Bounded: the command, plus a capped tail of output, plus fixed framing.
+		if len(msg) > len(cmd)+maxFaultOutputBytes+128 {
+			t.Fatalf("fault message is not bounded: len=%d cmd=%d", len(msg), len(cmd))
+		}
+		// Diagnosable: a non-empty command is always named in the failure.
+		if cmd != "" && !strings.Contains(msg, cmd) {
+			t.Fatalf("fault message does not name the command %q: %q", cmd, msg)
+		}
+	})
+}
 
 // FuzzParseExpr asserts the expression parser never panics, whatever bytes it is
 // given: a malformed expression must return an error, not crash. This matters
