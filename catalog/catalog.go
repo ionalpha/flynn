@@ -99,7 +99,33 @@ type Quant struct {
 	// pull time and still verifies the bytes, so an unpinned entry is never trusted
 	// blindly.
 	Digest string `json:"digest,omitempty"`
+	// Files, when set, is the multi-file manifest for a model served from a directory
+	// rather than a single file: a safetensors model is a set of weight shards plus the
+	// tokenizer and config files a GPU runtime loads from a directory. It is the multi-file
+	// counterpart to URL: a single-file quantization (GGUF) names URL, a directory model
+	// names Files. A quant names one or the other, never both.
+	Files []QuantFile `json:"files,omitempty"`
 }
+
+// QuantFile is one file of a multi-file quantization: its name within the model directory,
+// where to fetch it, and the digest it is verified against. The set of these is how a
+// safetensors model (shards + tokenizer + config) is acquired with the same per-file
+// verification a single-file weight gets.
+type QuantFile struct {
+	// Name is the file's path within the model directory (for example "model.safetensors"
+	// or "tokenizer.json"). It is relative and must not escape the directory.
+	Name string `json:"name"`
+	// URL is the direct https location of the file.
+	URL string `json:"url"`
+	// Digest is the content hash the file is verified against; empty pins on fetch.
+	Digest string `json:"digest,omitempty"`
+	// SizeBytes is the file's size, the per-file download cap.
+	SizeBytes int64 `json:"sizeBytes,omitempty"`
+}
+
+// MultiFile reports whether the quant is a directory model (a set of files) rather than a
+// single downloadable file.
+func (q Quant) MultiFile() bool { return len(q.Files) > 0 }
 
 // Capabilities is what a model can do, used to filter to models that fit a task.
 type Capabilities struct {

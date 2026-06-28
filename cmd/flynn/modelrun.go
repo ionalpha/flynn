@@ -12,6 +12,7 @@ import (
 	"github.com/ionalpha/flynn/bindguard"
 	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/fetch"
+	"github.com/ionalpha/flynn/hardware"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/inference/launch"
 	"github.com/ionalpha/flynn/inference/modelsource"
@@ -54,6 +55,9 @@ type localRunner struct {
 	// ledger records the provenance of every model source and pins its integrity on
 	// first use.
 	ledger *modelsource.Ledger
+	// box is the detected hardware: it gates the GPU serving path (a vLLM container needs a
+	// GPU plus a container engine with the NVIDIA toolkit) and picks the quant to serve.
+	box hardware.Box
 }
 
 // newLocalRunner builds a runner wired to the real runtime provisioner, weights fetcher,
@@ -76,6 +80,10 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 		// The self-provisioned runtime exposes a Prometheus endpoint, so its load can be
 		// read back to drive scheduling and reporting.
 		serve.WithStatsSource(selfProvisionedRuntime, serve.LlamaCppStatsSource(nil)),
+		// A container-backed server (vLLM) is stopped by driving the engine, since it has no
+		// host pid; the manager routes a container record's teardown here.
+		serve.WithContainerStopper(serve.EngineStopper),
+		serve.WithStatsSource("vllm", serve.VLLMStatsSource(nil)),
 	)
 	return &localRunner{
 		dataDir:       dataDir,
@@ -86,6 +94,8 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 		freePort:      bindguard.FreeLoopbackPort,
 		sb:            sb,
 		ledger:        modelsource.NewLedger(filepath.Join(dataDir, "models")),
+		// Detect the hardware once so the serve path can choose the runtime that fits.
+		box: hardware.Detect(context.Background()),
 	}
 }
 
@@ -215,10 +225,19 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 	if !m.Local() {
 		return serve.Endpoint{}, fmt.Errorf("%q is a hosted API model, not a local one", m.ID)
 	}
-	q, ok := m.SmallestQuant()
-	if !ok {
-		return serve.Endpoint{}, fmt.Errorf("%q has no quantization to serve", m.ID)
+	// Pick the quant and the engine that fit this host: a safetensors quant runs on the vLLM
+	// GPU container path, a GGUF quant on the llama.cpp process path. A model with both falls
+	// back to GGUF when there is no GPU container path.
+	gpuContainer := r.box.HasGPU() && r.box.Containers.GPUPassthrough()
+	q, engine, err := selectServeQuant(m, gpuContainer)
+	if err != nil {
+		return serve.Endpoint{}, err
 	}
+	if engine == launch.EngineVLLM {
+		return r.serveContainerModel(ctx, m, q, ctxSize)
+	}
+
+	// The llama.cpp process path serves a single-file GGUF weight.
 	if q.URL == "" {
 		return serve.Endpoint{}, fmt.Errorf("%q has no pinned direct download, so Flynn cannot fetch and serve it yet (the catalog entry records the model but no verifiable weights source)", m.ID)
 	}

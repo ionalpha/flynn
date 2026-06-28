@@ -254,6 +254,32 @@ func TestBuildPlanBuildsVLLMServeCommand(t *testing.T) {
 	}
 }
 
+func TestBuildPlanVLLMContainerizedBindsAllInterfaces(t *testing.T) {
+	// In a container the server must bind 0.0.0.0 so the engine's loopback-published port
+	// reaches it, but the client-facing endpoint stays loopback (the host publish is
+	// loopback-only), so the off-host exposure is still closed.
+	cfg := Config{
+		BinPath: "vllm", WeightsPath: "/model", Model: localModel("chatml"),
+		Format: catalog.FormatSafetensors, Port: 9000, Containerized: true,
+	}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !argvHasFlag(plan.Argv, "--host", "0.0.0.0") {
+		t.Fatalf("a containerized vLLM must bind 0.0.0.0 inside the container: %v", plan.Argv)
+	}
+	if plan.Host != "127.0.0.1" || plan.BaseURL != "http://127.0.0.1:9000/v1" {
+		t.Fatalf("the client-facing endpoint must stay loopback, got %s %s", plan.Host, plan.BaseURL)
+	}
+	// A non-containerized vLLM binds loopback directly.
+	cfg.Containerized = false
+	plan, _ = BuildPlan(cfg)
+	if !argvHasFlag(plan.Argv, "--host", "127.0.0.1") {
+		t.Fatalf("a non-containerized vLLM must bind loopback: %v", plan.Argv)
+	}
+}
+
 func TestBuildPlanVLLMRefusesBadKnobs(t *testing.T) {
 	base := func() Config {
 		return Config{BinPath: "vllm", WeightsPath: "/w/model", Model: localModel("chatml"), Format: catalog.FormatSafetensors, Port: 9000}

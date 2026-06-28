@@ -68,7 +68,7 @@ func TestBuildContainerArgvHardenedServingCommand(t *testing.T) {
 		{"--pids-limit", "512"},
 		{"--network", "flynn-egress"},
 		{"--gpus", "device=0"},
-		{"--tmpfs", "/tmp"},
+		{"--tmpfs", "/tmp:noexec"},
 		{"--publish", "127.0.0.1:8123:8000"},
 	} {
 		if !argvHasPair(argv, p[0], p[1]) {
@@ -131,6 +131,22 @@ func TestBuildContainerArgvAppendsCommandAfterImage(t *testing.T) {
 		if tail[i] != spec.Command[i] {
 			t.Fatalf("command not appended verbatim after the image: %v", tail)
 		}
+	}
+	// A command also clears the image's entrypoint, so the composed command is exactly what
+	// runs and the image cannot prepend an entrypoint of its own.
+	if !argvHasPair(argv, "--entrypoint", "") {
+		t.Fatalf("a command must clear the image entrypoint: %v", argv)
+	}
+}
+
+func TestBuildContainerArgvExecScratch(t *testing.T) {
+	spec := servingSpec()
+	if argv := buildContainerArgv(EngineDocker, spec); !argvHasPair(argv, "--tmpfs", "/tmp:noexec") {
+		t.Fatalf("the default scratch must be noexec: %v", argv)
+	}
+	spec.ExecScratch = true
+	if argv := buildContainerArgv(EngineDocker, spec); !argvHasPair(argv, "--tmpfs", "/tmp:exec") {
+		t.Fatalf("ExecScratch must make the scratch executable: %v", argv)
 	}
 }
 

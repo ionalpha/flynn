@@ -219,7 +219,7 @@ func (m *Manager) Ensure(ctx context.Context, cfg EnsureConfig) (Endpoint, error
 		return Endpoint{}, fault.Wrap(fault.Terminal, "serve_start", err)
 	}
 
-	if err := m.waitReady(ctx, proc, cfg.Plan.BaseURL); err != nil {
+	if err := m.waitReady(ctx, proc, cfg.Plan.BaseURL, m.readyTimeout); err != nil {
 		_ = proc.Stop()
 		return Endpoint{}, err
 	}
@@ -254,6 +254,11 @@ type ContainerEnsureConfig struct {
 	// OpenAI-compatible coordinates a process-backed server reports.
 	BaseURL string
 	Port    int
+	// ReadyTimeout overrides how long to wait for the endpoint to come up. A container
+	// runtime can be far slower to first answer than a process (a GPU server loads weights,
+	// captures CUDA graphs, and compiles kernels on first start), so the caller raises it
+	// above the manager's process-oriented default. Zero uses the manager default.
+	ReadyTimeout time.Duration
 }
 
 // EnsureContainer returns a running endpoint for a container-backed model, the container
@@ -284,7 +289,11 @@ func (m *Manager) EnsureContainer(ctx context.Context, cfg ContainerEnsureConfig
 	}
 	proc := servingProc{serving}
 
-	if err := m.waitReady(ctx, proc, cfg.BaseURL); err != nil {
+	timeout := m.readyTimeout
+	if cfg.ReadyTimeout > 0 {
+		timeout = cfg.ReadyTimeout
+	}
+	if err := m.waitReady(ctx, proc, cfg.BaseURL, timeout); err != nil {
 		_ = serving.Stop()
 		return Endpoint{}, err
 	}
@@ -354,8 +363,8 @@ type waitable interface {
 // passes, or ctx is cancelled. A server that exits while starting is the common
 // real-world failure (a bad runtime flag, a refused weights file), so it is reported
 // with the server's own output rather than as a bare timeout.
-func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string) error {
-	deadline := time.NewTimer(m.readyTimeout)
+func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string, timeout time.Duration) error {
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(m.pollEvery)
 	defer tick.Stop()
@@ -373,7 +382,7 @@ func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string) 
 				"serve: the runtime exited before its endpoint came up:\n"+proc.Output())
 		case <-deadline.C:
 			return fault.New(fault.Terminal, "serve_timeout",
-				fmt.Sprintf("serve: the runtime did not answer within %s:\n%s", m.readyTimeout, proc.Output()))
+				fmt.Sprintf("serve: the runtime did not answer within %s:\n%s", timeout, proc.Output()))
 		case <-tick.C:
 			if m.probe(ctx, baseURL) == nil {
 				return nil
