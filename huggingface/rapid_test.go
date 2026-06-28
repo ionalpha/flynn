@@ -94,6 +94,37 @@ func TestTreeParsingProperty(t *testing.T) {
 	})
 }
 
+// TestSearchNormalizeProperty checks the invariants that bound a search request: the
+// page size is always within the supported range whatever a caller asks for, and the
+// resolved sort is always one of the three keys the Hub accepts, descending. These hold
+// so no query can pull an unbounded page or send the Hub an order it would reject.
+func TestSearchNormalizeProperty(t *testing.T) {
+	rapid.Check(t, func(t *rapid.T) {
+		n := rapid.IntRange(-1000, 100000).Draw(t, "limit")
+		got := searchLimit(n)
+		if got < 1 || got > searchLimitMax {
+			t.Fatalf("searchLimit(%d) = %d, out of [1,%d]", n, got, searchLimitMax)
+		}
+		if n >= 1 && n <= searchLimitMax && got != n {
+			t.Fatalf("searchLimit(%d) = %d, an in-range request must pass through", n, got)
+		}
+		if n <= 0 && got != searchLimitDefault {
+			t.Fatalf("searchLimit(%d) = %d, a non-positive request must take the default %d", n, got, searchLimitDefault)
+		}
+
+		name := rapid.StringMatching(`[A-Za-z]{0,12}`).Draw(t, "sort")
+		key, dir := searchSort(name)
+		switch key {
+		case "downloads", "likes", "lastModified":
+		default:
+			t.Fatalf("searchSort(%q) returned unsupported key %q", name, key)
+		}
+		if dir != "-1" {
+			t.Fatalf("searchSort(%q) direction = %q, want descending", name, dir)
+		}
+	})
+}
+
 // TestRepoCheckProperty checks that any well-formed owner/name is accepted and that a
 // reference carrying traversal or a query is always rejected, so a hostile reference can
 // never be assembled into a request URL.

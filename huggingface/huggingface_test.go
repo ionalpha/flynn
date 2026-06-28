@@ -104,6 +104,80 @@ func TestInfoGatedFalse(t *testing.T) {
 	}
 }
 
+func TestSearchBuildsQueryAndParsesResults(t *testing.T) {
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/models" {
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+		q := r.URL.Query()
+		if q.Get("search") != "qwen2.5" {
+			t.Errorf("search = %q", q.Get("search"))
+		}
+		if q.Get("author") != "Qwen" {
+			t.Errorf("author = %q", q.Get("author"))
+		}
+		if got := q["filter"]; len(got) != 2 || got[0] != "text-generation" || got[1] != "safetensors" {
+			t.Errorf("filter = %v", got)
+		}
+		if q.Get("sort") != "downloads" || q.Get("direction") != "-1" {
+			t.Errorf("sort/direction = %q/%q", q.Get("sort"), q.Get("direction"))
+		}
+		if q.Get("limit") != "5" {
+			t.Errorf("limit = %q", q.Get("limit"))
+		}
+		_, _ = w.Write([]byte(`[
+			{"id":"Qwen/Qwen2.5-7B-Instruct","downloads":1234567,"likes":890,"pipeline_tag":"text-generation","library_name":"transformers","tags":["safetensors","text-generation"]},
+			{"id":"someone/pickle-only","downloads":10,"likes":1,"pipeline_tag":"text-generation","tags":["pytorch"]}
+		]`))
+	})
+
+	res, err := c.Search(context.Background(), SearchQuery{
+		Text:    "qwen2.5",
+		Author:  "Qwen",
+		Filters: []string{"text-generation", "safetensors"},
+		Limit:   5,
+	})
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if len(res) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(res))
+	}
+	if res[0].ID != "Qwen/Qwen2.5-7B-Instruct" || res[0].Downloads != 1234567 || res[0].Likes != 890 {
+		t.Errorf("first result mis-parsed: %+v", res[0])
+	}
+	if !res[0].SafeFormat() {
+		t.Error("safetensors result should report a safe format")
+	}
+	if res[1].SafeFormat() {
+		t.Error("pickle-only result must not report a safe format")
+	}
+}
+
+func TestSearchSortAndLimitNormalize(t *testing.T) {
+	var gotSort, gotLimit string
+	c := testClient(t, func(w http.ResponseWriter, r *http.Request) {
+		gotSort = r.URL.Query().Get("sort")
+		gotLimit = r.URL.Query().Get("limit")
+		_, _ = w.Write([]byte(`[]`))
+	})
+
+	// An unknown sort falls back to downloads; a zero limit takes the default; an
+	// oversized limit is clamped to the max.
+	if _, err := c.Search(context.Background(), SearchQuery{Text: "x", Sort: "bogus", Limit: 0}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotSort != "downloads" || gotLimit != "20" {
+		t.Errorf("normalized sort/limit = %q/%q, want downloads/20", gotSort, gotLimit)
+	}
+	if _, err := c.Search(context.Background(), SearchQuery{Text: "x", Sort: "likes", Limit: 9999}); err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	if gotSort != "likes" || gotLimit != "100" {
+		t.Errorf("clamped sort/limit = %q/%q, want likes/100", gotSort, gotLimit)
+	}
+}
+
 func TestFileURLResolvesMain(t *testing.T) {
 	c := New(WithBaseURL("https://example.test"))
 	got := c.FileURL("Qwen/X", "model.safetensors")
