@@ -80,6 +80,35 @@ func TestDefaultConfinementPreservesExitCode(t *testing.T) {
 	}
 }
 
+// TestContainmentReportsNoneWhenConfinementCannotStart is the regression test for the
+// trust-gate bypass: a Local configured for the full kernel tier but unable to actually
+// establish confinement on this host must report the process-jail floor, not the kernel
+// tier it cannot enforce, so the gate refuses semi-trusted work rather than admitting it
+// on a guarantee that does not hold. The selfExe override forces the setup failure on
+// the Linux launcher (macOS and Windows apply confinement differently and ignore it), so
+// the honest-report path is exercised there.
+func TestContainmentReportsNoneWhenConfinementCannotStart(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the selfExe setup-failure override only applies to the Linux launcher")
+	}
+	sb, err := NewLocal(t.TempDir(), WithKernelConfinement())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb.selfExe = filepath.Join(t.TempDir(), "no-such-binary") // a host that cannot set confinement up
+
+	if got := sb.Containment(); got != ContainmentNone {
+		t.Fatalf("a sandbox that cannot enforce confinement must report process-jail, got %v", got)
+	}
+	if err := Admit(sb, TrustSemi); err == nil {
+		t.Fatal("semi-trusted work must be refused when kernel confinement cannot actually be enforced")
+	}
+	// Trusted work still runs: it needs only the process-jail floor, which holds.
+	if err := Admit(sb, TrustTrusted); err != nil {
+		t.Fatalf("trusted work must still be admitted at the floor: %v", err)
+	}
+}
+
 // TestLocalContainmentReflectsConfinement checks that the reported containment level
 // tracks what is actually enforced: a bare Local is a process jail, a fully confined
 // Local rises to the kernel-confined level where the platform enforces it, and a
@@ -95,10 +124,14 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 		t.Fatalf("a bare Local must be a process jail, got %v", got)
 	}
 
-	wantFull := ContainmentNone
-	if kernelConfinementSupported() {
-		wantFull = ContainmentKernel
+	// The level reflects what the host can ACTUALLY enforce now (a one-time runtime
+	// probe), not merely what the platform supports, so derive the expectation the same
+	// way from a reference confined sandbox rather than the optimistic platform constant.
+	ref, err := NewLocal(t.TempDir(), WithReadOnlyFS(), WithSeccomp())
+	if err != nil {
+		t.Fatal(err)
 	}
+	wantFull := ref.Containment()
 
 	full, err := NewLocal(t.TempDir(), WithNetworkDenied(), WithReadOnlyFS(), WithSeccomp())
 	if err != nil {
