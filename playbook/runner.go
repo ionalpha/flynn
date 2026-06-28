@@ -25,10 +25,11 @@ type Result struct {
 // whatever flow the spec carries, and the only things it can do are the ones its ports
 // allow (run a command in the sandbox, resolve a dependency, write a service record).
 type Runner struct {
-	exec flow.Execer
-	deps flow.DependencyResolver
-	svc  *service.Store
-	clk  clock.Timing
+	exec    flow.Execer
+	deps    flow.DependencyResolver
+	confirm flow.Confirmer
+	svc     *service.Store
+	clk     clock.Timing
 }
 
 // RunnerOption configures a Runner.
@@ -41,6 +42,13 @@ func WithClock(c clock.Timing) RunnerOption {
 			r.clk = c
 		}
 	}
+}
+
+// WithConfirmer sets the port that asks the operator to approve a playbook's confirm steps
+// (an interactive terminal prompt, or a fail-closed instruction for a non-interactive run).
+// Without it, a confirm step fails closed.
+func WithConfirmer(c flow.Confirmer) RunnerOption {
+	return func(r *Runner) { r.confirm = c }
 }
 
 // NewRunner builds a playbook runner. exec runs the flow's exec steps (through the
@@ -63,7 +71,7 @@ func (r *Runner) Run(ctx context.Context, pb Playbook, config map[string]any) (R
 	if err != nil {
 		return Result{}, err
 	}
-	interp := flow.New(flow.WithExec(r.exec), flow.WithDependencies(r.deps))
+	interp := flow.New(flow.WithExec(r.exec), flow.WithDependencies(r.deps), flow.WithConfirm(r.confirm))
 	out, err := interp.Run(ctx, f, config)
 	if err != nil {
 		return Result{}, err

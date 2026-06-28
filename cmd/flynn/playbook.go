@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,11 +11,33 @@ import (
 	"text/tabwriter"
 
 	"github.com/ionalpha/flynn/dependency"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/fetch"
 	"github.com/ionalpha/flynn/playbook"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/service"
 )
+
+// terminalConfirmer asks the operator to approve a playbook's confirm steps at the
+// terminal: it prints the step's message and waits for a line on stdin. An empty line (just
+// Enter) approves; "n"/"no" declines; no input available (a non-interactive run) fails
+// closed with an instruction, so a confirmation never proceeds silently or hangs.
+type terminalConfirmer struct{}
+
+func (terminalConfirmer) Confirm(_ context.Context, message string) error {
+	_, _ = fmt.Fprintln(os.Stderr, message)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return fault.New(fault.Cancelled, "playbook_confirm_noinput",
+			"playbook: this step needs your confirmation but no input is available; run it in an interactive terminal, or set the relevant token to skip the step")
+	}
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "n", "no":
+		return fault.New(fault.Cancelled, "playbook_confirm_declined", "playbook: cancelled at the confirmation step")
+	default:
+		return nil
+	}
+}
 
 // runPlaybook implements `flynn playbook <ls|run>`: the multi-step procedures Flynn can
 // carry out. Listing shows the catalog; run executes a playbook's flow with the effect
@@ -87,6 +110,7 @@ func openPlaybookRuntime(ctx context.Context, dataDir string) (*playbookRuntime,
 		playbook.NewSandboxExecer(sb),
 		playbook.NewManagerResolver(depMgr),
 		service.NewStore(rstore),
+		playbook.WithConfirmer(terminalConfirmer{}),
 	)
 	return &playbookRuntime{store: pbStore, runner: runner, closer: durable.Close}, nil
 }
