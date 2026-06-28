@@ -126,6 +126,25 @@ func TestRoleRefused(t *testing.T) {
 	}
 }
 
+// TestNoAuthWithCredentialStore proves an integration that needs no credential (a
+// public API authenticating with "none") works even when a credential store is
+// configured: there is no reference to resolve, so the call is not blocked.
+func TestNoAuthWithCredentialStore(t *testing.T) {
+	doer := &fakeDoer{reply: func(_ *http.Request) (int, string) { return 200, `{"ok":true}` }}
+	h := NewHandler(
+		WithTransport(request.New(request.WithDoer(doer))),
+		WithCredentials(credStore(t)),
+	)
+	loader, _ := loadExtension(t, h, extension.AuthSpec{}, "https://api.example.com",
+		`{"operations":[{"name":"get","flow":{"steps":[{"id":"r","op":"http","http":{"url":"/x"}},{"op":"return","return":{"value":"{{steps.r.status}}"}}]}}]}`)
+	if _, err := loader.Tools()[0].Invoke(context.Background(), nil); err != nil {
+		t.Fatalf("a none-auth integration must work even with a credential store: %v", err)
+	}
+	if doer.gotReq == nil {
+		t.Fatal("the request should have been dispatched")
+	}
+}
+
 // TestRolePermitted proves a credential at or above the required role is allowed.
 func TestRolePermitted(t *testing.T) {
 	store := credStore(
