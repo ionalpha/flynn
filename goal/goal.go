@@ -56,7 +56,8 @@ var specSchema = json.RawMessage(`{
     "maxSteps": {"type": "integer", "minimum": 0},
     "grant": {"type": "array", "items": {"type": "string"}},
     "depth": {"type": "integer", "minimum": 0},
-    "budgetPool": {"type": "string"}
+    "budgetPool": {"type": "string"},
+    "system": {"type": "string"}
   },
   "additionalProperties": false
 }`)
@@ -86,6 +87,11 @@ type Spec struct {
 	// whole graph is bounded by a single ceiling rather than a budget per goal. Empty
 	// means the goal is its own pool (a standalone root).
 	BudgetPool string `json:"budgetPool,omitempty"`
+	// System is the standing system prompt this goal runs under, carried on the goal
+	// so a delegated child can run as a different agent than its parent (its prompt
+	// baked in by the spawner from the bound Agent). Empty defers to the executor's
+	// default prompt, so a standalone run is unchanged.
+	System string `json:"system,omitempty"`
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile

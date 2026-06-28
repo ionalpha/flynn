@@ -106,6 +106,16 @@ func WithGrant(g capability.Grant) Option {
 	return func(e *Executor) { e.grant, e.hasGrant = g, true }
 }
 
+// systemFor resolves the system prompt a goal runs under: the prompt carried on the
+// goal itself takes precedence (so a delegated child runs as its bound agent),
+// falling back to the executor's default prompt.
+func systemFor(spec goal.Spec, fallback string) string {
+	if spec.System != "" {
+		return spec.System
+	}
+	return fallback
+}
+
 // grantFor resolves the capability grant a goal runs under: the grant carried on
 // the goal itself takes precedence (authority travels with the work, so a delegated
 // child runs narrowed), falling back to the executor's default grant, and finally
@@ -382,7 +392,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 			e.recorder.RecordGeneration(ctx, envelopeOf(e.sampling))
 			var gerr error
 			resp, gerr = e.model.Generate(ctx, llm.Request{
-				System:    e.system,
+				System:    systemFor(spec, e.system),
 				Messages:  reqMessages,
 				Tools:     e.defs,
 				MaxTokens: e.maxTokens,

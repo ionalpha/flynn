@@ -18,12 +18,17 @@ import (
 // grant does not list it cannot fan out, which keeps delegation a least-privilege decision.
 const ActionSpawn = "spawn"
 
-// SubGoal is a child goal a parent asks to run as part of a fan-out: an objective and the actions
-// the child may take. The actions narrow the parent's authority, since a delegated run can never
-// exceed the authority of the run that spawned it.
+// SubGoal is a child goal a parent asks to run as part of a fan-out: an objective and either the
+// actions the child may take or a named Agent to run it as. The actions (or the named Agent's
+// capabilities) narrow the parent's authority, since a delegated run can never exceed the authority
+// of the run that spawned it.
 type SubGoal struct {
 	Objective string   `json:"objective"`
 	Actions   []string `json:"actions,omitempty"`
+	// Agent, when set, names an Agent archetype to run the child as: its system prompt and
+	// capabilities configure the child (intersected with the parent's authority), instead of the
+	// ad-hoc Actions list. Empty runs an ad-hoc child from Actions.
+	Agent string `json:"agent,omitempty"`
 }
 
 // ChildResult is the outcome of a spawned child, folded back into the parent's conversation as the
@@ -60,14 +65,16 @@ func WithFanout(f Fanout) Option {
 var spawnToolDef = llm.Tool{
 	Name: ActionSpawn,
 	Description: "Delegate a self-contained sub-task to a child agent that runs concurrently. " +
-		"Provide a complete objective and the minimal set of tool actions the child needs. The " +
-		"result is the child's final answer. Use this to parallelize independent sub-tasks.",
+		"Provide a complete objective and either the minimal set of tool actions the child needs, or " +
+		"the name of an agent to run it as. The result is the child's final answer. Use this to " +
+		"parallelize independent sub-tasks or hand work to a specialist.",
 	InputSchema: json.RawMessage(`{
   "type": "object",
   "required": ["objective"],
   "properties": {
     "objective": {"type": "string", "minLength": 1},
-    "actions": {"type": "array", "items": {"type": "string"}}
+    "actions": {"type": "array", "items": {"type": "string"}},
+    "agent": {"type": "string"}
   },
   "additionalProperties": false
 }`),
