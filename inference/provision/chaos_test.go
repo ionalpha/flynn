@@ -1,15 +1,12 @@
 package provision
 
 import (
-	"archive/tar"
 	"bytes"
-	"compress/gzip"
 	"context"
 	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/ionalpha/flynn/fetch"
@@ -107,52 +104,7 @@ func TestInstallCorruptArchiveLeavesNothing(t *testing.T) {
 	noBuildLeftBehind(t, dest)
 }
 
-// TestExtractRefusesTraversalTar crafts a tar whose entry name escapes the install
-// directory (the tar writer, unlike the zip writer, allows arbitrary names), and
-// asserts extraction refuses it and writes nothing outside the destination.
-func TestExtractRefusesTraversalTar(t *testing.T) {
-	var buf bytes.Buffer
-	gw := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gw)
-	payload := []byte("pwned")
-	for _, name := range []string{"../escape.txt", "../../escape.txt", "/abs/escape.txt"} {
-		if err := tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(payload)), Typeflag: tar.TypeReg}); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := tw.Write(payload); err != nil {
-			t.Fatal(err)
-		}
-	}
-	_ = tw.Close()
-	_ = gw.Close()
-
-	parent := t.TempDir()
-	destDir := filepath.Join(parent, "install")
-	if err := os.MkdirAll(destDir, 0o750); err != nil {
-		t.Fatal(err)
-	}
-	tmp := filepath.Join(parent, "r.tar.gz")
-	if err := os.WriteFile(tmp, buf.Bytes(), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := extract(ArchiveTarGz, tmp, destDir); err == nil || !strings.Contains(err.Error(), "escape") {
-		t.Fatalf("traversal entry must be refused, got err=%v", err)
-	}
-	// Nothing may have been written above the install directory.
-	if _, err := os.Stat(filepath.Join(parent, "escape.txt")); !os.IsNotExist(err) {
-		t.Fatal("a traversal entry escaped the install directory")
-	}
-}
-
-// TestWriteFileEnforcesSizeCeiling covers the decompression-bomb guard at the unit
-// level: a body larger than the remaining budget is refused rather than written.
-func TestWriteFileEnforcesSizeCeiling(t *testing.T) {
-	dst := filepath.Join(t.TempDir(), "out")
-	if _, err := writeFile(dst, bytes.NewReader(bytes.Repeat([]byte{1}, 100)), 10); err == nil {
-		t.Fatal("a body over the limit must be refused")
-	}
-	if _, err := writeFile(dst, bytes.NewReader([]byte("ok")), 0); err == nil {
-		t.Fatal("a zero remaining budget must be refused")
-	}
-}
+// The archive-extraction security invariants (traversal refusal, decompression-bomb
+// ceiling, safe-join containment) live with the generic extractor in the acquire package.
+// This file keeps the install-level chaos invariants that are specific to the runtime
+// provisioner: a failed fetch or a corrupt release leaves no usable build behind.

@@ -1,4 +1,4 @@
-package provision
+package acquire
 
 import (
 	"path/filepath"
@@ -8,13 +8,13 @@ import (
 	"pgregory.net/rapid"
 )
 
-// TestSafeJoinContainmentProperty asserts the core security invariant of extraction:
-// for any archive entry name, safeJoin either rejects it or returns a path that stays
-// strictly within the install directory. No generated name, however it mixes
-// separators, "..", absolute roots, or empty segments, may resolve outside base.
+// TestSafeJoinContainmentProperty asserts the core security invariant of extraction: for
+// any archive entry name, SafeJoin either rejects it or returns a path that stays strictly
+// within the install directory. No generated name, however it mixes separators, "..",
+// absolute roots, or empty segments, may resolve outside base.
 func TestSafeJoinContainmentProperty(t *testing.T) {
 	base := filepath.Clean(t.TempDir())
-	segment := rapid.SampledFrom([]string{"a", "b", "dir", "..", ".", "", "x.txt", "llama-server"})
+	segment := rapid.SampledFrom([]string{"a", "b", "dir", "..", ".", "", "x.txt", "flyctl"})
 	rapid.Check(t, func(rt *rapid.T) {
 		sep := rapid.SampledFrom([]string{"/", `\`}).Draw(rt, "sep")
 		parts := rapid.SliceOfN(segment, 1, 6).Draw(rt, "parts")
@@ -23,7 +23,7 @@ func TestSafeJoinContainmentProperty(t *testing.T) {
 			name = sep + name
 		}
 
-		dst, ok := safeJoin(base, name)
+		dst, ok := SafeJoin(base, name)
 		if !ok {
 			return // a rejected entry is always acceptable
 		}
