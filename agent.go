@@ -23,10 +23,13 @@ import (
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/observe"
+	"github.com/ionalpha/flynn/orchestration"
 	"github.com/ionalpha/flynn/provider"
+	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
@@ -47,6 +50,10 @@ When the objective is fully accomplished, stop and reply with a short summary of
 // It is set well above any real run's pace so it catches only a degenerate tight
 // loop, not legitimate tool use.
 const defaultMaxActionsPerMinute = 600
+
+// defaultFanoutWidth caps how many child runs a fan-out may have outstanding at
+// once, bounding the blast radius of delegation alongside the depth guard.
+const defaultFanoutWidth = 8
 
 // Config configures an Agent. The zero value is usable: New fills in safe,
 // standalone defaults so the agent always runs without external services.
@@ -158,6 +165,24 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 		return "", err
 	}
 
+	// One resource store + work queue backs the whole run, including the child goals a
+	// fan-out spawns, so they land where the runtime reconciles them. The Agent kind is
+	// registered too, so a delegation to a named archetype resolves from the store.
+	reg := resource.NewRegistry()
+	for _, register := range []func(*resource.Registry) error{
+		resource.RegisterCoreKinds, goal.RegisterKind, archetype.RegisterKind,
+	} {
+		if err := register(reg); err != nil {
+			return "", err
+		}
+	}
+	store := resource.NewMemory(reg)
+	q := jobs.NewMemory()
+	// The spawner is the run's fan-out: it creates governed child goals (owned by the
+	// parent, grant narrowed, depth- and concurrency-bounded) and hands them to the
+	// runtime. Its enqueue hook is bound once the runtime exists (below).
+	spawner := orchestration.NewSpawner(store, nil, orchestration.WithConcurrency(defaultFanoutWidth))
+
 	// The session streams the run as an event spine; its Reporter is wired into the
 	// executor so every turn, tool call, and result is recorded.
 	sess := session.New(spine.NewMemoryLog(), bus.NewMemory())
@@ -175,7 +200,9 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 	for _, t := range toolset {
 		names = append(names, t.Def().Name)
 	}
-	names = append(names, mission.ActionModelGenerate)
+	// The generalist may also delegate (spawn child runs); an archetype run delegates
+	// only if its capabilities list it, so a narrow specialist cannot fan out.
+	names = append(names, mission.ActionModelGenerate, mission.ActionSpawn)
 	if a.cfg.Agent != nil {
 		if a.cfg.Agent.System != "" {
 			system = a.cfg.Agent.System
@@ -207,6 +234,8 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 		HasGrant: true,
 		Sandbox:  sb,
 		Reporter: reporter,
+		// Let the run delegate sub-goals to concurrent, governed child runs.
+		Fanout: spawner,
 		// Halt a runaway from outside the model loop. The default is a generous rate
 		// backstop: a real run dispatches far fewer than this per minute, so the breaker
 		// fires only on a degenerate tight loop, never on legitimate tool use.
@@ -215,9 +244,9 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 	if err != nil {
 		return "", err
 	}
-	// A nil Store makes the runtime build its in-process substrate (store, queue,
-	// bus) over a registry holding the core and Goal kinds.
 	rt, err := runtime.New(runtime.Config{
+		Store:        store,
+		Jobs:         q,
 		Executor:     exec,
 		Stop:         stop,
 		PollInterval: 200 * time.Millisecond,
@@ -226,6 +255,13 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 	if err != nil {
 		return "", err
 	}
+	// Bind the spawner to the runtime so a spawned child is enqueued for
+	// reconciliation. Binding here (rather than at construction) breaks the cycle: the
+	// executor holds the spawner, and the runtime holds the executor.
+	spawner.SetEnqueue(func(ctx context.Context, key resource.Key) error {
+		_, rerr := rt.Resume(ctx, key.Name)
+		return rerr
+	})
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
