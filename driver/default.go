@@ -42,6 +42,9 @@ func (defaultDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, error
 	if s.Brakes != nil {
 		opts = append(opts, mission.WithBrakes(s.Brakes))
 	}
+	if s.Fanout != nil {
+		opts = append(opts, mission.WithFanout(s.Fanout))
+	}
 	if s.Plan.SimplifyToolSchemas {
 		opts = append(opts, mission.WithSimplifiedSchemas())
 	}
