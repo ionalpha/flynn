@@ -181,14 +181,14 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 	// An ad-hoc child takes its authority from the requested actions. An unknown Agent
 	// fails the spawn closed.
 	childGrant := narrowGrant(parentSpec.Grant, sub.Actions)
-	childSystem := ""
+	childSystem, childDriver, childModel := "", "", ""
 	if sub.Agent != "" {
 		resolved, err := archetype.Resolve(ctx, s.store, parent.Scope, sub.Agent)
 		if err != nil {
 			return resource.Resource{}, fault.Wrap(fault.Forbidden, "spawn_agent_resolve", err)
 		}
 		childGrant = narrowGrant(parentSpec.Grant, resolved.Capabilities)
-		childSystem = resolved.System
+		childSystem, childDriver, childModel = resolved.System, resolved.Driver, resolved.Model
 	}
 	childSpec := goal.Spec{
 		Objective:     sub.Objective,
@@ -196,6 +196,8 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		Grant:         childGrant,
 		Depth:         depth,
 		BudgetPool:    pool,
+		Driver:        childDriver,
+		Model:         childModel,
 		System:        childSystem,
 	}
 	raw, err := json.Marshal(childSpec)
