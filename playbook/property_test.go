@@ -18,7 +18,7 @@ func TestServiceResultFieldsProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		m := map[string]any{}
 		n := rapid.IntRange(0, 5).Draw(rt, "n")
-		for i := 0; i < n; i++ {
+		for range n {
 			k := key.Draw(rt, "k")
 			switch rapid.IntRange(0, 3).Draw(rt, "kind") {
 			case 0:
