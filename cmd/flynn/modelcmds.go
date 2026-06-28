@@ -22,12 +22,15 @@ import (
 
 // dispatchModels routes a `flynn models <sub>` invocation to its handler. The bare
 // `models` command browses the catalog; the named subcommands cover the local model
-// lifecycle from provisioning a runtime through running and stopping a server.
+// lifecycle from discovering a model on the Hub through provisioning, running, and
+// stopping a server.
 func dispatchModels(sub []string, dataDir string) error {
 	if len(sub) == 0 {
 		return runModels(sub, dataDir, os.Stdout)
 	}
 	switch sub[0] {
+	case "search":
+		return runModelSearch(sub[1:], dataDir, os.Stdout)
 	case "bless":
 		return runModelBless(sub[1:], dataDir, os.Stdout)
 	case "fetch":
