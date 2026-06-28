@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/ionalpha/flynn/acquire"
 	"github.com/ionalpha/flynn/fetch"
 	"github.com/ionalpha/flynn/inference"
 )
@@ -185,22 +186,6 @@ func TestInstallRefusesVulnerableVersion(t *testing.T) {
 	}
 }
 
-func TestSafeJoinRejectsTraversal(t *testing.T) {
-	base := filepath.Clean("/tmp/install")
-	bad := []string{"../escape", "../../etc/passwd", "a/../../b", `..\windows`, "/abs/outside"}
-	for _, name := range bad {
-		if dst, ok := safeJoin(base, name); ok {
-			t.Fatalf("safeJoin(%q) allowed escape to %q", name, dst)
-		}
-	}
-	good := map[string]string{"bin/llama-server": "bin", "a/b/c.txt": "c.txt"}
-	for name := range good {
-		if _, ok := safeJoin(base, name); !ok {
-			t.Fatalf("safeJoin(%q) rejected a safe path", name)
-		}
-	}
-}
-
 func TestRegistryReleasesPassGate(t *testing.T) {
 	if len(Releases()) == 0 {
 		t.Fatal("expected pinned releases")
@@ -220,10 +205,10 @@ func TestRegistryReleasesPassGate(t *testing.T) {
 	}
 }
 
-// findBinaryInDest reports an error when the named binary is absent anywhere under
-// dest, for asserting that a refused install left nothing behind.
+// findBinaryInDest reports an error when the named binary is absent anywhere under dest,
+// for asserting that a refused install left nothing behind.
 func findBinaryInDest(dest, name string) (string, error) {
-	if p, ok := findBinary(dest, name); ok {
+	if p, ok := acquire.FindBinary(dest, name); ok {
 		return p, nil
 	}
 	return "", os.ErrNotExist
