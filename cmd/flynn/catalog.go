@@ -72,20 +72,8 @@ func openIntegrationRuntime(ctx context.Context, dataDir string) (*integrationRu
 		_ = durable.Close()
 		return nil, err
 	}
-	creds := credential.NewStore(store)
-	opts := []integrations.Option{
-		integrations.WithSecrets(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))),
-		integrations.WithCredentials(creds),
-	}
-	ereg := extension.NewRegistry()
-	// The integration surface (API operations) and the ops surface (hosting
-	// providers) share the same operation engine; register both so the catalog can
-	// load either kind of extension and surface its operations as tools.
-	if err := ereg.Register(integrations.NewHandler(opts...)); err != nil {
-		_ = durable.Close()
-		return nil, err
-	}
-	if err := ops.RegisterWith(ereg, opts...); err != nil {
+	creds, loader, err := wireExtensions(store, dataDir)
+	if err != nil {
 		_ = durable.Close()
 		return nil, err
 	}
@@ -93,9 +81,31 @@ func openIntegrationRuntime(ctx context.Context, dataDir string) (*integrationRu
 		store:  store,
 		creds:  creds,
 		svc:    service.NewStore(store),
-		loader: extension.NewLoader(ereg),
+		loader: loader,
 		closer: durable.Close,
 	}, nil
+}
+
+// wireExtensions assembles the extension execution stack over an existing resource
+// store: the credential store, the vault-backed secret source, and a loader whose
+// registry serves both the integration surface (API operations) and the ops surface
+// (hosting providers) from one operation engine. It is shared by the integration
+// commands and the served supervision loop so an operation runs through identical
+// credential resolution, role enforcement, and egress confinement everywhere.
+func wireExtensions(store resource.Store, dataDir string) (*credential.Store, *extension.Loader, error) {
+	creds := credential.NewStore(store)
+	opts := []integrations.Option{
+		integrations.WithSecrets(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))),
+		integrations.WithCredentials(creds),
+	}
+	ereg := extension.NewRegistry()
+	if err := ereg.Register(integrations.NewHandler(opts...)); err != nil {
+		return nil, nil, err
+	}
+	if err := ops.RegisterWith(ereg, opts...); err != nil {
+		return nil, nil, err
+	}
+	return creds, extension.NewLoader(ereg), nil
 }
 
 // integrationsList prints the catalog: every extension, where it came from, whether
