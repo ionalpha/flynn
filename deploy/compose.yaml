@@ -29,6 +29,9 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       # Control-plane bearer token. If unset, one is generated and printed to the logs.
       FLYNN_API_TOKEN: ${FLYNN_API_TOKEN:-}
+      # Unseals the credential vault non-interactively so configured integrations work.
+      # Required only once you store an integration credential; set a long random value.
+      FLYNN_VAULT_PASSPHRASE: ${FLYNN_VAULT_PASSPHRASE:-}
     volumes:
       - flynn-data:/data
     restart: unless-stopped
