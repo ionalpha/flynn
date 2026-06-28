@@ -13,13 +13,13 @@ import (
 	"github.com/ionalpha/flynn/inference"
 )
 
-// Prober runs a present program to read its version. It is a narrow boundary so the engine
-// can be tested without executing anything and so the host can confine the probe (a fixed,
-// argument-only invocation of a discovered binary). A probe failure is reported, never
-// fatal: a binary that will not print a version is treated as not usable rather than
-// trusted blindly.
+// Prober runs a present program's version command and returns its output. It is a narrow
+// boundary so the engine can be tested without executing anything and so the host can
+// confine the probe: the real implementation runs the program through the sandbox, never
+// spawning a process directly. A probe error means the program is absent or would not run,
+// which the engine treats as "not present" rather than trusting it blindly.
 type Prober interface {
-	Probe(ctx context.Context, path string, args []string) (string, error)
+	Probe(ctx context.Context, name string, args []string) (string, error)
 }
 
 // Source is where a satisfied dependency came from.
@@ -32,8 +32,9 @@ const (
 	SourceProvisioned Source = "provisioned"
 )
 
-// Resolved is a satisfied dependency: the path to run, the version in effect, and where it
-// came from.
+// Resolved is a satisfied dependency: what to run, the version in effect, and where it came
+// from. For a system program the path is the program name the sandbox resolves on PATH; for
+// a provisioned build it is the absolute path of the installed binary.
 type Resolved struct {
 	Name    string
 	Path    string
@@ -41,9 +42,9 @@ type Resolved struct {
 	Source  Source
 }
 
-// Report is the observed state of a dependency without changing anything, for a status
-// surface: whether a usable build is present on the host, its version, whether it meets the
-// floor, and whether Flynn could provision one for this platform if it is not.
+// Report is the observed state of a dependency without changing anything: whether a usable
+// build is present on the host, its version, whether it meets the floor, and whether Flynn
+// could provision one for this platform if it is not.
 type Report struct {
 	Name         string
 	Present      bool
@@ -58,34 +59,23 @@ type Report struct {
 // verified through the acquire layer and installed under the data directory. It holds no
 // program knowledge: every program is a spec it reads.
 type Manager struct {
-	store    *Store
-	dl       *fetch.Downloader
-	dataDir  string
-	prober   Prober
-	lookPath func(string) (string, error)
-	goos     string
-	goarch   string
+	store   *Store
+	dl      *fetch.Downloader
+	dataDir string
+	prober  Prober
+	goos    string
+	goarch  string
 }
 
 // Option configures a Manager.
 type Option func(*Manager)
 
-// WithProber sets the version-probe boundary (default a sandboxed system prober supplied by
-// the caller; a nil prober means present binaries are accepted without a version check).
+// WithProber sets the version-probe boundary. A nil prober means no system program can be
+// verified, so every dependency is provisioned from its pinned build.
 func WithProber(p Prober) Option { return func(m *Manager) { m.prober = p } }
 
-// WithLookPath sets the PATH lookup used for detection (default exec.LookPath via the
-// system prober's resolver). Tests inject a fake.
-func WithLookPath(f func(string) (string, error)) Option {
-	return func(m *Manager) {
-		if f != nil {
-			m.lookPath = f
-		}
-	}
-}
-
-// WithPlatform overrides the target platform (default the running GOOS/GOARCH). Tests use
-// it to exercise the provisioning path for a specific platform.
+// WithPlatform overrides the target platform (default the running GOOS/GOARCH). Tests use it
+// to exercise provisioning for a specific platform.
 func WithPlatform(goos, goarch string) Option {
 	return func(m *Manager) {
 		if goos != "" {
@@ -100,14 +90,7 @@ func WithPlatform(goos, goarch string) Option {
 // NewManager builds a dependency manager over store. dl is the verified downloader used to
 // provision a missing build; dataDir is the root the install directory lives under.
 func NewManager(store *Store, dl *fetch.Downloader, dataDir string, opts ...Option) *Manager {
-	m := &Manager{
-		store:    store,
-		dl:       dl,
-		dataDir:  dataDir,
-		lookPath: defaultLookPath,
-		goos:     runtime.GOOS,
-		goarch:   runtime.GOARCH,
-	}
+	m := &Manager{store: store, dl: dl, dataDir: dataDir, goos: runtime.GOOS, goarch: runtime.GOARCH}
 	for _, o := range opts {
 		o(m)
 	}
@@ -137,50 +120,59 @@ func (m *Manager) Check(ctx context.Context, name string) (Report, error) {
 	}
 	_, canProvision := dep.Spec.ReleaseFor(m.goos, m.goarch)
 	rep := Report{Name: name, CanProvision: canProvision}
-	if r, ok := m.detect(ctx, dep.Spec, name); ok {
+	floor := parseFloor(dep.Spec.MinVersion)
+	for _, b := range m.presentBinaries(ctx, dep.Spec) {
 		rep.Present = true
-		rep.Path = r.Path
-		rep.Version = r.Version
-		rep.MeetsFloor = true
-		return rep, nil
-	}
-	// Detection failed the floor or found nothing; record presence at a lower fidelity so
-	// the surface can say "present but below floor" versus "absent".
-	for _, b := range dep.Spec.Binaries {
-		if p, err := m.lookPath(b); err == nil {
-			rep.Present = true
-			rep.Path = p
-			break
-		}
+		rep.Path = b.name
+		rep.Version = b.ver.String()
+		rep.MeetsFloor = floor == nil || !b.ver.Less(floor)
+		break // report the first present binary
 	}
 	return rep, nil
 }
 
 // detect implements the detect-installed-first policy: the first present binary that meets
-// the floor is returned. A binary that cannot be probed, or is below the floor, is skipped
-// so a vulnerable or unreadable system install never shadows the pinned build.
+// the floor is used. A binary that cannot be probed, or is below the floor, is skipped so a
+// vulnerable or unreadable system install never shadows the pinned build.
 func (m *Manager) detect(ctx context.Context, spec Spec, name string) (Resolved, bool) {
 	floor := parseFloor(spec.MinVersion)
+	for _, b := range m.presentBinaries(ctx, spec) {
+		if floor != nil && b.ver.Less(floor) {
+			continue // present but below the floor; prefer the pinned build
+		}
+		return Resolved{Name: name, Path: b.name, Version: b.ver.String(), Source: SourceSystem}, true
+	}
+	return Resolved{}, false
+}
+
+// probed is a present binary and the version read from it.
+type probed struct {
+	name string
+	ver  inference.Version
+}
+
+// presentBinaries probes each candidate binary in order and yields, lazily via a slice, the
+// ones that run and print a parseable version. With no prober or no version arguments a
+// present build cannot be verified through the sandbox, so none are reported and the pinned
+// build is preferred. It stops at the first success for Resolve's common case, but returns a
+// slice so Check and the floor-skip in detect can consider each in turn.
+func (m *Manager) presentBinaries(ctx context.Context, spec Spec) []probed {
+	if m.prober == nil || len(spec.VersionArgs) == 0 {
+		return nil
+	}
+	var out []probed
 	for _, b := range spec.Binaries {
-		path, err := m.lookPath(b)
-		if err != nil {
-			continue
-		}
-		// No version probe configured, or no prober wired: accept the present binary as-is.
-		if len(spec.VersionArgs) == 0 || m.prober == nil {
-			return Resolved{Name: name, Path: path, Source: SourceSystem}, true
-		}
-		raw, err := m.prober.Probe(ctx, path, spec.VersionArgs)
+		raw, err := m.prober.Probe(ctx, b, spec.VersionArgs)
 		if err != nil {
 			continue
 		}
 		v := parseVersion(raw, spec.VersionRegex)
-		if floor != nil && v.Less(floor) {
-			continue // present but below the floor; prefer the pinned build
+		if len(v) == 0 {
+			continue
 		}
-		return Resolved{Name: name, Path: path, Version: v.String(), Source: SourceSystem}, true
+		out = append(out, probed{name: b, ver: v})
 	}
-	return Resolved{}, false
+	return out
 }
 
 // provision fetches and installs the pinned build for this platform, refusing a spec whose
@@ -220,11 +212,11 @@ func (m *Manager) provision(ctx context.Context, spec Spec, name string) (Resolv
 }
 
 // parseFloor parses a minimum-version string, returning nil when no floor is set.
-func parseFloor(min string) inference.Version {
-	if strings.TrimSpace(min) == "" {
+func parseFloor(minVer string) inference.Version {
+	if strings.TrimSpace(minVer) == "" {
 		return nil
 	}
-	return inference.ParseVersion(min)
+	return inference.ParseVersion(minVer)
 }
 
 // parseVersion extracts the version token from raw version output (capture group one of

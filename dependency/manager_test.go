@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"testing"
 
 	"github.com/ionalpha/flynn/fetch"
@@ -27,7 +26,8 @@ func testStore(t *testing.T) *Store {
 	return NewStore(resource.NewMemory(reg))
 }
 
-// fakeProber returns a scripted version string (or an error) for any probe.
+// fakeProber scripts a version string (or an error) for any probe, standing in for running
+// a real program through the sandbox.
 type fakeProber struct {
 	out string
 	err error
@@ -35,21 +35,8 @@ type fakeProber struct {
 
 func (p fakeProber) Probe(context.Context, string, []string) (string, error) { return p.out, p.err }
 
-// foundAt makes a lookPath that resolves only the named binaries to a fixed path.
-func foundAt(path string, names ...string) func(string) (string, error) {
-	set := map[string]bool{}
-	for _, n := range names {
-		set[n] = true
-	}
-	return func(name string) (string, error) {
-		if set[name] {
-			return path, nil
-		}
-		return "", exec.ErrNotFound
-	}
-}
-
-func notFound(string) (string, error) { return "", exec.ErrNotFound }
+// absent is a prober that reports every program as not runnable.
+var absent = fakeProber{err: errors.New("not found")}
 
 // serveTarGz builds a tar.gz holding a single executable and serves it over TLS, returning
 // the url, the downloader that trusts the server, and the archive's digest and size.
@@ -90,32 +77,30 @@ func linuxSpec(t *testing.T, url, sha string, size int64) Spec {
 	}
 }
 
-// TestEnsureUsesSystemAboveFloor proves a present binary that meets the floor is used as-is,
+// TestResolveUsesSystemAboveFloor proves a present binary that meets the floor is used as-is,
 // with no download (the release URL is unreachable, so reaching it would be the bug).
-func TestEnsureUsesSystemAboveFloor(t *testing.T) {
+func TestResolveUsesSystemAboveFloor(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
-	spec := linuxSpec(t, "https://127.0.0.1:1/never", "00", 1)
-	if _, err := s.Put(ctx, "flyctl", spec); err != nil {
+	if _, err := s.Put(ctx, "flyctl", linuxSpec(t, "https://127.0.0.1:1/never", "00", 1)); err != nil {
 		t.Fatalf("put: %v", err)
 	}
 	m := NewManager(s, fetch.New(), t.TempDir(),
-		WithLookPath(foundAt("/usr/local/bin/flyctl", "flyctl")),
 		WithProber(fakeProber{out: "flyctl v0.4.61 linux/amd64"}),
 		WithPlatform("linux", "amd64"))
 
 	got, err := m.Resolve(ctx, "flyctl")
 	if err != nil {
-		t.Fatalf("ensure: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
-	if got.Source != SourceSystem || got.Path != "/usr/local/bin/flyctl" || got.Version != "0.4.61" {
+	if got.Source != SourceSystem || got.Path != "flyctl" || got.Version != "0.4.61" {
 		t.Fatalf("expected the system binary, got %+v", got)
 	}
 }
 
-// TestEnsureSkipsSystemBelowFloor proves a present binary below the floor is not used; the
+// TestResolveSkipsSystemBelowFloor proves a present binary below the floor is not used; the
 // pinned build is provisioned instead.
-func TestEnsureSkipsSystemBelowFloor(t *testing.T) {
+func TestResolveSkipsSystemBelowFloor(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	url, dl, sha, size := serveTarGz(t, "flyctl", "#!flyctl")
@@ -123,34 +108,31 @@ func TestEnsureSkipsSystemBelowFloor(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	m := NewManager(s, dl, t.TempDir(),
-		WithLookPath(foundAt("/usr/local/bin/flyctl", "flyctl")),
 		WithProber(fakeProber{out: "flyctl v0.1.0 linux/amd64"}), // below the 0.3.0 floor
 		WithPlatform("linux", "amd64"))
 
 	got, err := m.Resolve(ctx, "flyctl")
 	if err != nil {
-		t.Fatalf("ensure: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
 	if got.Source != SourceProvisioned || got.Version != "0.4.61" {
 		t.Fatalf("expected a provisioned build, got %+v", got)
 	}
 }
 
-// TestEnsureProvisionsWhenAbsent proves a missing program is fetched, verified, and installed.
-func TestEnsureProvisionsWhenAbsent(t *testing.T) {
+// TestResolveProvisionsWhenAbsent proves a missing program is fetched, verified, and installed.
+func TestResolveProvisionsWhenAbsent(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	url, dl, sha, size := serveTarGz(t, "flyctl", "#!flyctl")
 	if _, err := s.Put(ctx, "flyctl", linuxSpec(t, url, sha, size)); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	m := NewManager(s, dl, t.TempDir(),
-		WithLookPath(notFound),
-		WithPlatform("linux", "amd64"))
+	m := NewManager(s, dl, t.TempDir(), WithProber(absent), WithPlatform("linux", "amd64"))
 
 	got, err := m.Resolve(ctx, "flyctl")
 	if err != nil {
-		t.Fatalf("ensure: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
 	if got.Source != SourceProvisioned {
 		t.Fatalf("expected provisioned, got %+v", got)
@@ -160,26 +142,23 @@ func TestEnsureProvisionsWhenAbsent(t *testing.T) {
 	}
 }
 
-// TestEnsureNoBuildForPlatform proves an absent program with no shipped build for the host
+// TestResolveNoBuildForPlatform proves an absent program with no shipped build for the host
 // fails with a clear, actionable error rather than silently.
-func TestEnsureNoBuildForPlatform(t *testing.T) {
+func TestResolveNoBuildForPlatform(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	if _, err := s.Put(ctx, "flyctl", linuxSpec(t, "https://x/y", "00", 1)); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	m := NewManager(s, fetch.New(), t.TempDir(),
-		WithLookPath(notFound),
-		WithPlatform("plan9", "mips")) // no release for this platform
-
+	m := NewManager(s, fetch.New(), t.TempDir(), WithProber(absent), WithPlatform("plan9", "mips"))
 	if _, err := m.Resolve(ctx, "flyctl"); err == nil {
 		t.Fatal("expected a missing-build error for an unsupported platform")
 	}
 }
 
-// TestEnsurePinBelowFloorRefused proves a spec whose pinned version is below its own floor
+// TestResolvePinBelowFloorRefused proves a spec whose pinned version is below its own floor
 // is refused rather than installing a build the spec itself says is too old.
-func TestEnsurePinBelowFloorRefused(t *testing.T) {
+func TestResolvePinBelowFloorRefused(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
 	spec := linuxSpec(t, "https://x/y", "00", 1)
@@ -187,7 +166,7 @@ func TestEnsurePinBelowFloorRefused(t *testing.T) {
 	if _, err := s.Put(ctx, "flyctl", spec); err != nil {
 		t.Fatalf("put: %v", err)
 	}
-	m := NewManager(s, fetch.New(), t.TempDir(), WithLookPath(notFound), WithPlatform("linux", "amd64"))
+	m := NewManager(s, fetch.New(), t.TempDir(), WithProber(absent), WithPlatform("linux", "amd64"))
 	if _, err := m.Resolve(ctx, "flyctl"); err == nil {
 		t.Fatal("expected a pin-below-floor refusal")
 	}
@@ -203,9 +182,7 @@ func TestCheckReportsState(t *testing.T) {
 	}
 	// Present and above floor.
 	m := NewManager(s, fetch.New(), t.TempDir(),
-		WithLookPath(foundAt("/bin/flyctl", "flyctl")),
-		WithProber(fakeProber{out: "flyctl v0.4.61 linux/amd64"}),
-		WithPlatform("linux", "amd64"))
+		WithProber(fakeProber{out: "flyctl v0.4.61 linux/amd64"}), WithPlatform("linux", "amd64"))
 	rep, err := m.Check(ctx, "flyctl")
 	if err != nil {
 		t.Fatalf("check: %v", err)
@@ -214,26 +191,24 @@ func TestCheckReportsState(t *testing.T) {
 		t.Fatalf("expected present+meets-floor+can-provision, got %+v", rep)
 	}
 
-	// Present but below floor: present yet not meeting the floor.
+	// Present but below floor.
 	m2 := NewManager(s, fetch.New(), t.TempDir(),
-		WithLookPath(foundAt("/bin/flyctl", "flyctl")),
-		WithProber(fakeProber{out: "flyctl v0.1.0 linux/amd64"}),
-		WithPlatform("linux", "amd64"))
+		WithProber(fakeProber{out: "flyctl v0.1.0 linux/amd64"}), WithPlatform("linux", "amd64"))
 	rep2, _ := m2.Check(ctx, "flyctl")
 	if !rep2.Present || rep2.MeetsFloor {
 		t.Fatalf("expected present-but-below-floor, got %+v", rep2)
 	}
 
 	// Absent.
-	m3 := NewManager(s, fetch.New(), t.TempDir(), WithLookPath(notFound), WithPlatform("linux", "amd64"))
+	m3 := NewManager(s, fetch.New(), t.TempDir(), WithProber(absent), WithPlatform("linux", "amd64"))
 	rep3, _ := m3.Check(ctx, "flyctl")
 	if rep3.Present {
 		t.Fatalf("expected absent, got %+v", rep3)
 	}
 }
 
-// TestProbeErrorSkipsBinary proves a binary that cannot be probed is treated as not usable,
-// not trusted blindly.
+// TestProbeErrorSkipsBinary proves a binary whose probe fails is treated as not usable, not
+// trusted blindly: the pinned build is provisioned instead.
 func TestProbeErrorSkipsBinary(t *testing.T) {
 	s := testStore(t)
 	ctx := context.Background()
@@ -242,12 +217,11 @@ func TestProbeErrorSkipsBinary(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	m := NewManager(s, dl, t.TempDir(),
-		WithLookPath(foundAt("/bin/flyctl", "flyctl")),
 		WithProber(fakeProber{err: errors.New("exec format error")}),
 		WithPlatform("linux", "amd64"))
 	got, err := m.Resolve(ctx, "flyctl")
 	if err != nil {
-		t.Fatalf("ensure: %v", err)
+		t.Fatalf("resolve: %v", err)
 	}
 	if got.Source != SourceProvisioned {
 		t.Fatalf("an unprobeable system binary must be skipped, got %+v", got)
