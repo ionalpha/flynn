@@ -30,6 +30,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/service"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -217,6 +218,9 @@ func missionRegistry() (*resource.Registry, error) {
 		return nil, err
 	}
 	if err := extension.RegisterKind(reg); err != nil {
+		return nil, err
+	}
+	if err := service.RegisterKind(reg); err != nil {
 		return nil, err
 	}
 	return reg, nil
