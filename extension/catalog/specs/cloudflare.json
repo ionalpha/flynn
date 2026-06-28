@@ -1,0 +1,145 @@
+{
+  "displayName": "Cloudflare",
+  "provider": "cloudflare",
+  "baseURL": "https://api.cloudflare.com/client/v4",
+  "capabilities": ["cloudflare.dns", "cloudflare.pages"],
+  "auth": {"type": "bearer", "credentialRef": "cloudflare"},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "list_accounts",
+          "description": "List the accounts the token can access. Use an account id with the Pages operations.",
+          "role": "read",
+          "input": {"type": "object", "properties": {}},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/accounts", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_zones",
+          "description": "List zones (domains) on the account. Use a zone id with the DNS operations.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"name": {"type": "string"}}},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/zones", "query": {"name": "{{default(config.name, '')}}"}, "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "get_zone",
+          "description": "Get a single zone by id.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"zone_id": {"type": "string"}}, "required": ["zone_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/zones/{{config.zone_id}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_dns_records",
+          "description": "List the DNS records in a zone. Filter by type or name when given.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"zone_id": {"type": "string"}, "type": {"type": "string"}, "name": {"type": "string"}}, "required": ["zone_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/zones/{{config.zone_id}}/dns_records", "query": {"type": "{{default(config.type, '')}}", "name": "{{default(config.name, '')}}"}, "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "create_dns_record",
+          "description": "Create a DNS record in a zone. type is A, AAAA, CNAME, TXT, MX, etc. ttl 1 means automatic. proxied routes the record through Cloudflare.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"zone_id": {"type": "string"}, "type": {"type": "string"}, "name": {"type": "string"}, "content": {"type": "string"}, "ttl": {"type": "integer"}, "proxied": {"type": "boolean"}}, "required": ["zone_id", "type", "name", "content"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "POST", "url": "/zones/{{config.zone_id}}/dns_records", "headers": {"Accept": "application/json"}, "body": {"type": "{{config.type}}", "name": "{{config.name}}", "content": "{{config.content}}", "ttl": "{{default(config.ttl, 1)}}", "proxied": "{{default(config.proxied, false)}}"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "update_dns_record",
+          "description": "Replace an existing DNS record in a zone by record id.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"zone_id": {"type": "string"}, "record_id": {"type": "string"}, "type": {"type": "string"}, "name": {"type": "string"}, "content": {"type": "string"}, "ttl": {"type": "integer"}, "proxied": {"type": "boolean"}}, "required": ["zone_id", "record_id", "type", "name", "content"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "PUT", "url": "/zones/{{config.zone_id}}/dns_records/{{config.record_id}}", "headers": {"Accept": "application/json"}, "body": {"type": "{{config.type}}", "name": "{{config.name}}", "content": "{{config.content}}", "ttl": "{{default(config.ttl, 1)}}", "proxied": "{{default(config.proxied, false)}}"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "delete_dns_record",
+          "description": "Delete a DNS record from a zone by record id.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"zone_id": {"type": "string"}, "record_id": {"type": "string"}}, "required": ["zone_id", "record_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "DELETE", "url": "/zones/{{config.zone_id}}/dns_records/{{config.record_id}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_pages_projects",
+          "description": "List the Cloudflare Pages projects in an account.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}}, "required": ["account_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/accounts/{{config.account_id}}/pages/projects", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "get_pages_project",
+          "description": "Get a single Cloudflare Pages project by name, including its subdomain and latest deployment.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}, "project_name": {"type": "string"}}, "required": ["account_id", "project_name"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/accounts/{{config.account_id}}/pages/projects/{{config.project_name}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "create_pages_project",
+          "description": "Create a Cloudflare Pages project. The production branch defaults to main. The project's files are uploaded by a later deploy step.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}, "name": {"type": "string"}, "production_branch": {"type": "string"}}, "required": ["account_id", "name"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "POST", "url": "/accounts/{{config.account_id}}/pages/projects", "headers": {"Accept": "application/json"}, "body": {"name": "{{config.name}}", "production_branch": "{{default(config.production_branch, 'main')}}"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_pages_deployments",
+          "description": "List the deployments of a Cloudflare Pages project, newest first.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"account_id": {"type": "string"}, "project_name": {"type": "string"}}, "required": ["account_id", "project_name"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/accounts/{{config.account_id}}/pages/projects/{{config.project_name}}/deployments", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.result}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
