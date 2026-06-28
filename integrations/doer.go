@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/fault"
@@ -244,24 +245,30 @@ func drain(resp *http.Response) {
 // no secret. An auth type the declarative interpreter does not implement (oauth2 and
 // custom protocols) is a terminal error here, since it belongs to the optional-code
 // port rather than this surface.
-func providerFor(a extension.AuthSpec) (auth.Provider, error) {
+func providerFor(a extension.AuthSpec, exchanger auth.TokenExchanger, clk clock.Clock) (auth.Provider, error) {
 	cfg, err := authConfig(a)
 	if err != nil {
 		return nil, err
 	}
-	return auth.FromConfig(cfg)
+	var opts []auth.Option
+	if cfg.Type == auth.SchemeOAuth2 {
+		// The oauth2 scheme obtains its token through the governed transport and tracks
+		// expiry against the injected clock.
+		opts = append(opts, auth.WithTokenExchanger(exchanger), auth.WithClock(clk))
+	}
+	return auth.FromConfig(cfg, opts...)
 }
 
 // providerForCredential builds the auth provider for a resolved credential. The
 // credential supplies the effective vault reference (where its secret lives) and,
 // when set, the auth type, overriding the extension's defaults so a credential and
 // the request it signs always agree on the mechanism and the secret location.
-func providerForCredential(a extension.AuthSpec, cred credential.Credential) (auth.Provider, error) {
+func providerForCredential(a extension.AuthSpec, cred credential.Credential, exchanger auth.TokenExchanger, clk clock.Clock) (auth.Provider, error) {
 	a.CredentialRef = cred.Ref()
 	if cred.Spec.AuthType != "" {
 		a.Type = cred.Spec.AuthType
 	}
-	return providerFor(a)
+	return providerFor(a, exchanger, clk)
 }
 
 func authConfig(a extension.AuthSpec) (auth.Config, error) {
@@ -281,6 +288,30 @@ func authConfig(a extension.AuthSpec) (auth.Config, error) {
 		// credential model that gives basic auth a separate username is a later
 		// addition. An empty username is valid.
 		return auth.Config{Type: auth.SchemeBasic, PasswordRef: a.CredentialRef}, nil
+	case "oauth2":
+		if a.OAuth2 == nil {
+			return auth.Config{}, fault.New(fault.Terminal, "integration_auth", "integration: oauth2 auth needs an oauth2 block")
+		}
+		grant := a.OAuth2.Grant
+		if grant == "" {
+			grant = auth.GrantClientCredentials
+		}
+		cfg := auth.Config{
+			Type:     auth.SchemeOAuth2,
+			TokenURL: a.OAuth2.TokenURL,
+			ClientID: a.OAuth2.ClientID,
+			Grant:    grant,
+			Scopes:   a.OAuth2.Scopes,
+		}
+		// The integration's credential supplies the oauth2 secret: the client secret
+		// for the client_credentials grant, the refresh token for the refresh_token
+		// grant.
+		if grant == auth.GrantRefreshToken {
+			cfg.RefreshTokenRef = a.CredentialRef
+		} else {
+			cfg.ClientSecretRef = a.CredentialRef
+		}
+		return cfg, nil
 	default:
 		return auth.Config{}, fault.New(fault.Terminal, "integration_auth",
 			"integration: auth type "+a.Type+" is not supported by the declarative interpreter; use the code port")

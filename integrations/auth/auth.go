@@ -24,6 +24,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/secret"
 )
@@ -43,6 +44,9 @@ const (
 	// SchemeAPIKey sends a key in a named header or query parameter, with an
 	// optional value prefix.
 	SchemeAPIKey Scheme = "api_key"
+	// SchemeOAuth2 obtains a short-lived access token from a token endpoint and sends
+	// it as a bearer token, refreshing it when it expires.
+	SchemeOAuth2 Scheme = "oauth2"
 )
 
 // Placement is where SchemeAPIKey puts the key.
@@ -80,6 +84,63 @@ type Config struct {
 	// Prefix is an optional literal prepended to the SchemeAPIKey value (e.g.
 	// "Token ", "Bearer "). It is part of the wire value, not a secret.
 	Prefix string `json:"prefix,omitempty"`
+
+	// OAuth2 fields (SchemeOAuth2). TokenURL is the token endpoint. ClientID is the
+	// client identifier (semi-public, carried inline); ClientSecretRef and
+	// RefreshTokenRef are vault references for the client secret and a refresh token.
+	// Grant selects the flow ("client_credentials" by default, or "refresh_token");
+	// Scopes are requested at the token endpoint. A token endpoint returning an
+	// access token and its lifetime is all this needs: the access token is cached and
+	// refreshed, and never stored in a spec.
+	TokenURL        string   `json:"token_url,omitempty"`
+	ClientID        string   `json:"client_id,omitempty"`
+	ClientSecretRef string   `json:"client_secret_ref,omitempty"`
+	RefreshTokenRef string   `json:"refresh_token_ref,omitempty"`
+	Grant           string   `json:"grant,omitempty"`
+	Scopes          []string `json:"scopes,omitempty"`
+}
+
+// OAuth2 grant types.
+const (
+	// GrantClientCredentials authenticates with the client's own credentials, for
+	// server-to-server access.
+	GrantClientCredentials = "client_credentials"
+	// GrantRefreshToken exchanges a stored refresh token for an access token.
+	GrantRefreshToken = "refresh_token"
+)
+
+// TokenExchanger performs the token-endpoint request for SchemeOAuth2. The shared
+// request transport satisfies it, so a token request is dispatched through the same
+// governed path (anti-SSRF dialer, bounded retries) as every other request.
+type TokenExchanger interface {
+	Do(ctx context.Context, req *http.Request) (*http.Response, error)
+}
+
+// options carries the dependencies a stateful provider needs beyond its Config. The
+// static schemes ignore them; SchemeOAuth2 requires a TokenExchanger and uses the
+// clock to track token expiry.
+type options struct {
+	exchanger TokenExchanger
+	clk       clock.Clock
+}
+
+// Option configures FromConfig.
+type Option func(*options)
+
+// WithTokenExchanger supplies the transport SchemeOAuth2 uses to call the token
+// endpoint. It is required to build an oauth2 provider.
+func WithTokenExchanger(e TokenExchanger) Option {
+	return func(o *options) { o.exchanger = e }
+}
+
+// WithClock supplies the clock SchemeOAuth2 measures token expiry against (default
+// clock.System). Tests pass a manual clock for determinism.
+func WithClock(c clock.Clock) Option {
+	return func(o *options) {
+		if c != nil {
+			o.clk = c
+		}
+	}
 }
 
 // Provider applies a single auth scheme to a request. It is the pluggable unit of
@@ -99,8 +160,13 @@ type Provider interface {
 // FromConfig builds the Provider a Config selects, validating that the config
 // carries the references its scheme requires. An unknown scheme, or a scheme
 // missing a required field, is a terminal configuration fault. The zero Config and
-// SchemeNone both yield the no-op provider.
-func FromConfig(c Config) (Provider, error) {
+// SchemeNone both yield the no-op provider. SchemeOAuth2 requires a TokenExchanger
+// (see WithTokenExchanger); the other schemes ignore the options.
+func FromConfig(c Config, opts ...Option) (Provider, error) {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	switch c.Type {
 	case "", SchemeNone:
 		return none{}, nil
@@ -132,6 +198,8 @@ func FromConfig(c Config) (Provider, error) {
 			return nil, fault.New(fault.Terminal, "auth_config", "api_key param is not a valid header name")
 		}
 		return apiKey{tokenRef: c.TokenRef, in: in, param: c.Param, prefix: c.Prefix}, nil
+	case SchemeOAuth2:
+		return newOAuth2(c, o)
 	default:
 		return nil, fault.New(fault.Terminal, "auth_config", "unknown auth scheme: "+string(c.Type))
 	}
