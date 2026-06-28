@@ -1,5 +1,5 @@
 {
-  "description": "Deploy an application to Fly.io and register it as a supervised service. Run from the application's directory (the one holding its fly.toml). Logging in (fly auth login) and any volumes or secrets the app needs are operator prerequisites; this playbook ensures the CLI is present, the app exists, deploys it, and tracks the result.",
+  "description": "Deploy an application to Fly.io and register it as a supervised service. Run from the application's directory (the one holding its fly.toml). This playbook ensures the CLI is present and, when you are not logged in, asks you to confirm before it runs fly auth login (which opens your browser); it then ensures the app exists, deploys it, and tracks the result. Set FLY_API_TOKEN to skip the interactive login. Any volumes or secrets the app needs are operator prerequisites.",
   "inputs": {
     "type": "object",
     "properties": {
@@ -14,9 +14,17 @@
     "steps": [
       {"id": "flyctl", "op": "dependency", "dependency": {"name": "flyctl"}},
       {"id": "auth", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth whoami", "allowNonzero": true}},
+      {"op": "condition", "condition": {
+        "if": "steps.auth.exitCode != 0",
+        "then": [
+          {"op": "confirm", "confirm": {"message": "You are not logged in to Fly. Flynn will run `fly auth login`, which opens your browser to authorize. Press Enter to continue (or Ctrl-C to cancel; set FLY_API_TOKEN to skip)."}},
+          {"op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth login"}}
+        ]
+      }},
+      {"id": "authCheck", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth whoami", "allowNonzero": true}},
       {"op": "assert", "assert": {
-        "that": "steps.auth.exitCode == 0",
-        "message": "Not logged in to Fly. Run `fly auth login` (or set FLY_API_TOKEN), then re-run this playbook."
+        "that": "steps.authCheck.exitCode == 0",
+        "message": "Fly login did not complete. Run `fly auth login` (or set FLY_API_TOKEN), then re-run this playbook."
       }},
       {"id": "applist", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} apps list", "allowNonzero": true}},
       {"op": "condition", "condition": {

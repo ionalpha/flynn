@@ -72,6 +72,15 @@ type DependencyResolver interface {
 	Resolve(ctx context.Context, name string) (path string, err error)
 }
 
+// Confirmer performs the confirm steps of a flow: it shows the user a message and waits
+// for them to approve before the flow continues. The host wires how that is asked (an
+// interactive terminal prompt for a person, a fail-closed instruction for a
+// non-interactive run). Returning a non-nil error stops the flow, so a declined or
+// unanswerable confirmation aborts rather than proceeding without consent.
+type Confirmer interface {
+	Confirm(ctx context.Context, message string) error
+}
+
 // Limits bound a flow's resource use so a runtime-authored flow cannot wedge or
 // amplify. A zero field takes the interpreter's default; DefaultLimits documents
 // those. They are enforced as terminal faults: exceeding one stops the flow, it is
@@ -117,12 +126,13 @@ func (l Limits) merge(base Limits) Limits {
 // Interpreter runs flows. It holds the injected effect ports and the default limits;
 // it is safe for concurrent use because Run keeps all mutable run state local.
 type Interpreter struct {
-	http   HTTPDoer
-	tools  ToolCaller
-	exec   Execer
-	deps   DependencyResolver
-	clk    clock.Clock
-	limits Limits
+	http    HTTPDoer
+	tools   ToolCaller
+	exec    Execer
+	deps    DependencyResolver
+	confirm Confirmer
+	clk     clock.Clock
+	limits  Limits
 }
 
 // Option configures an Interpreter.
@@ -143,6 +153,10 @@ func WithExec(e Execer) Option { return func(i *Interpreter) { i.exec = e } }
 // WithDependencies sets the port that resolves dependency steps. Without it, a
 // dependency step fails closed.
 func WithDependencies(d DependencyResolver) Option { return func(i *Interpreter) { i.deps = d } }
+
+// WithConfirm sets the port that asks the user to approve confirm steps. Without it, a
+// confirm step fails closed.
+func WithConfirm(c Confirmer) Option { return func(i *Interpreter) { i.confirm = c } }
 
 // WithClock sets the time source the timeout cap measures against (default
 // clock.System). Tests pass a Manual clock for determinism.
@@ -283,6 +297,8 @@ func (r *run) execStep(ctx context.Context, st Step, s *scope) error {
 		out, err = r.execExec(ctx, st.Exec, s)
 	case OpDependency:
 		out, err = r.execDependency(ctx, st.Dependency, s)
+	case OpConfirm:
+		return r.execConfirm(ctx, st.Confirm, s)
 	default:
 		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(st.Op))
 	}
