@@ -22,6 +22,7 @@ package controlplane
 import (
 	"crypto/ed25519"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -169,7 +170,7 @@ func ResolveName(id *Identity, base, purpose, override string, c Constraints) (R
 // can never produce one), and a length window that can hold a derived name.
 func (c Constraints) valid() error {
 	if c.Charset == "" {
-		return fmt.Errorf("controlplane: name constraints: empty charset")
+		return errors.New("controlplane: name constraints: empty charset")
 	}
 	if c.MaxLen < c.MinLen {
 		return fmt.Errorf("controlplane: name constraints: maxLen %d below minLen %d", c.MaxLen, c.MinLen)
@@ -181,7 +182,7 @@ func (c Constraints) valid() error {
 		return fmt.Errorf("controlplane: name constraints: separator %q overlaps the charset", c.Separator)
 	}
 	if c.LeadLetter && leadingLetters(c.Charset) == "" {
-		return fmt.Errorf("controlplane: name constraints: leadLetter set but charset has no leading letters")
+		return errors.New("controlplane: name constraints: leadLetter set but charset has no leading letters")
 	}
 	return nil
 }
@@ -201,8 +202,8 @@ func (c Constraints) assemble(base string, digest []byte) (string, error) {
 	}
 	budget := c.MaxLen - len(prefix)
 	need := suffixFloorLen
-	if min := c.MinLen - len(prefix); min > need {
-		need = min
+	if floor := c.MinLen - len(prefix); floor > need {
+		need = floor
 	}
 	if need > budget {
 		return "", fmt.Errorf("controlplane: base %q leaves %d characters, need at least %d for a derived name", base, budget, need)
@@ -236,7 +237,7 @@ func encodeSuffix(digest []byte, charset string, n int) string {
 	x := new(big.Int).SetBytes(digest)
 	mod := new(big.Int)
 	out := make([]byte, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		x.DivMod(x, radix, mod)
 		out[i] = charset[mod.Int64()]
 	}
@@ -257,8 +258,8 @@ func (c Constraints) Validate(name string) error {
 			return fmt.Errorf("character %q not allowed", ch)
 		}
 	}
-	if c.LeadLetter && !isASCIILetter(name[0]) {
-		return fmt.Errorf("must begin with a letter")
+	if c.LeadLetter && len(name) > 0 && !isASCIILetter(name[0]) {
+		return errors.New("must begin with a letter")
 	}
 	if c.Separator != "" {
 		if strings.HasPrefix(name, c.Separator) || strings.HasSuffix(name, c.Separator) {
