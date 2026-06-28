@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/bindguard"
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/exposure"
@@ -115,8 +116,11 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if *apiAddr != "" {
 		var auth controlplane.Authenticator
 		if apiTok != "" {
+			// A local operator token is not grant-attenuated: it carries full action
+			// authority (AllowAll), bounded only by its scope, so the action gate reduces
+			// to the instance's own local grant. The zero Grant would instead deny-all.
 			auth = controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
-				apiTok: {ID: "operator", Scope: controlplane.ScopeRead},
+				apiTok: {ID: "operator", Scope: controlplane.ScopeRead, Grant: capability.AllowAll()},
 			})
 		} else {
 			gen, tok, err := controlplane.GeneratedOperator("operator", controlplane.ScopeRead, ids.Token)
