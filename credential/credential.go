@@ -30,12 +30,13 @@ const (
 )
 
 // Role is the privilege level a credential may exercise. Roles are ordered
-// read < operator < admin, and they are an opt-in narrowing: a credential with no
-// role is unscoped and an action that requires no role admits any credential. A
-// credential is refused only when both it and the action name a role and the
-// credential's rank is below the action's. The enforcement (refusing a low-role
-// credential for a higher action, recorded on the event log) is applied at the
-// dispatch boundary; this type is the policy the boundary reads.
+// read < operator < admin. Role gating is opt-in per action: an action that requires
+// no role admits any credential, so an integration that does not use roles is never
+// blocked. But once an action requires a role, it is enforced least-privilege: a
+// credential must carry a role that ranks at least as high, and a role-less
+// credential cannot satisfy it. The enforcement (refusing an insufficient credential
+// for an action, recorded on the event log) is applied where a request is signed;
+// this type is the policy that boundary reads.
 type Role string
 
 const (
@@ -67,12 +68,16 @@ func (r Role) rank() int {
 func (r Role) Valid() bool { return r.rank() > 0 }
 
 // Permits reports whether a credential carrying this role may be used for an action
-// that requires the given role. An unscoped credential (empty role) permits any
-// action, and an action that requires no role (empty) admits any credential; when
-// both name a role, the credential must rank at least as high as the action.
+// that requires the given role. An action that requires no role (empty) admits any
+// credential. Otherwise the requirement is enforced least-privilege: a role-less
+// credential is refused, and a credential with a role must rank at least as high as
+// the action requires.
 func (r Role) Permits(required Role) bool {
-	if r == "" || required == "" {
+	if required == "" {
 		return true
+	}
+	if r == "" {
+		return false
 	}
 	return r.rank() >= required.rank()
 }

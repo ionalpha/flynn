@@ -19,9 +19,12 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/flow"
+	"github.com/ionalpha/flynn/integrations/auth"
 	"github.com/ionalpha/flynn/integrations/request"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
@@ -39,12 +42,31 @@ type Spec struct {
 // Operation is one callable tool. Name and Description are what the model sees;
 // Input is the JSON Schema for the tool's arguments (the values the flow reads as
 // config); Flow is the declarative procedure that runs when the tool is invoked.
+// Role is the credential role the operation requires: when a credential store is
+// configured, a credential below this role is refused before the flow runs. An empty
+// role requires no particular privilege.
 type Operation struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
 	Input       json.RawMessage `json:"input,omitempty"`
+	Role        credential.Role `json:"role,omitempty"`
 	Flow        json.RawMessage `json:"flow"`
 }
+
+// Denial records a credential refused for an operation because its role was below
+// the operation's required role. It is handed to the audit recorder (see WithAudit)
+// so a host can write it to the event log with the caller's principal.
+type Denial struct {
+	Principal      string
+	Integration    string
+	Credential     string
+	CredentialRole credential.Role
+	RequiredRole   credential.Role
+}
+
+// AuditFunc receives a Denial when a role check refuses a credential. The host wires
+// it to its audit log; the integrations package stays decoupled from any log backend.
+type AuditFunc func(Denial)
 
 // Handler is the extension.Point for the "integration" surface. It builds an
 // integration's operations into tools backed by the flow interpreter and the shared
@@ -54,6 +76,8 @@ type Handler struct {
 	transport *request.Transport
 	secrets   secret.Source
 	limits    flow.Limits
+	creds     *credential.Store // optional; when set, credentials resolve by name/default and roles are enforced
+	audit     AuditFunc         // optional; receives a Denial on a role refusal
 
 	mu      sync.Mutex
 	mounted map[string][]mission.Tool // extension id -> tools
@@ -85,6 +109,19 @@ func WithSecrets(s secret.Source) Option {
 // WithLimits sets the resource caps every operation flow runs under.
 func WithLimits(l flow.Limits) Option {
 	return func(h *Handler) { h.limits = l }
+}
+
+// WithCredentials sets the credential store used to resolve an integration's
+// credential by name or default and to enforce operation roles. Without it, the
+// extension's auth credential reference is treated as a direct vault reference and no
+// role is enforced (the zero-config behaviour).
+func WithCredentials(c *credential.Store) Option {
+	return func(h *Handler) { h.creds = c }
+}
+
+// WithAudit sets the recorder notified when a role check refuses a credential.
+func WithAudit(a AuditFunc) Option {
+	return func(h *Handler) { h.audit = a }
 }
 
 // NewHandler builds an integration-surface handler.
@@ -125,12 +162,22 @@ func (h *Handler) OnLoad(_ context.Context, m extension.Mount) error {
 		return fault.New(fault.Terminal, "integration_no_ops", "integration: surface declares no operations")
 	}
 
-	provider, err := providerFor(m.Spec.Auth)
-	if err != nil {
+	// Validate the auth configuration up front (scheme plus its required fields, e.g.
+	// an api_key needs a parameter name) so a misconfigured integration is rejected at
+	// load. The credential value itself is resolved per call.
+	if _, err := providerFor(m.Spec.Auth); err != nil {
 		return err
 	}
-	doer := newTransportDoer(h.transport, provider, h.secrets, m.Spec.BaseURL, m.Spec.Safety.EgressAllow)
-	interp := flow.New(flow.WithHTTP(doer), flow.WithLimits(h.limits))
+	b := &binding{
+		transport: h.transport,
+		secrets:   h.secrets,
+		limits:    h.limits,
+		base:      m.Spec.BaseURL,
+		egress:    m.Spec.Safety.EgressAllow,
+		auth:      m.Spec.Auth,
+		creds:     h.creds,
+		audit:     h.audit,
+	}
 
 	tools := make([]mission.Tool, 0, len(spec.Operations))
 	seen := map[string]bool{}
@@ -143,16 +190,20 @@ func (h *Handler) OnLoad(_ context.Context, m extension.Mount) error {
 			return fault.New(fault.Terminal, "integration_op_dup", "integration: duplicate operation "+op.Name)
 		}
 		seen[op.Name] = true
+		if op.Role != "" && !op.Role.Valid() {
+			return fault.New(fault.Terminal, "integration_op_role", "integration: operation "+op.Name+" has an unknown role "+string(op.Role))
+		}
 		f, err := flow.Decode(op.Flow)
 		if err != nil {
 			return fault.Wrap(fault.Terminal, "integration_op_flow", fmt.Errorf("operation %q: %w", op.Name, err))
 		}
 		tools = append(tools, &opTool{
-			name:   op.Name,
-			desc:   op.Description,
-			input:  op.Input,
-			flow:   f,
-			interp: interp,
+			name:    op.Name,
+			desc:    op.Description,
+			input:   op.Input,
+			flow:    f,
+			role:    op.Role,
+			binding: b,
 		})
 	}
 
@@ -183,13 +234,14 @@ func (h *Handler) Tools(id string) []mission.Tool {
 
 // opTool is one operation exposed as a mission.Tool. Invoking it runs the
 // operation's flow with the tool input as config and returns the flow result as
-// JSON.
+// JSON. The binding resolves the credential and builds the request path per call.
 type opTool struct {
-	name   string
-	desc   string
-	input  json.RawMessage
-	flow   flow.Flow
-	interp *flow.Interpreter
+	name    string
+	desc    string
+	input   json.RawMessage
+	flow    flow.Flow
+	role    credential.Role
+	binding *binding
 }
 
 var _ mission.Tool = (*opTool)(nil)
@@ -214,7 +266,7 @@ func (t *opTool) Invoke(ctx context.Context, input json.RawMessage) (string, err
 			return "", fault.Wrap(fault.Terminal, "integration_input", err)
 		}
 	}
-	result, err := t.interp.Run(ctx, t.flow, config)
+	result, err := t.binding.run(ctx, t.flow, t.role, config)
 	if err != nil {
 		return "", err
 	}
@@ -223,4 +275,63 @@ func (t *opTool) Invoke(ctx context.Context, input json.RawMessage) (string, err
 		return "", fault.Wrap(fault.Terminal, "integration_result", err)
 	}
 	return string(out), nil
+}
+
+// binding holds the per-extension request context shared by an integration's
+// operations: the transport, vault, base URL and egress envelope, the auth spec, and
+// (optionally) the credential store and audit recorder. It resolves the credential
+// and assembles the flow interpreter on each call, so a default change or a credential
+// rotation takes effect without reloading the extension.
+type binding struct {
+	transport *request.Transport
+	secrets   secret.Source
+	limits    flow.Limits
+	base      string
+	egress    []string
+	auth      extension.AuthSpec
+	creds     *credential.Store
+	audit     AuditFunc
+}
+
+// run resolves the auth provider (enforcing the required role) and runs the flow.
+func (b *binding) run(ctx context.Context, f flow.Flow, required credential.Role, config map[string]any) (any, error) {
+	provider, err := b.resolveProvider(ctx, required)
+	if err != nil {
+		return nil, err
+	}
+	doer := newTransportDoer(b.transport, provider, b.secrets, b.base, b.egress)
+	interp := flow.New(flow.WithHTTP(doer), flow.WithLimits(b.limits))
+	return interp.Run(ctx, f, config)
+}
+
+// resolveProvider builds the auth provider for a call. Without a credential store the
+// auth spec's credential reference is used directly as a vault reference and no role
+// is checked. With a store, the reference selects a credential by name or default,
+// the credential's role must permit the operation's required role (a refusal is
+// audited and returned as a Forbidden fault), and the provider is built against the
+// resolved credential's vault reference.
+func (b *binding) resolveProvider(ctx context.Context, required credential.Role) (auth.Provider, error) {
+	if b.creds == nil {
+		return providerFor(b.auth)
+	}
+	cred, err := b.creds.Resolve(ctx, b.auth.CredentialRef)
+	if err != nil {
+		return nil, fault.Wrap(fault.Terminal, "integration_credential", err)
+	}
+	if !cred.Spec.Role.Permits(required) {
+		principal := capability.PrincipalFromContext(ctx)
+		if b.audit != nil {
+			b.audit(Denial{
+				Principal:      principal,
+				Integration:    cred.Spec.Integration,
+				Credential:     cred.Spec.Name,
+				CredentialRole: cred.Spec.Role,
+				RequiredRole:   required,
+			})
+		}
+		return nil, fault.New(fault.Forbidden, "credential_role_denied",
+			fmt.Sprintf("credential %q with role %q may not perform an action requiring role %q (principal %q)",
+				cred.Ref(), cred.Spec.Role, required, principal))
+	}
+	return providerForCredential(b.auth, cred)
 }
