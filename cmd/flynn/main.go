@@ -152,6 +152,7 @@ func printUsage(w io.Writer) {
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
+  flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry and print it for review
   flynn models fetch <id>    download and verify a model's weights (does not run it)
   flynn models check         report installed local runtimes and any known parser advisories
   flynn models install [rt]  fetch and verify a pinned local runtime (default: llama.cpp)

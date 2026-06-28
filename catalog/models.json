@@ -150,6 +150,91 @@
       "trust": "blessed",
       "chatTemplate": "chatml",
       "notes": "Full-precision safetensors served by vLLM on a GPU through a digest-pinned container; every weight file is fetched and verified individually."
+    },
+    {
+      "id": "vllm:qwen2.5-7b-instruct-awq",
+      "name": "Qwen2.5-7B-Instruct-AWQ",
+      "kind": "local",
+      "source": {
+        "publisher": "Qwen",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ",
+        "registry": "huggingface"
+      },
+      "license": "apache-2.0",
+      "paramsB": 7,
+      "contextTokens": 32768,
+      "capabilities": {
+        "tools": true,
+        "vision": false,
+        "reasoning": false
+      },
+      "quants": [
+        {
+          "name": "awq",
+          "format": "safetensors",
+          "sizeBytes": 5582381128,
+          "ref": "Qwen/Qwen2.5-7B-Instruct-AWQ",
+          "files": [
+            {
+              "name": "config.json",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/config.json",
+              "digest": "sha256:ec0c1f5f875ad8bc1f78c5140c22dbdde1b55478442ad358e7a4d9ecf947a327",
+              "sizeBytes": 841
+            },
+            {
+              "name": "generation_config.json",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/generation_config.json",
+              "digest": "sha256:9df8ac8558514924f3481a609f1e5590ab4416efc600b12ad805155d79581c59",
+              "sizeBytes": 243
+            },
+            {
+              "name": "merges.txt",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/merges.txt",
+              "digest": "sha256:599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+              "sizeBytes": 1671839
+            },
+            {
+              "name": "model-00001-of-00002.safetensors",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/model-00001-of-00002.safetensors",
+              "digest": "sha256:4ad6e70f93823a9228931615e04b5e9293854c236fb4bd5f85e27f3b600605ad",
+              "sizeBytes": 3996422976
+            },
+            {
+              "name": "model-00002-of-00002.safetensors",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/model-00002-of-00002.safetensors",
+              "digest": "sha256:920a8cc9d3c81668f18014a69bb041ab8bab22a31640a713f90f5e7580e2f126",
+              "sizeBytes": 1574406784
+            },
+            {
+              "name": "model.safetensors.index.json",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/model.safetensors.index.json",
+              "digest": "sha256:559b6859f37625080bf49eea80806ecc2f859a13b316b7fae2ff4432b6308e36",
+              "sizeBytes": 62662
+            },
+            {
+              "name": "tokenizer.json",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/tokenizer.json",
+              "digest": "sha256:c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+              "sizeBytes": 7031645
+            },
+            {
+              "name": "tokenizer_config.json",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/tokenizer_config.json",
+              "digest": "sha256:5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+              "sizeBytes": 7305
+            },
+            {
+              "name": "vocab.json",
+              "url": "https://huggingface.co/Qwen/Qwen2.5-7B-Instruct-AWQ/resolve/main/vocab.json",
+              "digest": "sha256:ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+              "sizeBytes": 2776833
+            }
+          ]
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "AWQ int4 safetensors served by vLLM on a GPU; per-file digest-verified. 7B class: deep KV headroom on a 12GB card for concurrent multi-agent batching. Resolved with `flynn models bless`."
     }
   ]
 }
