@@ -126,13 +126,14 @@ func (l Limits) merge(base Limits) Limits {
 // Interpreter runs flows. It holds the injected effect ports and the default limits;
 // it is safe for concurrent use because Run keeps all mutable run state local.
 type Interpreter struct {
-	http    HTTPDoer
-	tools   ToolCaller
-	exec    Execer
-	deps    DependencyResolver
-	confirm Confirmer
-	clk     clock.Clock
-	limits  Limits
+	http     HTTPDoer
+	tools    ToolCaller
+	exec     Execer
+	deps     DependencyResolver
+	confirm  Confirmer
+	observer Observer
+	clk      clock.Clock
+	limits   Limits
 }
 
 // Option configures an Interpreter.
@@ -157,6 +158,10 @@ func WithDependencies(d DependencyResolver) Option { return func(i *Interpreter)
 // WithConfirm sets the port that asks the user to approve confirm steps. Without it, a
 // confirm step fails closed.
 func WithConfirm(c Confirmer) Option { return func(i *Interpreter) { i.confirm = c } }
+
+// WithObserver sets the port that watches each observable step as it runs, so a host can
+// show progress while a flow executes. Without it, a flow still runs; nothing is reported.
+func WithObserver(o Observer) Option { return func(i *Interpreter) { i.observer = o } }
 
 // WithClock sets the time source the timeout cap measures against (default
 // clock.System). Tests pass a Manual clock for determinism.
@@ -223,6 +228,14 @@ type run struct {
 	stepsOut map[string]any
 	returned bool
 	result   any
+}
+
+// observe reports a step event to the interpreter's observer when one is configured, so
+// progress reporting is a no-op cost when nothing is watching.
+func (r *run) observe(ev StepEvent) {
+	if r.in.observer != nil {
+		r.in.observer.Step(ev)
+	}
 }
 
 // execSteps runs a sequence until it ends or a return fires. It returns whether a

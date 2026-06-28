@@ -4,7 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strconv"
+	"fmt"
+	"strings"
 
 	"github.com/ionalpha/flynn/fault"
 )
@@ -268,14 +269,36 @@ func (r *run) execExec(ctx context.Context, a *ExecAction, s *scope) (any, error
 	if err != nil {
 		return nil, templErr(err)
 	}
+	r.observe(StepEvent{Phase: StepBegin, Op: OpExec, Detail: cmd})
 	res, err := r.in.exec.Exec(ctx, ExecRequest{Command: cmd})
 	if err != nil {
+		r.observe(StepEvent{Phase: StepEnd, Op: OpExec, Detail: cmd, Err: err})
 		return nil, err
 	}
+	r.observe(StepEvent{Phase: StepEnd, Op: OpExec, Detail: cmd, ExitCode: res.ExitCode, Output: res.Output})
 	if res.ExitCode != 0 && !a.AllowNonzero {
-		return nil, fault.New(fault.Terminal, "flow_exec_failed", "flow: command exited "+strconv.Itoa(res.ExitCode))
+		return nil, execFailedFault(cmd, res)
 	}
 	return map[string]any{"exitCode": float64(res.ExitCode), "output": res.Output}, nil
+}
+
+// maxFaultOutputBytes bounds how much command output a failure fault carries, so a chatty
+// command cannot produce an unbounded error message.
+const maxFaultOutputBytes = 2000
+
+// execFailedFault builds the terminal fault for a command that exited nonzero when the
+// step did not allow it. It carries the command and a bounded tail of its output, so the
+// failure is diagnosable from the error itself rather than an opaque exit code. The tail is
+// kept because a command's reason for failing is usually printed last.
+func execFailedFault(cmd string, res ExecResult) error {
+	msg := fmt.Sprintf("flow: command exited %d: %s", res.ExitCode, cmd)
+	if out := strings.TrimSpace(res.Output); out != "" {
+		if len(out) > maxFaultOutputBytes {
+			out = "...\n" + out[len(out)-maxFaultOutputBytes:]
+		}
+		msg += "\n" + out
+	}
+	return fault.New(fault.Terminal, "flow_exec_failed", msg)
 }
 
 // execDependency ensures the named program is present through the injected resolver and
@@ -288,10 +311,13 @@ func (r *run) execDependency(ctx context.Context, a *DependencyAction, s *scope)
 	if err != nil {
 		return nil, templErr(err)
 	}
+	r.observe(StepEvent{Phase: StepBegin, Op: OpDependency, Detail: name})
 	path, err := r.in.deps.Resolve(ctx, name)
 	if err != nil {
+		r.observe(StepEvent{Phase: StepEnd, Op: OpDependency, Detail: name, Err: err})
 		return nil, err
 	}
+	r.observe(StepEvent{Phase: StepEnd, Op: OpDependency, Detail: name})
 	return map[string]any{"path": path}, nil
 }
 

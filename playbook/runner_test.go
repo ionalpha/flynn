@@ -41,6 +41,7 @@ func (okExecer) Exec(context.Context, flow.ExecRequest) (flow.ExecResult, error)
 type flyExecer struct {
 	authed    bool // becomes true once auth login runs, unless loginNoOp
 	loginNoOp bool // login "runs" but does not authenticate (browser not completed)
+	loginExit int  // exit code auth login returns; flyctl can exit nonzero even on success
 	appExists bool
 	loginRuns int
 	seen      []string
@@ -55,7 +56,7 @@ func (e *flyExecer) Exec(_ context.Context, req flow.ExecRequest) (flow.ExecResu
 		if !e.loginNoOp {
 			e.authed = true
 		}
-		return flow.ExecResult{ExitCode: 0, Output: "logged in"}, nil
+		return flow.ExecResult{ExitCode: e.loginExit, Output: "logged in"}, nil
 	case strings.Contains(c, "auth whoami"):
 		if e.authed {
 			return flow.ExecResult{ExitCode: 0, Output: "ops@example.com"}, nil
@@ -171,6 +172,31 @@ func TestRunnerTriggersLoginWhenUnauthed(t *testing.T) {
 	}
 	if !ex.ran("apps create myapp") || !ex.ran("deploy") {
 		t.Fatal("expected create + deploy after login")
+	}
+	if res.Service == nil || res.Service.Spec.URL != "https://myapp.fly.dev" {
+		t.Fatalf("service not registered: %+v", res.Service)
+	}
+}
+
+// TestRunnerLoginNonzeroExitButAuthenticated proves the run succeeds when auth login exits
+// nonzero yet the login actually completed (flyctl exits nonzero on some platforms even
+// after writing the token). The flow must not abort on the login command's exit code: the
+// whoami verification that follows is the source of truth, so the run proceeds to deploy.
+func TestRunnerLoginNonzeroExitButAuthenticated(t *testing.T) {
+	ps, svc := stores(t)
+	pb := flyPlaybook(t, ps)
+	ex := &flyExecer{authed: false, loginExit: 1}
+	r := NewRunner(ex, fixedResolver{path: "/deps/flyctl"}, svc, WithConfirmer(autoConfirm{}))
+
+	res, err := r.Run(context.Background(), pb, map[string]any{"app": "myapp"})
+	if err != nil {
+		t.Fatalf("a nonzero login exit must not fail the run once whoami confirms auth: %v", err)
+	}
+	if ex.loginRuns != 1 {
+		t.Fatalf("expected login to run exactly once, ran %d", ex.loginRuns)
+	}
+	if !ex.ran("deploy") {
+		t.Fatal("expected deploy to run after a verified login")
 	}
 	if res.Service == nil || res.Service.Spec.URL != "https://myapp.fly.dev" {
 		t.Fatalf("service not registered: %+v", res.Service)
