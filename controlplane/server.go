@@ -84,26 +84,76 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// guard authenticates a request, enforces the minimum scope, and records the call
-// before handing off. A failure is a clean 401 (unauthenticated) or 403
-// (authenticated but under-scoped).
+// Audit constants name the immutable record of who accessed the control plane. Every
+// authenticated request records its decision on AuditStream as an EvAccess event, so
+// the access history is a replayable fold over the spine, not a best-effort log.
+const (
+	// AuditStream is the spine stream every control-plane access decision is recorded
+	// on, separate from the resource stream the watch tails.
+	AuditStream = "controlplane.audit"
+	// EvAccess is the event type of one access decision.
+	EvAccess = "controlplane.access"
+)
+
+// Access decisions recorded in an audit event's payload under "decision".
+const (
+	decisionAllowed         = "allowed"
+	decisionForbidden       = "forbidden"
+	decisionUnauthenticated = "unauthenticated"
+)
+
+// guard authenticates a request, enforces the minimum scope, and records the call on
+// the spine before handing off. A failure is a clean 401 (unauthenticated) or 403
+// (authenticated but under-scoped); each outcome, including the failures, is audited,
+// because a refused or unauthenticated attempt is itself security-relevant.
 func (s *Server) guard(required Scope, h func(http.ResponseWriter, *http.Request, Principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, err := s.auth.Authenticate(r)
 		if err != nil {
+			s.audit(r.Context(), Principal{}, decisionUnauthenticated, required, r)
 			writeError(w, http.StatusUnauthorized, "unauthenticated")
 			return
 		}
 		if !p.Scope.Allows(required) {
+			s.audit(r.Context(), p, decisionForbidden, required, r)
 			s.obs.Info(r.Context(), "controlplane: forbidden",
 				observe.String("principal", p.ID), observe.String("scope", p.Scope.String()),
 				observe.String("path", r.URL.Path))
 			writeError(w, http.StatusForbidden, "insufficient scope")
 			return
 		}
+		s.audit(r.Context(), p, decisionAllowed, required, r)
 		s.obs.Info(r.Context(), "controlplane: request",
 			observe.String("principal", p.ID), observe.String("path", r.URL.Path))
 		h(w, r, p)
+	}
+}
+
+// audit records one access decision on the spine, the immutable audit trail by
+// construction: the principal (the "who"), the decision, the request method and path,
+// the principal's scope, and the scope the route required. The spine is the system of
+// record; a failure to append is logged but never fails the request, so trouble writing
+// the audit degrades to the operability logger rather than taking the API down. An
+// unauthenticated attempt carries the empty principal, since none was established.
+func (s *Server) audit(ctx context.Context, p Principal, decision string, required Scope, r *http.Request) {
+	if s.log == nil {
+		return
+	}
+	if _, err := s.log.Append(ctx, spine.AppendInput{
+		Stream:    AuditStream,
+		Type:      EvAccess,
+		Actor:     spine.ActorHuman,
+		Principal: p.ID,
+		Payload: map[string]any{
+			"decision": decision,
+			"method":   r.Method,
+			"path":     r.URL.Path,
+			"scope":    p.Scope.String(),
+			"required": required.String(),
+		},
+	}); err != nil {
+		s.obs.Error(ctx, "controlplane: audit append failed",
+			observe.Err(err), observe.String("decision", decision))
 	}
 }
 
