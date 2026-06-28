@@ -27,6 +27,17 @@ import (
 	"github.com/ionalpha/flynn/vault"
 )
 
+// dataDirCommands are the subcommands whose only state is the data directory.
+// They share one dispatch path in main, keyed by the first argument.
+var dataDirCommands = map[string]func(args []string, dataDir string) error{
+	"auth":     runAuth,
+	"models":   dispatchModels,
+	"get":      dispatchGet,
+	"describe": dispatchDescribe,
+	"ps":       dispatchPs,
+	"status":   dispatchStatus,
+}
+
 func main() {
 	var (
 		model       = flag.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
@@ -98,52 +109,16 @@ func main() {
 		return
 	}
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "auth" {
-		if err := runAuth(args[1:], *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+	// Subcommands that take only the data directory share one dispatch path, so
+	// adding one is a table entry rather than another branch in main.
+	if args := flag.Args(); len(args) >= 1 {
+		if fn, ok := dataDirCommands[args[0]]; ok {
+			if err := fn(args[1:], *dataDir); err != nil {
+				fmt.Fprintln(os.Stderr, "error:", err)
+				os.Exit(1)
+			}
+			return
 		}
-		return
-	}
-
-	if args := flag.Args(); len(args) >= 1 && args[0] == "models" {
-		if err := dispatchModels(args[1:], *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if args := flag.Args(); len(args) >= 1 && args[0] == "get" {
-		if err := dispatchGet(args[1:], *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if args := flag.Args(); len(args) >= 1 && args[0] == "describe" {
-		if err := dispatchDescribe(args[1:], *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if args := flag.Args(); len(args) >= 1 && args[0] == "ps" {
-		if err := dispatchPs(args[1:], *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		return
-	}
-
-	if args := flag.Args(); len(args) >= 1 && args[0] == "status" {
-		if err := dispatchStatus(args[1:], *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
-		}
-		return
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
