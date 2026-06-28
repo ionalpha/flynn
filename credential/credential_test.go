@@ -29,8 +29,10 @@ func TestRolePermits(t *testing.T) {
 		{RoleOperator, RoleAdmin, false},
 		{RoleRead, RoleOperator, false},
 		{RoleRead, RoleRead, true},
-		{"", RoleAdmin, true}, // unscoped credential permits anything
-		{RoleRead, "", true},  // action requiring no role admits any credential
+		{"", RoleAdmin, false}, // a role-less credential cannot meet a role requirement
+		{"", RoleRead, false},
+		{RoleRead, "", true}, // an action requiring no role admits any credential
+		{"", "", true},
 	}
 	for _, c := range cases {
 		if got := c.cred.Permits(c.required); got != c.want {

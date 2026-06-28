@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/flow"
@@ -249,6 +250,18 @@ func providerFor(a extension.AuthSpec) (auth.Provider, error) {
 		return nil, err
 	}
 	return auth.FromConfig(cfg)
+}
+
+// providerForCredential builds the auth provider for a resolved credential. The
+// credential supplies the effective vault reference (where its secret lives) and,
+// when set, the auth type, overriding the extension's defaults so a credential and
+// the request it signs always agree on the mechanism and the secret location.
+func providerForCredential(a extension.AuthSpec, cred credential.Credential) (auth.Provider, error) {
+	a.CredentialRef = cred.Ref()
+	if cred.Spec.AuthType != "" {
+		a.Type = cred.Spec.AuthType
+	}
+	return providerFor(a)
 }
 
 func authConfig(a extension.AuthSpec) (auth.Config, error) {
