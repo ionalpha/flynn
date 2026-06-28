@@ -24,11 +24,12 @@ type recordingSandbox struct {
 	line  string
 	stdin []byte
 	res   sandbox.ExecResult
+	err   error
 }
 
 func (s *recordingSandbox) Exec(_ context.Context, cmd sandbox.Command) (sandbox.ExecResult, error) {
 	s.line, s.stdin = cmd.Line, cmd.Stdin
-	return s.res, nil
+	return s.res, s.err
 }
 func (s *recordingSandbox) ReadFile(context.Context, string) ([]byte, error) { return nil, nil }
 func (s *recordingSandbox) WriteFile(context.Context, string, []byte) error  { return nil }
