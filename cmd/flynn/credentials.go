@@ -98,6 +98,18 @@ func addCredential(ctx context.Context, credStore *credential.Store, vaultStore 
 	if spec.VaultRef != "" {
 		ref = spec.VaultRef
 	}
+	// The first credential for an integration becomes its default, so a single
+	// credential is usable straight away (a bare integration reference resolves to the
+	// default). Later credentials are added non-default unless asked otherwise.
+	if !spec.IsDefault {
+		existing, err := credStore.List(ctx, spec.Integration)
+		if err != nil {
+			return err
+		}
+		if len(existing) == 0 {
+			spec.IsDefault = true
+		}
+	}
 	if err := vaultStore.Set(ctx, ref, value); err != nil {
 		return err
 	}
