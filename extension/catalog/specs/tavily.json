@@ -1,0 +1,26 @@
+{
+  "displayName": "Tavily Search",
+  "provider": "tavily",
+  "baseURL": "https://api.tavily.com",
+  "capabilities": ["websearch"],
+  "auth": {"type": "bearer", "credentialRef": "tavily"},
+  "safety": {"readOnly": true},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "search",
+          "description": "Search the web with Tavily and return results plus a short answer, formatted for an LLM.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"query": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "POST", "url": "/search", "headers": {"Accept": "application/json"}, "body": {"query": "{{config.query}}", "max_results": "{{default(config.max_results, 5)}}", "search_depth": "basic", "include_answer": true}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
