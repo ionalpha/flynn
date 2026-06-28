@@ -114,6 +114,22 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "get" {
+		if err := dispatchGet(args[1:], *dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if args := flag.Args(); len(args) >= 1 && args[0] == "describe" {
+		if err := dispatchDescribe(args[1:], *dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
 		if err := runServe(args[1:], *model, *dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -148,6 +164,8 @@ func printUsage(w io.Writer) {
   flynn                      start an interactive session (chat turn by turn)
   flynn goal "<objective>"   drive a goal to completion in the current directory
   flynn runs                 list past runs (id, phase, objective)
+  flynn get <kind>           list resources of a kind (instances, agents, runs, ...)
+  flynn describe <kind> <id> show one resource's fields and recent change history
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn auth set <provider>  store an API key in the encrypted vault

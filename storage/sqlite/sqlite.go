@@ -117,6 +117,11 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 // Name identifies the backend ("sqlite").
 func (s *Store) Name() string { return "sqlite" }
 
+// InstanceID is the origin/last-writer instance id this backend stamps onto the
+// records it creates. It identifies this process on the fleet, so a running flynn
+// can register and address its own Instance resource.
+func (s *Store) InstanceID() string { return s.instanceID }
+
 // Sessions returns the durable conversation store.
 func (s *Store) Sessions() state.SessionStore { return &sessions{s} }
 
