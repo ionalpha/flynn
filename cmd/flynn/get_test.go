@@ -19,7 +19,10 @@ func TestResolveKindKnownAndFallbackAndUnknown(t *testing.T) {
 		t.Fatalf("registry: %v", err)
 	}
 	// Curated kinds resolve by their aliases with multiple columns.
-	for _, alias := range []string{"instances", "instance", "agents", "runs", "goal"} {
+	for _, alias := range []string{
+		"instances", "instance", "agents", "runs", "goal",
+		"entries", "credentials", "creds", "profiles", "modelprofile",
+	} {
 		ck, ok := resolveKind(reg, alias)
 		if !ok {
 			t.Fatalf("alias %q did not resolve", alias)
@@ -85,6 +88,34 @@ func TestRenderTableEmptyAndPopulated(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "NAME") || !strings.Contains(out, "local") || !strings.Contains(out, "Idle") {
 		t.Fatalf("table render missing content: %q", out)
+	}
+}
+
+func TestRenderDiffShowsDeltasAndIdentity(t *testing.T) {
+	a := resource.Resource{
+		Name: "researcher", ID: "id-a",
+		Spec: json.RawMessage(`{"model":"opus"}`),
+	}
+	b := resource.Resource{
+		Name: "shipper", ID: "id-b",
+		Spec: json.RawMessage(`{"model":"sonnet","driver":"sw"}`),
+	}
+	var buf bytes.Buffer
+	renderDiff(&buf, "Agent", a, b, controlplane.Diff(a, b))
+	out := buf.String()
+	// Identity of both sides, the changed field with both values, and the added field
+	// shown as absent on side A.
+	for _, want := range []string{"researcher", "id-a", "shipper", "id-b", "spec.model", "opus", "sonnet", "spec.driver"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("diff render missing %q in:\n%s", want, out)
+		}
+	}
+
+	// Identical resources report no differences.
+	var same bytes.Buffer
+	renderDiff(&same, "Agent", a, a, controlplane.Diff(a, a))
+	if !strings.Contains(same.String(), "no differences") {
+		t.Fatalf("identical diff render = %q", same.String())
 	}
 }
 

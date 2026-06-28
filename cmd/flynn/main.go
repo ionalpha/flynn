@@ -35,6 +35,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"models":       dispatchModels,
 	"get":          dispatchGet,
 	"describe":     dispatchDescribe,
+	"diff":         dispatchDiff,
 	"ps":           dispatchPs,
 	"status":       dispatchStatus,
 }
@@ -158,6 +159,7 @@ func printUsage(w io.Writer) {
   flynn runs                 list past runs (id, phase, objective)
   flynn get <kind>           list resources of a kind (instances, agents, runs, ...)
   flynn describe <kind> <id> show one resource's fields and recent change history
+  flynn diff <kind> <a> <b>  show the fields that differ between two resources of a kind
   flynn ps                   list instances with their live, heartbeat-aware state
   flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id

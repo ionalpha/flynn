@@ -10,6 +10,7 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strconv"
 
 	"github.com/ionalpha/flynn/resource"
@@ -131,6 +132,74 @@ func history(ctx context.Context, log spine.Log, id string, tail int) ([]spine.E
 		out = out[len(out)-tail:]
 	}
 	return out, nil
+}
+
+// FieldDelta is one field whose value differs between two resources, addressed by its
+// dotted path under spec or status (for example "spec.model", "status.phase").
+type FieldDelta struct {
+	Field string
+	A     string
+	B     string
+}
+
+// Diff compares two resources field by field over their Spec and Status, returning the
+// fields that differ in a stable, path-sorted order. A field present on only one side
+// compares against the empty string on the other. It walks the stored JSON rather than
+// a typed struct, so it is kind-agnostic: flynn diff and any future face (the remote
+// API, a dashboard) share this one comparison for every kind, the same way they share
+// List and Describe. Envelope metadata (ids, versions, timestamps) is excluded; the
+// diff is of declared and observed content, not bookkeeping.
+func Diff(a, b resource.Resource) []FieldDelta {
+	av, bv := flattenResource(a), flattenResource(b)
+	keys := make(map[string]struct{}, len(av)+len(bv))
+	for k := range av {
+		keys[k] = struct{}{}
+	}
+	for k := range bv {
+		keys[k] = struct{}{}
+	}
+	out := make([]FieldDelta, 0, len(keys))
+	for k := range keys {
+		if av[k] != bv[k] {
+			out = append(out, FieldDelta{Field: k, A: av[k], B: bv[k]})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Field < out[j].Field })
+	return out
+}
+
+// flattenResource renders a resource's Spec and Status as a flat map of dotted paths to
+// cell strings, the shape Diff compares. The spec and status namespaces are kept
+// distinct so a field of the same name in each never collides.
+func flattenResource(r resource.Resource) map[string]string {
+	out := map[string]string{}
+	flattenInto(out, "spec", r.Spec)
+	flattenInto(out, "status", r.Status)
+	return out
+}
+
+func flattenInto(out map[string]string, prefix string, raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return
+	}
+	flattenValue(out, prefix, v)
+}
+
+// flattenValue walks a decoded JSON value, recording each object leaf under its dotted
+// path. Objects recurse; scalars and arrays are rendered as a single cell (arrays via
+// compact JSON), so a nested spec diffs at field granularity without exploding arrays.
+func flattenValue(out map[string]string, path string, v any) {
+	if m, ok := v.(map[string]any); ok {
+		for k, val := range m {
+			flattenValue(out, path+"."+k, val)
+		}
+		return
+	}
+	out[path] = scalar(v)
 }
 
 // Name projects the resource's logical name. It is the column nearly every kind
