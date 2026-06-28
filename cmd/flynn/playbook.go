@@ -57,6 +57,8 @@ func (p terminalProgress) Step(ev flow.StepEvent) {
 			_, _ = fmt.Fprintf(p.w, "\n$ %s\n", ev.Detail)
 		case flow.OpDependency:
 			_, _ = fmt.Fprintf(p.w, "\n* ensuring %s is available\n", ev.Detail)
+		default:
+			// Other ops carry no command to show; only exec and dependency are reported.
 		}
 	case flow.StepEnd:
 		if ev.Err != nil {
@@ -70,6 +72,8 @@ func (p terminalProgress) Step(ev flow.StepEvent) {
 			_, _ = fmt.Fprintf(p.w, "  [exit %d]\n", ev.ExitCode)
 		case flow.OpDependency:
 			_, _ = fmt.Fprintln(p.w, "  ready")
+		default:
+			// Other ops carry no command to show; only exec and dependency are reported.
 		}
 	}
 }
