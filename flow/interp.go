@@ -44,6 +44,34 @@ type ToolCaller interface {
 	Call(ctx context.Context, tool string, input json.RawMessage) (any, error)
 }
 
+// ExecRequest is one command an exec step asks the host to run. It is a value type,
+// free of os/exec, so the interpreter never spawns a process itself: the host runs the
+// command through the sandbox, where confinement, egress policy, and timeouts live.
+type ExecRequest struct {
+	Command string
+}
+
+// ExecResult is the outcome of a command: its exit code and combined output.
+type ExecResult struct {
+	ExitCode int
+	Output   string
+}
+
+// Execer performs the exec steps of a flow by running a command through the sandbox.
+// Without it, an exec step fails closed, so a flow can never reach a process except
+// through a host that confines it.
+type Execer interface {
+	Exec(ctx context.Context, req ExecRequest) (ExecResult, error)
+}
+
+// DependencyResolver performs the dependency steps of a flow: it ensures an external
+// program is present (provisioning a pinned build when missing) and returns the path to
+// run it. The host wires the dependency manager, so a flow declares what it needs
+// without knowing how it is obtained.
+type DependencyResolver interface {
+	Resolve(ctx context.Context, name string) (path string, err error)
+}
+
 // Limits bound a flow's resource use so a runtime-authored flow cannot wedge or
 // amplify. A zero field takes the interpreter's default; DefaultLimits documents
 // those. They are enforced as terminal faults: exceeding one stops the flow, it is
@@ -91,6 +119,8 @@ func (l Limits) merge(base Limits) Limits {
 type Interpreter struct {
 	http   HTTPDoer
 	tools  ToolCaller
+	exec   Execer
+	deps   DependencyResolver
 	clk    clock.Clock
 	limits Limits
 }
@@ -105,6 +135,14 @@ func WithHTTP(d HTTPDoer) Option { return func(i *Interpreter) { i.http = d } }
 // WithTools sets the port that performs call steps. Without it, a call step fails
 // closed.
 func WithTools(c ToolCaller) Option { return func(i *Interpreter) { i.tools = c } }
+
+// WithExec sets the port that runs exec steps through the sandbox. Without it, an exec
+// step fails closed.
+func WithExec(e Execer) Option { return func(i *Interpreter) { i.exec = e } }
+
+// WithDependencies sets the port that resolves dependency steps. Without it, a
+// dependency step fails closed.
+func WithDependencies(d DependencyResolver) Option { return func(i *Interpreter) { i.deps = d } }
 
 // WithClock sets the time source the timeout cap measures against (default
 // clock.System). Tests pass a Manual clock for determinism.
@@ -239,13 +277,20 @@ func (r *run) execStep(ctx context.Context, st Step, s *scope) error {
 		out, err = r.execCall(ctx, st.Call, s)
 	case OpReturn:
 		return r.execReturn(st.Return, s)
+	case OpAssert:
+		return r.execAssert(st.Assert, s)
+	case OpExec:
+		out, err = r.execExec(ctx, st.Exec, s)
+	case OpDependency:
+		out, err = r.execDependency(ctx, st.Dependency, s)
 	default:
 		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(st.Op))
 	}
 	if err != nil {
 		return err
 	}
-	// Record a value-producing step's output so later steps can reference it.
+	// Record a value-producing step's output so later steps can reference it. Condition
+	// and assert produce no value (they branch or verify), so they record nothing.
 	if st.ID != "" && st.Op != OpCondition {
 		r.stepsOut[st.ID] = out
 	}
