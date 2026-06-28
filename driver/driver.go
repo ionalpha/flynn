@@ -58,6 +58,10 @@ type Spec struct {
 	// Brakes, when set, halts the run from outside the loop on a tripped breaker or
 	// the kill-switch. It applies regardless of which loop is built.
 	Brakes *brakes.Hook
+	// Fanout, when set, lets the loop delegate sub-goals to concurrent child runs
+	// (the model is offered a spawn tool). A loop that does not fan out (a single-shot
+	// responder) ignores it. The default is nil: a goal runs as a single conversation.
+	Fanout mission.Fanout
 	// Plan is the capability-scaffolding for a weaker or more quantized model: how
 	// hard the loop should work to keep it reliable. The zero Plan adds nothing, so a
 	// capable model runs leanly.
