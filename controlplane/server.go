@@ -1,6 +1,7 @@
 package controlplane
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -118,12 +119,26 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, _ Principal)
 	writeJSON(w, http.StatusOK, listResponse{Items: rs})
 }
 
-// handleGet returns one resource by kind and name.
+// handleGet returns one resource by kind and name. It resolves the name across all
+// scopes to match handleList, which lists every scope: the global scope is tried
+// first (the unambiguous, n=1 case), then a by-name search over the other scopes,
+// so a resource that is listable is also gettable rather than 404ing when it lives
+// in a non-global scope.
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ Principal) {
 	kind, name := r.PathValue("kind"), r.PathValue("name")
 	res, err := s.store.Get(r.Context(), kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "not found")
+		alt, found, scanErr := s.getAcrossScopes(r.Context(), kind, name)
+		if scanErr != nil {
+			s.obs.Error(r.Context(), "controlplane: get", observe.String("kind", kind), observe.Err(scanErr))
+			writeError(w, http.StatusBadRequest, "cannot get "+kind+"/"+name)
+			return
+		}
+		if !found {
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, alt)
 		return
 	}
 	if err != nil {
@@ -132,6 +147,23 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ Principal) 
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// getAcrossScopes finds a resource of kind by name in any scope, used when the
+// global scope has no match. It returns the first match in the store's stable order
+// (scope then name), so the result is deterministic when the same name exists in
+// more than one scope.
+func (s *Server) getAcrossScopes(ctx context.Context, kind, name string) (resource.Resource, bool, error) {
+	rs, err := s.store.ListAll(ctx, kind, resource.Selector{})
+	if err != nil {
+		return resource.Resource{}, false, err
+	}
+	for _, res := range rs {
+		if res.Name == name {
+			return res, true, nil
+		}
+	}
+	return resource.Resource{}, false, nil
 }
 
 // handleWatch streams resource changes of a kind as server-sent events. It tails
@@ -158,26 +190,39 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request, _ Principal
 		}
 	}
 
+	// A persistent store read error should not log on every poll forever; give up
+	// after a few consecutive failures and let the client reconnect, rather than
+	// turning a broken store into an endless error stream.
+	const maxWatchReadErrors = 5
 	t := time.NewTicker(s.poll)
 	defer t.Stop()
+	readErrs := 0
 	for {
 		evs, err := s.log.Read(ctx, spine.Query{Stream: resource.ResourceStream, AfterSeq: cursor})
 		if err != nil {
 			if ctx.Err() != nil {
 				return
 			}
-			s.obs.Error(ctx, "controlplane: watch read", observe.Err(err))
-		}
-		for _, e := range evs {
-			cursor = e.Seq
-			res, ok := resourceEvent(e)
-			if !ok || res.Kind != kind {
-				continue
+			readErrs++
+			s.obs.Error(ctx, "controlplane: watch read", observe.Err(err), observe.Int("consecutive", readErrs))
+			if readErrs >= maxWatchReadErrors {
+				s.obs.Error(ctx, "controlplane: watch giving up after repeated read errors",
+					observe.Int("consecutive", readErrs))
+				return
 			}
-			if err := writeSSE(w, e.Seq, res); err != nil {
-				return // client went away
+		} else {
+			readErrs = 0
+			for _, e := range evs {
+				cursor = e.Seq
+				res, ok := resourceEvent(e)
+				if !ok || res.Kind != kind {
+					continue
+				}
+				if err := writeSSE(w, e.Seq, res); err != nil {
+					return // client went away
+				}
+				flusher.Flush()
 			}
-			flusher.Flush()
 		}
 		select {
 		case <-ctx.Done():
