@@ -14,7 +14,9 @@ import (
 	"github.com/ionalpha/flynn/extension/catalog"
 	"github.com/ionalpha/flynn/integrations"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/ops"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/service"
 	"github.com/ionalpha/flynn/vault"
 )
 
@@ -47,6 +49,7 @@ func runIntegrations(args []string, dataDir string) error {
 type integrationRuntime struct {
 	store  resource.Store
 	creds  *credential.Store
+	svc    *service.Store
 	loader *extension.Loader
 	closer func() error
 }
@@ -70,18 +73,26 @@ func openIntegrationRuntime(ctx context.Context, dataDir string) (*integrationRu
 		return nil, err
 	}
 	creds := credential.NewStore(store)
-	h := integrations.NewHandler(
+	opts := []integrations.Option{
 		integrations.WithSecrets(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))),
 		integrations.WithCredentials(creds),
-	)
+	}
 	ereg := extension.NewRegistry()
-	if err := ereg.Register(h); err != nil {
+	// The integration surface (API operations) and the ops surface (hosting
+	// providers) share the same operation engine; register both so the catalog can
+	// load either kind of extension and surface its operations as tools.
+	if err := ereg.Register(integrations.NewHandler(opts...)); err != nil {
+		_ = durable.Close()
+		return nil, err
+	}
+	if err := ops.RegisterWith(ereg, opts...); err != nil {
 		_ = durable.Close()
 		return nil, err
 	}
 	return &integrationRuntime{
 		store:  store,
 		creds:  creds,
+		svc:    service.NewStore(store),
 		loader: extension.NewLoader(ereg),
 		closer: durable.Close,
 	}, nil
