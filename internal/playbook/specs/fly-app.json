@@ -1,12 +1,11 @@
 {
-  "description": "Deploy an application to Fly.io and register it as a supervised service. Run from the application's directory (the one holding its fly.toml). This playbook ensures the CLI is present and, when you are not logged in, asks you to confirm before it runs fly auth login (which opens your browser); it then ensures the app exists, deploys it, and tracks the result. Set FLY_API_TOKEN to skip the interactive login. Any volumes or secrets the app needs are operator prerequisites.",
+  "description": "Deploy an application to Fly.io and register it as a supervised service. Run from the application's directory (the one holding its fly.toml). This playbook ensures the CLI is present and, when you are not logged in, asks you to confirm before it runs fly auth login (which opens your browser); it then ensures the app exists, deploys it, and tracks the result. Set FLY_API_TOKEN to skip the interactive login. When you do not pass an app name, one is derived from this instance's identity so it is globally unique and the same on every redeploy. Any volumes or secrets the app needs are operator prerequisites.",
   "inputs": {
     "type": "object",
     "properties": {
-      "app": {"type": "string", "description": "the Fly app name"},
+      "app": {"type": "string", "description": "the Fly app name; omit it to derive a globally-unique name from this instance's identity"},
       "config": {"type": "string", "description": "path to the fly.toml, relative to the working directory (default fly.toml)"}
-    },
-    "required": ["app"]
+    }
   },
   "service": {"provider": "fly", "target": "container"},
   "flow": {
