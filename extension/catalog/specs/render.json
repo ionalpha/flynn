@@ -1,0 +1,102 @@
+{
+  "displayName": "Render",
+  "provider": "render",
+  "baseURL": "https://api.render.com",
+  "capabilities": ["render.services"],
+  "auth": {"type": "bearer", "credentialRef": "render"},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "list_services",
+          "description": "List the services in the Render account the API key can access.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"limit": {"type": "integer"}}},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/v1/services", "query": {"limit": "{{default(config.limit, 20)}}"}, "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "get_service",
+          "description": "Get a single Render service by id, including its live URL and current state.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"service_id": {"type": "string"}}, "required": ["service_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/v1/services/{{config.service_id}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_deploys",
+          "description": "List the deploys of a Render service, newest first.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"service_id": {"type": "string"}, "limit": {"type": "integer"}}, "required": ["service_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/v1/services/{{config.service_id}}/deploys", "query": {"limit": "{{default(config.limit, 20)}}"}, "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        }
+      ]
+    },
+    "ops": {
+      "targets": ["container"],
+      "operations": [
+        {
+          "name": "deploy",
+          "description": "Trigger a new deploy of an existing Render service and return the deploy id. The service must already exist (created from a connected repository or image); this ships a new deploy of it. The service's live URL is reported by the status operation once the deploy is live.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"service_id": {"type": "string"}, "clear_cache": {"type": "string", "enum": ["clear", "do_not_clear"]}}, "required": ["service_id"]},
+          "flow": {
+            "steps": [
+              {"id": "dep", "op": "http", "http": {"method": "POST", "url": "/v1/services/{{config.service_id}}/deploys", "headers": {"Accept": "application/json"}, "body": {"clearCache": "{{default(config.clear_cache, 'do_not_clear')}}"}}},
+              {"op": "return", "return": {"value": {"id": "{{steps.dep.body.id}}", "phase": "{{steps.dep.body.status}}", "address": {"service_id": "{{config.service_id}}"}}}}
+            ]
+          }
+        },
+        {
+          "name": "status",
+          "description": "Report a Render service's current state and live URL, used to supervise a deployed workload.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"service_id": {"type": "string"}}, "required": ["service_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/v1/services/{{config.service_id}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": {"phase": "running", "url": "{{steps.r.body.serviceDetails.url}}"}}}
+            ]
+          }
+        },
+        {
+          "name": "teardown",
+          "description": "Delete a Render service, removing the deployed workload.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"service_id": {"type": "string"}}, "required": ["service_id"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "DELETE", "url": "/v1/services/{{config.service_id}}", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": {"deleted": true}}}
+            ]
+          }
+        },
+        {
+          "name": "list",
+          "description": "List the services deployed in the Render account.",
+          "role": "read",
+          "input": {"type": "object", "properties": {}},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/v1/services", "headers": {"Accept": "application/json"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

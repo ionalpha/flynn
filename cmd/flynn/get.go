@@ -19,6 +19,7 @@ import (
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/profilestore"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/service"
 )
 
 // cpKind binds a resource kind to how the read surface displays it.
@@ -86,6 +87,15 @@ func knownKinds() map[string]cpKind {
 			col("MODEL", controlplane.SpecField("modelID")),
 			col("QUANT", controlplane.SpecField("quant")),
 			col("RUNTIME", controlplane.SpecField("runtime")),
+		)},
+		{[]string{"services", "service", "svc"}, mk(
+			service.Kind,
+			col("NAME", controlplane.Name()),
+			col("PROVIDER", controlplane.SpecField("provider")),
+			col("TARGET", controlplane.SpecField("target")),
+			col("DESIRED", controlplane.SpecField("desiredState")),
+			col("PHASE", controlplane.StatusField("phase")),
+			col("URL", controlplane.SpecField("url")),
 		)},
 	}
 	m := map[string]cpKind{}
