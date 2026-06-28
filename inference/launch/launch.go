@@ -158,6 +158,14 @@ type Config struct {
 	// is refused. This is the vLLM counterpart to KVCacheType, which is llama.cpp's; a plan
 	// uses whichever matches its engine. vLLM engine only.
 	KVCacheDtype string
+	// Containerized records that the vLLM server runs inside a container, so it must bind
+	// all interfaces inside the container's isolated network namespace for the engine's
+	// loopback-only published port to reach it. The off-host exposure stays closed: the
+	// container tier publishes the port bound to the host's loopback only, so binding
+	// 0.0.0.0 inside the container is reachable from the host loopback and nowhere else, and
+	// the client still targets the loopback BaseURL. A non-containerized server binds
+	// loopback directly. vLLM engine only.
+	Containerized bool
 	// APIKey, when set, is required by the server on every request, so even a local
 	// process cannot reach the model without the token the caller holds. Optional.
 	APIKey string
@@ -319,9 +327,16 @@ func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 // is still required to name a recognized trusted template (BuildPlan checks it), so an
 // entry with no vetted prompt contract is refused on either engine.
 func buildVLLMArgv(cfg Config) []string {
+	// Inside a container the server must bind all interfaces in its isolated namespace for
+	// the engine's host-loopback-published port to reach it; the off-host exposure is closed
+	// by that publish, not by this bind. A non-containerized vLLM binds loopback directly.
+	bindHost := loopbackHost
+	if cfg.Containerized {
+		bindHost = "0.0.0.0"
+	}
 	argv := []string{
 		cfg.BinPath, "serve", cfg.WeightsPath,
-		"--host", loopbackHost,
+		"--host", bindHost,
 		"--port", strconv.Itoa(cfg.Port),
 		"--served-model-name", cfg.Model.ID,
 	}

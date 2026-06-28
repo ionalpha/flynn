@@ -121,6 +121,13 @@ type ContainerSpec struct {
 	// vLLM serve arguments. It is argv, never a shell string, so nothing in it is
 	// interpreted by a shell. Empty runs the image's own entrypoint and command.
 	Command []string
+	// ExecScratch makes the in-memory /tmp scratch executable. It is off by default so the
+	// container's only writable area cannot also run code, the hardened posture. A runtime
+	// that compiles and runs code at startup needs it on: a GPU inference server JIT-compiles
+	// its kernels into the scratch directory and must execute them from there, so a noexec
+	// scratch makes it fail to start. The scratch is still in-memory and per-container, and
+	// the root filesystem stays read-only either way.
+	ExecScratch bool
 }
 
 // publishes reports whether the spec exposes a server port.
@@ -170,9 +177,11 @@ func buildContainerArgv(engine OCIEngine, spec ContainerSpec) []string {
 	argv := []string{
 		string(engine), "run", "--rm", "--detach",
 		// A read-only root with a small in-memory /tmp: the container cannot persist a
-		// change to its own image, and the writable area never touches the host.
+		// change to its own image, and the writable area never touches the host. The scratch
+		// is noexec by default so it cannot also run code; a runtime that JIT-compiles at
+		// startup opts into an executable scratch via ExecScratch.
 		"--read-only",
-		"--tmpfs", "/tmp",
+		"--tmpfs", tmpfsSpec(spec.ExecScratch),
 		// Drop every capability and block gaining new privileges: a runtime parsing
 		// untrusted weights has no need for either, and removing them shrinks the blast
 		// radius of an exploit.
@@ -210,11 +219,28 @@ func buildContainerArgv(engine OCIEngine, spec ContainerSpec) []string {
 		argv = append(argv, "--publish",
 			fmt.Sprintf("127.0.0.1:%d:%d", spec.HostPort, spec.ContainerPort))
 	}
+	if len(spec.Command) > 0 {
+		// Clear the image's baked entrypoint so the command runs exactly as composed: the
+		// full argv is the command, and the image cannot prepend an entrypoint of its own.
+		// This keeps what executes decided here, not by the (downloaded, untrusted) image.
+		argv = append(argv, "--entrypoint", "")
+	}
 	argv = append(argv, spec.Image.pinnedRef())
-	// The command to run inside the container, appended after the image so it overrides the
-	// image default. It is argv, never a shell string.
+	// The command to run inside the container, appended after the image so it is the exact
+	// command run. It is argv, never a shell string.
 	argv = append(argv, spec.Command...)
 	return argv
+}
+
+// tmpfsSpec returns the --tmpfs mount value for the container's scratch directory. The
+// default forbids execution from the scratch (defense in depth: the only writable area
+// cannot also run code); execScratch allows it for a runtime that must run code it compiles
+// at startup. Either way the scratch is in-memory and the root filesystem is read-only.
+func tmpfsSpec(execScratch bool) string {
+	if execScratch {
+		return "/tmp:exec"
+	}
+	return "/tmp:noexec"
 }
 
 // sortedKeys returns the map keys in sorted order, so an environment renders the same way

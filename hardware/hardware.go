@@ -257,20 +257,51 @@ var nvidiaToolkitBins = []string{"nvidia-ctk", "nvidia-container-runtime", "nvid
 // is presence-only and best-effort: finding the client is enough to record it, and a
 // missing tool simply stays false, so the probe never blocks or errors. Whether a daemon
 // actually answers is confirmed later by the path that uses it.
-func detectContainers(_ context.Context) ContainerSupport {
+func detectContainers(ctx context.Context) ContainerSupport {
 	var c ContainerSupport
 	for _, p := range ociClients {
 		if _, err := exec.LookPath(p.bin); err == nil {
 			p.set(&c)
 		}
 	}
+	// The toolkit may appear as a host binary (a native Linux install puts nvidia-ctk on
+	// PATH) or be wired into the engine itself with no host binary at all (Docker Desktop
+	// runs it inside its own VM). Check both: a host binary, or the engine reporting an
+	// "nvidia" runtime, which is the authoritative signal that a container can be given the
+	// GPU and the only one present in the Docker Desktop case.
 	for _, bin := range nvidiaToolkitBins {
 		if _, err := exec.LookPath(bin); err == nil {
 			c.NVIDIAToolkit = true
 			break
 		}
 	}
+	if !c.NVIDIAToolkit && c.Available() {
+		c.NVIDIAToolkit = engineHasNVIDIARuntime(ctx, c)
+	}
 	return c
+}
+
+// engineHasNVIDIARuntime asks an available engine whether it has the nvidia runtime
+// registered, the authoritative signal that a container can be given the host GPU. It is the
+// fallback that catches the Docker Desktop case, where the toolkit lives inside the engine's
+// VM and no host binary is on PATH. It is best-effort: an engine that cannot be queried (no
+// daemon) reports false rather than erroring, so detection never blocks the probe.
+func engineHasNVIDIARuntime(ctx context.Context, c ContainerSupport) bool {
+	var bins []string
+	if c.Docker {
+		bins = append(bins, "docker")
+	}
+	if c.Podman {
+		bins = append(bins, "podman")
+	}
+	for _, bin := range bins {
+		//nolint:gosec // bin is a fixed engine name ("docker"/"podman") from this function, never user input
+		out, err := exec.CommandContext(ctx, bin, "info", "--format", "{{json .Runtimes}}").Output()
+		if err == nil && strings.Contains(strings.ToLower(string(out)), "nvidia") {
+			return true
+		}
+	}
+	return false
 }
 
 // parseMeminfo reads the total memory from the contents of /proc/meminfo on Linux. The

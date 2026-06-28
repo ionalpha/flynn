@@ -116,6 +116,40 @@
       "trust": "blessed",
       "chatTemplate": "chatml",
       "notes": "Small instruct model with a directly downloadable, digest-verified GGUF; serves on CPU with no GPU."
+    },
+    {
+      "id": "vllm:qwen2.5-0.5b-instruct",
+      "name": "Qwen2.5 0.5B Instruct (safetensors)",
+      "kind": "local",
+      "source": {
+        "publisher": "Qwen",
+        "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 0.5,
+      "contextTokens": 32768,
+      "capabilities": { "tools": true, "vision": false, "reasoning": false },
+      "quants": [
+        {
+          "name": "fp16",
+          "format": "safetensors",
+          "sizeBytes": 999586347,
+          "ref": "Qwen/Qwen2.5-0.5B-Instruct",
+          "files": [
+            { "name": "config.json", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/config.json", "digest": "sha256:18e18afcaccafade98daf13a54092927904649e1dd4eba8299ab717d5d94ff45", "sizeBytes": 659 },
+            { "name": "generation_config.json", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/generation_config.json", "digest": "sha256:e558847a8b4402616f1273797b015104dc266fe4b520056fca88823ba8f8ebe6", "sizeBytes": 242 },
+            { "name": "merges.txt", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/merges.txt", "digest": "sha256:599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3", "sizeBytes": 1671839 },
+            { "name": "model.safetensors", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/model.safetensors", "digest": "sha256:fdf756fa7fcbe7404d5c60e26bff1a0c8b8aa1f72ced49e7dd0210fe288fb7fe", "sizeBytes": 988097824 },
+            { "name": "tokenizer.json", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer.json", "digest": "sha256:c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539", "sizeBytes": 7031645 },
+            { "name": "tokenizer_config.json", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/tokenizer_config.json", "digest": "sha256:5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583", "sizeBytes": 7305 },
+            { "name": "vocab.json", "url": "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct/resolve/main/vocab.json", "digest": "sha256:ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910", "sizeBytes": 2776833 }
+          ]
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "Full-precision safetensors served by vLLM on a GPU through a digest-pinned container; every weight file is fetched and verified individually."
     }
   ]
 }
