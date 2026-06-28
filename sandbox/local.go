@@ -278,9 +278,10 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	res, err := l.execOnce(ctx, cmd, confined)
 	// A confined run that could not start (an error, not a non-zero exit) under the
 	// always-on baseline falls back to the floor. The failed attempt never ran the
-	// command, so there is nothing to undo before retrying. Egress is excluded: it must
-	// not silently drop to an unconfined (open-egress) run.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil {
+	// command, so there is nothing to undo before retrying. A requested network
+	// control is excluded: neither the egress gate nor an explicit network denial may
+	// silently drop to an unconfined (open-network) run, so both fail loudly instead.
+	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork {
 		return l.execOnce(ctx, cmd, false)
 	}
 	return res, err
