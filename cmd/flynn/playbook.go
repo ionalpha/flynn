@@ -60,6 +60,8 @@ func fillDerivedNames(ctx context.Context, dataDir string, pb playbook.Playbook,
 		_, _ = fmt.Fprintf(os.Stderr, "Using derived app name %q (from this instance's identity; stable across redeploys).\n", name.Value)
 	case controlplane.NameEphemeral:
 		_, _ = fmt.Fprintf(os.Stderr, "No instance identity available, so using a one-off app name %q (it will differ next run). Unlock the vault for a stable name.\n", name.Value)
+	case controlplane.NameOverride:
+		// Unreachable here (no override is passed), but listed so the cases are exhaustive.
 	}
 	return nil
 }
