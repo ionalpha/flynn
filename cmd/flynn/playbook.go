@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -13,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/dependency"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/fetch"
+	"github.com/ionalpha/flynn/flow"
 	"github.com/ionalpha/flynn/playbook"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/service"
@@ -37,6 +39,49 @@ func (terminalConfirmer) Confirm(_ context.Context, message string) error {
 	default:
 		return nil
 	}
+}
+
+// terminalProgress shows a playbook's steps as they run, so a long procedure (provisioning
+// a tool, deploying an app) is visible at the terminal rather than silent until it finishes.
+// It writes to stderr, leaving stdout for the run's final result. Each command is printed as
+// it starts, then its output and exit status as it ends; a dependency step shows what is
+// being made available. Failures are not printed here: the run's error carries the command
+// output, so it is reported once, by the caller.
+type terminalProgress struct{ w io.Writer }
+
+func (p terminalProgress) Step(ev flow.StepEvent) {
+	switch ev.Phase {
+	case flow.StepBegin:
+		switch ev.Op {
+		case flow.OpExec:
+			_, _ = fmt.Fprintf(p.w, "\n$ %s\n", ev.Detail)
+		case flow.OpDependency:
+			_, _ = fmt.Fprintf(p.w, "\n* ensuring %s is available\n", ev.Detail)
+		}
+	case flow.StepEnd:
+		if ev.Err != nil {
+			return
+		}
+		switch ev.Op {
+		case flow.OpExec:
+			if out := strings.TrimSpace(ev.Output); out != "" {
+				_, _ = fmt.Fprintln(p.w, indentLines(out, "  "))
+			}
+			_, _ = fmt.Fprintf(p.w, "  [exit %d]\n", ev.ExitCode)
+		case flow.OpDependency:
+			_, _ = fmt.Fprintln(p.w, "  ready")
+		}
+	}
+}
+
+// indentLines prefixes every line of s with prefix, so multi-line command output is set off
+// from the progress markers around it.
+func indentLines(s, prefix string) string {
+	lines := strings.Split(s, "\n")
+	for i, ln := range lines {
+		lines[i] = prefix + ln
+	}
+	return strings.Join(lines, "\n")
 }
 
 // runPlaybook implements `flynn playbook <ls|run>`: the multi-step procedures Flynn can
@@ -111,6 +156,7 @@ func openPlaybookRuntime(ctx context.Context, dataDir string) (*playbookRuntime,
 		playbook.NewManagerResolver(depMgr),
 		service.NewStore(rstore),
 		playbook.WithConfirmer(terminalConfirmer{}),
+		playbook.WithObserver(terminalProgress{w: os.Stderr}),
 	)
 	return &playbookRuntime{store: pbStore, runner: runner, closer: durable.Close}, nil
 }

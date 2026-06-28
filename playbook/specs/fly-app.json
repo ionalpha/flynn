@@ -18,7 +18,7 @@
         "if": "steps.auth.exitCode != 0",
         "then": [
           {"op": "confirm", "confirm": {"message": "You are not logged in to Fly. Flynn will run `fly auth login`, which opens your browser to authorize. Press Enter to continue (or Ctrl-C to cancel; set FLY_API_TOKEN to skip)."}},
-          {"op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth login"}}
+          {"op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth login", "allowNonzero": true}}
         ]
       }},
       {"id": "authCheck", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth whoami", "allowNonzero": true}},
