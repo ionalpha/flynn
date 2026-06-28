@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
@@ -209,6 +210,9 @@ func missionRegistry() (*resource.Registry, error) {
 		return nil, err
 	}
 	if err := instance.RegisterKind(reg); err != nil {
+		return nil, err
+	}
+	if err := credential.RegisterKind(reg); err != nil {
 		return nil, err
 	}
 	return reg, nil

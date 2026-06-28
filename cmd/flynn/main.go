@@ -30,12 +30,13 @@ import (
 // dataDirCommands are the subcommands whose only state is the data directory.
 // They share one dispatch path in main, keyed by the first argument.
 var dataDirCommands = map[string]func(args []string, dataDir string) error{
-	"auth":     runAuth,
-	"models":   dispatchModels,
-	"get":      dispatchGet,
-	"describe": dispatchDescribe,
-	"ps":       dispatchPs,
-	"status":   dispatchStatus,
+	"auth":         runAuth,
+	"integrations": runIntegrations,
+	"models":       dispatchModels,
+	"get":          dispatchGet,
+	"describe":     dispatchDescribe,
+	"ps":           dispatchPs,
+	"status":       dispatchStatus,
 }
 
 func main() {

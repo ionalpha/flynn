@@ -17,12 +17,20 @@ import (
 // runAuth implements the `flynn auth` command group: managing the credentials the
 // agent uses, stored in the encrypted vault rather than handed in on every run.
 //
-//	flynn auth set <provider>   read an API key (hidden) and seal it
-//	flynn auth rm  <provider>   remove a stored key
-//	flynn auth list             show which providers have a key stored
+//	flynn auth set <provider>                 read a model-provider API key (hidden)
+//	flynn auth list                           show which providers have a key stored
+//	flynn auth add <integration> --name <n>   add a named integration credential
+//	flynn auth use <integration>/<name>       make a credential the integration default
+//	flynn auth ls  <integration>              list an integration's credentials
+//	flynn auth rm  <provider> | <integration>/<name>   remove a key or credential
+//
+// The model-provider verbs (set, list) manage the one key per model provider. The
+// integration verbs (add, use, ls) manage the named, role-bearing credentials an
+// integration holds. rm removes a model-provider key when given a bare provider, or
+// an integration credential when given an <integration>/<name> reference.
 func runAuth(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return errors.New(`usage: flynn auth <set|rm|list> [provider]`)
+		return errors.New("usage: flynn auth <set|list|add|use|ls|rm>")
 	}
 	store := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))
 	ctx := context.Background()
@@ -30,12 +38,28 @@ func runAuth(args []string, dataDir string) error {
 	switch args[0] {
 	case "set":
 		return authSet(ctx, store, args[1:])
-	case "rm", "remove", "delete":
-		return authRemove(ctx, store, args[1:])
-	case "list", "ls":
+	case "add":
+		return authCredAdd(ctx, store, dataDir, args[1:])
+	case "use":
+		return authCredUse(ctx, dataDir, args[1:])
+	case "ls":
+		// `auth ls <integration>` lists that integration's credentials; bare `auth ls`
+		// falls back to the model-provider listing.
+		if len(args) >= 2 {
+			return authCredList(ctx, dataDir, args[1])
+		}
 		return authList(ctx, store)
+	case "list":
+		return authList(ctx, store)
+	case "rm", "remove", "delete":
+		// An <integration>/<name> reference removes a credential; a bare provider name
+		// removes a model-provider key.
+		if len(args) >= 2 && strings.Contains(args[1], "/") {
+			return authCredRemove(ctx, store, dataDir, args[1:])
+		}
+		return authRemove(ctx, store, args[1:])
 	default:
-		return fmt.Errorf("auth: unknown subcommand %q (want set, rm, or list)", args[0])
+		return fmt.Errorf("auth: unknown subcommand %q (want set, list, add, use, ls, or rm)", args[0])
 	}
 }
 

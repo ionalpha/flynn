@@ -84,6 +84,22 @@ func (s *Store) Get(ctx context.Context, integration, name string) (Credential, 
 	return toCredential(r)
 }
 
+// All returns every credential across the store, ordered by integration then name.
+// It backs a listing that spans integrations.
+func (s *Store) All(ctx context.Context) ([]Credential, error) {
+	out, err := s.all(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Spec.Integration != out[j].Spec.Integration {
+			return out[i].Spec.Integration < out[j].Spec.Integration
+		}
+		return out[i].Spec.Name < out[j].Spec.Name
+	})
+	return out, nil
+}
+
 // List returns the credentials of an integration, ordered by name.
 func (s *Store) List(ctx context.Context, integration string) ([]Credential, error) {
 	all, err := s.all(ctx)
