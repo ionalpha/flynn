@@ -151,7 +151,10 @@ type FieldDelta struct {
 // diff is of declared and observed content, not bookkeeping.
 func Diff(a, b resource.Resource) []FieldDelta {
 	av, bv := flattenResource(a), flattenResource(b)
-	keys := make(map[string]struct{}, len(av)+len(bv))
+	// The key set is the union of two field maps. Hint with one side's length rather
+	// than the sum, so the capacity computation cannot overflow; the map grows to the
+	// true union as needed.
+	keys := make(map[string]struct{}, len(av))
 	for k := range av {
 		keys[k] = struct{}{}
 	}
