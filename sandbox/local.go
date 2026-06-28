@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -244,7 +245,7 @@ func (l *Local) probeConfinement() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	name, args := shell("exit 0")
-	_, err := l.runShell(ctx, name, args, true)
+	_, err := l.runShell(ctx, name, args, nil, true)
 	return err == nil
 }
 
@@ -339,7 +340,7 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 // confined is true.
 func (l *Local) execOnce(ctx context.Context, cmd Command, confined bool) (ExecResult, error) {
 	name, args := shell(cmd.Line)
-	return l.runShell(ctx, name, args, confined)
+	return l.runShell(ctx, name, args, cmd.Stdin, confined)
 }
 
 // runWithExecCmd runs a command through the standard library in the working directory
@@ -349,10 +350,15 @@ func (l *Local) execOnce(ctx context.Context, cmd Command, confined bool) (ExecR
 // exec.Cmd (the network, filesystem, and syscall isolation on Linux and macOS). A
 // confined command on Windows cannot be expressed this way and takes a different path;
 // see runShell.
-func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, confined bool) (ExecResult, error) {
+func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, stdin []byte, confined bool) (ExecResult, error) {
 	//nolint:gosec // running a model-supplied command is the bash tool's purpose; isolation is this sandbox's job, hardened by the stronger tiers
 	c := exec.CommandContext(ctx, name, args...)
 	c.Dir = l.root
+	// A command that reads a secret on stdin (a credential import) gets it from a pipe,
+	// not its arguments, so the value is never on the command line or in a log.
+	if len(stdin) > 0 {
+		c.Stdin = bytes.NewReader(stdin)
+	}
 	// Deny-by-default environment: never inherit the host's, so the agent's API
 	// keys and every other process secret are withheld from a model-run command.
 	// The command sees only a minimal baseline plus what WithEnv explicitly grants.

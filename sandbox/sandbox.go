@@ -22,6 +22,13 @@ import (
 type Command struct {
 	// Line is the command line, interpreted by the sandbox's shell.
 	Line string
+	// Stdin, when non-empty, is written to the command's standard input and the stream
+	// is then closed. It is the safe way to pass a secret to a command that reads one on
+	// stdin (a credential import, a passphrase), because the value travels on a pipe: it
+	// is never placed on the command line (argv, visible to other processes through the
+	// process table) and never appears in the command's rendered text or any log. A
+	// caller handling a credential builds it here rather than interpolating it into Line.
+	Stdin []byte
 }
 
 // ExecResult is the outcome of a Command. A non-zero ExitCode is a normal result,

@@ -335,6 +335,37 @@ func (r *run) execConfirm(ctx context.Context, a *ConfirmAction, s *scope) error
 	return r.in.confirm.Confirm(ctx, msg)
 }
 
+// execSecret materializes the referenced secret into the named sink through the credential
+// sink port. It renders only the reference, the sink, and the target, and reports the step
+// to the observer by the reference name and sink, never the value: the value is resolved
+// and delivered entirely inside the sink, so it never enters the flow, the rendered
+// command, the step output, or a log. It produces no output.
+func (r *run) execSecret(ctx context.Context, a *SecretAction, s *scope) error {
+	if r.in.sink == nil {
+		return fault.New(fault.Terminal, "flow_no_sink", "flow: secret step but no credential sink is configured")
+	}
+	ref, err := renderTemplateString(a.Ref, s)
+	if err != nil {
+		return templErr(err)
+	}
+	sink, err := renderTemplateString(a.Sink, s)
+	if err != nil {
+		return templErr(err)
+	}
+	target, err := renderStringMap(a.Target, s)
+	if err != nil {
+		return err
+	}
+	subject := sink + ":" + ref
+	r.observe(StepEvent{Phase: StepBegin, Op: OpSecret, Detail: subject})
+	if err := r.in.sink.Put(ctx, sink, ref, target); err != nil {
+		r.observe(StepEvent{Phase: StepEnd, Op: OpSecret, Detail: subject, Err: err})
+		return err
+	}
+	r.observe(StepEvent{Phase: StepEnd, Op: OpSecret, Detail: subject})
+	return nil
+}
+
 // evalExpr parses and evaluates an expression against a scope. Parse errors are
 // already caught at admission, so a parse failure here is still surfaced as a
 // terminal fault for safety.
