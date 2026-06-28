@@ -3,12 +3,13 @@ package controlplane
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/observe"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
@@ -21,14 +22,30 @@ import (
 const defaultWatchPoll = 250 * time.Millisecond
 
 // Server is the read/watch control-plane API over a resource store. It serves
-// get/list/watch for any registered kind, gated by the Authenticator. Writes and
-// actions are added by later layers behind the same auth boundary.
+// get/list/watch for any registered kind, gated by the Authenticator, plus action
+// subresources (operator/admin verbs) behind the same auth boundary and a second,
+// finer gate: the caller's verified grant intersected with this instance's own local
+// grant, so a narrowed remote grant can never act beyond what the target would do
+// locally.
 type Server struct {
 	store resource.Store
 	log   spine.Log // the resource stream, tailed for watch
 	auth  Authenticator
 	obs   observe.Logger
 	poll  time.Duration
+
+	// localGrant is this instance's own action authority: the ceiling every remote
+	// caller is intersected against. It defaults to AllowAll (the zero-config
+	// instance is unconstrained locally); a host narrows it to bound what any remote
+	// caller can ever do here, independent of how broad a token they present.
+	localGrant capability.Grant
+	// admit is the capability waist the action gate runs an admitted verb through,
+	// reading the effective (intersected) grant from the request context.
+	admit dispatch.Admitter
+	// actions maps an action verb to its spec. Verbs are registered by the
+	// kill-switch and lifecycle layers via WithAction; this package owns the gate,
+	// not the verbs.
+	actions map[string]ActionSpec
 }
 
 // Option configures a Server.
@@ -52,6 +69,38 @@ func WithWatchPoll(d time.Duration) Option {
 	}
 }
 
+// WithLocalGrant sets this instance's own action authority: the ceiling every remote
+// caller's grant is intersected against, so no presented token can act beyond what
+// the instance itself admits locally. The default is AllowAll (locally unconstrained).
+func WithLocalGrant(g capability.Grant) Option {
+	return func(s *Server) { s.localGrant = g }
+}
+
+// WithAdmitter overrides the capability waist the action gate admits a verb through.
+// The default is capability.Admitter, which reads the effective grant from the
+// request context; this hook exists for tests.
+func WithAdmitter(a dispatch.Admitter) Option {
+	return func(s *Server) {
+		if a != nil {
+			s.admit = a
+		}
+	}
+}
+
+// WithAction registers an action verb (a kube-style subresource) and its gate. The
+// verb is served at POST /v1/{kind}/{name}/<verb>, refuses a token below spec.MinScope,
+// and admits only if the caller's grant intersected with the instance's local grant
+// permits spec.Action. Verbs with an empty Action or a nil Run are ignored, so a
+// half-declared action cannot open an ungated route.
+func WithAction(verb string, spec ActionSpec) Option {
+	return func(s *Server) {
+		if verb == "" || spec.Action == "" || spec.Run == nil {
+			return
+		}
+		s.actions[verb] = spec
+	}
+}
+
 // NewServer builds the read/watch API over store, tailing log (the store's resource
 // stream) for watch, authenticated by auth. A nil auth fails closed: the server denies
 // every request rather than serving openly, so an unauthenticated API cannot be created
@@ -61,11 +110,14 @@ func NewServer(store resource.Store, log spine.Log, auth Authenticator, opts ...
 		auth = DenyAll{}
 	}
 	s := &Server{
-		store: store,
-		log:   log,
-		auth:  auth,
-		obs:   observe.Default().Log,
-		poll:  defaultWatchPoll,
+		store:      store,
+		log:        log,
+		auth:       auth,
+		obs:        observe.Default().Log,
+		poll:       defaultWatchPoll,
+		localGrant: capability.AllowAll(),
+		admit:      capability.Admitter{},
+		actions:    make(map[string]ActionSpec),
 	}
 	for _, o := range opts {
 		o(s)
@@ -81,6 +133,12 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/{kind}/watch", s.guard(ScopeRead, s.handleWatch))
 	mux.HandleFunc("GET /v1/{kind}/{name}", s.guard(ScopeRead, s.handleGet))
 	mux.HandleFunc("GET /v1/{kind}", s.guard(ScopeRead, s.handleList))
+	// Action subresources are POSTs on a named resource: POST /v1/{kind}/{name}/<verb>.
+	// The literal verb segment and the POST method keep them distinct from the GET
+	// read routes above. Each carries its own minimum scope and grant gate.
+	for verb, spec := range s.actions {
+		mux.HandleFunc("POST /v1/{kind}/{name}/"+verb, s.guardAction(spec, verb, s.handleAction(verb, spec)))
+	}
 	return mux
 }
 
@@ -100,42 +158,76 @@ const (
 	decisionAllowed         = "allowed"
 	decisionForbidden       = "forbidden"
 	decisionUnauthenticated = "unauthenticated"
+	// decisionDenied is a request that passed scope but was refused by the grant gate:
+	// the caller had the scope to ask, but neither its grant nor the instance's local
+	// grant admits the action. It is distinct from decisionForbidden (scope) so an
+	// audit reader can tell a coarse under-scoping from a fine capability denial.
+	decisionDenied = "denied"
 )
+
+// authorize authenticates a request and enforces the minimum scope, auditing and
+// writing the HTTP error on failure. It returns the principal and true only when both
+// pass; on a false return the response is already written and the attempt audited.
+// action is the verb being attempted ("" for a read route), recorded with the decision.
+func (s *Server) authorize(w http.ResponseWriter, r *http.Request, required Scope, action string) (Principal, bool) {
+	p, err := s.auth.Authenticate(r)
+	if err != nil {
+		s.audit(r.Context(), Principal{}, decisionUnauthenticated, required, action, r)
+		writeError(w, http.StatusUnauthorized, "unauthenticated")
+		return Principal{}, false
+	}
+	if !p.Scope.Allows(required) {
+		s.audit(r.Context(), p, decisionForbidden, required, action, r)
+		s.obs.Info(r.Context(), "controlplane: forbidden",
+			observe.String("principal", p.ID), observe.String("scope", p.Scope.String()),
+			observe.String("path", r.URL.Path))
+		writeError(w, http.StatusForbidden, "insufficient scope")
+		return Principal{}, false
+	}
+	return p, true
+}
 
 // guard authenticates a request, enforces the minimum scope, and records the call on
 // the spine before handing off. A failure is a clean 401 (unauthenticated) or 403
 // (authenticated but under-scoped); each outcome, including the failures, is audited,
-// because a refused or unauthenticated attempt is itself security-relevant.
+// because a refused or unauthenticated attempt is itself security-relevant. Reads are
+// fully decided here, so a passing read is recorded allowed before the handler runs.
 func (s *Server) guard(required Scope, h func(http.ResponseWriter, *http.Request, Principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		p, err := s.auth.Authenticate(r)
-		if err != nil {
-			s.audit(r.Context(), Principal{}, decisionUnauthenticated, required, r)
-			writeError(w, http.StatusUnauthorized, "unauthenticated")
+		p, ok := s.authorize(w, r, required, "")
+		if !ok {
 			return
 		}
-		if !p.Scope.Allows(required) {
-			s.audit(r.Context(), p, decisionForbidden, required, r)
-			s.obs.Info(r.Context(), "controlplane: forbidden",
-				observe.String("principal", p.ID), observe.String("scope", p.Scope.String()),
-				observe.String("path", r.URL.Path))
-			writeError(w, http.StatusForbidden, "insufficient scope")
-			return
-		}
-		s.audit(r.Context(), p, decisionAllowed, required, r)
+		s.audit(r.Context(), p, decisionAllowed, required, "", r)
 		s.obs.Info(r.Context(), "controlplane: request",
 			observe.String("principal", p.ID), observe.String("path", r.URL.Path))
 		h(w, r, p)
 	}
 }
 
+// guardAction is guard for an action subresource: it authenticates and enforces the
+// verb's scope, but defers the allow/deny audit to the handler, because an action has
+// a second checkpoint (the grant gate) the scope check cannot see. The handler records
+// exactly one decision for the request, allowed or denied, so an action never produces
+// a misleading "allowed" event it then refuses at the grant.
+func (s *Server) guardAction(spec ActionSpec, verb string, h func(http.ResponseWriter, *http.Request, Principal)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		p, ok := s.authorize(w, r, spec.MinScope, verb)
+		if !ok {
+			return
+		}
+		h(w, r, p)
+	}
+}
+
 // audit records one access decision on the spine, the immutable audit trail by
 // construction: the principal (the "who"), the decision, the request method and path,
-// the principal's scope, and the scope the route required. The spine is the system of
-// record; a failure to append is logged but never fails the request, so trouble writing
-// the audit degrades to the operability logger rather than taking the API down. An
-// unauthenticated attempt carries the empty principal, since none was established.
-func (s *Server) audit(ctx context.Context, p Principal, decision string, required Scope, r *http.Request) {
+// the action verb (empty for a read), the principal's scope, and the scope the route
+// required. The spine is the system of record; a failure to append is logged but never
+// fails the request, so trouble writing the audit degrades to the operability logger
+// rather than taking the API down. An unauthenticated attempt carries the empty
+// principal, since none was established.
+func (s *Server) audit(ctx context.Context, p Principal, decision string, required Scope, action string, r *http.Request) {
 	if s.log == nil {
 		return
 	}
@@ -148,6 +240,7 @@ func (s *Server) audit(ctx context.Context, p Principal, decision string, requir
 			"decision": decision,
 			"method":   r.Method,
 			"path":     r.URL.Path,
+			"action":   action,
 			"scope":    p.Scope.String(),
 			"required": required.String(),
 		},
@@ -176,24 +269,14 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, _ Principal)
 // in a non-global scope.
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ Principal) {
 	kind, name := r.PathValue("kind"), r.PathValue("name")
-	res, err := s.store.Get(r.Context(), kind, resource.Scope{}, name)
-	if errors.Is(err, resource.ErrNotFound) {
-		alt, found, scanErr := s.getAcrossScopes(r.Context(), kind, name)
-		if scanErr != nil {
-			s.obs.Error(r.Context(), "controlplane: get", observe.String("kind", kind), observe.Err(scanErr))
-			writeError(w, http.StatusBadRequest, "cannot get "+kind+"/"+name)
-			return
-		}
-		if !found {
-			writeError(w, http.StatusNotFound, "not found")
-			return
-		}
-		writeJSON(w, http.StatusOK, alt)
-		return
-	}
+	res, found, err := s.resolve(r.Context(), kind, name)
 	if err != nil {
 		s.obs.Error(r.Context(), "controlplane: get", observe.String("kind", kind), observe.Err(err))
 		writeError(w, http.StatusBadRequest, "cannot get "+kind+"/"+name)
+		return
+	}
+	if !found {
+		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
 	writeJSON(w, http.StatusOK, res)

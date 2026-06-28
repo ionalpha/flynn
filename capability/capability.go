@@ -89,6 +89,33 @@ func (g Grant) Narrow(actions ...string) Grant {
 	return Grant{actions: set}
 }
 
+// Intersect returns the grant admitting only the actions that BOTH grants allow.
+// It is the no-escalation operator for delegated authority across a boundary: a
+// caller's grant intersected with the target's own local grant yields exactly the
+// authority the target is willing to act on for that caller, never more than either
+// side admits. AllowAll is the identity for the operator (AllowAll intersect g is g),
+// so a fully trusted caller is bounded by the target's local grant and a fully
+// trusted target is bounded by the caller's grant; two AllowAll grants intersect to
+// AllowAll. Unlike Narrow, this preserves an AllowAll operand rather than collapsing
+// it to its (empty) action list.
+func (g Grant) Intersect(other Grant) Grant {
+	switch {
+	case g.allowAll && other.allowAll:
+		return AllowAll()
+	case g.allowAll:
+		return other
+	case other.allowAll:
+		return g
+	}
+	set := make(map[string]struct{}, len(g.actions))
+	for a := range g.actions {
+		if _, ok := other.actions[a]; ok {
+			set[a] = struct{}{}
+		}
+	}
+	return Grant{actions: set}
+}
+
 type ctxKey struct{}
 
 // Into returns a context carrying g, so the dispatch waist's Admitter reads the
