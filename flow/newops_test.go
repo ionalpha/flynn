@@ -90,14 +90,72 @@ func TestExecRecordsOutput(t *testing.T) {
 	}
 }
 
-// TestExecNonzeroFails proves a command that exits nonzero fails the flow by default.
+// TestExecNonzeroFails proves a command that exits nonzero fails the flow by default, and
+// that the failure carries the command and its output so the cause is diagnosable rather
+// than an opaque exit code.
 func TestExecNonzeroFails(t *testing.T) {
-	ex := &fakeExecer{res: ExecResult{ExitCode: 1, Output: "boom"}}
+	ex := &fakeExecer{res: ExecResult{ExitCode: 1, Output: "boom: it broke"}}
 	_, err := runFlow(t, `{"steps":[
-		{"op":"exec","exec":{"command":"false"}}
+		{"op":"exec","exec":{"command":"do-the-thing"}}
 	]}`, nil, WithExec(ex))
 	if err == nil {
 		t.Fatal("expected a nonzero exit to fail the flow")
+	}
+	if !strings.Contains(err.Error(), "do-the-thing") {
+		t.Errorf("error should name the failed command, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "boom: it broke") {
+		t.Errorf("error should carry the command output, got: %v", err)
+	}
+}
+
+// recordingObserver captures every step event it is shown, so a test can assert what the
+// interpreter reported and in what order.
+type recordingObserver struct{ events []StepEvent }
+
+func (o *recordingObserver) Step(ev StepEvent) { o.events = append(o.events, ev) }
+
+// TestObserverReportsExecSteps proves the interpreter reports each command step to an
+// observer as it begins and ends, carrying the rendered command, exit code, and output, so
+// a host can show progress while a flow runs.
+func TestObserverReportsExecSteps(t *testing.T) {
+	ex := &fakeExecer{res: ExecResult{ExitCode: 0, Output: "done"}}
+	obs := &recordingObserver{}
+	_, err := runFlow(t, `{"steps":[
+		{"op":"exec","exec":{"command":"deploy {{config.app}}"}},
+		{"op":"return","return":{"value":"ok"}}
+	]}`, map[string]any{"app": "myapp"}, WithExec(ex), WithObserver(obs))
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if len(obs.events) != 2 {
+		t.Fatalf("expected begin+end events, got %d: %+v", len(obs.events), obs.events)
+	}
+	begin, end := obs.events[0], obs.events[1]
+	if begin.Phase != StepBegin || begin.Op != OpExec || begin.Detail != "deploy myapp" {
+		t.Errorf("unexpected begin event: %+v", begin)
+	}
+	if end.Phase != StepEnd || end.ExitCode != 0 || end.Output != "done" || end.Err != nil {
+		t.Errorf("unexpected end event: %+v", end)
+	}
+}
+
+// TestObserverReportsExecFailure proves a failing command's end event carries the error, so
+// a host can mark the step failed while the run's own error still reports the cause.
+func TestObserverReportsExecFailure(t *testing.T) {
+	ex := &fakeExecer{res: ExecResult{ExitCode: 2, Output: "nope"}}
+	obs := &recordingObserver{}
+	_, err := runFlow(t, `{"steps":[
+		{"op":"exec","exec":{"command":"broken"}}
+	]}`, nil, WithExec(ex), WithObserver(obs))
+	if err == nil {
+		t.Fatal("expected the flow to fail")
+	}
+	if len(obs.events) != 2 || obs.events[1].Phase != StepEnd {
+		t.Fatalf("expected a begin and an end event, got: %+v", obs.events)
+	}
+	if obs.events[1].ExitCode != 2 {
+		t.Errorf("end event should carry the exit code, got: %+v", obs.events[1])
 	}
 }
 

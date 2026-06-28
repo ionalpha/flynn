@@ -25,11 +25,12 @@ type Result struct {
 // whatever flow the spec carries, and the only things it can do are the ones its ports
 // allow (run a command in the sandbox, resolve a dependency, write a service record).
 type Runner struct {
-	exec    flow.Execer
-	deps    flow.DependencyResolver
-	confirm flow.Confirmer
-	svc     *service.Store
-	clk     clock.Timing
+	exec     flow.Execer
+	deps     flow.DependencyResolver
+	confirm  flow.Confirmer
+	observer flow.Observer
+	svc      *service.Store
+	clk      clock.Timing
 }
 
 // RunnerOption configures a Runner.
@@ -49,6 +50,13 @@ func WithClock(c clock.Timing) RunnerOption {
 // Without it, a confirm step fails closed.
 func WithConfirmer(c flow.Confirmer) RunnerOption {
 	return func(r *Runner) { r.confirm = c }
+}
+
+// WithObserver sets the port that watches each command and dependency step as it runs, so a
+// host can show progress while a playbook executes. Without it, the playbook still runs;
+// nothing is reported.
+func WithObserver(o flow.Observer) RunnerOption {
+	return func(r *Runner) { r.observer = o }
 }
 
 // NewRunner builds a playbook runner. exec runs the flow's exec steps (through the
@@ -71,7 +79,7 @@ func (r *Runner) Run(ctx context.Context, pb Playbook, config map[string]any) (R
 	if err != nil {
 		return Result{}, err
 	}
-	interp := flow.New(flow.WithExec(r.exec), flow.WithDependencies(r.deps), flow.WithConfirm(r.confirm))
+	interp := flow.New(flow.WithExec(r.exec), flow.WithDependencies(r.deps), flow.WithConfirm(r.confirm), flow.WithObserver(r.observer))
 	out, err := interp.Run(ctx, f, config)
 	if err != nil {
 		return Result{}, err
