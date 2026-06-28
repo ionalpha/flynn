@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/observe"
@@ -46,6 +47,15 @@ type Server struct {
 	// kill-switch and lifecycle layers via WithAction; this package owns the gate,
 	// not the verbs.
 	actions map[string]ActionSpec
+
+	// approvals verifies the signed approvals a dangerous verb requires before it runs,
+	// the second factor above scope and grant. It is nil when no approval verifier is
+	// configured, in which case a dangerous verb fails closed (cannot run) rather than
+	// running unauthorized. approvalHost is the host id stamped on the binding an
+	// approver must have signed, so an approval minted for one host cannot authorize an
+	// action on another.
+	approvals    *approval.Verifier
+	approvalHost string
 }
 
 // Option configures a Server.
@@ -84,6 +94,18 @@ func WithAdmitter(a dispatch.Admitter) Option {
 		if a != nil {
 			s.admit = a
 		}
+	}
+}
+
+// WithApprovals wires the verifier that checks the signed approvals a dangerous verb
+// requires, and the host id an approval must be bound to (it should match the
+// verifier's own host). Without it, a verb marked Dangerous fails closed: it cannot
+// run, because the second factor cannot be verified. A non-dangerous verb is
+// unaffected.
+func WithApprovals(v *approval.Verifier, host string) Option {
+	return func(s *Server) {
+		s.approvals = v
+		s.approvalHost = host
 	}
 }
 
@@ -151,6 +173,11 @@ const (
 	AuditStream = "controlplane.audit"
 	// EvAccess is the event type of one access decision.
 	EvAccess = "controlplane.access"
+	// EvApproval is the event type of one signed-approval decision for a dangerous
+	// verb: who authorized (the contributing key ids), the bound action and target, and
+	// whether it was granted. It is the non-repudiable "who approved what" record,
+	// distinct from the access decision EvAccess.
+	EvApproval = "controlplane.approval"
 )
 
 // Access decisions recorded in an audit event's payload under "decision".
