@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
@@ -107,7 +108,7 @@ func instanceStatusTable(rs []resource.Resource, now time.Time) controlplane.Tab
 			Name: r.Name,
 			Cells: []string{
 				r.Name, spec.Host, spec.Version, string(state),
-				fmt.Sprintf("%d", len(st.Runs)), hb,
+				strconv.Itoa(len(st.Runs)), hb,
 			},
 		})
 	}
