@@ -1,0 +1,42 @@
+{
+  "description": "Deploy an application to Fly.io and register it as a supervised service. Run from the application's directory (the one holding its fly.toml). Logging in (fly auth login) and any volumes or secrets the app needs are operator prerequisites; this playbook ensures the CLI is present, the app exists, deploys it, and tracks the result.",
+  "inputs": {
+    "type": "object",
+    "properties": {
+      "app": {"type": "string", "description": "the Fly app name"},
+      "config": {"type": "string", "description": "path to the fly.toml, relative to the working directory (default fly.toml)"}
+    },
+    "required": ["app"]
+  },
+  "service": {"provider": "fly", "target": "container"},
+  "flow": {
+    "limits": {"timeoutMillis": 900000},
+    "steps": [
+      {"id": "flyctl", "op": "dependency", "dependency": {"name": "flyctl"}},
+      {"id": "auth", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} auth whoami", "allowNonzero": true}},
+      {"op": "assert", "assert": {
+        "that": "steps.auth.exitCode == 0",
+        "message": "Not logged in to Fly. Run `fly auth login` (or set FLY_API_TOKEN), then re-run this playbook."
+      }},
+      {"id": "applist", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} apps list", "allowNonzero": true}},
+      {"op": "condition", "condition": {
+        "if": "!contains(steps.applist.output, config.app)",
+        "then": [
+          {"op": "exec", "exec": {"command": "{{steps.flyctl.path}} apps create {{config.app}}"}}
+        ]
+      }},
+      {"id": "deploy", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} deploy --config {{default(config.config, 'fly.toml')}} --app {{config.app}}"}},
+      {"id": "status", "op": "exec", "exec": {"command": "{{steps.flyctl.path}} status --app {{config.app}}", "allowNonzero": true}},
+      {"op": "assert", "assert": {
+        "that": "steps.deploy.exitCode == 0",
+        "message": "fly deploy did not succeed; see the output above."
+      }},
+      {"op": "return", "return": {"value": {
+        "name": "{{config.app}}",
+        "url": "https://{{config.app}}.fly.dev",
+        "provider": "fly",
+        "address": {"app": "{{config.app}}"}
+      }}}
+    ]
+  }
+}
