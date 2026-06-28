@@ -9,11 +9,12 @@
 #
 #   docker build -t flynn:local --build-arg VERSION=v0.1.0 .
 #
-# Pin both base images by @sha256 digest for production builds; the tags below track a
-# minor line so the image stays reproducible within it.
+# Both base images are pinned by @sha256 digest so a build is byte-for-byte reproducible
+# and cannot be changed under the tag; the tag is kept alongside the digest for
+# readability. Update the digest together with the tag when moving to a new base.
 
 # ---- build stage --------------------------------------------------------------
-FROM golang:1.25.11-bookworm AS build
+FROM golang:1.25.11-bookworm@sha256:b96f24a8d7d010ea0acb9c3ba99064740f02b6b984612b28bd3c9c5ab9453e38 AS build
 WORKDIR /src
 
 # Download modules first so the layer caches across source-only changes.
@@ -43,7 +44,7 @@ RUN install -d -o 65532 -g 65532 /data
 # distroless static: ~2 MB, no shell or package manager, runs as a non-root user
 # (uid 65532), and ships ca-certificates and tzdata so outbound HTTPS to model
 # providers and integrations works out of the box.
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
 
 # APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
 # posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits

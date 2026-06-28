@@ -11,7 +11,7 @@ if [ -z "$govulncheck" ]; then
     govulncheck="$gobin/govulncheck"
   else
     echo "==> installing govulncheck"
-    go install golang.org/x/vuln/cmd/govulncheck@latest
+    go install golang.org/x/vuln/cmd/govulncheck@v1.5.0
     govulncheck="$gobin/govulncheck"
   fi
 fi
