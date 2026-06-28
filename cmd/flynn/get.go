@@ -12,9 +12,12 @@ import (
 
 	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/version"
+	"github.com/ionalpha/flynn/profilestore"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -60,6 +63,29 @@ func knownKinds() map[string]cpKind {
 			col("PHASE", controlplane.StatusField("phase")),
 			col("STEPS", controlplane.StatusField("steps")),
 			col("OBJECTIVE", objective),
+		)},
+		{[]string{"entries", "entry"}, mk(
+			inbox.Kind,
+			col("NAME", controlplane.Name()),
+			col("SOURCE", controlplane.SpecField("source")),
+			col("SENDER", controlplane.SpecField("sender")),
+			col("PHASE", controlplane.StatusField("phase")),
+			col("DISPOSITION", controlplane.StatusField("disposition")),
+		)},
+		{[]string{"credentials", "credential", "creds"}, mk(
+			credential.Kind,
+			col("NAME", controlplane.Name()),
+			col("INTEGRATION", controlplane.SpecField("integration")),
+			col("AUTH", controlplane.SpecField("authType")),
+			col("ROLE", controlplane.SpecField("role")),
+			col("DEFAULT", controlplane.SpecField("isDefault")),
+		)},
+		{[]string{"profiles", "profile", "modelprofiles", "modelprofile"}, mk(
+			profilestore.Kind,
+			col("NAME", controlplane.Name()),
+			col("MODEL", controlplane.SpecField("modelID")),
+			col("QUANT", controlplane.SpecField("quant")),
+			col("RUNTIME", controlplane.SpecField("runtime")),
 		)},
 	}
 	m := map[string]cpKind{}
@@ -161,6 +187,50 @@ func dispatchDescribe(args []string, dataDir string) error {
 	return nil
 }
 
+// dispatchDiff implements `flynn diff <kind> <a> <b>`: it shows the fields that differ
+// between two resources of the same kind (their spec and status), the resource-level
+// comparison that versioning makes meaningful (for example two agents, or an agent
+// before and after an edit). It reads the same store as get/describe.
+func dispatchDiff(args []string, dataDir string) error {
+	if len(args) < 3 {
+		return errors.New("usage: flynn diff <kind> <name-or-id> <name-or-id>")
+	}
+	ctx := context.Background()
+	durable, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = durable.Close() }()
+	reg, err := missionRegistry()
+	if err != nil {
+		return err
+	}
+	store := durable.Resources(reg)
+
+	ck, ok := resolveKind(reg, args[0])
+	if !ok {
+		return fmt.Errorf("unknown kind %q; try one of: %s", args[0], strings.Join(kindAliases(), ", "))
+	}
+	idA, err := resolveID(ctx, store, ck.kind, args[1])
+	if err != nil {
+		return err
+	}
+	idB, err := resolveID(ctx, store, ck.kind, args[2])
+	if err != nil {
+		return err
+	}
+	ra, err := store.GetByID(ctx, idA)
+	if err != nil {
+		return err
+	}
+	rb, err := store.GetByID(ctx, idB)
+	if err != nil {
+		return err
+	}
+	renderDiff(os.Stdout, ck.kind, ra, rb, controlplane.Diff(ra, rb))
+	return nil
+}
+
 // resolveID accepts either a resource id or a logical name and returns the id. It
 // tries the id first (the unambiguous handle), then the name in the global scope.
 func resolveID(ctx context.Context, store resource.Store, kind, ref string) (string, error) {
@@ -238,4 +308,33 @@ func renderDetail(out io.Writer, kind string, d controlplane.Detail) {
 		_, _ = fmt.Fprintf(w, "%d\t%s\t%s\t%s\n", ev.Seq, ev.Type, ev.Actor, ev.Time.UTC().Format("2006-01-02T15:04:05Z"))
 	}
 	_ = w.Flush()
+}
+
+// renderDiff prints the two resources being compared and the fields that differ, or a
+// note when they are identical in content. An absent value on one side shows as "-" so
+// an added or removed field reads clearly.
+func renderDiff(out io.Writer, kind string, a, b resource.Resource, deltas []controlplane.FieldDelta) {
+	_, _ = fmt.Fprintf(out, "Kind:  %s\n", kind)
+	_, _ = fmt.Fprintf(out, "A:     %s (%s)\n", a.Name, a.ID)
+	_, _ = fmt.Fprintf(out, "B:     %s (%s)\n", b.Name, b.ID)
+	if len(deltas) == 0 {
+		_, _ = fmt.Fprintln(out, "\nno differences")
+		return
+	}
+	_, _ = fmt.Fprintln(out)
+	w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(w, "FIELD\tA\tB")
+	for _, d := range deltas {
+		_, _ = fmt.Fprintf(w, "%s\t%s\t%s\n", d.Field, diffCell(d.A), diffCell(d.B))
+	}
+	_ = w.Flush()
+}
+
+// diffCell renders a diff value, showing an empty (absent) value as "-" so a field
+// present on only one side is unambiguous.
+func diffCell(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
 }
