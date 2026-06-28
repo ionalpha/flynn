@@ -138,3 +138,26 @@ func TestSpawnNamedAgentComposes(t *testing.T) {
 		t.Fatalf("child grant = %v, want [glob read] (composed base+specialist ∩ parent)", got)
 	}
 }
+
+// TestSpawnNamedAgentCarriesDriverAndModel proves a delegation to a named Agent
+// records the Agent's driver and model on the child goal, so the router runs the
+// child under the specialist's loop and model, not just its prompt + authority.
+func TestSpawnNamedAgentCarriesDriverAndModel(t *testing.T) {
+	s := storeWithAgents(t)
+	putAgentRes(t, s, "summarizer", archetype.Spec{
+		System: "summarize", Capabilities: []string{"read"},
+		Driver: "single-shot", Model: "cheap-model",
+	})
+	sp := orchestration.NewSpawner(s, nil)
+	sp.SetEnqueue((&recordingEnqueue{}).fn)
+	parent := putParent(t, s, "root", goal.Spec{Objective: "o", StopCondition: "c", Grant: []string{"read", "spawn"}})
+
+	id, err := sp.Spawn(context.Background(), parent, mission.SubGoal{Objective: "x", Agent: "summarizer"})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	cs := childSpec(t, s, id)
+	if cs.Driver != "single-shot" || cs.Model != "cheap-model" {
+		t.Fatalf("child driver=%q model=%q, want single-shot/cheap-model from the agent", cs.Driver, cs.Model)
+	}
+}
