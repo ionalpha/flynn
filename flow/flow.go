@@ -25,6 +25,15 @@ const (
 	OpCall Op = "call"
 	// OpReturn yields the flow's result and stops.
 	OpReturn Op = "return"
+	// OpAssert checks a condition and fails the flow when it is false, so a flow can
+	// verify an outcome (a resource exists, a status is healthy) before continuing.
+	OpAssert Op = "assert"
+	// OpExec runs a command through the injected runner, which confines it in the
+	// sandbox, so a flow can drive an external command-line program.
+	OpExec Op = "exec"
+	// OpDependency ensures an external program is present, provisioning a pinned build
+	// when it is missing, and yields the path to run it.
+	OpDependency Op = "dependency"
 )
 
 // Flow is a declarative procedure: an ordered list of steps the interpreter runs to
@@ -43,12 +52,15 @@ type Step struct {
 	Op  Op     `json:"op"`
 	Doc string `json:"doc,omitempty"`
 
-	HTTP      *HTTPAction      `json:"http,omitempty"`
-	Transform *TransformAction `json:"transform,omitempty"`
-	Condition *ConditionAction `json:"condition,omitempty"`
-	Loop      *LoopAction      `json:"loop,omitempty"`
-	Call      *CallAction      `json:"call,omitempty"`
-	Return    *ReturnAction    `json:"return,omitempty"`
+	HTTP       *HTTPAction       `json:"http,omitempty"`
+	Transform  *TransformAction  `json:"transform,omitempty"`
+	Condition  *ConditionAction  `json:"condition,omitempty"`
+	Loop       *LoopAction       `json:"loop,omitempty"`
+	Call       *CallAction       `json:"call,omitempty"`
+	Return     *ReturnAction     `json:"return,omitempty"`
+	Assert     *AssertAction     `json:"assert,omitempty"`
+	Exec       *ExecAction       `json:"exec,omitempty"`
+	Dependency *DependencyAction `json:"dependency,omitempty"`
 }
 
 // HTTPAction is a single request. Method, URL, and the values of Headers and Query
@@ -109,6 +121,29 @@ type CallAction struct {
 // literal shape with holes or a single expression yielding a typed value.
 type ReturnAction struct {
 	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// AssertAction fails the flow when That is not truthy, with an optional templated
+// Message. It is how a flow verifies an outcome and stops with a clear error when the
+// outcome does not hold, rather than continuing on a false assumption.
+type AssertAction struct {
+	That    string `json:"that"`
+	Message string `json:"message,omitempty"`
+}
+
+// ExecAction runs Command (templated) through the injected runner, which confines it in
+// the sandbox. The step output is {exitCode, output}. A nonzero exit fails the step
+// unless AllowNonzero is set, so a command failure stops the flow by default; set
+// AllowNonzero to inspect the exit code in a later step instead.
+type ExecAction struct {
+	Command      string `json:"command"`
+	AllowNonzero bool   `json:"allowNonzero,omitempty"`
+}
+
+// DependencyAction ensures the named external program is present, provisioning a pinned
+// build when it is missing, and yields {path} to run it. Name is templated.
+type DependencyAction struct {
+	Name string `json:"name"`
 }
 
 // Decode parses a Flow from JSON and validates it. A flow that does not validate is
@@ -173,6 +208,12 @@ func validateStep(s Step, seen map[string]bool) error {
 		return validateCall(s.Call)
 	case OpReturn:
 		return validateReturn(s.Return)
+	case OpAssert:
+		return validateAssert(s.Assert)
+	case OpExec:
+		return validateExec(s.Exec)
+	case OpDependency:
+		return validateDependency(s.Dependency)
 	default:
 		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(s.Op))
 	}
@@ -193,6 +234,9 @@ func actionBlocks(s Step) (total int, matchesOp bool) {
 		{s.Loop != nil, OpLoop},
 		{s.Call != nil, OpCall},
 		{s.Return != nil, OpReturn},
+		{s.Assert != nil, OpAssert},
+		{s.Exec != nil, OpExec},
+		{s.Dependency != nil, OpDependency},
 	} {
 		if b.present {
 			total++
@@ -306,6 +350,33 @@ func validateCall(a *CallAction) error {
 }
 
 func validateReturn(a *ReturnAction) error { return checkBodyTemplate(a.Value) }
+
+func validateAssert(a *AssertAction) error {
+	if a.That == "" {
+		return fault.New(fault.Terminal, "flow_assert_no_cond", "flow: assert step needs a condition")
+	}
+	if err := checkExpr(a.That); err != nil {
+		return err
+	}
+	if a.Message != "" {
+		return checkTemplate(a.Message)
+	}
+	return nil
+}
+
+func validateExec(a *ExecAction) error {
+	if a.Command == "" {
+		return fault.New(fault.Terminal, "flow_exec_no_command", "flow: exec step needs a command")
+	}
+	return checkTemplate(a.Command)
+}
+
+func validateDependency(a *DependencyAction) error {
+	if a.Name == "" {
+		return fault.New(fault.Terminal, "flow_dep_no_name", "flow: dependency step needs a name")
+	}
+	return checkTemplate(a.Name)
+}
 
 // checkExpr parses an expression and discards it, reporting a parse error as a
 // terminal fault so a bad expression is caught at admission.

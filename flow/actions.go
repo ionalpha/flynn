@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/ionalpha/flynn/fault"
 )
@@ -234,6 +235,64 @@ func (r *run) execCall(ctx context.Context, a *CallAction, s *scope) (any, error
 		return nil, fault.Wrap(fault.Terminal, "flow_call_encode", err)
 	}
 	return r.in.tools.Call(ctx, tool, raw)
+}
+
+// execAssert evaluates the condition and stops the flow with a terminal fault when it is
+// not truthy, so a verification step fails loudly rather than letting the flow continue
+// on a false outcome. It produces no output.
+func (r *run) execAssert(a *AssertAction, s *scope) error {
+	v, err := evalExpr(a.That, s)
+	if err != nil {
+		return err
+	}
+	if truthy(v) {
+		return nil
+	}
+	msg := "flow: assertion failed: " + a.That
+	if a.Message != "" {
+		if rendered, rerr := renderTemplateString(a.Message, s); rerr == nil {
+			msg = rendered
+		}
+	}
+	return fault.New(fault.Terminal, "flow_assertion", msg)
+}
+
+// execExec runs a command through the injected runner (the sandbox) and returns
+// {exitCode, output}. A nonzero exit fails the step unless the action allows it, so a
+// failed command stops the flow by default rather than being silently ignored.
+func (r *run) execExec(ctx context.Context, a *ExecAction, s *scope) (any, error) {
+	if r.in.exec == nil {
+		return nil, fault.New(fault.Terminal, "flow_no_exec", "flow: exec step but no runner is configured")
+	}
+	cmd, err := renderTemplateString(a.Command, s)
+	if err != nil {
+		return nil, templErr(err)
+	}
+	res, err := r.in.exec.Exec(ctx, ExecRequest{Command: cmd})
+	if err != nil {
+		return nil, err
+	}
+	if res.ExitCode != 0 && !a.AllowNonzero {
+		return nil, fault.New(fault.Terminal, "flow_exec_failed", "flow: command exited "+strconv.Itoa(res.ExitCode))
+	}
+	return map[string]any{"exitCode": float64(res.ExitCode), "output": res.Output}, nil
+}
+
+// execDependency ensures the named program is present through the injected resolver and
+// returns {path} to run it, so a later exec step can invoke it.
+func (r *run) execDependency(ctx context.Context, a *DependencyAction, s *scope) (any, error) {
+	if r.in.deps == nil {
+		return nil, fault.New(fault.Terminal, "flow_no_deps", "flow: dependency step but no resolver is configured")
+	}
+	name, err := renderTemplateString(a.Name, s)
+	if err != nil {
+		return nil, templErr(err)
+	}
+	path, err := r.in.deps.Resolve(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"path": path}, nil
 }
 
 // evalExpr parses and evaluates an expression against a scope. Parse errors are
