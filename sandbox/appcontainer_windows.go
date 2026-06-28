@@ -264,7 +264,7 @@ func applyJobLimits(process windows.Handle) (windows.Handle, error) {
 // or a cancelled context is an error. Output is drained on a separate goroutine so a
 // command that writes more than the pipe buffer cannot deadlock, and only the single
 // output-pipe handle is inherited by the child.
-func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID) (ExecResult, error) {
+func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte) (ExecResult, error) {
 	capAttrs := make([]windows.SIDAndAttributes, 0, len(caps))
 	for _, c := range caps {
 		capAttrs = append(capAttrs, windows.SIDAndAttributes{Sid: c, Attributes: windows.SE_GROUP_ENABLED})
@@ -288,28 +288,60 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 		return ExecResult{}, fmt.Errorf("sandbox: handle info: %w", err)
 	}
 
+	// Optional standard-input pipe for a command that reads a secret on stdin (a
+	// credential import). The read end is inheritable (the child reads it); the write end
+	// stays with the parent (made non-inheritable) and is fed the bytes after launch, then
+	// closed to signal EOF. The value travels only on this pipe, never on the command line.
+	// With no stdin both handles stay zero and the child simply has no input, as before.
+	var rdIn, wrIn windows.Handle
+	if len(stdin) > 0 {
+		if err := windows.CreatePipe(&rdIn, &wrIn, sa, 0); err != nil {
+			windows.CloseHandle(wr)
+			return ExecResult{}, fmt.Errorf("sandbox: stdin pipe: %w", err)
+		}
+		if err := windows.SetHandleInformation(wrIn, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			windows.CloseHandle(wr)
+			windows.CloseHandle(rdIn)
+			windows.CloseHandle(wrIn)
+			return ExecResult{}, fmt.Errorf("sandbox: stdin handle info: %w", err)
+		}
+	}
+
+	// failClose releases every handle the child will inherit (and the parent's stdin
+	// writer) on any path that fails before the child holds its own copies.
+	failClose := func() {
+		windows.CloseHandle(wr)
+		if rdIn != 0 {
+			windows.CloseHandle(rdIn)
+			windows.CloseHandle(wrIn)
+		}
+	}
+
 	al, err := windows.NewProcThreadAttributeList(3)
 	if err != nil {
-		windows.CloseHandle(wr)
+		failClose()
 		return ExecResult{}, fmt.Errorf("sandbox: attribute list: %w", err)
 	}
 	defer al.Delete()
 	if err := al.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(&sc), unsafe.Sizeof(sc)); err != nil {
-		windows.CloseHandle(wr)
+		failClose()
 		return ExecResult{}, fmt.Errorf("sandbox: security capabilities: %w", err)
 	}
-	// Inherit only the output pipe, not whatever other inheritable handles this process
-	// happens to hold.
+	// Inherit only the pipe handles we set up (output, and the stdin reader when present),
+	// not whatever other inheritable handles this process happens to hold.
 	handles := []windows.Handle{wr}
+	if rdIn != 0 {
+		handles = append(handles, rdIn)
+	}
 	if err := al.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
-		windows.CloseHandle(wr)
+		failClose()
 		return ExecResult{}, fmt.Errorf("sandbox: handle list: %w", err)
 	}
 	// Harden the child with process-mitigation policies (Win32k lockdown, no code
 	// injection or DLL planting, standard exploit mitigations) on top of the container.
 	policy := uint64(sandboxMitigationPolicy)
 	if err := al.Update(procThreadAttributeMitigationPolicy, unsafe.Pointer(&policy), unsafe.Sizeof(policy)); err != nil {
-		windows.CloseHandle(wr)
+		failClose()
 		return ExecResult{}, fmt.Errorf("sandbox: mitigation policy: %w", err)
 	}
 
@@ -318,6 +350,7 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	si.StartupInfo.Flags |= windows.STARTF_USESTDHANDLES
 	si.StartupInfo.StdOutput = wr
 	si.StartupInfo.StdErr = wr
+	si.StartupInfo.StdInput = rdIn // zero when no stdin: the child has no input, as before
 	si.ProcThreadAttributeList = al.List()
 
 	appPtr, _ := windows.UTF16PtrFromString(appName)
@@ -329,8 +362,14 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	// force, before it runs a single instruction.
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
 	err = windows.CreateProcess(appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
-	windows.CloseHandle(wr) // the parent never writes; the child holds its own copy
+	windows.CloseHandle(wr) // the parent never writes output; the child holds its own copy
+	if rdIn != 0 {
+		windows.CloseHandle(rdIn) // the child holds its own copy of the stdin reader
+	}
 	if err != nil {
+		if wrIn != 0 {
+			windows.CloseHandle(wrIn)
+		}
 		return ExecResult{}, fmt.Errorf("sandbox: create process: %w", err)
 	}
 	defer windows.CloseHandle(pi.Thread)
@@ -340,13 +379,38 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	// the run ends), then start it.
 	job, err := applyJobLimits(pi.Process)
 	if err != nil {
+		if wrIn != 0 {
+			windows.CloseHandle(wrIn)
+		}
 		_ = windows.TerminateProcess(pi.Process, 1)
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 	defer windows.CloseHandle(job) // closing the last job handle reaps any survivors
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
+		if wrIn != 0 {
+			windows.CloseHandle(wrIn)
+		}
 		_ = windows.TerminateProcess(pi.Process, 1)
 		return ExecResult{}, fmt.Errorf("sandbox: resume: %w", err)
+	}
+
+	// Feed the optional stdin on a separate goroutine so a value larger than the pipe
+	// buffer cannot deadlock against a child that has not started reading, then close the
+	// writer so the child sees end-of-input. The bytes never touch the command line.
+	if wrIn != 0 {
+		go func() {
+			b := stdin
+			for len(b) > 0 {
+				n, werr := windows.Write(wrIn, b)
+				if n > 0 {
+					b = b[n:]
+				}
+				if werr != nil {
+					break
+				}
+			}
+			windows.CloseHandle(wrIn)
+		}()
 	}
 
 	outCh := make(chan []byte, 1)

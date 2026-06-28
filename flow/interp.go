@@ -72,6 +72,16 @@ type DependencyResolver interface {
 	Resolve(ctx context.Context, name string) (path string, err error)
 }
 
+// CredentialSink performs the secret steps of a flow: it materializes a secret, named by
+// a reference, into a target's secret store (a hosting provider's secrets, a deployed
+// workload's environment). The implementation resolves the reference to its value through
+// the host's secret source and delivers it to the named sink, so the value never enters
+// the flow as data: a step passes only the reference, the sink, and the target. Returning
+// a non-nil error fails the step. Without it, a secret step fails closed.
+type CredentialSink interface {
+	Put(ctx context.Context, sink, ref string, target map[string]string) error
+}
+
 // Confirmer performs the confirm steps of a flow: it shows the user a message and waits
 // for them to approve before the flow continues. The host wires how that is asked (an
 // interactive terminal prompt for a person, a fail-closed instruction for a
@@ -131,6 +141,7 @@ type Interpreter struct {
 	exec     Execer
 	deps     DependencyResolver
 	confirm  Confirmer
+	sink     CredentialSink
 	observer Observer
 	clk      clock.Clock
 	limits   Limits
@@ -158,6 +169,10 @@ func WithDependencies(d DependencyResolver) Option { return func(i *Interpreter)
 // WithConfirm sets the port that asks the user to approve confirm steps. Without it, a
 // confirm step fails closed.
 func WithConfirm(c Confirmer) Option { return func(i *Interpreter) { i.confirm = c } }
+
+// WithCredentialSink sets the port that materializes secret steps into a target's secret
+// store. Without it, a secret step fails closed.
+func WithCredentialSink(s CredentialSink) Option { return func(i *Interpreter) { i.sink = s } }
 
 // WithObserver sets the port that watches each observable step as it runs, so a host can
 // show progress while a flow executes. Without it, a flow still runs; nothing is reported.
@@ -312,6 +327,8 @@ func (r *run) execStep(ctx context.Context, st Step, s *scope) error {
 		out, err = r.execDependency(ctx, st.Dependency, s)
 	case OpConfirm:
 		return r.execConfirm(ctx, st.Confirm, s)
+	case OpSecret:
+		return r.execSecret(ctx, st.Secret, s)
 	default:
 		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(st.Op))
 	}

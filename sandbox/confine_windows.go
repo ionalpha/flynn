@@ -49,11 +49,11 @@ func (l *Local) closePlatform() error {
 // with only the working directory writable, and the network allowed only when it was
 // not denied. The confined flag is decided by the caller (Exec), so the always-on
 // secure-by-default baseline confines a Windows command through the container too.
-func (l *Local) runShell(ctx context.Context, name string, args []string, confined bool) (ExecResult, error) {
+func (l *Local) runShell(ctx context.Context, name string, args []string, stdin []byte, confined bool) (ExecResult, error) {
 	if !confined {
-		return l.runWithExecCmd(ctx, name, args, false)
+		return l.runWithExecCmd(ctx, name, args, stdin, false)
 	}
-	return l.runAppContainer(ctx, name, args)
+	return l.runAppContainer(ctx, name, args, stdin)
 }
 
 // runAppContainer builds the AppContainer policy from the Local's options and launches
@@ -61,7 +61,7 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, confin
 // so commands in different sandbox roots cannot reach each other's files even though
 // both are confined. The network is granted only when it was not denied; the working
 // directory is the one writable location.
-func (l *Local) runAppContainer(ctx context.Context, name string, args []string) (ExecResult, error) {
+func (l *Local) runAppContainer(ctx context.Context, name string, args []string, stdin []byte) (ExecResult, error) {
 	comspec := os.Getenv("ComSpec")
 	if comspec == "" {
 		comspec = `C:\Windows\System32\cmd.exe`
@@ -94,7 +94,7 @@ func (l *Local) runAppContainer(ctx context.Context, name string, args []string)
 	// what the loader uses to find the binary.
 	line := args[len(args)-1]
 	cmdline := `"` + comspec + `" /s /c "` + line + `"`
-	return launchAppContainer(ctx, comspec, cmdline, l.root, l.appContainerEnv(), sid, caps)
+	return launchAppContainer(ctx, comspec, cmdline, l.root, l.appContainerEnv(), sid, caps, stdin)
 }
 
 // appContainerMoniker derives a stable, unique AppContainer name from the absolute

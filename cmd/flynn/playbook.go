@@ -57,8 +57,11 @@ func (p terminalProgress) Step(ev flow.StepEvent) {
 			_, _ = fmt.Fprintf(p.w, "\n$ %s\n", ev.Detail)
 		case flow.OpDependency:
 			_, _ = fmt.Fprintf(p.w, "\n* ensuring %s is available\n", ev.Detail)
+		case flow.OpSecret:
+			// ev.Detail is "sink:ref", a sink name and a reference name, never the value.
+			_, _ = fmt.Fprintf(p.w, "\n* materializing secret %s\n", ev.Detail)
 		default:
-			// Other ops carry no command to show; only exec and dependency are reported.
+			// Other ops carry no command to show; only exec, dependency, and secret are reported.
 		}
 	case flow.StepEnd:
 		if ev.Err != nil {
@@ -72,8 +75,10 @@ func (p terminalProgress) Step(ev flow.StepEvent) {
 			_, _ = fmt.Fprintf(p.w, "  [exit %d]\n", ev.ExitCode)
 		case flow.OpDependency:
 			_, _ = fmt.Fprintln(p.w, "  ready")
+		case flow.OpSecret:
+			_, _ = fmt.Fprintln(p.w, "  staged")
 		default:
-			// Other ops carry no command to show; only exec and dependency are reported.
+			// Other ops carry no command to show; only exec, dependency, and secret are reported.
 		}
 	}
 }
@@ -161,6 +166,11 @@ func openPlaybookRuntime(ctx context.Context, dataDir string) (*playbookRuntime,
 		service.NewStore(rstore),
 		playbook.WithConfirmer(terminalConfirmer{}),
 		playbook.WithObserver(terminalProgress{w: os.Stderr}),
+		// The secret sink resolves a credential from the same vault-then-env chain the rest
+		// of the agent uses, and materializes it into a provider through the sandbox, so a
+		// playbook can provision a deployed workload's secrets without the value ever being
+		// rendered into a command or the progress output.
+		playbook.WithCredentialSink(playbook.NewCredentialSink(credentialSource(dataDir), sb)),
 	)
 	return &playbookRuntime{store: pbStore, runner: runner, closer: durable.Close}, nil
 }
