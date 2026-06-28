@@ -60,6 +60,28 @@ func TestAddCredentialStoresMetadataAndSecret(t *testing.T) {
 	}
 }
 
+// TestAddCredentialFirstIsDefault proves the first credential for an integration
+// becomes its default automatically, so a single credential is usable without a
+// separate selection step, while a later credential does not steal the default.
+func TestAddCredentialFirstIsDefault(t *testing.T) {
+	cs, vs := testStores(t)
+	ctx := context.Background()
+	if err := addCredential(ctx, cs, vs, credential.Spec{Integration: "cf", Name: "a"}, secret.New("1")); err != nil {
+		t.Fatalf("add first: %v", err)
+	}
+	def, err := cs.Default(ctx, "cf")
+	if err != nil || def.Spec.Name != "a" {
+		t.Fatalf("the first credential should be the default, got %+v (%v)", def, err)
+	}
+	if err := addCredential(ctx, cs, vs, credential.Spec{Integration: "cf", Name: "b"}, secret.New("2")); err != nil {
+		t.Fatalf("add second: %v", err)
+	}
+	def, _ = cs.Default(ctx, "cf")
+	if def.Spec.Name != "a" {
+		t.Fatalf("a later credential must not steal the default, got %q", def.Spec.Name)
+	}
+}
+
 func TestAddCredentialRollsBackOnMetadataFailure(t *testing.T) {
 	cs, vs := testStores(t)
 	ctx := context.Background()
