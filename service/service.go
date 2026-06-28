@@ -169,7 +169,7 @@ func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
 // record. The deploy path uses it to register a freshly deployed workload.
 func (s *Store) Put(ctx context.Context, name string, spec Spec, status Status) (Service, error) {
 	if name == "" || spec.Provider == "" {
-		return Service{}, fmt.Errorf("service: a service needs a name and a provider")
+		return Service{}, errors.New("service: a service needs a name and a provider")
 	}
 	rawSpec, err := json.Marshal(spec)
 	if err != nil {
