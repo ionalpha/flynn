@@ -105,7 +105,9 @@ Flynn is secured by default; the container configuration keeps it that way.
   filesystem (state is on the volume), no privilege escalation, and all Linux
   capabilities dropped (see `compose.yaml`).
 
-For production, pin both base images in the `Dockerfile` by `@sha256` digest.
+Both base images in the `Dockerfile` are pinned by `@sha256` digest, so a build is
+reproducible and the base cannot change under its tag. Update the digest together with
+the tag when moving to a newer base.
 
 ## Reaching the control plane remotely
 
