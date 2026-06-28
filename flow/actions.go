@@ -295,6 +295,20 @@ func (r *run) execDependency(ctx context.Context, a *DependencyAction, s *scope)
 	return map[string]any{"path": path}, nil
 }
 
+// execConfirm shows the user the rendered message and waits for them to approve before the
+// flow continues. A declined or unanswerable confirmation returns an error, so the flow
+// stops rather than proceeding without consent. It produces no output.
+func (r *run) execConfirm(ctx context.Context, a *ConfirmAction, s *scope) error {
+	if r.in.confirm == nil {
+		return fault.New(fault.Terminal, "flow_no_confirm", "flow: confirm step but no prompter is configured")
+	}
+	msg, err := renderTemplateString(a.Message, s)
+	if err != nil {
+		return templErr(err)
+	}
+	return r.in.confirm.Confirm(ctx, msg)
+}
+
 // evalExpr parses and evaluates an expression against a scope. Parse errors are
 // already caught at admission, so a parse failure here is still surfaced as a
 // terminal fault for safety.

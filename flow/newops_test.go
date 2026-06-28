@@ -32,6 +32,17 @@ func (r *fakeResolver) Resolve(_ context.Context, name string) (string, error) {
 	return r.path, r.err
 }
 
+// fakeConfirmer scripts a confirmation outcome and records the message it was shown.
+type fakeConfirmer struct {
+	err     error
+	lastMsg string
+}
+
+func (c *fakeConfirmer) Confirm(_ context.Context, message string) error {
+	c.lastMsg = message
+	return c.err
+}
+
 func runFlow(t *testing.T, src string, config map[string]any, opts ...Option) (any, error) {
 	t.Helper()
 	f, err := Decode([]byte(src))
@@ -148,6 +159,44 @@ func TestDependencyNoResolverFailsClosed(t *testing.T) {
 	}
 }
 
+// TestConfirmProceeds proves an approved confirmation lets the flow continue, and that the
+// message is templated and shown.
+func TestConfirmProceeds(t *testing.T) {
+	c := &fakeConfirmer{}
+	out, err := runFlow(t, `{"steps":[
+		{"op":"confirm","confirm":{"message":"Log in to {{config.svc}}? Press Enter."}},
+		{"op":"return","return":{"value":"continued"}}
+	]}`, map[string]any{"svc": "Fly"}, WithConfirm(c))
+	if err != nil || out != "continued" {
+		t.Fatalf("expected the flow to continue, got %v err=%v", out, err)
+	}
+	if c.lastMsg != "Log in to Fly? Press Enter." {
+		t.Fatalf("confirm message not templated: %q", c.lastMsg)
+	}
+}
+
+// TestConfirmDeclinesStopsFlow proves a declined (or unanswerable) confirmation stops the
+// flow rather than proceeding without consent.
+func TestConfirmDeclinesStopsFlow(t *testing.T) {
+	c := &fakeConfirmer{err: errors.New("cancelled by operator")}
+	_, err := runFlow(t, `{"steps":[
+		{"op":"confirm","confirm":{"message":"proceed?"}},
+		{"op":"return","return":{"value":"continued"}}
+	]}`, nil, WithConfirm(c))
+	if err == nil || !strings.Contains(err.Error(), "cancelled") {
+		t.Fatalf("expected a declined confirmation to stop the flow, got %v", err)
+	}
+}
+
+// TestConfirmNoPrompterFailsClosed proves a confirm step with no prompter fails rather than
+// silently proceeding.
+func TestConfirmNoPrompterFailsClosed(t *testing.T) {
+	_, err := runFlow(t, `{"steps":[{"op":"confirm","confirm":{"message":"ok?"}}]}`, nil)
+	if err == nil {
+		t.Fatal("a confirm step without a prompter must fail closed")
+	}
+}
+
 // TestNewOpsValidation proves the new ops are admitted only when well-formed: an assert
 // with no condition, an exec with no command, and a dependency with no name are rejected
 // at decode.
@@ -156,6 +205,7 @@ func TestNewOpsValidation(t *testing.T) {
 		`{"steps":[{"op":"assert","assert":{}}]}`,
 		`{"steps":[{"op":"exec","exec":{}}]}`,
 		`{"steps":[{"op":"dependency","dependency":{}}]}`,
+		`{"steps":[{"op":"confirm","confirm":{}}]}`,
 	}
 	for _, src := range bad {
 		if _, err := Decode([]byte(src)); err == nil {

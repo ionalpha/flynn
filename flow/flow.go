@@ -34,6 +34,10 @@ const (
 	// OpDependency ensures an external program is present, provisioning a pinned build
 	// when it is missing, and yields the path to run it.
 	OpDependency Op = "dependency"
+	// OpConfirm pauses the flow to show the user a message and wait for them to approve
+	// before continuing, so an interactive step (a browser login, a destructive action)
+	// is surfaced and consented to rather than happening silently.
+	OpConfirm Op = "confirm"
 )
 
 // Flow is a declarative procedure: an ordered list of steps the interpreter runs to
@@ -61,6 +65,7 @@ type Step struct {
 	Assert     *AssertAction     `json:"assert,omitempty"`
 	Exec       *ExecAction       `json:"exec,omitempty"`
 	Dependency *DependencyAction `json:"dependency,omitempty"`
+	Confirm    *ConfirmAction    `json:"confirm,omitempty"`
 }
 
 // HTTPAction is a single request. Method, URL, and the values of Headers and Query
@@ -146,6 +151,14 @@ type DependencyAction struct {
 	Name string `json:"name"`
 }
 
+// ConfirmAction pauses the flow to show Message (templated) and wait for the user to
+// approve before continuing. It is how a flow makes an interactive step visible and gets
+// the operator's go-ahead rather than acting silently, and how a non-interactive run stops
+// with a clear instruction instead of blocking. It produces no output.
+type ConfirmAction struct {
+	Message string `json:"message"`
+}
+
 // Decode parses a Flow from JSON and validates it. A flow that does not validate is
 // never returned, so the interpreter only ever runs well-formed flows.
 func Decode(raw []byte) (Flow, error) {
@@ -214,6 +227,8 @@ func validateStep(s Step, seen map[string]bool) error {
 		return validateExec(s.Exec)
 	case OpDependency:
 		return validateDependency(s.Dependency)
+	case OpConfirm:
+		return validateConfirm(s.Confirm)
 	default:
 		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(s.Op))
 	}
@@ -237,6 +252,7 @@ func actionBlocks(s Step) (total int, matchesOp bool) {
 		{s.Assert != nil, OpAssert},
 		{s.Exec != nil, OpExec},
 		{s.Dependency != nil, OpDependency},
+		{s.Confirm != nil, OpConfirm},
 	} {
 		if b.present {
 			total++
@@ -376,6 +392,13 @@ func validateDependency(a *DependencyAction) error {
 		return fault.New(fault.Terminal, "flow_dep_no_name", "flow: dependency step needs a name")
 	}
 	return checkTemplate(a.Name)
+}
+
+func validateConfirm(a *ConfirmAction) error {
+	if a.Message == "" {
+		return fault.New(fault.Terminal, "flow_confirm_no_message", "flow: confirm step needs a message")
+	}
+	return checkTemplate(a.Message)
 }
 
 // checkExpr parses an expression and discards it, reporting a parse error as a
