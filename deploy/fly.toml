@@ -1,0 +1,31 @@
+# Deploy Flynn to Fly.io. Run these from the repository root:
+#
+#   fly apps create flynn
+#   fly volumes create flynn_data --size 1 --region iad
+#   fly secrets set ANTHROPIC_API_KEY=... TELEGRAM_BOT_TOKEN=...
+#   fly deploy --config deploy/fly.toml --dockerfile Dockerfile
+#
+# Chat channels are outbound, so no public service is defined and no port is opened.
+# Inspect the agent over Fly's private link:
+#
+#   fly ssh console -C "flynn get goals"
+#
+# To reach the control-plane HTTP API remotely, forward Fly's loopback bind to your
+# machine: `fly proxy 7575:7575` then call http://127.0.0.1:7575 with the bearer token.
+
+app = "flynn"
+primary_region = "iad"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[processes]
+  app = "serve --data-dir=/data --api-addr=127.0.0.1:7575"
+
+[mounts]
+  source = "flynn_data"
+  destination = "/data"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
