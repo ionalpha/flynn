@@ -29,22 +29,23 @@ func openCredentialStore(ctx context.Context, dataDir string) (*credential.Store
 	return credential.NewStore(durable.Resources(reg)), durable.Close, nil
 }
 
-// authCredAdd implements `flynn auth add <integration> --name <name> [flags]`. It
+// authCredAdd implements `flynn auth add <integration> [--name <name>] [flags]`. It
 // reads the secret value with no echo, writes it to the vault under the credential's
 // reference, and records the credential metadata. The value never appears on screen
-// or in the resource store.
+// or in the resource store. The name defaults to "default", so a single credential per
+// integration needs no --name at all.
 //
-//	flynn auth add <integration> --name <name> [--role read|operator|admin]
+//	flynn auth add <integration> [--name <name>] [--role read|operator|admin]
 //	                             [--type bearer|api_key|basic|oauth2] [--default]
 func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, args []string) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-		return errors.New("usage: flynn auth add <integration> --name <name> [--role r] [--type t] [--default]")
+		return errors.New("usage: flynn auth add <integration> [--name <name>] [--role r] [--type t] [--default]")
 	}
 	integration := args[0]
 
 	fs := flag.NewFlagSet("auth add", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
-	name := fs.String("name", "", "credential name within the integration")
+	name := fs.String("name", "default", "credential name within the integration")
 	role := fs.String("role", "", "role: read, operator, or admin")
 	authType := fs.String("type", "", "auth scheme: bearer, api_key, basic, oauth2")
 	isDefault := fs.Bool("default", false, "make this the integration's default credential")
@@ -55,7 +56,7 @@ func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, a
 		return fmt.Errorf("auth add: unexpected arguments %v (the integration must come first, then flags)", fs.Args())
 	}
 	if *name == "" {
-		return errors.New("auth add: --name is required")
+		return errors.New("auth add: --name must not be empty")
 	}
 	if *role != "" && !credential.Role(*role).Valid() {
 		return fmt.Errorf("auth add: unknown role %q (want read, operator, or admin)", *role)

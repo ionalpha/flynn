@@ -19,7 +19,7 @@ import (
 //
 //	flynn auth set <provider>                 read a model-provider API key (hidden)
 //	flynn auth list                           show which providers have a key stored
-//	flynn auth add <integration> --name <n>   add a named integration credential
+//	flynn auth add <integration> [--name <n>] add an integration credential (name defaults to "default")
 //	flynn auth use <integration>/<name>       make a credential the integration default
 //	flynn auth ls  <integration>              list an integration's credentials
 //	flynn auth rm  <provider> | <integration>/<name>   remove a key or credential
