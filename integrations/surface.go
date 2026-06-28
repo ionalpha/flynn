@@ -20,6 +20,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/fault"
@@ -76,6 +77,7 @@ type Handler struct {
 	transport *request.Transport
 	secrets   secret.Source
 	limits    flow.Limits
+	clk       clock.Clock       // measures oauth2 token expiry
 	creds     *credential.Store // optional; when set, credentials resolve by name/default and roles are enforced
 	audit     AuditFunc         // optional; receives a Denial on a role refusal
 
@@ -124,12 +126,23 @@ func WithAudit(a AuditFunc) Option {
 	return func(h *Handler) { h.audit = a }
 }
 
+// WithClock sets the clock oauth2 token expiry is measured against (default
+// clock.System). Tests pass a manual clock for determinism.
+func WithClock(c clock.Clock) Option {
+	return func(h *Handler) {
+		if c != nil {
+			h.clk = c
+		}
+	}
+}
+
 // NewHandler builds an integration-surface handler.
 func NewHandler(opts ...Option) *Handler {
 	h := &Handler{
 		transport: request.New(),
 		secrets:   secret.EnvSource{},
 		limits:    flow.DefaultLimits,
+		clk:       clock.System{},
 		mounted:   map[string][]mission.Tool{},
 	}
 	for _, o := range opts {
@@ -163,15 +176,17 @@ func (h *Handler) OnLoad(_ context.Context, m extension.Mount) error {
 	}
 
 	// Validate the auth configuration up front (scheme plus its required fields, e.g.
-	// an api_key needs a parameter name) so a misconfigured integration is rejected at
-	// load. The credential value itself is resolved per call.
-	if _, err := providerFor(m.Spec.Auth); err != nil {
+	// an api_key needs a parameter name, an oauth2 scheme needs a token endpoint) so a
+	// misconfigured integration is rejected at load. The credential value itself is
+	// resolved per call.
+	if _, err := providerFor(m.Spec.Auth, h.transport, h.clk); err != nil {
 		return err
 	}
 	b := &binding{
 		transport: h.transport,
 		secrets:   h.secrets,
 		limits:    h.limits,
+		clk:       h.clk,
 		base:      m.Spec.BaseURL,
 		egress:    m.Spec.Safety.EgressAllow,
 		auth:      m.Spec.Auth,
@@ -286,6 +301,7 @@ type binding struct {
 	transport *request.Transport
 	secrets   secret.Source
 	limits    flow.Limits
+	clk       clock.Clock
 	base      string
 	egress    []string
 	auth      extension.AuthSpec
@@ -312,7 +328,7 @@ func (b *binding) run(ctx context.Context, f flow.Flow, required credential.Role
 // resolved credential's vault reference.
 func (b *binding) resolveProvider(ctx context.Context, required credential.Role) (auth.Provider, error) {
 	if b.creds == nil {
-		return providerFor(b.auth)
+		return providerFor(b.auth, b.transport, b.clk)
 	}
 	cred, err := b.creds.Resolve(ctx, b.auth.CredentialRef)
 	if err != nil {
@@ -333,5 +349,5 @@ func (b *binding) resolveProvider(ctx context.Context, required credential.Role)
 			fmt.Sprintf("credential %q with role %q may not perform an action requiring role %q (principal %q)",
 				cred.Ref(), cred.Spec.Role, required, principal))
 	}
-	return providerForCredential(b.auth, cred)
+	return providerForCredential(b.auth, cred, b.transport, b.clk)
 }

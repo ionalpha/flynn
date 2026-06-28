@@ -130,6 +130,26 @@ type AuthSpec struct {
 	// read role and a deploy role backed by different keys). Empty means a single
 	// default credential.
 	Roles []string `json:"roles,omitempty"`
+	// OAuth2 carries the static parameters of an "oauth2" scheme (the token endpoint,
+	// client id, grant, and scopes). The secret it exchanges (a client secret or a
+	// refresh token) is the resolved credential, never carried here. Ignored for other
+	// types.
+	OAuth2 *OAuth2Spec `json:"oauth2,omitempty"`
+}
+
+// OAuth2Spec is the static configuration of an "oauth2" auth scheme. The access
+// token is obtained from TokenURL and refreshed automatically; the credential the
+// integration holds supplies the client secret (the client_credentials grant) or the
+// refresh token (the refresh_token grant), resolved from the vault at call time.
+type OAuth2Spec struct {
+	// TokenURL is the token endpoint the access token is obtained from.
+	TokenURL string `json:"tokenURL,omitempty"`
+	// ClientID is the OAuth2 client identifier (semi-public, carried inline).
+	ClientID string `json:"clientID,omitempty"`
+	// Grant selects the flow: "client_credentials" (default) or "refresh_token".
+	Grant string `json:"grant,omitempty"`
+	// Scopes are requested at the token endpoint.
+	Scopes []string `json:"scopes,omitempty"`
 }
 
 // SafetySpec is the declared safety envelope for an extension. It is intent the
@@ -211,7 +231,17 @@ var specSchema = json.RawMessage(`{
         "name": {"type": "string"},
         "scheme": {"type": "string"},
         "credentialRef": {"type": "string"},
-        "roles": {"type": "array", "items": {"type": "string"}}
+        "roles": {"type": "array", "items": {"type": "string"}},
+        "oauth2": {
+          "type": "object",
+          "properties": {
+            "tokenURL": {"type": "string"},
+            "clientID": {"type": "string"},
+            "grant": {"type": "string"},
+            "scopes": {"type": "array", "items": {"type": "string"}}
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

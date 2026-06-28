@@ -208,7 +208,8 @@ func TestOnLoadValidation(t *testing.T) {
 		{"op without name", extension.AuthSpec{}, `{"operations":[{"flow":{"steps":[{"op":"return","return":{}}]}}]}`, "no name"},
 		{"bad flow", extension.AuthSpec{}, `{"operations":[{"name":"x","flow":{"steps":[{"op":"http","http":{}}]}}]}`, "needs a url"},
 		{"duplicate op", extension.AuthSpec{}, `{"operations":[{"name":"x","flow":{"steps":[{"op":"return","return":{}}]}},{"name":"x","flow":{"steps":[{"op":"return","return":{}}]}}]}`, "duplicate operation"},
-		{"unsupported auth", extension.AuthSpec{Type: "oauth2"}, `{"operations":[{"name":"x","flow":{"steps":[{"op":"return","return":{}}]}}]}`, "not supported"},
+		{"unsupported auth", extension.AuthSpec{Type: "sigv4"}, `{"operations":[{"name":"x","flow":{"steps":[{"op":"return","return":{}}]}}]}`, "not supported"},
+		{"oauth2 without block", extension.AuthSpec{Type: "oauth2"}, `{"operations":[{"name":"x","flow":{"steps":[{"op":"return","return":{}}]}}]}`, "oauth2"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
