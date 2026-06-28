@@ -11,14 +11,58 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/dependency"
 	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/internal/flow"
 	"github.com/ionalpha/flynn/internal/playbook"
 	"github.com/ionalpha/flynn/internal/service"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/sandbox"
 )
+
+// flyAppMaxLen is the length budget for a derived Fly app name. A Fly app name is a DNS
+// label (it becomes "<app>.fly.dev"); this stays well inside the label limit and keeps the
+// name readable while leaving room for the identity-derived suffix.
+const flyAppMaxLen = 30
+
+// fillDerivedNames supplies a globally-unique resource name for a playbook input the
+// operator left blank, deriving it from this instance's identity so the name is the same on
+// every redeploy (and so two instances never collide). Today this covers the one input that
+// needs a globally-unique, provider-valid name: a Fly app. The derivation policy lives in
+// one place (controlplane.ResolveName); this only supplies the provider's rules (a DNS
+// label) and the input key, which are the parts that genuinely differ per provider. An
+// operator-supplied "app" is left untouched: an explicit name always wins.
+func fillDerivedNames(ctx context.Context, dataDir string, pb playbook.Playbook, config map[string]any) error {
+	if pb.Spec.Service == nil || pb.Spec.Service.Provider != "fly" {
+		return nil
+	}
+	if v, ok := config["app"]; ok {
+		if s, _ := v.(string); strings.TrimSpace(s) != "" {
+			return nil
+		}
+	}
+	// Load the instance's stable identity to derive from; if the vault is locked or has no
+	// identity yet, ResolveName falls back to a one-off name and reports that, rather than
+	// failing the deploy.
+	var id *controlplane.Identity
+	if loaded, err := controlplane.LoadOrCreateIdentity(ctx, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), ""); err == nil {
+		id = loaded
+	}
+	name, err := controlplane.ResolveName(id, "flynn-agent", "fly-app", "", controlplane.DNSName(flyAppMaxLen))
+	if err != nil {
+		return fmt.Errorf("playbook: deriving a Fly app name: %w", err)
+	}
+	config["app"] = name.Value
+	switch name.Source {
+	case controlplane.NameIdentity:
+		_, _ = fmt.Fprintf(os.Stderr, "Using derived app name %q (from this instance's identity; stable across redeploys).\n", name.Value)
+	case controlplane.NameEphemeral:
+		_, _ = fmt.Fprintf(os.Stderr, "No instance identity available, so using a one-off app name %q (it will differ next run). Unlock the vault for a stable name.\n", name.Value)
+	}
+	return nil
+}
 
 // terminalConfirmer asks the operator to approve a playbook's confirm steps at the
 // terminal: it prints the step's message and waits for a line on stdin. An empty line (just
@@ -225,6 +269,10 @@ func playbookRun(ctx context.Context, dataDir string, args []string) error {
 		if errors.Is(err, playbook.ErrNotFound) {
 			return fmt.Errorf("playbook: unknown playbook %q (see flynn playbook ls)", name)
 		}
+		return err
+	}
+
+	if err := fillDerivedNames(ctx, dataDir, pb, config); err != nil {
 		return err
 	}
 
