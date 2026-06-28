@@ -1,0 +1,26 @@
+{
+  "displayName": "Exa Search",
+  "provider": "exa",
+  "baseURL": "https://api.exa.ai",
+  "capabilities": ["websearch"],
+  "auth": {"type": "api_key", "in": "header", "name": "x-api-key", "credentialRef": "exa"},
+  "safety": {"readOnly": true},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "search",
+          "description": "Search the web semantically with Exa and return matching pages.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"query": {"type": "string"}, "num_results": {"type": "integer"}}, "required": ["query"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "POST", "url": "/search", "headers": {"Accept": "application/json"}, "body": {"query": "{{config.query}}", "numResults": "{{default(config.num_results, 5)}}"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body.results}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
