@@ -1,23 +1,39 @@
-# Deploy Flynn to Fly.io. Run these from the repository root:
+# Deploy Flynn to Fly.io as a 24/7, durable, self-hosted agent. Run from the repo root:
 #
 #   fly apps create flynn
-#   fly volumes create flynn_data --size 1 --region iad
-#   fly secrets set ANTHROPIC_API_KEY=... TELEGRAM_BOT_TOKEN=...
+#   fly volumes create flynn_data --size 3 --region iad        # durable disk for /data
+#   fly secrets set ANTHROPIC_API_KEY=... \
+#                   FLYNN_VAULT_PASSPHRASE=... \                # unseals the credential vault
+#                   TELEGRAM_BOT_TOKEN=...                      # optional chat channel
 #   fly deploy --config deploy/fly.toml --dockerfile Dockerfile
 #
-# Chat channels are outbound, so no public service is defined and no port is opened.
-# Inspect the agent over Fly's private link:
+# This runs ONE always-on machine bound to ONE volume. Flynn keeps a single-writer
+# SQLite store, the sealed credential vault, and accumulated learning on that volume, so
+# the app must never run more than one machine: do not `fly scale count` above 1 and do
+# not add a second region (two machines would mean two volumes and a split store). There
+# is no public service (chat channels are outbound), so the Fly proxy never auto-stops
+# the machine and no port is exposed.
 #
-#   fly ssh console -C "flynn get goals"
-#
-# To reach the control-plane HTTP API remotely, forward Fly's loopback bind to your
-# machine: `fly proxy 7575:7575` then call http://127.0.0.1:7575 with the bearer token.
+# Inspect or reach the agent over Fly's private link:
+#   fly ssh console -C "flynn get goals"     # read state directly from the store
+#   fly proxy 7575:7575                        # then call http://127.0.0.1:7575 with the bearer token
 
 app = "flynn"
 primary_region = "iad"
 
 [build]
   dockerfile = "Dockerfile"
+
+  [build.args]
+    # Fly mounts the volume root-owned and the distroless image has no shell to chown it
+    # at boot, so run as root here. Each Fly app is an isolated Firecracker microVM, which
+    # is the isolation boundary; other hosts keep the non-root default.
+    APP_USER = "root"
+
+[deploy]
+  # One stateful machine on one volume: replace it in place rather than standing up a
+  # second machine that cannot attach the single volume.
+  strategy = "immediate"
 
 [processes]
   app = "serve --data-dir=/data --api-addr=127.0.0.1:7575"
@@ -28,4 +44,4 @@ primary_region = "iad"
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "512mb"
+  memory = "1gb"

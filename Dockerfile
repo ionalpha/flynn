@@ -45,10 +45,19 @@ RUN install -d -o 65532 -g 65532 /data
 # providers and integrations works out of the box.
 FROM gcr.io/distroless/static-debian12:nonroot
 
+# APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
+# posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits
+# the image path's ownership, so /data is writable without a chown. Some hosts instead
+# mount the data volume root-owned and offer no shell to fix it at boot (Fly.io, where
+# every app is its own isolated Firecracker microVM). Build those with
+# `--build-arg APP_USER=root` so the process can write the volume; the microVM is the
+# isolation boundary there, not the in-VM user.
+ARG APP_USER=nonroot
+
 COPY --from=build /out/flynn /usr/local/bin/flynn
 COPY --from=build --chown=65532:65532 /data /data
 
-USER nonroot
+USER ${APP_USER}
 WORKDIR /data
 
 # Durable state lives here: the SQLite store, the credential vault's sealed file, and
