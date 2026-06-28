@@ -130,6 +130,22 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "ps" {
+		if err := dispatchPs(args[1:], *dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if args := flag.Args(); len(args) >= 1 && args[0] == "status" {
+		if err := dispatchStatus(args[1:], *dataDir); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
 		if err := runServe(args[1:], *model, *dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
@@ -166,6 +182,8 @@ func printUsage(w io.Writer) {
   flynn runs                 list past runs (id, phase, objective)
   flynn get <kind>           list resources of a kind (instances, agents, runs, ...)
   flynn describe <kind> <id> show one resource's fields and recent change history
+  flynn ps                   list instances with their live, heartbeat-aware state
+  flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn auth set <provider>  store an API key in the encrypted vault
