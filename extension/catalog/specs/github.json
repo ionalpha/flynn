@@ -1,0 +1,109 @@
+{
+  "displayName": "GitHub",
+  "provider": "github",
+  "baseURL": "https://api.github.com",
+  "capabilities": ["github.read", "github.write"],
+  "auth": {"type": "bearer", "credentialRef": "github"},
+  "surfaces": {
+    "integration": {
+      "operations": [
+        {
+          "name": "list_repos",
+          "description": "List repositories for the authenticated user.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"per_page": {"type": "integer"}}},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/user/repos", "query": {"per_page": "{{default(config.per_page, 30)}}"}, "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "get_repo",
+          "description": "Get a repository by owner and name.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}}, "required": ["owner", "repo"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/repos/{{config.owner}}/{{config.repo}}", "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_issues",
+          "description": "List issues in a repository. The state parameter is open, closed, or all.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "state": {"type": "string"}}, "required": ["owner", "repo"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/repos/{{config.owner}}/{{config.repo}}/issues", "query": {"state": "{{default(config.state, 'open')}}"}, "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "get_issue",
+          "description": "Get a single issue by number.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "number": {"type": "integer"}}, "required": ["owner", "repo", "number"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/repos/{{config.owner}}/{{config.repo}}/issues/{{config.number}}", "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "create_issue",
+          "description": "Open a new issue in a repository.",
+          "role": "operator",
+          "input": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "title": {"type": "string"}, "body": {"type": "string"}}, "required": ["owner", "repo", "title"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "POST", "url": "/repos/{{config.owner}}/{{config.repo}}/issues", "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}, "body": {"title": "{{config.title}}", "body": "{{config.body}}"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "list_pull_requests",
+          "description": "List pull requests in a repository.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "state": {"type": "string"}}, "required": ["owner", "repo"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/repos/{{config.owner}}/{{config.repo}}/pulls", "query": {"state": "{{default(config.state, 'open')}}"}, "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "get_file_contents",
+          "description": "Get the contents metadata for a file or directory at a path in a repository.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"owner": {"type": "string"}, "repo": {"type": "string"}, "path": {"type": "string"}}, "required": ["owner", "repo", "path"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/repos/{{config.owner}}/{{config.repo}}/contents/{{config.path}}", "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        },
+        {
+          "name": "search_repos",
+          "description": "Search public repositories with a GitHub search query.",
+          "role": "read",
+          "input": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+          "flow": {
+            "steps": [
+              {"id": "r", "op": "http", "http": {"method": "GET", "url": "/search/repositories", "query": {"q": "{{config.query}}"}, "headers": {"Accept": "application/vnd.github+json", "User-Agent": "flynn-agent"}}},
+              {"op": "return", "return": {"value": "{{steps.r.body}}"}}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
