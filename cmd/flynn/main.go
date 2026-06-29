@@ -54,6 +54,7 @@ func main() {
 		verboseLong = flag.Bool("verbose", false, "alias for -v")
 		plain       = flag.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		verify      = flag.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
+		fanout      = flag.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -70,7 +71,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, `usage: flynn goal "<objective>"`)
 			os.Exit(2)
 		}
-		if err := runGoal(*model, objective, *verify, *dataDir, !*noLearn, vrb); err != nil {
+		if err := runGoal(*model, objective, *verify, *dataDir, !*noLearn, vrb, *fanout); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -186,7 +187,7 @@ func printUsage(w io.Writer) {
   flynn regrade              re-grade learned skills against the working directory
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn --version            print the version
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", -v/--verbose, --plain (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, -v/--verbose, --plain (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
@@ -203,7 +204,7 @@ func defaultDataDir() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose bool) error {
+func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -227,6 +228,15 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		distiller = governedDistiller(model)
 	}
 
+	// With fan-out enabled the run drives the full goals engine: the model may
+	// delegate sub-goals to concurrent child agents, each routed to the model its
+	// bound archetype pins, all folded into this run's one sealed record. A child that
+	// names a model resolves it through the same credential chain as the root.
+	var fc *fanoutConfig
+	if fanout {
+		fc = &fanoutConfig{resolveModel: childModelResolver(ctx, dataDir)}
+	}
+
 	// Load the instance signer so the run is sealed into a verifiable record. This is
 	// best effort: if the identity cannot be loaded, the run proceeds unsigned rather
 	// than failing.
@@ -238,7 +248,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 	// The objective and the final answer are rendered from the run's own events
 	// (session.started and session.converged), so the live transcript and a later
 	// `flynn inspect` of the same run read identically.
-	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, verify, store, signer, verbose); err != nil {
+	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, verify, store, signer, verbose, fc); err != nil {
 		return err
 	}
 	return nil
@@ -305,6 +315,6 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID)
+	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID, nil)
 	return err
 }

@@ -40,7 +40,7 @@ func TestRunEmitsVerifiableRecord(t *testing.T) {
 
 	result, runID, _, err := drive(ctx, io.Discard, model, harness.Plan{}, t.TempDir(),
 		"reply done and stop", defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), rec, false, "")
+		store.Resources(reg), store.Jobs(), rec, false, "", nil)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}

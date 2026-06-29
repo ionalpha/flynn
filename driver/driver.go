@@ -26,6 +26,7 @@ import (
 
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
@@ -62,6 +63,15 @@ type Spec struct {
 	// (the model is offered a spawn tool). A loop that does not fan out (a single-shot
 	// responder) ignores it. The default is nil: a goal runs as a single conversation.
 	Fanout mission.Fanout
+	// EventSink, when set, records every governed action's lifecycle (admitted,
+	// completed, or rejected) onto the event spine, so the admission decisions are
+	// part of the run's recorded and sealed history rather than only the live trace.
+	// A nil sink records nothing extra, leaving the live trace unchanged.
+	EventSink dispatch.EventSink
+	// CompactionBudget, when greater than zero, is the input-token budget past which
+	// the loop elides the oldest middle turns to keep a long session within the
+	// model's window. Zero leaves compaction at its default.
+	CompactionBudget int
 	// Plan is the capability-scaffolding for a weaker or more quantized model: how
 	// hard the loop should work to keep it reliable. The zero Plan adds nothing, so a
 	// capable model runs leanly.
