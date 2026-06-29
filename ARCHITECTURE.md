@@ -37,7 +37,7 @@ package is one plus the highest layer it imports.
 | L0 foundation | `clock`, `fault`, `llm`, `observe` | Pure ports: time source, error taxonomy, the model port, the logging/tracing port. No internal imports. |
 | L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters. |
 | L2 core data | `state`, `resource`, `provider` | The host persistence boundary, the event-sourced resource store, the model-adapter registry. |
-| L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill` | The governance waist, the reconcile loop, the leased job queue, durable memory and skill stores. |
+| L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill`, `chain` | The governance waist, the reconcile loop, the leased job queue, durable memory and skill stores, the verifiable-record encoder and signer over spine events. |
 | L4 governance + domain | `capability`, `budget`, `spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
@@ -182,6 +182,39 @@ checkpoints of a stream, and a rebuild resumes from the latest one and folds onl
 the events after it. The events stay the immutable source of truth; a snapshot is a
 cache that can always be rebuilt by folding from an earlier point.
 
+## Verifiable run records
+
+The append-only spine makes a run replayable, but on its own its integrity rests on
+trusting the operator not to rewrite history. The `chain` package adds the layer that
+removes that trust: it turns a run into a signed, tamper-evident record an independent
+party can verify, in any language, without trusting the producer.
+
+The pipeline is built from established primitives, not new cryptography:
+
+1. **Canonical encoding.** Each event is encoded to deterministic CBOR (RFC 8949 Core
+   Deterministic Encoding), so the same logical event always produces the same bytes
+   regardless of map order or language.
+2. **Merkle log.** Each event's canonical bytes are committed as a leaf in an
+   append-only RFC 9162 (Certificate Transparency v2) Merkle log. The log yields
+   inclusion proofs (an event is under a signed root) and consistency proofs (the log
+   only ever appended between two signed roots).
+3. **Signed checkpoint.** The Merkle head is signed as a COSE_Sign1 (RFC 9052)
+   checkpoint with an Ed25519 key whose id is the instance's self-certifying principal
+   id, so a verifier recovers the public key from the record itself.
+4. **Sealed record.** On convergence a run is sealed into a portable record (the signed
+   checkpoint plus every event's canonical bytes) and persisted on the run's own stream,
+   so the run is verifiable from the durable store alone. The record is stored as
+   captured, not re-derived from the persisted events, because the store serializes
+   payloads as JSON and re-canonicalizing a read-back event would change its bytes.
+
+A verifier follows the carry-the-bytes rule: the record carries the exact canonical
+bytes of each event and a verifier rehashes the bytes it is given rather than
+re-serializing, so cross-language verification cannot drift on encoding differences.
+`flynn spine verify <run>` is the reference verifier; `chain/conformance` holds a public
+test-vector suite (structural, signature, and transparency tiers) that pins the record
+format so a second implementation in any language can be checked against the same
+evidence.
+
 ## Stability tiers
 
 Flynn is a public Go module, so every exported package is, in principle, a
@@ -228,6 +261,9 @@ is part of CI).
   **`storage/sqlite`** the durable backend; **`state`** the host boundary.
 - **`dispatch`** the governance waist; **`capability`** grants; **`budget`** the
   per-run spend ceiling; **`spinesink`** routes dispatched actions onto the spine.
+- **`chain`** the verifiable-record layer: canonical CBOR encoding, the RFC 9162
+  Merkle log, COSE signing, sealed run records, and the verifier behind
+  `flynn spine verify`.
 - **`learn`** the closed learning loop (capture, verify, reinforce, regrade);
   **`memory`** and **`skill`** its durable stores.
 - **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
