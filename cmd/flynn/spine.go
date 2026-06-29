@@ -4,8 +4,11 @@ import (
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/ionalpha/flynn/chain"
@@ -54,21 +57,39 @@ func sealRun(ctx context.Context, store *sqlite.Store, rec *chain.RecordingLog, 
 	return err
 }
 
+// errChecksFailed reports that a record did not pass every check. The per-tier detail
+// is written to stdout; this is the concise error that sets a non-zero exit code so
+// the command can gate a script.
+var errChecksFailed = errors.New("record did not pass all checks")
+
 // dispatchSpine handles the spine subcommands.
 func dispatchSpine(args []string, dataDir string) error {
+	const usage = "usage: flynn spine verify [--file <path> [--key <hex>]] <run-id>"
 	if len(args) >= 1 && args[0] == "verify" {
-		if len(args) < 2 {
-			return errors.New("usage: flynn spine verify <run-id>")
+		fs := flag.NewFlagSet("spine verify", flag.ContinueOnError)
+		file := fs.String("file", "", "verify a record read from this file instead of a stored run")
+		keyHex := fs.String("key", "", "hex-encoded Ed25519 public key to verify a record whose signer is not self-certifying (for example a published conformance vector)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
 		}
-		return verifyRun(dataDir, args[1])
+		if *file != "" {
+			return verifyRecordFile(*file, *keyHex)
+		}
+		if *keyHex != "" {
+			return errors.New("--key applies only with --file; a stored run names a self-certifying signer")
+		}
+		if fs.NArg() < 1 {
+			return errors.New(usage)
+		}
+		return verifyRun(dataDir, fs.Arg(0))
 	}
-	return errors.New("usage: flynn spine verify <run-id>")
+	return errors.New(usage)
 }
 
-// verifyRun reads a run's stored signed record and checks it: the record's events
-// rebuild the signed Merkle root and the signature is valid under the key the record
-// names. The key id is self-certifying, so verification needs only the durable store
-// and the record itself.
+// verifyRun reads a run's stored signed record and reports every tier it satisfies:
+// integrity (the events rebuild the signed Merkle root), governance (no action ran
+// without admission), and ground truth (a claimed success is backed by a passing
+// check). The signer is self-certifying, so a stored run needs only the durable store.
 func verifyRun(dataDir, runID string) error {
 	ctx := context.Background()
 	store, err := openDataStore(ctx, dataDir)
@@ -84,32 +105,106 @@ func verifyRun(dataDir, runID string) error {
 	if len(events) == 0 {
 		return fmt.Errorf("no run found with id %q under %s", runID, dataDir)
 	}
-
 	record, err := recordFromEvents(events)
 	if err != nil {
 		return fmt.Errorf("run %q: %w", runID, err)
 	}
+	return verifyRecord(os.Stdout, "run "+runID, record, "")
+}
 
+// verifyRecordFile reads a signed record from a file and reports every tier it
+// satisfies. A record whose signer is self-certifying is verified with no further
+// input; one signed by another key (a published conformance vector) needs that key in
+// hex via --key.
+func verifyRecordFile(path, keyHex string) error {
+	record, err := os.ReadFile(path) //nolint:gosec // the path is an operator-supplied record to verify
+	if err != nil {
+		return err
+	}
+	return verifyRecord(os.Stdout, path, record, keyHex)
+}
+
+// verifyRecord resolves the record's signing key and reports, tier by tier, what the
+// record proves. It returns errChecksFailed if any tier is not satisfied, so the
+// command exits non-zero while still printing the full report.
+func verifyRecord(out io.Writer, label string, record []byte, keyHex string) error {
 	keyID, err := chain.RecordKeyID(record)
 	if err != nil {
 		return err
 	}
-	pub, err := controlplane.ParsePrincipalID(keyID)
+	pub, err := resolveKey(keyID, keyHex)
 	if err != nil {
-		return fmt.Errorf("run %q names an unrecognizable signer: %w", runID, err)
+		return err
 	}
 	ring := chain.NewRootKeyring()
 	if err := ring.Add(keyID, pub); err != nil {
 		return err
 	}
 
-	verified, err := chain.VerifyRun(record, ring)
+	_, _ = fmt.Fprintf(out, "%s\n", label)
+	events, err := chain.VerifyRun(record, ring)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stdout, "run %s: NOT VERIFIED: %v\n", runID, err)
-		return err
+		_, _ = fmt.Fprintf(out, "  integrity:    NOT VERIFIED: %v\n", err)
+		return errChecksFailed
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "run %s: VERIFIED, %d events, signed by %s\n", runID, len(verified), keyID)
+	_, _ = fmt.Fprintf(out, "  integrity:    VERIFIED (%d events, signed by %s)\n", len(events), keyID)
+
+	failed := false
+	if gerr := chain.VerifyGovernance(events); gerr != nil {
+		_, _ = fmt.Fprintf(out, "  governance:   VIOLATION: %v\n", gerr)
+		failed = true
+	} else {
+		_, _ = fmt.Fprintln(out, "  governance:   OK (no action ran without admission)")
+	}
+
+	gt := chain.VerifyGroundTruth(events)
+	switch {
+	case !claimsSuccess(events):
+		_, _ = fmt.Fprintln(out, "  ground-truth: not asserted (no independent check was bound)")
+	case gt == nil:
+		_, _ = fmt.Fprintln(out, "  ground-truth: GROUNDED (success backed by a passing check)")
+	default:
+		_, _ = fmt.Fprintf(out, "  ground-truth: NOT GROUNDED: %v\n", gt)
+		failed = true
+	}
+	if failed {
+		return errChecksFailed
+	}
 	return nil
+}
+
+// resolveKey recovers the public key a record is verified against: the supplied hex
+// key when given, otherwise the self-certifying key the record names.
+func resolveKey(keyID, keyHex string) (ed25519.PublicKey, error) {
+	if keyHex != "" {
+		raw, err := hex.DecodeString(keyHex)
+		if err != nil {
+			return nil, fmt.Errorf("--key is not valid hex: %w", err)
+		}
+		if len(raw) != ed25519.PublicKeySize {
+			return nil, fmt.Errorf("--key must be a %d-byte Ed25519 public key, got %d bytes", ed25519.PublicKeySize, len(raw))
+		}
+		return ed25519.PublicKey(raw), nil
+	}
+	pub, err := controlplane.ParsePrincipalID(keyID)
+	if err != nil {
+		return nil, fmt.Errorf("the record is signed by %q, which is not a self-certifying key; supply its public key with --key", keyID)
+	}
+	return pub, nil
+}
+
+// claimsSuccess reports whether the run records a success outcome, which is what the
+// ground-truth tier applies to. A run that claims nothing needs no backing check.
+func claimsSuccess(events []spine.Event) bool {
+	for _, e := range events {
+		if e.Type != chain.OutcomeRecorded {
+			continue
+		}
+		if result, _ := e.Payload[chain.OutcomeResultKey].(string); result == chain.ResultSuccess {
+			return true
+		}
+	}
+	return false
 }
 
 // recordFromEvents extracts the signed record stored on a run's stream.
