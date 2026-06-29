@@ -61,6 +61,25 @@ func TestRunRecordsGovernanceOnSpine(t *testing.T) {
 	if ends == 0 {
 		t.Fatal("no completion (dispatch.end) events recorded on the run stream")
 	}
+
+	// The governance the run actually emitted satisfies the admission invariants: no
+	// action completed without admission, none denied yet executed. This is the
+	// end-to-end check that what the runtime records is what the verifier accepts.
+	if err := chain.VerifyGovernance(events); err != nil {
+		t.Fatalf("the run's own governance did not verify: %v", err)
+	}
+}
+
+// TestGovernanceVocabularyMatchesDispatch guards against the chain verifier's
+// governance event-type vocabulary drifting from what the dispatch waist emits. They
+// are defined in separate packages on purpose (the verifier does not import the
+// waist), so this is the integration point that keeps them in agreement.
+func TestGovernanceVocabularyMatchesDispatch(t *testing.T) {
+	if chain.GovStart != dispatch.EventStart ||
+		chain.GovEnd != dispatch.EventEnd ||
+		chain.GovRejected != dispatch.EventRejected {
+		t.Fatal("chain governance vocabulary has drifted from the dispatch event types")
+	}
 }
 
 // TestSpineVerifyRoundTrip drives a real run, seals it, persists the signed record

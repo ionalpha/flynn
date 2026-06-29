@@ -35,7 +35,10 @@ func New(log spine.Log, stream string) *Sink {
 // spine event. The dispatcher's timestamp (e.At, unix nanos) is preserved so the
 // two layers agree on time.
 func (s *Sink) Append(ctx context.Context, e dispatch.Event) error {
-	payload := map[string]any{"action": e.Action}
+	// The correlation id pairs this invocation's start with its end or rejection, so a
+	// verifier can prove no action completed without a preceding admission and no
+	// denied action also completed.
+	payload := map[string]any{"action": e.Action, "call": e.Call}
 	// Record the action's trust level, so the run's containment posture (which
 	// actions ran as model-authored or external versus the agent's own) is part of
 	// the sealed governance record, not just the live trace.
