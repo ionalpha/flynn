@@ -225,6 +225,11 @@ Flynn is built to be handed real authority over untrusted input and real tools.
   pairing and allowlists, not processed blindly.
 - **Secrets stay out of context.** Credentials live in a vault and are applied at
   call time, never placed in prompts or logs.
+- **Verifiable execution.** Each run is sealed into a signed, tamper-evident record:
+  every event is committed to an append-only Merkle log under a signed checkpoint, so
+  an independent party can confirm what the agent did, and that the record was not
+  altered, without trusting the host. `flynn spine verify <run>` checks a run from the
+  durable store alone.
 
 The [threat model](docs/THREAT_MODEL.md) sets out the trust boundaries and which defense
 covers each class of attack, marking what is enforced today versus planned. To report a
@@ -238,6 +243,9 @@ Because the mission event spine is ordered and immutable, a run is not a black b
 - **Fork from any point.** Branch a new run from any event to explore an alternative.
 - **Diff and time-travel.** Compare two runs event by event, and step backward to
   see exactly where a decision was made.
+- **Verifiable, not just replayable.** A run is sealed into a signed record a
+  standalone verifier checks (`flynn spine verify`), so replay rests on tamper-evidence
+  a third party can confirm, not on trusting the operator.
 
 ## Declarative core
 
@@ -276,6 +284,7 @@ methods used for systems people depend on.
 | `flynn runs` | List past runs and sessions |
 | `flynn resume <run>` | Continue a past run |
 | `flynn replay <run>` | Replay a recorded run |
+| `flynn spine verify <run>` | Verify a run's signed, tamper-evident record |
 | `flynn --version` | Print the version |
 
 ## Use it as a library
@@ -414,6 +423,7 @@ above is filling in on top of that substrate. Follow
 - The dispatch waist: every model and tool call admitted against a capability grant, traced, and bracketed by spine events.
 - Per-run token and cost budgets with hard ceilings.
 - Deterministic replay, with golden missions guarding behavior in CI.
+- Signed, tamper-evident run records: each run's events are committed to an append-only Merkle log under a COSE signature, checkable by a standalone verifier (`flynn spine verify`), with a public conformance vector suite for the record format.
 - A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
 - Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
