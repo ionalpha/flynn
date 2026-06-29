@@ -1,6 +1,6 @@
 <h1 align="center">Flynn</h1>
 
-<p align="center"><strong>A self-healing, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real autonomy, because every action is governed, reversible, and replayable.</strong></p>
+<p align="center"><strong>A secure, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real authority, because every action is sandboxed, governed, and sealed into a verifiable, tamper-evident record.</strong></p>
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
@@ -24,8 +24,9 @@ Four ideas run through everything it does:
    governs many agent runs toward a single objective.
 3. **It owns its cost.** A cost-aware router and on-demand tool loading keep token
    usage low, so running it continuously is affordable.
-4. **You can trust it with autonomy.** Every action is governed, reversible,
-   auditable, and replayable, so giving it real authority is a decision, not a gamble.
+4. **You can trust it with autonomy.** Every action is governed, contained, and sealed
+   into a verifiable, tamper-evident record, so giving it real authority is a decision
+   you can audit, not a gamble.
 
 ## Why Flynn
 
