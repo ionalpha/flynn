@@ -268,8 +268,11 @@ func classifyDecodeError(err error) error {
 	if errors.As(err, &extra) {
 		return fault.Wrap(fault.Terminal, CodeTrailingBytes, err)
 	}
-	if strings.Contains(err.Error(), "indefinite-length") {
+	if strings.Contains(err.Error(), "indefinite") {
 		return fault.Wrap(fault.Terminal, CodeIndefiniteLength, err)
+	}
+	if strings.Contains(err.Error(), "invalid UTF-8") {
+		return fault.Wrap(fault.Terminal, CodeInvalidUTF8, err)
 	}
 	return fault.Wrap(fault.Terminal, CodeDecode, err)
 }
