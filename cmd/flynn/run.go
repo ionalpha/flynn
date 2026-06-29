@@ -36,6 +36,7 @@ import (
 	"github.com/ionalpha/flynn/service"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/spinesink"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 	"github.com/ionalpha/flynn/tools"
@@ -634,6 +635,12 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 		mission.WithSystem(system),
 		mission.WithObserver(sess.Reporter()),
 		mission.WithGrant(capability.NewGrant(names...)),
+		// Record every governed action's lifecycle (admitted, completed, or rejected)
+		// onto the run's own stream, so the admission decisions are part of the run's
+		// recorded and sealed history rather than only the live trace. The stream is the
+		// session's, so governance events interleave with the run's other events in one
+		// ordered log.
+		mission.WithEventSink(spinesink.New(log, sess.ID())),
 		// Compact the transcript when it grows past this budget so a long session
 		// stays affordable and clear of the context limit. It is a conservative floor
 		// for a model whose window is unknown; the plan below tightens it to a model

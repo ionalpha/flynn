@@ -36,6 +36,12 @@ func New(log spine.Log, stream string) *Sink {
 // two layers agree on time.
 func (s *Sink) Append(ctx context.Context, e dispatch.Event) error {
 	payload := map[string]any{"action": e.Action}
+	// Record the action's trust level, so the run's containment posture (which
+	// actions ran as model-authored or external versus the agent's own) is part of
+	// the sealed governance record, not just the live trace.
+	if e.Trust != "" {
+		payload["trust"] = e.Trust
+	}
 	if e.Err != "" {
 		payload["error_class"] = e.Err
 	}
