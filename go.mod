@@ -8,6 +8,7 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-cmp v0.7.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.53.0
@@ -42,6 +43,7 @@ require (
 	github.com/ncruces/go-strftime v1.0.0 // indirect
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	github.com/rivo/uniseg v0.4.7 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/text v0.38.0 // indirect
 	modernc.org/libc v1.73.4 // indirect
