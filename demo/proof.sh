@@ -16,7 +16,7 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$root"
 
-flynn="./flynn"
+flynn="$root/flynn"
 echo "building flynn..."
 go build -o "$flynn" ./cmd/flynn
 
