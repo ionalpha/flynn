@@ -180,14 +180,14 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 	// (intersected with the parent's authority, never widened) and its system prompt.
 	// An ad-hoc child takes its authority from the requested actions. An unknown Agent
 	// fails the spawn closed.
-	childGrant := narrowGrant(parentSpec.Grant, sub.Actions)
+	childGrant := narrowGrant(parentSpec.Grant, withModelGenerate(sub.Actions))
 	childSystem, childDriver, childModel := "", "", ""
 	if sub.Agent != "" {
 		resolved, err := archetype.Resolve(ctx, s.store, parent.Scope, sub.Agent)
 		if err != nil {
 			return resource.Resource{}, fault.Wrap(fault.Forbidden, "spawn_agent_resolve", err)
 		}
-		childGrant = narrowGrant(parentSpec.Grant, resolved.Capabilities)
+		childGrant = narrowGrant(parentSpec.Grant, withModelGenerate(resolved.Capabilities))
 		childSystem, childDriver, childModel = resolved.System, resolved.Driver, resolved.Model
 	}
 	childSpec := goal.Spec{
@@ -307,4 +307,20 @@ func narrowGrant(parentGrant, requested []string) []string {
 		return requested
 	}
 	return capability.NewGrant(parentGrant...).Narrow(requested...).Actions()
+}
+
+// withModelGenerate ensures the model-call action is in a child's requested
+// authority. Every loop must call the model to make progress, so a child that
+// requested only tool actions (or a bound Agent whose capabilities omit it) would
+// otherwise be admitted for its tools but refused the model call, leaving it unable
+// to think. The action is added to the request before it is narrowed against the
+// parent, so it is still intersected with the parent's grant and never widens it;
+// this mirrors how the host grants the root run its own model call.
+func withModelGenerate(actions []string) []string {
+	for _, a := range actions {
+		if a == mission.ActionModelGenerate {
+			return actions
+		}
+	}
+	return append(append(make([]string, 0, len(actions)+1), actions...), mission.ActionModelGenerate)
 }
