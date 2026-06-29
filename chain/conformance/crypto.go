@@ -1,14 +1,18 @@
 package conformance
 
-// This file defines the cryptographic conformance tiers, L2 and L3, that sit above
-// the L1 structural suite in conformance.go. Where L1 fixes the canonical event
-// encoding, the cryptographic tiers fix the artifacts a verifier must check against
-// a public key:
+// This file defines the cryptographic and governance conformance tiers (L2, L3, L4)
+// that sit above the L1 structural suite in conformance.go. Where L1 fixes the
+// canonical event encoding, these tiers fix the artifacts a verifier must check
+// against a public key:
 //
 //   - L2 (checkpoint): a COSE_Sign1 signed checkpoint over a Merkle head, checked
 //     with chain.VerifyCheckpoint.
-//   - L3 (run, event_proof): a full signed run record checked with chain.VerifyRun,
-//     and a standalone single-event proof checked with chain.VerifyEventProof.
+//   - L3 (run, event_proof, consistency): a full signed run record checked with
+//     chain.VerifyRun, a standalone single-event proof checked with
+//     chain.VerifyEventProof, and a consistency proof checked with
+//     chain.VerifyConsistencyProof.
+//   - L4 (governance): a cryptographically valid run whose events carry the admission
+//     lifecycle, checked with chain.VerifyGovernance for the governance invariants.
 //
 // Every artifact is produced from a fixed Ed25519 key over fixed events, and Ed25519
 // signing is deterministic, so the committed golden artifacts are reproducible byte
@@ -42,9 +46,12 @@ const (
 	// KindConsistency is a marshalled consistency proof between two signed checkpoints,
 	// checked with VerifyConsistencyProof.
 	KindConsistency Kind = "consistency"
+	// KindGovernance is a marshalled sealed run whose events carry governance lifecycle
+	// records, checked with VerifyRun (cryptographic) then VerifyGovernance (semantic).
+	KindGovernance Kind = "governance"
 )
 
-// CryptoVector is one L2 or L3 case: a single signed artifact and the verdict a
+// CryptoVector is one L2, L3, or L4 case: a single artifact and the verdict a
 // conforming verifier must reach over it, checked against the suite keyring.
 type CryptoVector struct {
 	ID          string
@@ -205,10 +212,11 @@ func encodeRun(w runWire) []byte {
 	return b
 }
 
-// GenerateCrypto returns the full L2 and L3 cryptographic vector set, deterministically.
-// L2 covers every VerifyCheckpoint outcome; L3 covers every VerifyRun,
-// VerifyEventProof, and VerifyConsistencyProof outcome, so each cryptographic failure
-// code has an exact vector.
+// GenerateCrypto returns the full L2, L3, and L4 vector set, deterministically. L2
+// covers every VerifyCheckpoint outcome; L3 covers every VerifyRun, VerifyEventProof,
+// and VerifyConsistencyProof outcome; L4 covers the governance admission invariants
+// (VerifyGovernance over a cryptographically valid run), so each failure code has an
+// exact vector.
 func GenerateCrypto() []CryptoVector {
 	root := mustSigner(rootSeed, rootKeyID)
 	alt := mustSigner(altSeed, "provetrail-conformance-alt")
@@ -405,12 +413,80 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof)+len(l3consistency))
+	// L4: governance. Sealed runs whose events carry the admission lifecycle; the
+	// crypto layer is valid, so only the governance semantics decide the verdict.
+	l4 := []CryptoVector{
+		{
+			ID: "crypto.governance.valid.01", Tier: "L4", Kind: KindGovernance, Expect: Accept,
+			Description: "A run where every completed action was admitted first and no denied action ran.",
+			Artifact: govRun(
+				root,
+				govEvent(1, chain.GovStart, 1),
+				govEvent(2, chain.GovEnd, 1),
+				govEvent(3, chain.GovRejected, 2),
+				govEvent(4, chain.GovStart, 3),
+				govEvent(5, chain.GovEnd, 3),
+			),
+		},
+		{
+			ID: "crypto.governance.unadmitted_action.01", Tier: "L4", Kind: KindGovernance, Expect: Reject,
+			FailureCode: chain.CodeUnadmittedAction,
+			Description: "A run where an action completed with no preceding admission.",
+			Artifact: govRun(
+				root,
+				govEvent(1, chain.GovStart, 1),
+				govEvent(2, chain.GovEnd, 1),
+				govEvent(3, chain.GovEnd, 2), // call 2 completes but was never admitted
+			),
+		},
+		{
+			ID: "crypto.governance.denied_but_executed.01", Tier: "L4", Kind: KindGovernance, Expect: Reject,
+			FailureCode: chain.CodeDeniedButExecuted,
+			Description: "A run where an action that was denied admission nonetheless completed.",
+			Artifact: govRun(
+				root,
+				govEvent(1, chain.GovStart, 1),
+				govEvent(2, chain.GovRejected, 1),
+				govEvent(3, chain.GovEnd, 1), // call 1 was denied yet completes
+			),
+		},
+	}
+
+	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof)+len(l3consistency)+len(l4))
 	out = append(out, l2...)
 	out = append(out, l3run...)
 	out = append(out, l3proof...)
 	out = append(out, l3consistency...)
+	out = append(out, l4...)
 	return out
+}
+
+// govEvent builds a governance lifecycle event at the given stream sequence: a typed
+// dispatch event carrying the correlation id that pairs an action's admission with
+// its completion or rejection.
+func govEvent(seq int64, typ string, call int64) spine.Event {
+	e := baseEvent()
+	e.Seq = seq
+	e.Type = typ
+	e.Payload = map[string]any{chain.GovCallKey: call}
+	return e
+}
+
+// govRun seals a run over the given governance events, signed by signer, and returns
+// the portable record. The events are sealed as-is, so a record with a deliberate
+// governance defect is still cryptographically valid: only VerifyGovernance rejects it.
+func govRun(signer chain.RootSigner, events ...spine.Event) []byte {
+	b := chain.NewBuilder(checkOrig)
+	for _, e := range events {
+		if err := b.Add(e); err != nil {
+			panic("conformance: add governance event: " + err.Error())
+		}
+	}
+	sealed, err := b.Seal(signer)
+	if err != nil {
+		panic("conformance: seal governance run: " + err.Error())
+	}
+	return mustMarshal(sealed.Marshal())
 }
 
 // growingCheckpoints builds a Merkle log of five events signed by signer and returns

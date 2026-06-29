@@ -2,7 +2,8 @@
   "suite_version": "0.1.0-draft",
   "tiers": [
     "L2",
-    "L3"
+    "L3",
+    "L4"
   ],
   "keyring": [
     {
@@ -160,6 +161,32 @@
       "failure_code": "sign.unknown_key",
       "description": "A consistency proof whose checkpoints are signed by a key not in the keyring.",
       "artifact": "invalid/crypto_consistency_unknown_key_01.cbor"
+    },
+    {
+      "id": "crypto.governance.valid.01",
+      "tier": "L4",
+      "kind": "governance",
+      "expect": "accept",
+      "description": "A run where every completed action was admitted first and no denied action ran.",
+      "artifact": "valid/crypto_governance_valid_01.cbor"
+    },
+    {
+      "id": "crypto.governance.unadmitted_action.01",
+      "tier": "L4",
+      "kind": "governance",
+      "expect": "reject",
+      "failure_code": "gov.unadmitted_action",
+      "description": "A run where an action completed with no preceding admission.",
+      "artifact": "invalid/crypto_governance_unadmitted_action_01.cbor"
+    },
+    {
+      "id": "crypto.governance.denied_but_executed.01",
+      "tier": "L4",
+      "kind": "governance",
+      "expect": "reject",
+      "failure_code": "gov.admission_denied_but_executed",
+      "description": "A run where an action that was denied admission nonetheless completed.",
+      "artifact": "invalid/crypto_governance_denied_but_executed_01.cbor"
     }
   ]
 }
