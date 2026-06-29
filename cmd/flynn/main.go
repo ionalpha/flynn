@@ -53,6 +53,7 @@ func main() {
 		verbose     = flag.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
 		verboseLong = flag.Bool("verbose", false, "alias for -v")
 		plain       = flag.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
+		verify      = flag.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
 		showVersion = flag.Bool("version", false, "print version and exit")
 	)
 	flag.Parse()
@@ -69,7 +70,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, `usage: flynn goal "<objective>"`)
 			os.Exit(2)
 		}
-		if err := runGoal(*model, objective, *dataDir, !*noLearn, vrb); err != nil {
+		if err := runGoal(*model, objective, *verify, *dataDir, !*noLearn, vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -185,7 +186,7 @@ func printUsage(w io.Writer) {
   flynn regrade              re-grade learned skills against the working directory
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn --version            print the version
-Flags: --model, --data-dir, --no-learn, -v/--verbose, --plain (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", -v/--verbose, --plain (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
@@ -202,7 +203,7 @@ func defaultDataDir() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) error {
+func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -237,7 +238,7 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 	// The objective and the final answer are rendered from the run's own events
 	// (session.started and session.converged), so the live transcript and a later
 	// `flynn inspect` of the same run read identically.
-	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, store, signer, verbose); err != nil {
+	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, verify, store, signer, verbose); err != nil {
 		return err
 	}
 	return nil
