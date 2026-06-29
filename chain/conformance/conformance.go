@@ -1,14 +1,14 @@
-// Package conformance defines the Provetrail structural (L1) conformance vector
-// suite: a fixed set of canonical event encodings a conforming verifier must
-// accept, and malformed encodings it must reject with a specific failure code.
-// The vectors are the language-neutral canon other implementations test themselves
-// against. Generate builds them deterministically (no wall clock, no randomness),
-// so the committed fixture files are reproducible byte for byte and a verifier in
-// any language can be checked against the same evidence.
+// Package conformance defines the Provetrail conformance vector suite: a fixed set
+// of artifacts a conforming verifier must accept, and malformed ones it must reject
+// with a specific failure code. The vectors are the language-neutral canon other
+// implementations test themselves against. They are built deterministically (no wall
+// clock, no randomness), so the committed fixture files are reproducible byte for
+// byte and a verifier in any language can be checked against the same evidence.
 //
-// This suite covers the L1 structural tier only: well-formedness, canonical form,
-// and ordering. The cryptographic tiers (signatures, hash-chain inclusion, signed
-// roots) are added with the tamper-evident spine and are not represented here.
+// This file covers the L1 structural tier: well-formedness, canonical form, and
+// ordering. The cryptographic tiers (signed checkpoints, single-event inclusion
+// proofs, full signed run records) are defined alongside it in crypto.go as L2 and
+// L3.
 package conformance
 
 import (

@@ -1,0 +1,139 @@
+{
+  "suite_version": "0.1.0-draft",
+  "tiers": [
+    "L2",
+    "L3"
+  ],
+  "keyring": [
+    {
+      "key_id": "provetrail-conformance-root",
+      "algorithm": "Ed25519",
+      "public_key_hex": "79b5562e8fe654f94078b112e8a98ba7901f853ae695bed7e0e3910bad049664"
+    }
+  ],
+  "vectors": [
+    {
+      "id": "crypto.checkpoint.valid.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "accept",
+      "description": "A COSE_Sign1 checkpoint over a three-leaf Merkle head, signed by the root key.",
+      "artifact": "valid/crypto_checkpoint_valid_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.unknown_key.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.unknown_key",
+      "description": "A checkpoint signed by a key whose public half is not in the keyring.",
+      "artifact": "invalid/crypto_checkpoint_unknown_key_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.bad_signature.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.signature_invalid",
+      "description": "A valid checkpoint with its final signature byte flipped.",
+      "artifact": "invalid/crypto_checkpoint_bad_signature_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.bad_content_type.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.bad_content_type",
+      "description": "A correctly signed COSE_Sign1 whose protected content type is not the checkpoint type.",
+      "artifact": "invalid/crypto_checkpoint_bad_content_type_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.undecodable_payload.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.checkpoint_decode",
+      "description": "A correctly signed checkpoint-typed message whose payload is not a checkpoint encoding.",
+      "artifact": "invalid/crypto_checkpoint_undecodable_payload_01.cbor"
+    },
+    {
+      "id": "crypto.run.valid.01",
+      "tier": "L3",
+      "kind": "run",
+      "expect": "accept",
+      "description": "A sealed three-event run: signed checkpoint plus every event's canonical bytes.",
+      "artifact": "valid/crypto_run_valid_01.cbor"
+    },
+    {
+      "id": "crypto.run.root_mismatch.01",
+      "tier": "L3",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.root_mismatch",
+      "description": "A run whose events are canonical and ordered but no longer reproduce the signed root.",
+      "artifact": "invalid/crypto_run_root_mismatch_01.cbor"
+    },
+    {
+      "id": "crypto.run.size_mismatch.01",
+      "tier": "L3",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.size_mismatch",
+      "description": "A run with one event removed so the count no longer matches the signed size.",
+      "artifact": "invalid/crypto_run_size_mismatch_01.cbor"
+    },
+    {
+      "id": "crypto.run.bad_signature.01",
+      "tier": "L3",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "sign.signature_invalid",
+      "description": "A run whose embedded checkpoint signature has been altered.",
+      "artifact": "invalid/crypto_run_bad_signature_01.cbor"
+    },
+    {
+      "id": "crypto.run.non_canonical.01",
+      "tier": "L3",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.non_canonical",
+      "description": "A run record carrying an extra map field, so it is not in canonical form.",
+      "artifact": "invalid/crypto_run_non_canonical_01.cbor"
+    },
+    {
+      "id": "crypto.event_proof.valid.01",
+      "tier": "L3",
+      "kind": "event_proof",
+      "expect": "accept",
+      "description": "A standalone proof that the second event is included under the signed root.",
+      "artifact": "valid/crypto_event_proof_valid_01.cbor"
+    },
+    {
+      "id": "crypto.event_proof.bad_inclusion.01",
+      "tier": "L3",
+      "kind": "event_proof",
+      "expect": "reject",
+      "failure_code": "merkle.inclusion_invalid",
+      "description": "A proof whose event was replaced, so its leaf is not included under the signed root.",
+      "artifact": "invalid/crypto_event_proof_bad_inclusion_01.cbor"
+    },
+    {
+      "id": "crypto.event_proof.size_mismatch.01",
+      "tier": "L3",
+      "kind": "event_proof",
+      "expect": "reject",
+      "failure_code": "record.size_mismatch",
+      "description": "A proof whose claimed tree size does not match the signed size.",
+      "artifact": "invalid/crypto_event_proof_size_mismatch_01.cbor"
+    },
+    {
+      "id": "crypto.event_proof.bad_signature.01",
+      "tier": "L3",
+      "kind": "event_proof",
+      "expect": "reject",
+      "failure_code": "sign.signature_invalid",
+      "description": "A proof whose embedded checkpoint signature has been altered.",
+      "artifact": "invalid/crypto_event_proof_bad_signature_01.cbor"
+    }
+  ]
+}
