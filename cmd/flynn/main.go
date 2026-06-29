@@ -42,6 +42,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"diff":         dispatchDiff,
 	"ps":           dispatchPs,
 	"status":       dispatchStatus,
+	"spine":        dispatchSpine,
 }
 
 func main() {
@@ -168,6 +169,7 @@ func printUsage(w io.Writer) {
   flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
+  flynn spine verify <run>   check a run's signed, tamper-evident record
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
   flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry and print it for review
@@ -224,10 +226,18 @@ func runGoal(modelSpec, objective, dataDir string, learnEnabled, verbose bool) e
 		distiller = governedDistiller(model)
 	}
 
+	// Load the instance signer so the run is sealed into a verifiable record. This is
+	// best effort: if the identity cannot be loaded, the run proceeds unsigned rather
+	// than failing.
+	signer, serr := runSigner(ctx, dataDir)
+	if serr != nil {
+		signer = nil
+	}
+
 	// The objective and the final answer are rendered from the run's own events
 	// (session.started and session.converged), so the live transcript and a later
 	// `flynn inspect` of the same run read identically.
-	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, store, verbose); err != nil {
+	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, store, signer, verbose); err != nil {
 		return err
 	}
 	return nil
