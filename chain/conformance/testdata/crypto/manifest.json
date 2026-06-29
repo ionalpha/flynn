@@ -187,6 +187,32 @@
       "failure_code": "gov.admission_denied_but_executed",
       "description": "A run where an action that was denied admission nonetheless completed.",
       "artifact": "invalid/crypto_governance_denied_but_executed_01.cbor"
+    },
+    {
+      "id": "crypto.ground_truth.valid.01",
+      "tier": "L4",
+      "kind": "ground_truth",
+      "expect": "accept",
+      "description": "A run whose success outcome is grounded in a check that passed.",
+      "artifact": "valid/crypto_ground_truth_valid_01.cbor"
+    },
+    {
+      "id": "crypto.ground_truth.unbound_success.01",
+      "tier": "L4",
+      "kind": "ground_truth",
+      "expect": "reject",
+      "failure_code": "shallow.no_ground_truth",
+      "description": "A run claiming success with no check bound: signed, not proven.",
+      "artifact": "invalid/crypto_ground_truth_unbound_success_01.cbor"
+    },
+    {
+      "id": "crypto.ground_truth.failed_check.01",
+      "tier": "L4",
+      "kind": "ground_truth",
+      "expect": "reject",
+      "failure_code": "shallow.no_ground_truth",
+      "description": "A run claiming success bound to a check that did not pass.",
+      "artifact": "invalid/crypto_ground_truth_failed_check_01.cbor"
     }
   ]
 }
