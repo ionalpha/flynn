@@ -17,6 +17,7 @@ package dispatch
 
 import (
 	"context"
+	"sync/atomic"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
@@ -57,6 +58,7 @@ type Admitter interface {
 type Event struct {
 	Type   string // EventStart, EventEnd, or EventRejected
 	Action string
+	Call   int64 // correlation id pairing one invocation's start with its end or rejection
 	Scope  state.Scope
 	Trust  string // the work's trust level, recorded so a run's containment posture is auditable
 	At     int64  // unix nanos, from the dispatcher's clock
@@ -96,6 +98,10 @@ type Dispatcher struct {
 	ob     *observe.Observability
 	clk    clock.Clock
 	hooks  []Hook
+	// calls assigns each Govern invocation a correlation id, monotonic within this
+	// dispatcher, so an action's start and its end or rejection are pairable. It is a
+	// counter, not a random id, so a replay reproduces the same ids.
+	calls atomic.Int64
 }
 
 // Option configures a Dispatcher.
@@ -142,25 +148,29 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 	defer span.End()
 	span.SetAttr("action", a.Name)
 
+	// One correlation id for this invocation, so its start and its end or rejection
+	// can be paired in the recorded stream even when the same action runs many times.
+	call := d.calls.Add(1)
+
 	// Run Before hooks, remembering how many entered so After unwinds exactly
 	// that set in reverse, even if a later Before, admission, or the work fails.
 	entered := 0
 	for _, h := range d.hooks {
 		if err := h.Before(ctx, a); err != nil {
-			return d.rejected(ctx, a, err, span, entered)
+			return d.rejected(ctx, a, err, span, entered, call)
 		}
 		entered++
 	}
 	if err := d.admit.Admit(ctx, a); err != nil {
-		return d.rejected(ctx, a, err, span, entered)
+		return d.rejected(ctx, a, err, span, entered, call)
 	}
 
-	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()})
+	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()})
 	d.ob.Log.Info(ctx, "dispatch start", observe.String("action", a.Name), observe.String("trust", a.Trust.String()))
 
 	m, err := work(ctx)
 
-	end := Event{Type: EventEnd, Action: a.Name, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()}
+	end := Event{Type: EventEnd, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()}
 	outcome := "ok"
 	if err != nil {
 		class := fault.Classify(err)
@@ -182,10 +192,10 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 // rejected records a pre-execution rejection (a Before hook or admission) and
 // unwinds the hooks that already entered. The work never ran, so the metering is
 // zero.
-func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span observe.Span, entered int) error {
+func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span observe.Span, entered int, call int64) error {
 	class := fault.Classify(err)
 	span.RecordError(err)
-	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano(), Err: string(class)})
+	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano(), Err: string(class)})
 	d.ob.Log.Warn(ctx, "dispatch rejected",
 		observe.String("action", a.Name), observe.String("class", string(class)))
 	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))

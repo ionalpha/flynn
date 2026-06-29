@@ -44,6 +44,12 @@ func verifyCrypto(v CryptoVector, ring *chain.RootKeyring) error {
 	case KindConsistency:
 		_, _, err := chain.VerifyConsistencyProof(v.Artifact, ring)
 		return err
+	case KindGovernance:
+		events, err := chain.VerifyRun(v.Artifact, ring)
+		if err != nil {
+			return err
+		}
+		return chain.VerifyGovernance(events)
 	default:
 		return nil
 	}
@@ -114,7 +120,7 @@ func cryptoPath(v CryptoVector) string {
 func buildCryptoManifest() (cryptoManifest, map[string][]byte) {
 	m := cryptoManifest{
 		SuiteVersion: CryptoSuiteVersion,
-		Tiers:        []string{"L2", "L3"},
+		Tiers:        []string{"L2", "L3", "L4"},
 		Keyring: []cryptoKey{{
 			KeyID:        RootKeyID(),
 			Algorithm:    "Ed25519",
