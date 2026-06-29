@@ -46,6 +46,12 @@ func TestSinkRecordsDispatchOntoSpine(t *testing.T) {
 	if got := events[0].Payload["action"]; got != "search" {
 		t.Fatalf("payload action = %v, want search", got)
 	}
+	// The action's trust level is recorded, so the run's containment posture is part
+	// of the governance record. An action with no explicit trust carries the agent's
+	// own (the zero value), which is a non-empty level.
+	if trust, ok := events[0].Payload["trust"].(string); !ok || trust == "" {
+		t.Fatalf("payload trust = %v, want a non-empty level", events[0].Payload["trust"])
+	}
 	// The dispatcher's clock time is preserved on the spine.
 	if !events[0].Time.Equal(at.UTC()) {
 		t.Fatalf("event Time = %v, want %v", events[0].Time, at.UTC())
