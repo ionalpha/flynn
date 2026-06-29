@@ -241,7 +241,7 @@ func missionRegistry() (*resource.Registry, error) {
 // sandboxed toolset, and (when a distiller is supplied) distills the converged run
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
-func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective string, store *sqlite.Store, signer chain.RootSigner, verbose bool) (string, error) {
+func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool) (string, error) {
 	reg, err := missionRegistry()
 	if err != nil {
 		return "", err
@@ -278,6 +278,15 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		return "", err
 	}
 
+	// Ground the run's success in an independent check before sealing, when one is
+	// given. The check runs after the agent has stopped and is never seen by the
+	// model, so a sealed run that claims success is backed by a verdict the model
+	// could not have produced. This must run before the seal so the check and outcome
+	// events are part of the verifiable record.
+	if verify != "" && rec != nil {
+		recordGroundTruth(ctx, out, rec, source, workdir, verify)
+	}
+
 	// Seal the run into a signed, verifiable record stored on its own stream, so it
 	// can be checked later from the durable store alone. Best effort: a sealing
 	// failure is reported but never fails the run.
@@ -303,6 +312,58 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		})
 	}
 	return result, nil
+}
+
+// recordGroundTruth runs the run's verification command independently and records the
+// result on the run's stream: a check event carrying the real exit-code verdict, and
+// an outcome event that binds the run's success to it. The verdict is the system's,
+// produced after the agent stopped and never seen by the model, so a sealed run that
+// claims success is grounded in a check the agent could not have graded itself. A
+// failing or unrunnable check is recorded honestly, which makes the run's own record
+// fail the ground-truth check rather than overstate the outcome.
+func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream, workdir, verify string) {
+	passed := runVerification(ctx, workdir, verify)
+	if err := appendGroundTruth(ctx, log, stream, passed); err != nil {
+		_, _ = fmt.Fprintf(out, "  (ground-truth not recorded: %v)\n", err)
+		return
+	}
+	if passed {
+		_, _ = fmt.Fprintln(out, "  ground-truth check passed; the run's success is independently verifiable")
+	} else {
+		_, _ = fmt.Fprintln(out, "  ground-truth check did not pass; the run's success is not grounded")
+	}
+}
+
+// runVerification runs command in a confined sandbox at workdir and reports whether it
+// succeeded (exit 0). The command is operator-supplied and run after the agent stops,
+// so its verdict is independent of anything the model produced.
+func runVerification(ctx context.Context, workdir, command string) bool {
+	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
+	if err != nil {
+		return false
+	}
+	res, err := sb.Exec(ctx, sandbox.Command{Line: command})
+	return err == nil && res.ExitCode == 0
+}
+
+// appendGroundTruth records the independent check's verdict and binds the run's
+// success to it on the run's stream, using the chain's ground-truth vocabulary.
+func appendGroundTruth(ctx context.Context, log spine.Log, stream string, passed bool) error {
+	if _, err := log.Append(ctx, spine.AppendInput{
+		Stream:  stream,
+		Type:    chain.CheckRecorded,
+		Actor:   spine.ActorSystem,
+		Payload: map[string]any{chain.CheckRefKey: int64(1), chain.CheckPassedKey: passed},
+	}); err != nil {
+		return err
+	}
+	_, err := log.Append(ctx, spine.AppendInput{
+		Stream:  stream,
+		Type:    chain.OutcomeRecorded,
+		Actor:   spine.ActorSystem,
+		Payload: map[string]any{chain.OutcomeResultKey: chain.ResultSuccess, chain.CheckRefKey: int64(1)},
+	})
+	return err
 }
 
 // distillOutcome distills a converged run into durable skills and memory and retires

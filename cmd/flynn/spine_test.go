@@ -155,3 +155,88 @@ func TestSpineVerifyRejectsUnsealed(t *testing.T) {
 		t.Fatal("verified a nonexistent run")
 	}
 }
+
+// TestRunVerificationIndependent confirms the verification command's verdict is the
+// command's real exit code, run in a sandbox and not derived from anything the model
+// said.
+func TestRunVerificationIndependent(t *testing.T) {
+	ctx := context.Background()
+	if !runVerification(ctx, t.TempDir(), "exit 0") {
+		t.Fatal("a passing command was reported as failed")
+	}
+	if runVerification(ctx, t.TempDir(), "exit 1") {
+		t.Fatal("a failing command was reported as passed")
+	}
+}
+
+// TestRunGroundTruthEndToEnd drives a real run, grounds its success in an independent
+// check, seals it, and verifies the sealed record. A run whose check passed is
+// grounded; a run whose check failed claims success the record can show is not backed,
+// so the run's own sealed record fails the ground-truth check rather than overstating
+// the outcome.
+func TestRunGroundTruthEndToEnd(t *testing.T) {
+	groundTruthOf := func(t *testing.T, verify string) error {
+		t.Helper()
+		ctx := context.Background()
+		dataDir := t.TempDir()
+		store, err := openDataStore(ctx, dataDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = store.Close() }()
+		reg, err := missionRegistry()
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		seed := make([]byte, ed25519.SeedSize)
+		priv := ed25519.NewKeyFromSeed(seed)
+		pub := priv.Public().(ed25519.PublicKey)
+		keyID := controlplane.PrincipalID(pub)
+		signer, err := chain.NewEd25519RootSigner(keyID, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		rec := chain.NewRecordingLog(store.Log(), nil)
+		model := llmtest.NewScripted(llmtest.SayText("done"))
+		_, runID, _, err := drive(ctx, io.Discard, model, harness.Plan{}, t.TempDir(),
+			"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), rec, false, "")
+		if err != nil {
+			t.Fatalf("drive: %v", err)
+		}
+		recordGroundTruth(ctx, io.Discard, rec, runID, t.TempDir(), verify)
+		if err := sealRun(ctx, store, rec, runID, signer); err != nil {
+			t.Fatalf("seal: %v", err)
+		}
+
+		events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		record, err := recordFromEvents(events)
+		if err != nil {
+			t.Fatalf("record: %v", err)
+		}
+		ring := chain.NewRootKeyring()
+		if err := ring.Add(keyID, pub); err != nil {
+			t.Fatal(err)
+		}
+		runEvents, err := chain.VerifyRun(record, ring)
+		if err != nil {
+			t.Fatalf("verify run: %v", err)
+		}
+		return chain.VerifyGroundTruth(runEvents)
+	}
+
+	t.Run("passing check grounds the run", func(t *testing.T) {
+		if err := groundTruthOf(t, "exit 0"); err != nil {
+			t.Fatalf("a run with a passing independent check was not grounded: %v", err)
+		}
+	})
+	t.Run("failing check is not grounded", func(t *testing.T) {
+		if err := groundTruthOf(t, "exit 1"); err == nil {
+			t.Fatal("a run whose independent check failed was accepted as grounded")
+		}
+	})
+}
