@@ -187,7 +187,9 @@ cache that can always be rebuilt by folding from an earlier point.
 The append-only spine makes a run replayable, but on its own its integrity rests on
 trusting the operator not to rewrite history. The `chain` package adds the layer that
 removes that trust: it turns a run into a signed, tamper-evident record an independent
-party can verify, in any language, without trusting the producer.
+party can verify, in any language, without trusting the producer. The record format is
+[Provetrail](https://github.com/ionalpha/provetrail), an open standard for verifiable
+execution provenance; this package is its reference implementation.
 
 The pipeline is built from established primitives, not new cryptography:
 
