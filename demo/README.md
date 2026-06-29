@@ -57,8 +57,32 @@ It needs a model: store a provider key once (`flynn auth set anthropic`) or run 
 local with no key (`flynn models use <id>`, see `flynn models --local`).
 
 ```
-./demo/proof-live.sh [--model provider:model]
+$ ./demo/proof-live.sh [--model provider:model]
+
+A. A goal whose success is checked independently and holds: GROUNDED.
+  run 019f148e-144e-7084-b209-35854f32bc69
+  Created `status.txt` containing exactly `READY`.
+
+B. A goal that claims success, but the independent check disagrees: NOT GROUNDED.
+  run 019f148e-21da-765f-8936-9f4900c323c8
+  The release is complete.
+
+Both runs are sealed. Verify them from the durable store, tier by tier:
+run 019f148e-144e-7084-b209-35854f32bc69
+  integrity:    VERIFIED (17 events, signed by ed25519:6Uugkf0Tj2N5ZSAm3n1U6uEJ8sgbv4rR6US0GF6zd5M)
+  governance:   OK (no action ran without admission)
+  ground-truth: GROUNDED (success backed by a passing check)
+
+run 019f148e-21da-765f-8936-9f4900c323c8
+  integrity:    VERIFIED (9 events, signed by ed25519:6Uugkf0Tj2N5ZSAm3n1U6uEJ8sgbv4rR6US0GF6zd5M)
+  governance:   OK (no action ran without admission)
+  ground-truth: NOT GROUNDED: shallow.no_ground_truth: chain: a success outcome is not grounded in a passing check
 ```
+
+Run B is the agent reporting success that did not happen. It is signed and governed, so
+a record that only checked signatures would accept it, and the ground-truth check is
+what catches it. The verification command runs in the platform shell (sh on Unix, cmd on
+Windows), so the script picks a check the local shell understands.
 
 ## Honesty
 
