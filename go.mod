@@ -11,6 +11,7 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-cmp v0.7.0
 	github.com/transparency-dev/merkle v0.0.2
+	github.com/veraison/go-cose v1.3.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.53.0
 	golang.org/x/sys v0.46.0
