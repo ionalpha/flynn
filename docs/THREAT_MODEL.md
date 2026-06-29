@@ -83,14 +83,26 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   own chat template. Flynn parses the file with its own hardened reader, never the
   runtime's parser, and forces a known, trusted template at run time, so a template
   embedded in hostile weights cannot rewrite the prompt contract.
-- **Tampering with the run record.** The mission event spine is append-only and ordered,
-  so the record of what happened cannot be silently rewritten.
+- **Tampering with the run record.** The mission event spine is append-only and ordered.
+  On its own that resists silent rewriting only as far as the operator of the store is
+  trusted. A run is therefore also sealed into a signed, tamper-evident record: its
+  events are committed to an append-only RFC 9162 Merkle log and the head is signed as a
+  COSE_Sign1 checkpoint with the instance's Ed25519 key. Any alteration, a changed,
+  reordered, dropped, or inserted event, no longer reproduces the signed root, so an
+  independent party can detect tampering with `flynn spine verify` without trusting the
+  host. The verifier rehashes the exact bytes the record carries rather than
+  re-serializing, so verification holds across languages.
 
 ### Repudiation (denying an action took place)
 
 - **An unattributable action.** Every action is recorded on the event spine through the
   one dispatch boundary, with its trust level, so each privileged action is attributable
   and the run is auditable and replayable.
+- **Denying the record itself.** The sealed run record is signed by the instance's key,
+  and the signature binds the whole event sequence through the Merkle root, so the
+  producer cannot later disown a run it sealed or claim a different sequence of events.
+  The signing key is identified by a self-certifying id carried in the record, so a
+  verifier checks the signature against the key the record names.
 
 ### Information disclosure (leaking data)
 
@@ -197,7 +209,11 @@ Enforced and tested today:
   file parsing, a forced trusted chat template, loopback-only serving, and explicit
   consent for a risky run with a safe default and a non-interactive refusal.
 - Credential isolation: vault-held, redacted, never in a child's environment.
-- An append-only, ordered event spine as the record of what happened.
+- An append-only, ordered event spine as the record of what happened, and, on a run's
+  convergence, a signed, tamper-evident sealed record of it (RFC 9162 Merkle log under a
+  COSE/Ed25519 signed checkpoint) that a standalone verifier (`flynn spine verify`)
+  checks without trusting the host, backed by a public conformance vector suite for the
+  record format.
 
 Planned, not yet enforced (a control in this list is not something to rely on today):
 
