@@ -39,6 +39,9 @@ const (
 	KindRun Kind = "run"
 	// KindEventProof is a marshalled single-event proof, checked with VerifyEventProof.
 	KindEventProof Kind = "event_proof"
+	// KindConsistency is a marshalled consistency proof between two signed checkpoints,
+	// checked with VerifyConsistencyProof.
+	KindConsistency Kind = "consistency"
 )
 
 // CryptoVector is one L2 or L3 case: a single signed artifact and the verdict a
@@ -203,8 +206,9 @@ func encodeRun(w runWire) []byte {
 }
 
 // GenerateCrypto returns the full L2 and L3 cryptographic vector set, deterministically.
-// L2 covers every VerifyCheckpoint outcome; L3 covers every VerifyRun and
-// VerifyEventProof outcome, so each cryptographic failure code has an exact vector.
+// L2 covers every VerifyCheckpoint outcome; L3 covers every VerifyRun,
+// VerifyEventProof, and VerifyConsistencyProof outcome, so each cryptographic failure
+// code has an exact vector.
 func GenerateCrypto() []CryptoVector {
 	root := mustSigner(rootSeed, rootKeyID)
 	alt := mustSigner(altSeed, "provetrail-conformance-alt")
@@ -379,11 +383,88 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof))
+	// L3: consistency proofs (the append-only property between two signed roots).
+	validConsistency, forgedConsistency := consistencyArtifacts(root, alt)
+	l3consistency := []CryptoVector{
+		{
+			ID: "crypto.consistency.valid.01", Tier: "L3", Kind: KindConsistency, Expect: Accept,
+			Description: "A proof that the signed checkpoint over two events is a prefix of the signed checkpoint over five.",
+			Artifact:    validConsistency,
+		},
+		{
+			ID: "crypto.consistency.forged_path.01", Tier: "L3", Kind: KindConsistency, Expect: Reject,
+			FailureCode: chain.CodeConsistencyInvalid,
+			Description: "A consistency proof whose path does not connect the two signed roots.",
+			Artifact:    forgedConsistency,
+		},
+		{
+			ID: "crypto.consistency.unknown_key.01", Tier: "L3", Kind: KindConsistency, Expect: Reject,
+			FailureCode: chain.CodeUnknownKey,
+			Description: "A consistency proof whose checkpoints are signed by a key not in the keyring.",
+			Artifact:    altConsistencyArtifact(alt),
+		},
+	}
+
+	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof)+len(l3consistency))
 	out = append(out, l2...)
 	out = append(out, l3run...)
 	out = append(out, l3proof...)
+	out = append(out, l3consistency...)
 	return out
+}
+
+// growingCheckpoints builds a Merkle log of five events signed by signer and returns
+// the signed checkpoint at size 2, the signed checkpoint at size 5, and the
+// consistency path between them.
+func growingCheckpoints(signer chain.RootSigner) (before, after []byte, path [][]byte) {
+	tree := chain.NewTree()
+	sign := func(n uint64) []byte {
+		root, err := tree.Root()
+		if err != nil {
+			panic("conformance: tree root: " + err.Error())
+		}
+		sc, err := signer.SignCheckpoint(chain.Checkpoint{Origin: checkOrig, Size: n, RootHash: root})
+		if err != nil {
+			panic("conformance: sign checkpoint: " + err.Error())
+		}
+		return sc.COSE
+	}
+	for i, cb := range cryptoEvents(5) {
+		if err := tree.Append(cb); err != nil {
+			panic("conformance: append leaf: " + err.Error())
+		}
+		if i+1 == 2 {
+			before = sign(2)
+		}
+	}
+	after = sign(5)
+	p, err := tree.ConsistencyProof(2)
+	if err != nil {
+		panic("conformance: consistency proof: " + err.Error())
+	}
+	return before, after, p
+}
+
+// consistencyArtifacts returns a valid consistency proof signed by root, and a
+// variant whose path byte is flipped so it no longer connects the two roots.
+func consistencyArtifacts(root, _ chain.RootSigner) (valid, forged []byte) {
+	before, after, path := growingCheckpoints(root)
+	valid = mustMarshal((&chain.ConsistencyProof{Before: before, After: after, Proof: path}).Marshal())
+
+	badPath := make([][]byte, len(path))
+	copy(badPath, path)
+	if len(badPath) > 0 {
+		badPath[0] = flipLast(badPath[0])
+	}
+	forged = mustMarshal((&chain.ConsistencyProof{Before: before, After: after, Proof: badPath}).Marshal())
+	return valid, forged
+}
+
+// altConsistencyArtifact returns a structurally valid consistency proof whose
+// checkpoints are signed by alt, a key the published keyring does not carry.
+func altConsistencyArtifact(alt chain.RootSigner) []byte {
+	before, after, path := growingCheckpoints(alt)
+	return mustMarshal((&chain.ConsistencyProof{Before: before, After: after, Proof: path}).Marshal())
 }
 
 // threeEvents returns the three events the run vectors are sealed over, as spine

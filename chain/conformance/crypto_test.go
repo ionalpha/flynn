@@ -41,6 +41,9 @@ func verifyCrypto(v CryptoVector, ring *chain.RootKeyring) error {
 	case KindEventProof:
 		_, err := chain.VerifyEventProof(v.Artifact, ring)
 		return err
+	case KindConsistency:
+		_, _, err := chain.VerifyConsistencyProof(v.Artifact, ring)
+		return err
 	default:
 		return nil
 	}
