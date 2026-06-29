@@ -134,6 +134,32 @@
       "failure_code": "sign.signature_invalid",
       "description": "A proof whose embedded checkpoint signature has been altered.",
       "artifact": "invalid/crypto_event_proof_bad_signature_01.cbor"
+    },
+    {
+      "id": "crypto.consistency.valid.01",
+      "tier": "L3",
+      "kind": "consistency",
+      "expect": "accept",
+      "description": "A proof that the signed checkpoint over two events is a prefix of the signed checkpoint over five.",
+      "artifact": "valid/crypto_consistency_valid_01.cbor"
+    },
+    {
+      "id": "crypto.consistency.forged_path.01",
+      "tier": "L3",
+      "kind": "consistency",
+      "expect": "reject",
+      "failure_code": "merkle.consistency_invalid",
+      "description": "A consistency proof whose path does not connect the two signed roots.",
+      "artifact": "invalid/crypto_consistency_forged_path_01.cbor"
+    },
+    {
+      "id": "crypto.consistency.unknown_key.01",
+      "tier": "L3",
+      "kind": "consistency",
+      "expect": "reject",
+      "failure_code": "sign.unknown_key",
+      "description": "A consistency proof whose checkpoints are signed by a key not in the keyring.",
+      "artifact": "invalid/crypto_consistency_unknown_key_01.cbor"
     }
   ]
 }
