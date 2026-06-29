@@ -207,6 +207,10 @@ Most agents wait to be prompted. Flynn can take initiative.
   alongside MCP by the Linux Foundation's Agentic AI Foundation.
 - **Editor integration.** Run as a Zed Agent Client Protocol (ACP) server inside
   editors.
+- **Provetrail.** Implements [Provetrail](https://github.com/ionalpha/provetrail), an
+  open standard for verifiable execution provenance, and ships a reference verifier and
+  the standard's public conformance vectors, so a run's record can be checked by any
+  conformant verifier in any language.
 
 ## Trust and safety
 
@@ -229,7 +233,8 @@ Flynn is built to be handed real authority over untrusted input and real tools.
   every event is committed to an append-only Merkle log under a signed checkpoint, so
   an independent party can confirm what the agent did, and that the record was not
   altered, without trusting the host. `flynn spine verify <run>` checks a run from the
-  durable store alone.
+  durable store alone, and the record follows the open [Provetrail](https://github.com/ionalpha/provetrail)
+  format so any conformant verifier can check it.
 
 The [threat model](docs/THREAT_MODEL.md) sets out the trust boundaries and which defense
 covers each class of attack, marking what is enforced today versus planned. To report a
