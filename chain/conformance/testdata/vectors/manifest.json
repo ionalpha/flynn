@@ -1,0 +1,138 @@
+{
+  "suite_version": "0.1.0-draft",
+  "tier": "L1",
+  "vectors": [
+    {
+      "id": "valid.minimal.01",
+      "expect": "accept",
+      "flags": [
+        "Structural"
+      ],
+      "description": "A single minimal event with the required fields and an empty payload.",
+      "events": [
+        "valid/valid_minimal_01.cbor"
+      ]
+    },
+    {
+      "id": "valid.optional_fields.01",
+      "expect": "accept",
+      "flags": [
+        "Structural"
+      ],
+      "description": "A single event carrying every optional field and a payload of mixed value types.",
+      "events": [
+        "valid/valid_optional_fields_01.cbor"
+      ]
+    },
+    {
+      "id": "valid.chain.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Ordering"
+      ],
+      "description": "Three events on one stream with strictly increasing Seq.",
+      "events": [
+        "valid/valid_chain_01_0.cbor",
+        "valid/valid_chain_01_1.cbor",
+        "valid/valid_chain_01_2.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.trailing_bytes.01",
+      "expect": "reject",
+      "failure_code": "enc.trailing_bytes",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A canonical event followed by one extra trailing byte.",
+      "events": [
+        "invalid/invalid_enc_trailing_bytes_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.duplicate_map_key.01",
+      "expect": "reject",
+      "failure_code": "enc.duplicate_map_key",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A CBOR map containing a duplicated key.",
+      "events": [
+        "invalid/invalid_enc_duplicate_map_key_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.indefinite_length.01",
+      "expect": "reject",
+      "failure_code": "enc.indefinite_length",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "An indefinite-length CBOR map.",
+      "events": [
+        "invalid/invalid_enc_indefinite_length_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.invalid_utf8.01",
+      "expect": "reject",
+      "failure_code": "enc.invalid_utf8",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A CBOR text string containing invalid UTF-8.",
+      "events": [
+        "invalid/invalid_enc_invalid_utf8_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.non_canonical_cbor.01",
+      "expect": "reject",
+      "failure_code": "enc.non_canonical_cbor",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A valid event whose map keys are not in canonical sorted order.",
+      "events": [
+        "invalid/invalid_enc_non_canonical_cbor_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.chain.non_monotonic_seq.01",
+      "expect": "reject",
+      "failure_code": "chain.non_monotonic_seq",
+      "flags": [
+        "Ordering"
+      ],
+      "description": "Two events on one stream with a repeated Seq.",
+      "events": [
+        "invalid/invalid_chain_non_monotonic_seq_01_0.cbor",
+        "invalid/invalid_chain_non_monotonic_seq_01_1.cbor"
+      ]
+    },
+    {
+      "id": "invalid.chain.stream_mismatch.01",
+      "expect": "reject",
+      "failure_code": "chain.stream_mismatch",
+      "flags": [
+        "Ordering"
+      ],
+      "description": "Two events that belong to different streams.",
+      "events": [
+        "invalid/invalid_chain_stream_mismatch_01_0.cbor",
+        "invalid/invalid_chain_stream_mismatch_01_1.cbor"
+      ]
+    },
+    {
+      "id": "invalid.chain.empty.01",
+      "expect": "reject",
+      "failure_code": "chain.empty",
+      "flags": [
+        "Structural"
+      ],
+      "description": "An empty event stream.",
+      "events": []
+    }
+  ]
+}
