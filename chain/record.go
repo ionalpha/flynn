@@ -79,17 +79,19 @@ func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &SealedRun{cose: sc.COSE, events: b.events, tree: b.tree}, nil
+	events := make([][]byte, len(b.events))
+	copy(events, b.events)
+	return &SealedRun{cose: sc.COSE, events: events}, nil
 }
 
-// SealedRun is a signed, verifiable record of a run: the COSE-signed checkpoint over
-// the Merkle head plus the canonical bytes of every event. It can be marshalled to a
-// portable artifact, verified in full, or used to produce a standalone proof for one
-// event.
+// SealedRun is an immutable, signed record of a run: the COSE-signed checkpoint over
+// the Merkle head plus the canonical bytes of every event. It is a snapshot taken at
+// seal time, so further appends to the builder it came from do not affect it. It can
+// be marshalled to a portable artifact, verified in full, or used to produce a
+// standalone proof for one event.
 type SealedRun struct {
 	cose   []byte
 	events [][]byte
-	tree   *Tree
 }
 
 type sealedRunWire struct {
@@ -113,7 +115,13 @@ func (s *SealedRun) EventProof(index uint64) (*EventProof, error) {
 	if index >= uint64(len(s.events)) {
 		return nil, fault.New(fault.Terminal, CodeIndexRange, "chain: event index out of range")
 	}
-	inclusion, err := s.tree.InclusionProof(index)
+	tree := NewTree()
+	for _, cb := range s.events {
+		if err := tree.Append(cb); err != nil {
+			return nil, err
+		}
+	}
+	inclusion, err := tree.InclusionProof(index)
 	if err != nil {
 		return nil, err
 	}
