@@ -235,7 +235,9 @@ Flynn is built to be handed real authority over untrusted input and real tools.
   an independent party can confirm what the agent did, and that the record was not
   altered, without trusting the host. `flynn spine verify <run>` checks a run from the
   durable store alone, and the record follows the open [Provetrail](https://github.com/ionalpha/provetrail)
-  format so any conformant verifier can check it.
+  format so any conformant verifier can check it. The [`demo/`](demo/) directory is a
+  runnable walkthrough: a signed but ungoverned or unproven record is rejected, a real
+  one verifies.
 
 The [threat model](docs/THREAT_MODEL.md) sets out the trust boundaries and which defense
 covers each class of attack, marking what is enforced today versus planned. To report a
