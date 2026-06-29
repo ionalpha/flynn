@@ -170,7 +170,7 @@ func printUsage(w io.Writer) {
   flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
-  flynn spine verify <run>   check a run's signed, tamper-evident record
+  flynn spine verify <run>   report a run's record tier by tier: integrity, governance, ground truth (or --file <path> for an exported record)
   flynn auth set <provider>  store an API key in the encrypted vault
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
   flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry and print it for review
