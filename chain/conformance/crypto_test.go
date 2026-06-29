@@ -50,6 +50,12 @@ func verifyCrypto(v CryptoVector, ring *chain.RootKeyring) error {
 			return err
 		}
 		return chain.VerifyGovernance(events)
+	case KindGroundTruth:
+		events, err := chain.VerifyRun(v.Artifact, ring)
+		if err != nil {
+			return err
+		}
+		return chain.VerifyGroundTruth(events)
 	default:
 		return nil
 	}

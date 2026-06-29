@@ -82,12 +82,17 @@ func VerifyGovernance(events []spine.Event) error {
 	return nil
 }
 
-// callID extracts the correlation id from a lifecycle event's payload. The value is
-// an integer on the wire; it is read tolerantly across the integer and float
-// representations a CBOR or JSON round trip can produce, so a record is verifiable
-// whether its events came straight from the canonical bytes or back through a store.
+// callID extracts the correlation id from a lifecycle event's payload.
 func callID(payload map[string]any) (int64, bool) {
-	v, ok := payload[GovCallKey]
+	return intField(payload, GovCallKey)
+}
+
+// intField reads an integer-valued payload field tolerantly across the integer and
+// float representations a CBOR or JSON round trip can produce, so a record is
+// verifiable whether its events came straight from the canonical bytes or back
+// through a store that serializes them as JSON.
+func intField(payload map[string]any, key string) (int64, bool) {
+	v, ok := payload[key]
 	if !ok {
 		return 0, false
 	}

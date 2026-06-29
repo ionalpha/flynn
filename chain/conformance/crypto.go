@@ -11,8 +11,9 @@ package conformance
 //     chain.VerifyRun, a standalone single-event proof checked with
 //     chain.VerifyEventProof, and a consistency proof checked with
 //     chain.VerifyConsistencyProof.
-//   - L4 (governance): a cryptographically valid run whose events carry the admission
-//     lifecycle, checked with chain.VerifyGovernance for the governance invariants.
+//   - L4 (governance, ground_truth): a cryptographically valid run whose events carry
+//     the admission lifecycle (chain.VerifyGovernance) or outcome and check records
+//     (chain.VerifyGroundTruth, is a claimed success grounded in a passing check).
 //
 // Every artifact is produced from a fixed Ed25519 key over fixed events, and Ed25519
 // signing is deterministic, so the committed golden artifacts are reproducible byte
@@ -49,6 +50,9 @@ const (
 	// KindGovernance is a marshalled sealed run whose events carry governance lifecycle
 	// records, checked with VerifyRun (cryptographic) then VerifyGovernance (semantic).
 	KindGovernance Kind = "governance"
+	// KindGroundTruth is a marshalled sealed run whose events carry outcome and check
+	// records, checked with VerifyRun then VerifyGroundTruth (is a success grounded?).
+	KindGroundTruth Kind = "ground_truth"
 )
 
 // CryptoVector is one L2, L3, or L4 case: a single artifact and the verdict a
@@ -215,8 +219,8 @@ func encodeRun(w runWire) []byte {
 // GenerateCrypto returns the full L2, L3, and L4 vector set, deterministically. L2
 // covers every VerifyCheckpoint outcome; L3 covers every VerifyRun, VerifyEventProof,
 // and VerifyConsistencyProof outcome; L4 covers the governance admission invariants
-// (VerifyGovernance over a cryptographically valid run), so each failure code has an
-// exact vector.
+// (VerifyGovernance) and the ground-truth invariant (VerifyGroundTruth) over a
+// cryptographically valid run, so each failure code has an exact vector.
 func GenerateCrypto() []CryptoVector {
 	root := mustSigner(rootSeed, rootKeyID)
 	alt := mustSigner(altSeed, "provetrail-conformance-alt")
@@ -452,13 +456,70 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof)+len(l3consistency)+len(l4))
+	// L4: ground truth. A success outcome must be grounded in a passing check.
+	l4gt := []CryptoVector{
+		{
+			ID: "crypto.ground_truth.valid.01", Tier: "L4", Kind: KindGroundTruth, Expect: Accept,
+			Description: "A run whose success outcome is grounded in a check that passed.",
+			Artifact: govRun(
+				root,
+				gtCheck(1, 1, true),
+				gtOutcome(2, chain.ResultSuccess, 1, true),
+			),
+		},
+		{
+			ID: "crypto.ground_truth.unbound_success.01", Tier: "L4", Kind: KindGroundTruth, Expect: Reject,
+			FailureCode: chain.CodeNoGroundTruth,
+			Description: "A run claiming success with no check bound: signed, not proven.",
+			Artifact: govRun(
+				root,
+				gtOutcome(1, chain.ResultSuccess, 0, false),
+			),
+		},
+		{
+			ID: "crypto.ground_truth.failed_check.01", Tier: "L4", Kind: KindGroundTruth, Expect: Reject,
+			FailureCode: chain.CodeNoGroundTruth,
+			Description: "A run claiming success bound to a check that did not pass.",
+			Artifact: govRun(
+				root,
+				gtCheck(1, 1, false),
+				gtOutcome(2, chain.ResultSuccess, 1, true),
+			),
+		},
+	}
+
+	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof)+len(l3consistency)+len(l4)+len(l4gt))
 	out = append(out, l2...)
 	out = append(out, l3run...)
 	out = append(out, l3proof...)
 	out = append(out, l3consistency...)
 	out = append(out, l4...)
+	out = append(out, l4gt...)
 	return out
+}
+
+// gtCheck builds a check-verdict event at the given stream sequence: a verification
+// recorded with its own id and whether it passed.
+func gtCheck(seq, id int64, passed bool) spine.Event {
+	e := baseEvent()
+	e.Seq = seq
+	e.Type = chain.CheckRecorded
+	e.Payload = map[string]any{chain.CheckRefKey: id, chain.CheckPassedKey: passed}
+	return e
+}
+
+// gtOutcome builds an outcome-claim event. When bound, it names the check that grounds
+// it; when not, it claims a result with no backing check.
+func gtOutcome(seq int64, result string, checkID int64, bound bool) spine.Event {
+	e := baseEvent()
+	e.Seq = seq
+	e.Type = chain.OutcomeRecorded
+	p := map[string]any{chain.OutcomeResultKey: result}
+	if bound {
+		p[chain.CheckRefKey] = checkID
+	}
+	e.Payload = p
+	return e
 }
 
 // govEvent builds a governance lifecycle event at the given stream sequence: a typed
