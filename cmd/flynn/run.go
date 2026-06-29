@@ -13,12 +13,14 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/archetype"
+	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/dependency"
 	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
@@ -28,8 +30,10 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/orchestration"
 	"github.com/ionalpha/flynn/playbook"
 	"github.com/ionalpha/flynn/profilestore"
+	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
@@ -241,7 +245,7 @@ func missionRegistry() (*resource.Registry, error) {
 // sandboxed toolset, and (when a distiller is supplied) distills the converged run
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
-func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool) (string, error) {
+func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool, fanout *fanoutConfig) (string, error) {
 	reg, err := missionRegistry()
 	if err != nil {
 		return "", err
@@ -266,7 +270,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		log = rec
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, store.Resources(reg), store.Jobs(), log, verbose, "")
+	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, store.Resources(reg), store.Jobs(), log, verbose, "", fanout)
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -409,6 +413,23 @@ func governedVerifier(dir string) learn.Verifier {
 // just ungoverned.
 func governedDistiller(model llm.Model) learn.Distiller {
 	return learn.NewGovernedDistiller(learn.NewModelDistiller(model), dispatch.WithAdmitter(capability.Admitter{}))
+}
+
+// childModelResolver builds the model resolver the Router consults for a delegated
+// child goal that names a model other than the run's default. A local catalog model
+// is provisioned and served on demand; a hosted model resolves through the same
+// credential chain (vault then environment) as the root model, so a child runs on
+// whatever its archetype pins without any extra setup. The child's scaffolding plan
+// is not threaded through (the Router shares one base plan across loops), so a local
+// child runs on the shared defaults.
+func childModelResolver(ctx context.Context, dataDir string) driver.ModelResolver {
+	return func(id string) (llm.Model, error) {
+		if isLocalModelID(id) {
+			m, _, err := resolveLocalModel(ctx, id, dataDir)
+			return m, err
+		}
+		return provider.ResolveWith(ctx, id, credentialSource(dataDir))
+	}
 }
 
 // recallContext queries the durable skills and memory for what is relevant to the
@@ -614,9 +635,18 @@ func truncate(s string, n int) string {
 // id (used as learning provenance), and the conversation transcript (so the
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string) (result, source string, transcript []llm.Message, err error) {
+func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string, fanout *fanoutConfig) (result, source string, transcript []llm.Message, err error) {
 	w := &syncWriter{w: out}
-	run, err := assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID)
+	// A run with fan-out enabled drives the full goals engine (the Router plus a
+	// delegation spawner); otherwise it is a single governed conversation. Both seal
+	// into the same verifiable record, so fan-out adds delegation without changing how
+	// a run is recorded or checked.
+	var run *missionRun
+	if fanout != nil {
+		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel)
+	} else {
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID)
+	}
 	if err != nil {
 		return "", "", nil, err
 	}
@@ -643,6 +673,13 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	} else if _, err := run.sess.Submit(runCtx, run.rt, goal.Spec{
 		Objective:     objective,
 		StopCondition: "the objective is fully accomplished",
+		// A fan-out parent spends steps it would not as a single conversation: a step
+		// dispatching each delegation, and a step per poll while it waits for the
+		// children to finish (a wait makes no model call, but the reconciler still
+		// counts it). Give it a larger budget so a legitimate delegation that waits on
+		// a few children is not cut off mid-fold; a single conversation keeps the
+		// default. The safety brake and fan-out width still bound a runaway.
+		MaxSteps: fanoutMaxSteps(fanout),
 	}); err != nil {
 		return "", "", nil, err
 	}
@@ -729,6 +766,135 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	if err != nil {
 		return nil, err
 	}
+	return &missionRun{rt: rt, sess: sess}, nil
+}
+
+// defaultFanoutWidth caps how many child runs a fan-out may have outstanding at
+// once, bounding the blast radius of delegation alongside the depth guard.
+const defaultFanoutWidth = 8
+
+// fanoutRootMaxSteps is the step budget a fan-out parent runs under. A fan-out adds
+// orchestration steps a single conversation never takes (a dispatch per delegation,
+// and one poll per reconcile while it waits for the children), so the default budget
+// that suits a single loop would cut a legitimate delegation off mid-fold. Zero
+// (single conversation) keeps the reconciler's default.
+const fanoutRootMaxSteps = 200
+
+// fanoutMaxSteps returns the step budget for a run's root goal: the larger fan-out
+// budget when delegation is enabled, or zero (the reconciler's default) otherwise.
+func fanoutMaxSteps(fanout *fanoutConfig) int {
+	if fanout != nil {
+		return fanoutRootMaxSteps
+	}
+	return 0
+}
+
+// defaultMaxActionsPerMinute is the rate the default safety brake halts a run at.
+// It is set well above any real run's pace so it catches only a degenerate tight
+// loop, not legitimate tool use.
+const defaultMaxActionsPerMinute = 600
+
+// fanoutConfig enables the goals engine on a one-shot run: the model may delegate
+// self-contained sub-goals to concurrent, governed child agents, and each child is
+// routed to the model and loop its bound Agent archetype pins (resolveModel turns a
+// named model into a client). Every child runs under a grant narrowed from the
+// parent's, shares the run's budget, and folds back into the parent's single sealed
+// record, so a multi-goal, multi-model fan-out stays one verifiable run. A nil
+// *fanoutConfig leaves a run as a single conversation, which is the n=1 case of the
+// same mechanism.
+type fanoutConfig struct {
+	resolveModel driver.ModelResolver
+}
+
+// assembleFanoutMission wires a one-shot run that drives the full goals engine over
+// the durable store: a Router that builds one loop per (driver, model) a goal
+// selects, and a fan-out spawner that creates governed child goals. It mirrors
+// assembleMission (same sandbox, session, toolset, grant, governance recording, and
+// compaction) but adds the spawn action to the grant and routes each goal through
+// the Router, so a delegated child runs as the agent its archetype names, on that
+// agent's model, while the root and every child fold into one recorded, sealable
+// stream. The shared store backs the child goals a fan-out spawns, so they land
+// where the runtime reconciles them.
+func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resolveModel driver.ModelResolver) (*missionRun, error) {
+	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
+	if err != nil {
+		return nil, err
+	}
+
+	var sopts []session.Option
+	if runID != "" {
+		sopts = append(sopts, session.WithID(runID))
+	}
+	sess := session.New(log, bus.NewMemory(), sopts...)
+
+	toolset := tools.New(sb).Tools()
+	// The grant lists every action the run may take: the tools, the model call, the
+	// distillation, and the spawn that delegates a sub-goal. A child narrows from this
+	// set, so a delegation can never widen authority; a run whose grant omitted spawn
+	// could not fan out at all.
+	names := make([]string, 0, len(toolset)+3)
+	for _, t := range toolset {
+		names = append(names, t.Def().Name)
+	}
+	names = append(names, mission.ActionModelGenerate, learn.DistillAction, mission.ActionSpawn)
+
+	// The spawner is the run's fan-out: it creates governed child goals (owned by the
+	// parent, grant narrowed, depth- and concurrency-bounded) and hands them to the
+	// runtime. Its enqueue hook is bound once the runtime exists (below).
+	spawner := orchestration.NewSpawner(rstore, nil, orchestration.WithConcurrency(defaultFanoutWidth))
+
+	// The Router drives each goal through the loop and model its spec selects: the
+	// default loop and host model for the root, and the bound Agent's loop and model
+	// for a delegated child. The shared ingredients (tools, default prompt and grant,
+	// sandbox gate, governance recording, compaction, brake, fan-out) apply to every
+	// loop; the per-goal prompt, grant, and model are applied from the goal.
+	router := driver.NewRouter(driver.RouterConfig{
+		Registry:     driver.Default(),
+		DefaultModel: model,
+		ResolveModel: resolveModel,
+		Base: driver.Spec{
+			Tools:    toolset,
+			System:   system,
+			Grant:    capability.NewGrant(names...),
+			HasGrant: true,
+			Sandbox:  sb,
+			Reporter: sess.Reporter(),
+			Fanout:   spawner,
+			// Record every governed action's lifecycle onto the run's own stream, so the
+			// admission decisions (including each delegation) are part of the sealed record.
+			EventSink:        spinesink.New(log, sess.ID()),
+			CompactionBudget: defaultCompactionBudget,
+			// Halt a runaway from outside the model loop. The default is a generous rate
+			// backstop: a real run dispatches far fewer than this per minute, so the breaker
+			// fires only on a degenerate tight loop, never on legitimate tool use.
+			Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+			// Apply the model's scaffolding plan so a weaker model is driven with the
+			// support it needs; the zero plan of a strong model adds nothing.
+			Plan: plan,
+		},
+	})
+
+	rt, err := runtime.New(runtime.Config{
+		Executor:     router,
+		Stop:         router,
+		Store:        rstore,
+		Jobs:         jq,
+		PollInterval: 200 * time.Millisecond,
+		WorkerPoll:   50 * time.Millisecond,
+		// A CLI run drives only its own goal and the children it spawns (enqueued
+		// explicitly below), never a parked goal an earlier run left non-terminal.
+		DriveSubmittedOnly: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	// Bind the spawner to the runtime so a spawned child is enqueued for
+	// reconciliation. Binding here (rather than at construction) breaks the cycle: the
+	// executor holds the spawner, and the runtime holds the executor.
+	spawner.SetEnqueue(func(ctx context.Context, key resource.Key) error {
+		_, rerr := rt.Resume(ctx, key.Name)
+		return rerr
+	})
 	return &missionRun{rt: rt, sess: sess}, nil
 }
 
