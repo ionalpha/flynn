@@ -34,7 +34,7 @@ func TestRunRecordsGovernanceOnSpine(t *testing.T) {
 
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	_, runID, _, err := drive(ctx, io.Discard, model, harness.Plan{}, t.TempDir(),
-		"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), false, "")
+		"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), false, "", nil)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestSpineVerifyRoundTrip(t *testing.T) {
 	rec := chain.NewRecordingLog(store.Log(), nil)
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	_, runID, _, err := drive(ctx, io.Discard, model, harness.Plan{}, t.TempDir(),
-		"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), rec, false, "")
+		"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), rec, false, "", nil)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}
@@ -201,7 +201,7 @@ func TestRunGroundTruthEndToEnd(t *testing.T) {
 		rec := chain.NewRecordingLog(store.Log(), nil)
 		model := llmtest.NewScripted(llmtest.SayText("done"))
 		_, runID, _, err := drive(ctx, io.Discard, model, harness.Plan{}, t.TempDir(),
-			"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), rec, false, "")
+			"reply done and stop", defaultSystemPrompt, store.Resources(reg), store.Jobs(), rec, false, "", nil)
 		if err != nil {
 			t.Fatalf("drive: %v", err)
 		}
