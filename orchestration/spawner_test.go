@@ -232,8 +232,8 @@ func TestPollReportsOutcomes(t *testing.T) {
 }
 
 // TestNarrowGrantProperty is the rigor property: a child's grant is always a subset
-// of both what its parent holds and what the sub-goal requested, so a delegation can
-// never widen authority.
+// of both what its parent holds and what the sub-goal requested (plus the model call,
+// which every child gets so it can think), so a delegation can never widen authority.
 func TestNarrowGrantProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		actions := rapid.SliceOfNDistinct(rapid.StringMatching(`[a-z]{1,4}`), 0, 8, func(s string) string { return s }).Draw(rt, "actions")
@@ -251,11 +251,13 @@ func TestNarrowGrantProperty(t *testing.T) {
 		}
 		got := childSpec(t, s, id).Grant
 		pset := toSet(parentGrant)
-		rset := toSet(requested)
+		// The model call is always added to the request so a child can think; it is still
+		// intersected with the parent, so it never widens authority.
+		rset := toSet(append(requested, mission.ActionModelGenerate))
 		for _, a := range got {
 			// When the parent is unconstrained (empty grant), the child is scoped to its
 			// request; otherwise it is the intersection.
-			if len(parentGrant) > 0 && !pset[a] {
+			if len(parentGrant) > 0 && !pset[a] && a != mission.ActionModelGenerate {
 				rt.Fatalf("child action %q not in parent grant %v", a, parentGrant)
 			}
 			if !rset[a] {
@@ -263,6 +265,29 @@ func TestNarrowGrantProperty(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestChildAlwaysGrantedModelCall checks that a child spawned with only tool actions
+// can still call the model: every loop must generate to make progress, so the model
+// call is added to a child's grant even when the delegation requested only tools. The
+// parent here holds the model call, so the addition is within its authority.
+func TestChildAlwaysGrantedModelCall(t *testing.T) {
+	s := newStore(t)
+	sp := orchestration.NewSpawner(s, nil)
+	sp.SetEnqueue((&recordingEnqueue{}).fn)
+	parent := putParent(t, s, "root", goal.Spec{
+		Objective:     "o",
+		StopCondition: "c",
+		Grant:         []string{"write", mission.ActionModelGenerate},
+	})
+
+	id, err := sp.Spawn(context.Background(), parent, mission.SubGoal{Objective: "x", Actions: []string{"write"}})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if !toSet(childSpec(t, s, id).Grant)[mission.ActionModelGenerate] {
+		t.Fatalf("child spawned with only tool actions cannot call the model: grant = %v", childSpec(t, s, id).Grant)
+	}
 }
 
 func mustSpawn(t *testing.T, sp *orchestration.Spawner, parent resource.Resource) string {
