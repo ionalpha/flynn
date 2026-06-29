@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/dependency"
 	"github.com/ionalpha/flynn/dispatch"
@@ -239,7 +240,7 @@ func missionRegistry() (*resource.Registry, error) {
 // sandboxed toolset, and (when a distiller is supplied) distills the converged run
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
-func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective string, store *sqlite.Store, verbose bool) (string, error) {
+func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective string, store *sqlite.Store, signer chain.RootSigner, verbose bool) (string, error) {
 	reg, err := missionRegistry()
 	if err != nil {
 		return "", err
@@ -254,7 +255,17 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		system += "\n\n" + block
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, store.Resources(reg), store.Jobs(), store.Log(), verbose, "")
+	// Record the run's events into a verifiable chain as they are produced, when an
+	// instance signer is available. The recorder wraps the log and changes nothing
+	// about how events are written.
+	log := store.Log()
+	var rec *chain.RecordingLog
+	if signer != nil {
+		rec = chain.NewRecordingLog(log, nil)
+		log = rec
+	}
+
+	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, store.Resources(reg), store.Jobs(), log, verbose, "")
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -264,6 +275,17 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	}
 	if err != nil {
 		return "", err
+	}
+
+	// Seal the run into a signed, verifiable record stored on its own stream, so it
+	// can be checked later from the durable store alone. Best effort: a sealing
+	// failure is reported but never fails the run.
+	if rec != nil {
+		if serr := sealRun(ctx, store, rec, source, signer); serr != nil {
+			_, _ = fmt.Fprintf(out, "  (run not sealed: %v)\n", serr)
+		} else {
+			_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", source)
+		}
 	}
 
 	// Capture: distill the converged run back into durable, provenance-stamped
