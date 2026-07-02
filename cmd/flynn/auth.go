@@ -9,9 +9,9 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/secret"
-	"github.com/ionalpha/flynn/vault"
 )
 
 // runAuth implements the `flynn auth` command group: managing the credentials the

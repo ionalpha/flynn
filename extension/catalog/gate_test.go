@@ -7,8 +7,8 @@ import (
 
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
-	"github.com/ionalpha/flynn/integrations"
-	"github.com/ionalpha/flynn/ops"
+	"github.com/ionalpha/flynn/internal/integrations"
+	"github.com/ionalpha/flynn/internal/ops"
 	"github.com/ionalpha/flynn/resource"
 )
 

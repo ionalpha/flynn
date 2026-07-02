@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/fetch"
-	"github.com/ionalpha/flynn/inference/launch"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/inference/launch"
 )
 
 // runModelFetch implements `flynn models fetch <id>`: download a catalog model's

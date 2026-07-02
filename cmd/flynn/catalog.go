@@ -9,15 +9,15 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
-	"github.com/ionalpha/flynn/integrations"
+	"github.com/ionalpha/flynn/internal/credential"
+	"github.com/ionalpha/flynn/internal/integrations"
+	"github.com/ionalpha/flynn/internal/ops"
+	"github.com/ionalpha/flynn/internal/service"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/ops"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/service"
-	"github.com/ionalpha/flynn/vault"
 )
 
 // runIntegrations implements `flynn integrations <subcommand>`: the catalog of

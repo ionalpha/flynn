@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ionalpha/flynn/archetype"
+	"github.com/ionalpha/flynn/internal/archetype"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 )

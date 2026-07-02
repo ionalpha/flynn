@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/internal/spinesink"
 	"github.com/ionalpha/flynn/spine"
-	"github.com/ionalpha/flynn/spinesink"
 	"github.com/ionalpha/flynn/state"
 )
 

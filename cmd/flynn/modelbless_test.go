@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/huggingface"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/huggingface"
 )
 
 func TestSelectServeFilesKeepsWeightsDropsDocs(t *testing.T) {

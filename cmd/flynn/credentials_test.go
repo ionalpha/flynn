@@ -5,10 +5,10 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ionalpha/flynn/credential"
+	"github.com/ionalpha/flynn/internal/credential"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/secret"
-	"github.com/ionalpha/flynn/vault"
 )
 
 // memKeyring is an in-memory vault.Keyring for tests, so the vault uses its

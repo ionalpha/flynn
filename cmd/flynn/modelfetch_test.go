@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/catalog"
+	"github.com/ionalpha/flynn/internal/catalog"
 )
 
 func TestRunModelFetchBranches(t *testing.T) {

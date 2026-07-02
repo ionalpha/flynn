@@ -10,10 +10,10 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/hardware"
 	"github.com/ionalpha/flynn/harness"
-	"github.com/ionalpha/flynn/reliability"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/hardware"
+	"github.com/ionalpha/flynn/internal/reliability"
 )
 
 // runModels implements `flynn models`: browse the curated model catalog and filter

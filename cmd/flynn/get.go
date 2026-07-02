@@ -10,16 +10,16 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/controlplane"
-	"github.com/ionalpha/flynn/credential"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/inbox"
-	"github.com/ionalpha/flynn/instance"
+	"github.com/ionalpha/flynn/internal/archetype"
+	"github.com/ionalpha/flynn/internal/credential"
+	"github.com/ionalpha/flynn/internal/instance"
+	"github.com/ionalpha/flynn/internal/profilestore"
+	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/internal/version"
-	"github.com/ionalpha/flynn/profilestore"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/service"
 )
 
 // cpKind binds a resource kind to how the read surface displays it.

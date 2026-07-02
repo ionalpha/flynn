@@ -8,8 +8,8 @@ import (
 	gruntime "runtime"
 	"strings"
 
-	"github.com/ionalpha/flynn/inference"
-	"github.com/ionalpha/flynn/inference/provision"
+	"github.com/ionalpha/flynn/internal/inference"
+	"github.com/ionalpha/flynn/internal/inference/provision"
 	"github.com/ionalpha/flynn/sandbox"
 )
 

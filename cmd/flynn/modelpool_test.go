@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/inference/orchestrate"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/inference/orchestrate"
 )
 
 func TestClassifyLaunchFailure(t *testing.T) {
