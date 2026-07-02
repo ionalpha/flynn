@@ -36,11 +36,10 @@ import (
 //   - foreign_keys(1): enforce referential integrity (a no-op where none declared).
 //
 // One connection: SQLite serialises writers anyway, and a single connection keeps
-// a ":memory:" database alive with a consistent view.
+// a ":memory:" database alive with a consistent view. Reads need not queue behind
+// it: OpenReadPool opens the read side of a file database.
 func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) {
-	conn := dsn + "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)" +
-		"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)"
-	db, err := sql.Open("sqlite", conn)
+	db, err := sql.Open("sqlite", dsn+dsnPragmas)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
 	}
@@ -55,6 +54,40 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 		_ = db.Close()
 		return nil, fmt.Errorf("sqlitex: migrate: %w", err)
 	}
+	return db, nil
+}
+
+// dsnPragmas is the shared per-connection configuration. Beyond the write-side
+// journal pragmas documented on Open:
+//   - cache_size(-8000): an 8 MiB page cache per connection (the default is 2 MiB),
+//     sized for a working set of projections and recent events.
+//   - temp_store(2): temporary tables and sort spills stay in memory instead of
+//     hitting the filesystem.
+//
+// mmap_size is deliberately absent: the pure-Go driver reads through its own VFS,
+// where the pragma buys nothing.
+const dsnPragmas = "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)" +
+	"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
+	"&_pragma=cache_size(-8000)&_pragma=temp_store(2)"
+
+// OpenReadPool opens the read side of an already-open-and-migrated file database:
+// a pool of maxConns connections pinned read-only with query_only, so point reads
+// and sweeps run concurrently with each other and with the single writer (WAL
+// gives one writer plus N readers; a lone connection forgoes the N). It returns
+// (nil, nil) for ":memory:", which lives entirely inside its one write connection
+// and cannot be opened twice; callers fall back to the write handle.
+func OpenReadPool(dsn string, maxConns int) (*sql.DB, error) {
+	if dsn == ":memory:" {
+		return nil, nil
+	}
+	db, err := sql.Open("sqlite", dsn+dsnPragmas+"&_pragma=query_only(1)")
+	if err != nil {
+		return nil, fmt.Errorf("sqlitex: open read pool: %w", err)
+	}
+	if maxConns < 1 {
+		maxConns = 4
+	}
+	db.SetMaxOpenConns(maxConns)
 	return db, nil
 }
 

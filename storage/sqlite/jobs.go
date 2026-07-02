@@ -174,7 +174,7 @@ func (q *jobQueue) transition(ctx context.Context, id string, apply func(*jobs.J
 }
 
 func (q *jobQueue) Get(ctx context.Context, id string) (jobs.Job, error) {
-	row := q.p.db.QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE id = ?`, id)
+	row := q.p.reads().QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE id = ?`, id)
 	j, err := scanJob(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return jobs.Job{}, jobs.ErrNotFound

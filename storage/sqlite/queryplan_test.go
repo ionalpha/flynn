@@ -20,12 +20,73 @@ func TestListKeysCoveringIndex(t *testing.T) {
 	}
 	defer func() { _ = s.Close() }()
 
-	rows, err := s.db.QueryContext(ctx,
-		`EXPLAIN QUERY PLAN
-		 SELECT scope_instance, scope_project, scope_workspace, name FROM resources
+	plan := explainPlan(ctx, t, s,
+		`SELECT scope_instance, scope_project, scope_workspace, name FROM resources
 		 WHERE kind = ? AND deleted = 0
 		 ORDER BY scope_instance, scope_project, scope_workspace, name`,
 		"Widget")
+	if !strings.Contains(plan, "USING COVERING INDEX idx_resources_live_keys") {
+		t.Fatalf("ListKeys is not a covering scan of idx_resources_live_keys; plan: %s", plan)
+	}
+	// A covering scan in index order needs no sort pass; a TEMP B-TREE in the plan
+	// means the ORDER BY stopped matching the index.
+	if strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("ListKeys plan sorts through a temp b-tree instead of reading in index order; plan: %s", plan)
+	}
+}
+
+// TestScopedRecallIndex is the query-plan gate for the agent-startup memory read:
+// scoped recall must be an index range scan of idx_memory_items_live_scope,
+// returning rows already in (created_at DESC, id DESC) order, never a full table
+// scan with a sort pass (memory_items previously had only its id primary key).
+func TestScopedRecallIndex(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	plan := explainPlan(ctx, t, s,
+		`SELECT `+memoryCols+` FROM memory_items m
+		 WHERE m.deleted = 0 AND m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?
+		 ORDER BY m.created_at DESC, m.id DESC LIMIT ?`,
+		"i", "p", "w", -1)
+	if !strings.Contains(plan, "USING INDEX idx_memory_items_live_scope") {
+		t.Fatalf("scoped recall does not use idx_memory_items_live_scope; plan: %s", plan)
+	}
+	if strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("scoped recall sorts through a temp b-tree instead of reading in index order; plan: %s", plan)
+	}
+}
+
+// TestSkillSlugIndex is the query-plan gate for the bare-slug skill lookup: the
+// slug fallback in Get must seek idx_skills_live_slug (slug had no index, so the
+// lookup was a table scan) and read its single row without a sort pass.
+func TestSkillSlugIndex(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	plan := explainPlan(ctx, t, s,
+		`SELECT `+skillCols+` FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`,
+		"a-slug")
+	if !strings.Contains(plan, "USING INDEX idx_skills_live_slug") {
+		t.Fatalf("slug lookup does not use idx_skills_live_slug; plan: %s", plan)
+	}
+	if strings.Contains(plan, "TEMP B-TREE") {
+		t.Fatalf("slug lookup sorts through a temp b-tree instead of reading in index order; plan: %s", plan)
+	}
+}
+
+// explainPlan runs EXPLAIN QUERY PLAN over query and joins the detail rows, the
+// shared harness of the plan-shape gates above.
+func explainPlan(ctx context.Context, t *testing.T, s *Store, query string, args ...any) string {
+	t.Helper()
+	rows, err := s.db.QueryContext(ctx, `EXPLAIN QUERY PLAN `+query, args...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,14 +104,5 @@ func TestListKeysCoveringIndex(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatal(err)
 	}
-
-	plan := strings.Join(details, "; ")
-	if !strings.Contains(plan, "USING COVERING INDEX idx_resources_live_keys") {
-		t.Fatalf("ListKeys is not a covering scan of idx_resources_live_keys; plan: %s", plan)
-	}
-	// A covering scan in index order needs no sort pass; a TEMP B-TREE in the plan
-	// means the ORDER BY stopped matching the index.
-	if strings.Contains(plan, "TEMP B-TREE") {
-		t.Fatalf("ListKeys plan sorts through a temp b-tree instead of reading in index order; plan: %s", plan)
-	}
+	return strings.Join(details, "; ")
 }

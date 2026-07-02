@@ -81,7 +81,14 @@ func WithIDGenerator(g *ids.Generator) Option {
 // memory) and exposes the event spine via Log(), all over one database and one
 // connection so cross-domain work shares a single file and transaction.
 type Store struct {
-	db         *sql.DB
+	db *sql.DB
+	// readDB is the read-only connection pool for a file database (nil for
+	// ":memory:", which lives inside its single write connection). Point reads
+	// and sweeps run here so they never queue behind the write connection's
+	// multi-statement transactions; WAL gives one writer plus N readers, and a
+	// lone connection would forgo the N. Readers see only committed state.
+	readDB     *sql.DB
+	stmts      stmts
 	clk        clock.Clock
 	hlc        *hlc.Clock
 	gen        *ids.Generator
@@ -108,7 +115,12 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1)}
+	readDB, err := sqlitex.OpenReadPool(dsn, 0)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s := &Store{db: db, readDB: readDB, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1)}
 	for _, o := range opts {
 		o(s)
 	}
@@ -117,7 +129,79 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	}
 	s.hlc = hlc.NewClock(hlc.WithPhysical(s.clk))
 	s.st = state.NewStamper(s.instanceID, s.clk, s.hlc, s.gen)
+	if err := s.prepare(ctx); err != nil {
+		_ = s.Close()
+		return nil, err
+	}
 	return s, nil
+}
+
+// reads is the handle read-only statements run on: the read pool for a file
+// database, the single write connection for ":memory:".
+func (s *Store) reads() *sql.DB {
+	if s.readDB != nil {
+		return s.readDB
+	}
+	return s.db
+}
+
+// stmts holds the hot statements, prepared once at Open. The pure-Go driver
+// compiles a statement on every ExecContext/QueryContext call; the point reads
+// and the event append below run on every control-loop turn, so each is prepared
+// once here and reused (database/sql re-prepares a Stmt per pooled connection
+// transparently, then caches it on that connection).
+type stmts struct {
+	// Write-connection statements, entered into each transaction with
+	// tx.StmtContext (a Tx only accepts statements prepared on its own DB).
+	eventInsert    *sql.Stmt // the folded assign-seq-and-insert
+	sessionGetTx   *sql.Stmt // AppendTurn's session lookup
+	turnsMaxSeq    *sql.Stmt // AppendTurn's per-session seq assignment
+	turnInsert     *sql.Stmt
+	sessionUpsert  *sql.Stmt
+	resourceKeyTx  *sql.Stmt // the CAS lookup on every resource Put/Delete
+	resourceUpsert *sql.Stmt // the projection write on every resource mutation
+	// Read-pool statements.
+	eventsRead   *sql.Stmt
+	sessionGet   *sql.Stmt
+	skillByID    *sql.Stmt
+	skillBySlug  *sql.Stmt
+	memoryRecall *sql.Stmt // the scoped, no-FTS recall shape (the agent-startup read)
+}
+
+// prepare compiles the hot statements. Read statements are prepared on reads()
+// so they run on the pool; the transaction-scoped statements are prepared on the
+// write connection and entered into each write transaction with tx.StmtContext.
+func (s *Store) prepare(ctx context.Context) error {
+	var err error
+	prep := func(dst **sql.Stmt, db *sql.DB, q string) {
+		if err != nil {
+			return
+		}
+		*dst, err = db.PrepareContext(ctx, q)
+	}
+	prep(&s.stmts.eventInsert, s.db, insertEventSQL)
+	prep(&s.stmts.sessionGetTx, s.db, sessionGetLiveSQL)
+	prep(&s.stmts.turnsMaxSeq, s.db,
+		`SELECT COALESCE(MAX(seq), 0) FROM turns WHERE session_id = ?`)
+	prep(&s.stmts.turnInsert, s.db, insertTurnSQL)
+	prep(&s.stmts.sessionUpsert, s.db, upsertSessionSQL)
+	prep(&s.stmts.resourceKeyTx, s.db, resourceByKeySQL)
+	prep(&s.stmts.resourceUpsert, s.db, upsertResourceSQL)
+	prep(&s.stmts.eventsRead, s.reads(),
+		`SELECT * FROM events WHERE stream = ? AND seq > ? ORDER BY seq LIMIT ?`)
+	prep(&s.stmts.sessionGet, s.reads(), sessionGetLiveSQL)
+	prep(&s.stmts.skillByID, s.reads(),
+		`SELECT `+skillCols+` FROM skills WHERE id = ? AND deleted = 0`)
+	prep(&s.stmts.skillBySlug, s.reads(),
+		`SELECT `+skillCols+` FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`)
+	prep(&s.stmts.memoryRecall, s.reads(),
+		`SELECT `+memoryCols+` FROM memory_items m
+		 WHERE m.deleted = 0 AND m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?
+		 ORDER BY m.created_at DESC, m.id DESC LIMIT ?`)
+	if err != nil {
+		return fmt.Errorf("sqlite: prepare: %w", err)
+	}
+	return nil
 }
 
 // Name identifies the backend ("sqlite").
@@ -138,13 +222,21 @@ func (s *Store) Skills() state.SkillStore { return &skills{s} }
 func (s *Store) Memory() state.MemoryStore { return &memory{s} }
 
 // Log returns the durable event spine backed by the same database, so events and
-// state share one file. The returned Log uses the Store's connection and clock and
-// is valid until the Store is closed.
-func (s *Store) Log() spine.Log { return &eventLog{db: s.db, clk: s.clk} }
+// state share one file. The returned Log uses the Store's connections and clock
+// and is valid until the Store is closed.
+func (s *Store) Log() spine.Log { return &eventLog{p: s} }
 
-// Close closes the underlying database, releasing both the state provider and the
-// event log.
-func (s *Store) Close() error { return s.db.Close() }
+// Close closes the underlying database (and the read pool of a file database),
+// releasing both the state provider and the event log.
+func (s *Store) Close() error {
+	err := s.db.Close()
+	if s.readDB != nil {
+		if rerr := s.readDB.Close(); err == nil {
+			err = rerr
+		}
+	}
+	return err
+}
 
 // commit runs the command path for one mutation: build stamps the record,
 // produces the event to append (doing any tx-scoped lookup it needs for CAS),
@@ -160,7 +252,7 @@ func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.Append
 		if err != nil {
 			return err
 		}
-		if _, _, _, err := insertEventTx(ctx, tx, s.clk, in); err != nil {
+		if _, _, _, err := insertEventTx(ctx, tx, s, in); err != nil {
 			return err
 		}
 		return project(tx)
@@ -198,7 +290,7 @@ func (s *Store) applyEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error
 		if err != nil {
 			return err
 		}
-		return upsertSessionRow(ctx, tx, ses)
+		return upsertSessionRow(ctx, tx, s, ses)
 	case state.EvTurnAppended:
 		t, err := state.DecodeTurn(e.Payload)
 		if err != nil {
@@ -208,10 +300,10 @@ func (s *Store) applyEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error
 		if err != nil {
 			return err
 		}
-		if err := insertTurnRow(ctx, tx, t); err != nil {
+		if err := insertTurnRow(ctx, tx, s, t); err != nil {
 			return err
 		}
-		return upsertSessionRow(ctx, tx, ses)
+		return upsertSessionRow(ctx, tx, s, ses)
 	case state.EvSkillUpserted, state.EvSkillDeleted:
 		sk, err := state.DecodeSkill(e.Payload)
 		if err != nil {
@@ -274,6 +366,11 @@ type sessions struct{ p *Store }
 const sessionCols = `id, title, model, created_at, updated_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
+// sessionGetLiveSQL is the live-session point read, prepared twice at Open: on
+// the read pool (Sessions().Get) and on the write connection (the tx-scoped
+// lookup in the turn/delete command paths).
+const sessionGetLiveSQL = `SELECT ` + sessionCols + ` FROM sessions WHERE id = ? AND deleted = 0`
+
 func scanSession(sc interface{ Scan(...any) error }) (state.Session, error) {
 	var (
 		s                state.Session
@@ -295,32 +392,34 @@ func scanSession(sc interface{ Scan(...any) error }) (state.Session, error) {
 // upsert rather than INSERT OR REPLACE: REPLACE would delete the existing row,
 // which the turns foreign key forbids once a session has turns. DO UPDATE mutates
 // the row in place, so the projection stays consistent and Rebuild is idempotent.
-func upsertSessionRow(ctx context.Context, tx *sql.Tx, ses state.Session) error {
-	_, err := tx.ExecContext(ctx,
-		`INSERT INTO sessions (`+sessionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(id) DO UPDATE SET
-			title=excluded.title, model=excluded.model,
-			created_at=excluded.created_at, updated_at=excluded.updated_at,
-			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
-			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
-			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
+const upsertSessionSQL = `INSERT INTO sessions (` + sessionCols + `) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(id) DO UPDATE SET
+		title=excluded.title, model=excluded.model,
+		created_at=excluded.created_at, updated_at=excluded.updated_at,
+		sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
+		updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
+		last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`
+
+func upsertSessionRow(ctx context.Context, tx *sql.Tx, p *Store, ses state.Session) error {
+	_, err := tx.StmtContext(ctx, p.stmts.sessionUpsert).ExecContext(ctx,
 		ses.ID, ses.Title, ses.Model, formatTime(ses.CreatedAt), formatTime(ses.UpdatedAt),
 		ses.SyncVersion, ses.OriginInstanceID, ses.UpdatedHLC.Wall, int64(ses.UpdatedHLC.Counter), ses.LastWriterID, boolToInt(ses.Deleted))
 	return err
 }
 
+const insertTurnSQL = `INSERT INTO turns (id, session_id, seq, role, content, created_at,
+		sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted)
+	VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+	ON CONFLICT(id) DO UPDATE SET
+		session_id=excluded.session_id, seq=excluded.seq, role=excluded.role, content=excluded.content,
+		created_at=excluded.created_at, sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
+		updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
+		last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`
+
 // insertTurnRow writes a turn post-image. Turns are append-only, but an upsert by
 // id keeps Rebuild idempotent (replaying the same event is a no-op write).
-func insertTurnRow(ctx context.Context, tx *sql.Tx, t state.Turn) error {
-	_, err := tx.ExecContext(ctx,
-		`INSERT INTO turns (id, session_id, seq, role, content, created_at,
-			sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
-		 ON CONFLICT(id) DO UPDATE SET
-			session_id=excluded.session_id, seq=excluded.seq, role=excluded.role, content=excluded.content,
-			created_at=excluded.created_at, sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
-			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
-			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
+func insertTurnRow(ctx context.Context, tx *sql.Tx, p *Store, t state.Turn) error {
+	_, err := tx.StmtContext(ctx, p.stmts.turnInsert).ExecContext(ctx,
 		t.ID, t.SessionID, t.Seq, t.Role, t.Content, formatTime(t.CreatedAt),
 		t.SyncVersion, t.OriginInstanceID, t.UpdatedHLC.Wall, int64(t.UpdatedHLC.Counter), t.LastWriterID, boolToInt(t.Deleted))
 	return err
@@ -331,7 +430,7 @@ func (s *sessions) Create(ctx context.Context, ses state.Session) (state.Session
 	err := s.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		r, ev, err := s.p.st.CreateSession(ses)
 		rec = r
-		return ev, func(tx *sql.Tx) error { return upsertSessionRow(ctx, tx, r) }, err
+		return ev, func(tx *sql.Tx) error { return upsertSessionRow(ctx, tx, s.p, r) }, err
 	})
 	if err != nil {
 		return state.Session{}, fmt.Errorf("sqlite: create session: %w", err)
@@ -340,7 +439,7 @@ func (s *sessions) Create(ctx context.Context, ses state.Session) (state.Session
 }
 
 func (s *sessions) Get(ctx context.Context, id string) (state.Session, error) {
-	row := s.p.db.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE id = ? AND deleted = 0`, id)
+	row := s.p.stmts.sessionGet.QueryRowContext(ctx, id)
 	ses, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state.Session{}, state.ErrNotFound
@@ -349,7 +448,7 @@ func (s *sessions) Get(ctx context.Context, id string) (state.Session, error) {
 }
 
 func (s *sessions) List(ctx context.Context) ([]state.Session, error) {
-	rows, err := s.p.db.QueryContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE deleted = 0 ORDER BY created_at, id`)
+	rows, err := s.p.reads().QueryContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE deleted = 0 ORDER BY created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -368,28 +467,28 @@ func (s *sessions) List(ctx context.Context) ([]state.Session, error) {
 func (s *sessions) AppendTurn(ctx context.Context, t state.Turn) (state.Turn, error) {
 	var rec state.Turn
 	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
-		ses, err := getSessionTx(ctx, tx, t.SessionID)
+		ses, err := getSessionTx(ctx, tx, s.p, t.SessionID)
 		if err != nil {
 			return spine.AppendInput{}, nil, err
 		}
 		var maxSeq int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM turns WHERE session_id = ?`, t.SessionID).Scan(&maxSeq); err != nil {
+		if err := tx.StmtContext(ctx, s.p.stmts.turnsMaxSeq).QueryRowContext(ctx, t.SessionID).Scan(&maxSeq); err != nil {
 			return spine.AppendInput{}, nil, err
 		}
 		r, bumped, ev, err := s.p.st.AppendTurn(ses, t, maxSeq+1)
 		rec = r
 		return ev, func(tx *sql.Tx) error {
-			if err := insertTurnRow(ctx, tx, r); err != nil {
+			if err := insertTurnRow(ctx, tx, s.p, r); err != nil {
 				return err
 			}
-			return upsertSessionRow(ctx, tx, bumped)
+			return upsertSessionRow(ctx, tx, s.p, bumped)
 		}, err
 	})
 	return rec, err
 }
 
 func (s *sessions) Turns(ctx context.Context, sessionID string) ([]state.Turn, error) {
-	rows, err := s.p.db.QueryContext(ctx,
+	rows, err := s.p.reads().QueryContext(ctx,
 		`SELECT id, session_id, seq, role, content, created_at,
 			sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted
 		 FROM turns WHERE session_id = ? AND deleted = 0 ORDER BY seq`, sessionID)
@@ -419,19 +518,19 @@ func (s *sessions) Turns(ctx context.Context, sessionID string) ([]state.Turn, e
 
 func (s *sessions) Delete(ctx context.Context, id string) error {
 	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
-		ses, err := getSessionTx(ctx, tx, id)
+		ses, err := getSessionTx(ctx, tx, s.p, id)
 		if err != nil {
 			return spine.AppendInput{}, nil, err
 		}
 		r, ev, err := s.p.st.DeleteSession(ses)
-		return ev, func(tx *sql.Tx) error { return upsertSessionRow(ctx, tx, r) }, err
+		return ev, func(tx *sql.Tx) error { return upsertSessionRow(ctx, tx, s.p, r) }, err
 	})
 }
 
 // getSessionTx loads a live session within tx (for the envelope it bumps), or
 // returns ErrNotFound if it is missing or tombstoned.
-func getSessionTx(ctx context.Context, tx *sql.Tx, id string) (state.Session, error) {
-	row := tx.QueryRowContext(ctx, `SELECT `+sessionCols+` FROM sessions WHERE id = ? AND deleted = 0`, id)
+func getSessionTx(ctx context.Context, tx *sql.Tx, p *Store, id string) (state.Session, error) {
+	row := tx.StmtContext(ctx, p.stmts.sessionGetTx).QueryRowContext(ctx, id)
 	ses, err := scanSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state.Session{}, state.ErrNotFound
@@ -507,7 +606,7 @@ func (s *skills) Upsert(ctx context.Context, sk state.Skill) (state.Skill, error
 }
 
 func (s *skills) Get(ctx context.Context, idOrSlug string) (state.Skill, error) {
-	row := s.p.db.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE id = ? AND deleted = 0`, idOrSlug)
+	row := s.p.stmts.skillByID.QueryRowContext(ctx, idOrSlug)
 	sk, err := scanSkill(row)
 	if err == nil {
 		return sk, nil
@@ -515,7 +614,7 @@ func (s *skills) Get(ctx context.Context, idOrSlug string) (state.Skill, error) 
 	if !errors.Is(err, sql.ErrNoRows) {
 		return state.Skill{}, err
 	}
-	row = s.p.db.QueryRowContext(ctx, `SELECT `+skillCols+` FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`, idOrSlug)
+	row = s.p.stmts.skillBySlug.QueryRowContext(ctx, idOrSlug)
 	sk, err = scanSkill(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return state.Skill{}, state.ErrNotFound
@@ -524,7 +623,7 @@ func (s *skills) Get(ctx context.Context, idOrSlug string) (state.Skill, error) 
 }
 
 func (s *skills) List(ctx context.Context, scope state.Scope) ([]state.Skill, error) {
-	rows, err := s.p.db.QueryContext(ctx,
+	rows, err := s.p.reads().QueryContext(ctx,
 		`SELECT `+skillCols+` FROM skills WHERE scope_instance = ? AND scope_project = ? AND scope_workspace = ? AND deleted = 0 ORDER BY slug`,
 		scope.Instance, scope.Project, scope.Workspace)
 	if err != nil {
@@ -545,9 +644,9 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 		sqlStr := `SELECT ` + skillCols + ` FROM skills WHERE deleted = 0 ORDER BY slug`
 		if limit > 0 {
 			sqlStr += ` LIMIT ?`
-			rows, err = s.p.db.QueryContext(ctx, sqlStr, limit)
+			rows, err = s.p.reads().QueryContext(ctx, sqlStr, limit)
 		} else {
-			rows, err = s.p.db.QueryContext(ctx, sqlStr)
+			rows, err = s.p.reads().QueryContext(ctx, sqlStr)
 		}
 	} else {
 		sqlStr := `SELECT s.id, s.slug, s.name, s.body, s.tags, s.uses, s.wins, s.check_cmd, s.scope_instance, s.scope_project, s.scope_workspace,
@@ -557,9 +656,9 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 			WHERE f.skills_fts MATCH ? AND s.deleted = 0 ORDER BY s.slug`
 		if limit > 0 {
 			sqlStr += ` LIMIT ?`
-			rows, err = s.p.db.QueryContext(ctx, sqlStr, ftsPhrase(q), limit)
+			rows, err = s.p.reads().QueryContext(ctx, sqlStr, ftsPhrase(q), limit)
 		} else {
-			rows, err = s.p.db.QueryContext(ctx, sqlStr, ftsPhrase(q))
+			rows, err = s.p.reads().QueryContext(ctx, sqlStr, ftsPhrase(q))
 		}
 	}
 	if err != nil {
@@ -734,6 +833,21 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	query := strings.TrimSpace(q.Query)
 	scoped := q.Scope != (state.Scope{})
 
+	// The scoped, no-FTS shape is the agent-startup read; it runs on the
+	// prepared statement (a non-positive Limit becomes SQLite's LIMIT -1, no
+	// limit, so both limit shapes share it).
+	if query == "" && scoped {
+		limit := q.Limit
+		if limit <= 0 {
+			limit = -1
+		}
+		rows, err := m.p.stmts.memoryRecall.QueryContext(ctx, q.Scope.Instance, q.Scope.Project, q.Scope.Workspace, limit)
+		if err != nil {
+			return nil, err
+		}
+		return collectMemory(rows)
+	}
+
 	var sb strings.Builder
 	args := make([]any, 0, 5)
 	if query == "" {
@@ -757,10 +871,15 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		args = append(args, q.Limit)
 	}
 
-	rows, err := m.p.db.QueryContext(ctx, sb.String(), args...)
+	rows, err := m.p.reads().QueryContext(ctx, sb.String(), args...)
 	if err != nil {
 		return nil, err
 	}
+	return collectMemory(rows)
+}
+
+// collectMemory drains rows into memory items, closing rows on every path.
+func collectMemory(rows *sql.Rows) ([]state.MemoryItem, error) {
 	defer func() { _ = rows.Close() }()
 	out := make([]state.MemoryItem, 0)
 	for rows.Next() {

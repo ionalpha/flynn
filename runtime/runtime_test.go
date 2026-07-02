@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -85,6 +86,22 @@ func TestResumeDrivesAnUnenqueuedGoal(t *testing.T) {
 type noopExec struct{}
 
 func (noopExec) Execute(context.Context, resource.Resource) (json.RawMessage, error) {
+	return nil, nil
+}
+
+// gatedExec completes one real step, then blocks every later step until its
+// context is cancelled, so a goal records progress but can never converge while
+// the gate holds. The restart test uses it to hold a goal mid-flight
+// deterministically (polling for "some but not all steps" is a race the loop
+// wins once reads stop queueing behind writes); the blocked step dies with the
+// run, exactly the crashed-mid-step shape resume exists for.
+type gatedExec struct{ stepped atomic.Bool }
+
+func (g *gatedExec) Execute(ctx context.Context, _ resource.Resource) (json.RawMessage, error) {
+	if g.stepped.Swap(true) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	return nil, nil
 }
 
@@ -255,7 +272,7 @@ func TestRuntimeResumesAcrossRestart(t *testing.T) {
 	reg1 := newReg()
 	rt1, err := New(Config{
 		Store: s1.Resources(reg1), Jobs: s1.Jobs(),
-		Executor: noopExec{}, Stop: stopAfter{at: target},
+		Executor: &gatedExec{}, Stop: stopAfter{at: target},
 		PollInterval: 20 * time.Millisecond, WorkerPoll: 10 * time.Millisecond, WorkerLease: 100 * time.Millisecond,
 	})
 	if err != nil {
