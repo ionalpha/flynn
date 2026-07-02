@@ -14,7 +14,7 @@ import (
 // stops, not an expected contention level.
 const maxConflictRetries = 1000
 
-// ErrSkipUpdate, returned by an Update mutate function, ends the retry loop
+// ErrSkipUpdate is returned by an Update mutate function to end the retry loop
 // without writing: the state the mutation observed makes the write unnecessary
 // (a park already cleared, a limit already exceeded). Update returns the
 // resource as read and a nil error.
