@@ -65,3 +65,35 @@ func TestAllocCeilingMemoryPut(t *testing.T) {
 		}
 	})
 }
+
+// listAllocs runs List over a store with a fixed live set and the given
+// tombstone backlog, reporting allocations per call.
+func listAllocs(t *testing.T, tombstones int) float64 {
+	t.Helper()
+	ctx := context.Background()
+	store := tombstoneStore(t, 100, tombstones)
+	defer func() { _ = store.Close() }()
+	return testing.AllocsPerRun(50, func() {
+		out, err := store.List(ctx, "Gadget", resource.Scope{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(out) != 100 {
+			t.Fatalf("got %d live resources", len(out))
+		}
+	})
+}
+
+// TestAllocCeilingListFlatInTombstoneBacklog pins the read-side guarantee: a
+// tombstone leaves the live index when it projects, so List over a fixed live
+// set costs the same with 100 tombstones retained as with 10,000.
+func TestAllocCeilingListFlatInTombstoneBacklog(t *testing.T) {
+	small := listAllocs(t, 100)
+	large := listAllocs(t, 10_000)
+	if small != large {
+		t.Errorf("List allocates %.0f/op with 100 tombstones but %.0f/op with 10000: list cost is scaling with the tombstone backlog", small, large)
+	}
+	if large > 8 {
+		t.Errorf("List allocates %.0f/op, over the 8 ceiling: a read-path regression (or lower the ceiling if the cost legitimately dropped)", large)
+	}
+}

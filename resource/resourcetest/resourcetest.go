@@ -79,6 +79,47 @@ func RunSuite(t *testing.T, newStore func(reg *resource.Registry) resource.Store
 	t.Run("Merge", func(t *testing.T) { testMerge(t, newStore) })
 	t.Run("MergeConverges", func(t *testing.T) { testMergeConverges(t, newStore) })
 	t.Run("MergeValidation", func(t *testing.T) { testMergeValidation(t, newStore) })
+	t.Run("ListKeys", func(t *testing.T) { testListKeys(t, newStore) })
+}
+
+// testListKeys holds the optional KeyLister capability to its contract: the keys
+// of every live resource of the kind, ordered by scope then name, agreeing with
+// ListAll, tombstones excluded. A store without the capability skips.
+func testListKeys(t *testing.T, newStore func(*resource.Registry) resource.Store) {
+	ctx := context.Background()
+	s := newStore(NewRegistry(t))
+	defer func() { _ = s.Close() }()
+	kl, ok := s.(resource.KeyLister)
+	if !ok {
+		t.Skip("store does not implement resource.KeyLister")
+	}
+
+	mustPut(t, s, widget("a", "s", nil))
+	mustPut(t, s, resource.Resource{APIVersion: widgetAPIVersion, Kind: widgetKind, Name: "a", Scope: resource.Scope{Project: "p"}, Spec: json.RawMessage(`{"size":"m"}`)})
+	mustPut(t, s, resource.Resource{APIVersion: widgetAPIVersion, Kind: widgetKind, Name: "b", Scope: resource.Scope{Project: "p", Workspace: "w"}, Spec: json.RawMessage(`{"size":"l"}`)})
+	if err := s.Delete(ctx, widgetKind, resource.Scope{Project: "p"}, "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := kl.ListKeys(ctx, widgetKind)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all, err := s.ListAll(ctx, widgetKind, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != len(all) {
+		t.Fatalf("ListKeys = %d keys, ListAll = %d live resources; a tombstone leaked or a live record is missing", len(keys), len(all))
+	}
+	for i := range all {
+		if keys[i] != all[i].Key() {
+			t.Fatalf("ListKeys[%d] = %+v, want %+v (must agree with ListAll's order)", i, keys[i], all[i].Key())
+		}
+	}
+	if none, err := kl.ListKeys(ctx, "NoSuchKind"); err != nil || len(none) != 0 {
+		t.Fatalf("ListKeys of an unknown kind = (%d, %v), want empty", len(none), err)
+	}
 }
 
 // remoteWidget builds a Widget as it would arrive replicated from another

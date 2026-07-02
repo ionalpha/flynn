@@ -155,8 +155,8 @@ func (s *memStore) Merge(ctx context.Context, remote Resource) (MergeResult, err
 
 func (s *memStore) Get(_ context.Context, kind string, scope Scope, name string) (Resource, error) {
 	c := s.core
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	id, ok := c.nameIndex[Key{Kind: kind, Scope: scope, Name: name}]
 	if !ok {
 		return Resource{}, ErrNotFound
@@ -170,8 +170,8 @@ func (s *memStore) Get(_ context.Context, kind string, scope Scope, name string)
 
 func (s *memStore) GetByID(_ context.Context, id string) (Resource, error) {
 	c := s.core
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
 	r, ok := c.byID[id]
 	if !ok || r.Deleted {
 		return Resource{}, ErrNotFound
@@ -181,18 +181,20 @@ func (s *memStore) GetByID(_ context.Context, id string) (Resource, error) {
 
 func (s *memStore) List(_ context.Context, kind string, scope Scope, sel Selector) ([]Resource, error) {
 	c := s.core
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	out := make([]Resource, 0)
-	for _, r := range c.byID {
-		if r.Deleted || r.Kind != kind || r.Scope != scope {
-			continue
-		}
+	// Collect matches under the read lock via the live index (only candidates of
+	// this kind and scope are visited, never tombstones), then sort outside it so
+	// the lock is held for the copy alone.
+	c.mu.RLock()
+	ids := c.live[kind][scope]
+	out := make([]Resource, 0, len(ids))
+	for id := range ids {
+		r := c.byID[id]
 		if !sel.Matches(r.Labels) {
 			continue
 		}
 		out = append(out, r)
 	}
+	c.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Name != out[j].Name {
 			return out[i].Name < out[j].Name
@@ -204,19 +206,36 @@ func (s *memStore) List(_ context.Context, kind string, scope Scope, sel Selecto
 
 func (s *memStore) ListAll(_ context.Context, kind string, sel Selector) ([]Resource, error) {
 	c := s.core
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
 	out := make([]Resource, 0)
-	for _, r := range c.byID {
-		if r.Deleted || r.Kind != kind {
-			continue
+	for _, ids := range c.live[kind] {
+		for id := range ids {
+			r := c.byID[id]
+			if !sel.Matches(r.Labels) {
+				continue
+			}
+			out = append(out, r)
 		}
-		if !sel.Matches(r.Labels) {
-			continue
-		}
-		out = append(out, r)
 	}
+	c.mu.RUnlock()
 	sort.Slice(out, func(i, j int) bool { return lessByScopeName(out[i], out[j]) })
+	return out, nil
+}
+
+// ListKeys is the KeyLister capability: the keys of every live resource of a
+// kind, straight from the live index, so a resync sweep copies addresses rather
+// than records.
+func (s *memStore) ListKeys(_ context.Context, kind string) ([]Key, error) {
+	c := s.core
+	c.mu.RLock()
+	var out []Key
+	for scope, ids := range c.live[kind] {
+		for id := range ids {
+			out = append(out, Key{Kind: kind, Scope: scope, Name: c.byID[id].Name})
+		}
+	}
+	c.mu.RUnlock()
+	sort.Slice(out, func(i, j int) bool { return lessKey(out[i], out[j]) })
 	return out, nil
 }
 
@@ -240,6 +259,21 @@ func (s *memStore) Delete(ctx context.Context, kind string, scope Scope, name st
 		return err
 	}
 	return c.record(ctx, ev)
+}
+
+// lessKey is the total order ListKeys returns: by scope (instance, project,
+// workspace), then name, mirroring lessByScopeName without a record in hand.
+func lessKey(a, b Key) bool {
+	if a.Scope.Instance != b.Scope.Instance {
+		return a.Scope.Instance < b.Scope.Instance
+	}
+	if a.Scope.Project != b.Scope.Project {
+		return a.Scope.Project < b.Scope.Project
+	}
+	if a.Scope.Workspace != b.Scope.Workspace {
+		return a.Scope.Workspace < b.Scope.Workspace
+	}
+	return a.Name < b.Name
 }
 
 // lessByScopeName is the total order ListAll returns: by scope (instance, project,
@@ -269,14 +303,26 @@ type core struct {
 	st  *Stamper
 	log spine.Log
 
-	mu        sync.Mutex
+	mu        sync.RWMutex
 	lastSeq   int64
 	byID      map[string]Resource
 	nameIndex map[Key]string // (kind, scope, name) -> id, tombstones included
+	// live indexes the ids of live (non-tombstoned) resources by kind and scope, so
+	// List and ListAll visit only candidates instead of scanning every record ever
+	// written. A tombstone leaves this index the moment it projects but stays in
+	// byID: Merge still resolves a late remote write against the deletion by HLC,
+	// and a snapshot still carries the tombstone, so eviction here changes only the
+	// scan cost, never a read's result.
+	live map[string]map[Scope]map[string]struct{}
 }
 
 func newCore(st *Stamper, log spine.Log) *core {
-	return &core{st: st, log: log, byID: map[string]Resource{}, nameIndex: map[Key]string{}}
+	return &core{
+		st: st, log: log,
+		byID:      map[string]Resource{},
+		nameIndex: map[Key]string{},
+		live:      map[string]map[Scope]map[string]struct{}{},
+	}
 }
 
 // recordMerge appends a merge event carrying r verbatim and projects it, so a
@@ -329,6 +375,46 @@ func (c *core) apply(e spine.Event) error {
 func (c *core) project(r Resource) {
 	c.byID[r.ID] = r
 	c.nameIndex[r.Key()] = r.ID
+	if r.Deleted {
+		c.unindexLive(r.Kind, r.Scope, r.ID)
+		return
+	}
+	c.indexLive(r.Kind, r.Scope, r.ID)
+}
+
+// indexLive adds an id to the live index under (kind, scope). Callers hold mu.
+func (c *core) indexLive(kind string, scope Scope, id string) {
+	scopes, ok := c.live[kind]
+	if !ok {
+		scopes = map[Scope]map[string]struct{}{}
+		c.live[kind] = scopes
+	}
+	ids, ok := scopes[scope]
+	if !ok {
+		ids = map[string]struct{}{}
+		scopes[scope] = ids
+	}
+	ids[id] = struct{}{}
+}
+
+// unindexLive drops an id from the live index, pruning emptied inner maps so a
+// churn of short-lived scopes cannot grow the index forever. Callers hold mu.
+func (c *core) unindexLive(kind string, scope Scope, id string) {
+	scopes, ok := c.live[kind]
+	if !ok {
+		return
+	}
+	ids, ok := scopes[scope]
+	if !ok {
+		return
+	}
+	delete(ids, id)
+	if len(ids) == 0 {
+		delete(scopes, scope)
+		if len(scopes) == 0 {
+			delete(c.live, kind)
+		}
+	}
 }
 
 // Replay reconstructs an in-memory Store by folding a log's resource stream: the
@@ -377,13 +463,13 @@ type snapshotPayload struct {
 // spine.Snapshot on the resource stream, anchored at the last applied Seq, so a
 // later Replay resumes from it. It keeps rebuild cost flat as the stream grows.
 func (s *memStore) Snapshot(ctx context.Context) error {
-	s.core.mu.Lock()
+	s.core.mu.RLock()
 	resources := make([]Resource, 0, len(s.core.byID))
 	for _, r := range s.core.byID {
 		resources = append(resources, r)
 	}
 	lastSeq := s.core.lastSeq
-	s.core.mu.Unlock()
+	s.core.mu.RUnlock()
 
 	b, err := MarshalSnapshot(resources, lastSeq)
 	if err != nil {
@@ -411,9 +497,9 @@ func (c *core) restore(payload []byte) error {
 	}
 	c.byID = make(map[string]Resource, len(pay.Resources))
 	c.nameIndex = make(map[Key]string, len(pay.Resources))
+	c.live = map[string]map[Scope]map[string]struct{}{}
 	for _, r := range pay.Resources {
-		c.byID[r.ID] = r
-		c.nameIndex[r.Key()] = r.ID
+		c.project(r)
 	}
 	c.lastSeq = pay.LastSeq
 	return nil

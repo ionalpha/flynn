@@ -200,6 +200,30 @@ func (s *resourceStore) ListAll(ctx context.Context, kind string, sel resource.S
 	return out, rows.Err()
 }
 
+// ListKeys is the resource.KeyLister capability: the keys of every live resource
+// of a kind, reading only the address columns so a resync sweep never decodes
+// record payloads.
+func (s *resourceStore) ListKeys(ctx context.Context, kind string) ([]resource.Key, error) {
+	rows, err := s.p.db.QueryContext(ctx,
+		`SELECT scope_instance, scope_project, scope_workspace, name FROM resources
+		 WHERE kind = ? AND deleted = 0
+		 ORDER BY scope_instance, scope_project, scope_workspace, name`,
+		kind)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []resource.Key
+	for rows.Next() {
+		k := resource.Key{Kind: kind}
+		if err := rows.Scan(&k.Scope.Instance, &k.Scope.Project, &k.Scope.Workspace, &k.Name); err != nil {
+			return nil, err
+		}
+		out = append(out, k)
+	}
+	return out, rows.Err()
+}
+
 // errAlreadyTerminating is an internal sentinel: deleting a resource that already
 // has a DeletionTimestamp is an idempotent no-op, so the command path rolls back
 // (writes nothing) and Delete reports success.

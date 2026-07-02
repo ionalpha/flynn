@@ -80,6 +80,36 @@ func TestManagerInitialResyncReconcilesExisting(t *testing.T) {
 	}
 }
 
+// listOnlyStore hides the KeyLister capability of the wrapped store, so the
+// manager's ListAll fallback stays covered even though both bundled backends
+// offer key-only reads.
+type listOnlyStore struct{ resource.Store }
+
+// TestManagerResyncWithoutKeyLister proves resync converges through the ListAll
+// fallback when the store offers no key-only read.
+func TestManagerResyncWithoutKeyLister(t *testing.T) {
+	m := clock.NewManual(epoch())
+	store := newStore(t, m)
+	putTask(t, store, "a")
+	putTask(t, store, "b")
+
+	reconciled := make(chan Ref, 16)
+	mgr := NewManager(listOnlyStore{store}, WithClock(m), WithResync(0))
+	mgr.Register(taskKind, ReconcilerFunc[Ref](func(_ context.Context, ref Ref) (Result, error) {
+		reconciled <- ref
+		return Result{}, nil
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go mgr.Start(ctx)
+
+	got := collect(t, reconciled, 2)
+	if !got["a"] || !got["b"] {
+		t.Fatalf("fallback resync reconciled %v, want a and b", got)
+	}
+}
+
 // TestManagerWithoutResyncIgnoresExisting is the controlled-resume guarantee: a
 // manager built WithoutResync drives only explicitly-enqueued work and never adopts
 // a resource it finds already in the store, so a one-shot run does not resume a goal

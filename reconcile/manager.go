@@ -140,10 +140,23 @@ func (m *Manager) resyncLoop(ctx context.Context) {
 	}
 }
 
-// resyncAll re-enqueues every live resource of each registered kind. List errors
-// are skipped: the next resync retries, and Enqueue hints still flow.
+// resyncAll re-enqueues every live resource of each registered kind. A resync
+// needs addresses, not records, so it reads keys only when the store offers the
+// KeyLister capability and falls back to ListAll otherwise. List errors are
+// skipped: the next resync retries, and Enqueue hints still flow.
 func (m *Manager) resyncAll(ctx context.Context) {
+	kl, _ := m.store.(resource.KeyLister)
 	for kind, c := range m.controllers {
+		if kl != nil {
+			keys, err := kl.ListKeys(ctx, kind)
+			if err != nil {
+				continue
+			}
+			for _, k := range keys {
+				c.Queue().Add(k)
+			}
+			continue
+		}
 		resources, err := m.store.ListAll(ctx, kind, nil)
 		if err != nil {
 			continue

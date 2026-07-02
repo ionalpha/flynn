@@ -115,3 +115,101 @@ func BenchmarkMemoryList(b *testing.B) {
 		}
 	}
 }
+
+// tombstoneStore builds a store with a fixed live set and a given number of
+// tombstoned records of the same kind and scope, the shape a long-lived control
+// plane converges to: reads must cost the live set, never the graveyard.
+func tombstoneStore(tb testing.TB, live, tombstones int) resource.Store {
+	tb.Helper()
+	ctx := context.Background()
+	store := resource.NewMemory(benchRegistry())
+	for i := range live {
+		if _, err := store.Put(ctx, benchResource(fmt.Sprintf("live-%05d", i))); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	for i := range tombstones {
+		name := fmt.Sprintf("dead-%05d", i)
+		if _, err := store.Put(ctx, benchResource(name)); err != nil {
+			tb.Fatal(err)
+		}
+		if err := store.Delete(ctx, "Gadget", resource.Scope{}, name); err != nil {
+			tb.Fatal(err)
+		}
+	}
+	return store
+}
+
+// BenchmarkListTombstones holds the live set fixed while the tombstone count
+// grows: List must stay flat because a tombstone leaves the live index the
+// moment it projects.
+func BenchmarkListTombstones(b *testing.B) {
+	ctx := context.Background()
+	for _, tombstones := range []int{100, 10_000, 100_000} {
+		b.Run(fmt.Sprintf("tombstones=%d", tombstones), func(b *testing.B) {
+			store := tombstoneStore(b, 100, tombstones)
+			defer func() { _ = store.Close() }()
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				out, err := store.List(ctx, "Gadget", resource.Scope{}, nil)
+				if err != nil {
+					b.Fatal(err)
+				}
+				if len(out) != 100 {
+					b.Fatalf("got %d live resources", len(out))
+				}
+			}
+		})
+	}
+}
+
+// BenchmarkGetDuringListAll measures Get latency while a resync-shaped ListAll
+// churns concurrently: with the read-write lock, point reads proceed alongside
+// the sweep instead of queueing behind it.
+func BenchmarkGetDuringListAll(b *testing.B) {
+	ctx := context.Background()
+	store := tombstoneStore(b, 1000, 1000)
+	defer func() { _ = store.Close() }()
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				if _, err := store.ListAll(ctx, "Gadget", nil); err != nil {
+					return
+				}
+			}
+		}
+	}()
+	defer close(stop)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		if _, err := store.Get(ctx, "Gadget", resource.Scope{}, "live-00042"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkListKeys prices the key-only resync read against ListAll on the same
+// population: addresses only, no record copies.
+func BenchmarkListKeys(b *testing.B) {
+	ctx := context.Background()
+	store := tombstoneStore(b, 1000, 1000)
+	defer func() { _ = store.Close() }()
+	kl := store.(resource.KeyLister)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for b.Loop() {
+		keys, err := kl.ListKeys(ctx, "Gadget")
+		if err != nil {
+			b.Fatal(err)
+		}
+		if len(keys) != 1000 {
+			b.Fatalf("got %d keys", len(keys))
+		}
+	}
+}

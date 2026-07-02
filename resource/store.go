@@ -80,6 +80,15 @@ type Store interface {
 	Close() error
 }
 
+// KeyLister is an optional Store capability: a key-only listing of every live
+// resource of a kind, ordered by scope then name. Callers that need addresses
+// rather than records (the reconcile resync, which only enqueues keys) read
+// through it when the backend offers it, so a periodic sweep does not copy
+// every record of the kind. Both bundled backends implement it.
+type KeyLister interface {
+	ListKeys(ctx context.Context, kind string) ([]Key, error)
+}
+
 // OwnerGone reports whether r's controller owner no longer exists or is itself
 // terminating, which makes r an orphan a garbage collector should reap so an
 // owner's deletion cascades to the subtree it created. A resource with no
