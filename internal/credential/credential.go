@@ -169,11 +169,8 @@ func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 
 // DecodeSpec reads the typed spec from a resource.
 func DecodeSpec(r resource.Resource) (Spec, error) {
-	var s Spec
-	if len(r.Spec) == 0 {
-		return s, nil
-	}
-	if err := json.Unmarshal(r.Spec, &s); err != nil {
+	s, err := resource.DecodeSpec[Spec](r)
+	if err != nil {
 		return Spec{}, fmt.Errorf("credential: decode spec: %w", err)
 	}
 	return s, nil
@@ -181,11 +178,8 @@ func DecodeSpec(r resource.Resource) (Spec, error) {
 
 // DecodeStatus reads the typed status from a resource.
 func DecodeStatus(r resource.Resource) (Status, error) {
-	var s Status
-	if len(r.Status) == 0 {
-		return s, nil
-	}
-	if err := json.Unmarshal(r.Status, &s); err != nil {
+	s, err := resource.DecodeStatus[Status](r)
+	if err != nil {
 		return Status{}, fmt.Errorf("credential: decode status: %w", err)
 	}
 	return s, nil

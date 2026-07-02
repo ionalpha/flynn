@@ -176,11 +176,9 @@ func toResource(m state.MemoryItem) (resource.Resource, error) {
 // toItem maps a Memory resource back to the typed memory item. The shared envelope
 // fields carry across so provenance and sync behave like every other kind.
 func toItem(r resource.Resource) (state.MemoryItem, error) {
-	var sp spec
-	if len(r.Spec) > 0 {
-		if err := json.Unmarshal(r.Spec, &sp); err != nil {
-			return state.MemoryItem{}, fmt.Errorf("memory: decode spec: %w", err)
-		}
+	sp, err := resource.DecodeSpec[spec](r)
+	if err != nil {
+		return state.MemoryItem{}, fmt.Errorf("memory: decode spec: %w", err)
 	}
 	return state.MemoryItem{
 		ID:        r.ID,

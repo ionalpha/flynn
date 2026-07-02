@@ -107,14 +107,8 @@ type Status struct {
 	Message    string      `json:"message,omitempty"`
 }
 
-// Condition is one standard status condition.
-type Condition struct {
-	Type               string    `json:"type"`
-	Status             string    `json:"status"` // "True" | "False" | "Unknown"
-	Reason             string    `json:"reason,omitempty"`
-	Message            string    `json:"message,omitempty"`
-	LastTransitionTime time.Time `json:"lastTransitionTime"`
-}
+// Condition is one standard status condition (the shared resource.Condition).
+type Condition = resource.Condition
 
 // RegisterKind registers the Entry kind so entries can be stored and admitted
 // like any other resource.
@@ -129,41 +123,16 @@ func RegisterKind(reg *resource.Registry) error {
 }
 
 // DecodeSpec reads the typed spec from a resource.
-func DecodeSpec(r resource.Resource) (Spec, error) {
-	var s Spec
-	if len(r.Spec) == 0 {
-		return s, nil
-	}
-	return s, json.Unmarshal(r.Spec, &s)
-}
+func DecodeSpec(r resource.Resource) (Spec, error) { return resource.DecodeSpec[Spec](r) }
 
 // DecodeStatus reads the typed status from a resource.
-func DecodeStatus(r resource.Resource) (Status, error) {
-	var s Status
-	if len(r.Status) == 0 {
-		return s, nil
-	}
-	return s, json.Unmarshal(r.Status, &s)
-}
+func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeStatus[Status](r) }
 
 // Encode marshals the status for writing back onto a resource.
-func (s Status) Encode() (json.RawMessage, error) { return json.Marshal(s) }
+func (s Status) Encode() (json.RawMessage, error) { return resource.EncodeStatus(s) }
 
 // SetCondition upserts c by type, stamping LastTransitionTime only when the status
 // value actually changes, so a no-op reconcile does not churn the time.
 func (s *Status) SetCondition(c Condition, now time.Time) {
-	for i := range s.Conditions {
-		if s.Conditions[i].Type != c.Type {
-			continue
-		}
-		if s.Conditions[i].Status == c.Status {
-			c.LastTransitionTime = s.Conditions[i].LastTransitionTime
-		} else {
-			c.LastTransitionTime = now
-		}
-		s.Conditions[i] = c
-		return
-	}
-	c.LastTransitionTime = now
-	s.Conditions = append(s.Conditions, c)
+	s.Conditions = resource.SetCondition(s.Conditions, c, now)
 }

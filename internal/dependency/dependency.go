@@ -125,11 +125,8 @@ func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 
 // DecodeSpec reads the typed spec from a resource.
 func DecodeSpec(r resource.Resource) (Spec, error) {
-	var s Spec
-	if len(r.Spec) == 0 {
-		return s, nil
-	}
-	if err := json.Unmarshal(r.Spec, &s); err != nil {
+	s, err := resource.DecodeSpec[Spec](r)
+	if err != nil {
 		return Spec{}, fmt.Errorf("dependency: decode spec: %w", err)
 	}
 	return s, nil

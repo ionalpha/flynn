@@ -125,22 +125,10 @@ func RegisterKind(reg *resource.Registry) error {
 }
 
 // DecodeSpec reads the typed spec from a resource.
-func DecodeSpec(r resource.Resource) (Spec, error) {
-	var s Spec
-	if len(r.Spec) == 0 {
-		return s, nil
-	}
-	return s, json.Unmarshal(r.Spec, &s)
-}
+func DecodeSpec(r resource.Resource) (Spec, error) { return resource.DecodeSpec[Spec](r) }
 
 // DecodeStatus reads the typed status from a resource.
-func DecodeStatus(r resource.Resource) (Status, error) {
-	var s Status
-	if len(r.Status) == 0 {
-		return s, nil
-	}
-	return s, json.Unmarshal(r.Status, &s)
-}
+func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeStatus[Status](r) }
 
 // Encode marshals the status for writing back onto a resource.
-func (s Status) Encode() (json.RawMessage, error) { return json.Marshal(s) }
+func (s Status) Encode() (json.RawMessage, error) { return resource.EncodeStatus(s) }

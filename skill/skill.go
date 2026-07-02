@@ -205,11 +205,9 @@ func toResource(sk state.Skill) (resource.Resource, error) {
 // toSkill maps a Skill resource back to the typed skill. The resource's content
 // Version is the skill's revision, and the shared envelope fields carry across.
 func toSkill(r resource.Resource) (state.Skill, error) {
-	var sp spec
-	if len(r.Spec) > 0 {
-		if err := json.Unmarshal(r.Spec, &sp); err != nil {
-			return state.Skill{}, fmt.Errorf("skill: decode spec: %w", err)
-		}
+	sp, err := resource.DecodeSpec[spec](r)
+	if err != nil {
+		return state.Skill{}, fmt.Errorf("skill: decode spec: %w", err)
 	}
 	return state.Skill{
 		ID:        r.ID,
