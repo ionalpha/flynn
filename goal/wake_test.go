@@ -45,8 +45,8 @@ func TestRunWakesOnEnqueue(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.After(5 * time.Second)
+	for {
 		got, err := q.Get(ctx, j.ID)
 		if err != nil && !errors.Is(err, jobs.ErrNotFound) {
 			t.Fatal(err)
@@ -54,7 +54,10 @@ func TestRunWakesOnEnqueue(t *testing.T) {
 		if got.State == jobs.StateDone {
 			return // claimed and completed long before any poll tick
 		}
-		time.Sleep(time.Millisecond)
+		select {
+		case <-deadline:
+			t.Fatal("enqueued step not claimed within 5s: the worker slept through the enqueue signal (poll interval is 1h)")
+		case <-time.After(time.Millisecond):
+		}
 	}
-	t.Fatal("enqueued step not claimed within 5s: the worker slept through the enqueue signal (poll interval is 1h)")
 }
