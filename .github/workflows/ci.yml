@@ -78,6 +78,22 @@ jobs:
           cache: true
       - run: ./dev/vuln
 
+  # The performance gate: allocation-ceiling tests and the curated hot-path
+  # benchmarks, run without the race detector (the test matrix runs -race, whose
+  # instrumentation skews allocation counts, so the ceilings are !race-tagged
+  # and only this job exercises them). The short -benchtime keeps it a smoke: it
+  # proves the benchmarks run and the ceilings hold, not stable timings.
+  bench:
+    name: Bench smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25"
+          cache: true
+      - run: BENCHTIME=100x ./dev/bench
+
   fuzz:
     name: Fuzz smoke
     runs-on: ubuntu-latest
@@ -124,7 +140,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [test, lint, vuln, pr-body]
+    needs: [test, lint, vuln, bench, pr-body]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded

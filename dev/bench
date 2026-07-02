@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+# The performance gate: allocation-ceiling tests plus the curated hot-path
+# benchmarks, both WITHOUT the race detector (its instrumentation skews
+# allocation counts and timings, which is why dev/test cannot run them).
+# dev/test is the correctness gate; this is its performance sibling.
+# With no args, runs the curated set; pass package patterns to scope.
+# BENCHTIME overrides -benchtime (CI uses 100x for a fast smoke).
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+if [ "$#" -eq 0 ]; then set -- ./chain/... ./resource/... ./storage/sqlite/...; fi
+echo "==> go test -run TestAllocCeiling -count=1 $*"
+go test -run TestAllocCeiling -count=1 "$@"
+echo "==> go test -run=^\$ -bench=. -benchmem ${BENCHTIME:+-benchtime=$BENCHTIME} $*"
+go test -run="^\$" -bench=. -benchmem ${BENCHTIME:+-benchtime=$BENCHTIME} "$@"

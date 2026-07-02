@@ -1,6 +1,8 @@
 // Package rigor enforces the project's engineering-rigor floor as a test rather
 // than a hope: every production package must carry a property test (rapid or the
-// testkit harness), and a declared set must carry a fuzz target. Because the gate
+// testkit harness), a declared set must carry a fuzz target, and a declared set
+// must carry a benchmark (so a hot path, once measured, can never silently lose
+// its measurement). Because the gate
 // is an ordinary Go test (see rigor_test.go), it runs inside dev/test, dev/check,
 // and the CI test matrix with no extra wiring, so a package added without its
 // required tests turns `go test ./...` red locally and in CI.
@@ -39,6 +41,12 @@ type Policy struct {
 	// FuzzRequired lists module-relative packages that parse untrusted input and so
 	// must carry a fuzz target.
 	FuzzRequired map[string]bool
+	// BenchRequired lists module-relative packages on the hot path (the write
+	// path, the canonical codec, the durable store) that must carry a benchmark,
+	// so dev/bench and the CI bench smoke always have something to measure and a
+	// regression gate cannot be deleted along with its benchmark. Grow it as
+	// hotspots gain benchmarks; never shrink it.
+	BenchRequired map[string]bool
 }
 
 // DefaultPolicy is the policy the live gate enforces. The empty string is the
@@ -64,6 +72,11 @@ func DefaultPolicy() Policy {
 			"internal/tui/input":    true,
 			"internal/tui/mdstream": true,
 			"internal/tui/theme":    true,
+		},
+		BenchRequired: map[string]bool{
+			"chain":          true,
+			"resource":       true,
+			"storage/sqlite": true,
 		},
 	}
 }
@@ -124,13 +137,23 @@ func Check(root, modulePath string, pol Policy) ([]Violation, error) {
 			vs = append(vs, Violation{label, "now has a property test: remove it from the rigor grandfather allowlist (the list only shrinks)"})
 		}
 
+		testFiles := append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...)
 		if pol.FuzzRequired[rel] {
-			ok, ferr := hasFuzzTarget(p, append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...))
+			ok, ferr := hasFuncPrefix(p, testFiles, "Fuzz")
 			if ferr != nil {
 				return ferr
 			}
 			if !ok {
 				vs = append(vs, Violation{label, "missing a fuzz target: declare a func FuzzXxx(*testing.F)"})
+			}
+		}
+		if pol.BenchRequired[rel] {
+			ok, berr := hasFuncPrefix(p, testFiles, "Benchmark")
+			if berr != nil {
+				return berr
+			}
+			if !ok {
+				vs = append(vs, Violation{label, "missing a benchmark: declare a func BenchmarkXxx(*testing.B)"})
 			}
 		}
 		return nil
@@ -183,9 +206,11 @@ func importsAny(imports []string, want ...string) bool {
 	return false
 }
 
-// hasFuzzTarget reports whether any of the given test files in dir declares a
-// top-level fuzz target: func FuzzXxx(f *testing.F).
-func hasFuzzTarget(dir string, testFiles []string) (bool, error) {
+// hasFuncPrefix reports whether any of the given test files in dir declares a
+// top-level single-parameter function whose name has the prefix: "Fuzz" finds a
+// fuzz target (func FuzzXxx(*testing.F)), "Benchmark" a benchmark
+// (func BenchmarkXxx(*testing.B)).
+func hasFuncPrefix(dir string, testFiles []string, prefix string) (bool, error) {
 	fset := token.NewFileSet()
 	for _, name := range testFiles {
 		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
@@ -197,7 +222,7 @@ func hasFuzzTarget(dir string, testFiles []string) (bool, error) {
 			if !ok || fn.Recv != nil {
 				continue
 			}
-			if strings.HasPrefix(fn.Name.Name, "Fuzz") && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
+			if strings.HasPrefix(fn.Name.Name, prefix) && fn.Type.Params != nil && len(fn.Type.Params.List) == 1 {
 				return true, nil
 			}
 		}
