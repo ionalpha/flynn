@@ -21,7 +21,15 @@ func (s *Store) Jobs() jobs.Queue { return &jobQueue{s} }
 // behave identically; only storage and atomic claim selection live here.
 type jobQueue struct{ p *Store }
 
-var _ jobs.Queue = (*jobQueue)(nil)
+var (
+	_ jobs.Queue = (*jobQueue)(nil)
+	_ jobs.Waker = (*jobQueue)(nil)
+)
+
+// Ready implements jobs.Waker: the channel signalled after this process
+// enqueues a job or returns one to pending. Writes from other processes on the
+// same database cannot be signalled; a worker's poll covers those.
+func (q *jobQueue) Ready() <-chan struct{} { return q.p.jobsReady }
 
 // jobCols matches the jobs table column order and the scanJob order.
 const jobCols = `id, queue, kind, payload, scope_instance, scope_project, scope_workspace,
@@ -70,6 +78,7 @@ func (q *jobQueue) Enqueue(ctx context.Context, p jobs.EnqueueParams) (jobs.Job,
 	if err := insertJob(ctx, q.p.db, j); err != nil {
 		return jobs.Job{}, fmt.Errorf("sqlite: enqueue job: %w", err)
 	}
+	jobs.Notify(q.p.jobsReady)
 	return j, nil
 }
 
@@ -130,9 +139,17 @@ func (q *jobQueue) Complete(ctx context.Context, id string) error {
 }
 
 func (q *jobQueue) Fail(ctx context.Context, id, errMsg string, retryAt int64) error {
-	return q.transition(ctx, id, func(j *jobs.Job) {
+	var pending bool
+	err := q.transition(ctx, id, func(j *jobs.Job) {
 		jobs.MarkFailed(j, errMsg, retryAt, q.p.clk.Now().UnixNano())
+		pending = j.State == jobs.StatePending
 	})
+	// A retryable failure re-pends the job; wake a worker so a due retry is
+	// picked up on the signal rather than the next idle poll.
+	if err == nil && pending {
+		jobs.Notify(q.p.jobsReady)
+	}
+	return err
 }
 
 // transition loads a running job, applies a state change, and writes it back, all

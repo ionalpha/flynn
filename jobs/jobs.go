@@ -110,6 +110,30 @@ type Queue interface {
 	Close() error
 }
 
+// Waker is an optional Queue capability: a queue that can observe its own
+// in-process writes exposes a ready channel, so a worker wakes the moment work
+// is enqueued instead of discovering it on its next idle poll. The signal is
+// advisory and coalesced (one buffered slot): receiving one does not guarantee
+// a claimable job, and a missed one costs nothing because the worker's poll
+// remains the fallback. The poll is also the only path for scheduled RunAt
+// arrivals and for writes from other processes, which a queue cannot signal.
+type Waker interface {
+	// Ready returns the channel signalled after a job is enqueued or returned to
+	// pending for retry. Every call returns the same channel.
+	Ready() <-chan struct{}
+}
+
+// Notify sends the coalesced, non-blocking ready signal a Waker delivers: if
+// the channel's buffered slot is free the signal is queued, otherwise one is
+// already pending and this one merges into it. Shared so every backend
+// coalesces identically and none can block a writer on a slow worker.
+func Notify(ch chan<- struct{}) {
+	select {
+	case ch <- struct{}{}:
+	default:
+	}
+}
+
 // Sentinel errors, fault-classified so callers branch on the class rather than
 // on string matching.
 var (

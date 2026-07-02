@@ -28,8 +28,10 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// DefaultWorkerPoll is how often the step worker polls for work when the queue is
-// idle and no completion signal has woken it.
+// DefaultWorkerPoll is how often the step worker polls for work when idle. Both
+// bundled queues implement jobs.Waker, so a fresh dispatch wakes the worker at
+// once and this interval is only the fallback sweep for scheduled retries,
+// expired leases, and enqueues from other processes.
 const DefaultWorkerPoll = 50 * time.Millisecond
 
 // Config assembles a Runtime. Executor and Stop are required: they are the agent's

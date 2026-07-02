@@ -87,6 +87,10 @@ type Store struct {
 	gen        *ids.Generator
 	st         *state.Stamper
 	instanceID string
+	// jobsReady carries the jobs.Waker signal for the queue in Jobs(). It lives
+	// on the Store because Jobs() builds a fresh facade per call: every facade
+	// must share one channel or a worker would miss another facade's enqueues.
+	jobsReady chan struct{}
 }
 
 var _ state.Provider = (*Store)(nil)
@@ -104,7 +108,7 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Store{db: db, clk: clock.System{}, instanceID: "local"}
+	s := &Store{db: db, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1)}
 	for _, o := range opts {
 		o(s)
 	}

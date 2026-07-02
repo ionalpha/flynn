@@ -132,10 +132,16 @@ func (w *Worker) ProcessOnce(ctx context.Context) (bool, error) {
 	return true, w.runStep(ctx, claimed[0])
 }
 
-// Run processes steps until ctx is cancelled, polling at interval when the queue
-// is empty. A live event bus can drive a tighter loop later; polling is the
-// always-correct floor.
+// Run processes steps until ctx is cancelled. When the queue implements
+// jobs.Waker, an idle worker wakes on the enqueue signal, so dispatch-to-claim
+// latency is signal delivery, not the poll interval. The poll remains the
+// always-correct floor: it is the only wake-up for scheduled RunAt arrivals,
+// expired leases, and enqueues from processes the queue cannot observe.
 func (w *Worker) Run(ctx context.Context, poll time.Duration) {
+	var ready <-chan struct{} // nil (blocks forever in select) unless the queue signals
+	if wk, ok := w.jobs.(jobs.Waker); ok {
+		ready = wk.Ready()
+	}
 	for {
 		if ctx.Err() != nil {
 			return
@@ -145,6 +151,7 @@ func (w *Worker) Run(ctx context.Context, poll time.Duration) {
 			select {
 			case <-ctx.Done():
 				return
+			case <-ready:
 			case <-time.After(poll):
 			}
 		}
