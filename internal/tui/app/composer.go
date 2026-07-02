@@ -57,15 +57,21 @@ func composerRows(ed *editor.Editor, th *theme.Theme, width int, placeholder str
 // can report a cursor column equal to the row width (the cursor on a line
 // break ending a full row, or on a wide cluster clipped by a very narrow
 // terminal), and appending a cursor cell there would overflow the row the
-// painter was promised.
+// painter was promised. The walk never consumes a cluster that would cross
+// the clamped column: when the column lands inside a wide cluster, the
+// cursor covers that cluster, keeping the row within width instead of
+// pushing the appended cell past it.
 func spliceCursor(row string, col, width int, th *theme.Theme) string {
 	if col >= width {
 		col = width - 1
 	}
 	var left strings.Builder
 	used, rest := 0, row
-	for rest != "" && used < col {
+	for rest != "" {
 		cluster, tail, w, _ := uniseg.FirstGraphemeClusterInString(rest, -1)
+		if used+w > col {
+			break
+		}
 		left.WriteString(cluster)
 		used += w
 		rest = tail
