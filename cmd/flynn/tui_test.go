@@ -2,174 +2,275 @@ package main
 
 import (
 	"context"
-	"fmt"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"pgregory.net/rapid"
-
+	"github.com/ionalpha/flynn/internal/tui/input"
+	"github.com/ionalpha/flynn/internal/tui/screen"
+	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 )
 
-// newTUIForTest builds a TUI model over an in-memory session and the given model,
-// already sized so the viewport is live.
-func newTUIForTest(t *testing.T, model llm.Model) tuiModel {
-	t.Helper()
-	s, _ := newREPL(t, t.TempDir(), memStore(t), model)
-	m := newTUIModel(context.Background(), s, "")
-	sized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	return sized.(tuiModel)
+// fakeUI records what the session host drives, standing in for a live shell.
+type fakeUI struct {
+	mu     sync.Mutex
+	lines  []string
+	status string
+	quit   bool
 }
 
-// pumpTurn drives the manual update loop the way the bubbletea runtime would: it
-// runs each command, feeds the resulting message back into Update, and stops once the
-// turn's output stream closes. It is bounded by a timeout so a stuck turn fails the
-// test loudly instead of hanging.
-func pumpTurn(t *testing.T, m tuiModel, cmd tea.Cmd) tuiModel {
+func (f *fakeUI) Append(lines ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.lines = append(f.lines, lines...)
+}
+
+func (f *fakeUI) SetLive(screen.Component) {}
+
+func (f *fakeUI) SetStatus(line string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.status = line
+}
+
+func (f *fakeUI) Quit() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.quit = true
+}
+
+func (f *fakeUI) transcript() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.lines, "\n")
+}
+
+func (f *fakeUI) quitCalled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.quit
+}
+
+// newHostForTest builds a session host over an in-memory session and the
+// given model, driving a recording fake instead of a terminal.
+func newHostForTest(t *testing.T, model llm.Model) (*sessionHost, *fakeUI) {
 	t.Helper()
-	type result struct{ m tuiModel }
-	ch := make(chan result, 1)
-	go func() {
-		cur := m
-		for cmd != nil {
-			msg := cmd()
-			next, c := cur.Update(msg)
-			cur = next.(tuiModel)
-			cmd = c
-			if _, done := msg.(streamClosedMsg); done {
-				break
-			}
+	s, _ := newREPL(t, t.TempDir(), memStore(t), model)
+	ui := &fakeUI{}
+	return &sessionHost{ctx: context.Background(), s: s, ui: ui, th: theme.Default()}, ui
+}
+
+// waitIdle blocks until the host has no running turn and an empty queue,
+// failing the test if it never settles.
+func waitIdle(t *testing.T, h *sessionHost) {
+	t.Helper()
+	deadline := time.After(15 * time.Second)
+	for {
+		h.mu.Lock()
+		idle := !h.busy && len(h.queue) == 0
+		h.mu.Unlock()
+		if idle {
+			return
 		}
-		ch <- result{cur}
-	}()
-	select {
-	case r := <-ch:
-		return r.m
-	case <-time.After(15 * time.Second):
-		t.Fatal("TUI turn did not complete (the update loop stalled)")
-		return m
+		select {
+		case <-deadline:
+			t.Fatal("session host never returned to idle")
+		case <-time.After(5 * time.Millisecond):
+		}
 	}
 }
 
-// TestTUIRunsTurnAndShowsTranscript is the end-to-end proof for the full-screen
-// interface: submitting a message drives a real turn through the same driver the
-// line interface uses, the user's message and the model's answer both land in the
-// transcript, and the composer is freed when the turn ends.
-func TestTUIRunsTurnAndShowsTranscript(t *testing.T) {
-	m := newTUIForTest(t, llmtest.NewScripted(llmtest.SayText("first answer")))
-	started, cmd := m.startTurn("hello there")
-	final := pumpTurn(t, started.(tuiModel), cmd)
+// TestShellHostRunsTurnAndAppendsTranscript proves a submitted prompt drives
+// a real turn through the same driver the line interface uses: the prompt
+// echo and the model's answer both land in the scrollback, and the host
+// returns to idle.
+func TestShellHostRunsTurnAndAppendsTranscript(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted(llmtest.SayText("first answer")))
+	host.submit("hello there")
+	waitIdle(t, host)
 
-	got := final.transcript
-	for _, want := range []string{"> hello there", "first answer"} {
+	got := ui.transcript()
+	for _, want := range []string{"hello there", "first answer"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("transcript missing %q:\n%s", want, got)
 		}
 	}
-	if final.busy {
-		t.Fatal("composer still marked busy after the turn ended")
-	}
 }
 
-// TestTUICancelTurnKeepsSession proves Ctrl-C cancels the in-flight turn in the
-// full-screen interface without ending the session: a blocked turn is cancelled, the
-// transcript notes it, and the model returns to idle.
-func TestTUICancelTurnKeepsSession(t *testing.T) {
+// TestShellHostCancelKeepsSession proves interrupting an in-flight turn
+// cancels only that turn: the transcript notes the cancellation and the host
+// returns to idle with the session intact.
+func TestShellHostCancelKeepsSession(t *testing.T) {
 	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
-	s, _ := newREPL(t, t.TempDir(), memStore(t), gm)
-	m := newTUIModel(context.Background(), s, "")
-	sized, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	started, cmd := sized.(tuiModel).startTurn("long running")
-	cur := started.(tuiModel)
+	host, ui := newHostForTest(t, gm)
+	host.submit("long running")
 
-	// Wait until the model is mid-call, then interrupt.
 	select {
 	case <-gm.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("turn never reached the model")
 	}
-	interrupted, _ := cur.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	final := pumpTurn(t, interrupted.(tuiModel), cmd)
+	host.interrupt()
+	waitIdle(t, host)
 
-	if final.busy {
-		t.Fatal("session still busy after cancel")
+	if got := ui.transcript(); !strings.Contains(got, "cancelled") {
+		t.Fatalf("transcript did not note the cancellation:\n%s", got)
 	}
-	if !strings.Contains(final.transcript, "cancelled") {
-		t.Fatalf("transcript did not note the cancellation:\n%s", final.transcript)
-	}
-}
-
-// TestTUIIdleKeys covers the session-level keys when no turn is running: Ctrl-C and
-// Ctrl-D quit, an exit command quits, and an empty enter is a no-op.
-func TestTUIIdleKeys(t *testing.T) {
-	isQuit := func(cmd tea.Cmd) bool {
-		if cmd == nil {
-			return false
-		}
-		_, ok := cmd().(tea.QuitMsg)
-		return ok
-	}
-
-	for _, k := range []tea.KeyType{tea.KeyCtrlC, tea.KeyCtrlD} {
-		m := newTUIForTest(t, llmtest.NewScripted())
-		_, cmd := m.Update(tea.KeyMsg{Type: k})
-		if !isQuit(cmd) {
-			t.Fatalf("key %v at idle did not quit", k)
-		}
-	}
-
-	// An exit command typed into the composer quits.
-	m := newTUIForTest(t, llmtest.NewScripted())
-	m.ta.SetValue("exit")
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if !isQuit(cmd) {
-		t.Fatal(`typing "exit" did not quit`)
-	}
-
-	// An empty enter does nothing and does not start a turn.
-	m = newTUIForTest(t, llmtest.NewScripted())
-	got, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if got.(tuiModel).busy {
-		t.Fatal("empty enter started a turn")
+	if host.s.runID == "" {
+		t.Fatal("a cancelled first turn still opens the run, but no id was recorded")
 	}
 }
 
-// TestLineSinkChunkInvarianceProperty: the lines a lineSink emits do not depend on
-// how the writes are chunked, so the transcript is identical however the turn's
-// output happens to be flushed to it.
-func TestLineSinkChunkInvarianceProperty(t *testing.T) {
-	rapid.Check(t, func(rt *rapid.T) {
-		text := rapid.StringMatching(`([a-z ]|\n){0,40}`).Draw(rt, "text")
+// TestShellHostQueuesPromptWhileBusy proves a prompt submitted during a
+// running turn queues behind it and runs when the turn ends, in order.
+func TestShellHostQueuesPromptWhileBusy(t *testing.T) {
+	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
+	host, ui := newHostForTest(t, gm)
+	host.submit("one")
 
-		emit := func(chunks []string) []string {
-			ch := make(chan tea.Msg, len(text)+8)
-			s := &lineSink{ctx: context.Background(), ch: ch}
-			for _, c := range chunks {
-				_, _ = s.Write([]byte(c))
-			}
-			s.flush()
-			var lines []string
-			for {
-				select {
-				case msg := <-ch:
-					lines = append(lines, string(msg.(outLineMsg)))
-				default:
-					return lines
-				}
-			}
+	select {
+	case <-gm.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn never reached the model")
+	}
+	host.submit("two")
+	host.mu.Lock()
+	queued := len(host.queue)
+	host.mu.Unlock()
+	if queued != 1 {
+		t.Fatalf("queue length = %d, want 1", queued)
+	}
+	if !strings.Contains(host.statusNow(), "queued") {
+		t.Fatal("status line does not show the queued prompt")
+	}
+
+	close(gm.release)
+	waitIdle(t, host)
+
+	got := ui.transcript()
+	first, second := strings.Index(got, "one"), strings.Index(got, "two")
+	if first < 0 || second < 0 {
+		t.Fatalf("transcript missing an echoed prompt:\n%s", got)
+	}
+	if second < first {
+		t.Fatalf("queued prompt ran out of order:\n%s", got)
+	}
+}
+
+// statusNow reads the current status line through the host's own fake.
+func (h *sessionHost) statusNow() string {
+	f, ok := h.ui.(*fakeUI)
+	if !ok {
+		return ""
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.status
+}
+
+// TestShellHostExitQuitsWithoutTurn proves an exit command closes the shell
+// and never opens a run.
+func TestShellHostExitQuitsWithoutTurn(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	host.submit("exit")
+	if !ui.quitCalled() {
+		t.Fatal("exit command did not quit the shell")
+	}
+	if host.s.started {
+		t.Fatal("exit command opened a run")
+	}
+}
+
+// TestShellHostKeys covers the session-level key routing: Ctrl+C cancels
+// only while a turn runs, Ctrl+D quits only at idle, and both stay unclaimed
+// otherwise so the shell's defaults apply.
+func TestShellHostKeys(t *testing.T) {
+	ctrl := func(c rune) input.Key { return input.Key{Code: c, Mods: input.ModCtrl} }
+
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	if host.key(ctrl('c')) {
+		t.Fatal("idle Ctrl+C was claimed; it belongs to the shell's defaults")
+	}
+	if !host.key(ctrl('d')) || !ui.quitCalled() {
+		t.Fatal("idle Ctrl+D did not quit")
+	}
+
+	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
+	host, _ = newHostForTest(t, gm)
+	host.submit("long running")
+	select {
+	case <-gm.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn never reached the model")
+	}
+	if host.key(ctrl('d')) {
+		t.Fatal("busy Ctrl+D was claimed; quitting mid-turn is the composer's Delete")
+	}
+	if !host.key(ctrl('c')) {
+		t.Fatal("busy Ctrl+C did not cancel the turn")
+	}
+	waitIdle(t, host)
+}
+
+// syncOut is a concurrency-safe frame sink for the end-to-end shell test.
+type syncOut struct {
+	mu sync.Mutex
+	b  strings.Builder
+}
+
+func (s *syncOut) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.Write(p)
+}
+
+func (s *syncOut) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.b.String()
+}
+
+// TestSessionShellEndToEnd drives the production wiring over pipes: typed
+// keystrokes reach the composer, Enter submits and runs a real turn, the
+// answer is painted, and Ctrl+D on the empty composer ends the shell.
+func TestSessionShellEndToEnd(t *testing.T) {
+	s, _ := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted(llmtest.SayText("first answer")))
+	pr, pw := io.Pipe()
+	out := &syncOut{}
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24)
+	host.greet("")
+
+	done := make(chan error, 1)
+	go func() { done <- a.Run() }()
+
+	if _, err := pw.Write([]byte("hello there\r")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(15 * time.Second)
+	for !strings.Contains(out.String(), "first answer") {
+		select {
+		case <-deadline:
+			t.Fatalf("answer never painted:\n%s", out.String())
+		case <-time.After(10 * time.Millisecond):
 		}
+	}
+	waitIdle(t, host)
 
-		whole := emit([]string{text})
-
-		// Re-chunk at a random split point and compare.
-		split := rapid.IntRange(0, len(text)).Draw(rt, "split")
-		chunked := emit([]string{text[:split], text[split:]})
-
-		if fmt.Sprint(whole) != fmt.Sprint(chunked) {
-			t.Fatalf("chunking changed the emitted lines:\nwhole=%q\nchunked=%q", whole, chunked)
+	if _, err := pw.Write([]byte{0x04}); err != nil { // Ctrl+D on the empty composer
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shell exited with error: %v", err)
 		}
-	})
+	case <-time.After(15 * time.Second):
+		t.Fatal("Ctrl+D did not end the shell")
+	}
+	host.shutdown()
+	_ = pw.Close()
 }

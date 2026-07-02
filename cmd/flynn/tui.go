@@ -4,325 +4,343 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/internal/tui/app"
+	"github.com/ionalpha/flynn/internal/tui/input"
+	"github.com/ionalpha/flynn/internal/tui/screen"
+	tuiterm "github.com/ionalpha/flynn/internal/tui/term"
+	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// runInteractiveTUI runs the full-screen interactive session: a scrollable
-// transcript above a multi-line composer. It reuses the whole turn driver (recall,
-// reopen, streaming, cancellation, learning) by pointing the session's output at the
-// model, so the agent behaviour is identical to the line-based session; only the
-// presentation differs. When the program exits, output is restored to stdout and the
-// session's learning pass runs there.
+// resizePoll is how often the shell samples the terminal size. Polling is the
+// portable resize signal: it needs no SIGWINCH, so the same loop works on
+// Windows consoles and Unix terminals alike.
+const resizePoll = 250 * time.Millisecond
+
+// runInteractiveTUI runs the full-screen interactive session on the
+// scrollback-native shell: finalized transcript lines are committed to the
+// terminal's own scrollback (selectable, searchable, wrapped by the terminal),
+// the in-flight turn renders in a live region, and the composer stays at the
+// bottom. It reuses the whole turn driver (recall, reopen, streaming,
+// cancellation, learning) by pointing the session's output at the shell, so
+// the agent behaviour is identical to the line-based session; only the
+// presentation differs. When the shell exits, output is restored to stdout
+// and the session's learning pass runs there.
 func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
-	p := tea.NewProgram(newTUIModel(ctx, s, seed), tea.WithAltScreen(), tea.WithMouseCellMotion(), tea.WithContext(ctx))
-	_, err := p.Run()
-	if errors.Is(err, tea.ErrProgramKilled) || errors.Is(err, context.Canceled) {
-		err = nil
+	fd := int(os.Stdin.Fd())
+	restore, err := tuiterm.MakeRaw(fd)
+	if err != nil {
+		// No raw mode means no shell; the line interface still works.
+		return s.runLineMode(ctx, s.cwd)
 	}
+	modes := tuiterm.Options{BracketedPaste: true, KittyKeyboard: true, HideCursor: true}
+	if err := tuiterm.Setup(os.Stdout, modes); err != nil {
+		_ = restore()
+		return err
+	}
+
+	width, height, _ := tuiterm.Size(fd) // zero on error selects the shell's defaults
+	a, host := newSessionShell(ctx, s, os.Stdin, os.Stdout, width, height)
+	watcher := tuiterm.WatchResize(clock.System{}, resizePoll, func() (int, int, error) {
+		return tuiterm.Size(fd)
+	}, a.Resize)
+
+	host.greet(seed)
+	runErr := a.Run()
+
+	watcher.Stop()
+	host.shutdown()
+	if err := tuiterm.Teardown(os.Stdout, modes); err != nil && runErr == nil {
+		runErr = err
+	}
+	if err := restore(); err != nil && runErr == nil {
+		runErr = err
+	}
+
 	s.out = &syncWriter{w: os.Stdout}
-	if ferr := s.finish(ctx); ferr != nil && err == nil {
-		err = ferr
+	if ferr := s.finish(ctx); ferr != nil && runErr == nil {
+		runErr = ferr
 	}
-	return err
+	return runErr
 }
 
-// Messages bridging a running turn into the model: each line the turn writes, the
-// turn's terminal result, and the end of the turn's output stream.
-type (
-	outLineMsg      string
-	turnDoneMsg     struct{ err error }
-	streamClosedMsg struct{}
-)
+// newSessionShell wires one replSession to a shell over the given terminal
+// streams. It is split from runInteractiveTUI so tests can drive the exact
+// production wiring over pipes, with no terminal required.
+func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int) (*app.App, *sessionHost) {
+	host := &sessionHost{ctx: ctx, s: s, th: theme.Default()}
+	a := app.New(app.Config{
+		Input:       in,
+		Output:      out,
+		Width:       width,
+		Height:      height,
+		Theme:       host.th,
+		Placeholder: "Send a message",
+		OnSubmit:    host.submit,
+		OnEsc:       host.interrupt,
+		OnKey:       host.key,
+	})
+	host.ui = a
+	return a, host
+}
 
-// tuiModel is the interactive session UI: a viewport showing the transcript, a
-// textarea composer, and a status line, over one replSession whose turns it drives.
-type tuiModel struct {
+// shellUI is the slice of the shell the session host drives. An interface so
+// tests can observe the host through a recording fake.
+type shellUI interface {
+	Append(lines ...string)
+	SetLive(c screen.Component)
+	SetStatus(line string)
+	Quit()
+}
+
+// sessionHost owns the session policy on top of the shell's mechanics: it
+// echoes and queues submitted prompts, drives each one as a turn of the
+// replSession on its own goroutine, routes the turn's rendered output into
+// the scrollback, and maps Escape and Ctrl+C onto cancelling the in-flight
+// turn. Turns are strictly serial; a prompt submitted while one runs waits
+// its turn in the queue.
+type sessionHost struct {
+	ctx context.Context
 	s   *replSession
-	ctx context.Context
+	ui  shellUI
+	th  *theme.Theme
 
-	ta textarea.Model
-	vp viewport.Model
-
-	// transcript is a plain string, not a strings.Builder: the model is copied by
-	// value on every Update, which a Builder forbids.
-	transcript string
-	ready      bool
-	busy       bool
-
-	bridge     chan tea.Msg
-	turnCancel context.CancelFunc
-
-	width, height int
-	contentWidth  int // transcript wrap width (inner width minus the frame)
+	mu       sync.Mutex
+	busy     bool
+	queue    []string
+	cancel   context.CancelFunc
+	quitting bool
+	turns    sync.WaitGroup
 }
 
-const (
-	composerHeight = 3
-	statusHeight   = 1
-	padX           = 2 // left/right breathing room so content is not flush to the edge
-	padTop         = 1 // a blank row above the transcript
-	padBottom      = 1 // a blank row below the composer
-)
-
-// appStyle frames the whole UI with a little padding so nothing sits against the
-// terminal edge. The inner width and height are reduced to match in layout.
-var appStyle = lipgloss.NewStyle().PaddingTop(padTop).PaddingBottom(padBottom).PaddingLeft(padX)
-
-func newTUIModel(ctx context.Context, s *replSession, seed string) tuiModel {
-	ta := textarea.New()
-	ta.Placeholder = "Send a message..."
-	ta.Prompt = "> "
-	ta.ShowLineNumbers = false
-	ta.CharLimit = 0
-	ta.SetHeight(composerHeight)
-	ta.Focus()
-	// seed is a resumed run's rendered history, shown above the composer so the user
-	// picks up the conversation with its context already in view.
-	return tuiModel{s: s, ctx: ctx, ta: ta, transcript: seed}
+// greet writes the session banner and, for a resumed run, its rendered
+// history, so the conversation's context is in the scrollback from the start.
+func (h *sessionHost) greet(seed string) {
+	h.ui.Append(h.th.Render(theme.Status, "flynn interactive session in "+h.s.cwd))
+	if seed != "" {
+		h.ui.Append(strings.Split(strings.TrimRight(seed, "\n"), "\n")...)
+	}
+	h.refreshStatus()
 }
 
-func (m tuiModel) Init() tea.Cmd { return textarea.Blink }
-
-func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.layout(msg.Width, msg.Height)
-		return m, nil
-
-	case tea.KeyMsg:
-		return m.onKey(msg)
-
-	case tea.MouseMsg:
-		// The wheel always scrolls the transcript, whether a turn is running or the
-		// session is idle, so reading back is never blocked by the composer focus.
-		var cmd tea.Cmd
-		m.vp, cmd = m.vp.Update(msg)
-		return m, cmd
-
-	case outLineMsg:
-		m.appendLine(string(msg))
-		return m, m.readNext()
-
-	case turnDoneMsg:
-		switch {
-		case errors.Is(msg.err, context.Canceled):
-			m.appendLine("  (turn cancelled)")
-		case msg.err != nil:
-			m.appendLine("  error: " + msg.err.Error())
-		}
-		return m, m.readNext() // keep draining until the stream closes
-
-	case streamClosedMsg:
-		m.busy = false
-		m.turnCancel = nil
-		m.bridge = nil
-		return m, m.ta.Focus()
+// submit handles one submitted prompt on the shell's event loop: exit
+// commands quit, a prompt during a running turn queues behind it, and an
+// idle prompt starts its turn immediately.
+func (h *sessionHost) submit(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
 	}
-
-	// Anything else (mouse, paste) goes to whichever component is active.
-	var cmd tea.Cmd
-	if m.busy {
-		m.vp, cmd = m.vp.Update(msg)
-	} else {
-		m.ta, cmd = m.ta.Update(msg)
+	if isExit(text) {
+		h.ui.Quit()
+		return
 	}
-	return m, cmd
+	h.mu.Lock()
+	if h.quitting {
+		h.mu.Unlock()
+		return
+	}
+	if h.busy {
+		h.queue = append(h.queue, text)
+		h.mu.Unlock()
+		h.refreshStatus()
+		return
+	}
+	h.busy = true
+	h.mu.Unlock()
+	h.start(text)
 }
 
-// onKey handles the session-level keys and otherwise forwards to the composer (when
-// idle) or the viewport (while a turn streams, so the transcript can be scrolled).
-func (m tuiModel) onKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
-		if m.busy {
-			if m.turnCancel != nil {
-				m.turnCancel() // cancel the in-flight turn, keep the session
-			}
-			return m, nil
-		}
-		return m, tea.Quit
-	case tea.KeyCtrlD:
-		if !m.busy {
-			return m, tea.Quit
-		}
-		return m, nil
-	case tea.KeyEnter:
-		if m.busy {
-			return m, nil
-		}
-		text := strings.TrimSpace(m.ta.Value())
-		if text == "" {
-			return m, nil
-		}
-		if isExit(text) {
-			return m, tea.Quit
-		}
-		m.ta.Reset()
-		return m.startTurn(text)
-	case tea.KeyPgUp, tea.KeyPgDown:
-		// Page keys always scroll the transcript, idle or busy. They do not conflict
-		// with composing (unlike the arrows, which the textarea needs for the cursor).
-		var cmd tea.Cmd
-		m.vp, cmd = m.vp.Update(msg)
-		return m, cmd
-	default:
-		// Any other key is editing or scrolling, handled below.
-	}
+// start launches text as one turn on its own goroutine. The prompt is echoed
+// into the scrollback, the turn's rendered lines follow it as they arrive,
+// and when the turn ends the next queued prompt (if any) starts. The caller
+// has already marked the host busy.
+func (h *sessionHost) start(text string) {
+	turnCtx, cancel := context.WithCancel(h.ctx)
+	h.mu.Lock()
+	h.cancel = cancel
+	h.mu.Unlock()
+	h.refreshStatus()
 
-	var cmd tea.Cmd
-	if m.busy {
-		m.vp, cmd = m.vp.Update(msg) // scroll the transcript while the turn runs
-	} else {
-		m.ta, cmd = m.ta.Update(msg)
-	}
-	return m, cmd
-}
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, text))
+	sink := &turnSink{ui: h.ui}
+	h.s.out = sink
+	h.ui.SetLive(sink)
 
-// startTurn echoes the user's message, points the session output at a per-turn
-// bridge channel, and drives the turn in the background. The turn writes its
-// rendered lines through the bridge (as outLineMsg), then a turnDoneMsg and the
-// channel close mark the end.
-func (m tuiModel) startTurn(text string) (tea.Model, tea.Cmd) {
-	m.busy = true
-	m.appendLine("> " + text)
-	m.ta.Blur()
-
-	bridge := make(chan tea.Msg, 256)
-	m.bridge = bridge
-	turnCtx, cancel := context.WithCancel(m.ctx)
-	m.turnCancel = cancel
-
-	sink := &lineSink{ctx: turnCtx, ch: bridge}
-	m.s.out = sink
+	h.turns.Add(1)
 	go func() {
-		_, err := m.s.runTurn(turnCtx, text, nil)
-		sink.flush()
-		bridge <- turnDoneMsg{err: err}
-		close(bridge)
-	}()
-	return m, m.readNext()
-}
-
-// readNext yields the next bridged message, or streamClosedMsg once the turn's
-// output channel is closed.
-func (m tuiModel) readNext() tea.Cmd {
-	ch := m.bridge
-	if ch == nil {
-		return nil
-	}
-	return func() tea.Msg {
-		msg, ok := <-ch
-		if !ok {
-			return streamClosedMsg{}
+		defer h.turns.Done()
+		_, err := h.s.runTurn(turnCtx, text, nil)
+		cancel()
+		sink.finish()
+		h.ui.SetLive(nil)
+		switch {
+		case errors.Is(err, context.Canceled):
+			h.ui.Append("  (turn cancelled)")
+		case err != nil:
+			h.ui.Append("  error: " + err.Error())
 		}
-		return msg
+		h.next()
+	}()
+}
+
+// next ends the finished turn's ownership of the shell: it starts the next
+// queued prompt if one is waiting, or returns the session to idle. A closing
+// shell drops the queue instead, so shutdown never races a fresh turn.
+func (h *sessionHost) next() {
+	h.mu.Lock()
+	h.cancel = nil
+	if h.quitting {
+		h.queue = nil
+		h.busy = false
+		h.mu.Unlock()
+		return
+	}
+	if len(h.queue) > 0 {
+		text := h.queue[0]
+		h.queue = h.queue[1:]
+		h.mu.Unlock()
+		h.start(text)
+		return
+	}
+	h.busy = false
+	h.mu.Unlock()
+	h.refreshStatus()
+}
+
+// interrupt cancels the in-flight turn, if any; the session survives and the
+// composer stays live. At idle it does nothing.
+func (h *sessionHost) interrupt() {
+	h.mu.Lock()
+	cancel := h.cancel
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 
-func (m tuiModel) View() string {
-	if !m.ready {
-		return "starting flynn..."
+// key claims the session-level keys the editor leaves alone: Ctrl+C during a
+// turn cancels the turn (idle Ctrl+C stays with the shell: clear the prompt,
+// then quit), and Ctrl+D at an empty idle prompt ends the session, matching
+// the readline EOF convention the line interface follows.
+func (h *sessionHost) key(k input.Key) bool {
+	if k.Mods != input.ModCtrl {
+		return false
 	}
-	return appStyle.Render(strings.Join([]string{m.vp.View(), m.statusLine(), m.ta.View()}, "\n"))
+	h.mu.Lock()
+	busy := h.busy
+	h.mu.Unlock()
+	switch k.Code {
+	case 'c':
+		if busy {
+			h.interrupt()
+			return true
+		}
+	case 'd':
+		if !busy {
+			h.ui.Quit()
+			return true
+		}
+	}
+	return false
 }
 
-var statusStyle = lipgloss.NewStyle().Faint(true)
-
-func (m tuiModel) statusLine() string {
-	hint := "enter: send   ctrl+j: newline   ctrl+d: quit"
-	if m.busy {
-		hint = "working...   ctrl+c: cancel turn"
+// shutdown cancels any in-flight turn, drops the queue, and waits for the
+// turn goroutine, so the caller can hand the terminal back and run the
+// session's closing work on stdout.
+func (h *sessionHost) shutdown() {
+	h.mu.Lock()
+	h.quitting = true
+	h.queue = nil
+	cancel := h.cancel
+	h.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
-	return statusStyle.Render(hint)
+	h.turns.Wait()
 }
 
-// layout sizes the viewport and composer to the terminal, seeding the viewport on
-// first sight and keeping it pinned to the latest output.
-func (m *tuiModel) layout(w, h int) {
-	m.width, m.height = w, h
-	innerW := w - 2*padX
-	if innerW < 1 {
-		innerW = 1
-	}
-	m.contentWidth = innerW
-	vpHeight := h - composerHeight - statusHeight - padTop - padBottom
-	if vpHeight < 1 {
-		vpHeight = 1
-	}
-	if !m.ready {
-		m.vp = viewport.New(innerW, vpHeight)
-		m.ready = true
-	} else {
-		m.vp.Width = innerW
-		m.vp.Height = vpHeight
-	}
-	m.ta.SetWidth(innerW)
-	m.refreshViewport()
+// refreshStatus rewrites the status line from the host's current state.
+func (h *sessionHost) refreshStatus() {
+	h.mu.Lock()
+	busy, queued := h.busy, len(h.queue)
+	h.mu.Unlock()
+	h.ui.SetStatus(statusLine(busy, queued))
 }
 
-// appendLine adds one line to the transcript and keeps the viewport at the bottom.
-func (m *tuiModel) appendLine(s string) {
-	m.transcript += s + "\n"
-	if m.ready {
-		m.refreshViewport()
+// statusLine is the one-row hint between the live output and the composer.
+func statusLine(busy bool, queued int) string {
+	if !busy {
+		return "enter sends · alt+enter or ctrl+j newline · up/down history · ctrl+d quits"
 	}
+	line := "working... esc or ctrl+c cancels"
+	if queued > 0 {
+		line += fmt.Sprintf(" · %d queued", queued)
+	}
+	return line
 }
 
-// refreshViewport word-wraps the transcript to the content width and pins the view
-// to the latest output, so long lines reflow instead of overflowing the edge.
-func (m *tuiModel) refreshViewport() {
-	content := m.transcript
-	if m.contentWidth > 0 {
-		content = lipgloss.NewStyle().Width(m.contentWidth).Render(m.transcript)
-	}
-	m.vp.SetContent(content)
-	m.vp.GotoBottom()
-}
+// turnSink routes a turn's rendered output into the shell. Every completed
+// line is committed to the scrollback as it arrives; the trailing partial
+// line (output not yet ended by a newline) renders as the live region until
+// it completes, so mid-line progress is visible without ever committing a
+// line twice.
+type turnSink struct {
+	ui shellUI
 
-// lineSink turns the writes a turn makes into per-line messages on ch, so the
-// viewport shows the same transcript the line renderer produces. Sends honor ctx, so
-// a cancelled turn never blocks the writing goroutine.
-type lineSink struct {
-	ctx context.Context
-	ch  chan<- tea.Msg
+	mu  sync.Mutex
 	buf []byte
 }
 
-func (s *lineSink) Write(p []byte) (int, error) {
-	s.buf = append(s.buf, p...)
+// Write splits the stream on newlines. It never calls into the shell while
+// holding the sink's lock: the shell's paint path calls Render under its own
+// lock, so nesting the two would invert the lock order.
+func (t *turnSink) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	t.buf = append(t.buf, p...)
+	var lines []string
 	for {
-		i := bytes.IndexByte(s.buf, '\n')
+		i := bytes.IndexByte(t.buf, '\n')
 		if i < 0 {
 			break
 		}
-		line := string(s.buf[:i])
-		s.buf = s.buf[i+1:]
-		if !s.send(outLineMsg(line)) {
-			return len(p), nil
-		}
+		lines = append(lines, strings.TrimRight(string(t.buf[:i]), "\r"))
+		t.buf = t.buf[i+1:]
+	}
+	t.mu.Unlock()
+	if len(lines) > 0 {
+		t.ui.Append(lines...)
 	}
 	return len(p), nil
 }
 
-// flush emits any trailing partial line (one not ended by a newline).
-func (s *lineSink) flush() {
-	if len(s.buf) > 0 {
-		_ = s.send(outLineMsg(string(s.buf)))
-		s.buf = nil
+// finish commits any trailing partial line, so output not ended by a newline
+// still lands in the transcript when the turn ends.
+func (t *turnSink) finish() {
+	t.mu.Lock()
+	rest := string(t.buf)
+	t.buf = nil
+	t.mu.Unlock()
+	if strings.TrimSpace(rest) != "" {
+		t.ui.Append(rest)
 	}
 }
 
-func (s *lineSink) send(m tea.Msg) bool {
-	select {
-	case s.ch <- m:
-		return true
-	case <-s.ctx.Done():
-		return false
+// Render shows the pending partial line in the live region, wrapped to the
+// terminal width.
+func (t *turnSink) Render(width int) []string {
+	t.mu.Lock()
+	rest := string(t.buf)
+	t.mu.Unlock()
+	if strings.TrimSpace(rest) == "" {
+		return nil
 	}
+	return strings.Split(screen.Wrap(rest, width), "\n")
 }

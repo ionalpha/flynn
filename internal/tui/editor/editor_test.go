@@ -201,3 +201,21 @@ func TestClear(t *testing.T) {
 		t.Fatalf("Clear left content %q", e.Content())
 	}
 }
+
+// TestCtrlDEmptyBufferUnclaimed proves Ctrl+D follows the readline EOF
+// convention: on an empty buffer the key is left unclaimed for the session,
+// while on a non-empty buffer it deletes forward as usual.
+func TestCtrlDEmptyBufferUnclaimed(t *testing.T) {
+	var e editor.Editor
+	if got := e.Handle(input.Key{Code: 'd', Mods: input.ModCtrl}); got != editor.ActionNone {
+		t.Fatalf("Ctrl+D on an empty buffer = %v, want ActionNone", got)
+	}
+	typeIn(&e, "ab")
+	e.Handle(input.Key{Code: input.KeyLeft})
+	if got := e.Handle(input.Key{Code: 'd', Mods: input.ModCtrl}); got != editor.ActionRedraw {
+		t.Fatalf("Ctrl+D mid-buffer = %v, want ActionRedraw", got)
+	}
+	if got := e.Content(); got != "a" {
+		t.Fatalf("Ctrl+D did not delete forward: content = %q, want %q", got, "a")
+	}
+}

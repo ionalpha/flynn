@@ -124,6 +124,11 @@ func (e *Editor) ctrlKey(code rune) Action {
 	case 'f':
 		e.Right()
 	case 'd':
+		// Ctrl+D deletes forward, except on an empty buffer, where it is
+		// left unclaimed for the session (the readline EOF convention).
+		if e.Empty() {
+			return ActionNone
+		}
 		e.Delete()
 	case 'k':
 		e.KillToEnd()
