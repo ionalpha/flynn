@@ -1,6 +1,8 @@
 package chain
 
 import (
+	"github.com/transparency-dev/merkle/proof"
+
 	"bytes"
 
 	"github.com/ionalpha/flynn/fault"
@@ -81,7 +83,23 @@ func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 	}
 	events := make([][]byte, len(b.events))
 	copy(events, b.events)
-	return &SealedRun{cose: sc.COSE, events: events}, nil
+	return &SealedRun{cose: sc.COSE, events: events, nodes: b.tree.cloneNodes()}, nil
+}
+
+// SealAndReset seals the current run and resets the builder to an empty run under
+// the same origin. This is the rotation point for a long-lived stream: everything a
+// run accumulates (each event's canonical bytes plus the full Merkle node set) moves
+// into the returned immutable record and the builder starts fresh, so retention is
+// bounded per segment instead of growing for the stream's life. Each sealed segment
+// verifies on its own; Seq continuity across segments ties them together.
+func (b *Builder) SealAndReset(signer RootSigner) (*SealedRun, error) {
+	sealed, err := b.Seal(signer)
+	if err != nil {
+		return nil, err
+	}
+	b.tree = NewTree()
+	b.events = nil
+	return sealed, nil
 }
 
 // SealedRun is an immutable, signed record of a run: the COSE-signed checkpoint over
@@ -92,6 +110,11 @@ func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 type SealedRun struct {
 	cose   []byte
 	events [][]byte
+	// nodes is the seal-time snapshot of the run's Merkle nodes (hash slices
+	// shared with the builder's tree, which never mutates a written node), so
+	// EventProof assembles an inclusion path by lookup instead of rebuilding the
+	// whole tree per proof. Seal always populates it.
+	nodes map[nodeKey][]byte
 }
 
 type sealedRunWire struct {
@@ -115,13 +138,11 @@ func (s *SealedRun) EventProof(index uint64) (*EventProof, error) {
 	if index >= uint64(len(s.events)) {
 		return nil, fault.New(fault.Terminal, CodeIndexRange, "chain: event index out of range")
 	}
-	tree := NewTree()
-	for _, cb := range s.events {
-		if err := tree.Append(cb); err != nil {
-			return nil, err
-		}
+	nodes, err := proof.Inclusion(index, uint64(len(s.events)))
+	if err != nil {
+		return nil, fault.Wrap(fault.Terminal, CodeInclusionInvalid, err)
 	}
-	inclusion, err := tree.InclusionProof(index)
+	inclusion, err := assembleProof(s.nodes, nodes)
 	if err != nil {
 		return nil, err
 	}

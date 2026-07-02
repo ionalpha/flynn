@@ -113,15 +113,32 @@ func (t *Tree) ConsistencyProof(size uint64) ([][]byte, error) {
 // assemble looks up the hashes for a proof's node IDs and rehashes them into the
 // final proof, collapsing the single ephemeral node the library may require.
 func (t *Tree) assemble(nodes proof.Nodes) ([][]byte, error) {
+	return assembleProof(t.nodes, nodes)
+}
+
+// assembleProof is assemble over a bare node map, so a sealed run's retained
+// nodes can produce proofs without a live Tree.
+func assembleProof(m map[nodeKey][]byte, nodes proof.Nodes) ([][]byte, error) {
 	hashes := make([][]byte, len(nodes.IDs))
 	for i, id := range nodes.IDs {
-		h, ok := t.nodes[nodeKey{level: id.Level, index: id.Index}]
+		h, ok := m[nodeKey{level: id.Level, index: id.Index}]
 		if !ok {
 			return nil, fault.New(fault.Terminal, CodeMissingNode, "chain: proof references a node not in the tree")
 		}
 		hashes[i] = h
 	}
 	return nodes.Rehash(hashes, merkleHasher.HashChildren)
+}
+
+// cloneNodes copies the node map for a seal-time snapshot. The hash values are
+// immutable and shared; only the map header is duplicated, so the snapshot is
+// decoupled from further appends at map-copy cost.
+func (t *Tree) cloneNodes() map[nodeKey][]byte {
+	c := make(map[nodeKey][]byte, len(t.nodes))
+	for k, v := range t.nodes {
+		c[k] = v
+	}
+	return c
 }
 
 // VerifyInclusion reports whether pf proves that leafHash is the leaf at index in a

@@ -88,4 +88,21 @@ func (r *RecordingLog) Seal(stream string, signer RootSigner) (*SealedRun, error
 	return sr.builder.Seal(signer)
 }
 
+// SealAndReset seals the stream's record and resets its recorder, so a long-lived
+// stream can rotate into bounded segments: the returned record owns everything
+// recorded so far, and later appends accumulate into a fresh run under the same
+// origin. It refuses under the same conditions as Seal.
+func (r *RecordingLog) SealAndReset(stream string, signer RootSigner) (*SealedRun, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sr := r.builders[stream]
+	if sr == nil {
+		return nil, fault.New(fault.Terminal, CodeEmptyRecord, "chain: stream was not recorded")
+	}
+	if sr.err != nil {
+		return nil, sr.err
+	}
+	return sr.builder.SealAndReset(signer)
+}
+
 var _ spine.Log = (*RecordingLog)(nil)

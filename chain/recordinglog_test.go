@@ -131,3 +131,50 @@ func TestPropRecordingLogRoundTrip(t *testing.T) {
 		}
 	})
 }
+
+// TestRecordingLogSealAndReset rotates a recorded stream: the first segment seals
+// and verifies, and appends after the reset accumulate into a second independently
+// verifiable segment with continuing Seq numbers.
+func TestRecordingLogSealAndReset(t *testing.T) {
+	rl := NewRecordingLog(spine.NewMemoryLog(), nil)
+	appendN(t, rl, "run/x", 3)
+
+	priv, pub := testKey(0x20)
+	signer, err := NewEd25519RootSigner("inst", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring := NewRootKeyring()
+	if err := ring.Add("inst", pub); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := rl.SealAndReset("run/x", signer)
+	if err != nil {
+		t.Fatalf("seal and reset: %v", err)
+	}
+	appendN(t, rl, "run/x", 3)
+	second, err := rl.Seal("run/x", signer)
+	if err != nil {
+		t.Fatalf("seal after rotation: %v", err)
+	}
+
+	wantSeq := int64(1)
+	for _, sr := range []*SealedRun{first, second} {
+		record, err := sr.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := VerifyRun(record, ring)
+		if err != nil {
+			t.Fatalf("rotated segment rejected: %v", err)
+		}
+		if len(events) != 3 {
+			t.Fatalf("segment holds %d events, want 3", len(events))
+		}
+		if events[0].Seq != wantSeq {
+			t.Fatalf("segment starts at Seq %d, want %d", events[0].Seq, wantSeq)
+		}
+		wantSeq += 3
+	}
+}

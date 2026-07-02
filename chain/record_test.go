@@ -289,3 +289,73 @@ func FuzzVerifyRunNoPanic(f *testing.F) {
 		_, _ = VerifyEventProof(data, ring)
 	})
 }
+
+// TestSealAndResetRotation rotates a long-lived stream into two sealed segments:
+// each segment verifies on its own, the reset builder refuses an immediate empty
+// seal, and proofs from the first segment survive the rotation.
+func TestSealAndResetRotation(t *testing.T) {
+	priv, pub := testKey(0x10)
+	signer, err := NewEd25519RootSigner("inst", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring := NewRootKeyring()
+	if err := ring.Add("inst", pub); err != nil {
+		t.Fatal(err)
+	}
+	b := NewBuilder("flynn://run/rotate")
+	add := func(seq int64) {
+		t.Helper()
+		e := sampleEvent()
+		e.Seq = seq
+		if err := b.Add(e); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := int64(1); i <= 4; i++ {
+		add(i)
+	}
+	first, err := b.SealAndReset(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := b.Seal(signer); err == nil {
+		t.Fatal("empty builder sealed right after reset")
+	}
+	for i := int64(5); i <= 8; i++ {
+		add(i)
+	}
+	second, err := b.Seal(signer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantSeq := int64(1)
+	for _, sr := range []*SealedRun{first, second} {
+		record, err := sr.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := VerifyRun(record, ring)
+		if err != nil {
+			t.Fatalf("rotated segment rejected: %v", err)
+		}
+		if len(events) != 4 {
+			t.Fatalf("segment holds %d events, want 4", len(events))
+		}
+		if events[0].Seq != wantSeq {
+			t.Fatalf("segment starts at Seq %d, want %d", events[0].Seq, wantSeq)
+		}
+		wantSeq += 4
+	}
+	ep, err := first.EventProof(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blob, err := ep.Marshal()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyEventProof(blob, ring); err != nil {
+		t.Fatalf("first-segment proof rejected after rotation: %v", err)
+	}
+}
