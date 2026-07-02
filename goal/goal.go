@@ -124,6 +124,13 @@ type Status struct {
 	// crashes resumes from here instead of restarting. It is owned by the step
 	// executor; the reconciler never interprets it.
 	Checkpoint json.RawMessage `json:"checkpoint,omitempty"`
+	// WaitingSince marks the goal as parked: its last step reported ErrWaiting (no
+	// progress, waiting on external state such as a fan-out's running children),
+	// stamped with when the worker recorded it. While set, the reconciler does not
+	// dispatch a step, evaluate the stop condition, or count the wait against the
+	// step budget. A settling child clears it (the prompt wake); the reconciler's
+	// recheck fallback clears it after a bounded delay if that wake is lost.
+	WaitingSince *time.Time `json:"waitingSince,omitempty"`
 }
 
 // Condition is one standard status condition.

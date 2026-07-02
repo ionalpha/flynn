@@ -47,6 +47,16 @@ type StepExecutor interface {
 	Execute(ctx context.Context, goal resource.Resource) (checkpoint json.RawMessage, err error)
 }
 
+// ErrWaiting is returned by a StepExecutor whose step made no progress because it
+// is waiting on external state, such as a fan-out whose children are still
+// running. The worker completes the job without persisting a checkpoint and stamps
+// Status.WaitingSince, and the reconciler then parks the goal: no step is counted
+// against the budget and no re-check job is dispatched until a child settles (the
+// wake) or the recheck fallback fires. Without this, a wait is a full durable step
+// per poll cycle, and a long enough wait exhausts the step budget and false-stalls
+// the goal.
+var ErrWaiting = errors.New("goal: step waiting on external state")
+
 // Worker claims dispatched goal steps and runs them through a StepExecutor. It is
 // the execution half of the goal reconciler's dispatch-and-observe loop: the
 // reconciler decides a step is needed and enqueues it; the worker performs it,
@@ -158,6 +168,14 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	}
 
 	checkpoint, err := w.exec.Execute(ctx, r)
+	if errors.Is(err, ErrWaiting) {
+		w.markWaiting(ctx, r)
+		if err := w.jobs.Complete(ctx, job.ID); err != nil {
+			return err
+		}
+		w.signal(ctx, r)
+		return nil
+	}
 	if err != nil {
 		return w.fail(ctx, job, err)
 	}
@@ -207,6 +225,26 @@ func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, che
 		}
 		r = fresh
 	}
+}
+
+// markWaiting stamps the goal's status with when its step reported it is waiting,
+// so the reconciler parks the goal instead of counting the step and dispatching
+// another. Best effort like persistCheckpoint: a write conflict means the goal
+// moved on under us, and a lost mark only degrades that one wait back to the
+// counted-and-redispatched behaviour.
+func (w *Worker) markWaiting(ctx context.Context, r resource.Resource) {
+	status, err := DecodeStatus(r)
+	if err != nil {
+		return
+	}
+	now := w.clk.Now()
+	status.WaitingSince = &now
+	enc, err := status.Encode()
+	if err != nil {
+		return
+	}
+	r.Status = enc
+	_, _ = w.store.Put(ctx, r)
 }
 
 // fail records a failed attempt. A transient cause is retried after an exponential

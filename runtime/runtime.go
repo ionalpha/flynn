@@ -125,7 +125,9 @@ func New(cfg Config) (*Runtime, error) {
 		b = bus.NewMemory()
 	}
 
-	var ropts []goal.Option
+	// The wake bus lets a settling child re-check its parked fan-out parent
+	// promptly; the parent's recheck fallback covers a lost wake.
+	ropts := []goal.Option{goal.WithWakeBus(b)}
 	if cfg.PollInterval > 0 {
 		ropts = append(ropts, goal.WithPollInterval(cfg.PollInterval))
 	}

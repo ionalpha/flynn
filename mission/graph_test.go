@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
@@ -89,10 +90,10 @@ func TestFanoutSpawnWaitFold(t *testing.T) {
 		t.Fatalf("parent should be waiting on child-1, got %+v", cp.Pending)
 	}
 
-	// While the child runs, the parent waits without calling the model again.
-	raw, cp = step(t, exec, raw)
-	if len(cp.Pending) != 1 {
-		t.Fatalf("parent should still be waiting, got %+v", cp.Pending)
+	// While the child runs, a check reports goal.ErrWaiting (parking the parent)
+	// without calling the model or advancing the checkpoint.
+	if _, err := exec.Execute(context.Background(), res(t, raw)); !errors.Is(err, goal.ErrWaiting) {
+		t.Fatalf("a waiting check must report goal.ErrWaiting, got %v", err)
 	}
 	if model.Calls() != 1 {
 		t.Fatalf("a waiting parent must not call the model, calls = %d", model.Calls())
@@ -226,8 +227,11 @@ func TestFanoutWaitSurvivesResume(t *testing.T) {
 	if len(cp.Pending) != 1 {
 		t.Fatalf("resumed checkpoint lost the wait: %+v", cp)
 	}
-	// Resuming and polling (children still running) must not spawn again.
-	_, _ = step(t, exec, raw)
+	// Resuming and polling (children still running) must not spawn again; the
+	// check reports goal.ErrWaiting so the parent parks rather than re-runs.
+	if _, err := exec.Execute(context.Background(), res(t, raw)); !errors.Is(err, goal.ErrWaiting) {
+		t.Fatalf("resumed waiting check must report goal.ErrWaiting, got %v", err)
+	}
 	if len(fan.spawned) != 1 {
 		t.Fatalf("resume re-spawned the child: %+v", fan.spawned)
 	}

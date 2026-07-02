@@ -354,8 +354,9 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	}
 
 	// A goal waiting on a fan-out folds its children in before it does anything else: poll them,
-	// and either fold their results into the conversation (all finished) or wait (some still
-	// running). No model call happens while waiting, so a fan-out parent is cheap to re-reconcile.
+	// and either fold their results into the conversation (all finished) or report goal.ErrWaiting
+	// (some still running), which parks the parent until a child settles. No model call happens on
+	// a waiting check, and a parked parent runs no steps at all between child completions.
 	if len(cp.Pending) > 0 {
 		return e.advanceFanout(ctx, r, cp)
 	}

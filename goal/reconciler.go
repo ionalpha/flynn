@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/jobs"
@@ -21,6 +22,13 @@ const DefaultMaxSteps = 20
 // DefaultPollInterval is how often the reconciler re-checks an in-flight step when
 // it is not woken by a completion signal (the safety-net poll).
 const DefaultPollInterval = 15 * time.Second
+
+// DefaultWaitRecheckFactor scales the poll interval into the recheck fallback for
+// a parked goal: a goal waiting on a fan-out is normally woken the moment a child
+// settles, so the timed re-check only covers a lost wake and can be much slower
+// than the in-flight poll. That gap is what makes a wait cheap: re-check jobs are
+// paced by child completions, not by the poll.
+const DefaultWaitRecheckFactor = 10
 
 // StopEvaluator decides whether a goal's stop condition is satisfied given its
 // desired spec and observed status. The production evaluator asks the model; tests
@@ -43,13 +51,15 @@ type Cleaner interface {
 // completes. That keeps each reconcile quick and idempotent, and because progress
 // is recorded in status, a crash resumes mid-goal instead of restarting.
 type Reconciler struct {
-	store     resource.Store
-	jobs      jobs.Queue
-	clk       clock.Clock
-	stop      StopEvaluator
-	cleaner   Cleaner
-	poll      time.Duration
-	stepTries int
+	store       resource.Store
+	jobs        jobs.Queue
+	clk         clock.Clock
+	stop        StopEvaluator
+	cleaner     Cleaner
+	bus         bus.Bus // optional; nil disables owner wake signals
+	poll        time.Duration
+	waitRecheck time.Duration // 0 derives DefaultWaitRecheckFactor * poll
+	stepTries   int
 }
 
 // Option configures a Reconciler.
@@ -66,6 +76,21 @@ func WithPollInterval(d time.Duration) Option {
 		}
 	}
 }
+
+// WithWaitRecheck overrides how long a parked goal (waiting on a fan-out's
+// children) may sit before the reconciler re-checks it without a wake signal.
+func WithWaitRecheck(d time.Duration) Option {
+	return func(g *Reconciler) {
+		if d > 0 {
+			g.waitRecheck = d
+		}
+	}
+}
+
+// WithWakeBus sets the bus the reconciler signals a parked owner on when one of
+// its children settles, so a fan-out parent re-checks on child state-change
+// instead of waiting out the recheck fallback.
+func WithWakeBus(b bus.Bus) Option { return func(g *Reconciler) { g.bus = b } }
 
 // WithStepMaxAttempts bounds how many times a single dispatched step is retried by
 // the job queue before it goes dead and stalls the goal (0 uses the queue default).
@@ -156,6 +181,7 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	}
 
 	// Observe an in-flight step.
+	observed := false
 	if status.InFlight != nil {
 		job, err := g.jobs.Get(ctx, status.InFlight.JobID)
 		switch {
@@ -173,8 +199,33 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 			return g.terminal(ctx, r, status, specHash)
 		default: // StateDone: a step completed.
 			status.InFlight = nil
-			status.Steps++
+			observed = true
+			// A step that parked the goal (ErrWaiting) made no progress, so it
+			// does not count against the step budget: a fan-out whose children
+			// outlast the budget's worth of re-checks must wait, not false-stall.
+			if status.WaitingSince == nil {
+				status.Steps++
+			}
 		}
+	}
+
+	// A parked goal: its last step reported it is waiting on external state (a
+	// fan-out's children). Do not dispatch a re-check, evaluate the stop condition,
+	// or touch the budget; a settling child clears the park and signals (prompt),
+	// and the recheck fallback below makes the re-check certain if that wake is
+	// lost. This is what keeps a wait O(child state-changes) instead of a full
+	// durable step per poll cycle.
+	if status.WaitingSince != nil {
+		if wait := status.WaitingSince.Add(g.recheckAfter()).Sub(g.clk.Now()); wait > 0 {
+			if observed {
+				status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "AwaitingChildren", Message: "waiting on child goals"}, g.clk.Now())
+				if err := g.persistStatus(ctx, r, status, specHash); err != nil {
+					return reconcile.Result{}, err
+				}
+			}
+			return reconcile.Result{RequeueAfter: wait}, nil
+		}
+		status.WaitingSince = nil // fallback elapsed with no wake: re-check now
 	}
 
 	// Converged?
@@ -262,7 +313,51 @@ func (g *Reconciler) terminal(ctx context.Context, r resource.Resource, status S
 	if err := g.persistStatus(ctx, r, status, specHash); err != nil {
 		return reconcile.Result{}, err
 	}
+	g.wakeOwner(ctx, r)
 	return reconcile.Result{}, nil
+}
+
+// recheckAfter is how long a parked goal waits before re-checking without a wake.
+func (g *Reconciler) recheckAfter() time.Duration {
+	if g.waitRecheck > 0 {
+		return g.waitRecheck
+	}
+	return DefaultWaitRecheckFactor * g.poll
+}
+
+// wakeOwner clears the controller owner's park and signals it, so a parent goal
+// waiting on a fan-out re-checks its children the moment one settles instead of
+// waiting out the recheck fallback. Best effort: a lost wake costs latency (the
+// fallback catches it), never correctness, so every failure here is dropped. The
+// conflict retry matters because the parent's status is also written by its own
+// reconciler and worker; losing every race would silently downgrade the wake.
+func (g *Reconciler) wakeOwner(ctx context.Context, r resource.Resource) {
+	owner, ok := r.Controller()
+	if !ok || owner.Kind != Kind {
+		return
+	}
+	for range 3 {
+		o, err := g.store.GetByID(ctx, owner.ID)
+		if err != nil {
+			return // owner gone or unreadable; nothing to wake
+		}
+		status, err := DecodeStatus(o)
+		if err != nil || status.WaitingSince == nil {
+			break // not parked; the signal alone suffices
+		}
+		status.WaitingSince = nil
+		enc, err := status.Encode()
+		if err != nil {
+			return
+		}
+		o.Status = enc
+		if _, err := g.store.Put(ctx, o); err == nil || !errors.Is(err, resource.ErrConflict) {
+			break
+		}
+	}
+	if g.bus != nil {
+		_ = g.bus.Publish(ctx, bus.Message{Subject: StepSubject, Payload: []byte(owner.ID)})
+	}
 }
 
 func maxSteps(s Spec) int {

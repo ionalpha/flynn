@@ -7,6 +7,7 @@ import (
 
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
@@ -155,8 +156,9 @@ func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.To
 }
 
 // advanceFanout is the waiting step of a fan-out: poll the children, and either fold their results
-// into the conversation once they have all finished or leave the checkpoint unchanged while any is
-// still running. Folding fills each spawn slot from its child and preserves call order, so the
+// into the conversation once they have all finished or report goal.ErrWaiting while any is still
+// running, which parks the parent (no checkpoint write, no step counted, no re-dispatch until a
+// child settles). Folding fills each spawn slot from its child and preserves call order, so the
 // model receives the spawn results as ordinary tool results in the order it issued them.
 func (e *Executor) advanceFanout(ctx context.Context, _ resource.Resource, cp checkpoint) (json.RawMessage, error) {
 	results, allDone, err := e.fanout.Poll(ctx, childIDs(cp.Pending))
@@ -164,7 +166,7 @@ func (e *Executor) advanceFanout(ctx context.Context, _ resource.Resource, cp ch
 		return nil, fault.Wrap(fault.Transient, "mission_fanout_poll", err)
 	}
 	if !allDone {
-		return encodeCheckpoint(cp) // children still running; wait
+		return nil, goal.ErrWaiting // children still running; park until one settles
 	}
 	byID := make(map[string]ChildResult, len(results))
 	for _, cr := range results {
