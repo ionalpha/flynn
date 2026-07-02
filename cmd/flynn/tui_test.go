@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // fakeUI records what the session host drives, standing in for a live shell.
@@ -160,6 +161,146 @@ func TestShellHostQueuesPromptWhileBusy(t *testing.T) {
 	}
 	if second < first {
 		t.Fatalf("queued prompt ran out of order:\n%s", got)
+	}
+}
+
+// fakeRunner is a scripted shellRunner recording the commands shell mode
+// runs. When block is set, Exec waits for the channel or the context, so a
+// test can hold a command in flight.
+type fakeRunner struct {
+	res   sandbox.ExecResult
+	err   error
+	block chan struct{}
+
+	mu   sync.Mutex
+	cmds []string
+}
+
+func (f *fakeRunner) Exec(ctx context.Context, cmd sandbox.Command) (sandbox.ExecResult, error) {
+	f.mu.Lock()
+	f.cmds = append(f.cmds, cmd.Line)
+	f.mu.Unlock()
+	if f.block != nil {
+		select {
+		case <-ctx.Done():
+			return sandbox.ExecResult{}, ctx.Err()
+		case <-f.block:
+		}
+	}
+	return f.res, f.err
+}
+
+// TestShellHostBangRunsConfinedCommand proves a "!" prompt runs through the
+// host's runner instead of a model turn: the command is echoed, its output
+// lands in the scrollback, and the host returns to idle.
+func TestShellHostBangRunsConfinedCommand(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	run := &fakeRunner{res: sandbox.ExecResult{Output: "alpha\nbeta\n"}}
+	host.run = run
+	host.submit("!echo hi")
+	waitIdle(t, host)
+
+	got := ui.transcript()
+	for _, want := range []string{"! ", "echo hi", "alpha", "beta"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("transcript missing %q:\n%s", want, got)
+		}
+	}
+	run.mu.Lock()
+	cmds := run.cmds
+	run.mu.Unlock()
+	if len(cmds) != 1 || cmds[0] != "echo hi" {
+		t.Fatalf("runner saw %v, want the bare command line", cmds)
+	}
+	if host.s.started {
+		t.Fatal("a shell command opened a model run")
+	}
+}
+
+// TestShellHostBangReportsExitCode proves a failing command's exit code is
+// committed to the transcript; a zero exit stays silent.
+func TestShellHostBangReportsExitCode(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	host.run = &fakeRunner{res: sandbox.ExecResult{ExitCode: 2}}
+	host.submit("!false")
+	waitIdle(t, host)
+	if got := ui.transcript(); !strings.Contains(got, "exit 2") {
+		t.Fatalf("transcript missing the exit code:\n%s", got)
+	}
+
+	host, ui = newHostForTest(t, llmtest.NewScripted())
+	host.run = &fakeRunner{res: sandbox.ExecResult{Output: "ok\n"}}
+	host.submit("!true")
+	waitIdle(t, host)
+	if got := ui.transcript(); strings.Contains(got, "exit") {
+		t.Fatalf("zero exit was reported:\n%s", got)
+	}
+}
+
+// TestShellHostBangCancel proves Escape cancels an in-flight shell command
+// the same way it cancels a turn: the transcript notes it and the session
+// stays live.
+func TestShellHostBangCancel(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	host.run = &fakeRunner{block: make(chan struct{})}
+	host.submit("!sleep forever")
+	host.interrupt()
+	waitIdle(t, host)
+	if got := ui.transcript(); !strings.Contains(got, "command cancelled") {
+		t.Fatalf("transcript did not note the cancellation:\n%s", got)
+	}
+}
+
+// TestShellHostBangEdgeCases covers the bare "!" usage hint and a session
+// whose sandbox could not be built.
+func TestShellHostBangEdgeCases(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	host.run = &fakeRunner{}
+	host.submit("!")
+	waitIdle(t, host)
+	if got := ui.transcript(); !strings.Contains(got, "usage:") {
+		t.Fatalf("bare ! did not show the usage hint:\n%s", got)
+	}
+
+	host, ui = newHostForTest(t, llmtest.NewScripted())
+	host.submit("!echo hi")
+	waitIdle(t, host)
+	if got := ui.transcript(); !strings.Contains(got, "shell mode unavailable") {
+		t.Fatalf("missing runner was not reported:\n%s", got)
+	}
+}
+
+// TestShellHostBangQueuesBehindTurn proves a shell command submitted during
+// a running turn waits its turn and runs after it, in submission order.
+func TestShellHostBangQueuesBehindTurn(t *testing.T) {
+	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
+	host, ui := newHostForTest(t, gm)
+	host.run = &fakeRunner{res: sandbox.ExecResult{Output: "later\n"}}
+	host.submit("one")
+	select {
+	case <-gm.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("turn never reached the model")
+	}
+	host.submit("!echo later")
+	close(gm.release)
+	waitIdle(t, host)
+
+	got := ui.transcript()
+	turn, cmd := strings.Index(got, "one"), strings.Index(got, "echo later")
+	if turn < 0 || cmd < 0 || cmd < turn {
+		t.Fatalf("queued shell command ran out of order:\n%s", got)
+	}
+}
+
+// TestShellMarker pins the composer marker hook: a "!" prompt carries the
+// shell marker, anything else keeps the default.
+func TestShellMarker(t *testing.T) {
+	if got := shellMarker("!ls"); got != "! " {
+		t.Fatalf("shellMarker(!ls) = %q", got)
+	}
+	if got := shellMarker("hello"); got != "" {
+		t.Fatalf("shellMarker(hello) = %q", got)
 	}
 }
 

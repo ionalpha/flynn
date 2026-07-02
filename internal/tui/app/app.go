@@ -76,6 +76,13 @@ type Config struct {
 	// Both methods run on the event loop goroutine with no locks held, so
 	// Complete must be fast; slow indexing belongs behind a host-built cache.
 	Completer Completer
+	// Marker maps the composer's current content to its first-row gutter
+	// marker, so the host can surface an input mode the content selects
+	// ("! " while the prompt is a shell command). Empty selects the default
+	// prompt marker; a non-empty marker is fitted to the gutter's width. It
+	// runs on the paint goroutine under the shell's lock, so it must be a
+	// fast pure function of its argument. Nil always uses the default.
+	Marker func(content string) string
 }
 
 // Completer is the host side of @-completion. Complete returns the
@@ -349,5 +356,9 @@ func (a *App) composeLocked() []string {
 	if a.menu.open {
 		frame = append(frame, a.menuRowsLocked()...)
 	}
-	return append(frame, composerRows(&a.editor, a.cfg.Theme, a.width, a.cfg.Placeholder)...)
+	marker := ""
+	if a.cfg.Marker != nil {
+		marker = a.cfg.Marker(a.editor.Content())
+	}
+	return append(frame, composerRows(&a.editor, a.cfg.Theme, a.width, a.cfg.Placeholder, marker)...)
 }

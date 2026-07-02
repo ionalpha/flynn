@@ -22,21 +22,27 @@ const (
 // is hidden for the session (the painter rests it at the start of the last
 // live row, not at the edit point), so the cursor the user sees is a
 // reverse-video cell spliced into the row at the editor's reported position.
-func composerRows(ed *editor.Editor, th *theme.Theme, width int, placeholder string) []string {
+// marker, when non-empty, replaces the first row's prompt marker; it is
+// fitted to the gutter's width so a host marker can never shift alignment.
+func composerRows(ed *editor.Editor, th *theme.Theme, width int, placeholder, marker string) []string {
 	inner := width - gutterWidth
 	if inner < 1 {
 		inner = 1
 	}
+	first := gutterPrompt
+	if marker != "" {
+		first = fitGutter(marker)
+	}
 	if ed.Empty() && placeholder != "" {
 		hint := screen.Truncate(placeholder, inner-1)
-		return []string{th.Render(theme.UserPrefix, gutterPrompt) + cursorCell(" ") + th.Render(theme.Placeholder, hint)}
+		return []string{th.Render(theme.UserPrefix, first) + cursorCell(" ") + th.Render(theme.Placeholder, hint)}
 	}
 	rows, curRow, curCol := ed.Render(inner)
 	out := make([]string, len(rows))
 	for i, row := range rows {
 		gutter := gutterCont
 		if i == 0 {
-			gutter = gutterPrompt
+			gutter = first
 		}
 		body := th.Render(theme.UserText, row)
 		if i == curRow {
@@ -45,6 +51,17 @@ func composerRows(ed *editor.Editor, th *theme.Theme, width int, placeholder str
 		out[i] = th.Render(theme.UserPrefix, gutter) + body
 	}
 	return out
+}
+
+// fitGutter fits a host-supplied marker to exactly the gutter's width in
+// cells, truncating a long one and padding a short one, so every composer
+// row keeps the same left edge whatever the host returns.
+func fitGutter(marker string) string {
+	marker = screen.Truncate(marker, gutterWidth)
+	if pad := gutterWidth - screen.Width(marker); pad > 0 {
+		marker += strings.Repeat(" ", pad)
+	}
+	return marker
 }
 
 // spliceCursor styles row with the cursor over the cell at col. Editor rows

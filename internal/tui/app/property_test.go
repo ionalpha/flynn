@@ -28,7 +28,7 @@ func TestComposerInvariants(t *testing.T) {
 		}
 		width := rapid.IntRange(3, 60).Draw(rt, "width")
 
-		rows := composerRows(&ed, theme.Default(), width, "hint")
+		rows := composerRows(&ed, theme.Default(), width, "hint", "")
 		if len(rows) == 0 {
 			rt.Fatal("composer rendered no rows")
 		}

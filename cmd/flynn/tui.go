@@ -17,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/screen"
 	tuiterm "github.com/ionalpha/flynn/internal/tui/term"
 	"github.com/ionalpha/flynn/internal/tui/theme"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // resizePoll is how often the shell samples the terminal size. Polling is the
@@ -76,6 +77,15 @@ func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
 // production wiring over pipes, with no terminal required.
 func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int) (*app.App, *sessionHost) {
 	host := &sessionHost{ctx: ctx, s: s, th: theme.Default()}
+	// Shell mode runs the user's commands through the same confined sandbox
+	// every other command takes, rooted at the session's working directory. A
+	// directory the sandbox refuses is reported when shell mode is first used;
+	// the rest of the session works without it.
+	if run, err := sandbox.NewLocal(s.cwd); err != nil {
+		host.runErr = err
+	} else {
+		host.run = run
+	}
 	a := app.New(app.Config{
 		Input:       in,
 		Output:      out,
@@ -87,9 +97,19 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		OnEsc:       host.interrupt,
 		OnKey:       host.key,
 		Completer:   newFileCompleter(s.cwd),
+		Marker:      shellMarker,
 	})
 	host.ui = a
 	return a, host
+}
+
+// shellMarker swaps the composer's prompt marker for the shell marker while
+// the prompt is a shell command, so the input mode is visible as it is typed.
+func shellMarker(content string) string {
+	if strings.HasPrefix(content, "!") {
+		return "! "
+	}
+	return ""
 }
 
 // shellUI is the slice of the shell the session host drives. An interface so
@@ -101,17 +121,28 @@ type shellUI interface {
 	Quit()
 }
 
+// shellRunner is the confined executor behind the composer's shell mode: the
+// slice of the sandbox the host needs, an interface so tests can substitute
+// a recording fake.
+type shellRunner interface {
+	Exec(ctx context.Context, cmd sandbox.Command) (sandbox.ExecResult, error)
+}
+
 // sessionHost owns the session policy on top of the shell's mechanics: it
 // echoes and queues submitted prompts, drives each one as a turn of the
 // replSession on its own goroutine, routes the turn's rendered output into
 // the scrollback, and maps Escape and Ctrl+C onto cancelling the in-flight
 // turn. Turns are strictly serial; a prompt submitted while one runs waits
-// its turn in the queue.
+// its turn in the queue. A prompt starting with "!" is a shell command: it
+// holds the same turn slot, runs through the confined sandbox at the working
+// directory, and lands its output in the scrollback like any other turn.
 type sessionHost struct {
-	ctx context.Context
-	s   *replSession
-	ui  shellUI
-	th  *theme.Theme
+	ctx    context.Context
+	s      *replSession
+	ui     shellUI
+	th     *theme.Theme
+	run    shellRunner
+	runErr error
 
 	mu       sync.Mutex
 	busy     bool
@@ -161,9 +192,15 @@ func (h *sessionHost) submit(text string) {
 
 // start launches text as one turn on its own goroutine. The prompt is echoed
 // into the scrollback, the turn's rendered lines follow it as they arrive,
-// and when the turn ends the next queued prompt (if any) starts. The caller
-// has already marked the host busy.
+// and when the turn ends the next queued prompt (if any) starts. A "!"
+// prompt starts a shell command instead of a model turn; the branch lives
+// here so queued shell commands and prompts run in submission order. The
+// caller has already marked the host busy.
 func (h *sessionHost) start(text string) {
+	if cmd, ok := strings.CutPrefix(text, "!"); ok {
+		h.startShell(strings.TrimSpace(cmd))
+		return
+	}
 	turnCtx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
 	h.cancel = cancel
@@ -190,6 +227,67 @@ func (h *sessionHost) start(text string) {
 		}
 		h.next()
 	}()
+}
+
+// startShell runs one composer shell command as the current turn: echoed
+// into the scrollback under the shell marker, executed through the confined
+// sandbox, its output committed below the echo. It holds the same turn slot
+// a prompt does, so Escape and Ctrl+C cancel a running command and anything
+// queued behind it waits. The caller has already marked the host busy.
+func (h *sessionHost) startShell(cmdLine string) {
+	turnCtx, cancel := context.WithCancel(h.ctx)
+	h.mu.Lock()
+	h.cancel = cancel
+	h.mu.Unlock()
+	h.refreshStatus()
+
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "! ")+h.th.Render(theme.UserText, cmdLine))
+	h.turns.Add(1)
+	go func() {
+		defer h.turns.Done()
+		h.runShell(turnCtx, cmdLine)
+		cancel()
+		h.next()
+	}()
+}
+
+// runShell executes one shell-mode command and commits its outcome to the
+// scrollback: the command's combined output, then its exit code when it is
+// not zero. Cancellation reads as a cancelled command, not an error.
+func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
+	if cmdLine == "" {
+		h.ui.Append(h.th.Render(theme.Status, "  usage: !<command> runs a shell command in "+h.s.cwd))
+		return
+	}
+	if h.run == nil {
+		msg := "no sandbox at the working directory"
+		if h.runErr != nil {
+			msg = h.runErr.Error()
+		}
+		h.ui.Append("  shell mode unavailable: " + msg)
+		return
+	}
+	res, err := h.run.Exec(ctx, sandbox.Command{Line: cmdLine})
+	switch {
+	case errors.Is(ctx.Err(), context.Canceled):
+		h.ui.Append("  (command cancelled)")
+		return
+	case err != nil:
+		h.ui.Append("  error: " + err.Error())
+		return
+	}
+	var lines []string
+	if out := strings.TrimRight(res.Output, "\n"); out != "" {
+		for _, line := range strings.Split(out, "\n") {
+			lines = append(lines, h.th.Render(theme.ToolOutput, "  "+strings.TrimRight(line, "\r")))
+		}
+	}
+	if res.ExitCode != 0 {
+		lines = append(lines, h.th.Render(theme.Rejected, fmt.Sprintf("  exit %d", res.ExitCode)))
+	}
+	if len(lines) > 0 {
+		h.ui.Append(lines...)
+	}
 }
 
 // next ends the finished turn's ownership of the shell: it starts the next
@@ -279,7 +377,7 @@ func (h *sessionHost) refreshStatus() {
 // statusLine is the one-row hint between the live output and the composer.
 func statusLine(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {
