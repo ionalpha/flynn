@@ -105,14 +105,20 @@ func (t *Theme) Name() string { return t.name }
 func (t *Theme) Style(r Role) Style { return t.styles[r] }
 
 // Render styles s for the role: the role's SGR attributes, the text, then a
-// reset. Text with a zero style passes through untouched, so an unthemed
-// role costs nothing and adds no escape noise.
+// reset. Text whose style contributes no attributes passes through
+// untouched. That covers the zero style (an unthemed role costs nothing and
+// adds no escape noise) and a style whose only content is an invalid color:
+// the color is muted, so there is no prefix, and there must be no dangling
+// reset either.
 func (t *Theme) Render(r Role, s string) string {
-	st := t.styles[r]
-	if st.IsZero() || s == "" {
+	if s == "" {
 		return s
 	}
-	return st.sgr() + s + "\x1b[0m"
+	prefix := t.styles[r].sgr()
+	if prefix == "" {
+		return s
+	}
+	return prefix + s + "\x1b[0m"
 }
 
 // sgr builds the style's escape sequence.

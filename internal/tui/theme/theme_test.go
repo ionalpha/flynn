@@ -52,6 +52,17 @@ func TestColorForms(t *testing.T) {
 	}
 }
 
+// TestInvalidColorOnlyStyleRendersBare pins a regression the property test
+// found: a style whose only content is an invalid color is not the zero
+// style, but it contributes no attributes, so the render must be the bare
+// text, never a dangling reset with no prefix.
+func TestInvalidColorOnlyStyleRendersBare(t *testing.T) {
+	th := themeWith(t, theme.Style{Foreground: "!"})
+	if got := th.Render(theme.UserText, " "); got != " " {
+		t.Fatalf("attribute-free style rendered %q, want the bare text", got)
+	}
+}
+
 func TestInvalidColorMutesRatherThanCorrupts(t *testing.T) {
 	th := themeWith(t, theme.Style{Foreground: "#zzzzzz", Bold: true})
 	got := th.Render(theme.UserText, "x")
