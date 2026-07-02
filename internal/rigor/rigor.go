@@ -46,21 +46,21 @@ type Policy struct {
 func DefaultPolicy() Policy {
 	return Policy{
 		Grandfathered: map[string]bool{
-			"clock":            true,
-			"dispatch":         true,
-			"ids":              true,
-			"internal/sqlitex": true,
-			"observe":          true,
-			"spinesink":        true,
+			"clock":              true,
+			"dispatch":           true,
+			"ids":                true,
+			"internal/sqlitex":   true,
+			"internal/spinesink": true,
+			"observe":            true,
 		},
 		FuzzRequired: map[string]bool{
-			"bus":      true,
-			"fault":    true,
-			"jobs":     true,
-			"spine":    true,
-			"resource": true,
-			"fetch":    true,
-			"netguard": true,
+			"bus":            true,
+			"fault":          true,
+			"jobs":           true,
+			"spine":          true,
+			"resource":       true,
+			"internal/fetch": true,
+			"netguard":       true,
 		},
 	}
 }

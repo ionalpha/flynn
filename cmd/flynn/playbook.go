@@ -11,13 +11,13 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/ionalpha/flynn/dependency"
 	"github.com/ionalpha/flynn/fault"
-	"github.com/ionalpha/flynn/fetch"
-	"github.com/ionalpha/flynn/flow"
-	"github.com/ionalpha/flynn/playbook"
+	"github.com/ionalpha/flynn/internal/dependency"
+	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/flow"
+	"github.com/ionalpha/flynn/internal/playbook"
+	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/sandbox"
-	"github.com/ionalpha/flynn/service"
 )
 
 // terminalConfirmer asks the operator to approve a playbook's confirm steps at the

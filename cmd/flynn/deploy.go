@@ -12,10 +12,10 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/extension"
+	"github.com/ionalpha/flynn/internal/ops"
+	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/ops"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/service"
 )
 
 // runDeploy implements `flynn deploy <extension> [flags] [json-input]`. It runs a

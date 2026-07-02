@@ -6,7 +6,7 @@ import (
 	"io"
 	"strings"
 
-	"github.com/ionalpha/flynn/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/inference/modelsource"
 )
 
 // requireConsent is the no-footgun gate: before a risky model run proceeds, the user must

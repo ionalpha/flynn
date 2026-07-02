@@ -10,9 +10,9 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/spinesink"
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/spine"
-	"github.com/ionalpha/flynn/spinesink"
 	"github.com/ionalpha/flynn/state"
 )
 

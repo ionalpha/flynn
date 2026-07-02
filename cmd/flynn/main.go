@@ -19,12 +19,12 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/secret"
-	"github.com/ionalpha/flynn/vault"
 )
 
 // dataDirCommands are the subcommands whose only state is the data directory.

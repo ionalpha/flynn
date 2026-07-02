@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/ionalpha/flynn/fetch"
-	"github.com/ionalpha/flynn/inference/provision"
+	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/inference/provision"
 )
 
 // runRuntimeInstall implements `flynn models install [runtime]`: fetch a pinned, gated

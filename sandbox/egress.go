@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/ionalpha/flynn/bindguard"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/bindguard"
 	"github.com/ionalpha/flynn/netguard"
 )
 

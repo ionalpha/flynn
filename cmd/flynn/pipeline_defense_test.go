@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/gguf"
-	"github.com/ionalpha/flynn/inference"
-	"github.com/ionalpha/flynn/inference/launch"
-	"github.com/ionalpha/flynn/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/gguf"
+	"github.com/ionalpha/flynn/internal/inference"
+	"github.com/ionalpha/flynn/internal/inference/launch"
+	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/sandbox"
 )
 

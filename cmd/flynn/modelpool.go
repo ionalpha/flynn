@@ -10,10 +10,10 @@ import (
 	"os/signal"
 	"strings"
 
-	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/clock"
-	"github.com/ionalpha/flynn/inference/modelsource"
-	"github.com/ionalpha/flynn/inference/orchestrate"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/inference/orchestrate"
 )
 
 // runModelPool implements `flynn models pool [--vram GB] [--pin id,...] <model-id>...`: keep a

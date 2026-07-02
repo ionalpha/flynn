@@ -1,7 +1,7 @@
 package openai
 
 import (
-	"github.com/ionalpha/flynn/gbnf"
+	"github.com/ionalpha/flynn/internal/gbnf"
 	"github.com/ionalpha/flynn/llm"
 )
 
