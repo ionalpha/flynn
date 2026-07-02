@@ -8,8 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
-	"time"
 )
 
 // faultyBody yields data until failAfter bytes, then returns an injected error, the
@@ -91,16 +91,28 @@ func TestFetchTruncatedBodyInstallsNothing(t *testing.T) {
 	}
 }
 
-// TestFetchCancelledInstallsNothing covers a download cut off by a context timeout:
-// the server hangs, the client gives up, and Fetch must error with no file left.
+// TestFetchCancelledInstallsNothing covers a download cancelled mid-request:
+// the server holds the request open, the client cancels, and Fetch must error
+// with no file left. Cancellation is ordered explicitly: the context is
+// cancelled only after the server has the request, and the handler aborts the
+// connection rather than returning, so a response can never be produced and
+// the cancel cannot lose a race against a completed download.
 func TestFetchCancelledInstallsNothing(t *testing.T) {
+	requested := make(chan struct{})
+	var once sync.Once
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
-		<-r.Context().Done() // hang until the client cancels
+		once.Do(func() { close(requested) })
+		<-r.Context().Done() // hold the request open until the client cancels
+		panic(http.ErrAbortHandler)
 	}))
 	t.Cleanup(srv.Close)
 	d := New(WithHTTPClient(srv.Client()))
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	go func() {
+		<-requested
+		cancel()
+	}()
 	dest := filepath.Join(t.TempDir(), "m.gguf")
 
 	_, err := d.Fetch(ctx, Request{URL: srv.URL, Dest: dest, MaxBytes: 1 << 20})
