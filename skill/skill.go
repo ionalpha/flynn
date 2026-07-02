@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/state"
 )
@@ -193,8 +194,10 @@ func toResource(sk state.Skill) (resource.Resource, error) {
 		Scope:      resource.Scope(sk.Scope),
 		Spec:       body,
 		Envelope: resource.Envelope{
-			SyncVersion:      sk.SyncVersion,
-			OriginInstanceID: sk.OriginInstanceID,
+			Envelope: envelope.Envelope{
+				SyncVersion:      sk.SyncVersion,
+				OriginInstanceID: sk.OriginInstanceID,
+			},
 		},
 	}, nil
 }

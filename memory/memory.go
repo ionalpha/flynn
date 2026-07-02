@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/state"
 )
@@ -164,8 +165,10 @@ func toResource(m state.MemoryItem) (resource.Resource, error) {
 		Scope:        resource.Scope(m.Scope),
 		Spec:         body,
 		Envelope: resource.Envelope{
-			SyncVersion:      m.SyncVersion,
-			OriginInstanceID: m.OriginInstanceID,
+			Envelope: envelope.Envelope{
+				SyncVersion:      m.SyncVersion,
+				OriginInstanceID: m.OriginInstanceID,
+			},
 		},
 	}, nil
 }

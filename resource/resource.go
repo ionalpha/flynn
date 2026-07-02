@@ -21,7 +21,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/ionalpha/flynn/hlc"
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -73,20 +73,14 @@ type OwnerReference struct {
 type Envelope struct {
 	// --- sync / concurrency ---
 
-	// SyncVersion is bumped on every write (1 on create). It powers local
-	// optimistic concurrency: pass the version you read and the write fails with
-	// ErrConflict if it has moved; a zero SyncVersion writes unconditionally.
-	SyncVersion int64
-	// OriginInstanceID is the instance that first created the resource; preserved
-	// across updates so fleet/P2P merge can attribute provenance.
-	OriginInstanceID string
-	// UpdatedHLC is the hybrid-logical-clock time of the last write. It orders
-	// writes across instances for last-writer-wins merge (the LWW key is
-	// (UpdatedHLC, LastWriterID)), where SyncVersion (local-only) cannot.
-	UpdatedHLC hlc.Time
-	// LastWriterID is the instance that performed the last write (distinct from
-	// OriginInstanceID, the creator).
-	LastWriterID string
+	// The shared sync envelope: SyncVersion (optimistic concurrency),
+	// OriginInstanceID (creator provenance), UpdatedHLC + LastWriterID (the
+	// last-writer-wins merge key), and Deleted (the syncing tombstone). The
+	// fields and the stamping rules over them are defined once in the envelope
+	// package and shared with state records, so fleet merge is one discipline,
+	// not two. Embedding inlines the fields, so the wire format and hashes are
+	// unchanged.
+	envelope.Envelope
 	// WriterActor records who authored the last write: a human, the agent, or the
 	// runtime (system). It is the provenance signal cross-instance Merge uses for
 	// precedence, so a person's correction outranks a later automated write and is
@@ -94,9 +88,6 @@ type Envelope struct {
 	// excluded from the content hash (identical content authored by different actors
 	// shares a hash). The zero value is treated as the agent.
 	WriterActor spine.ActorType
-	// Deleted marks a tombstone: a soft delete that still carries its envelope so
-	// it propagates in sync and prevents a stale replica from resurrecting it.
-	Deleted bool
 
 	// --- deletion lifecycle (finalizers) ---
 

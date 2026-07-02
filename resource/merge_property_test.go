@@ -3,6 +3,7 @@ package resource
 import (
 	"testing"
 
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -46,8 +47,11 @@ func TestResolveConverges(t *testing.T) {
 		return Resource{
 			ID: "same", APIVersion: "t/v1", Kind: "T", Name: "n",
 			Envelope: Envelope{
-				OriginInstanceID: writer, LastWriterID: writer, WriterActor: actor,
-				UpdatedHLC: hlc.Time{Wall: wall, Counter: ctr}, Deleted: deleted,
+				Envelope: envelope.Envelope{
+					OriginInstanceID: writer, LastWriterID: writer,
+					UpdatedHLC: hlc.Time{Wall: wall, Counter: ctr}, Deleted: deleted,
+				},
+				WriterActor: actor,
 			},
 		}
 	}
@@ -93,8 +97,8 @@ func TestResolveConverges(t *testing.T) {
 // TestResolveIdempotent asserts re-applying the winning record never flips the
 // decision: once a record has won, seeing it again is a no-op.
 func TestResolveIdempotent(t *testing.T) {
-	a := Resource{ID: "x", Envelope: Envelope{LastWriterID: "a", WriterActor: spine.ActorAgent, UpdatedHLC: hlc.Time{Wall: 100}}}
-	b := Resource{ID: "x", Envelope: Envelope{LastWriterID: "b", WriterActor: spine.ActorAgent, UpdatedHLC: hlc.Time{Wall: 200}}}
+	a := Resource{ID: "x", Envelope: Envelope{Envelope: envelope.Envelope{LastWriterID: "a", UpdatedHLC: hlc.Time{Wall: 100}}, WriterActor: spine.ActorAgent}}
+	b := Resource{ID: "x", Envelope: Envelope{Envelope: envelope.Envelope{LastWriterID: "b", UpdatedHLC: hlc.Time{Wall: 200}}, WriterActor: spine.ActorAgent}}
 	winner, take := Resolve(b, a)
 	if !take || winner.LastWriterID != "b" {
 		t.Fatalf("Resolve(b,a) = (%q,%v), want b taken", winner.LastWriterID, take)

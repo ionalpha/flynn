@@ -2,6 +2,7 @@ package state
 
 import (
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/spine"
@@ -56,13 +57,7 @@ func (s *Stamper) input(typ string, records map[string]any) (spine.AppendInput, 
 	if err != nil {
 		return spine.AppendInput{}, err
 	}
-	return spine.AppendInput{
-		Stream:           StateStream,
-		Type:             typ,
-		Actor:            spine.ActorAgent,
-		RawPayload:       p,
-		OriginInstanceID: s.instanceID,
-	}, nil
+	return envelope.EventInput(StateStream, typ, spine.ActorAgent, s.instanceID, p), nil
 }
 
 // CreateSession stamps a new session and returns it with the event to append.
@@ -75,13 +70,7 @@ func (s *Stamper) CreateSession(ses Session) (Session, spine.AppendInput, error)
 		ses.CreatedAt = now
 	}
 	ses.UpdatedAt = now
-	if ses.OriginInstanceID == "" {
-		ses.OriginInstanceID = s.instanceID
-	}
-	ses.LastWriterID = s.instanceID
-	ses.UpdatedHLC = s.hlc.Now()
-	ses.SyncVersion = 1
-	ses.Deleted = false
+	envelope.StampCreate(&ses.Envelope, s.instanceID, s.hlc.Now())
 	ev, err := s.sessionEvent(EvSessionCreated, ses)
 	return ses, ev, err
 }
@@ -100,20 +89,12 @@ func (s *Stamper) AppendTurn(ses Session, t Turn, nextSeq int64) (Turn, Session,
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
 	}
-	if t.OriginInstanceID == "" {
-		t.OriginInstanceID = s.instanceID
-	}
 	hnow := s.hlc.Now()
-	t.LastWriterID = s.instanceID
-	t.UpdatedHLC = hnow
-	t.SyncVersion = 1
-	t.Deleted = false
+	envelope.StampCreate(&t.Envelope, s.instanceID, hnow)
 
 	// Appending a turn mutates the session: bump its envelope under the same HLC.
 	ses.UpdatedAt = t.CreatedAt
-	ses.LastWriterID = s.instanceID
-	ses.UpdatedHLC = hnow
-	ses.SyncVersion++
+	envelope.StampBump(&ses.Envelope, s.instanceID, hnow)
 
 	ev, err := s.input(EvTurnAppended, map[string]any{keyTurn: t, keySession: ses})
 	if err != nil {
@@ -124,11 +105,8 @@ func (s *Stamper) AppendTurn(ses Session, t Turn, nextSeq int64) (Turn, Session,
 
 // DeleteSession tombstones the given live session and returns the event.
 func (s *Stamper) DeleteSession(ses Session) (Session, spine.AppendInput, error) {
-	ses.Deleted = true
-	ses.LastWriterID = s.instanceID
-	ses.UpdatedHLC = s.hlc.Now()
+	envelope.StampTombstone(&ses.Envelope, s.instanceID, s.hlc.Now())
 	ses.UpdatedAt = s.clk.Now()
-	ses.SyncVersion++
 	ev, err := s.sessionEvent(EvSessionDeleted, ses)
 	return ses, ev, err
 }
@@ -141,24 +119,21 @@ func (s *Stamper) DeleteSession(ses Session) (Session, spine.AppendInput, error)
 func (s *Stamper) UpsertSkill(existing *Skill, sk Skill) (Skill, spine.AppendInput, error) {
 	now := s.clk.Now()
 	if existing != nil {
-		if sk.SyncVersion != 0 && sk.SyncVersion != existing.SyncVersion {
+		if !envelope.CAS(sk.SyncVersion, &existing.Envelope) {
 			return Skill{}, spine.AppendInput{}, ErrConflict
 		}
 		sk.ID = existing.ID
 		sk.CreatedAt = existing.CreatedAt
-		sk.OriginInstanceID = existing.OriginInstanceID // origin is preserved
 		sk.Version = existing.Version + 1
-		sk.SyncVersion = existing.SyncVersion + 1
-		sk.LastWriterID = s.instanceID
-		sk.UpdatedHLC = s.hlc.Now()
-		sk.UpdatedAt = now
 		// Deleted comes from sk: a normal upsert (Deleted false) over a tombstone
 		// resurrects it; the projection reindexes accordingly.
+		envelope.StampUpdate(&sk.Envelope, existing.Envelope, s.instanceID, s.hlc.Now())
+		sk.UpdatedAt = now
 		ev, err := s.skillEvent(EvSkillUpserted, sk)
 		return sk, ev, err
 	}
 
-	if sk.SyncVersion != 0 {
+	if !envelope.CAS(sk.SyncVersion, nil) {
 		return Skill{}, spine.AppendInput{}, ErrConflict
 	}
 	if sk.ID == "" {
@@ -167,12 +142,7 @@ func (s *Stamper) UpsertSkill(existing *Skill, sk Skill) (Skill, spine.AppendInp
 	if sk.Version == 0 {
 		sk.Version = 1
 	}
-	sk.SyncVersion = 1
-	if sk.OriginInstanceID == "" {
-		sk.OriginInstanceID = s.instanceID
-	}
-	sk.LastWriterID = s.instanceID
-	sk.UpdatedHLC = s.hlc.Now()
+	envelope.StampCreate(&sk.Envelope, s.instanceID, s.hlc.Now())
 	sk.CreatedAt = now
 	sk.UpdatedAt = now
 	ev, err := s.skillEvent(EvSkillUpserted, sk)
@@ -182,11 +152,8 @@ func (s *Stamper) UpsertSkill(existing *Skill, sk Skill) (Skill, spine.AppendInp
 // DeleteSkill tombstones the given live skill (bumping the content version too,
 // so a delete is itself a revision) and returns the event.
 func (s *Stamper) DeleteSkill(sk Skill) (Skill, spine.AppendInput, error) {
-	sk.Deleted = true
 	sk.Version++
-	sk.SyncVersion++
-	sk.LastWriterID = s.instanceID
-	sk.UpdatedHLC = s.hlc.Now()
+	envelope.StampTombstone(&sk.Envelope, s.instanceID, s.hlc.Now())
 	sk.UpdatedAt = s.clk.Now()
 	ev, err := s.skillEvent(EvSkillDeleted, sk)
 	return sk, ev, err
@@ -200,23 +167,14 @@ func (s *Stamper) WriteMemory(it MemoryItem) (MemoryItem, spine.AppendInput, err
 	if it.CreatedAt.IsZero() {
 		it.CreatedAt = s.clk.Now()
 	}
-	if it.OriginInstanceID == "" {
-		it.OriginInstanceID = s.instanceID
-	}
-	it.LastWriterID = s.instanceID
-	it.UpdatedHLC = s.hlc.Now()
-	it.SyncVersion = 1
-	it.Deleted = false
+	envelope.StampCreate(&it.Envelope, s.instanceID, s.hlc.Now())
 	ev, err := s.memoryEvent(EvMemoryWritten, it)
 	return it, ev, err
 }
 
 // DeleteMemory tombstones the given live memory item and returns the event.
 func (s *Stamper) DeleteMemory(it MemoryItem) (MemoryItem, spine.AppendInput, error) {
-	it.Deleted = true
-	it.LastWriterID = s.instanceID
-	it.UpdatedHLC = s.hlc.Now()
-	it.SyncVersion++
+	envelope.StampTombstone(&it.Envelope, s.instanceID, s.hlc.Now())
 	ev, err := s.memoryEvent(EvMemoryDeleted, it)
 	return it, ev, err
 }

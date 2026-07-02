@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
@@ -134,12 +135,14 @@ func remoteWidget(id, name, size string, wall int64, writer string, actor spine.
 		Name:       name,
 		Spec:       json.RawMessage(`{"size":"` + size + `"}`),
 		Envelope: resource.Envelope{
-			SyncVersion:      1,
-			Version:          1,
-			OriginInstanceID: writer,
-			LastWriterID:     writer,
-			WriterActor:      actor,
-			UpdatedHLC:       hlc.Time{Wall: wall},
+			Envelope: envelope.Envelope{
+				SyncVersion:      1,
+				OriginInstanceID: writer,
+				LastWriterID:     writer,
+				UpdatedHLC:       hlc.Time{Wall: wall},
+			},
+			Version:     1,
+			WriterActor: actor,
 		},
 	}
 	if h, err := resource.Hash(r); err == nil {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/spine"
@@ -48,16 +49,15 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 
 	now := s.clk.Now()
 	if existing != nil {
-		if r.SyncVersion != 0 && r.SyncVersion != existing.SyncVersion {
+		if !envelope.CAS(r.SyncVersion, &existing.Envelope.Envelope) {
 			return Resource{}, spine.AppendInput{}, ErrConflict
 		}
 		r.ID = existing.ID
 		r.CreatedAt = existing.CreatedAt
-		r.OriginInstanceID = existing.OriginInstanceID // origin preserved
 		r.Version = existing.Version + 1
-		r.SyncVersion = existing.SyncVersion + 1
+		envelope.StampUpdate(&r.Envelope.Envelope, existing.Envelope.Envelope, s.instanceID, s.hlc.Now())
 	} else {
-		if r.SyncVersion != 0 {
+		if !envelope.CAS(r.SyncVersion, nil) {
 			return Resource{}, spine.AppendInput{}, ErrConflict
 		}
 		if r.ID == "" {
@@ -70,16 +70,11 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 			r.Name = r.GenerateName + r.ID
 		}
 		r.Version = 1
-		r.SyncVersion = 1
-		if r.OriginInstanceID == "" {
-			r.OriginInstanceID = s.instanceID
-		}
+		envelope.StampCreate(&r.Envelope.Envelope, s.instanceID, s.hlc.Now())
 		r.CreatedAt = now
 	}
-	r.GenerateName = "" // consumed: the persisted record is named, never re-generates
-	r.LastWriterID = s.instanceID
+	r.GenerateName = ""                        // consumed: the persisted record is named, never re-generates
 	r.WriterActor = writerActor(r.WriterActor) // caller may mark a human write; defaults to the agent
-	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = now
 
 	// DeletionTimestamp is system-owned: a Put never sets or clears it. Preserve it
@@ -120,10 +115,8 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 // completes later, in Put, when the last finalizer is removed.
 func (s *Stamper) Delete(r Resource) (Resource, spine.AppendInput, error) {
 	r.Version++
-	r.SyncVersion++
-	r.LastWriterID = s.instanceID
+	envelope.StampBump(&r.Envelope.Envelope, s.instanceID, s.hlc.Now())
 	r.WriterActor = writerActor(r.WriterActor)
-	r.UpdatedHLC = s.hlc.Now()
 	r.UpdatedAt = s.clk.Now()
 
 	evType := EvDeleted
@@ -153,13 +146,7 @@ func (s *Stamper) event(typ string, r Resource) (spine.AppendInput, error) {
 	if err != nil {
 		return spine.AppendInput{}, err
 	}
-	return spine.AppendInput{
-		Stream:           ResourceStream,
-		Type:             typ,
-		Actor:            writerActor(r.WriterActor),
-		RawPayload:       p,
-		OriginInstanceID: s.instanceID,
-	}, nil
+	return envelope.EventInput(ResourceStream, typ, writerActor(r.WriterActor), s.instanceID, p), nil
 }
 
 // writerActor normalizes a provenance actor, defaulting the zero value to the

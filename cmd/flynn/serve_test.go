@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/resource"
@@ -34,7 +35,7 @@ func goalRes(t *testing.T, name, origin string, phase goal.Phase) resource.Resou
 		Kind:     goal.Kind,
 		Name:     name,
 		Status:   status,
-		Envelope: resource.Envelope{OriginInstanceID: origin},
+		Envelope: resource.Envelope{Envelope: envelope.Envelope{OriginInstanceID: origin}},
 	}
 }
 
