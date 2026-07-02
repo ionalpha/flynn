@@ -27,12 +27,12 @@ func TestSetupAndTeardownEmitNothingForZeroOptions(t *testing.T) {
 
 func TestSetupEnablesEverySelectedMode(t *testing.T) {
 	var b strings.Builder
-	o := term.Options{BracketedPaste: true, FocusEvents: true, KittyKeyboard: true}
+	o := term.Options{BracketedPaste: true, FocusEvents: true, KittyKeyboard: true, HideCursor: true}
 	if err := term.Setup(&b, o); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
-	for _, want := range []string{"\x1b[?2004h", "\x1b[?1004h", "\x1b[>1u"} {
+	for _, want := range []string{"\x1b[?2004h", "\x1b[?1004h", "\x1b[>1u", "\x1b[?25l"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("setup %q missing %q", out, want)
 		}
@@ -49,6 +49,7 @@ func TestProp_TeardownReversesSetup(t *testing.T) {
 			BracketedPaste: rapid.Bool().Draw(rt, "paste"),
 			FocusEvents:    rapid.Bool().Draw(rt, "focus"),
 			KittyKeyboard:  rapid.Bool().Draw(rt, "kitty"),
+			HideCursor:     rapid.Bool().Draw(rt, "cursor"),
 		}
 		var up, down strings.Builder
 		if err := term.Setup(&up, o); err != nil {
@@ -61,6 +62,7 @@ func TestProp_TeardownReversesSetup(t *testing.T) {
 			{"\x1b[?2004h", "\x1b[?2004l"},
 			{"\x1b[?1004h", "\x1b[?1004l"},
 			{"\x1b[>1u", "\x1b[<1u"},
+			{"\x1b[?25l", "\x1b[?25h"},
 		}
 		lastUp, lastDown := -1, len(down.String())+1
 		for _, p := range pairs {

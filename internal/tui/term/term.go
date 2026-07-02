@@ -35,6 +35,11 @@ type Options struct {
 	// keys the legacy encoding conflates (Escape, modified Enter and Tab).
 	// Terminals without the protocol ignore the push and the pop.
 	KittyKeyboard bool
+	// HideCursor hides the terminal's own cursor for the session. The
+	// painter rests the hardware cursor at the start of the last live row,
+	// not at the edit point, so the session draws a software cursor and the
+	// hardware one stays out of sight until teardown restores it.
+	HideCursor bool
 }
 
 // kittyFlags is the enhancement level the session uses: disambiguate escape
@@ -56,6 +61,9 @@ func Setup(w io.Writer, o Options) error {
 	if o.KittyKeyboard {
 		seq += ansi.PushKittyKeyboard(kittyFlags)
 	}
+	if o.HideCursor {
+		seq += ansi.HideCursor
+	}
 	if seq == "" {
 		return nil
 	}
@@ -69,6 +77,9 @@ func Setup(w io.Writer, o Options) error {
 // terminal.
 func Teardown(w io.Writer, o Options) error {
 	var seq string
+	if o.HideCursor {
+		seq += ansi.ShowCursor
+	}
 	if o.KittyKeyboard {
 		seq += ansi.PopKittyKeyboard(1)
 	}
