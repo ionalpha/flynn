@@ -19,7 +19,7 @@ const resourceCols = `id, api_version, kind, name, scope_instance, scope_project
 	labels, annotations, spec, status,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, writer_actor, deleted,
 	finalizers, deletion_timestamp, owner_references,
-	version, content_hash, valid_from, valid_to, created_at, updated_at`
+	version, content_hash, spec_hash, valid_from, valid_to, created_at, updated_at`
 
 // Resources returns a durable resource.Store backed by this Store's database, so
 // resource events share the spine, the file, and a transaction with state. The
@@ -79,18 +79,21 @@ func (s *resourceStore) Log() spine.Log { return s.p.Log() }
 
 // commit runs one resource mutation through the command path: build stamps the
 // record and produces the event (doing its tx-scoped lookup for CAS), then the
-// event is appended to the spine and projected into the table, both in one tx.
-func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (spine.AppendInput, error)) error {
+// event is appended to the spine and the record projected into the table, both
+// in one tx. The projection writes the typed record the Stamper returned (the
+// same post-image the event payload carries), so the live path never decodes
+// what it just encoded; applyResourceEvent performs the identical projection
+// from the payload during Rebuild.
+func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (resource.Resource, spine.AppendInput, error)) error {
 	return s.p.tx(ctx, func(tx *sql.Tx) error {
-		in, err := build(tx)
+		rec, in, err := build(tx)
 		if err != nil {
 			return err
 		}
-		e, err := appendTx(ctx, tx, s.p.clk, in)
-		if err != nil {
+		if _, _, _, err := insertEventTx(ctx, tx, s.p.clk, in); err != nil {
 			return err
 		}
-		return applyResourceEvent(ctx, tx, e)
+		return upsertResourceRow(ctx, tx, rec)
 	})
 }
 
@@ -113,14 +116,14 @@ func (s *resourceStore) Rebuild(ctx context.Context) error {
 
 func (s *resourceStore) Put(ctx context.Context, r resource.Resource) (resource.Resource, error) {
 	var rec resource.Resource
-	err := s.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	err := s.commit(ctx, func(tx *sql.Tx) (resource.Resource, spine.AppendInput, error) {
 		existing, err := getResourceByKeyTx(ctx, tx, r.Kind, r.Scope, r.Name)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return resource.Resource{}, spine.AppendInput{}, err
 		}
 		rc, ev, err := s.st.Put(existing, r)
 		rec = rc
-		return ev, err
+		return rc, ev, err
 	})
 	if err != nil {
 		return resource.Resource{}, err
@@ -203,19 +206,18 @@ func (s *resourceStore) ListAll(ctx context.Context, kind string, sel resource.S
 var errAlreadyTerminating = errors.New("sqlite: resource already terminating")
 
 func (s *resourceStore) Delete(ctx context.Context, kind string, scope resource.Scope, name string) error {
-	err := s.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	err := s.commit(ctx, func(tx *sql.Tx) (resource.Resource, spine.AppendInput, error) {
 		existing, err := getResourceByKeyTx(ctx, tx, kind, scope, name)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return resource.Resource{}, spine.AppendInput{}, err
 		}
 		if existing == nil || existing.Deleted {
-			return spine.AppendInput{}, resource.ErrNotFound
+			return resource.Resource{}, spine.AppendInput{}, resource.ErrNotFound
 		}
 		if existing.DeletionTimestamp != nil {
-			return spine.AppendInput{}, errAlreadyTerminating
+			return resource.Resource{}, spine.AppendInput{}, errAlreadyTerminating
 		}
-		_, ev, err := s.st.Delete(*existing)
-		return ev, err
+		return s.st.Delete(*existing)
 	})
 	if errors.Is(err, errAlreadyTerminating) {
 		return nil
@@ -266,11 +268,10 @@ func appendMergeEvent(ctx context.Context, tx *sql.Tx, clk clock.Clock, r resour
 	if err != nil {
 		return err
 	}
-	e, err := appendTx(ctx, tx, clk, in)
-	if err != nil {
+	if _, _, _, err := insertEventTx(ctx, tx, clk, in); err != nil {
 		return err
 	}
-	return applyResourceEvent(ctx, tx, e)
+	return upsertResourceRow(ctx, tx, r)
 }
 
 // getResourceByIDTx loads the stored resource by id within tx, tombstones included
@@ -322,7 +323,7 @@ func applyResourceEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error {
 func upsertResourceRow(ctx context.Context, tx *sql.Tx, r resource.Resource) error {
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO resources (`+resourceCols+`)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			api_version=excluded.api_version, kind=excluded.kind, name=excluded.name,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
@@ -331,14 +332,14 @@ func upsertResourceRow(ctx context.Context, tx *sql.Tx, r resource.Resource) err
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, writer_actor=excluded.writer_actor, deleted=excluded.deleted,
 			finalizers=excluded.finalizers, deletion_timestamp=excluded.deletion_timestamp, owner_references=excluded.owner_references,
-			version=excluded.version, content_hash=excluded.content_hash,
+			version=excluded.version, content_hash=excluded.content_hash, spec_hash=excluded.spec_hash,
 			valid_from=excluded.valid_from, valid_to=excluded.valid_to,
 			created_at=excluded.created_at, updated_at=excluded.updated_at`,
 		r.ID, r.APIVersion, r.Kind, r.Name, r.Scope.Instance, r.Scope.Project, r.Scope.Workspace,
 		marshalStringMap(r.Labels), marshalStringMap(r.Annotations), rawOrNil(r.Spec), rawOrNil(r.Status),
 		r.SyncVersion, r.OriginInstanceID, r.UpdatedHLC.Wall, int64(r.UpdatedHLC.Counter), r.LastWriterID, string(writerActorOrDefault(r.WriterActor)), boolToInt(r.Deleted),
 		marshalStringSlice(r.Finalizers), timeOrNil(r.DeletionTimestamp), marshalOwnerRefs(r.OwnerReferences),
-		r.Version, r.ContentHash, timeOrNil(r.ValidFrom), timeOrNil(r.ValidTo),
+		r.Version, r.ContentHash, r.SpecHash, timeOrNil(r.ValidFrom), timeOrNil(r.ValidTo),
 		formatTime(r.CreatedAt), formatTime(r.UpdatedAt))
 	return err
 }
@@ -363,7 +364,7 @@ func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error)
 		&labels, &annots, &spec, &status,
 		&r.SyncVersion, &r.OriginInstanceID, &wall, &counter, &r.LastWriterID, &writerActor, &deleted,
 		&finalizers, &deletionTS, &ownerRefs,
-		&r.Version, &r.ContentHash, &validFrom, &validTo, &created, &updated); err != nil {
+		&r.Version, &r.ContentHash, &r.SpecHash, &validFrom, &validTo, &created, &updated); err != nil {
 		return resource.Resource{}, err
 	}
 	r.WriterActor = spine.ActorType(writerActor)

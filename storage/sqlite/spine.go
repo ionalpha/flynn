@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/sqlitex"
@@ -42,48 +43,74 @@ func (l *eventLog) Append(ctx context.Context, in spine.AppendInput) (spine.Even
 	return e, nil
 }
 
-// appendTx appends one event inside an existing transaction. The durable command
-// path calls it so a state mutation's event and its projection commit together in
-// one tx (and the public Append wraps it in a transaction of its own). It assigns
-// the next per-stream Seq and stamps an unset Time from clk.
+// appendTx appends one event inside an existing transaction (the public Append
+// wraps it in a transaction of its own) and returns the stored event, decoding a
+// RawPayload so the returned payload shape matches a Payload append.
 func appendTx(ctx context.Context, tx *sql.Tx, clk clock.Clock, in spine.AppendInput) (spine.Event, error) {
-	t := in.Time
-	if t.IsZero() {
-		t = clk.Now()
-	}
-	t = t.UTC()
-
-	payload, err := json.Marshal(in.Payload)
+	payload, err := in.DecodedPayload()
 	if err != nil {
-		return spine.Event{}, fmt.Errorf("sqlite: marshal event payload: %w", err)
-	}
-
-	version := in.SchemaVersion
-	if version == 0 {
-		version = spine.DefaultSchemaVersion
-	}
-
-	var maxSeq int64
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream = ?`, in.Stream).Scan(&maxSeq); err != nil {
 		return spine.Event{}, err
 	}
-	seq := maxSeq + 1
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id, schema_version, principal)
-		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		in.Stream, seq, sqlitex.FormatTime(t), in.Type, string(in.Actor), string(payload),
-		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version, in.Principal); err != nil {
+	seq, t, version, err := insertEventTx(ctx, tx, clk, in)
+	if err != nil {
 		return spine.Event{}, err
 	}
 	return spine.Event{
 		Stream: in.Stream, Seq: seq, Time: t, Type: in.Type, Actor: in.Actor,
-		Payload:       clonePayload(in.Payload),
+		Payload:       clonePayload(payload),
 		SchemaVersion: version,
 		TraceID:       in.TraceID,
 		SpanID:        in.SpanID,
 		CausationID:   in.CausationID, OriginInstanceID: in.OriginInstanceID,
 		Principal: in.Principal,
 	}, nil
+}
+
+// insertEventTx writes one event row inside an existing transaction, assigning
+// the next per-stream Seq and stamping an unset Time from clk. A RawPayload is
+// stored verbatim (it is already the JSON the payload column holds), so the
+// durable command path never re-encodes what its stamper serialized; a decoded
+// Payload is marshalled here. The command path (commit) calls this directly and
+// projects from the typed record it already holds, so it never pays for the
+// decoded event appendTx builds.
+func insertEventTx(ctx context.Context, tx *sql.Tx, clk clock.Clock, in spine.AppendInput) (seq int64, t time.Time, version int, err error) {
+	t = in.Time
+	if t.IsZero() {
+		t = clk.Now()
+	}
+	t = t.UTC()
+
+	var payload []byte
+	switch {
+	case in.Payload != nil && len(in.RawPayload) > 0:
+		return 0, time.Time{}, 0, spine.ErrPayloadConflict
+	case len(in.RawPayload) > 0:
+		payload = in.RawPayload
+	default:
+		payload, err = json.Marshal(in.Payload)
+		if err != nil {
+			return 0, time.Time{}, 0, fmt.Errorf("sqlite: marshal event payload: %w", err)
+		}
+	}
+
+	version = in.SchemaVersion
+	if version == 0 {
+		version = spine.DefaultSchemaVersion
+	}
+
+	var maxSeq int64
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM events WHERE stream = ?`, in.Stream).Scan(&maxSeq); err != nil {
+		return 0, time.Time{}, 0, err
+	}
+	seq = maxSeq + 1
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id, schema_version, principal)
+		 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		in.Stream, seq, sqlitex.FormatTime(t), in.Type, string(in.Actor), string(payload),
+		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version, in.Principal); err != nil {
+		return 0, time.Time{}, 0, err
+	}
+	return seq, t, version, nil
 }
 
 // Read implements spine.Log: events on a stream in Seq order, AfterSeq exclusive,

@@ -102,11 +102,12 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 		r.Deleted = false
 	}
 
-	hash, err := Hash(r)
+	content, spec, err := Hashes(r)
 	if err != nil {
 		return Resource{}, spine.AppendInput{}, err
 	}
-	r.ContentHash = hash
+	r.ContentHash = content
+	r.SpecHash = spec
 
 	ev, err := s.event(evType, r)
 	return r, ev, err
@@ -137,17 +138,18 @@ func (s *Stamper) Delete(r Resource) (Resource, spine.AppendInput, error) {
 		r.Deleted = true
 	}
 
-	hash, err := Hash(r)
+	content, spec, err := Hashes(r)
 	if err != nil {
 		return Resource{}, spine.AppendInput{}, err
 	}
-	r.ContentHash = hash
+	r.ContentHash = content
+	r.SpecHash = spec
 	ev, err := s.event(evType, r)
 	return r, ev, err
 }
 
 func (s *Stamper) event(typ string, r Resource) (spine.AppendInput, error) {
-	p, err := encodeResource(r)
+	p, err := encodePayload(r)
 	if err != nil {
 		return spine.AppendInput{}, err
 	}
@@ -155,7 +157,7 @@ func (s *Stamper) event(typ string, r Resource) (spine.AppendInput, error) {
 		Stream:           ResourceStream,
 		Type:             typ,
 		Actor:            writerActor(r.WriterActor),
-		Payload:          map[string]any{payloadKey: p},
+		RawPayload:       p,
 		OriginInstanceID: s.instanceID,
 	}, nil
 }

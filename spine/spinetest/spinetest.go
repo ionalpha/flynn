@@ -24,6 +24,7 @@ func RunSuite(t *testing.T, newLog func() spine.Log) {
 	t.Run("ReadAfterAndLimit", func(t *testing.T) { testReadPaging(t, newLog()) })
 	t.Run("Time", func(t *testing.T) { testTime(t, newLog()) })
 	t.Run("PayloadImmutableAndPreserved", func(t *testing.T) { testPayload(t, newLog()) })
+	t.Run("RawPayload", func(t *testing.T) { testRawPayload(t, newLog()) })
 	t.Run("SchemaVersion", func(t *testing.T) { testSchemaVersion(t, newLog()) })
 	t.Run("EmptyStream", func(t *testing.T) { testEmpty(t, newLog()) })
 	t.Run("Concurrency", func(t *testing.T) { testConcurrency(t, newLog()) })
@@ -177,6 +178,53 @@ func testPayload(t *testing.T, log spine.Log) {
 	}
 	if e.Principal != "agent-7" {
 		t.Fatalf("principal not preserved: %q", e.Principal)
+	}
+}
+
+// testRawPayload holds a log to the RawPayload contract: a pre-encoded payload
+// stores and reads back exactly like its decoded equivalent (which form a
+// producer used is unobservable downstream), the returned event already carries
+// the decoded form, and setting both forms is rejected.
+func testRawPayload(t *testing.T, log spine.Log) {
+	ctx := context.Background()
+	want := map[string]any{"k": "v", "n": float64(42), "nested": map[string]any{"a": "b"}}
+
+	raw, err := log.Append(ctx, spine.AppendInput{
+		Stream: "s", Type: "e", Actor: spine.ActorAgent,
+		RawPayload: json.RawMessage(`{"k":"v","n":42,"nested":{"a":"b"}}`),
+	})
+	if err != nil {
+		t.Fatalf("append raw: %v", err)
+	}
+	if !jsonEqual(raw.Payload, want) {
+		t.Fatalf("returned payload = %v, want the decoded form %v", raw.Payload, want)
+	}
+	if _, err := log.Append(ctx, spine.AppendInput{
+		Stream: "s", Type: "e", Actor: spine.ActorAgent, Payload: want,
+	}); err != nil {
+		t.Fatalf("append decoded: %v", err)
+	}
+
+	got, err := log.Read(ctx, spine.Query{Stream: "s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("read len = %d, want 2", len(got))
+	}
+	if !jsonEqual(got[0].Payload, want) {
+		t.Fatalf("raw-appended payload read back = %v, want %v", got[0].Payload, want)
+	}
+	if !jsonEqual(got[0].Payload, got[1].Payload) {
+		t.Fatalf("raw and decoded appends diverge: %v vs %v", got[0].Payload, got[1].Payload)
+	}
+
+	if _, err := log.Append(ctx, spine.AppendInput{
+		Stream: "s", Type: "e", Actor: spine.ActorAgent,
+		Payload:    map[string]any{"k": "v"},
+		RawPayload: json.RawMessage(`{"k":"v"}`),
+	}); err == nil {
+		t.Fatal("append with both Payload and RawPayload succeeded, want an error")
 	}
 }
 

@@ -115,7 +115,7 @@ func ValidateForMerge(r Resource) error {
 // reproduces the merged state on any backend, and it preserves r's provenance
 // (origin instance and writer actor) rather than restamping it locally.
 func MergeEvent(r Resource) (spine.AppendInput, error) {
-	p, err := encodeResource(r)
+	p, err := encodePayload(r)
 	if err != nil {
 		return spine.AppendInput{}, err
 	}
@@ -123,7 +123,7 @@ func MergeEvent(r Resource) (spine.AppendInput, error) {
 		Stream:           ResourceStream,
 		Type:             EvMerged,
 		Actor:            writerActor(r.WriterActor),
-		Payload:          map[string]any{payloadKey: p},
+		RawPayload:       p,
 		OriginInstanceID: r.OriginInstanceID,
 	}, nil
 }

@@ -6,12 +6,14 @@
 //
 // Writes go through the command path: every mutation is stamped once by the shared
 // state.Stamper (IDs, HLC, versions, the sync envelope, CAS, tombstones), appended
-// to the event spine, and projected into the tables by applyEvent, all inside a
-// single transaction. The same applyEvent reprojects the log in Rebuild, so a
-// rebuilt-from-log database is identical to a live one and the event log can never
-// drift from the tables. No write touches a projection table except through
-// applyEvent, which keeps full event-sourcing reachable: state is a fold of the
-// spine.
+// to the event spine, and projected into the tables, all inside a single
+// transaction. The live path projects the typed record the Stamper returned (the
+// same post-image the event payload carries, written verbatim from RawPayload);
+// applyEvent performs the identical projection from the payload when Rebuild
+// reprojects the log, so a rebuilt-from-log database is identical to a live one
+// and the event log can never drift from the tables. Both paths share the same
+// row-projection helpers, which keeps full event-sourcing reachable: state is a
+// fold of the spine.
 //
 // A Store implements state.Provider directly and exposes the event log via Log().
 // Both pass the shared conformance suites (statetest.RunSuite, spinetest.RunSuite),
@@ -140,22 +142,24 @@ func (s *Store) Log() spine.Log { return &eventLog{db: s.db, clk: s.clk} }
 // event log.
 func (s *Store) Close() error { return s.db.Close() }
 
-// commit runs the command path for one mutation: build stamps the record and
+// commit runs the command path for one mutation: build stamps the record,
 // produces the event to append (doing any tx-scoped lookup it needs for CAS),
-// then commit appends the event to the spine and projects it into the tables,
-// both in one transaction. Append-and-project is atomic, so the log and the
-// projection can never diverge.
-func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.AppendInput, error)) error {
+// and returns the projection step; commit appends the event to the spine and
+// runs the projection, both in one transaction. Append-and-project is atomic, so
+// the log and the projection can never diverge. The projection writes the typed
+// record the Stamper already returned (the same post-image the event payload
+// carries), so the live path never decodes what it just encoded; applyEvent
+// performs the identical projection from the payload during Rebuild.
+func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.AppendInput, func(tx *sql.Tx) error, error)) error {
 	return s.tx(ctx, func(tx *sql.Tx) error {
-		in, err := build(tx)
+		in, project, err := build(tx)
 		if err != nil {
 			return err
 		}
-		e, err := appendTx(ctx, tx, s.clk, in)
-		if err != nil {
+		if _, _, _, err := insertEventTx(ctx, tx, s.clk, in); err != nil {
 			return err
 		}
-		return s.applyEvent(ctx, tx, e)
+		return project(tx)
 	})
 }
 
@@ -209,19 +213,13 @@ func (s *Store) applyEvent(ctx context.Context, tx *sql.Tx, e spine.Event) error
 		if err != nil {
 			return err
 		}
-		if err := upsertSkillRow(ctx, tx, sk); err != nil {
-			return err
-		}
-		return reindexSkill(ctx, tx, sk)
+		return projectSkill(ctx, tx, sk)
 	case state.EvMemoryWritten, state.EvMemoryDeleted:
 		it, err := state.DecodeMemoryItem(e.Payload)
 		if err != nil {
 			return err
 		}
-		if err := upsertMemoryRow(ctx, tx, it); err != nil {
-			return err
-		}
-		return reindexMemory(ctx, tx, it)
+		return projectMemory(ctx, tx, it)
 	default:
 		return fmt.Errorf("sqlite: unknown state event %q", e.Type)
 	}
@@ -326,10 +324,10 @@ func insertTurnRow(ctx context.Context, tx *sql.Tx, t state.Turn) error {
 
 func (s *sessions) Create(ctx context.Context, ses state.Session) (state.Session, error) {
 	var rec state.Session
-	err := s.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, error) {
+	err := s.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		r, ev, err := s.p.st.CreateSession(ses)
 		rec = r
-		return ev, err
+		return ev, func(tx *sql.Tx) error { return upsertSessionRow(ctx, tx, r) }, err
 	})
 	if err != nil {
 		return state.Session{}, fmt.Errorf("sqlite: create session: %w", err)
@@ -365,18 +363,23 @@ func (s *sessions) List(ctx context.Context) ([]state.Session, error) {
 
 func (s *sessions) AppendTurn(ctx context.Context, t state.Turn) (state.Turn, error) {
 	var rec state.Turn
-	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		ses, err := getSessionTx(ctx, tx, t.SessionID)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return spine.AppendInput{}, nil, err
 		}
 		var maxSeq int64
 		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM turns WHERE session_id = ?`, t.SessionID).Scan(&maxSeq); err != nil {
-			return spine.AppendInput{}, err
+			return spine.AppendInput{}, nil, err
 		}
-		r, _, ev, err := s.p.st.AppendTurn(ses, t, maxSeq+1)
+		r, bumped, ev, err := s.p.st.AppendTurn(ses, t, maxSeq+1)
 		rec = r
-		return ev, err
+		return ev, func(tx *sql.Tx) error {
+			if err := insertTurnRow(ctx, tx, r); err != nil {
+				return err
+			}
+			return upsertSessionRow(ctx, tx, bumped)
+		}, err
 	})
 	return rec, err
 }
@@ -411,13 +414,13 @@ func (s *sessions) Turns(ctx context.Context, sessionID string) ([]state.Turn, e
 }
 
 func (s *sessions) Delete(ctx context.Context, id string) error {
-	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		ses, err := getSessionTx(ctx, tx, id)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return spine.AppendInput{}, nil, err
 		}
-		_, ev, err := s.p.st.DeleteSession(ses)
-		return ev, err
+		r, ev, err := s.p.st.DeleteSession(ses)
+		return ev, func(tx *sql.Tx) error { return upsertSessionRow(ctx, tx, r) }, err
 	})
 }
 
@@ -484,14 +487,14 @@ func upsertSkillRow(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 
 func (s *skills) Upsert(ctx context.Context, sk state.Skill) (state.Skill, error) {
 	var rec state.Skill
-	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	err := s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		existing, err := getSkillBySlugTx(ctx, tx, sk.Scope, sk.Slug)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return spine.AppendInput{}, nil, err
 		}
 		r, ev, err := s.p.st.UpsertSkill(existing, sk)
 		rec = r
-		return ev, err
+		return ev, func(tx *sql.Tx) error { return projectSkill(ctx, tx, r) }, err
 	})
 	if err != nil {
 		return state.Skill{}, err
@@ -562,13 +565,13 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 }
 
 func (s *skills) Delete(ctx context.Context, idOrSlug string) error {
-	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	return s.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		existing, err := getLiveSkillTx(ctx, tx, idOrSlug)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return spine.AppendInput{}, nil, err
 		}
-		_, ev, err := s.p.st.DeleteSkill(existing)
-		return ev, err
+		r, ev, err := s.p.st.DeleteSkill(existing)
+		return ev, func(tx *sql.Tx) error { return projectSkill(ctx, tx, r) }, err
 	})
 }
 
@@ -620,6 +623,16 @@ func getLiveSkillTx(ctx context.Context, tx *sql.Tx, idOrSlug string) (state.Ski
 		return state.Skill{}, state.ErrNotFound
 	}
 	return sk, err
+}
+
+// projectSkill writes a skill post-image: the row and its FTS index together.
+// Shared by the live command path and applyEvent (Rebuild), so both project
+// identically.
+func projectSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
+	if err := upsertSkillRow(ctx, tx, sk); err != nil {
+		return err
+	}
+	return reindexSkill(ctx, tx, sk)
 }
 
 // reindexSkill rewrites a skill's FTS row so search reflects the latest content,
@@ -677,6 +690,16 @@ func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error
 	return err
 }
 
+// projectMemory writes a memory-item post-image: the row and its FTS index
+// together. Shared by the live command path and applyEvent (Rebuild), so both
+// project identically.
+func projectMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
+	if err := upsertMemoryRow(ctx, tx, it); err != nil {
+		return err
+	}
+	return reindexMemory(ctx, tx, it)
+}
+
 // reindexMemory keeps the memory FTS index holding an entry only while the item
 // is live, so a tombstone drops out of recall.
 func reindexMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
@@ -692,10 +715,10 @@ func reindexMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 
 func (m *memory) Write(ctx context.Context, it state.MemoryItem) (state.MemoryItem, error) {
 	var rec state.MemoryItem
-	err := m.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, error) {
+	err := m.p.commit(ctx, func(*sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		r, ev, err := m.p.st.WriteMemory(it)
 		rec = r
-		return ev, err
+		return ev, func(tx *sql.Tx) error { return projectMemory(ctx, tx, r) }, err
 	})
 	if err != nil {
 		return state.MemoryItem{}, err
@@ -747,13 +770,13 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 }
 
 func (m *memory) Delete(ctx context.Context, id string) error {
-	return m.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, error) {
+	return m.p.commit(ctx, func(tx *sql.Tx) (spine.AppendInput, func(*sql.Tx) error, error) {
 		existing, err := getLiveMemoryTx(ctx, tx, id)
 		if err != nil {
-			return spine.AppendInput{}, err
+			return spine.AppendInput{}, nil, err
 		}
-		_, ev, err := m.p.st.DeleteMemory(existing)
-		return ev, err
+		r, ev, err := m.p.st.DeleteMemory(existing)
+		return ev, func(tx *sql.Tx) error { return projectMemory(ctx, tx, r) }, err
 	})
 }
 

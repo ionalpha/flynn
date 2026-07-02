@@ -295,14 +295,20 @@ func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 	if err != nil {
 		return err
 	}
-	if err := c.apply(e); err != nil {
+	// Project from the raw payload the stamper already serialized: one Unmarshal
+	// of the same bytes the event carries, so the live projection is identical to
+	// a replayed one without the event round-trip apply pays.
+	r, err := decodePayload(in.RawPayload)
+	if err != nil {
 		return err
 	}
+	c.project(r)
 	c.lastSeq = e.Seq
 	return nil
 }
 
-// apply projects one event onto the read model. Shared by record and Replay, so a
+// apply projects one event onto the read model during Replay; the live write
+// path (record) projects the same post-image from the raw payload instead, so a
 // rebuilt-from-log store is identical to a live one. Callers hold mu.
 func (c *core) apply(e spine.Event) error {
 	switch e.Type {
@@ -311,12 +317,18 @@ func (c *core) apply(e spine.Event) error {
 		if err != nil {
 			return err
 		}
-		c.byID[r.ID] = r
-		c.nameIndex[r.Key()] = r.ID
+		c.project(r)
 		return nil
 	default:
 		return ErrInvalid
 	}
+}
+
+// project indexes one post-image record. The single mutator behind apply
+// (Replay) and record (live writes). Callers hold mu.
+func (c *core) project(r Resource) {
+	c.byID[r.ID] = r
+	c.nameIndex[r.Key()] = r.ID
 }
 
 // Replay reconstructs an in-memory Store by folding a log's resource stream: the

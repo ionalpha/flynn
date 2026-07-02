@@ -101,18 +101,36 @@ func OwnerGone(ctx context.Context, store Store, r Resource) (bool, error) {
 	return o.DeletionTimestamp != nil, nil // owner terminating: cascade the reap
 }
 
-// encodeResource serialises a resource to a JSON-compatible value for an event
-// payload (the spine is a JSON boundary).
-func encodeResource(r Resource) (any, error) {
+// encodePayload serialises a resource to the raw JSON event payload
+// ({"resource": <record>}) with a single Marshal. The spine stores these bytes
+// verbatim (spine.AppendInput.RawPayload), so a write serialises its post-image
+// exactly once instead of Marshal-Unmarshal-Marshal through a generic tree.
+func encodePayload(r Resource) (json.RawMessage, error) {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return nil, err
 	}
-	var out any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, err
+	p := make([]byte, 0, len(b)+len(payloadKey)+4)
+	p = append(p, `{"`...)
+	p = append(p, payloadKey...)
+	p = append(p, `":`...)
+	p = append(p, b...)
+	p = append(p, '}')
+	return p, nil
+}
+
+// decodePayload reconstructs a Resource from the raw JSON event payload with a
+// single Unmarshal: the live projection path in the in-memory core. Decoding the
+// same bytes the event stores keeps a live projection byte-for-byte identical to
+// a replayed one.
+func decodePayload(raw json.RawMessage) (Resource, error) {
+	var w struct {
+		Resource Resource `json:"resource"`
 	}
-	return out, nil
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return Resource{}, err
+	}
+	return w.Resource, nil
 }
 
 // DecodeResource reconstructs a Resource from an event payload. Durable backends

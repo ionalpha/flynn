@@ -37,39 +37,32 @@ func NewStamper(instanceID string, clk clock.Clock, hc *hlc.Clock, gen *ids.Gene
 func (s *Stamper) InstanceID() string { return s.instanceID }
 
 func (s *Stamper) sessionEvent(typ string, ses Session) (spine.AppendInput, error) {
-	p, err := encodeRecord(ses)
-	if err != nil {
-		return spine.AppendInput{}, err
-	}
-	return s.input(typ, map[string]any{keySession: p}), nil
+	return s.input(typ, map[string]any{keySession: ses})
 }
 
 func (s *Stamper) skillEvent(typ string, sk Skill) (spine.AppendInput, error) {
-	p, err := encodeRecord(sk)
-	if err != nil {
-		return spine.AppendInput{}, err
-	}
-	return s.input(typ, map[string]any{keySkill: p}), nil
+	return s.input(typ, map[string]any{keySkill: sk})
 }
 
 func (s *Stamper) memoryEvent(typ string, it MemoryItem) (spine.AppendInput, error) {
-	p, err := encodeRecord(it)
-	if err != nil {
-		return spine.AppendInput{}, err
-	}
-	return s.input(typ, map[string]any{keyItem: p}), nil
+	return s.input(typ, map[string]any{keyItem: it})
 }
 
 // input builds the AppendInput for a state event: always the state stream, the
-// agent actor, and this instance as origin.
-func (s *Stamper) input(typ string, payload map[string]any) spine.AppendInput {
+// agent actor, this instance as origin, and the post-image record(s) serialized
+// once as the raw payload.
+func (s *Stamper) input(typ string, records map[string]any) (spine.AppendInput, error) {
+	p, err := encodePayload(records)
+	if err != nil {
+		return spine.AppendInput{}, err
+	}
 	return spine.AppendInput{
 		Stream:           StateStream,
 		Type:             typ,
 		Actor:            spine.ActorAgent,
-		Payload:          payload,
+		RawPayload:       p,
 		OriginInstanceID: s.instanceID,
-	}
+	}, nil
 }
 
 // CreateSession stamps a new session and returns it with the event to append.
@@ -122,15 +115,10 @@ func (s *Stamper) AppendTurn(ses Session, t Turn, nextSeq int64) (Turn, Session,
 	ses.UpdatedHLC = hnow
 	ses.SyncVersion++
 
-	turnPayload, err := encodeRecord(t)
+	ev, err := s.input(EvTurnAppended, map[string]any{keyTurn: t, keySession: ses})
 	if err != nil {
 		return Turn{}, Session{}, spine.AppendInput{}, err
 	}
-	sessionPayload, err := encodeRecord(ses)
-	if err != nil {
-		return Turn{}, Session{}, spine.AppendInput{}, err
-	}
-	ev := s.input(EvTurnAppended, map[string]any{keyTurn: turnPayload, keySession: sessionPayload})
 	return t, ses, ev, nil
 }
 

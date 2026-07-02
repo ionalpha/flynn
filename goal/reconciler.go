@@ -140,9 +140,15 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		r = updated
 	}
 
-	specHash, err := resource.SpecHash(r)
-	if err != nil {
-		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_spec_hash", err)
+	// The Stamper stamps SpecHash on every write; compute it only for records
+	// written before the field existed.
+	specHash := r.SpecHash
+	if specHash == "" {
+		var err error
+		specHash, err = resource.SpecHash(r)
+		if err != nil {
+			return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_spec_hash", err)
+		}
 	}
 	// No-op skip: spec unchanged and the goal has already settled.
 	if status.ObservedSpecHash == specHash && (status.Phase == PhaseConverged || status.Phase == PhaseStalled) {

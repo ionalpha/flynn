@@ -75,76 +75,135 @@ func newCore(st *Stamper, log spine.Log) *core {
 // record appends a stamped event and projects it. The caller holds mu and has
 // already produced the event via the Stamper. Append-then-project is the in-memory
 // analogue of the one-transaction append+project the durable provider performs;
-// here mu is the boundary that makes the pair atomic.
+// here mu is the boundary that makes the pair atomic. It projects from the raw
+// payload the Stamper already serialized (one Unmarshal of the same bytes the
+// event carries), so the live projection is identical to a replayed one without
+// the event round-trip apply pays.
 func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 	e, err := c.log.Append(ctx, in)
 	if err != nil {
 		return err
 	}
-	if err := c.apply(e); err != nil {
+	var w payloadRecords
+	if err := json.Unmarshal(in.RawPayload, &w); err != nil {
+		return err
+	}
+	if err := c.projectRecords(e.Type, w); err != nil {
 		return err
 	}
 	c.lastSeq = e.Seq
 	return nil
 }
 
-// apply projects one event onto the read model. It is the single source of the
-// projection logic, shared by the live write path (record) and reconstruction
-// (Replay), so a rebuilt-from-log provider is byte-for-byte identical to a live
-// one. Callers hold mu.
-func (c *core) apply(e spine.Event) error {
-	switch e.Type {
+// payloadRecords is the decoded form of a state event payload: each key that a
+// given event type carries is non-nil.
+type payloadRecords struct {
+	Session *Session    `json:"session"`
+	Turn    *Turn       `json:"turn"`
+	Skill   *Skill      `json:"skill"`
+	Item    *MemoryItem `json:"item"`
+}
+
+// projectRecords projects one event's post-image record(s) onto the read model.
+// It is the single source of the projection logic, shared by the live write path
+// (record) and reconstruction (apply, via Replay), so a rebuilt-from-log provider
+// is byte-for-byte identical to a live one. Callers hold mu.
+func (c *core) projectRecords(evType string, w payloadRecords) error {
+	missing := func(key string) error {
+		return fmt.Errorf("state: event %q payload is missing %q", evType, key)
+	}
+	switch evType {
 	case EvSessionCreated, EvSessionDeleted:
-		s, err := DecodeSession(e.Payload)
-		if err != nil {
-			return err
+		if w.Session == nil {
+			return missing(keySession)
 		}
-		c.sessions[s.ID] = s
+		c.sessions[w.Session.ID] = *w.Session
 	case EvTurnAppended:
-		t, err := DecodeTurn(e.Payload)
-		if err != nil {
-			return err
+		if w.Turn == nil {
+			return missing(keyTurn)
 		}
-		s, err := DecodeSession(e.Payload)
-		if err != nil {
-			return err
+		if w.Session == nil {
+			return missing(keySession)
 		}
-		c.turns[t.SessionID] = append(c.turns[t.SessionID], t)
-		c.sessions[s.ID] = s
+		c.turns[w.Turn.SessionID] = append(c.turns[w.Turn.SessionID], *w.Turn)
+		c.sessions[w.Session.ID] = *w.Session
 	case EvSkillUpserted:
-		sk, err := DecodeSkill(e.Payload)
-		if err != nil {
-			return err
+		if w.Skill == nil {
+			return missing(keySkill)
 		}
-		c.skillsByID[sk.ID] = sk
-		c.slugToID[scopeKey(sk.Scope)+"\x00"+sk.Slug] = sk.ID
+		c.skillsByID[w.Skill.ID] = *w.Skill
+		c.slugToID[scopeKey(w.Skill.Scope)+"\x00"+w.Skill.Slug] = w.Skill.ID
 	case EvSkillDeleted:
-		sk, err := DecodeSkill(e.Payload)
-		if err != nil {
-			return err
+		if w.Skill == nil {
+			return missing(keySkill)
 		}
-		c.skillsByID[sk.ID] = sk
+		c.skillsByID[w.Skill.ID] = *w.Skill
 	case EvMemoryWritten:
-		it, err := DecodeMemoryItem(e.Payload)
-		if err != nil {
-			return err
+		if w.Item == nil {
+			return missing(keyItem)
 		}
-		c.memItems = append(c.memItems, it)
+		c.memItems = append(c.memItems, *w.Item)
 	case EvMemoryDeleted:
-		it, err := DecodeMemoryItem(e.Payload)
-		if err != nil {
-			return err
+		if w.Item == nil {
+			return missing(keyItem)
 		}
 		for i := range c.memItems {
-			if c.memItems[i].ID == it.ID {
-				c.memItems[i] = it
+			if c.memItems[i].ID == w.Item.ID {
+				c.memItems[i] = *w.Item
 				break
 			}
 		}
 	default:
-		return fmt.Errorf("state: unknown event type %q", e.Type)
+		return fmt.Errorf("state: unknown event type %q", evType)
 	}
 	return nil
+}
+
+// apply projects one event onto the read model during Replay; the live write
+// path (record) projects the same post-images from the raw payload instead.
+// Callers hold mu.
+func (c *core) apply(e spine.Event) error {
+	var w payloadRecords
+	if s, ok := e.Payload[keySession]; ok {
+		ses, err := decodeAs[Session](s)
+		if err != nil {
+			return err
+		}
+		w.Session = &ses
+	}
+	if t, ok := e.Payload[keyTurn]; ok {
+		turn, err := decodeAs[Turn](t)
+		if err != nil {
+			return err
+		}
+		w.Turn = &turn
+	}
+	if sk, ok := e.Payload[keySkill]; ok {
+		skill, err := decodeAs[Skill](sk)
+		if err != nil {
+			return err
+		}
+		w.Skill = &skill
+	}
+	if it, ok := e.Payload[keyItem]; ok {
+		item, err := decodeAs[MemoryItem](it)
+		if err != nil {
+			return err
+		}
+		w.Item = &item
+	}
+	return c.projectRecords(e.Type, w)
+}
+
+// decodeAs reconstructs one typed record from its decoded payload value.
+func decodeAs[T any](v any) (T, error) {
+	var out T
+	b, err := json.Marshal(v)
+	if err != nil {
+		return out, err
+	}
+	err = json.Unmarshal(b, &out)
+	return out, err
 }
 
 // Replay reconstructs an in-memory Provider purely by folding a log's "state"
@@ -193,19 +252,12 @@ func DecodeMemoryItem(payload map[string]any) (MemoryItem, error) {
 	return it, decodeRecord(payload, keyItem, &it)
 }
 
-// encodeRecord serialises a record to a JSON-compatible value for an event
-// payload. The spine is a serialisation boundary (its payload is JSON in the
-// durable log), so records cross it as canonical JSON.
-func encodeRecord(v any) (any, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, err
-	}
-	var out any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, err
-	}
-	return out, nil
+// encodePayload serialises an event's post-image record(s) to the raw JSON
+// payload with a single Marshal. The spine stores these bytes verbatim
+// (spine.AppendInput.RawPayload), so a write serialises its records exactly once
+// instead of Marshal-Unmarshal-Marshal through a generic tree.
+func encodePayload(records map[string]any) (json.RawMessage, error) {
+	return json.Marshal(records)
 }
 
 // decodeRecord reconstructs a typed record from the payload value at key.

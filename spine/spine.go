@@ -12,6 +12,8 @@ package spine
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -74,11 +76,20 @@ type Event struct {
 // AppendInput appends one event to a stream. The Log assigns Seq, assigns Time
 // from its clock when Time is zero, and stamps SchemaVersion to
 // DefaultSchemaVersion when it is left unset (0).
+//
+// The payload is supplied in exactly one of two forms. Payload is the decoded
+// form. RawPayload is its pre-encoded form: the JSON encoding of a single object,
+// produced by a caller that already serialized its record once (a stamper) so the
+// log does not re-encode it. A log stores the same bytes either way and always
+// returns the decoded form on Event.Payload, so which form a producer used is
+// unobservable downstream (readers, folds, and the canonical chain encoding see
+// one shape). Setting both is a contract violation and Append rejects it.
 type AppendInput struct {
 	Stream           string
 	Type             string
 	Actor            ActorType
 	Payload          map[string]any
+	RawPayload       json.RawMessage
 	SchemaVersion    int
 	Time             time.Time
 	TraceID          string
@@ -86,6 +97,31 @@ type AppendInput struct {
 	CausationID      string
 	OriginInstanceID string
 	Principal        string
+}
+
+// ErrPayloadConflict is returned by Append when an AppendInput carries both the
+// decoded Payload and the pre-encoded RawPayload; a producer must pick one form.
+var ErrPayloadConflict = errors.New("spine: AppendInput sets both Payload and RawPayload")
+
+// DecodedPayload resolves an AppendInput's payload to its decoded form: Payload
+// when set, else RawPayload decoded to a map (nil when neither is set). Log
+// implementations use it to build the returned Event, so every reader sees one
+// payload shape regardless of which form the producer supplied.
+func (in AppendInput) DecodedPayload() (map[string]any, error) {
+	if in.Payload != nil {
+		if len(in.RawPayload) > 0 {
+			return nil, ErrPayloadConflict
+		}
+		return in.Payload, nil
+	}
+	if len(in.RawPayload) == 0 {
+		return nil, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(in.RawPayload, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 // Query reads a contiguous slice of a stream in Seq order.

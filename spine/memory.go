@@ -34,8 +34,13 @@ func NewMemoryLog(opts ...MemoryOption) *MemoryLog {
 	return l
 }
 
-// Append implements Log.
+// Append implements Log. A RawPayload is decoded here, so the stored event
+// carries the same decoded payload shape a Payload append produces.
 func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
+	payload, err := in.DecodedPayload()
+	if err != nil {
+		return Event{}, err
+	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := in.Time
@@ -52,7 +57,7 @@ func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
 		Time:             t.UTC(),
 		Type:             in.Type,
 		Actor:            in.Actor,
-		Payload:          clonePayload(in.Payload),
+		Payload:          clonePayload(payload),
 		SchemaVersion:    version,
 		TraceID:          in.TraceID,
 		SpanID:           in.SpanID,

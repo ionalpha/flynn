@@ -17,6 +17,10 @@ import (
 // semantically equal specs that differ only in key order or whitespace hash the
 // same.
 func Hash(r Resource) (string, error) {
+	return contentHash(r, canonicalJSON(r.Spec))
+}
+
+func contentHash(r Resource, canonicalSpec any) (string, error) {
 	content := map[string]any{
 		"apiVersion":  r.APIVersion,
 		"kind":        r.Kind,
@@ -24,7 +28,7 @@ func Hash(r Resource) (string, error) {
 		"scope":       r.Scope,
 		"labels":      r.Labels,
 		"annotations": r.Annotations,
-		"spec":        canonicalJSON(r.Spec),
+		"spec":        canonicalSpec,
 		"status":      canonicalJSON(r.Status),
 		"deleted":     r.Deleted,
 		"validFrom":   r.ValidFrom,
@@ -45,10 +49,14 @@ func Hash(r Resource) (string, error) {
 // still matches, so writing status (which changes the full content hash) never
 // re-triggers work. Equal spec yields an equal hash on any machine.
 func SpecHash(r Resource) (string, error) {
+	return specHash(r, canonicalJSON(r.Spec))
+}
+
+func specHash(r Resource, canonicalSpec any) (string, error) {
 	desired := map[string]any{
 		"apiVersion": r.APIVersion,
 		"kind":       r.Kind,
-		"spec":       canonicalJSON(r.Spec),
+		"spec":       canonicalSpec,
 	}
 	b, err := json.Marshal(desired)
 	if err != nil {
@@ -56,6 +64,22 @@ func SpecHash(r Resource) (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// Hashes returns Hash and SpecHash together, canonicalizing the spec once. The
+// Stamper stamps both onto every write, so readers (the reconciler's no-op check
+// above all) compare stored fields instead of re-canonicalizing per tick.
+func Hashes(r Resource) (content, spec string, err error) {
+	cs := canonicalJSON(r.Spec)
+	content, err = contentHash(r, cs)
+	if err != nil {
+		return "", "", err
+	}
+	spec, err = specHash(r, cs)
+	if err != nil {
+		return "", "", err
+	}
+	return content, spec, nil
 }
 
 // canonicalJSON decodes raw JSON to a generic value so the outer Marshal re-encodes
