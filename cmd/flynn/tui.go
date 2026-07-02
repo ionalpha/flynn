@@ -86,6 +86,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		OnSubmit:    host.submit,
 		OnEsc:       host.interrupt,
 		OnKey:       host.key,
+		Completer:   newFileCompleter(s.cwd),
 	})
 	host.ui = a
 	return a, host
@@ -278,7 +279,7 @@ func (h *sessionHost) refreshStatus() {
 // statusLine is the one-row hint between the live output and the composer.
 func statusLine(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {

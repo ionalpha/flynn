@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -270,6 +272,54 @@ func TestSessionShellEndToEnd(t *testing.T) {
 		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("Ctrl+D did not end the shell")
+	}
+	host.shutdown()
+	_ = pw.Close()
+}
+
+// TestSessionShellFileCompletion checks the production wiring serves the
+// session's working directory through the composer's @-menu: typing @ plus
+// a query paints matching files, and Tab splices the pick into the prompt.
+func TestSessionShellFileCompletion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "alpha_notes.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := newREPL(t, dir, memStore(t), llmtest.NewScripted(llmtest.SayText("ok")))
+	pr, pw := io.Pipe()
+	out := &syncOut{}
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24)
+	host.greet("")
+
+	done := make(chan error, 1)
+	go func() { done <- a.Run() }()
+
+	awaitPaint := func(want string) {
+		t.Helper()
+		deadline := time.After(15 * time.Second)
+		for !strings.Contains(out.String(), want) {
+			select {
+			case <-deadline:
+				t.Fatalf("%q never painted:\n%s", want, out.String())
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+	}
+
+	if _, err := pw.Write([]byte("@alpha")); err != nil {
+		t.Fatal(err)
+	}
+	awaitPaint("> alpha_notes.md")
+	if _, err := pw.Write([]byte("\t")); err != nil { // Tab accepts the pick
+		t.Fatal(err)
+	}
+	awaitPaint("@alpha_notes.md ")
+
+	a.Quit()
+	select {
+	case <-done:
+	case <-time.After(15 * time.Second):
+		t.Fatal("shell did not stop")
 	}
 	host.shutdown()
 	_ = pw.Close()

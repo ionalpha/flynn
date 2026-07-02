@@ -66,11 +66,26 @@ type Config struct {
 	// OnEsc fires when Escape is pressed. The host owns what Escape means:
 	// interrupt the in-flight turn, dismiss a panel, nothing.
 	OnEsc func()
-	// OnKey receives keys neither the editor nor a named hook claimed,
-	// including Tab (completion needs the command and file universe the
-	// shell has no business knowing). Return true to consume the key;
-	// unconsumed keys fall through to the shell's defaults (Ctrl+C).
+	// OnKey receives keys neither the editor nor a named hook claimed.
+	// Return true to consume the key; unconsumed keys fall through to the
+	// shell's defaults (Ctrl+C).
 	OnKey func(k input.Key) bool
+	// Completer supplies @-completion candidates. The shell owns the popup
+	// (tracking the token at the cursor, navigation, accept, dismiss); the
+	// host owns the universe being completed over. Nil disables completion.
+	// Both methods run on the event loop goroutine with no locks held, so
+	// Complete must be fast; slow indexing belongs behind a host-built cache.
+	Completer Completer
+}
+
+// Completer is the host side of @-completion. Complete returns the
+// candidates for a query, best first, at most a menu's worth; the query may
+// be empty (the trigger was just typed, ask for the unfiltered universe).
+// Accepted reports the candidate the user chose, so the host can rank
+// recent picks higher.
+type Completer interface {
+	Complete(query string) []string
+	Accepted(item string)
 }
 
 const (
@@ -99,6 +114,8 @@ type App struct {
 	width     int
 	height    int
 	resized   bool
+	menu      menu
+	accepted  []string
 }
 
 // New builds the shell and starts its frame scheduler. Run must be called
@@ -214,8 +231,16 @@ func (a *App) Resize(width, height int) {
 	a.sched.Request()
 }
 
-// handle consumes one decoded input event on the event loop goroutine.
+// handle consumes one decoded input event on the event loop goroutine. An
+// open completion menu gets first claim on the navigation keys; everything
+// else flows through the editor, and afterwards the menu re-derives itself
+// from the composer's state.
 func (a *App) handle(ev input.Event) {
+	if k, isKey := ev.(input.Key); isKey && a.menuKey(k) {
+		a.notifyAccepted()
+		a.sched.Request()
+		return
+	}
 	var after func()
 	a.mu.Lock()
 	action := a.editor.Handle(ev)
@@ -252,6 +277,7 @@ func (a *App) handle(ev input.Event) {
 			a.fallbackKey(k)
 		}
 	}
+	a.refreshMenu()
 	a.sched.Request()
 }
 
@@ -319,6 +345,9 @@ func (a *App) composeLocked() []string {
 	}
 	if a.status != "" {
 		frame = append(frame, a.cfg.Theme.Render(theme.Status, screen.Truncate(a.status, a.width)))
+	}
+	if a.menu.open {
+		frame = append(frame, a.menuRowsLocked()...)
 	}
 	return append(frame, composerRows(&a.editor, a.cfg.Theme, a.width, a.cfg.Placeholder)...)
 }
