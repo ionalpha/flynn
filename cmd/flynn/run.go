@@ -30,6 +30,7 @@ import (
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/internal/spinesink"
+	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -621,14 +622,7 @@ func keywords(s string) []string {
 }
 
 // truncate shortens s to at most n runes, appending an ellipsis when it cut.
-func truncate(s string, n int) string {
-	s = strings.TrimSpace(s)
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return strings.TrimSpace(string(r[:n])) + "..."
-}
+func truncate(s string, n int) string { return text.Clip(strings.TrimSpace(s), n) }
 
 // drive assembles the runtime over the given store and the sandboxed toolset,
 // streams the session live to out, and returns the converged result, the session

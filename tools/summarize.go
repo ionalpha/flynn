@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/ionalpha/flynn/internal/text"
+
 	"github.com/ionalpha/flynn/mission"
 )
 
@@ -33,7 +35,7 @@ func (bashTool) SummarizeResult(input json.RawMessage, result string) string {
 	if i := strings.LastIndex(result, "[exit status "); i >= 0 {
 		status = strings.TrimSuffix(strings.TrimPrefix(result[i:], "["), "]")
 	}
-	return fmt.Sprintf("%q, %s, %d lines", clip(firstLine(in.Command), 48), status, lineCount(result))
+	return fmt.Sprintf("%q, %s, %d lines", text.Clip(firstLine(in.Command), 48), status, lineCount(result))
 }
 
 // SummarizeResult describes a file read by its path and size.
@@ -78,14 +80,4 @@ func lineCount(s string) int {
 		return 0
 	}
 	return strings.Count(strings.TrimRight(s, "\n"), "\n") + 1
-}
-
-// clip shortens s to at most n runes, marking a cut with an ellipsis, so a long
-// command does not blow up a one-line summary.
-func clip(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "..."
 }

@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ionalpha/flynn/internal/text"
+
 	"github.com/ionalpha/flynn/session"
 )
 
@@ -112,14 +114,6 @@ func humanTokens(n int) string {
 	return fmt.Sprintf("%.1fk", float64(n)/1000)
 }
 
-// oneLine collapses whitespace runs (including newlines) into single spaces and
-// truncates to max runes, so a multi-line tool output or model message renders as a
-// single tidy transcript line.
-func oneLine(s string, limit int) string {
-	s = strings.Join(strings.Fields(s), " ")
-	r := []rune(s)
-	if len(r) <= limit {
-		return s
-	}
-	return string(r[:limit]) + "..."
-}
+// oneLine collapses a multi-line tool output or model message into a single
+// tidy transcript line.
+func oneLine(s string, limit int) string { return text.OneLine(s, limit) }

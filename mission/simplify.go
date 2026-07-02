@@ -29,10 +29,13 @@ func simplifyTool(t llm.Tool) llm.Tool {
 // hard truncation.
 func trimDescription(s string) string {
 	s = strings.TrimSpace(s)
-	if len(s) <= maxToolDescription {
+	r := []rune(s)
+	if len(r) <= maxToolDescription {
 		return s
 	}
-	clipped := s[:maxToolDescription]
+	// Cut on runes, never bytes: a byte slice can split a multibyte character
+	// mid-sequence and hand the model invalid UTF-8.
+	clipped := string(r[:maxToolDescription])
 	if i := strings.LastIndex(clipped, ". "); i > 0 {
 		return clipped[:i+1]
 	}

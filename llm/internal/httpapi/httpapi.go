@@ -21,6 +21,7 @@ import (
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/integrations/request"
+	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/netguard"
 )
@@ -131,18 +132,8 @@ func statusError(name string, code int, body []byte) error {
 		msg = string(body)
 	}
 	quota := e.Error.Type == "insufficient_quota" || e.Error.Code == "insufficient_quota" ||
-		containsAny(strings.ToLower(msg), "credit", "billing", "quota")
+		text.ContainsAny(strings.ToLower(msg), "credit", "billing", "quota")
 	return fault.New(llm.RetryClass(code, quota), name+"_status", fmt.Sprintf("%s: HTTP %d: %s", name, code, msg))
-}
-
-// containsAny reports whether s contains any of the substrings.
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }
 
 // defaultClient selects the client for an endpoint no caller overrode. Loopback

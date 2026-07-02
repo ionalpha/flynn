@@ -13,6 +13,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/inference/orchestrate"
+	"github.com/ionalpha/flynn/internal/text"
 )
 
 // runModelPool implements `flynn models pool [--vram GB] [--pin id,...] <model-id>...`: keep a
@@ -172,22 +173,13 @@ func classifyLaunchFailure(err error) orchestrate.FailureKind {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case containsAny(msg, "out of memory", "cuda error", "failed to allocate", "cudamalloc", "ggml_cuda", "oom"):
+	case text.ContainsAny(msg, "out of memory", "cuda error", "failed to allocate", "cudamalloc", "ggml_cuda", "oom"):
 		return orchestrate.FailureOOM
-	case containsAny(msg, "did not answer within", "timed out", "timeout"):
+	case text.ContainsAny(msg, "did not answer within", "timed out", "timeout"):
 		return orchestrate.FailureHang
 	default:
 		return orchestrate.FailureCrash
 	}
-}
-
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }
 
 // staticPoolProvider serves a fixed desired state, the explicit set of models named on the
