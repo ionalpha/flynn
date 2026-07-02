@@ -45,7 +45,7 @@ func TestAdversarialCorpusEachThreatNeutralizedAtItsLayer(t *testing.T) {
 				if err != nil {
 					return false, "parse failed: " + err.Error()
 				}
-				_, err = gr.admitSource(src)
+				_, err = gr.admitForTest(src)
 				return err != nil && strings.Contains(err.Error(), "untrusted"), errStr(err)
 			},
 		},
@@ -98,7 +98,7 @@ func TestAdversarialCorpusEachThreatNeutralizedAtItsLayer(t *testing.T) {
 				// Even a recognized publisher is semi-trusted and needs kernel confinement;
 				// a process-jail host cannot provide it, so the run is refused.
 				src, _ := modelsource.Parse("hf:Qwen/Qwen2.5-0.5B-Instruct-GGUF/model.gguf", isLocalModelID)
-				_, err := gr.admitSource(src)
+				_, err := gr.admitForTest(src)
 				return err != nil && strings.Contains(err.Error(), "semi-trusted"), errStr(err)
 			},
 		},
@@ -131,7 +131,7 @@ func TestAdversarialCorpusEachThreatNeutralizedAtItsLayer(t *testing.T) {
 	// Guard the guard: a benign trusted catalog model must pass every layer, so the
 	// pipeline refuses the hostile corpus without also blocking the legitimate path.
 	src, _ := modelsource.Parse("qwen2.5:0.5b-instruct", isLocalModelID)
-	if _, err := gr.admitSource(src); err != nil {
+	if _, err := gr.admitForTest(src); err != nil {
 		t.Fatalf("a benign catalog model must pass the gate, got %v", err)
 	}
 	if sandbox.Required(sandbox.TrustTrusted) != sandbox.ContainmentNone {

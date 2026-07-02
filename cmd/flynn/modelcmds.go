@@ -76,45 +76,9 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 
 	runner := newLocalRunner(dataDir, out)
 
-	// Classify the source, refuse an unsafe weight format, record its provenance, and gate
-	// it against the isolation this host can provide, before anything is fetched or run.
-	src, err := modelsource.Parse(id, isLocalModelID)
-	if err != nil {
-		return fmt.Errorf("models run: %w", err)
-	}
-	class, err := runner.classifySource(src)
-	if err != nil {
-		return fmt.Errorf("models run: %w", err)
-	}
-
-	// Surface the trust, isolation, integrity, and network posture in plain language
-	// before anything happens, so a refusal below is explained rather than bare, and gate
-	// the run on the isolation this host can provide.
-	rs := runner.riskSurface(src, class)
-	printRiskSurface(out, rs)
-	if err := runner.admitOnly(class.Trust); err != nil {
-		return fmt.Errorf("models run: %w", err)
-	}
-
-	// Require explicit consent for anything that is not a vetted catalog model. The safe
-	// answer is the default, and a non-interactive session refuses rather than assumes yes.
-	if err := requireConsent(rs, stdinIsTerminal(), autoApprove, os.Stdin, out); err != nil {
-		return fmt.Errorf("models run: %w", err)
-	}
-
-	if src.Kind != modelsource.KindCatalog {
-		// The source is admitted by the isolation gate and consented to, but is not a
-		// curated catalog entry. Serving an arbitrary downloaded model is delivered with the
-		// strong isolation tier it requires; until then the gate above refuses an
-		// uncontained run.
-		return fmt.Errorf("models run: %s is %s and would run, but serving a non-catalog model is not wired yet; only catalog models serve today", src.Raw, class.Trust)
-	}
-
-	m, err := findLocalModel(id)
-	if err != nil {
-		return fmt.Errorf("models run: %w", err)
-	}
-	ep, err := runner.serveModel(ctx, m, 0, false)
+	// The one admission gate: classify, surface the risk, gate on isolation, obtain
+	// consent, then provision and serve. Shared with `models probe` and the goal path.
+	m, ep, err := runner.gateAndServe(ctx, id, consentFor(autoApprove), 0, false)
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)
 	}
@@ -157,31 +121,7 @@ func runModelProbe(args []string, dataDir string, out io.Writer) error {
 	defer stop()
 
 	runner := newLocalRunner(dataDir, out)
-	src, err := modelsource.Parse(id, isLocalModelID)
-	if err != nil {
-		return fmt.Errorf("models probe: %w", err)
-	}
-	class, err := runner.classifySource(src)
-	if err != nil {
-		return fmt.Errorf("models probe: %w", err)
-	}
-	rs := runner.riskSurface(src, class)
-	printRiskSurface(out, rs)
-	if err := runner.admitOnly(class.Trust); err != nil {
-		return fmt.Errorf("models probe: %w", err)
-	}
-	if err := requireConsent(rs, stdinIsTerminal(), autoApprove, os.Stdin, out); err != nil {
-		return fmt.Errorf("models probe: %w", err)
-	}
-	if src.Kind != modelsource.KindCatalog {
-		return fmt.Errorf("models probe: %s is %s; only catalog models can be probed today", src.Raw, class.Trust)
-	}
-
-	m, err := findLocalModel(id)
-	if err != nil {
-		return fmt.Errorf("models probe: %w", err)
-	}
-	ep, err := runner.serveModel(ctx, m, 0, false)
+	m, ep, err := runner.gateAndServe(ctx, id, consentFor(autoApprove), 0, false)
 	if err != nil {
 		return fmt.Errorf("models probe: %w", err)
 	}

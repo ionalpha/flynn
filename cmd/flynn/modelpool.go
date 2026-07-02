@@ -12,7 +12,6 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/catalog"
-	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/internal/inference/orchestrate"
 )
 
@@ -141,15 +140,11 @@ func poolLauncher(runner *localRunner, specs map[string]catalog.ModelSpec) orche
 		if !ok {
 			return fmt.Errorf("model %q is not in the pool", id)
 		}
-		src, err := modelsource.Parse(m.ID, isLocalModelID)
-		if err != nil {
-			return err
-		}
-		if _, err := runner.admitSource(src); err != nil {
-			return err
-		}
+		// Trust-gate-only: pool members come from the catalog, so there is no
+		// consent surface to show; the classification and containment gate still
+		// apply on every launch.
 		ctxSize, cpuOnly := launchProfile(level)
-		_, err = runner.serveModel(ctx, m, ctxSize, cpuOnly)
+		_, _, err := runner.gateAndServe(ctx, m.ID, consentTrustGateOnly, ctxSize, cpuOnly)
 		return err
 	}
 }

@@ -99,23 +99,88 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 	}
 }
 
-// admitSource classifies a model reference, refuses an unsafe weight format, records the
-// source's provenance, and gates it against the isolation the serving sandbox provides.
-// It returns the classification on success, or a refusal that names the trust level and
-// the isolation gap. This is the one gate every run path goes through, so a model from
-// anywhere (a catalog entry, a hub reference, a raw URL, a dropped file) is classified and
-// contained, not just blessed catalog entries. A source whose trust requires stronger
-// isolation than is available here is refused rather than run, which is the security
-// guarantee for a model whose bytes we cannot vouch for.
-func (r *localRunner) admitSource(src modelsource.Source) (modelsource.Classification, error) {
+// consentPolicy says how gateAndServe obtains consent for a source that is not a
+// vetted catalog entry. It is an explicit value so a consent-free path is a
+// deliberate, reviewable choice rather than a missing call.
+type consentPolicy int
+
+const (
+	// consentPrompt shows the risk surface and requires explicit consent for a risky
+	// source: an interactive session is prompted with "no" as the default, a
+	// non-interactive one is refused.
+	consentPrompt consentPolicy = iota
+	// consentPreapproved records an explicit up-front approval (--yes) instead of
+	// prompting. The risk surface is still shown.
+	consentPreapproved
+	// consentTrustGateOnly applies classification, provenance recording, and the
+	// containment gate, but neither prints the risk surface nor prompts. The goal
+	// path uses it because only catalog models resolve there today and a catalog
+	// model is not risky; if non-catalog sources ever resolve through that path,
+	// this value is the grep target for adding its consent surface.
+	consentTrustGateOnly
+)
+
+// consentFor maps a command's --yes flag to the consent policy the gate applies.
+func consentFor(autoApprove bool) consentPolicy {
+	if autoApprove {
+		return consentPreapproved
+	}
+	return consentPrompt
+}
+
+// gateAndServe is the one admission-and-serve path for a local model reference:
+// parse, classify (refusing an unsafe weight format, recording provenance), show
+// the risk, gate on the isolation this host provides, obtain consent per policy,
+// then provision and serve. Every route that serves a model goes through it -
+// `models run`, `models probe`, and the goal path - so a check added here covers
+// all of them instead of living in per-command copies. A source whose trust
+// requires stronger isolation than is available is refused rather than run, which
+// is the security guarantee for a model whose bytes we cannot vouch for. Callers
+// wrap the returned error with their command name. ctxSize and cpuOnly pass
+// through to the serve (0, false for the defaults); the pool's degraded relaunch
+// uses them to shrink a model that ran out of memory.
+func (r *localRunner) gateAndServe(ctx context.Context, id string, consent consentPolicy, ctxSize int, cpuOnly bool) (catalog.ModelSpec, serve.Endpoint, error) {
+	src, err := modelsource.Parse(id, isLocalModelID)
+	if err != nil {
+		return catalog.ModelSpec{}, serve.Endpoint{}, err
+	}
 	class, err := r.classifySource(src)
 	if err != nil {
-		return class, err
+		return catalog.ModelSpec{}, serve.Endpoint{}, err
+	}
+	// Surface the trust, isolation, integrity, and network posture in plain language
+	// before anything happens, so a refusal below is explained rather than bare.
+	rs := r.riskSurface(src, class)
+	if consent != consentTrustGateOnly {
+		printRiskSurface(r.out, rs)
 	}
 	if err := r.admitOnly(class.Trust); err != nil {
-		return class, err
+		return catalog.ModelSpec{}, serve.Endpoint{}, err
 	}
-	return class, nil
+	// Require explicit consent for anything that is not a vetted catalog model. The
+	// safe answer is the default, and a non-interactive session refuses rather than
+	// assumes yes.
+	if consent != consentTrustGateOnly {
+		if err := requireConsent(rs, stdinIsTerminal(), consent == consentPreapproved, os.Stdin, r.out); err != nil {
+			return catalog.ModelSpec{}, serve.Endpoint{}, err
+		}
+	}
+	if src.Kind != modelsource.KindCatalog {
+		// The source is admitted by the isolation gate and consented to, but is not a
+		// curated catalog entry. Serving an arbitrary downloaded model is delivered
+		// with the strong isolation tier it requires; until then the gate above
+		// refuses an uncontained run.
+		return catalog.ModelSpec{}, serve.Endpoint{}, fmt.Errorf("%s is %s and would run, but serving a non-catalog model is not wired yet; only catalog models serve today", src.Raw, class.Trust)
+	}
+	m, err := findLocalModel(id)
+	if err != nil {
+		return catalog.ModelSpec{}, serve.Endpoint{}, err
+	}
+	ep, err := r.serveModel(ctx, m, ctxSize, cpuOnly)
+	if err != nil {
+		return catalog.ModelSpec{}, serve.Endpoint{}, err
+	}
+	return m, ep, nil
 }
 
 // classifySource classifies a source, refuses an unsafe weight format, and records the
@@ -370,23 +435,14 @@ func findLocalModel(id string) (catalog.ModelSpec, error) {
 // sandboxed model with no manual step. Progress is reported to stderr so it does not
 // corrupt a piped run transcript on stdout.
 func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
-	m, err := findLocalModel(modelSpec)
-	if err != nil {
-		return nil, harness.Plan{}, err
-	}
 	runner := newLocalRunner(dataDir, os.Stderr)
-	// The goal path goes through the same trust gate as `models run`, so no model-run
-	// route skips classification, provenance, and the containment check.
-	src, err := modelsource.Parse(modelSpec, isLocalModelID)
+	// The goal path goes through the same admission gate as `models run`, so no
+	// model-run route skips classification, provenance, or the containment check. It
+	// is trust-gate-only: only catalog models resolve here, and a catalog model is
+	// not risky, so there is no consent surface to show.
+	m, ep, err := runner.gateAndServe(ctx, modelSpec, consentTrustGateOnly, 0, false)
 	if err != nil {
-		return nil, harness.Plan{}, err
-	}
-	if _, err := runner.admitSource(src); err != nil {
-		return nil, harness.Plan{}, err
-	}
-	ep, err := runner.serveModel(ctx, m, 0, false)
-	if err != nil {
-		return nil, harness.Plan{}, fmt.Errorf("serve local model %s: %w", modelSpec, err)
+		return nil, harness.Plan{}, fmt.Errorf("local model %s: %w", modelSpec, err)
 	}
 	plan := localModelPlan(ctx, m, dataDir)
 	logPlan(os.Stderr, m.ID, plan)

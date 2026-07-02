@@ -13,7 +13,6 @@ import (
 // must call one of these, so classification, provenance, and the containment check are
 // never skipped.
 var gateFunctions = map[string]bool{
-	"admitSource":    true,
 	"admitOnly":      true,
 	"classifySource": true,
 }
