@@ -16,11 +16,11 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/internal/archetype"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 )

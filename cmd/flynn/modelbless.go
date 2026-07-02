@@ -12,10 +12,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/fetch"
-	"github.com/ionalpha/flynn/huggingface"
-	"github.com/ionalpha/flynn/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/huggingface"
+	"github.com/ionalpha/flynn/internal/inference/modelsource"
 )
 
 // runModelBless implements `flynn models bless <hf:owner/repo>`: resolve a Hugging Face

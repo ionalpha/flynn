@@ -17,12 +17,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ionalpha/flynn/archetype"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/internal/archetype"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"

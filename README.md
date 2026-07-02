@@ -364,13 +364,13 @@ skill/, memory/     durable skill and memory stores
 llm/, provider/     the model port and concrete adapters
 tools/              the default agentic toolset
 sandbox/            the isolation boundary for command execution
-integrations/       data-driven integration and plugin engine
 clock/, ids/, hlc/  determinism: time source, sortable ids, write ordering
 fault/              typed, classified error model
 runtime/            wires controller, worker, store, and bus together
 session/            conversational front door and event stream
 storage/sqlite/     the durable SQLite backend
-internal/           build and runtime internals
+internal/           the mechanism band: model plumbing, guards, the
+                    integration/extension engine, and other non-API machinery
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full layer map, the ports a host

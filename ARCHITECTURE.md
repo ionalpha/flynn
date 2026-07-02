@@ -38,7 +38,7 @@ package is one plus the highest layer it imports.
 | L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters. |
 | L2 core data | `state`, `resource`, `provider` | The host persistence boundary, the event-sourced resource store, the model-adapter registry. |
 | L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill`, `chain` | The governance waist, the reconcile loop, the leased job queue, durable memory and skill stores, the verifiable-record encoder and signer over spine events. |
-| L4 governance + domain | `capability`, `budget`, `spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
+| L4 governance + domain | `capability`, `budget`, `internal/spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
 | L7 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade. |
@@ -48,16 +48,38 @@ reach up into a domain package; that inversion is what turns a clean graph into 
 ball of mud. The direction is enforced by `depguard` (see Invariants), so the
 table cannot silently rot.
 
-### Why flat, not nested
+### Surface and structure are two different controls
 
-Packages stay at the top level rather than nested under `infra/`, `agent/`, etc.
-In Go a directory *is* a package and its import identity; nesting changes import
-paths and (for a public module) breaks importers, but it does not change the
-dependency graph. The graph is what matters, and we enforce it directly with the
-layer rule above. So the layering lives in `depguard`, not in folders, and the
-top level stays scannable. The two adapter families that genuinely cluster
-(`llm/*`, `storage/*`) are the only nesting, because they are alternative
-implementations of one port.
+Two separate questions get conflated in most repo layouts, and Flynn answers
+them with two separate mechanisms:
+
+- **Internal structure** (which package may import which) is governed by the
+  `depguard` layer rules above. Folders cannot express import *direction*, so
+  nesting packages under an `infra/`-style taxonomy would change import paths
+  without changing the graph. The layering lives in the linter, not in folders.
+- **External API surface** (what the module promises importers) is governed by
+  `internal/`. A public Go module's every exported package is formally API;
+  `internal/` is the one language-level tool that removes a package from that
+  promise. It is not about visibility - the code stays world-readable on
+  GitHub - it only removes importability, i.e. the semver promise.
+
+They are complementary, not alternatives. So the top level holds only the
+surface a visitor or embedder should see: the root `agent` facade, the ports a
+host implements or consumes, and the domain nouns of the product. The
+machinery those are built from (parsers, guards, stores, probes, adapters)
+lives under `internal/`, one level flat for the same scannability reason - no
+`internal/infra/...` taxonomy. Within each band the packages stay flat, and
+the only nesting is adapter families that are alternative implementations of
+one port (`llm/*`, `storage/*`).
+
+The mechanical criterion for what stays public: a package is top-level iff
+(a) it appears in the exported signatures of a public package (checked with a
+`go/types` audit over the declared public set - an internal type leaking
+through a public signature compiles but is broken API), or (b) it is a port
+third parties implement (`sandbox` backends, `state` stores, `llm` adapters,
+`driver` loops, `inbox` sources), or (c) it is a standard's reference
+implementation (`chain`, for Provetrail). Everything else is a mechanism and
+goes under `internal/`.
 
 ## Ports (the interfaces that keep it swappable)
 
@@ -220,21 +242,27 @@ evidence.
 ## Stability tiers
 
 Flynn is a public Go module, so every exported package is, in principle, a
-promise. Until v1.0 the promise is deliberately scoped:
+promise. The layout makes the tiers physical:
 
 - **Stable surface** (the embedding contract): the root `agent` facade and the
   ports a host implements or consumes, `state`, `observe`, `llm`, `capability`,
-  `fault`, `tools`. Keep these small and guarded; breaking them is a major-version
-  event.
-- **Engine** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`, `session`,
-  `runtime`, `learn`, ...): importable and visible, but **unstable while pre-1.0**.
-  These churn as the orchestration graph and router land. Power users may import
-  them with that understanding.
+  `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`,
+  `storage/sqlite`, and `chain` (the Provetrail reference implementation, which
+  external verifiers must be able to import). Keep these small and guarded;
+  breaking them is a major-version event.
+- **Domain surface** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`,
+  `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`,
+  `controlplane`, `orchestration`, ...): importable and visible, but **unstable
+  while pre-1.0**. These churn as the orchestration graph and router land.
+  Power users may import them with that understanding.
+- **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
+  guards, stores, probes, and adapters the surfaces are built from.
 
-Pre-1.0 Go semver already permits breaking changes, so the engine stays
-refactorable while the top level stays visible. The decision to physically move
-the engine under `internal/` is deferred to the v1.0 cut, when this tier list
-says exactly what must lock.
+Pre-1.0 Go semver already permits breaking changes, so the domain surface stays
+refactorable while remaining visible. The mechanism band moved under
+`internal/` pre-launch, while the module had no external importers - the
+cheapest such a move can ever be - so godoc shows exactly the curated surface
+and nothing below it ever enters the compatibility promise.
 
 ## Concurrency and lifecycle
 
@@ -262,7 +290,8 @@ is part of CI).
 - **`resource`** event-sourced state of record; **`spine`** the raw event log;
   **`storage/sqlite`** the durable backend; **`state`** the host boundary.
 - **`dispatch`** the governance waist; **`capability`** grants; **`budget`** the
-  per-run spend ceiling; **`spinesink`** routes dispatched actions onto the spine.
+  per-run spend ceiling; **`internal/spinesink`** routes dispatched actions onto
+  the spine.
 - **`chain`** the verifiable-record layer: canonical CBOR encoding, the RFC 9162
   Merkle log, COSE signing, sealed run records, and the verifier behind
   `flynn spine verify`.
@@ -273,3 +302,9 @@ is part of CI).
 - **`clock`**, **`ids`**, **`hlc`** the determinism ports; **`fault`** the error
   taxonomy; **`observe`** logging/tracing; **`bus`** the in-process event bus;
   **`jobs`** the leased job queue.
+- **`internal/...`** the mechanism band: model plumbing (`inference`, `gguf`,
+  `gbnf`, `modelformat`, `modeltrust`, `huggingface`, `hardware`, `acquire`),
+  network and credential guards (`bindguard`, `vault`, `credential`), the
+  extension machinery (`integrations`, `catalog`, `flow`, `ops`, `service`,
+  `playbook`, `dependency`, `fetch`, `source`), and the rest of the plumbing.
+  Not importable; see Stability tiers.

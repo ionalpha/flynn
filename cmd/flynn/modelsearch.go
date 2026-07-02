@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/ionalpha/flynn/huggingface"
+	"github.com/ionalpha/flynn/internal/huggingface"
 )
 
 // runModelSearch implements `flynn models search <query>`: find models on the Hugging

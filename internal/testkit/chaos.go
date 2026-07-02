@@ -18,7 +18,7 @@ import (
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/integrations/request"
+	"github.com/ionalpha/flynn/internal/integrations/request"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/secret"

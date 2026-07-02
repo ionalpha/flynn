@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/fetch"
-	"github.com/ionalpha/flynn/inference/launch"
-	"github.com/ionalpha/flynn/inference/provision"
-	"github.com/ionalpha/flynn/inference/serve"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/inference/launch"
+	"github.com/ionalpha/flynn/internal/inference/provision"
+	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/sandbox"
 )
 

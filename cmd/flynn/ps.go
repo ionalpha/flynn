@@ -11,7 +11,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/instance"
+	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/resource"
 )
 

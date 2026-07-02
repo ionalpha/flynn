@@ -11,12 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/harness"
-	"github.com/ionalpha/flynn/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/profilestore"
+	"github.com/ionalpha/flynn/internal/reliability"
 	"github.com/ionalpha/flynn/llm"
-	"github.com/ionalpha/flynn/profilestore"
-	"github.com/ionalpha/flynn/reliability"
 	"github.com/ionalpha/flynn/resource"
 )
 

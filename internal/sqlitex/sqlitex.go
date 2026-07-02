@@ -15,7 +15,7 @@ import (
 
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
 
-	"github.com/ionalpha/flynn/migrate"
+	"github.com/ionalpha/flynn/internal/migrate"
 )
 
 // Open opens (creating if needed) a SQLite database at dsn, applies the standard

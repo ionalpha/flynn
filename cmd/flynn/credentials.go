@@ -8,9 +8,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ionalpha/flynn/credential"
+	"github.com/ionalpha/flynn/internal/credential"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/secret"
-	"github.com/ionalpha/flynn/vault"
 )
 
 // openCredentialStore opens the durable store and returns a credential facade over

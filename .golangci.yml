@@ -123,7 +123,7 @@ linters:
               desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
             - pkg: "github.com/ionalpha/flynn/skill"
               desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
-            - pkg: "github.com/ionalpha/flynn/spinesink"
+            - pkg: "github.com/ionalpha/flynn/internal/spinesink"
               desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"
             - pkg: "github.com/ionalpha/flynn/goal"
               desc: "core may not import the engine (layer inversion); see ARCHITECTURE.md"

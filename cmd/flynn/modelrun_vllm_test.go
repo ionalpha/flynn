@@ -3,8 +3,8 @@ package main
 import (
 	"testing"
 
-	"github.com/ionalpha/flynn/catalog"
-	"github.com/ionalpha/flynn/inference/launch"
+	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/inference/launch"
 )
 
 func st(format catalog.Format, name string, size int64) catalog.Quant {

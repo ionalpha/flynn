@@ -13,9 +13,9 @@ import (
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/storage/sqlite"
-	"github.com/ionalpha/flynn/vault"
 )
 
 // recordEventType is the event a sealed run's signed record is stored under, on the

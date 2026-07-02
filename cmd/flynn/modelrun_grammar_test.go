@@ -9,7 +9,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/harness"
-	"github.com/ionalpha/flynn/inference/serve"
+	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/llm"
 )
 

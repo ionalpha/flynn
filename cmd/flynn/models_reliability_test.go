@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/catalog"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/catalog"
 )
 
 // TestReliabilityColMeasured proves a probed model shows its measured tool-call reliability.

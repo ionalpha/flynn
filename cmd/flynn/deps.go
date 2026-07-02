@@ -7,8 +7,8 @@ import (
 	"os"
 	"text/tabwriter"
 
-	"github.com/ionalpha/flynn/dependency"
-	"github.com/ionalpha/flynn/fetch"
+	"github.com/ionalpha/flynn/internal/dependency"
+	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/sandbox"
 )
 
