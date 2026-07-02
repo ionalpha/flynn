@@ -17,8 +17,8 @@ func TestAllocCeilingCanonicalBytes(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if allocs > 24 {
-		t.Errorf("CanonicalBytes allocates %.0f/op, over the 24 ceiling: a codec regression (or lower the ceiling if the cost legitimately grew)", allocs)
+	if allocs > 4 {
+		t.Errorf("CanonicalBytes allocates %.0f/op, over the 4 ceiling: a codec regression (or lower the ceiling if the cost legitimately grew)", allocs)
 	}
 }
 
@@ -32,7 +32,7 @@ func TestAllocCeilingDecodeCanonical(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if allocs > 20 {
-		t.Errorf("DecodeCanonical allocates %.0f/op, over the 20 ceiling: a codec regression (or lower the ceiling if the cost legitimately grew)", allocs)
+	if allocs > 18 {
+		t.Errorf("DecodeCanonical allocates %.0f/op, over the 18 ceiling: a codec regression (or lower the ceiling if the cost legitimately grew)", allocs)
 	}
 }

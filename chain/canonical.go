@@ -64,10 +64,13 @@ func init() {
 	canonicalDec = dec
 }
 
-// canonicalEvent is the decode target for canonical bytes. Its cbor tags name the
-// wire keys. It exists only to extract fields cleanly on decode; the encode path
-// builds a map directly (below) so the encoder, not Go struct order, is the single
-// authority on which keys are present and how they are ordered.
+// canonicalEvent is both the decode target and the encode source for canonical
+// bytes. Its cbor tags name the wire keys. The seven critical keys are always
+// present; the optional string keys carry omitempty so they are present only when
+// set, by a fixed rule, and the encoding of an event without them is stable. The
+// canonical encoder sorts struct-field keys bytewise exactly as it sorts map keys,
+// so field declaration order carries no authority over the wire; the conformance
+// vectors pin the resulting bytes.
 type canonicalEvent struct {
 	Stream         string         `cbor:"stream"`
 	Seq            int64          `cbor:"seq"`
@@ -76,23 +79,21 @@ type canonicalEvent struct {
 	Actor          string         `cbor:"actor"`
 	SchemaVersion  int            `cbor:"schema_version"`
 	Payload        map[string]any `cbor:"payload"`
-	CausationID    string         `cbor:"causation_id"`
-	OriginInstance string         `cbor:"origin_instance_id"`
-	Principal      string         `cbor:"principal"`
-	TraceID        string         `cbor:"trace_id"`
-	SpanID         string         `cbor:"span_id"`
+	CausationID    string         `cbor:"causation_id,omitempty"`
+	OriginInstance string         `cbor:"origin_instance_id,omitempty"`
+	Principal      string         `cbor:"principal,omitempty"`
+	TraceID        string         `cbor:"trace_id,omitempty"`
+	SpanID         string         `cbor:"span_id,omitempty"`
 }
 
-// canonicalMap builds the logical key/value map the encoder serializes. The seven
-// critical keys are always present; the optional string keys are present only
-// when set, by a fixed rule, so the encoding of an event without them is stable.
-// Time is normalized to UTC unix nanoseconds, which intentionally drops the
-// monotonic reading and location so the canonical form is clock- and
-// location-independent. A nil payload is normalized to an empty map so the payload
-// key is always present with a stable value.
-func canonicalMap(e spine.Event) (map[string]any, error) {
+// toCanonical validates e and shapes it into the encode source. Time is
+// normalized to UTC unix nanoseconds, which intentionally drops the monotonic
+// reading and location so the canonical form is clock- and location-independent.
+// A nil payload is normalized to an empty map so the payload key is always
+// present with a stable value.
+func toCanonical(e spine.Event) (canonicalEvent, error) {
 	if e.Time.IsZero() {
-		return nil, fault.New(fault.Terminal, CodeTimeRange, "chain: event time is zero")
+		return canonicalEvent{}, fault.New(fault.Terminal, CodeTimeRange, "chain: event time is zero")
 	}
 	payload := e.Payload
 	if payload == nil {
@@ -101,40 +102,30 @@ func canonicalMap(e spine.Event) (map[string]any, error) {
 	// A CBOR text string must be valid UTF-8, and the strict decoder enforces that,
 	// so the encoder fails closed on a non-UTF-8 string field rather than producing
 	// bytes that will not round-trip. Binary data belongs in a byte string ([]byte),
-	// which carries no UTF-8 constraint.
-	for _, s := range []string{e.Stream, e.Type, string(e.Actor), e.CausationID, e.OriginInstanceID, e.Principal, e.TraceID, e.SpanID} {
+	// which carries no UTF-8 constraint. The array literal keeps the sweep on the
+	// stack.
+	for _, s := range [...]string{e.Stream, e.Type, string(e.Actor), e.CausationID, e.OriginInstanceID, e.Principal, e.TraceID, e.SpanID} {
 		if !utf8.ValidString(s) {
-			return nil, fault.New(fault.Terminal, CodeInvalidUTF8, "chain: event field is not valid UTF-8")
+			return canonicalEvent{}, fault.New(fault.Terminal, CodeInvalidUTF8, "chain: event field is not valid UTF-8")
 		}
 	}
 	if !validUTF8Value(payload) {
-		return nil, fault.New(fault.Terminal, CodeInvalidUTF8, "chain: payload contains a non-UTF-8 string")
+		return canonicalEvent{}, fault.New(fault.Terminal, CodeInvalidUTF8, "chain: payload contains a non-UTF-8 string")
 	}
-	m := map[string]any{
-		"stream":         e.Stream,
-		"seq":            e.Seq,
-		"time":           e.Time.UTC().UnixNano(),
-		"type":           e.Type,
-		"actor":          string(e.Actor),
-		"schema_version": e.SchemaVersion,
-		"payload":        payload,
-	}
-	if e.CausationID != "" {
-		m["causation_id"] = e.CausationID
-	}
-	if e.OriginInstanceID != "" {
-		m["origin_instance_id"] = e.OriginInstanceID
-	}
-	if e.Principal != "" {
-		m["principal"] = e.Principal
-	}
-	if e.TraceID != "" {
-		m["trace_id"] = e.TraceID
-	}
-	if e.SpanID != "" {
-		m["span_id"] = e.SpanID
-	}
-	return m, nil
+	return canonicalEvent{
+		Stream:         e.Stream,
+		Seq:            e.Seq,
+		TimeUnixNano:   e.Time.UTC().UnixNano(),
+		Type:           e.Type,
+		Actor:          string(e.Actor),
+		SchemaVersion:  e.SchemaVersion,
+		Payload:        payload,
+		CausationID:    e.CausationID,
+		OriginInstance: e.OriginInstanceID,
+		Principal:      e.Principal,
+		TraceID:        e.TraceID,
+		SpanID:         e.SpanID,
+	}, nil
 }
 
 // CanonicalBytes returns the deterministic CBOR encoding of e. Two events with the
@@ -147,11 +138,11 @@ func canonicalMap(e spine.Event) (map[string]any, error) {
 // decoder becomes, encodes as a float and changes the bytes. Producers must
 // preserve integer types; the property tests guard this.
 func CanonicalBytes(e spine.Event) ([]byte, error) {
-	m, err := canonicalMap(e)
+	ce, err := toCanonical(e)
 	if err != nil {
 		return nil, err
 	}
-	b, err := canonicalEnc.Marshal(m)
+	b, err := canonicalEnc.Marshal(ce)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, CodeEncode, err)
 	}
@@ -177,18 +168,25 @@ func DecodeCanonical(b []byte) (spine.Event, error) {
 // extra content and is rejected. This is the re-derivation check that lets a
 // verifier confirm carried bytes agree with their logical content.
 func VerifyCanonical(b []byte) error {
+	_, err := verifyCanonical(b)
+	return err
+}
+
+// verifyCanonical is VerifyCanonical returning the decoded event, so a stream
+// verifier gets the event from the same pass instead of decoding the bytes twice.
+func verifyCanonical(b []byte) (spine.Event, error) {
 	e, err := DecodeCanonical(b)
 	if err != nil {
-		return err
+		return spine.Event{}, err
 	}
 	reencoded, err := CanonicalBytes(e)
 	if err != nil {
-		return err
+		return spine.Event{}, err
 	}
 	if !bytes.Equal(reencoded, b) {
-		return fault.New(fault.Terminal, CodeNonCanonicalCBOR, "chain: bytes are not in canonical form")
+		return spine.Event{}, fault.New(fault.Terminal, CodeNonCanonicalCBOR, "chain: bytes are not in canonical form")
 	}
-	return nil
+	return e, nil
 }
 
 // LeafInput returns the domain-separated preimage the hash chain commits to for one

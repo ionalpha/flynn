@@ -33,10 +33,9 @@ func (v *Verifier) VerifyStream(canonicalEvents [][]byte) ([]spine.Event, error)
 	events := make([]spine.Event, 0, len(canonicalEvents))
 	var prev spine.Event
 	for i, b := range canonicalEvents {
-		if err := VerifyCanonical(b); err != nil {
-			return nil, err
-		}
-		e, err := DecodeCanonical(b)
+		// One pass: the canonical-form check decodes the event anyway, so take
+		// the decoded event from it instead of decoding the bytes a second time.
+		e, err := verifyCanonical(b)
 		if err != nil {
 			return nil, err
 		}

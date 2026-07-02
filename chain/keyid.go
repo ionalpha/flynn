@@ -11,7 +11,11 @@ import (
 // uses it to look up (or, for a self-certifying key id, derive) the public key
 // before checking the record with VerifyRun.
 func RecordKeyID(record []byte) (string, error) {
-	var w sealedRunWire
+	// Decode only the checkpoint: the full wire struct would materialize every
+	// event byte string just to read one header.
+	var w struct {
+		Checkpoint []byte `cbor:"checkpoint"`
+	}
 	if err := canonicalDec.Unmarshal(record, &w); err != nil {
 		return "", fault.Wrap(fault.Terminal, CodeRecordDecode, err)
 	}
