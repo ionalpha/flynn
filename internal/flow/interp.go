@@ -204,8 +204,15 @@ func New(opts ...Option) *Interpreter {
 // return yields nil. config is exposed to expressions as "config"; step outputs
 // accumulate under "steps".
 func (in *Interpreter) Run(ctx context.Context, f Flow, config map[string]any) (any, error) {
-	if err := f.Validate(); err != nil {
-		return nil, err
+	// Decode compiles; a Flow constructed directly is compiled here instead, once
+	// per Run rather than once per evaluation. The compiled tree stays local to this
+	// call, so a directly constructed Flow value is still safe to run concurrently.
+	cf := f.compiled
+	if cf == nil {
+		var err error
+		if cf, err = compileFlow(f); err != nil {
+			return nil, err
+		}
 	}
 	limits := in.limits
 	if f.Limits != nil {
@@ -225,7 +232,7 @@ func (in *Interpreter) Run(ctx context.Context, f Flow, config map[string]any) (
 		stepsOut: stepsOut,
 		deadline: in.clk.Now().Add(time.Duration(limits.TimeoutMillis) * time.Millisecond),
 	}
-	if _, err := r.execSteps(ctx, f.Steps, root); err != nil {
+	if _, err := r.execSteps(ctx, cf.steps, root); err != nil {
 		return nil, err
 	}
 	return r.result, nil
@@ -255,7 +262,7 @@ func (r *run) observe(ev StepEvent) {
 
 // execSteps runs a sequence until it ends or a return fires. It returns whether a
 // return propagated, so an enclosing loop or condition can stop early too.
-func (r *run) execSteps(ctx context.Context, steps []Step, s *scope) (bool, error) {
+func (r *run) execSteps(ctx context.Context, steps []compiledStep, s *scope) (bool, error) {
 	for i := range steps {
 		if r.returned {
 			return true, nil
@@ -301,71 +308,59 @@ func (r *run) checkDeadline(ctx context.Context) error {
 	return nil
 }
 
-func (r *run) execStep(ctx context.Context, st Step, s *scope) error {
+func (r *run) execStep(ctx context.Context, st compiledStep, s *scope) error {
 	var (
 		out any
 		err error
 	)
-	switch st.Op {
+	switch st.op {
 	case OpHTTP:
-		out, err = r.execHTTP(ctx, st.HTTP, s)
+		out, err = r.execHTTP(ctx, st.http, s)
 	case OpTransform:
-		out, err = r.execTransform(st.Transform, s)
+		out, err = r.execTransform(st.transform, s)
 	case OpCondition:
-		err = r.execCondition(ctx, st.Condition, s)
+		err = r.execCondition(ctx, st.condition, s)
 	case OpLoop:
-		out, err = r.execLoop(ctx, st.Loop, s)
+		out, err = r.execLoop(ctx, st.loop, s)
 	case OpCall:
-		out, err = r.execCall(ctx, st.Call, s)
+		out, err = r.execCall(ctx, st.call, s)
 	case OpReturn:
-		return r.execReturn(st.Return, s)
+		return r.execReturn(st.ret, s)
 	case OpAssert:
-		return r.execAssert(st.Assert, s)
+		return r.execAssert(st.assert, s)
 	case OpExec:
-		out, err = r.execExec(ctx, st.Exec, s)
+		out, err = r.execExec(ctx, st.exec, s)
 	case OpDependency:
-		out, err = r.execDependency(ctx, st.Dependency, s)
+		out, err = r.execDependency(ctx, st.dependency, s)
 	case OpConfirm:
-		return r.execConfirm(ctx, st.Confirm, s)
+		return r.execConfirm(ctx, st.confirm, s)
 	case OpSecret:
-		return r.execSecret(ctx, st.Secret, s)
+		return r.execSecret(ctx, st.secret, s)
 	default:
-		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(st.Op))
+		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(st.op))
 	}
 	if err != nil {
 		return err
 	}
 	// Record a value-producing step's output so later steps can reference it. Condition
 	// and assert produce no value (they branch or verify), so they record nothing.
-	if st.ID != "" && st.Op != OpCondition {
-		r.stepsOut[st.ID] = out
+	if st.id != "" && st.op != OpCondition {
+		r.stepsOut[st.id] = out
 	}
 	return nil
 }
 
-func (r *run) execReturn(a *ReturnAction, s *scope) error {
-	v, err := renderBody(a.Value, s)
+func (r *run) execReturn(a *compiledReturn, s *scope) error {
+	if a.value == nil {
+		r.result = nil
+		r.returned = true
+		return nil
+	}
+	v, err := a.value.render(s)
 	if err != nil {
-		return err
+		return templErr(err)
 	}
 	r.result = v
 	r.returned = true
 	return nil
-}
-
-// renderBody deep-templates a JSON body value against the scope. An empty body
-// yields nil.
-func renderBody(raw json.RawMessage, s *scope) (any, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return nil, fault.Wrap(fault.Terminal, "flow_bad_body", err)
-	}
-	out, err := deepTemplate(v, s)
-	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, "flow_template", err)
-	}
-	return out, nil
 }

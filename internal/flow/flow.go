@@ -2,7 +2,6 @@ package flow
 
 import (
 	"encoding/json"
-	"fmt"
 
 	"github.com/ionalpha/flynn/fault"
 )
@@ -51,6 +50,11 @@ const (
 type Flow struct {
 	Steps  []Step  `json:"steps"`
 	Limits *Limits `json:"limits,omitempty"`
+
+	// compiled is the parsed executable form, built once by Decode. It is read-only
+	// after compile, so the same Flow value can run concurrently. A Flow constructed
+	// directly (without Decode) is compiled by Run instead.
+	compiled *compiledFlow
 }
 
 // Step is one action in a flow. ID names the step so later steps can reference its
@@ -177,8 +181,10 @@ type SecretAction struct {
 	Target map[string]string `json:"target,omitempty"`
 }
 
-// Decode parses a Flow from JSON and validates it. A flow that does not validate is
-// never returned, so the interpreter only ever runs well-formed flows.
+// Decode parses a Flow from JSON, validates it, and compiles it: every expression,
+// template, and templated body is parsed exactly once here, and execution reuses
+// the parsed form. A flow that does not compile is never returned, so the
+// interpreter only ever runs well-formed flows.
 func Decode(raw []byte) (Flow, error) {
 	var f Flow
 	if len(raw) == 0 {
@@ -187,9 +193,11 @@ func Decode(raw []byte) (Flow, error) {
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return Flow{}, fault.Wrap(fault.Terminal, "flow_decode", err)
 	}
-	if err := f.Validate(); err != nil {
+	cf, err := compileFlow(f)
+	if err != nil {
 		return Flow{}, err
 	}
+	f.compiled = cf
 	return f, nil
 }
 
@@ -198,60 +206,8 @@ func Decode(raw []byte) (Flow, error) {
 // template parses. It is static admission: a flow that passes never fails later for
 // a structural reason, only for a runtime value error or a resource cap.
 func (f Flow) Validate() error {
-	if len(f.Steps) == 0 {
-		return fault.New(fault.Terminal, "flow_no_steps", "flow: a flow needs at least one step")
-	}
-	seen := map[string]bool{}
-	return validateSteps(f.Steps, seen)
-}
-
-func validateSteps(steps []Step, seen map[string]bool) error {
-	for i := range steps {
-		if err := validateStep(steps[i], seen); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateStep(s Step, seen map[string]bool) error {
-	if s.ID != "" {
-		if seen[s.ID] {
-			return fault.New(fault.Terminal, "flow_duplicate_id", "flow: duplicate step id "+s.ID)
-		}
-		seen[s.ID] = true
-	}
-	total, matchesOp := actionBlocks(s)
-	if total != 1 || !matchesOp {
-		return fault.New(fault.Terminal, "flow_action_mismatch",
-			fmt.Sprintf("flow: step %q must carry exactly one action block matching its op %q, found %d", stepLabel(s), s.Op, total))
-	}
-	switch s.Op {
-	case OpHTTP:
-		return validateHTTP(s.HTTP)
-	case OpTransform:
-		return validateTransform(s.Transform)
-	case OpCondition:
-		return validateCondition(s.Condition, seen)
-	case OpLoop:
-		return validateLoop(s.Loop, seen)
-	case OpCall:
-		return validateCall(s.Call)
-	case OpReturn:
-		return validateReturn(s.Return)
-	case OpAssert:
-		return validateAssert(s.Assert)
-	case OpExec:
-		return validateExec(s.Exec)
-	case OpDependency:
-		return validateDependency(s.Dependency)
-	case OpConfirm:
-		return validateConfirm(s.Confirm)
-	case OpSecret:
-		return validateSecret(s.Secret)
-	default:
-		return fault.New(fault.Terminal, "flow_unknown_op", "flow: unknown op "+string(s.Op))
-	}
+	_, err := compileFlow(f)
+	return err
 }
 
 // actionBlocks counts how many action blocks a step carries (regardless of Op) and
@@ -283,213 +239,6 @@ func actionBlocks(s Step) (total int, matchesOp bool) {
 		}
 	}
 	return total, matchesOp
-}
-
-func validateHTTP(a *HTTPAction) error {
-	if a.URL == "" {
-		return fault.New(fault.Terminal, "flow_http_no_url", "flow: http step needs a url")
-	}
-	if err := checkTemplate(a.URL); err != nil {
-		return err
-	}
-	if a.Method != "" {
-		if err := checkTemplate(a.Method); err != nil {
-			return err
-		}
-	}
-	for _, v := range a.Headers {
-		if err := checkTemplate(v); err != nil {
-			return err
-		}
-	}
-	for _, v := range a.Query {
-		if err := checkTemplate(v); err != nil {
-			return err
-		}
-	}
-	return checkBodyTemplate(a.Body)
-}
-
-func validateTransform(a *TransformAction) error {
-	modes := 0
-	for _, e := range []string{a.Value, a.Filter, a.Map} {
-		if e != "" {
-			modes++
-		}
-	}
-	if len(a.Select) > 0 {
-		modes++
-	}
-	if modes != 1 {
-		return fault.New(fault.Terminal, "flow_transform_mode",
-			"flow: transform needs exactly one of value/select/filter/map")
-	}
-	if a.Source != "" {
-		if err := checkExpr(a.Source); err != nil {
-			return err
-		}
-	}
-	for _, e := range []string{a.Value, a.Filter, a.Map} {
-		if e != "" {
-			if err := checkExpr(e); err != nil {
-				return err
-			}
-		}
-	}
-	for _, e := range a.Select {
-		if err := checkExpr(e); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateCondition(a *ConditionAction, seen map[string]bool) error {
-	if err := checkExpr(a.If); err != nil {
-		return err
-	}
-	if err := validateSteps(a.Then, seen); err != nil {
-		return err
-	}
-	return validateSteps(a.Else, seen)
-}
-
-func validateLoop(a *LoopAction, seen map[string]bool) error {
-	if a.Over == "" && a.Count <= 0 {
-		return fault.New(fault.Terminal, "flow_loop_source", "flow: loop needs over or a positive count")
-	}
-	if a.Over != "" {
-		if err := checkExpr(a.Over); err != nil {
-			return err
-		}
-	}
-	if a.Collect != "" {
-		if err := checkExpr(a.Collect); err != nil {
-			return err
-		}
-	}
-	return validateSteps(a.Body, seen)
-}
-
-func validateCall(a *CallAction) error {
-	if a.Tool == "" {
-		return fault.New(fault.Terminal, "flow_call_no_tool", "flow: call step needs a tool name")
-	}
-	if err := checkTemplate(a.Tool); err != nil {
-		return err
-	}
-	for _, v := range a.Input {
-		if err := checkDeepTemplate(v); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func validateReturn(a *ReturnAction) error { return checkBodyTemplate(a.Value) }
-
-func validateAssert(a *AssertAction) error {
-	if a.That == "" {
-		return fault.New(fault.Terminal, "flow_assert_no_cond", "flow: assert step needs a condition")
-	}
-	if err := checkExpr(a.That); err != nil {
-		return err
-	}
-	if a.Message != "" {
-		return checkTemplate(a.Message)
-	}
-	return nil
-}
-
-func validateExec(a *ExecAction) error {
-	if a.Command == "" {
-		return fault.New(fault.Terminal, "flow_exec_no_command", "flow: exec step needs a command")
-	}
-	return checkTemplate(a.Command)
-}
-
-func validateDependency(a *DependencyAction) error {
-	if a.Name == "" {
-		return fault.New(fault.Terminal, "flow_dep_no_name", "flow: dependency step needs a name")
-	}
-	return checkTemplate(a.Name)
-}
-
-func validateConfirm(a *ConfirmAction) error {
-	if a.Message == "" {
-		return fault.New(fault.Terminal, "flow_confirm_no_message", "flow: confirm step needs a message")
-	}
-	return checkTemplate(a.Message)
-}
-
-func validateSecret(a *SecretAction) error {
-	if a.Ref == "" {
-		return fault.New(fault.Terminal, "flow_secret_no_ref", "flow: secret step needs a ref")
-	}
-	if a.Sink == "" {
-		return fault.New(fault.Terminal, "flow_secret_no_sink", "flow: secret step needs a sink")
-	}
-	if err := checkTemplate(a.Ref); err != nil {
-		return err
-	}
-	if err := checkTemplate(a.Sink); err != nil {
-		return err
-	}
-	for _, v := range a.Target {
-		if err := checkTemplate(v); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// checkExpr parses an expression and discards it, reporting a parse error as a
-// terminal fault so a bad expression is caught at admission.
-func checkExpr(src string) error {
-	if _, err := parseExpr(src); err != nil {
-		return fault.Wrap(fault.Terminal, "flow_bad_expr", err)
-	}
-	return nil
-}
-
-func checkTemplate(src string) error {
-	if _, err := parseTemplate(src); err != nil {
-		return fault.Wrap(fault.Terminal, "flow_bad_template", err)
-	}
-	return nil
-}
-
-func checkBodyTemplate(raw json.RawMessage) error {
-	if len(raw) == 0 {
-		return nil
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		return fault.Wrap(fault.Terminal, "flow_bad_body", err)
-	}
-	return checkDeepTemplate(v)
-}
-
-// checkDeepTemplate validates every string leaf of a structured value as a
-// template, the static half of deepTemplate.
-func checkDeepTemplate(v any) error {
-	switch x := v.(type) {
-	case string:
-		return checkTemplate(x)
-	case []any:
-		for _, e := range x {
-			if err := checkDeepTemplate(e); err != nil {
-				return err
-			}
-		}
-	case map[string]any:
-		for _, e := range x {
-			if err := checkDeepTemplate(e); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 func stepLabel(s Step) string {

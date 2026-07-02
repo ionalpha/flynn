@@ -7,8 +7,10 @@ import (
 
 // template is a parsed string with embedded {{ expression }} holes. It is the form
 // every templated field in a spec takes: a URL, a header value, a JSON body leaf.
-// Parsing once and evaluating against a scope keeps interpolation deterministic and
-// keeps the expression language the single mechanism for reading the scope.
+// The compile pass (compile.go) parses each templated field exactly once and the
+// interpreter renders the parsed form, so evaluating a template N times never
+// re-parses it, interpolation stays deterministic, and the expression language is
+// the single mechanism for reading the scope.
 type template struct {
 	parts []templatePart
 	// singleExpr is set when the whole template is exactly one {{ expr }} and no
@@ -88,51 +90,4 @@ func (t *template) renderString(s *scope) (string, error) {
 		return "", err
 	}
 	return toString(v), nil
-}
-
-// renderTemplateString is the one-shot helper: parse src and render it against s.
-func renderTemplateString(src string, s *scope) (string, error) {
-	t, err := parseTemplate(src)
-	if err != nil {
-		return "", err
-	}
-	return t.renderString(s)
-}
-
-// deepTemplate walks a decoded JSON value and templates every string leaf against
-// the scope, preserving the surrounding structure. Object keys are not templated
-// (only values), so the shape of a body stays fixed while its data is filled in. A
-// string leaf that is a whole-template single expression takes the expression's
-// typed value, so a body field can become a list or number, not only a string.
-func deepTemplate(v any, s *scope) (any, error) {
-	switch x := v.(type) {
-	case string:
-		t, err := parseTemplate(x)
-		if err != nil {
-			return nil, err
-		}
-		return t.renderValue(s)
-	case []any:
-		out := make([]any, len(x))
-		for i, e := range x {
-			r, err := deepTemplate(e, s)
-			if err != nil {
-				return nil, err
-			}
-			out[i] = r
-		}
-		return out, nil
-	case map[string]any:
-		out := make(map[string]any, len(x))
-		for k, e := range x {
-			r, err := deepTemplate(e, s)
-			if err != nil {
-				return nil, err
-			}
-			out[k] = r
-		}
-		return out, nil
-	default:
-		return v, nil
-	}
 }

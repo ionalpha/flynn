@@ -9,7 +9,11 @@ func TestTemplateInterpolation(t *testing.T) {
 	s := newScope(map[string]any{
 		"config": map[string]any{"q": "widgets", "page": float64(2)},
 	})
-	got, err := renderTemplateString("search?q={{urlencode(config.q)}}&page={{config.page}}", s)
+	tpl, err := parseTemplate("search?q={{urlencode(config.q)}}&page={{config.page}}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := tpl.renderString(s)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -39,7 +43,10 @@ func TestTemplateSingleExprKeepsType(t *testing.T) {
 	}
 }
 
-func TestDeepTemplate(t *testing.T) {
+// TestCompiledValueRender proves a compiled structured value renders every string
+// leaf against the scope while preserving the surrounding structure, compiling
+// once and rendering from the parsed form.
+func TestCompiledValueRender(t *testing.T) {
 	s := newScope(map[string]any{
 		"config": map[string]any{"name": "ion", "count": float64(3)},
 	})
@@ -50,7 +57,11 @@ func TestDeepTemplate(t *testing.T) {
 			"list": []any{"{{config.name}}", "static"},
 		},
 	}
-	got, err := deepTemplate(in, s)
+	cv, err := compileValue(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := cv.render(s)
 	if err != nil {
 		t.Fatal(err)
 	}

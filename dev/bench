@@ -7,7 +7,7 @@
 # BENCHTIME overrides -benchtime (CI uses 100x for a fast smoke).
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-if [ "$#" -eq 0 ]; then set -- ./chain/... ./jobs/... ./resource/... ./storage/sqlite/...; fi
+if [ "$#" -eq 0 ]; then set -- ./chain/... ./internal/flow/... ./jobs/... ./resource/... ./storage/sqlite/...; fi
 echo "==> go test -run TestAllocCeiling -count=1 $*"
 go test -run TestAllocCeiling -count=1 "$@"
 echo "==> go test -run=^\$ -bench=. -benchmem ${BENCHTIME:+-benchtime=$BENCHTIME} $*"

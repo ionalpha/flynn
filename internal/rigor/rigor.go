@@ -76,6 +76,7 @@ func DefaultPolicy() Policy {
 		},
 		BenchRequired: map[string]bool{
 			"chain":          true,
+			"internal/flow":  true,
 			"jobs":           true,
 			"resource":       true,
 			"storage/sqlite": true,

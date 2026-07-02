@@ -13,31 +13,34 @@ import (
 // execHTTP renders and performs one request, returning a map output of
 // {status, headers, body} so later steps reference steps.<id>.body and .status by
 // path. The response payload is checked against the cap before it is exposed.
-func (r *run) execHTTP(ctx context.Context, a *HTTPAction, s *scope) (any, error) {
+func (r *run) execHTTP(ctx context.Context, a *compiledHTTP, s *scope) (any, error) {
 	if r.in.http == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_http", "flow: http step but no transport is configured")
 	}
-	method, err := renderTemplateString(orDefault(a.Method, "GET"), s)
+	method := "GET"
+	if a.method != nil {
+		var err error
+		if method, err = a.method.renderString(s); err != nil {
+			return nil, templErr(err)
+		}
+	}
+	rawURL, err := a.url.renderString(s)
 	if err != nil {
 		return nil, templErr(err)
 	}
-	rawURL, err := renderTemplateString(a.URL, s)
-	if err != nil {
-		return nil, templErr(err)
-	}
-	headers, err := renderStringMap(a.Headers, s)
+	headers, err := renderStringMap(a.headers, s)
 	if err != nil {
 		return nil, err
 	}
-	query, err := renderStringMap(a.Query, s)
+	query, err := renderStringMap(a.query, s)
 	if err != nil {
 		return nil, err
 	}
 	var body []byte
-	if len(a.Body) > 0 {
-		v, err := renderBody(a.Body, s)
+	if a.body != nil {
+		v, err := a.body.render(s)
 		if err != nil {
-			return nil, err
+			return nil, templErr(err)
 		}
 		body, err = json.Marshal(v)
 		if err != nil {
@@ -67,10 +70,10 @@ func (r *run) execHTTP(ctx context.Context, a *HTTPAction, s *scope) (any, error
 
 // execTransform reshapes a source value. The source (if any) is bound as "it" in a
 // child scope so the mode expressions read the element under transformation.
-func (r *run) execTransform(a *TransformAction, s *scope) (any, error) {
+func (r *run) execTransform(a *compiledTransform, s *scope) (any, error) {
 	var input any
-	if a.Source != "" {
-		v, err := evalExpr(a.Source, s)
+	if a.source != nil {
+		v, err := evalNode(a.source, s)
 		if err != nil {
 			return nil, err
 		}
@@ -79,26 +82,26 @@ func (r *run) execTransform(a *TransformAction, s *scope) (any, error) {
 	inner := s.child(map[string]any{"it": input})
 
 	switch {
-	case a.Value != "":
-		return evalExpr(a.Value, inner)
-	case len(a.Select) > 0:
-		out := make(map[string]any, len(a.Select))
-		for k, expr := range a.Select {
-			v, err := evalExpr(expr, inner)
+	case a.value != nil:
+		return evalNode(a.value, inner)
+	case len(a.sel) > 0:
+		out := make(map[string]any, len(a.sel))
+		for k, expr := range a.sel {
+			v, err := evalNode(expr, inner)
 			if err != nil {
 				return nil, err
 			}
 			out[k] = v
 		}
 		return out, nil
-	case a.Filter != "":
+	case a.filter != nil:
 		list, ok := input.([]any)
 		if !ok {
 			return nil, fault.New(fault.Terminal, "flow_filter_not_list", "flow: filter source must be a list")
 		}
 		out := make([]any, 0, len(list))
 		for _, e := range list {
-			keep, err := evalExpr(a.Filter, s.child(map[string]any{"it": e}))
+			keep, err := evalNode(a.filter, s.child(map[string]any{"it": e}))
 			if err != nil {
 				return nil, err
 			}
@@ -107,14 +110,14 @@ func (r *run) execTransform(a *TransformAction, s *scope) (any, error) {
 			}
 		}
 		return out, nil
-	case a.Map != "":
+	case a.mapExpr != nil:
 		list, ok := input.([]any)
 		if !ok {
 			return nil, fault.New(fault.Terminal, "flow_map_not_list", "flow: map source must be a list")
 		}
 		out := make([]any, len(list))
 		for i, e := range list {
-			v, err := evalExpr(a.Map, s.child(map[string]any{"it": e}))
+			v, err := evalNode(a.mapExpr, s.child(map[string]any{"it": e}))
 			if err != nil {
 				return nil, err
 			}
@@ -128,14 +131,14 @@ func (r *run) execTransform(a *TransformAction, s *scope) (any, error) {
 
 // execCondition evaluates the predicate and runs the matching branch, propagating a
 // return out of the branch.
-func (r *run) execCondition(ctx context.Context, a *ConditionAction, s *scope) error {
-	cond, err := evalExpr(a.If, s)
+func (r *run) execCondition(ctx context.Context, a *compiledCondition, s *scope) error {
+	cond, err := evalNode(a.ifExpr, s)
 	if err != nil {
 		return err
 	}
-	branch := a.Else
+	branch := a.els
 	if truthy(cond) {
-		branch = a.Then
+		branch = a.then
 	}
 	_, err = r.execSteps(ctx, branch, s)
 	return err
@@ -149,12 +152,12 @@ func (r *run) execCondition(ctx context.Context, a *ConditionAction, s *scope) e
 // gathered into the returned list. A fixed Count is iterated by index rather than
 // materialised, so a large declared count cannot allocate before the loop cap
 // applies.
-func (r *run) execLoop(ctx context.Context, a *LoopAction, s *scope) (any, error) {
-	overMode := a.Over != ""
+func (r *run) execLoop(ctx context.Context, a *compiledLoop, s *scope) (any, error) {
+	overMode := a.over != nil
 	var list []any
-	n := a.Count
+	n := a.count
 	if overMode {
-		v, err := evalExpr(a.Over, s)
+		v, err := evalNode(a.over, s)
 		if err != nil {
 			return nil, err
 		}
@@ -166,9 +169,8 @@ func (r *run) execLoop(ctx context.Context, a *LoopAction, s *scope) (any, error
 		n = len(list)
 	}
 
-	as := orDefault(a.As, "item")
 	var collected []any
-	if a.Collect != "" {
+	if a.collect != nil {
 		// The loop cap bounds how many values can ever be collected, so the capacity
 		// is bounded too even when a huge count or list is declared.
 		collected = make([]any, 0, minInt(n, r.limits.MaxLoopIterations))
@@ -186,8 +188,8 @@ func (r *run) execLoop(ctx context.Context, a *LoopAction, s *scope) (any, error
 		if overMode {
 			item = list[i]
 		}
-		iter := s.child(map[string]any{as: item, "index": float64(i)})
-		returned, err := r.execSteps(ctx, a.Body, iter)
+		iter := s.child(map[string]any{a.as: item, "index": float64(i)})
+		returned, err := r.execSteps(ctx, a.body, iter)
 		if err != nil {
 			return nil, err
 		}
@@ -196,8 +198,8 @@ func (r *run) execLoop(ctx context.Context, a *LoopAction, s *scope) (any, error
 			// partially executed iteration's scope.
 			break
 		}
-		if a.Collect != "" {
-			v, err := evalExpr(a.Collect, iter)
+		if a.collect != nil {
+			v, err := evalNode(a.collect, iter)
 			if err != nil {
 				return nil, err
 			}
@@ -215,17 +217,17 @@ func minInt(a, b int) int {
 }
 
 // execCall invokes another tool or extension and returns its result.
-func (r *run) execCall(ctx context.Context, a *CallAction, s *scope) (any, error) {
+func (r *run) execCall(ctx context.Context, a *compiledCall, s *scope) (any, error) {
 	if r.in.tools == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_tools", "flow: call step but no tool caller is configured")
 	}
-	tool, err := renderTemplateString(a.Tool, s)
+	tool, err := a.tool.renderString(s)
 	if err != nil {
 		return nil, templErr(err)
 	}
 	input := map[string]any{}
-	for k, v := range a.Input {
-		rendered, err := deepTemplate(v, s)
+	for k, v := range a.input {
+		rendered, err := v.render(s)
 		if err != nil {
 			return nil, templErr(err)
 		}
@@ -241,17 +243,17 @@ func (r *run) execCall(ctx context.Context, a *CallAction, s *scope) (any, error
 // execAssert evaluates the condition and stops the flow with a terminal fault when it is
 // not truthy, so a verification step fails loudly rather than letting the flow continue
 // on a false outcome. It produces no output.
-func (r *run) execAssert(a *AssertAction, s *scope) error {
-	v, err := evalExpr(a.That, s)
+func (r *run) execAssert(a *compiledAssert, s *scope) error {
+	v, err := evalNode(a.that, s)
 	if err != nil {
 		return err
 	}
 	if truthy(v) {
 		return nil
 	}
-	msg := "flow: assertion failed: " + a.That
-	if a.Message != "" {
-		if rendered, rerr := renderTemplateString(a.Message, s); rerr == nil {
+	msg := "flow: assertion failed: " + a.thatSrc
+	if a.message != nil {
+		if rendered, rerr := a.message.renderString(s); rerr == nil {
 			msg = rendered
 		}
 	}
@@ -261,11 +263,11 @@ func (r *run) execAssert(a *AssertAction, s *scope) error {
 // execExec runs a command through the injected runner (the sandbox) and returns
 // {exitCode, output}. A nonzero exit fails the step unless the action allows it, so a
 // failed command stops the flow by default rather than being silently ignored.
-func (r *run) execExec(ctx context.Context, a *ExecAction, s *scope) (any, error) {
+func (r *run) execExec(ctx context.Context, a *compiledExec, s *scope) (any, error) {
 	if r.in.exec == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_exec", "flow: exec step but no runner is configured")
 	}
-	cmd, err := renderTemplateString(a.Command, s)
+	cmd, err := a.command.renderString(s)
 	if err != nil {
 		return nil, templErr(err)
 	}
@@ -276,7 +278,7 @@ func (r *run) execExec(ctx context.Context, a *ExecAction, s *scope) (any, error
 		return nil, err
 	}
 	r.observe(StepEvent{Phase: StepEnd, Op: OpExec, Detail: cmd, ExitCode: res.ExitCode, Output: res.Output})
-	if res.ExitCode != 0 && !a.AllowNonzero {
+	if res.ExitCode != 0 && !a.allowNonzero {
 		return nil, execFailedFault(cmd, res)
 	}
 	return map[string]any{"exitCode": float64(res.ExitCode), "output": res.Output}, nil
@@ -303,11 +305,11 @@ func execFailedFault(cmd string, res ExecResult) error {
 
 // execDependency ensures the named program is present through the injected resolver and
 // returns {path} to run it, so a later exec step can invoke it.
-func (r *run) execDependency(ctx context.Context, a *DependencyAction, s *scope) (any, error) {
+func (r *run) execDependency(ctx context.Context, a *compiledDependency, s *scope) (any, error) {
 	if r.in.deps == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_deps", "flow: dependency step but no resolver is configured")
 	}
-	name, err := renderTemplateString(a.Name, s)
+	name, err := a.name.renderString(s)
 	if err != nil {
 		return nil, templErr(err)
 	}
@@ -324,11 +326,11 @@ func (r *run) execDependency(ctx context.Context, a *DependencyAction, s *scope)
 // execConfirm shows the user the rendered message and waits for them to approve before the
 // flow continues. A declined or unanswerable confirmation returns an error, so the flow
 // stops rather than proceeding without consent. It produces no output.
-func (r *run) execConfirm(ctx context.Context, a *ConfirmAction, s *scope) error {
+func (r *run) execConfirm(ctx context.Context, a *compiledConfirm, s *scope) error {
 	if r.in.confirm == nil {
 		return fault.New(fault.Terminal, "flow_no_confirm", "flow: confirm step but no prompter is configured")
 	}
-	msg, err := renderTemplateString(a.Message, s)
+	msg, err := a.message.renderString(s)
 	if err != nil {
 		return templErr(err)
 	}
@@ -340,19 +342,19 @@ func (r *run) execConfirm(ctx context.Context, a *ConfirmAction, s *scope) error
 // to the observer by the reference name and sink, never the value: the value is resolved
 // and delivered entirely inside the sink, so it never enters the flow, the rendered
 // command, the step output, or a log. It produces no output.
-func (r *run) execSecret(ctx context.Context, a *SecretAction, s *scope) error {
+func (r *run) execSecret(ctx context.Context, a *compiledSecret, s *scope) error {
 	if r.in.sink == nil {
 		return fault.New(fault.Terminal, "flow_no_sink", "flow: secret step but no credential sink is configured")
 	}
-	ref, err := renderTemplateString(a.Ref, s)
+	ref, err := a.ref.renderString(s)
 	if err != nil {
 		return templErr(err)
 	}
-	sink, err := renderTemplateString(a.Sink, s)
+	sink, err := a.sink.renderString(s)
 	if err != nil {
 		return templErr(err)
 	}
-	target, err := renderStringMap(a.Target, s)
+	target, err := renderStringMap(a.target, s)
 	if err != nil {
 		return err
 	}
@@ -366,14 +368,10 @@ func (r *run) execSecret(ctx context.Context, a *SecretAction, s *scope) error {
 	return nil
 }
 
-// evalExpr parses and evaluates an expression against a scope. Parse errors are
-// already caught at admission, so a parse failure here is still surfaced as a
-// terminal fault for safety.
-func evalExpr(src string, s *scope) (any, error) {
-	n, err := parseExpr(src)
-	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, "flow_bad_expr", err)
-	}
+// evalNode evaluates a compiled expression against a scope, surfacing an
+// evaluation error as a terminal fault. Parsing happened at compile, so there is
+// no parse path here.
+func evalNode(n node, s *scope) (any, error) {
 	v, err := n.eval(s)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "flow_eval", err)
@@ -381,13 +379,13 @@ func evalExpr(src string, s *scope) (any, error) {
 	return v, nil
 }
 
-func renderStringMap(m map[string]string, s *scope) (map[string]string, error) {
+func renderStringMap(m map[string]*template, s *scope) (map[string]string, error) {
 	if len(m) == 0 {
 		return nil, nil
 	}
 	out := make(map[string]string, len(m))
-	for k, v := range m {
-		rendered, err := renderTemplateString(v, s)
+	for k, t := range m {
+		rendered, err := t.renderString(s)
 		if err != nil {
 			return nil, templErr(err)
 		}
