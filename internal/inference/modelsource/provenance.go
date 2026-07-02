@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
 // Provenance is the durable record of a model source: where it came from, how it was
@@ -137,13 +138,8 @@ func (l *Ledger) saveLocked(recs []Provenance) error {
 	if err != nil {
 		return fault.Wrap(fault.Terminal, "modelsource_ledger_encode", err)
 	}
-	tmp := l.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := fsatomic.WriteFile(l.path, data, 0o600); err != nil {
 		return fault.Wrap(fault.Terminal, "modelsource_ledger_write", err)
-	}
-	if err := os.Rename(tmp, l.path); err != nil {
-		_ = os.Remove(tmp)
-		return fault.Wrap(fault.Terminal, "modelsource_ledger_rename", err)
 	}
 	return nil
 }

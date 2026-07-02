@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/secret"
 )
 
@@ -210,11 +211,7 @@ func (s *Store) saveFile(m map[string]string) error {
 	if err := os.MkdirAll(filepath.Dir(s.file), 0o700); err != nil {
 		return err
 	}
-	tmp := s.file + ".tmp"
-	if err := os.WriteFile(tmp, blob, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.file)
+	return fsatomic.WriteFile(s.file, blob, 0o600)
 }
 
 // passphrase obtains the sealed-file passphrase as raw bytes, erroring if none is

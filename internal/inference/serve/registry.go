@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
 // Record is the persisted description of a model server that was started, so a later,
@@ -148,15 +149,8 @@ func (r *Registry) saveLocked(recs []Record) error {
 	if err != nil {
 		return fault.Wrap(fault.Terminal, "serve_registry_encode", err)
 	}
-	// Write to a sibling temp file and rename, so a reader never sees a partial file and
-	// a crash mid-write cannot corrupt the registry.
-	tmp := r.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if err := fsatomic.WriteFile(r.path, data, 0o600); err != nil {
 		return fault.Wrap(fault.Terminal, "serve_registry_write", err)
-	}
-	if err := os.Rename(tmp, r.path); err != nil {
-		_ = os.Remove(tmp)
-		return fault.Wrap(fault.Terminal, "serve_registry_rename", err)
 	}
 	return nil
 }
