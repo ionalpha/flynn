@@ -6,21 +6,23 @@ import "github.com/ionalpha/flynn/internal/tui/input"
 type Action int
 
 const (
-	// ActionNone: the event was not the editor's to handle.
+	// ActionNone reports the event was not the editor's to handle.
 	ActionNone Action = iota
-	// ActionRedraw: the buffer or cursor changed; repaint the composer.
+	// ActionRedraw reports the buffer or cursor changed; repaint the composer.
 	ActionRedraw
-	// ActionSubmit: the user pressed Enter; send Content and Clear.
+	// ActionSubmit reports the user pressed Enter; send Content and Clear.
 	ActionSubmit
-	// ActionEsc: Escape with the buffer untouched by this key; the caller
-	// owns what Esc means (backtrack, dismiss an overlay, interrupt).
+	// ActionEsc reports Escape with the buffer untouched by this key; the
+	// caller owns what Esc means (backtrack, dismiss an overlay, interrupt).
 	ActionEsc
-	// ActionTab: completion is the caller's, since it needs the file and
+	// ActionTab hands completion to the caller, since it needs the file and
 	// command universe the editor has no business knowing.
 	ActionTab
-	// ActionHistoryPrev and ActionHistoryNext: the cursor tried to move
-	// past the first or last line; recall the adjacent prompt.
+	// ActionHistoryPrev reports the cursor tried to move above the first
+	// line; recall the previous prompt.
 	ActionHistoryPrev
+	// ActionHistoryNext reports the cursor tried to move below the last
+	// line; recall the next prompt.
 	ActionHistoryNext
 )
 
@@ -96,11 +98,12 @@ func (e *Editor) key(k input.Key) Action {
 		return ActionRedraw
 	}
 
-	switch {
-	case k.Mods == input.ModCtrl:
+	switch k.Mods {
+	case input.ModCtrl:
 		return e.ctrlKey(k.Code)
-	case k.Mods == input.ModAlt:
+	case input.ModAlt:
 		return e.altKey(k.Code)
+	default:
 	}
 
 	if t := k.Text(); t != "" {

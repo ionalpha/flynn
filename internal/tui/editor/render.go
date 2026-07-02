@@ -1,6 +1,8 @@
 package editor
 
 import (
+	"strings"
+
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rivo/uniseg"
 )
@@ -59,7 +61,8 @@ func (e *Editor) Render(width int) (rows []string, curRow, curCol int) {
 
 // clip truncates text to at most width cells, whole grapheme clusters only.
 func clip(text string, width int) (string, int) {
-	out, used := "", 0
+	var out strings.Builder
+	used := 0
 	for text != "" {
 		var cluster string
 		var w int
@@ -67,8 +70,8 @@ func clip(text string, width int) (string, int) {
 		if used+w > width {
 			break
 		}
-		out += cluster
+		out.WriteString(cluster)
 		used += w
 	}
-	return out, used
+	return out.String(), used
 }

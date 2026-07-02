@@ -49,7 +49,7 @@ func TestEditorInvariants(t *testing.T) {
 		var e editor.Editor
 		width := rapid.IntRange(1, 40).Draw(rt, "width")
 		n := rapid.IntRange(0, 60).Draw(rt, "events")
-		for i := 0; i < n; i++ {
+		for range n {
 			e.Handle(genEvent(rt))
 
 			rows, curRow, curCol := e.Render(width)
@@ -77,7 +77,7 @@ func TestUndoRestoresContent(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		var e editor.Editor
 		n := rapid.IntRange(0, 40).Draw(rt, "events")
-		for i := 0; i < n; i++ {
+		for range n {
 			e.Handle(genEvent(rt))
 		}
 		final := e.Content()
@@ -87,7 +87,7 @@ func TestUndoRestoresContent(t *testing.T) {
 		for e.Undo() {
 			k++
 		}
-		for i := 0; i < k; i++ {
+		for range k {
 			e.Redo()
 		}
 		if got := e.Content(); got != final {

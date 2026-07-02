@@ -27,7 +27,7 @@ func TestBackspaceDeletesWholeGrapheme(t *testing.T) {
 	var e editor.Editor
 	// A ZWJ family emoji is many runes but one cluster; one Backspace must
 	// remove all of it.
-	family := "\U0001F468‍\U0001F469‍\U0001F467"
+	family := "\U0001F468\u200d\U0001F469\u200d\U0001F467"
 	e.Insert("x" + family)
 	e.Backspace()
 	if got := e.Content(); got != "x" {

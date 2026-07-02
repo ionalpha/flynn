@@ -117,7 +117,7 @@ func (e *Editor) Insert(s string) {
 	}
 	// A run of single-cluster insertions coalesces into one undo step; the
 	// first keystroke of the run takes the snapshot.
-	if !(e.last == opInsert && len(as) == 1) {
+	if e.last != opInsert || len(as) != 1 {
 		e.pushUndo()
 	}
 	e.splice(as)
@@ -178,9 +178,8 @@ func (e *Editor) Delete() {
 	e.last = opNone
 }
 
-// Left and Right move the cursor by one atom, which is what makes chips and
-// grapheme clusters atomic to the user.
-
+// Left moves the cursor one atom back; atom granularity is what makes chips
+// and grapheme clusters atomic to the user.
 func (e *Editor) Left() {
 	if e.cur > 0 {
 		e.cur--
@@ -188,6 +187,7 @@ func (e *Editor) Left() {
 	e.last = opNone
 }
 
+// Right moves the cursor one atom forward.
 func (e *Editor) Right() {
 	if e.cur < len(e.atoms) {
 		e.cur++
@@ -232,7 +232,10 @@ func (e *Editor) wordRight() int {
 	return i
 }
 
-func (e *Editor) WordLeft()  { e.cur = e.wordLeft(); e.last = opNone }
+// WordLeft moves the cursor to the start of the previous word.
+func (e *Editor) WordLeft() { e.cur = e.wordLeft(); e.last = opNone }
+
+// WordRight moves the cursor past the end of the next word.
 func (e *Editor) WordRight() { e.cur = e.wordRight(); e.last = opNone }
 
 // lineBounds returns the buffer indices of the current logical line:
@@ -249,11 +252,13 @@ func (e *Editor) lineBounds() (start, end int) {
 	return start, end
 }
 
+// LineStart moves the cursor to the start of the current logical line.
 func (e *Editor) LineStart() {
 	e.cur, _ = e.lineBounds()
 	e.last = opNone
 }
 
+// LineEnd moves the cursor to the end of the current logical line.
 func (e *Editor) LineEnd() {
 	_, e.cur = e.lineBounds()
 	e.last = opNone
@@ -368,8 +373,8 @@ func (e *Editor) Yank() {
 	e.last = opYank
 }
 
-// YankPop, immediately after a yank, replaces the yanked text with the next
-// older ring entry, cycling through the ring.
+// YankPop replaces the text a yank just inserted with the next older ring
+// entry, cycling through the ring. It applies only immediately after a yank.
 func (e *Editor) YankPop() {
 	if e.last != opYank || len(e.ring) < 2 {
 		e.last = opNone
@@ -384,9 +389,7 @@ func (e *Editor) YankPop() {
 	e.last = opYank
 }
 
-// Undo restores the previous snapshot; Redo reverses an Undo. Both report
-// whether there was anything to restore.
-
+// Undo restores the previous snapshot, reporting whether there was one.
 func (e *Editor) Undo() bool {
 	if len(e.undo) == 0 {
 		return false
@@ -398,6 +401,7 @@ func (e *Editor) Undo() bool {
 	return true
 }
 
+// Redo reverses an Undo, reporting whether there was one to reverse.
 func (e *Editor) Redo() bool {
 	if len(e.redo) == 0 {
 		return false
