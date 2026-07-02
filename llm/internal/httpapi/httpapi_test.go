@@ -71,8 +71,8 @@ func TestQuotaClassifierUnion(t *testing.T) {
 
 func TestPostJSONRetriesTransientThenSucceeds(t *testing.T) {
 	rt := &seqTransport{responses: []*http.Response{
-		resp(500, `{"error":{"message":"internal"}}`),
-		resp(200, `{"ok":true}`),
+		resp(500, `{"error":{"message":"internal"}}`), //nolint:bodyclose // PostJSON closes the response body
+		resp(200, `{"ok":true}`),                      //nolint:bodyclose // PostJSON closes the response body
 	}}
 	c := clientWith(rt)
 	var out struct {
@@ -102,7 +102,7 @@ func TestPostJSONCapsResponseBody(t *testing.T) {
 }
 
 func TestPostJSONDecodeErrorIsTerminal(t *testing.T) {
-	err := post(t, clientWith(&seqTransport{responses: []*http.Response{resp(200, `{`)}}))
+	err := post(t, clientWith(&seqTransport{responses: []*http.Response{resp(200, `{`)}})) //nolint:bodyclose // PostJSON closes the response body
 	if err == nil || fault.Classify(err) != fault.Terminal {
 		t.Fatalf("malformed 2xx body must be terminal, got %v", err)
 	}
