@@ -171,21 +171,42 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	return nil
 }
 
-// persistCheckpoint records the step's progress on the goal's status so a re-run
-// resumes from it. A write conflict means the goal moved on under us; the
-// checkpoint is an optimisation, so we drop it rather than fail the completed step.
+// persistCheckpointTries bounds the conflict-retry loop in persistCheckpoint. The
+// only concurrent writer of a running goal is its reconciler updating status
+// metadata, so one re-read normally settles the conflict; the bound guards a
+// pathological writer, not an expected contention level.
+const persistCheckpointTries = 3
+
+// persistCheckpoint records the step's progress on the goal's status so the next
+// step resumes from it. A version conflict does NOT mean the checkpoint may be
+// dropped: the reconciler dispatches the job before it persists the in-flight
+// status, so a worker on a tight poll can read the goal one version behind and
+// conflict here even though nothing about the conversation moved. Dropping the
+// write would lose the whole turn this step just took (the next step would rerun
+// it), so a conflict is retried against a fresh read. Only a goal that vanished
+// or a corrupt status ends the attempt early; those leave the previous checkpoint
+// in place, which the executor is documented to tolerate (crash-resume path).
 func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, checkpoint json.RawMessage) {
-	status, err := DecodeStatus(r)
-	if err != nil {
-		return
+	for range persistCheckpointTries {
+		status, err := DecodeStatus(r)
+		if err != nil {
+			return
+		}
+		status.Checkpoint = checkpoint
+		enc, err := status.Encode()
+		if err != nil {
+			return
+		}
+		r.Status = enc
+		if _, err := w.store.Put(ctx, r); !errors.Is(err, resource.ErrConflict) {
+			return // written, or an error a retry cannot fix
+		}
+		fresh, err := w.store.GetByID(ctx, r.ID)
+		if err != nil {
+			return // goal gone under us; the step is complete either way
+		}
+		r = fresh
 	}
-	status.Checkpoint = checkpoint
-	enc, err := status.Encode()
-	if err != nil {
-		return
-	}
-	r.Status = enc
-	_, _ = w.store.Put(ctx, r)
 }
 
 // fail records a failed attempt. A transient cause is retried after an exponential

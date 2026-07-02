@@ -298,3 +298,59 @@ func TestWorkerTerminalStepFailsFast(t *testing.T) {
 		t.Fatalf("goal phase = %q, want Stalled after a terminal step failure", st.Phase)
 	}
 }
+
+// conflictingStatusExec simulates the reconciler writing goal status while a step
+// executes: the worker holds the pre-write version of the goal, so its checkpoint
+// Put hits a version conflict.
+type conflictingStatusExec struct {
+	store resource.Store
+}
+
+func (c *conflictingStatusExec) Execute(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
+	fresh, err := c.store.GetByID(ctx, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	st, err := DecodeStatus(fresh)
+	if err != nil {
+		return nil, err
+	}
+	st.Message = "status moved while the step ran"
+	enc, err := st.Encode()
+	if err != nil {
+		return nil, err
+	}
+	fresh.Status = enc
+	if _, err := c.store.Put(ctx, fresh); err != nil {
+		return nil, err
+	}
+	return json.RawMessage(`{"turn":2}`), nil
+}
+
+// TestWorkerPersistsCheckpointThroughConflict pins the dropped-turn fix: the
+// reconciler enqueues a step before it persists the in-flight status, so a worker
+// on a tight poll can execute against a goal one version behind and the checkpoint
+// write conflicts. The checkpoint is the conversation history, not an
+// optimisation; dropping it makes the next step rerun the turn (observed as
+// nondeterministic turn numbering in the golden missions). The worker must retry
+// the write against a fresh read.
+func TestWorkerPersistsCheckpointThroughConflict(t *testing.T) {
+	m := clock.NewManual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	q := jobs.NewMemory(jobs.WithClock(m))
+	exec := &conflictingStatusExec{}
+	h, w := workerHarness(t, q, stopAfter{at: 2}, exec, time.Minute)
+	exec.store = h.store
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
+
+	h.reconcile(t, ref) // finalizer
+	h.reconcile(t, ref) // dispatch the step
+
+	if processed, err := w.ProcessOnce(h.ctx); err != nil || !processed {
+		t.Fatalf("step not processed: processed=%v err=%v", processed, err)
+	}
+
+	st := h.status(t, ref)
+	if got, want := string(st.Checkpoint), `{"turn":2}`; got != want {
+		t.Fatalf("checkpoint after conflicting status write = %q, want %q (the turn was dropped)", got, want)
+	}
+}
