@@ -71,6 +71,7 @@ func DefaultPolicy() Policy {
 			"netguard":              true,
 			"internal/tui/input":    true,
 			"internal/tui/mdstream": true,
+			"internal/tui/render":   true,
 			"internal/tui/theme":    true,
 		},
 		BenchRequired: map[string]bool{

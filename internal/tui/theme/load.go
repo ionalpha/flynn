@@ -53,7 +53,9 @@ func Load(r io.Reader) (*Theme, error) {
 func knownRole(r Role) bool {
 	switch r {
 	case UserText, UserPrefix, AssistantText, Code, Quote, Link, Emphasis,
-		Strong, Heading, ToolName, ToolDetail, ToolOutput, Admitted, Rejected,
+		Strong, Heading, SyntaxKeyword, SyntaxString, SyntaxNumber, SyntaxComment,
+		SyntaxFunction, SyntaxType,
+		ToolName, ToolDetail, ToolOutput, Admitted, Rejected,
 		Trust, DiffAdded, DiffRemoved, DiffContext, DiffLocation, Status,
 		StatusBusy, RecordRecording, RecordSealed, RecordVerified, RecordFailed,
 		Success, Warning, Error, Muted, Border, Overlay, Selection, Placeholder,

@@ -59,6 +59,18 @@ const (
 	Muted           Role = "muted"
 )
 
+// The syntax roles: token classes inside highlighted code blocks. The set is
+// deliberately small; a highlighter buckets its lexer's fine-grained token
+// types into these, and anything unbucketed falls back to Code.
+const (
+	SyntaxKeyword  Role = "syntax.keyword"
+	SyntaxString   Role = "syntax.string"
+	SyntaxNumber   Role = "syntax.number"
+	SyntaxComment  Role = "syntax.comment"
+	SyntaxFunction Role = "syntax.function"
+	SyntaxType     Role = "syntax.type"
+)
+
 // The chrome roles: borders, overlays, selection, and the composer's
 // affordances.
 const (
@@ -85,10 +97,49 @@ type Style struct {
 	Italic     bool  `json:"italic,omitempty"`
 	Underline  bool  `json:"underline,omitempty"`
 	Reverse    bool  `json:"reverse,omitempty"`
+	Strike     bool  `json:"strike,omitempty"`
 }
 
 // IsZero reports whether the style changes nothing.
 func (s Style) IsZero() bool { return s == Style{} }
+
+// Over layers s onto base: s's colors win where set, and attribute flags
+// accumulate. This is how nested markdown styles compose (emphasis inside a
+// quote keeps the quote's color and gains italics) without any renderer
+// keeping escape state.
+func (s Style) Over(base Style) Style {
+	out := base
+	if s.Foreground != "" {
+		out.Foreground = s.Foreground
+	}
+	if s.Background != "" {
+		out.Background = s.Background
+	}
+	out.Bold = out.Bold || s.Bold
+	out.Faint = out.Faint || s.Faint
+	out.Italic = out.Italic || s.Italic
+	out.Underline = out.Underline || s.Underline
+	out.Reverse = out.Reverse || s.Reverse
+	out.Strike = out.Strike || s.Strike
+	return out
+}
+
+// Render styles text with s directly, for callers that compose styles
+// themselves (the markdown and syntax renderers merge several roles into one
+// effective style per span). Same contract as Theme.Render: an attribute-free
+// style passes the text through untouched, and every styled span is
+// self-contained (prefix, text, reset), so lines never leak escape state into
+// each other.
+func (s Style) Render(text string) string {
+	if text == "" {
+		return text
+	}
+	prefix := s.sgr()
+	if prefix == "" {
+		return text
+	}
+	return prefix + text + "\x1b[0m"
+}
 
 // Theme maps roles to styles. A role a theme does not define renders
 // unstyled, never as an error: a sparse user theme degrades to plain text,
@@ -138,6 +189,9 @@ func (s Style) sgr() string {
 	}
 	if s.Reverse {
 		attrs = append(attrs, "7")
+	}
+	if s.Strike {
+		attrs = append(attrs, "9")
 	}
 	if a, valid := colorAttrs(s.Foreground, false); valid {
 		attrs = append(attrs, a...)

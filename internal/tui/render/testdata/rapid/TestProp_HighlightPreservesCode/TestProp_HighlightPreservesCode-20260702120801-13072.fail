@@ -1,0 +1,18 @@
+# 2026/07/02 12:08:01.296439 [TestProp_HighlightPreservesCode] [rapid] draw code: "\n\n"
+# 2026/07/02 12:08:01.296439 [TestProp_HighlightPreservesCode] [rapid] draw lang: "go"
+# 2026/07/02 12:08:01.296439 [TestProp_HighlightPreservesCode] code changed:
+# got  "\n"
+# want ""
+# 
+v0.4.8#9715410743341663834
+0x5555555555555
+0x0
+0x0
+0x0
+0x5555555555555
+0x0
+0x0
+0x0
+0x0
+0x0
+0x1
