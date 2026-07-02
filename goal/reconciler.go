@@ -336,24 +336,20 @@ func (g *Reconciler) wakeOwner(ctx context.Context, r resource.Resource) {
 	if !ok || owner.Kind != Kind {
 		return
 	}
-	for range 3 {
-		o, err := g.store.GetByID(ctx, owner.ID)
-		if err != nil {
-			return // owner gone or unreadable; nothing to wake
-		}
-		status, err := DecodeStatus(o)
+	if _, err := resource.UpdateByID(ctx, g.store, owner.ID, func(o *resource.Resource) error {
+		status, err := DecodeStatus(*o)
 		if err != nil || status.WaitingSince == nil {
-			break // not parked; the signal alone suffices
+			return resource.ErrSkipUpdate // not parked; the signal alone suffices
 		}
 		status.WaitingSince = nil
 		enc, err := status.Encode()
 		if err != nil {
-			return
+			return err
 		}
 		o.Status = enc
-		if _, err := g.store.Put(ctx, o); err == nil || !errors.Is(err, resource.ErrConflict) {
-			break
-		}
+		return nil
+	}); err != nil && !errors.Is(err, resource.ErrConflict) {
+		return // owner gone or unreadable; nothing to wake
 	}
 	if g.bus != nil {
 		_ = g.bus.Publish(ctx, bus.Message{Subject: StepSubject, Payload: []byte(owner.ID)})

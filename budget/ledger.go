@@ -4,21 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"runtime"
 
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/resource"
 )
-
-// maxChargeRetries bounds the optimistic-concurrency retry loop a charge makes
-// when concurrent runs write the same pool. Every conflict means another writer
-// won and committed, so each round makes global progress; a charge yields between
-// attempts to let the winner settle before re-reading. The bound is high so a
-// charge effectively never loses under realistic fan-out, and only a pathological
-// thundering herd would exhaust it (surfaced as a transient error, never a silently
-// dropped charge).
-const maxChargeRetries = 1000
 
 // Ledger reads and writes run budgets on the resource store. It is the durable
 // home of a run's spend: concurrent charges converge on one record under the
@@ -83,41 +73,39 @@ func (l *Ledger) Available(ctx context.Context, id string, scope resource.Scope)
 // records nothing. With an upper-bound estimate the ceiling cannot be exceeded;
 // with a smaller estimate the overshoot is bounded by the in-flight estimates.
 func (l *Ledger) Reserve(ctx context.Context, id string, scope resource.Scope, est Spent) (bool, error) {
-	for range maxChargeRetries {
-		r, err := l.store.Get(ctx, Kind, scope, id)
-		if errors.Is(err, resource.ErrNotFound) {
-			return true, nil // no budget bound: unlimited
-		}
+	admitted := false
+	_, err := resource.Update(ctx, l.store, Kind, scope, id, func(r *resource.Resource) error {
+		spec, err := DecodeSpec(*r)
 		if err != nil {
-			return false, err
+			return err
 		}
-		spec, err := DecodeSpec(r)
+		status, err := DecodeStatus(*r)
 		if err != nil {
-			return false, err
-		}
-		status, err := DecodeStatus(r)
-		if err != nil {
-			return false, err
+			return err
 		}
 		if spec.Limits.Exceeded(status.committed()) {
-			return false, nil // pool fully committed: refuse before the action runs
+			admitted = false
+			return resource.ErrSkipUpdate // pool fully committed: refuse before the action runs
 		}
+		admitted = true
 		status.Reserved = status.Reserved.plus(est)
 		enc, err := status.Encode()
 		if err != nil {
-			return false, err
+			return err
 		}
 		r.Status = enc
-		if _, err := l.store.Put(ctx, r); errors.Is(err, resource.ErrConflict) {
-			runtime.Gosched()
-			continue
-		} else if err != nil {
-			return false, err
-		}
-		return true, nil
+		return nil
+	})
+	switch {
+	case errors.Is(err, resource.ErrNotFound):
+		return true, nil // no budget bound: unlimited
+	case errors.Is(err, resource.ErrConflict):
+		return false, fault.New(fault.Transient, "budget_reserve_contention",
+			"budget reserve gave up after repeated write conflicts")
+	case err != nil:
+		return false, err
 	}
-	return false, fault.New(fault.Transient, "budget_reserve_contention",
-		"budget reserve gave up after repeated write conflicts")
+	return admitted, nil
 }
 
 // Release returns a reservation to the pool without spending it, for an action that
@@ -144,19 +132,12 @@ func (l *Ledger) Settle(ctx context.Context, id string, scope resource.Scope, es
 	})
 }
 
-// update applies fn to the run's budget status under the same optimistic-concurrency
-// retry as Charge, so reserve, release, and settle all converge on a shared pool. A
-// run with no budget bound is a no-op.
+// update applies fn to the run's budget status under the store's shared
+// conflict-retry policy, so charge, release, and settle all converge on a shared
+// pool. A run with no budget bound is a no-op.
 func (l *Ledger) update(ctx context.Context, id string, scope resource.Scope, fn func(*Status)) error {
-	for range maxChargeRetries {
-		r, err := l.store.Get(ctx, Kind, scope, id)
-		if errors.Is(err, resource.ErrNotFound) {
-			return nil // no budget bound: unlimited, nothing to record
-		}
-		if err != nil {
-			return err
-		}
-		status, err := DecodeStatus(r)
+	_, err := resource.Update(ctx, l.store, Kind, scope, id, func(r *resource.Resource) error {
+		status, err := DecodeStatus(*r)
 		if err != nil {
 			return err
 		}
@@ -166,16 +147,16 @@ func (l *Ledger) update(ctx context.Context, id string, scope resource.Scope, fn
 			return err
 		}
 		r.Status = enc
-		if _, err := l.store.Put(ctx, r); errors.Is(err, resource.ErrConflict) {
-			runtime.Gosched()
-			continue
-		} else if err != nil {
-			return err
-		}
 		return nil
+	})
+	switch {
+	case errors.Is(err, resource.ErrNotFound):
+		return nil // no budget bound: unlimited, nothing to record
+	case errors.Is(err, resource.ErrConflict):
+		return fault.New(fault.Transient, "budget_update_contention",
+			"budget update gave up after repeated write conflicts")
 	}
-	return fault.New(fault.Transient, "budget_update_contention",
-		"budget update gave up after repeated write conflicts")
+	return err
 }
 
 // Charge adds m to the run's recorded spend, retrying under optimistic
@@ -188,36 +169,8 @@ func (l *Ledger) Charge(ctx context.Context, id string, scope resource.Scope, m 
 	if m.Tokens == 0 && m.Cost == 0 {
 		return nil
 	}
-	for range maxChargeRetries {
-		r, err := l.store.Get(ctx, Kind, scope, id)
-		if errors.Is(err, resource.ErrNotFound) {
-			return nil // no budget bound: unlimited, nothing to record
-		}
-		if err != nil {
-			return err
-		}
-		status, err := DecodeStatus(r)
-		if err != nil {
-			return err
-		}
-		status.Spent.Tokens += int64(m.Tokens)
-		status.Spent.Cost += m.Cost
-		enc, err := status.Encode()
-		if err != nil {
-			return err
-		}
-		r.Status = enc
-		// Put with the read SyncVersion is a compare-and-set: a concurrent charge
-		// that wrote in between fails with ErrConflict, so yield to let the winner
-		// settle, then re-read and retry against the new version.
-		if _, err := l.store.Put(ctx, r); errors.Is(err, resource.ErrConflict) {
-			runtime.Gosched()
-			continue
-		} else if err != nil {
-			return err
-		}
-		return nil
-	}
-	return fault.New(fault.Transient, "budget_charge_contention",
-		"budget charge gave up after repeated write conflicts")
+	return l.update(ctx, id, scope, func(s *Status) {
+		s.Spent.Tokens += int64(m.Tokens)
+		s.Spent.Cost += m.Cost
+	})
 }
