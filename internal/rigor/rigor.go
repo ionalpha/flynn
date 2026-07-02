@@ -54,13 +54,16 @@ func DefaultPolicy() Policy {
 			"observe":            true,
 		},
 		FuzzRequired: map[string]bool{
-			"bus":            true,
-			"fault":          true,
-			"jobs":           true,
-			"spine":          true,
-			"resource":       true,
-			"internal/fetch": true,
-			"netguard":       true,
+			"bus":                   true,
+			"fault":                 true,
+			"jobs":                  true,
+			"spine":                 true,
+			"resource":              true,
+			"internal/fetch":        true,
+			"netguard":              true,
+			"internal/tui/input":    true,
+			"internal/tui/mdstream": true,
+			"internal/tui/theme":    true,
 		},
 	}
 }

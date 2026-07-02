@@ -1,0 +1,9 @@
+# 2026/07/02 10:58:16.102317 [TestProp_PrintableTextRoundTrips] [rapid] draw text: "🙂"
+# 2026/07/02 10:58:16.102317 [TestProp_PrintableTextRoundTrips] text round-trip lost bytes: got "" want "🙂"
+# 
+v0.4.8#3709423672165830299
+0x5555555555555
+0x0
+0x1f2b5a0e61c3a6
+0x0
+0x0

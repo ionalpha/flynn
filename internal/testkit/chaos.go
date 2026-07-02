@@ -321,3 +321,45 @@ func (l *faultyLog) LatestSnapshot(ctx context.Context, stream string, upToSeq i
 }
 
 var _ spine.Log = (*faultyLog)(nil)
+
+// FaultyWriter wraps an io.Writer, injecting plan's faults before delegating,
+// so a terminal that dies mid-session (a closed pty, a dropped SSH connection)
+// is modelled deterministically against anything that renders. A firing fault
+// writes nothing and returns the error; a nil inner writer discards writes
+// when not faulting, so a plan alone can drive a renderer's error path.
+func FaultyWriter(inner io.Writer, plan *FaultPlan) io.Writer {
+	return writerFunc(func(p []byte) (int, error) {
+		if err := plan.next(); err != nil {
+			return 0, err
+		}
+		if inner == nil {
+			return len(p), nil
+		}
+		return inner.Write(p)
+	})
+}
+
+type writerFunc func([]byte) (int, error)
+
+func (f writerFunc) Write(p []byte) (int, error) { return f(p) }
+
+// FaultyReader wraps an io.Reader, injecting plan's faults before delegating,
+// so an input stream that fails mid-read (a hung console, a torn multiplexer
+// session) is modelled deterministically against anything that consumes it. A
+// firing fault consumes nothing and returns the error; a nil inner reader
+// reports io.EOF when not faulting.
+func FaultyReader(inner io.Reader, plan *FaultPlan) io.Reader {
+	return readerFunc(func(p []byte) (int, error) {
+		if err := plan.next(); err != nil {
+			return 0, err
+		}
+		if inner == nil {
+			return 0, io.EOF
+		}
+		return inner.Read(p)
+	})
+}
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
