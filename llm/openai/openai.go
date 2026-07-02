@@ -8,18 +8,15 @@
 package openai
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/llm/internal/httpapi"
 	"github.com/ionalpha/flynn/secret"
 )
 
@@ -35,6 +32,7 @@ type Client struct {
 	model       string
 	baseURL     string
 	http        *http.Client
+	api         *httpapi.Client
 	maxTokens   int
 	toolGrammar bool
 }
@@ -97,14 +95,16 @@ func WithToolGrammar() Option {
 
 // New builds a Client authenticating with apiKey. The key is held as a
 // secret.Text, so it cannot leak through logging or formatting of the Client.
+// With no HTTP client injected the shared core picks the governed default
+// (netguard for a hosted endpoint, plain for loopback).
 func New(apiKey secret.Text, opts ...Option) *Client {
 	c := &Client{apiKey: apiKey, model: DefaultModel, baseURL: defaultBaseURL}
 	for _, o := range opts {
 		o(c)
 	}
-	if c.http == nil {
-		c.http = &http.Client{Timeout: 10 * time.Minute}
-	}
+	c.api = httpapi.New("openai", c.baseURL, func(h http.Header) {
+		h.Set("authorization", "Bearer "+c.apiKey.Expose())
+	}, c.http)
 	return c
 }
 
@@ -113,33 +113,9 @@ var _ llm.Model = (*Client)(nil)
 // Generate implements llm.Model.
 func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
 	chatReq, grammarActive := c.buildRequest(req)
-	body, err := json.Marshal(chatReq)
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Terminal, "openai_encode", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Terminal, "openai_request", err)
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("authorization", "Bearer "+c.apiKey.Expose())
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Transient, "openai_http", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Transient, "openai_read", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return llm.Response{}, statusError(resp.StatusCode, raw)
-	}
-
 	var cr chatResponse
-	if err := json.Unmarshal(raw, &cr); err != nil {
-		return llm.Response{}, fault.Wrap(fault.Terminal, "openai_decode", err)
+	if err := c.api.PostJSON(ctx, "/chat/completions", chatReq, &cr); err != nil {
+		return llm.Response{}, err
 	}
 	var grammarTools map[string]bool
 	if grammarActive {
@@ -419,40 +395,4 @@ func mapFinishReason(r string) llm.StopReason {
 	default: // stop, content_filter, ...
 		return llm.StopEndTurn
 	}
-}
-
-// --- errors -----------------------------------------------------------------
-
-// statusError maps an HTTP error to a fault-classified error: a rate-limit 429 and
-// 5xx are transient so the worker retries; an exhausted-quota 429, and client
-// errors, are terminal so the run fails fast instead of retrying an account that
-// cannot succeed. OpenAI marks the quota case with the error type and code
-// "insufficient_quota"; the message ("exceeded your current quota ... billing") is
-// a fallback signal.
-func statusError(code int, body []byte) error {
-	var e struct {
-		Error struct {
-			Message string `json:"message"`
-			Type    string `json:"type"`
-			Code    string `json:"code"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(body, &e)
-	msg := e.Error.Message
-	if msg == "" {
-		msg = string(body)
-	}
-	quota := e.Error.Type == "insufficient_quota" || e.Error.Code == "insufficient_quota" ||
-		containsAny(strings.ToLower(msg), "quota", "billing")
-	return fault.New(llm.RetryClass(code, quota), "openai_status", fmt.Sprintf("openai: HTTP %d: %s", code, msg))
-}
-
-// containsAny reports whether s contains any of the substrings.
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }

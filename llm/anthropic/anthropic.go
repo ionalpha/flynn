@@ -11,17 +11,13 @@
 package anthropic
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"net/http"
-	"strings"
-	"time"
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/llm/internal/httpapi"
 	"github.com/ionalpha/flynn/secret"
 )
 
@@ -40,6 +36,7 @@ type Client struct {
 	model     string
 	baseURL   string
 	http      *http.Client
+	api       *httpapi.Client
 	maxTokens int
 	thinking  bool
 }
@@ -94,7 +91,8 @@ func WithThinking(on bool) Option {
 
 // New builds a Client authenticating with apiKey. The key is held as a
 // secret.Text, so it cannot leak through logging or formatting of the Client. With
-// no HTTP client injected it uses one with a generous timeout, since a single
+// no HTTP client injected the shared core picks the governed default (netguard for
+// a hosted endpoint, plain for loopback), with a generous timeout since a single
 // non-streaming turn can run for a while.
 func New(apiKey secret.Text, opts ...Option) *Client {
 	c := &Client{
@@ -107,9 +105,10 @@ func New(apiKey secret.Text, opts ...Option) *Client {
 	for _, o := range opts {
 		o(c)
 	}
-	if c.http == nil {
-		c.http = &http.Client{Timeout: 10 * time.Minute}
-	}
+	c.api = httpapi.New("anthropic", c.baseURL, func(h http.Header) {
+		h.Set("x-api-key", c.apiKey.Expose())
+		h.Set("anthropic-version", apiVersion)
+	}, c.http)
 	return c
 }
 
@@ -117,34 +116,9 @@ var _ llm.Model = (*Client)(nil)
 
 // Generate implements llm.Model.
 func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
-	body, err := json.Marshal(c.buildRequest(req))
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Terminal, "anthropic_encode", err)
-	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(body))
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Terminal, "anthropic_request", err)
-	}
-	httpReq.Header.Set("content-type", "application/json")
-	httpReq.Header.Set("x-api-key", c.apiKey.Expose())
-	httpReq.Header.Set("anthropic-version", apiVersion)
-
-	resp, err := c.http.Do(httpReq)
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Transient, "anthropic_http", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return llm.Response{}, fault.Wrap(fault.Transient, "anthropic_read", err)
-	}
-	if resp.StatusCode/100 != 2 {
-		return llm.Response{}, statusError(resp.StatusCode, raw)
-	}
-
 	var ar apiResponse
-	if err := json.Unmarshal(raw, &ar); err != nil {
-		return llm.Response{}, fault.Wrap(fault.Terminal, "anthropic_decode", err)
+	if err := c.api.PostJSON(ctx, "/v1/messages", c.buildRequest(req), &ar); err != nil {
+		return llm.Response{}, err
 	}
 	return decodeResponse(ar)
 }
@@ -379,38 +353,4 @@ func mapStopReason(r string) llm.StopReason {
 		// end_turn, refusal, stop_sequence, pause_turn: the turn is over.
 		return llm.StopEndTurn
 	}
-}
-
-// --- errors -----------------------------------------------------------------
-
-// statusError maps an HTTP error response to a fault-classified error: rate limits
-// and server errors are transient so the worker retries; client errors are terminal.
-func statusError(code int, body []byte) error {
-	var e struct {
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	_ = json.Unmarshal(body, &e)
-	msg := e.Error.Message
-	if msg == "" {
-		msg = string(body)
-	}
-	// A 429 is normally a rate limit (transient), but a billing/credit problem can
-	// also arrive as one; that is permanent, so it must fail fast rather than retry.
-	// Anthropic phrases it "credit balance is too low". The 529 overloaded status is
-	// a server-side transient and is covered by RetryClass's 5xx branch.
-	quota := containsAny(strings.ToLower(msg), "credit", "billing", "quota")
-	return fault.New(llm.RetryClass(code, quota), "anthropic_status", fmt.Sprintf("anthropic: HTTP %d: %s", code, msg))
-}
-
-// containsAny reports whether s contains any of the substrings.
-func containsAny(s string, subs ...string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
-			return true
-		}
-	}
-	return false
 }
