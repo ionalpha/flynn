@@ -65,8 +65,8 @@ func appendTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput) (
 // append is one statement instead of a SELECT-then-INSERT pair. That drops a round
 // trip per event and shortens the window the write transaction holds the database
 // exclusively.
-const insertEventSQL = `INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id, schema_version, principal)
-	VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE stream = ?), ?,?,?,?,?,?,?,?,?,?)
+const insertEventSQL = `INSERT INTO events (stream, seq, time, type, actor, payload, trace_id, span_id, causation_id, origin_instance_id, schema_version, principal, payload_blob)
+	VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE stream = ?), ?,?,?,?,?,?,?,?,?,?,?)
 	RETURNING seq`
 
 // insertEventTx writes one event row for the command path inside an existing
@@ -107,17 +107,37 @@ func insertEventTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInp
 // bytes - so the Append path (via Materialize) and the command path (via
 // insertEventTx) share one INSERT and one Seq assignment.
 func insertEventRow(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput, t time.Time, version int, raw json.RawMessage) (int64, error) {
+	// A large body is externalized into blobs and the inline column is left empty; a
+	// small one stays inline with no blob id. Either way the read path rehydrates the
+	// exact same bytes, so the canonical event the tree commits to is unchanged.
+	inline, blobID, err := resolvePayloadStorage(ctx, tx, p.blobThreshold, raw)
+	if err != nil {
+		return 0, err
+	}
 	var seq int64
 	// StmtContext binds the Open-time prepared statement to this transaction's
 	// connection; on the single write connection that is a cached re-bind, not a
 	// recompile.
 	if err := tx.StmtContext(ctx, p.stmts.eventInsert).QueryRowContext(ctx,
-		in.Stream, in.Stream, sqlitex.FormatTime(t.UTC()), in.Type, string(in.Actor), string(raw),
-		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version, in.Principal).Scan(&seq); err != nil {
+		in.Stream, in.Stream, sqlitex.FormatTime(t.UTC()), in.Type, string(in.Actor), inline,
+		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version, in.Principal, blobID).Scan(&seq); err != nil {
 		return 0, err
 	}
 	return seq, nil
 }
+
+// eventsReadSQL reads a stream's events in Seq order, rehydrating each payload in the
+// same query: an inline payload comes from events.payload, an externalized one from the
+// blob its payload_blob names (see resolvePayloadStorage). The blob content id is never
+// the empty string, so the LEFT JOIN misses for an inline row and the CASE falls back to
+// the inline column. The projected columns match the Read scan order below one to one;
+// they are listed explicitly (not SELECT *) so the payload_blob column added in migration
+// 0018 stays out of the scan and rehydration happens here instead.
+const eventsReadSQL = `SELECT e.stream, e.seq, e.time, e.type, e.actor,
+		CASE WHEN e.payload_blob = '' THEN e.payload ELSE b.body END,
+		e.trace_id, e.span_id, e.causation_id, e.origin_instance_id, e.schema_version, e.principal
+	FROM events e LEFT JOIN blobs b ON b.content_id = e.payload_blob
+	WHERE e.stream = ? AND e.seq > ? ORDER BY e.seq LIMIT ?`
 
 // Read implements spine.Log: events on a stream in Seq order, AfterSeq exclusive,
 // Limit capping (<= 0 means no limit). It runs on the read pool via the prepared

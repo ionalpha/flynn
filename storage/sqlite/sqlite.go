@@ -102,6 +102,16 @@ func WithSnapshotEvery(k int) Option {
 	}
 }
 
+// WithPayloadBlobThreshold sets the stored-byte length at or above which an event
+// payload is externalized into the content-addressed blobs table instead of kept inline.
+// Zero or negative keeps every payload inline. It overrides defaultPayloadBlobThreshold
+// and lets a caller (or a test) force or forgo externalization.
+func WithPayloadBlobThreshold(n int) Option {
+	return func(s *Store) {
+		s.blobThreshold = n
+	}
+}
+
 // Store is the SQLite backend. It implements state.Provider (sessions, skills,
 // memory) and exposes the event spine via Log(), all over one database and one
 // connection so cross-domain work shares a single file and transaction.
@@ -133,6 +143,11 @@ type Store struct {
 	// snapPendingState drives the state stream's snapshot cadence, kept separate from
 	// snapPending so the resource and state streams checkpoint on their own counts.
 	snapPendingState atomic.Int64
+	// blobThreshold is the stored-byte length at or above which an event payload is
+	// externalized into the content-addressed blobs table instead of kept inline (see
+	// resolvePayloadStorage). It defaults to defaultPayloadBlobThreshold; zero or
+	// negative keeps every payload inline (see WithPayloadBlobThreshold).
+	blobThreshold int
 }
 
 var _ state.Provider = (*Store)(nil)
@@ -155,7 +170,7 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, readDB: readDB, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1)}
+	s := &Store{db: db, readDB: readDB, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1), blobThreshold: defaultPayloadBlobThreshold}
 	for _, o := range opts {
 		o(s)
 	}
@@ -222,8 +237,7 @@ func (s *Store) prepare(ctx context.Context) error {
 	prep(&s.stmts.sessionUpsert, s.db, upsertSessionSQL)
 	prep(&s.stmts.resourceKeyTx, s.db, resourceByKeySQL)
 	prep(&s.stmts.resourceUpsert, s.db, upsertResourceSQL)
-	prep(&s.stmts.eventsRead, s.reads(),
-		`SELECT * FROM events WHERE stream = ? AND seq > ? ORDER BY seq LIMIT ?`)
+	prep(&s.stmts.eventsRead, s.reads(), eventsReadSQL)
 	prep(&s.stmts.sessionGet, s.reads(), sessionGetLiveSQL)
 	prep(&s.stmts.skillByID, s.reads(),
 		`SELECT `+skillCols+` FROM skills WHERE id = ? AND deleted = 0`)
