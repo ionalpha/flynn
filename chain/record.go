@@ -83,7 +83,7 @@ func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 	}
 	events := make([][]byte, len(b.events))
 	copy(events, b.events)
-	return &SealedRun{cose: sc.COSE, events: events, nodes: b.tree.cloneNodes()}, nil
+	return &SealedRun{cose: sc.COSE, events: events, nodes: b.tree.cloneStore()}, nil
 }
 
 // SealAndReset seals the current run and resets the builder to an empty run under
@@ -110,11 +110,11 @@ func (b *Builder) SealAndReset(signer RootSigner) (*SealedRun, error) {
 type SealedRun struct {
 	cose   []byte
 	events [][]byte
-	// nodes is the seal-time snapshot of the run's Merkle nodes (hash slices
-	// shared with the builder's tree, which never mutates a written node), so
-	// EventProof assembles an inclusion path by lookup instead of rebuilding the
-	// whole tree per proof. Seal always populates it.
-	nodes map[nodeKey][]byte
+	// nodes is the seal-time snapshot of the run's Merkle node store (hash values
+	// are immutable and never rewritten), so EventProof assembles an inclusion path
+	// by lookup instead of rebuilding the whole tree per proof. Seal always populates
+	// it.
+	nodes nodeStore
 }
 
 type sealedRunWire struct {

@@ -39,38 +39,52 @@ type nodeKey struct {
 // Tree is an append-only RFC 6962 Merkle log over event leaf hashes. It computes
 // the signed-tree-head root and produces inclusion and consistency proofs. The
 // hashing and proof verification are delegated to the transparency-dev/merkle
-// library; this type stores the perfect-subtree node hashes the library needs to
-// assemble a proof. A Tree is not safe for concurrent mutation.
+// library; the perfect-subtree node hashes a proof needs are kept in a nodeStore,
+// so the same tree can hold them in memory or page them into tiles. A Tree is not
+// safe for concurrent mutation.
 type Tree struct {
 	factory *compact.RangeFactory
 	rang    *compact.Range
-	nodes   map[nodeKey][]byte
+	store   nodeStore
 	leaves  uint64
 }
 
-// NewTree returns an empty Merkle log.
-func NewTree() *Tree {
+// NewTree returns an empty Merkle log whose nodes are held in memory.
+func NewTree() *Tree { return newTreeWithStore(newMemNodeStore()) }
+
+// newTreeWithStore returns an empty Merkle log backed by store. It is the shared
+// constructor: NewTree pairs it with the in-memory map, and a durable log pairs it
+// with a tiled, storage-backed store so proof nodes need not all be resident.
+func newTreeWithStore(store nodeStore) *Tree {
 	factory := &compact.RangeFactory{Hash: merkleHasher.HashChildren}
 	return &Tree{
 		factory: factory,
 		rang:    factory.NewEmptyRange(0),
-		nodes:   map[nodeKey][]byte{},
+		store:   store,
 	}
 }
 
 // Append adds an event's canonical bytes as the next leaf. It records the leaf and
-// every internal node the append completes, so later proofs can be assembled
-// without recomputing the tree.
+// every internal node the append completes into the store, so later proofs can be
+// assembled without recomputing the tree.
 func (t *Tree) Append(canonical []byte) error {
 	leaf, err := LeafHash(canonical)
 	if err != nil {
 		return err
 	}
-	t.nodes[nodeKey{level: 0, index: t.leaves}] = leaf
+	if err := t.store.putNode(0, t.leaves, leaf); err != nil {
+		return err
+	}
+	var putErr error
 	if err := t.rang.Append(leaf, func(id compact.NodeID, hash []byte) {
-		t.nodes[nodeKey{level: id.Level, index: id.Index}] = hash
+		if putErr == nil {
+			putErr = t.store.putNode(id.Level, id.Index, hash)
+		}
 	}); err != nil {
 		return fault.Wrap(fault.Terminal, CodeEncode, err)
+	}
+	if putErr != nil {
+		return putErr
 	}
 	t.leaves++
 	return nil
@@ -113,15 +127,18 @@ func (t *Tree) ConsistencyProof(size uint64) ([][]byte, error) {
 // assemble looks up the hashes for a proof's node IDs and rehashes them into the
 // final proof, collapsing the single ephemeral node the library may require.
 func (t *Tree) assemble(nodes proof.Nodes) ([][]byte, error) {
-	return assembleProof(t.nodes, nodes)
+	return assembleProof(t.store, nodes)
 }
 
-// assembleProof is assemble over a bare node map, so a sealed run's retained
+// assembleProof reads a proof's node IDs from a store, so a sealed run's retained
 // nodes can produce proofs without a live Tree.
-func assembleProof(m map[nodeKey][]byte, nodes proof.Nodes) ([][]byte, error) {
+func assembleProof(store nodeStore, nodes proof.Nodes) ([][]byte, error) {
 	hashes := make([][]byte, len(nodes.IDs))
 	for i, id := range nodes.IDs {
-		h, ok := m[nodeKey{level: id.Level, index: id.Index}]
+		h, ok, err := store.getNode(id.Level, id.Index)
+		if err != nil {
+			return nil, err
+		}
 		if !ok {
 			return nil, fault.New(fault.Terminal, CodeMissingNode, "chain: proof references a node not in the tree")
 		}
@@ -130,15 +147,10 @@ func assembleProof(m map[nodeKey][]byte, nodes proof.Nodes) ([][]byte, error) {
 	return nodes.Rehash(hashes, merkleHasher.HashChildren)
 }
 
-// cloneNodes copies the node map for a seal-time snapshot. The hash values are
-// immutable and shared; only the map header is duplicated, so the snapshot is
-// decoupled from further appends at map-copy cost.
-func (t *Tree) cloneNodes() map[nodeKey][]byte {
-	c := make(map[nodeKey][]byte, len(t.nodes))
-	for k, v := range t.nodes {
-		c[k] = v
-	}
-	return c
+// cloneStore copies the node store for a seal-time snapshot, so the sealed run's
+// proof material is decoupled from further appends to the live tree.
+func (t *Tree) cloneStore() nodeStore {
+	return t.store.clone()
 }
 
 // VerifyInclusion reports whether pf proves that leafHash is the leaf at index in a
