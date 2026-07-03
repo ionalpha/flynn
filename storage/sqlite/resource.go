@@ -110,7 +110,7 @@ func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (reso
 		if err != nil {
 			return err
 		}
-		if _, _, _, err := insertEventTx(ctx, tx, s.p, in); err != nil {
+		if _, err := insertEventTx(ctx, tx, s.p, in); err != nil {
 			return err
 		}
 		return upsertResourceRow(ctx, tx, s.p, rec)
@@ -352,7 +352,7 @@ func appendMergeEvent(ctx context.Context, tx *sql.Tx, p *Store, r resource.Reso
 	if err != nil {
 		return err
 	}
-	if _, _, _, err := insertEventTx(ctx, tx, p, in); err != nil {
+	if _, err := insertEventTx(ctx, tx, p, in); err != nil {
 		return err
 	}
 	return upsertResourceRow(ctx, tx, p, r)

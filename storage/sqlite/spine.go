@@ -43,26 +43,20 @@ func (l *eventLog) Append(ctx context.Context, in spine.AppendInput) (spine.Even
 }
 
 // appendTx appends one event inside an existing transaction (the public Append
-// wraps it in a transaction of its own) and returns the stored event, decoding a
-// RawPayload so the returned payload shape matches a Payload append.
+// wraps it in a transaction of its own) and returns the stored event. It builds
+// the event through spine.AppendInput.Materialize - the one place the event shape
+// and its defaulting live - and stamps the database-assigned Seq onto it.
 func appendTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput) (spine.Event, error) {
-	payload, err := in.DecodedPayload()
+	e, raw, err := in.Materialize(p.clk, 0)
 	if err != nil {
 		return spine.Event{}, err
 	}
-	seq, t, version, err := insertEventTx(ctx, tx, p, in)
+	seq, err := insertEventRow(ctx, tx, p, in, e.Time, e.SchemaVersion, raw)
 	if err != nil {
 		return spine.Event{}, err
 	}
-	return spine.Event{
-		Stream: in.Stream, Seq: seq, Time: t, Type: in.Type, Actor: in.Actor,
-		Payload:       clonePayload(payload),
-		SchemaVersion: version,
-		TraceID:       in.TraceID,
-		SpanID:        in.SpanID,
-		CausationID:   in.CausationID, OriginInstanceID: in.OriginInstanceID,
-		Principal: in.Principal,
-	}, nil
+	e.Seq = seq
+	return e, nil
 }
 
 // insertEventSQL is the append statement, prepared once at Open (stmts.eventInsert).
@@ -75,47 +69,54 @@ const insertEventSQL = `INSERT INTO events (stream, seq, time, type, actor, payl
 	VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM events WHERE stream = ?), ?,?,?,?,?,?,?,?,?,?)
 	RETURNING seq`
 
-// insertEventTx writes one event row inside an existing transaction, assigning
-// the next per-stream Seq and stamping an unset Time from the clock. A RawPayload is
-// stored verbatim (it is already the JSON the payload column holds), so the
-// durable command path never re-encodes what its stamper serialized; a decoded
-// Payload is marshalled here. The command path (commit) calls this directly and
-// projects from the typed record it already holds, so it never pays for the
-// decoded event appendTx builds.
-func insertEventTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput) (seq int64, t time.Time, version int, err error) {
-	t = in.Time
+// insertEventTx writes one event row for the command path inside an existing
+// transaction, assigning the next per-stream Seq. It resolves the stored payload
+// without decoding it - a RawPayload is stored verbatim (it is already the JSON the
+// payload column holds), a decoded Payload is marshalled - so the durable command
+// path never re-encodes or decodes what its stamper serialized. The command path
+// (commit) projects from the typed record it already holds, so it discards the
+// returned Seq and never builds a decoded Event.
+func insertEventTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput) (int64, error) {
+	t := in.Time
 	if t.IsZero() {
 		t = p.clk.Now()
 	}
-	t = t.UTC()
-
-	var payload []byte
-	switch {
-	case in.Payload != nil && len(in.RawPayload) > 0:
-		return 0, time.Time{}, 0, spine.ErrPayloadConflict
-	case len(in.RawPayload) > 0:
-		payload = in.RawPayload
-	default:
-		payload, err = json.Marshal(in.Payload)
-		if err != nil {
-			return 0, time.Time{}, 0, fmt.Errorf("sqlite: marshal event payload: %w", err)
-		}
-	}
-
-	version = in.SchemaVersion
+	version := in.SchemaVersion
 	if version == 0 {
 		version = spine.DefaultSchemaVersion
 	}
+	var raw json.RawMessage
+	switch {
+	case in.Payload != nil && len(in.RawPayload) > 0:
+		return 0, spine.ErrPayloadConflict
+	case len(in.RawPayload) > 0:
+		raw = in.RawPayload
+	default:
+		b, err := json.Marshal(in.Payload)
+		if err != nil {
+			return 0, fmt.Errorf("sqlite: marshal event payload: %w", err)
+		}
+		raw = b
+	}
+	return insertEventRow(ctx, tx, p, in, t, version, raw)
+}
 
+// insertEventRow writes one already-resolved event row inside a transaction and
+// returns the database-assigned per-stream Seq. It does no defaulting or payload
+// resolution - callers pass the stamped Time, SchemaVersion, and stored payload
+// bytes - so the Append path (via Materialize) and the command path (via
+// insertEventTx) share one INSERT and one Seq assignment.
+func insertEventRow(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput, t time.Time, version int, raw json.RawMessage) (int64, error) {
+	var seq int64
 	// StmtContext binds the Open-time prepared statement to this transaction's
 	// connection; on the single write connection that is a cached re-bind, not a
 	// recompile.
 	if err := tx.StmtContext(ctx, p.stmts.eventInsert).QueryRowContext(ctx,
-		in.Stream, in.Stream, sqlitex.FormatTime(t), in.Type, string(in.Actor), string(payload),
+		in.Stream, in.Stream, sqlitex.FormatTime(t.UTC()), in.Type, string(in.Actor), string(raw),
 		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, version, in.Principal).Scan(&seq); err != nil {
-		return 0, time.Time{}, 0, err
+		return 0, err
 	}
-	return seq, t, version, nil
+	return seq, nil
 }
 
 // Read implements spine.Log: events on a stream in Seq order, AfterSeq exclusive,
@@ -179,17 +180,4 @@ func (l *eventLog) LatestSnapshot(ctx context.Context, stream string, upToSeq in
 		return spine.Snapshot{}, false, err
 	}
 	return s, true, nil
-}
-
-// clonePayload shallow-copies a payload map so the returned event is decoupled
-// from the caller's map (the log is immutable).
-func clonePayload(p map[string]any) map[string]any {
-	if p == nil {
-		return nil
-	}
-	c := make(map[string]any, len(p))
-	for k, v := range p {
-		c[k] = v
-	}
-	return c
 }

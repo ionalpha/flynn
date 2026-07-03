@@ -34,53 +34,19 @@ func NewMemoryLog(opts ...MemoryOption) *MemoryLog {
 	return l
 }
 
-// Append implements Log. A RawPayload is decoded here, so the stored event
-// carries the same decoded payload shape a Payload append produces.
+// Append implements Log. It builds the stored event through
+// AppendInput.Materialize (the one place event defaulting and shape live) under
+// the lock, so the assigned Seq stays monotonic within the stream.
 func (l *MemoryLog) Append(_ context.Context, in AppendInput) (Event, error) {
-	payload, err := in.DecodedPayload()
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	seq := int64(len(l.streams[in.Stream]) + 1)
+	e, _, err := in.Materialize(l.clk, seq)
 	if err != nil {
 		return Event{}, err
 	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	t := in.Time
-	if t.IsZero() {
-		t = l.clk.Now()
-	}
-	version := in.SchemaVersion
-	if version == 0 {
-		version = DefaultSchemaVersion
-	}
-	e := Event{
-		Stream:           in.Stream,
-		Seq:              int64(len(l.streams[in.Stream]) + 1),
-		Time:             t.UTC(),
-		Type:             in.Type,
-		Actor:            in.Actor,
-		Payload:          clonePayload(payload),
-		SchemaVersion:    version,
-		TraceID:          in.TraceID,
-		SpanID:           in.SpanID,
-		CausationID:      in.CausationID,
-		OriginInstanceID: in.OriginInstanceID,
-		Principal:        in.Principal,
-	}
 	l.streams[in.Stream] = append(l.streams[in.Stream], e)
 	return e, nil
-}
-
-// clonePayload shallow-copies a payload map so the stored event is decoupled
-// from the caller's map (the log is immutable). Nested values are shared and
-// must be treated as read-only.
-func clonePayload(p map[string]any) map[string]any {
-	if p == nil {
-		return nil
-	}
-	c := make(map[string]any, len(p))
-	for k, v := range p {
-		c[k] = v
-	}
-	return c
 }
 
 // Read implements Log. Returned events share the stored payload maps; callers

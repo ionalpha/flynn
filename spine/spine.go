@@ -15,6 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+
+	"github.com/ionalpha/flynn/clock"
 )
 
 // ActorType identifies who produced an event.
@@ -103,25 +105,78 @@ type AppendInput struct {
 // decoded Payload and the pre-encoded RawPayload; a producer must pick one form.
 var ErrPayloadConflict = errors.New("spine: AppendInput sets both Payload and RawPayload")
 
-// DecodedPayload resolves an AppendInput's payload to its decoded form: Payload
-// when set, else RawPayload decoded to a map (nil when neither is set). Log
-// implementations use it to build the returned Event, so every reader sees one
-// payload shape regardless of which form the producer supplied.
-func (in AppendInput) DecodedPayload() (map[string]any, error) {
-	if in.Payload != nil {
-		if len(in.RawPayload) > 0 {
-			return nil, ErrPayloadConflict
+// Materialize builds the stored Event for this input at seq, applying the Log's
+// defaulting rules - an unset Time is stamped from clk (as UTC), an unset
+// SchemaVersion becomes DefaultSchemaVersion - and returns the payload in its
+// canonical stored-bytes form alongside it: RawPayload verbatim when the producer
+// pre-encoded it, else the JSON encoding of Payload. A durable backend stores
+// those bytes and assigns Seq itself (the in-memory log counts under its lock; the
+// SQLite log passes 0 and stamps Event.Seq from the row the database assigns), so
+// both logs build their returned Event through this one method and a new Event
+// field is threaded here once instead of in every backend. Setting both Payload
+// and RawPayload is a contract violation and returns ErrPayloadConflict.
+func (in AppendInput) Materialize(clk clock.Clock, seq int64) (Event, json.RawMessage, error) {
+	if in.Payload != nil && len(in.RawPayload) > 0 {
+		return Event{}, nil, ErrPayloadConflict
+	}
+	t := in.Time
+	if t.IsZero() {
+		t = clk.Now()
+	}
+	version := in.SchemaVersion
+	if version == 0 {
+		version = DefaultSchemaVersion
+	}
+	var (
+		decoded map[string]any
+		raw     json.RawMessage
+	)
+	switch {
+	case len(in.RawPayload) > 0:
+		raw = in.RawPayload
+		if err := json.Unmarshal(in.RawPayload, &decoded); err != nil {
+			return Event{}, nil, err
 		}
-		return in.Payload, nil
+	default:
+		// A decoded Payload is marshalled to the stored bytes; a nil Payload
+		// encodes as "null", matching what a RawPayload-free append has always
+		// stored, so an event with no payload round-trips to a nil Payload.
+		decoded = in.Payload
+		b, err := json.Marshal(in.Payload)
+		if err != nil {
+			return Event{}, nil, err
+		}
+		raw = b
 	}
-	if len(in.RawPayload) == 0 {
-		return nil, nil
+	e := Event{
+		Stream:           in.Stream,
+		Seq:              seq,
+		Time:             t.UTC(),
+		Type:             in.Type,
+		Actor:            in.Actor,
+		Payload:          clonePayload(decoded),
+		SchemaVersion:    version,
+		TraceID:          in.TraceID,
+		SpanID:           in.SpanID,
+		CausationID:      in.CausationID,
+		OriginInstanceID: in.OriginInstanceID,
+		Principal:        in.Principal,
 	}
-	var m map[string]any
-	if err := json.Unmarshal(in.RawPayload, &m); err != nil {
-		return nil, err
+	return e, raw, nil
+}
+
+// clonePayload shallow-copies a payload map so a stored or returned event is
+// decoupled from the caller's map (an event is immutable). Nested values are
+// shared and must be treated as read-only.
+func clonePayload(p map[string]any) map[string]any {
+	if p == nil {
+		return nil
 	}
-	return m, nil
+	c := make(map[string]any, len(p))
+	for k, v := range p {
+		c[k] = v
+	}
+	return c
 }
 
 // Query reads a contiguous slice of a stream in Seq order.

@@ -284,7 +284,7 @@ func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.Append
 		if err != nil {
 			return err
 		}
-		if _, _, _, err := insertEventTx(ctx, tx, s, in); err != nil {
+		if _, err := insertEventTx(ctx, tx, s, in); err != nil {
 			return err
 		}
 		return project(tx)
