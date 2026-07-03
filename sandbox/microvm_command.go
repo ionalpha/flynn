@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
 )
 
@@ -207,7 +208,7 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 	if err := cmd.Start(); err != nil {
 		return nil, fault.Wrap(fault.Terminal, "microvm_serve_start", err)
 	}
-	s := &cmdServing{cmd: cmd, tail: tail, done: make(chan struct{})}
+	s := &cmdServing{cmd: cmd, tail: tail, done: make(chan struct{}), clk: clock.System{}}
 	addrCh := make(chan string, 1)
 	go s.readAddr(stdout, tail, addrCh)
 	go s.reap()
@@ -327,6 +328,7 @@ type cmdServing struct {
 	cmd  *exec.Cmd
 	tail *tailBuffer
 	done chan struct{}
+	clk  clock.Timing
 
 	mu   sync.Mutex
 	addr string
@@ -388,7 +390,7 @@ func (s *cmdServing) Stop() error {
 	// Bound the wait so a runtime that ignores the kill cannot hang teardown forever.
 	select {
 	case <-s.done:
-	case <-time.After(5 * time.Second):
+	case <-s.clk.After(5 * time.Second):
 	}
 	return nil
 }

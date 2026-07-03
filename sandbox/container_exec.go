@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
 )
 
@@ -148,13 +149,14 @@ type containerServing struct {
 	run    Runner
 	done   chan struct{}
 	stop   sync.Once
+	clk    clock.Timing
 }
 
 var _ Serving = (*containerServing)(nil)
 
 // newContainerServing adopts a started container and begins reaping it.
 func newContainerServing(engine OCIEngine, id, addr string, run Runner) *containerServing {
-	s := &containerServing{engine: engine, id: id, addr: addr, run: run, done: make(chan struct{})}
+	s := &containerServing{engine: engine, id: id, addr: addr, run: run, done: make(chan struct{}), clk: clock.System{}}
 	go s.reap()
 	return s
 }
@@ -222,7 +224,7 @@ func (s *containerServing) Stop() error {
 	})
 	select {
 	case <-s.done:
-	case <-time.After(engineStopTimeout):
+	case <-s.clk.After(engineStopTimeout):
 	}
 	return nil
 }

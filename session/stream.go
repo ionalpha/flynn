@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -34,13 +35,14 @@ type Stream struct {
 	stream  string
 	subject string
 	poll    time.Duration
+	clk     clock.Timing
 }
 
 // newStream builds a Stream over log and b for the session id. The id names both
 // the spine stream and (as a suffix) the bus subject, so concurrent sessions on
 // shared infrastructure stay isolated.
 func newStream(log spine.Log, b bus.Bus, id string) *Stream {
-	return &Stream{log: log, bus: b, stream: id, subject: subjectPrefix + id, poll: DefaultStreamPoll}
+	return &Stream{log: log, bus: b, stream: id, subject: subjectPrefix + id, poll: DefaultStreamPoll, clk: clock.System{}}
 }
 
 // subjectPrefix namespaces every session's wake subject under one bus hierarchy,
@@ -90,16 +92,6 @@ func (s *Stream) Subscribe(ctx context.Context, afterSeq int64) (<-chan Event, e
 		defer close(out)
 		defer func() { _ = sub.Unsubscribe() }()
 
-		// The poll floor guarantees progress even if no wake ever arrives; the bus
-		// only makes delivery prompt. A non-positive poll disables the floor (used
-		// in tests that want to prove the bus path alone).
-		var tick <-chan time.Time
-		if s.poll > 0 {
-			t := time.NewTicker(s.poll)
-			defer t.Stop()
-			tick = t.C
-		}
-
 		cursor := afterSeq
 		drain := func() bool {
 			for {
@@ -124,10 +116,27 @@ func (s *Stream) Subscribe(ctx context.Context, afterSeq int64) (<-chan Event, e
 			return
 		}
 		for {
+			// The poll floor guarantees progress even if no wake ever arrives; the
+			// bus only makes delivery prompt. A non-positive poll disables the floor
+			// (used in tests that prove the bus path alone). The timer is re-armed
+			// each iteration and stopped when a wake or cancellation wins the select,
+			// so a Manual clock accumulates no stale timers.
+			var tick <-chan time.Time
+			var timer clock.Timer
+			if s.poll > 0 {
+				timer = s.clk.NewTimer(s.poll)
+				tick = timer.C()
+			}
 			select {
 			case <-ctx.Done():
+				if timer != nil {
+					timer.Stop()
+				}
 				return
 			case <-wake:
+				if timer != nil {
+					timer.Stop()
+				}
 				if !drain() {
 					return
 				}

@@ -65,7 +65,7 @@ type Worker struct {
 	store     resource.Store
 	jobs      jobs.Queue
 	exec      StepExecutor
-	clk       clock.Clock
+	clk       clock.Timing
 	bus       bus.Bus // optional; nil disables completion signals
 	lease     time.Duration
 	retryBase time.Duration
@@ -102,7 +102,7 @@ func WithBackoff(base, ceiling time.Duration) WorkerOption {
 // NewWorker builds a goal-step worker over the store, queue and executor. The
 // clock is used to schedule retry backoff and must be the same clock the queue
 // uses, so a failed step's RunAt is comparable to the queue's claim time.
-func NewWorker(store resource.Store, q jobs.Queue, clk clock.Clock, exec StepExecutor, opts ...WorkerOption) *Worker {
+func NewWorker(store resource.Store, q jobs.Queue, clk clock.Timing, exec StepExecutor, opts ...WorkerOption) *Worker {
 	w := &Worker{
 		store:     store,
 		jobs:      q,
@@ -152,7 +152,7 @@ func (w *Worker) Run(ctx context.Context, poll time.Duration) {
 			case <-ctx.Done():
 				return
 			case <-ready:
-			case <-time.After(poll):
+			case <-w.clk.After(poll):
 			}
 		}
 	}

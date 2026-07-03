@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/inbox"
 )
 
@@ -45,6 +46,7 @@ type Bot struct {
 	baseURL string
 	http    *http.Client
 	poll    time.Duration
+	clk     clock.Timing
 }
 
 // Option configures a Bot.
@@ -79,6 +81,17 @@ func WithPollTimeout(d time.Duration) Option {
 	}
 }
 
+// WithClock sets the clock that paces reconnect backoff, so a test drives retry
+// timing with a Manual clock instead of sleeping. Production leaves the default
+// System clock.
+func WithClock(clk clock.Timing) Option {
+	return func(b *Bot) {
+		if clk != nil {
+			b.clk = clk
+		}
+	}
+}
+
 // New builds a Telegram bot for the given token. The token is required and is never
 // logged or wrapped into an error.
 func New(token string, opts ...Option) (*Bot, error) {
@@ -90,6 +103,7 @@ func New(token string, opts ...Option) (*Bot, error) {
 		baseURL: defaultAPIBase,
 		http:    &http.Client{},
 		poll:    defaultPollTimeout,
+		clk:     clock.System{},
 	}
 	for _, o := range opts {
 		o(b)
@@ -109,21 +123,10 @@ func (b *Bot) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 	go func() {
 		defer close(out)
 		var offset int64
-		for {
-			if ctx.Err() != nil {
-				return
-			}
+		inbox.ReceiveLoop(ctx, retryBackoff, b.clk, func(ctx context.Context) error {
 			updates, err := b.getUpdates(ctx, offset)
 			if err != nil {
-				if ctx.Err() != nil {
-					return
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(retryBackoff):
-				}
-				continue
+				return err // ReceiveLoop backs off before the next poll
 			}
 			for _, u := range updates {
 				offset = u.UpdateID + 1 // acknowledge: never re-fetch this update
@@ -140,10 +143,11 @@ func (b *Bot) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 				select {
 				case out <- spec:
 				case <-ctx.Done():
-					return
+					return nil // cancelled; ReceiveLoop exits on the next ctx check
 				}
 			}
-		}
+			return nil // successful poll; ReceiveLoop long-polls again immediately
+		})
 	}()
 	return out, nil
 }

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/llm"
@@ -44,6 +45,7 @@ const DefaultPoll = 50 * time.Millisecond
 type Session struct {
 	stream *Stream
 	poll   time.Duration
+	clk    clock.Timing
 
 	mu             sync.Mutex
 	result         string
@@ -64,8 +66,10 @@ func WithID(id string) Option {
 	return func(s *Session) {
 		if id != "" {
 			poll := s.stream.poll
+			clk := s.stream.clk
 			s.stream = newStream(s.stream.log, s.stream.bus, id)
 			s.stream.poll = poll
+			s.stream.clk = clk
 		}
 	}
 }
@@ -86,6 +90,18 @@ func WithStreamPoll(d time.Duration) Option {
 	return func(s *Session) { s.stream.poll = d }
 }
 
+// WithClock sets the clock the lifecycle watch and the subscriber poll floor time
+// their re-reads on, so a test drives them with a Manual clock instead of sleeping.
+// Production leaves the default System clock.
+func WithClock(clk clock.Timing) Option {
+	return func(s *Session) {
+		if clk != nil {
+			s.clk = clk
+			s.stream.clk = clk
+		}
+	}
+}
+
 // New builds a Session whose events are recorded on log and fanned out over b.
 // Its identity defaults to a fresh UUIDv7 (override with WithID); that id names
 // the run's event stream and, via Submit, its goal resource, so one value
@@ -94,6 +110,7 @@ func New(log spine.Log, b bus.Bus, opts ...Option) *Session {
 	s := &Session{
 		stream: newStream(log, b, ids.New()),
 		poll:   DefaultPoll,
+		clk:    clock.System{},
 		done:   make(chan struct{}),
 	}
 	for _, o := range opts {
@@ -183,14 +200,14 @@ func (s *Session) Wait(ctx context.Context) (string, error) {
 // stalled transition is a property of goal status the reconciler owns, so the
 // session observes it the same way an external client would.
 func (s *Session) watch(ctx context.Context, rt *runtime.Runtime, key resource.Key) {
-	t := time.NewTicker(s.poll)
-	defer t.Stop()
 	for {
+		t := s.clk.NewTimer(s.poll)
 		select {
 		case <-ctx.Done():
+			t.Stop()
 			s.finish("", ctx.Err())
 			return
-		case <-t.C:
+		case <-t.C():
 			r, err := rt.Store().Get(ctx, key.Kind, key.Scope, key.Name)
 			if err != nil {
 				// A cancelled context surfaces here as a read error; the next loop

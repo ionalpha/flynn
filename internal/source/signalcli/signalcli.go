@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/netguard"
 )
@@ -48,6 +49,7 @@ type Client struct {
 	addr    string
 	account string
 	dial    func(ctx context.Context, network, address string) (net.Conn, error)
+	clk     clock.Timing
 
 	mu      sync.Mutex
 	enc     *json.Encoder
@@ -64,6 +66,17 @@ func WithAccount(a string) Option {
 	return func(c *Client) { c.account = a }
 }
 
+// WithClock sets the clock that paces reconnect backoff, so a test drives re-dial
+// timing with a Manual clock instead of sleeping. Production leaves the default
+// System clock.
+func WithClock(clk clock.Timing) Option {
+	return func(c *Client) {
+		if clk != nil {
+			c.clk = clk
+		}
+	}
+}
+
 // New builds a Signal client that talks to the signal-cli JSON-RPC daemon at the
 // given loopback TCP address (for example 127.0.0.1:7583).
 func New(tcpAddr string, opts ...Option) (*Client, error) {
@@ -73,6 +86,7 @@ func New(tcpAddr string, opts ...Option) (*Client, error) {
 	c := &Client{
 		addr:    tcpAddr,
 		dial:    netguard.Dialer(loopbackPolicy).DialContext,
+		clk:     clock.System{},
 		pending: make(map[uint64]chan rpcResult),
 	}
 	for _, o := range opts {
@@ -92,18 +106,9 @@ func (c *Client) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 	out := make(chan inbox.Spec)
 	go func() {
 		defer close(out)
-		for {
-			if ctx.Err() != nil {
-				return
-			}
-			if err := c.session(ctx, out); err != nil && ctx.Err() == nil {
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(reconnectBackoff):
-				}
-			}
-		}
+		inbox.ReceiveLoop(ctx, reconnectBackoff, c.clk, func(ctx context.Context) error {
+			return c.session(ctx, out)
+		})
 	}()
 	return out, nil
 }
