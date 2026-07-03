@@ -22,6 +22,14 @@ func RecordKeyID(record []byte) (string, error) {
 	return checkpointKeyID(w.Checkpoint)
 }
 
+// CheckpointKeyID returns the key id a standalone signed checkpoint was signed under,
+// decoded from the signature's protected header without verifying the signature. A
+// verifier of a durably checkpointed stream uses it to derive the self-certifying public
+// key before checking the checkpoint with VerifyCheckpoint.
+func CheckpointKeyID(coseBytes []byte) (string, error) {
+	return checkpointKeyID(coseBytes)
+}
+
 // checkpointKeyID extracts the key id from a COSE_Sign1 checkpoint's protected
 // header. The key id is in the protected header, so it is covered by the signature
 // and cannot be altered without detection once the signature is checked.

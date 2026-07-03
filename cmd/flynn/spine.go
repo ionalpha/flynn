@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -177,9 +178,81 @@ func verifyRun(dataDir, runID string) error {
 	}
 	record, err := recordFromEvents(events)
 	if err != nil {
-		return fmt.Errorf("run %q: %w", runID, err)
+		// No per-run sealed record: the stream may instead be a durably checkpointed
+		// one (the served path), verifiable from its latest signed checkpoint.
+		return verifyCheckpointedStream(os.Stdout, store, runID)
 	}
 	return verifyRecord(os.Stdout, "run "+runID, record, "")
+}
+
+// verifyCheckpointedStream verifies a stream that carries no single sealed record but a
+// durable, periodically checkpointed Merkle log: the events rebuild the latest signed
+// checkpoint's root (integrity), then the same governance and ground-truth tiers are
+// reported. The checkpoint's key is self-certifying, so a stored stream needs only the
+// durable store.
+func verifyCheckpointedStream(out io.Writer, store *sqlite.Store, stream string) error {
+	ctx := context.Background()
+	_, cose, ok, err := store.LatestCheckpoint(ctx, stream)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("stream %q has no signed record and no checkpoint; it was not sealed", stream)
+	}
+	keyID, err := chain.CheckpointKeyID(cose)
+	if err != nil {
+		return err
+	}
+	pub, err := resolveKey(keyID, "")
+	if err != nil {
+		return err
+	}
+	ring := chain.NewRootKeyring()
+	if err := ring.Add(keyID, pub); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(out, "stream %s\n", stream)
+	cp, err := chain.VerifyCheckpoint(cose, ring)
+	if err != nil {
+		_, _ = fmt.Fprintf(out, "  integrity:    NOT VERIFIED: %v\n", err)
+		return errChecksFailed
+	}
+	// Fold the first cp.Size events and require they rebuild the signed root.
+	events, err := store.Log().Read(ctx, spine.Query{Stream: stream, Limit: int(cp.Size)})
+	if err != nil {
+		return err
+	}
+	tree := chain.NewTree()
+	covered := make([]spine.Event, 0, len(events))
+	for _, e := range events {
+		if uint64(len(covered)) >= cp.Size {
+			break
+		}
+		cb, cerr := chain.CanonicalBytes(e)
+		if cerr != nil {
+			_, _ = fmt.Fprintf(out, "  integrity:    NOT VERIFIED: %v\n", cerr)
+			return errChecksFailed
+		}
+		if aerr := tree.Append(cb); aerr != nil {
+			_, _ = fmt.Fprintf(out, "  integrity:    NOT VERIFIED: %v\n", aerr)
+			return errChecksFailed
+		}
+		covered = append(covered, e)
+	}
+	root, err := tree.Root()
+	if err != nil {
+		return err
+	}
+	if uint64(len(covered)) != cp.Size || !bytes.Equal(root, cp.RootHash) {
+		_, _ = fmt.Fprintf(out, "  integrity:    NOT VERIFIED: events do not reproduce the signed checkpoint root\n")
+		return errChecksFailed
+	}
+	_, _ = fmt.Fprintf(out, "  integrity:    VERIFIED (%d events, checkpoint signed by %s)\n", cp.Size, keyID)
+	if reportGovernanceAndGroundTruth(out, covered) {
+		return errChecksFailed
+	}
+	return nil
 }
 
 // verifyRecordFile reads a signed record from a file and reports every tier it
@@ -219,7 +292,16 @@ func verifyRecord(out io.Writer, label string, record []byte, keyHex string) err
 	}
 	_, _ = fmt.Fprintf(out, "  integrity:    VERIFIED (%d events, signed by %s)\n", len(events), keyID)
 
-	failed := false
+	if reportGovernanceAndGroundTruth(out, events) {
+		return errChecksFailed
+	}
+	return nil
+}
+
+// reportGovernanceAndGroundTruth reports the governance and ground-truth tiers over a
+// verified event sequence and returns whether either failed. It is shared by the sealed
+// record and durable checkpoint verify paths so both report the same tiers identically.
+func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed bool) {
 	if gerr := chain.VerifyGovernance(events); gerr != nil {
 		_, _ = fmt.Fprintf(out, "  governance:   VIOLATION: %v\n", gerr)
 		failed = true
@@ -237,10 +319,7 @@ func verifyRecord(out io.Writer, label string, record []byte, keyHex string) err
 		_, _ = fmt.Fprintf(out, "  ground-truth: NOT GROUNDED: %v\n", gt)
 		failed = true
 	}
-	if failed {
-		return errChecksFailed
-	}
-	return nil
+	return failed
 }
 
 // resolveKey recovers the public key a record is verified against: the supplied hex
