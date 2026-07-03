@@ -83,7 +83,11 @@ func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 	}
 	events := make([][]byte, len(b.events))
 	copy(events, b.events)
-	return &SealedRun{cose: sc.COSE, events: events, nodes: b.tree.cloneStore()}, nil
+	nodes, err := b.tree.cloneStore()
+	if err != nil {
+		return nil, err
+	}
+	return &SealedRun{cose: sc.COSE, events: events, nodes: nodes}, nil
 }
 
 // SealAndReset seals the current run and resets the builder to an empty run under
@@ -114,7 +118,7 @@ type SealedRun struct {
 	// are immutable and never rewritten), so EventProof assembles an inclusion path
 	// by lookup instead of rebuilding the whole tree per proof. Seal always populates
 	// it.
-	nodes nodeStore
+	nodes NodeStore
 }
 
 type sealedRunWire struct {

@@ -18,22 +18,28 @@ const (
 	tileWidth  = 1 << tileHeight // 256 hashes per tile
 )
 
-// nodeStore holds the Merkle node hashes keyed by (level, index): Append writes each
+// NodeStore holds the Merkle node hashes keyed by (level, index): Append writes each
 // completed node and proof assembly reads them back. Separating node storage behind
 // this interface is what lets one ever-growing log keep only the O(log n) append
 // frontier in memory (the compact range) while proofs are assembled from nodes that
-// may live packed in a tile, on disk, or in a colder tier.
+// may live packed in a tile, on disk, or in a colder tier. A durable store implements
+// it to persist a long-lived stream's proof material without holding it all in memory.
 //
-// A node is written once and never changes, so a stored hash is stable and a getNode
+// A node is written once and never changes, so a stored hash is stable and a Node
 // result may be retained without copying.
-type nodeStore interface {
-	// getNode returns the hash at (level, index) and whether it is present.
-	getNode(level uint, index uint64) ([]byte, bool, error)
-	// putNode records the hash at (level, index).
-	putNode(level uint, index uint64, hash []byte) error
-	// clone returns an independent copy, so a seal-time snapshot keeps a run's proof
-	// material even as the live log keeps appending.
-	clone() nodeStore
+type NodeStore interface {
+	// Node returns the hash at (level, index) and whether it is present.
+	Node(level uint, index uint64) ([]byte, bool, error)
+	// PutNode records the hash at (level, index).
+	PutNode(level uint, index uint64, hash []byte) error
+}
+
+// cloneableStore is a NodeStore that can snapshot itself for a sealed run. The
+// in-memory stores implement it; a durable store need not, because a run sealed
+// through a Builder always accumulates its nodes in memory.
+type cloneableStore interface {
+	NodeStore
+	clone() NodeStore
 }
 
 // memNodeStore is the direct in-memory node map: one entry per node. It is the default
@@ -47,17 +53,17 @@ func newMemNodeStore() *memNodeStore {
 	return &memNodeStore{nodes: map[nodeKey][]byte{}}
 }
 
-func (s *memNodeStore) getNode(level uint, index uint64) ([]byte, bool, error) {
+func (s *memNodeStore) Node(level uint, index uint64) ([]byte, bool, error) {
 	h, ok := s.nodes[nodeKey{level: level, index: index}]
 	return h, ok, nil
 }
 
-func (s *memNodeStore) putNode(level uint, index uint64, hash []byte) error {
+func (s *memNodeStore) PutNode(level uint, index uint64, hash []byte) error {
 	s.nodes[nodeKey{level: level, index: index}] = hash
 	return nil
 }
 
-func (s *memNodeStore) clone() nodeStore {
+func (s *memNodeStore) clone() NodeStore {
 	c := &memNodeStore{nodes: make(map[nodeKey][]byte, len(s.nodes))}
 	for k, v := range s.nodes {
 		c.nodes[k] = v
@@ -86,7 +92,7 @@ func newTiledNodeStore() *tiledNodeStore {
 	return &tiledNodeStore{tiles: map[tileID][]byte{}}
 }
 
-func (s *tiledNodeStore) getNode(level uint, index uint64) ([]byte, bool, error) {
+func (s *tiledNodeStore) Node(level uint, index uint64) ([]byte, bool, error) {
 	b, ok := s.tiles[tileID{level: level, index: index / tileWidth}]
 	if !ok {
 		return nil, false, nil
@@ -98,7 +104,7 @@ func (s *tiledNodeStore) getNode(level uint, index uint64) ([]byte, bool, error)
 	return b[off : off+hashSize], true, nil
 }
 
-func (s *tiledNodeStore) putNode(level uint, index uint64, hash []byte) error {
+func (s *tiledNodeStore) PutNode(level uint, index uint64, hash []byte) error {
 	id := tileID{level: level, index: index / tileWidth}
 	off := int(index%tileWidth) * hashSize
 	b := s.tiles[id]
@@ -112,7 +118,7 @@ func (s *tiledNodeStore) putNode(level uint, index uint64, hash []byte) error {
 	return nil
 }
 
-func (s *tiledNodeStore) clone() nodeStore {
+func (s *tiledNodeStore) clone() NodeStore {
 	c := &tiledNodeStore{tiles: make(map[tileID][]byte, len(s.tiles))}
 	for k, v := range s.tiles {
 		nb := make([]byte, len(v))

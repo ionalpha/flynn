@@ -10,9 +10,9 @@ import (
 
 // buildTreeStore builds a size-n log backed by store and returns the tree and the
 // leaf hashes, so a test can drive one tree shape through different node layouts.
-func buildTreeStore(t *testing.T, store nodeStore, n int) (*Tree, [][]byte) {
+func buildTreeStore(t *testing.T, store NodeStore, n int) (*Tree, [][]byte) {
 	t.Helper()
-	tr := newTreeWithStore(store)
+	tr := NewTreeWithStore(store)
 	leaves := make([][]byte, n)
 	for i := range n {
 		e := sampleEvent()
