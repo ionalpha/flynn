@@ -3,7 +3,9 @@
 # Thin wrapper around `gh pr create` so the base branch and template are
 # consistent for everyone. A scripted body must contain the template's sections
 # (## What / ## Why / ## How to verify) or this refuses - the template can't be
-# skipped by passing --body. Any extra args pass straight through to gh, e.g.:
+# skipped by passing --body. The title, body, commit messages, and diff must
+# also pass dev/vocabcheck before anything goes public.
+# Any extra args pass straight through to gh, e.g.:
 #   dev/pr                                  # interactive, opens the template
 #   dev/pr --title "feat: x" --body-file b  # scripted
 #   dev/pr --web                            # finish in the browser
@@ -49,6 +51,31 @@ if [ "$have_body" -eq 1 ]; then
         exit 1 ;;
     esac
   done
+fi
+
+# Public-surface text hygiene: the title, body, commit messages, and diff are
+# public the moment the PR posts, so scan them here, before gh runs. CI's
+# pr-body job repeats the same scan as a backstop for PRs opened another way.
+command -v go >/dev/null 2>&1 || { echo "go not found: the vocabulary gate needs the Go toolchain" >&2; exit 1; }
+title=""; prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --title|-t) title="$arg" ;;
+  esac
+  case "$arg" in
+    --title=*) title="${arg#--title=}" ;;
+  esac
+  prev="$arg"
+done
+base="main"
+git rev-parse --verify -q main >/dev/null 2>&1 || base="origin/main"
+clean=1
+printf '%s\n%s\n' "$title" "$body" | go run ./dev/vocabcheck -label "PR title/body" || clean=0
+git log --format=%B "$base..HEAD" | go run ./dev/vocabcheck -label "commit message" || clean=0
+git diff "$base...HEAD" | go run ./dev/vocabcheck -diff || clean=0
+if [ "$clean" -ne 1 ]; then
+  echo "Refusing to open a PR: public-surface text failed the vocabulary gate (see findings above)." >&2
+  exit 1
 fi
 
 # gh auto-detects the PR template; --fill-first seeds title from the first commit

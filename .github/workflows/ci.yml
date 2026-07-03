@@ -108,15 +108,25 @@ jobs:
           cache: true
       - run: go test -run=^$ -fuzz=. -fuzztime=20s ./... || true
 
-  # Enforce the PR template at the gate, not just in dev/pr: this catches PRs
-  # opened any other way (gh directly, the web UI, an API call). The body comes
-  # from the event payload via env - never interpolated into the script - so a
-  # crafted body can't inject shell. Skipped on push (no PR body to check).
+  # Enforce PR text standards at the gate, not just in dev/pr: this catches PRs
+  # opened any other way (gh directly, the web UI, an API call). Two checks:
+  # the body carries the template sections, and the title, body, commit
+  # messages, and diff additions pass dev/vocabcheck (dev/pr runs the same scan
+  # locally; this job is the backstop). Payload text reaches the scripts via
+  # env - never interpolated - so a crafted body can't inject shell. Skipped on
+  # push (no PR text to check).
   pr-body:
-    name: PR body follows template
+    name: PR text follows template and hygiene rules
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25"
+          cache: true
       - name: Require template sections
         env:
           BODY: ${{ github.event.pull_request.body }}
@@ -133,6 +143,22 @@ jobs:
             exit 1
           fi
           echo "PR body contains all required template sections."
+      - name: Scan public-surface text
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          clean=1
+          printf '%s\n%s\n' "$TITLE" "$BODY" | go run ./dev/vocabcheck -label "PR title/body" || clean=0
+          git log --format=%B "$BASE_SHA..$HEAD_SHA" | go run ./dev/vocabcheck -label "commit message" || clean=0
+          git diff "$BASE_SHA...$HEAD_SHA" | go run ./dev/vocabcheck -diff || clean=0
+          if [ "$clean" -ne 1 ]; then
+            echo "::error::Public-surface text failed the vocabulary gate; rephrase the flagged text."
+            exit 1
+          fi
+          echo "Public-surface text is clean."
 
   # A single, stable gate to require in branch protection. Because it depends on
   # the real jobs rather than naming them, the test matrix (OS / Go version) can
