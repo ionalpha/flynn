@@ -7,12 +7,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/tui/app"
+	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/input"
 	"github.com/ionalpha/flynn/internal/tui/screen"
 	tuiterm "github.com/ionalpha/flynn/internal/tui/term"
@@ -93,6 +95,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		Height:      height,
 		Theme:       host.th,
 		Placeholder: "Send a message",
+		Keymap:      s.keys,
 		OnSubmit:    host.submit,
 		OnEsc:       host.interrupt,
 		OnKey:       host.key,
@@ -101,6 +104,27 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 	})
 	host.ui = a
 	return a, host
+}
+
+// loadKeymap reads the user's composer bindings from keymap.json in the data
+// directory, layered over the default map. No file means the defaults; a file
+// that fails to parse is an error, reported before the session starts, since
+// silently discarding a user's bindings would be undebuggable from inside the
+// shell.
+func loadKeymap(dataDir string) (editor.Keymap, error) {
+	f, err := os.Open(filepath.Join(dataDir, "keymap.json")) //nolint:gosec // G304: fixed filename under the operator-chosen data dir
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	km, err := editor.LoadKeymap(f)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", f.Name(), err)
+	}
+	return km, nil
 }
 
 // shellMarker swaps the composer's prompt marker for the shell marker while

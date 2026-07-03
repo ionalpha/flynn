@@ -11,6 +11,7 @@ import (
 
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
@@ -53,7 +54,13 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		distiller = governedDistiller(model)
 	}
 
+	keys, err := loadKeymap(dataDir)
+	if err != nil {
+		return err
+	}
+
 	s := &replSession{
+		keys:      keys,
 		out:       &syncWriter{w: os.Stdout},
 		model:     model,
 		plan:      plan,
@@ -121,6 +128,7 @@ type replSession struct {
 	cwd       string
 	store     *sqlite.Store
 	reg       *resource.Registry
+	keys      editor.Keymap // composer bindings; nil selects the default map
 
 	// Per-session run state, set on the first turn and continued by the rest.
 	started   bool

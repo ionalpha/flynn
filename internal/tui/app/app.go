@@ -58,6 +58,9 @@ type Config struct {
 	EscDelay time.Duration
 	// Placeholder is the hint shown in the empty composer.
 	Placeholder string
+	// Keymap is the composer's key bindings. Nil means the default map;
+	// build a custom one with editor.LoadKeymap.
+	Keymap editor.Keymap
 
 	// OnSubmit receives each submitted prompt. It runs on the event loop
 	// goroutine with no locks held; long work belongs on the host's own
@@ -153,6 +156,7 @@ func New(cfg Config) *App {
 		width:   cfg.Width,
 		height:  cfg.Height,
 	}
+	a.editor.SetKeymap(cfg.Keymap)
 	a.sched = screen.NewScheduler(cfg.Timing, cfg.FrameInterval, a.paint)
 	return a
 }

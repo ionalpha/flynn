@@ -82,6 +82,8 @@ type Editor struct {
 	undo []snapshot
 	redo []snapshot
 	last lastOp
+
+	keys Keymap // nil selects the default keymap
 }
 
 // Empty reports whether the buffer holds nothing.
