@@ -53,6 +53,11 @@ const (
 	// when decoding a response and splices its Raw bytes back when encoding a
 	// request; the conversation loop carries it through untouched.
 	KindOpaque BlockKind = "opaque"
+	// KindImage is bitmap content in a user message: a pasted or attached image,
+	// carried as raw bytes and a media type. A backend that supports vision encodes
+	// it to its wire format; one that does not refuses the request rather than
+	// dropping the image, so a picture never silently goes missing from a turn.
+	KindImage BlockKind = "image"
 )
 
 // Block is one piece of a message. Exactly one of Text, ToolUse, or ToolResult is
@@ -63,6 +68,7 @@ type Block struct {
 	Text       string          `json:"text,omitempty"`
 	ToolUse    *ToolUse        `json:"toolUse,omitempty"`
 	ToolResult *ToolResult     `json:"toolResult,omitempty"`
+	Image      *Image          `json:"image,omitempty"`
 	Raw        json.RawMessage `json:"raw,omitempty"` // provider-verbatim payload for KindOpaque
 }
 
@@ -81,6 +87,16 @@ type ToolResult struct {
 	ToolUseID string `json:"toolUseID"`
 	Content   string `json:"content"`
 	IsError   bool   `json:"isError,omitempty"`
+}
+
+// Image is bitmap content in a message: the raw encoded bytes and the IANA media
+// type that types them (for example "image/png"). The bytes are carried inline,
+// so an image travels with the turn it belongs to and survives a crash-resume in
+// the checkpoint like the rest of the conversation. A vision backend encodes the
+// bytes to its wire format; the media type tells it how.
+type Image struct {
+	MediaType string `json:"mediaType"`
+	Data      []byte `json:"data"`
 }
 
 // Message is one turn in the conversation: a role and its ordered content blocks.
@@ -262,6 +278,25 @@ func SafeBaseURL(raw string) bool {
 // Text builds a single-block text message in the given role.
 func Text(role Role, text string) Message {
 	return Message{Role: role, Blocks: []Block{{Kind: KindText, Text: text}}}
+}
+
+// ImageBlock builds an image content block from encoded bytes and their media
+// type, for composing into a user message alongside text blocks.
+func ImageBlock(mediaType string, data []byte) Block {
+	return Block{Kind: KindImage, Image: &Image{MediaType: mediaType, Data: data}}
+}
+
+// SupportedImageMediaType reports whether the media type is one every vision
+// backend this port targets accepts, so a caller can reject an unusable image at
+// the point of capture rather than at the model call. The set is the common
+// intersection: PNG, JPEG, GIF, and WebP.
+func SupportedImageMediaType(mediaType string) bool {
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp":
+		return true
+	default:
+		return false
+	}
 }
 
 // ToolUses returns the tool calls the assistant requested in this message, in

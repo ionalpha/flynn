@@ -18,6 +18,12 @@ const minCompactMessages = 6
 // per-model accounting arrives with the model registry.
 const charsPerToken = 4
 
+// imageTokens is the flat token cost charged for one image block. An image's real
+// cost scales with its pixel dimensions, which this estimate does not decode, so it
+// uses a fixed figure near the per-image ceiling of a vision model. That over- not
+// under-counts a small image, keeping compaction on the safe side of the budget.
+const imageTokens = 1500
+
 // compactView returns a view of a transcript that fits within a token budget by
 // eliding the oldest middle turns, when it would otherwise overflow. The objective
 // (the first message) is always kept as the head, the most recent turns are kept as
@@ -125,6 +131,8 @@ func blockSize(b llm.Block) int {
 		}
 	case llm.KindOpaque:
 		return len(b.Raw)
+	case llm.KindImage:
+		return imageTokens * charsPerToken
 	}
 	return 0
 }

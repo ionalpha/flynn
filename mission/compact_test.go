@@ -32,6 +32,22 @@ func userResult(id, content string) llm.Message {
 	}}
 }
 
+// TestImageBlockCountsTowardTheBudget: an image contributes a real token cost, so
+// a transcript with pictures compacts on time instead of treating them as free and
+// overflowing the model's context. The cost is fixed per image, not by byte size,
+// since the real cost tracks pixels the estimate does not decode.
+func TestImageBlockCountsTowardTheBudget(t *testing.T) {
+	small := llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{llm.ImageBlock("image/png", []byte{1, 2, 3})}}
+	got := estimateTokens([]llm.Message{small})
+	if got < imageTokens {
+		t.Fatalf("an image should count at least %d tokens, got %d", imageTokens, got)
+	}
+	big := llm.Message{Role: llm.RoleUser, Blocks: []llm.Block{llm.ImageBlock("image/png", make([]byte, 3000))}}
+	if estimateTokens([]llm.Message{big}) != got {
+		t.Fatalf("image token estimate should not depend on byte size: %d vs %d", estimateTokens([]llm.Message{big}), got)
+	}
+}
+
 func TestCompactDisabledOrShortIsUnchanged(t *testing.T) {
 	msgs := []llm.Message{userText("go"), asstCall("1", "bash"), userResult("1", bigText("a")), asstText("done")}
 	// budget 0 disables compaction.
