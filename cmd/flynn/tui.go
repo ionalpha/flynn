@@ -100,7 +100,11 @@ func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
 // streams. It is split from runInteractiveTUI so tests can drive the exact
 // production wiring over pipes, with no terminal required.
 func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int) (*app.App, *sessionHost) {
-	host := &sessionHost{ctx: ctx, s: s, th: theme.Default()}
+	th := s.theme
+	if th == nil {
+		th = theme.Default()
+	}
+	host := &sessionHost{ctx: ctx, s: s, th: th}
 	// Shell mode runs the user's commands through the same confined sandbox
 	// every other command takes, rooted at the session's working directory. A
 	// directory the sandbox refuses is reported when shell mode is first used;
@@ -147,6 +151,27 @@ func loadKeymap(dataDir string) (editor.Keymap, error) {
 		return nil, fmt.Errorf("%s: %w", f.Name(), err)
 	}
 	return km, nil
+}
+
+// loadTheme reads the user's theme from theme.json in the data directory,
+// layered over its declared built-in base. No file means the default theme; a
+// file that fails to parse is an error, reported before the session starts,
+// since silently falling back to the default would leave a user's theme
+// quietly ignored with nothing to point at.
+func loadTheme(dataDir string) (*theme.Theme, error) {
+	f, err := os.Open(filepath.Join(dataDir, "theme.json")) //nolint:gosec // G304: fixed filename under the operator-chosen data dir
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	th, err := theme.Load(f)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", f.Name(), err)
+	}
+	return th, nil
 }
 
 // shellMarker swaps the composer's prompt marker for the shell marker while

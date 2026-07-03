@@ -12,6 +12,7 @@ import (
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/tui/editor"
+	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
@@ -58,9 +59,14 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	if err != nil {
 		return err
 	}
+	th, err := loadTheme(dataDir)
+	if err != nil {
+		return err
+	}
 
 	s := &replSession{
 		keys:      keys,
+		theme:     th,
 		out:       &syncWriter{w: os.Stdout},
 		model:     model,
 		plan:      plan,
@@ -129,6 +135,7 @@ type replSession struct {
 	store     *sqlite.Store
 	reg       *resource.Registry
 	keys      editor.Keymap // composer bindings; nil selects the default map
+	theme     *theme.Theme  // session theme; nil selects the default theme
 
 	// Per-session run state, set on the first turn and continued by the rest.
 	started   bool
