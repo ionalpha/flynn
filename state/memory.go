@@ -59,6 +59,24 @@ func WithIDGenerator(g *ids.Generator) Option {
 	}
 }
 
+// WithSnapshotCodec makes the provider's snapshots verified: Snapshot seals the
+// projection payload through the codec before saving it, and Replay opens (verifies) a
+// stored snapshot through it before restoring. A snapshot that fails to open is skipped
+// and the stream folds from the start, so an unsigned or tampered snapshot is never
+// restored. With no codec the payload is stored as-is.
+func WithSnapshotCodec(c spine.SnapshotCodec) Option {
+	return func(p *memProvider) { p.snapCodec = c }
+}
+
+// WithSnapshotEvery checkpoints the provider automatically: after every k successful
+// mutations it writes a snapshot, so a Replay folds at most k events past the last
+// checkpoint. The snapshot is best effort, so a failure never fails the write. Zero or
+// negative disables automatic snapshots (the default); Snapshot can still be called
+// explicitly.
+func WithSnapshotEvery(k int) Option {
+	return func(p *memProvider) { p.snapEvery = k }
+}
+
 // NewMemory returns an empty in-memory Provider so the agent runs with zero
 // setup. It is safe for concurrent use and intended as the standalone default
 // and for tests. Every mutation is recorded on a spine.Log and projected, so the
@@ -82,6 +100,8 @@ func NewMemory(opts ...Option) Provider {
 	}
 	st := NewStamper(p.instanceID, p.clk, p.hlc, p.gen)
 	p.core = newCore(st, p.log)
+	p.core.snapCodec = p.snapCodec
+	p.core.snapEvery = p.snapEvery
 	p.sessions = &memSessions{c: p.core}
 	p.skills = &memSkills{c: p.core}
 	p.memory = &memMemory{c: p.core}
@@ -106,7 +126,16 @@ type memProvider struct {
 	sessions   *memSessions
 	skills     *memSkills
 	memory     *memMemory
+	snapCodec  spine.SnapshotCodec
+	snapEvery  int
 }
+
+// Snapshot checkpoints the provider's current projection onto its event log as a
+// spine.Snapshot on the state stream, anchored at the last applied Seq, so a later Replay
+// resumes from it and keeps rebuild cost flat as the stream grows. It is sealed by the
+// configured codec (see WithSnapshotCodec) so a stored snapshot is verified before it is
+// ever restored.
+func (m *memProvider) Snapshot(ctx context.Context) error { return m.core.snapshot(ctx) }
 
 func (m *memProvider) Name() string           { return "memory" }
 func (m *memProvider) Sessions() SessionStore { return m.sessions }

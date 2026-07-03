@@ -59,6 +59,13 @@ type core struct {
 	skillsByID map[string]Skill
 	slugToID   map[string]string // scopeKey+"\x00"+slug -> skill id
 	memItems   []MemoryItem
+
+	// snapCodec seals a snapshot before it is saved and verifies it before restore;
+	// snapEvery/snapPending drive the automatic snapshot cadence. They are set from the
+	// provider's options after the core is built, and read only under mu.
+	snapCodec   spine.SnapshotCodec
+	snapEvery   int
+	snapPending int
 }
 
 func newCore(st *Stamper, log spine.Log) *core {
@@ -92,7 +99,51 @@ func (c *core) record(ctx context.Context, in spine.AppendInput) error {
 		return err
 	}
 	c.lastSeq = e.Seq
+	c.maybeSnapshotLocked(ctx)
 	return nil
+}
+
+// snapshot checkpoints the current projection onto the log. It builds the payload under
+// mu, then seals and saves outside it so the store lock is not held across the signing
+// and log write.
+func (c *core) snapshot(ctx context.Context) error {
+	c.mu.Lock()
+	snap := c.snapshotLocked()
+	c.mu.Unlock()
+	return c.saveSnapshot(ctx, snap)
+}
+
+// saveSnapshot seals a snapshot with the configured codec (if any) and writes it to the
+// log on the state stream. It touches no core state, so it is safe to call with or
+// without mu held.
+func (c *core) saveSnapshot(ctx context.Context, snap Snapshot) error {
+	payload, err := MarshalSnapshot(snap)
+	if err != nil {
+		return err
+	}
+	s := spine.Snapshot{Stream: StateStream, Seq: snap.LastSeq, Payload: payload}
+	if c.snapCodec != nil {
+		if s, err = c.snapCodec.Seal(ctx, c.log, s); err != nil {
+			return err
+		}
+	}
+	return c.log.SaveSnapshot(ctx, s)
+}
+
+// maybeSnapshotLocked counts one mutation toward the automatic cadence and checkpoints
+// when it is reached. The caller holds mu; the snapshot is built and saved under it,
+// which keeps the projection and its checkpoint consistent. It is best effort: a snapshot
+// failure never fails the mutation that triggered it.
+func (c *core) maybeSnapshotLocked(ctx context.Context) {
+	if c.snapEvery <= 0 {
+		return
+	}
+	c.snapPending++
+	if c.snapPending < c.snapEvery {
+		return
+	}
+	c.snapPending = 0
+	_ = c.saveSnapshot(ctx, c.snapshotLocked())
 }
 
 // payloadRecords is the decoded form of a state event payload: each key that a
@@ -212,12 +263,35 @@ func decodeAs[T any](v any) (T, error) {
 // the last recorded event, so subsequent writes continue the stream.
 func Replay(ctx context.Context, log spine.Log, opts ...Option) (Provider, error) {
 	p := NewMemory(append(opts, WithEventLog(log))...).(*memProvider)
-	events, err := log.Read(ctx, spine.Query{Stream: StateStream})
+	p.core.mu.Lock()
+	defer p.core.mu.Unlock()
+
+	// Resume from the latest verified snapshot when one exists, folding only the events
+	// after it. A codec makes restore fail closed: a snapshot it cannot open (tampered,
+	// unsigned, unknown key) or one that does not decode is skipped and the stream folds
+	// from the start - a snapshot is a cache, so this is only slower, never wrong.
+	snap, found, err := log.LatestSnapshot(ctx, StateStream, 0)
 	if err != nil {
 		return nil, err
 	}
-	p.core.mu.Lock()
-	defer p.core.mu.Unlock()
+	if found && p.core.snapCodec != nil {
+		opened, oerr := p.core.snapCodec.Open(ctx, snap)
+		if oerr != nil {
+			found = false
+		} else {
+			snap = opened
+		}
+	}
+	if found {
+		if decoded, derr := UnmarshalSnapshot(snap.Payload); derr == nil {
+			p.core.restoreLocked(decoded)
+		}
+	}
+
+	events, err := log.Read(ctx, spine.Query{Stream: StateStream, AfterSeq: p.core.lastSeq})
+	if err != nil {
+		return nil, err
+	}
 	for _, e := range events {
 		if err := p.core.apply(e); err != nil {
 			return nil, err
