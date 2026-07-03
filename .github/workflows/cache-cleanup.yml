@@ -1,0 +1,50 @@
+name: Cache cleanup
+
+# A cache created by a pull_request run lives on that PR's merge ref
+# (refs/pull/N/merge) and can only be restored by re-runs of the same PR: once
+# the PR closes it can never be reused, but it still counts against the 10 GB
+# per-repository cache limit. When that limit is exceeded, GitHub evicts caches
+# by least-recent access, which is what pushes out the main-branch build caches
+# that PRs restore from on their first run. Deleting a closed PR's caches keeps
+# that dead weight from evicting the useful ones.
+on:
+  pull_request:
+    types: [closed]
+
+# Default every job to read-only; the cleanup job elevates to the single scope
+# it needs. pull_request (not pull_request_target) runs with the head's
+# perspective, so a fork PR only ever gets a read-only token and cannot touch
+# this repo's caches (its caches are isolated to the fork anyway); same-repo PRs
+# get the actions: write scope below, which is what allows deleting caches.
+permissions:
+  contents: read
+
+# Never run two cleanups for the same PR at once.
+concurrency:
+  group: cache-cleanup-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    name: Delete caches for the closed PR
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write # delete this PR's caches
+    steps:
+      - name: Delete this PR's caches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          REF: refs/pull/${{ github.event.pull_request.number }}/merge
+        run: |
+          echo "Deleting caches scoped to $REF"
+          ids="$(gh api --paginate "repos/$REPO/actions/caches?ref=$REF" \
+            --jq '.actions_caches[].id')"
+          if [ -z "$ids" ]; then
+            echo "No caches to delete."
+            exit 0
+          fi
+          for id in $ids; do
+            gh api --method DELETE "repos/$REPO/actions/caches/$id" \
+              && echo "deleted cache $id"
+          done
