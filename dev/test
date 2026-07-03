@@ -2,8 +2,17 @@
 # Run the test suite with the race detector and coverage.
 # Identical invocation to CI, so a green run here means a green run there.
 # With no args, tests everything; pass args to scope, e.g. `dev/test ./state/...`.
+#
+# The race detector always runs: it is the point of this gate. Coverage
+# instrumentation is separable via COVER, which defaults to atomic coverage
+# written to coverage.out (the local and primary-CI invocation). Set COVER= to
+# run without it: CI uploads coverage from one platform only, so the other
+# platforms skip the instrumentation cost while still running every test under
+# -race.
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+: "${COVER=-covermode=atomic -coverprofile=coverage.out}"
 if [ "$#" -eq 0 ]; then set -- ./...; fi
-echo "==> go test -race -covermode=atomic -coverprofile=coverage.out $*"
-go test -race -covermode=atomic -coverprofile=coverage.out "$@"
+# shellcheck disable=SC2086  # COVER is intentionally split into separate flags.
+echo "==> go test -race $COVER $*"
+go test -race $COVER "$@"

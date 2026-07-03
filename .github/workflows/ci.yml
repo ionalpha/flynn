@@ -39,11 +39,44 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go }}
-          cache: true
-      # Run the same dev/ scripts contributors run locally, so local == CI.
-      - run: ./dev/build
+          # Caching is handled by the explicit actions/cache step below. setup-go's
+          # own cache keys on the go.sum hash alone with no fallback, so any miss
+          # (a dependency bump, an evicted entry, the first run on a branch)
+          # recompiles every package cold - twice, once normal and once
+          # race-instrumented. The step below adds restore-keys so a miss starts
+          # from a near-warm build cache instead.
+          cache: false
+      # Resolve the module and build cache directories for this OS so the cache
+      # step works identically on Linux, macOS, and Windows (their paths differ).
+      - id: goenv
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gobuildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gomodcache }}
+            ${{ steps.goenv.outputs.gobuildcache }}
+          # The run-specific suffix makes every run save a fresh cache so the
+          # build cache never goes stale; the restore-keys fall back to the newest
+          # cache for the same go.sum, then to any cache for this OS. Because Go's
+          # build cache is content-addressed, a partial restore only recompiles
+          # what actually changed - never produces a wrong result.
+          key: go-test-${{ runner.os }}-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-test-${{ runner.os }}-${{ matrix.go }}-${{ hashFiles('**/go.sum') }}-
+            go-test-${{ runner.os }}-${{ matrix.go }}-
+      # go vet compiles every package for this OS, so a build break on this
+      # platform fails here; go test then builds and runs the suite under -race.
+      # A separate `go build ./...` would only be a third full compile of the tree.
       - run: go vet ./...
-      - run: ./dev/test
+      - name: Test (race on every platform; coverage only where it is uploaded)
+        # Only ubuntu uploads coverage, so only ubuntu pays the atomic-coverage
+        # instrumentation cost. The other platforms run the identical suite under
+        # -race with COVER unset, which is a correctness gate, not a coverage one.
+        env:
+          COVER: ${{ matrix.os == 'ubuntu-latest' && '-covermode=atomic -coverprofile=coverage.out' || '' }}
+        run: ./dev/test
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.25'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
