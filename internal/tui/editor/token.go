@@ -46,13 +46,13 @@ func (e *Editor) CompleteToken(trigger rune, text string) {
 
 // tokenStart finds the start of the run of non-space, non-chip atoms ending
 // at the cursor, and reports whether that run begins with the trigger. Chips
-// bound the run like spaces do: a chip is an opaque paste, not part of a
-// word being typed.
+// bound the run like spaces do: a chip (paste or image) is opaque, not part
+// of a word being typed.
 func (e *Editor) tokenStart(trigger rune) (int, bool) {
 	i := e.cur
 	for i > 0 {
 		a := e.atoms[i-1]
-		if a.chip != 0 || isSpaceAtom(a) {
+		if a.opaque() || isSpaceAtom(a) {
 			break
 		}
 		i--
@@ -61,7 +61,7 @@ func (e *Editor) tokenStart(trigger rune) (int, bool) {
 		return 0, false
 	}
 	first := e.atoms[i]
-	if first.chip != 0 {
+	if first.opaque() {
 		return 0, false
 	}
 	rs := []rune(first.text)
@@ -74,7 +74,7 @@ func (e *Editor) tokenStart(trigger rune) (int, bool) {
 // isSpaceAtom reports whether the atom is whitespace (a space or a line
 // break; tabs never enter the buffer).
 func isSpaceAtom(a atom) bool {
-	if a.chip != 0 {
+	if a.opaque() {
 		return false
 	}
 	for _, r := range a.text {

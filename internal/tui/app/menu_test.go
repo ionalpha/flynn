@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/internal/tui/app"
+	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/fuzzy"
 )
 
@@ -44,7 +45,7 @@ func startWithCompleter(t *testing.T, universe []string, submits chan string) (*
 	s := start(t, func(c *app.Config) {
 		c.Completer = fc
 		if submits != nil {
-			c.OnSubmit = func(text string) { submits <- text }
+			c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 		}
 	})
 	return s, fc

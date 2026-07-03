@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -59,7 +60,19 @@ var specSchema = json.RawMessage(`{
     "budgetPool": {"type": "string"},
     "system": {"type": "string"},
     "driver": {"type": "string"},
-    "model": {"type": "string"}
+    "model": {"type": "string"},
+    "attachments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["mediaType", "data"],
+        "properties": {
+          "mediaType": {"type": "string", "minLength": 1},
+          "data": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
   },
   "additionalProperties": false
 }`)
@@ -101,6 +114,14 @@ type Spec struct {
 	// run is unchanged.
 	Driver string `json:"driver,omitempty"`
 	Model  string `json:"model,omitempty"`
+	// Attachments are images seeded onto the goal's opening user turn. The
+	// objective is the opening turn's text; the attachments are its images, so
+	// a goal can open on a picture the way a composer prompt can. They are the
+	// model port's own image type (bytes inline, like the rest of a
+	// conversation in the checkpoint), so no translation is needed to open the
+	// turn. Empty on every text-only goal, so the text path serializes
+	// identically and is unchanged.
+	Attachments []llm.Image `json:"attachments,omitempty"`
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile

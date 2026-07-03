@@ -362,7 +362,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	}
 
 	if len(cp.Messages) == 0 {
-		cp.Messages = []llm.Message{llm.Text(llm.RoleUser, e.prompt(spec))}
+		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
 	}
 
 	// The turn index is the count of model turns taken so far plus this one, derived
@@ -542,6 +542,22 @@ func (e *Executor) prompt(spec goal.Spec) string {
 	return s
 }
 
+// userTurn builds one user message from prompt text and its attached images.
+// A text block leads when the text is non-empty (an image-only turn omits it),
+// then one image block per attachment in order, so the model sees the prose
+// before the pictures it refers to. The bytes are carried inline in the block,
+// matching how the rest of the conversation persists in the checkpoint.
+func userTurn(text string, images []llm.Image) llm.Message {
+	var blocks []llm.Block
+	if text != "" {
+		blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: text})
+	}
+	for i := range images {
+		blocks = append(blocks, llm.Block{Kind: llm.KindImage, Image: &images[i]})
+	}
+	return llm.Message{Role: llm.RoleUser, Blocks: blocks}
+}
+
 // Convergence is the goal.StopEvaluator paired with Executor: a mission has
 // converged once its conversation reached a final turn. It reads the same
 // checkpoint the executor writes, so the model's own decision to stop is the
@@ -579,12 +595,12 @@ func (Convergence) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool
 // off its settled value so the reconciler re-evaluates rather than no-op-skipping a
 // converged goal, and the step counter is cleared so the new turn runs with a fresh
 // step budget rather than inheriting the prior turn's spend.
-func ContinueConversation(status goal.Status, text string) (goal.Status, error) {
+func ContinueConversation(status goal.Status, text string, images ...llm.Image) (goal.Status, error) {
 	cp, err := decodeCheckpoint(status.Checkpoint)
 	if err != nil {
 		return status, fault.Wrap(fault.Terminal, "mission_checkpoint_decode", err)
 	}
-	cp.Messages = append(cp.Messages, llm.Text(llm.RoleUser, text))
+	cp.Messages = append(cp.Messages, userTurn(text, images))
 	cp.Done = false
 	cp.Result = ""
 	raw, err := encodeCheckpoint(cp)

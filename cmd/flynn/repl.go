@@ -173,7 +173,7 @@ func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.S
 		if isExit(line) {
 			return s.finish(ctx)
 		}
-		if _, err := s.runTurn(ctx, line, sigCh); err != nil {
+		if _, err := s.runTurn(ctx, line, nil, sigCh); err != nil {
 			if errors.Is(err, context.Canceled) {
 				_, _ = fmt.Fprintln(s.out, "  (turn cancelled)")
 			} else {
@@ -189,7 +189,7 @@ func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.S
 // re-drives it, so the model sees the whole conversation and the run keeps one id. A
 // Ctrl-C on sigCh cancels just this turn (a fresh per-turn runtime is bound to a
 // cancellable context), leaving the session intact for the next line.
-func (s *replSession) runTurn(ctx context.Context, userText string, sigCh <-chan os.Signal) (string, error) {
+func (s *replSession) runTurn(ctx context.Context, userText string, images []llm.Image, sigCh <-chan os.Signal) (string, error) {
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -215,7 +215,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, sigCh <-chan
 			s.system += "\n\n" + block
 			s.recalled = recalled
 		}
-	} else if err := s.reopen(turnCtx, userText); err != nil {
+	} else if err := s.reopen(turnCtx, userText, images); err != nil {
 		return "", err
 	}
 
@@ -226,7 +226,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, sigCh <-chan
 	done := make(chan struct{})
 	go func() { _ = run.rt.Start(turnCtx); close(done) }()
 
-	result, runErr := s.driveTurn(turnCtx, run, userText)
+	result, runErr := s.driveTurn(turnCtx, run, userText, images)
 
 	cancel()
 	<-done
@@ -238,7 +238,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, sigCh <-chan
 // renders the turn live. It advances the session cursor past the events it showed,
 // accumulates the transcript, and records the result so the closing learning pass
 // learns from the whole conversation.
-func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userText string) (string, error) {
+func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userText string, images []llm.Image) (string, error) {
 	events, err := run.sess.Subscribe(turnCtx, s.lastSeq)
 	if err != nil {
 		return "", err
@@ -250,14 +250,16 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userTe
 		}
 		run.sess.Resume(turnCtx, run.rt, g.Key())
 	} else {
+		objective := openingObjective(userText, images)
 		if _, err := run.sess.Submit(turnCtx, run.rt, goal.Spec{
-			Objective:     userText,
+			Objective:     objective,
+			Attachments:   images,
 			StopCondition: "the objective is fully accomplished",
 		}); err != nil {
 			return "", err
 		}
 		s.runID = run.sess.ID()
-		s.objective = userText
+		s.objective = objective
 		s.started = true
 		_, _ = fmt.Fprintf(s.out, "  run %s\n", s.runID)
 	}
@@ -274,10 +276,23 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userTe
 	return result, runErr
 }
 
+// openingObjective is the objective a goal opens on. It is the user's line,
+// unless the opening turn is images with no prose: a Goal must carry a
+// non-empty objective (an objective is what the run is driven toward), so an
+// image-only open gets a neutral instruction that matches what pasting an
+// image alone means. Later turns append to the conversation directly and are
+// not bound by this.
+func openingObjective(userText string, images []llm.Image) string {
+	if userText == "" && len(images) > 0 {
+		return "Look at the attached image."
+	}
+	return userText
+}
+
 // reopen appends the user's line to the shared goal's recorded conversation and
 // resets it to run again, so the next drive continues the exchange rather than
 // restarting it or stopping on the prior turn's convergence.
-func (s *replSession) reopen(ctx context.Context, userText string) error {
+func (s *replSession) reopen(ctx context.Context, userText string, images []llm.Image) error {
 	rs := s.store.Resources(s.reg)
 	r, err := rs.Get(ctx, goal.Kind, resource.Scope{}, s.runID)
 	if err != nil {
@@ -287,7 +302,7 @@ func (s *replSession) reopen(ctx context.Context, userText string) error {
 	if err != nil {
 		return err
 	}
-	status, err = mission.ContinueConversation(status, userText)
+	status, err = mission.ContinueConversation(status, userText, images...)
 	if err != nil {
 		return err
 	}

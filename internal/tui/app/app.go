@@ -62,10 +62,12 @@ type Config struct {
 	// build a custom one with editor.LoadKeymap.
 	Keymap editor.Keymap
 
-	// OnSubmit receives each submitted prompt. It runs on the event loop
-	// goroutine with no locks held; long work belongs on the host's own
-	// goroutine, which reports back through Append, SetLive, and SetStatus.
-	OnSubmit func(text string)
+	// OnSubmit receives each submitted prompt: the prompt text and the images
+	// attached to it (nil when there are none), in the order their chips
+	// appeared. It runs on the event loop goroutine with no locks held; long
+	// work belongs on the host's own goroutine, which reports back through
+	// Append, SetLive, and SetStatus.
+	OnSubmit func(text string, images []editor.Attachment)
 	// OnEsc fires when Escape is pressed. The host owns what Escape means:
 	// interrupt the in-flight turn, dismiss a panel, nothing.
 	OnEsc func()
@@ -251,6 +253,17 @@ func (a *App) SetDraft(text string) {
 	a.sched.Request()
 }
 
+// PasteImage inserts an image chip at the cursor and repaints. It is how the
+// host lands a clipboard image in the composer (Ctrl+V, or the /paste
+// fallback): the chip carries the image out of line, and the bytes surface on
+// the next submit through Attachments. Empty data is ignored.
+func (a *App) PasteImage(att editor.Attachment) {
+	a.mu.Lock()
+	a.editor.InsertImage(att)
+	a.mu.Unlock()
+	a.sched.Request()
+}
+
 // cursorQuery is the poke written while pausing the reader: a cursor
 // position query the terminal answers on the input stream, completing a
 // blocked read so the read goroutine can park. The answer is discarded by
@@ -337,11 +350,16 @@ func (a *App) handle(ev input.Event) {
 	switch action {
 	case editor.ActionSubmit:
 		text := a.editor.Content()
-		if strings.TrimSpace(text) != "" {
+		images := a.editor.Attachments()
+		// An image-only prompt (chips, no prose) is a real turn; submit when
+		// there is text or at least one attachment.
+		if strings.TrimSpace(text) != "" || len(images) > 0 {
 			a.editor.Clear()
-			a.history.add(text)
+			if strings.TrimSpace(text) != "" {
+				a.history.add(text)
+			}
 			if h := a.cfg.OnSubmit; h != nil {
-				after = func() { h(text) }
+				after = func() { h(text, images) }
 			}
 		}
 	case editor.ActionEsc:

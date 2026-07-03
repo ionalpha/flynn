@@ -10,8 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/input"
 	"github.com/ionalpha/flynn/internal/tui/screen"
+	tuiterm "github.com/ionalpha/flynn/internal/tui/term"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -26,6 +28,7 @@ type fakeUI struct {
 	quit     bool
 	draft    string
 	suspends int
+	pasted   []editor.Attachment
 }
 
 func (f *fakeUI) Append(lines ...string) {
@@ -67,6 +70,31 @@ func (f *fakeUI) SetDraft(text string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.draft = text
+}
+
+func (f *fakeUI) PasteImage(att editor.Attachment) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.pasted = append(f.pasted, att)
+}
+
+func (f *fakeUI) pastedImages() []editor.Attachment {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]editor.Attachment(nil), f.pasted...)
+}
+
+// fakeClip is a clipboard whose image content the test sets directly, standing
+// in for the OS clipboard.
+type fakeClip struct {
+	data []byte
+}
+
+func (c fakeClip) Image() ([]byte, bool) {
+	if len(c.data) == 0 {
+		return nil, false
+	}
+	return c.data, true
 }
 
 func (f *fakeUI) transcript() string {
@@ -116,7 +144,7 @@ func waitIdle(t *testing.T, h *sessionHost) {
 // returns to idle.
 func TestShellHostRunsTurnAndAppendsTranscript(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted(llmtest.SayText("first answer")))
-	host.submit("hello there")
+	host.submit("hello there", nil)
 	waitIdle(t, host)
 
 	got := ui.transcript()
@@ -133,7 +161,7 @@ func TestShellHostRunsTurnAndAppendsTranscript(t *testing.T) {
 func TestShellHostCancelKeepsSession(t *testing.T) {
 	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
 	host, ui := newHostForTest(t, gm)
-	host.submit("long running")
+	host.submit("long running", nil)
 
 	select {
 	case <-gm.entered:
@@ -156,14 +184,14 @@ func TestShellHostCancelKeepsSession(t *testing.T) {
 func TestShellHostQueuesPromptWhileBusy(t *testing.T) {
 	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
 	host, ui := newHostForTest(t, gm)
-	host.submit("one")
+	host.submit("one", nil)
 
 	select {
 	case <-gm.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("turn never reached the model")
 	}
-	host.submit("two")
+	host.submit("two", nil)
 	host.mu.Lock()
 	queued := len(host.queue)
 	host.mu.Unlock()
@@ -220,7 +248,7 @@ func TestShellHostBangRunsConfinedCommand(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted())
 	run := &fakeRunner{res: sandbox.ExecResult{Output: "alpha\nbeta\n"}}
 	host.run = run
-	host.submit("!echo hi")
+	host.submit("!echo hi", nil)
 	waitIdle(t, host)
 
 	got := ui.transcript()
@@ -245,7 +273,7 @@ func TestShellHostBangRunsConfinedCommand(t *testing.T) {
 func TestShellHostBangReportsExitCode(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted())
 	host.run = &fakeRunner{res: sandbox.ExecResult{ExitCode: 2}}
-	host.submit("!false")
+	host.submit("!false", nil)
 	waitIdle(t, host)
 	if got := ui.transcript(); !strings.Contains(got, "exit 2") {
 		t.Fatalf("transcript missing the exit code:\n%s", got)
@@ -253,7 +281,7 @@ func TestShellHostBangReportsExitCode(t *testing.T) {
 
 	host, ui = newHostForTest(t, llmtest.NewScripted())
 	host.run = &fakeRunner{res: sandbox.ExecResult{Output: "ok\n"}}
-	host.submit("!true")
+	host.submit("!true", nil)
 	waitIdle(t, host)
 	if got := ui.transcript(); strings.Contains(got, "exit") {
 		t.Fatalf("zero exit was reported:\n%s", got)
@@ -266,7 +294,7 @@ func TestShellHostBangReportsExitCode(t *testing.T) {
 func TestShellHostBangCancel(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted())
 	host.run = &fakeRunner{block: make(chan struct{})}
-	host.submit("!sleep forever")
+	host.submit("!sleep forever", nil)
 	host.interrupt()
 	waitIdle(t, host)
 	if got := ui.transcript(); !strings.Contains(got, "command cancelled") {
@@ -279,14 +307,14 @@ func TestShellHostBangCancel(t *testing.T) {
 func TestShellHostBangEdgeCases(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted())
 	host.run = &fakeRunner{}
-	host.submit("!")
+	host.submit("!", nil)
 	waitIdle(t, host)
 	if got := ui.transcript(); !strings.Contains(got, "usage:") {
 		t.Fatalf("bare ! did not show the usage hint:\n%s", got)
 	}
 
 	host, ui = newHostForTest(t, llmtest.NewScripted())
-	host.submit("!echo hi")
+	host.submit("!echo hi", nil)
 	waitIdle(t, host)
 	if got := ui.transcript(); !strings.Contains(got, "shell mode unavailable") {
 		t.Fatalf("missing runner was not reported:\n%s", got)
@@ -299,13 +327,13 @@ func TestShellHostBangQueuesBehindTurn(t *testing.T) {
 	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
 	host, ui := newHostForTest(t, gm)
 	host.run = &fakeRunner{res: sandbox.ExecResult{Output: "later\n"}}
-	host.submit("one")
+	host.submit("one", nil)
 	select {
 	case <-gm.entered:
 	case <-time.After(5 * time.Second):
 		t.Fatal("turn never reached the model")
 	}
-	host.submit("!echo later")
+	host.submit("!echo later", nil)
 	close(gm.release)
 	waitIdle(t, host)
 
@@ -342,7 +370,7 @@ func (h *sessionHost) statusNow() string {
 // and never opens a run.
 func TestShellHostExitQuitsWithoutTurn(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted())
-	host.submit("exit")
+	host.submit("exit", nil)
 	if !ui.quitCalled() {
 		t.Fatal("exit command did not quit the shell")
 	}
@@ -367,7 +395,7 @@ func TestShellHostKeys(t *testing.T) {
 
 	gm := &gateModel{entered: make(chan struct{}), release: make(chan struct{})}
 	host, _ = newHostForTest(t, gm)
-	host.submit("long running")
+	host.submit("long running", nil)
 	select {
 	case <-gm.entered:
 	case <-time.After(5 * time.Second):
@@ -380,6 +408,89 @@ func TestShellHostKeys(t *testing.T) {
 		t.Fatal("busy Ctrl+C did not cancel the turn")
 	}
 	waitIdle(t, host)
+}
+
+// TestShellHostPasteImage proves Ctrl+V lands a clipboard image in the
+// composer through the clipboard port, that an empty clipboard degrades to a
+// one-line notice, and that a host with no clipboard leaves Ctrl+V unclaimed.
+func TestShellHostPasteImage(t *testing.T) {
+	ctrlV := input.Key{Code: 'v', Mods: input.ModCtrl}
+
+	// An image on the clipboard becomes a composer chip.
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	host.clip = fakeClip{data: []byte("PNGDATA")}
+	if !host.key(ctrlV) {
+		t.Fatal("Ctrl+V with a clipboard was not claimed")
+	}
+	pasted := ui.pastedImages()
+	if len(pasted) != 1 || string(pasted[0].Data) != "PNGDATA" || pasted[0].MediaType != tuiterm.ImagePNG {
+		t.Fatalf("pasted = %+v, want one image/png PNGDATA", pasted)
+	}
+
+	// An empty clipboard says so rather than pasting nothing silently.
+	host, ui = newHostForTest(t, llmtest.NewScripted())
+	host.clip = fakeClip{}
+	if !host.key(ctrlV) {
+		t.Fatal("Ctrl+V with an empty clipboard was not claimed")
+	}
+	if len(ui.pastedImages()) != 0 {
+		t.Fatal("an empty clipboard must not paste an image")
+	}
+	if !strings.Contains(ui.transcript(), "no image on the clipboard") {
+		t.Fatalf("empty clipboard notice missing from %q", ui.transcript())
+	}
+
+	// No clipboard at all leaves the key for the shell's defaults.
+	host, _ = newHostForTest(t, llmtest.NewScripted())
+	if host.key(ctrlV) {
+		t.Fatal("Ctrl+V was claimed with no clipboard configured")
+	}
+}
+
+// TestShellHostPasteCommand proves the /paste fallback lands a clipboard image
+// in the composer instead of running as a prompt, for terminals that swallow
+// Ctrl+V.
+func TestShellHostPasteCommand(t *testing.T) {
+	host, ui := newHostForTest(t, llmtest.NewScripted())
+	host.clip = fakeClip{data: []byte("FROMCMD")}
+	host.submit("/paste", nil)
+	waitIdle(t, host)
+
+	pasted := ui.pastedImages()
+	if len(pasted) != 1 || string(pasted[0].Data) != "FROMCMD" {
+		t.Fatalf("/paste pasted = %+v, want the clipboard image", pasted)
+	}
+	// It must not have run as a turn: no prompt echo for "/paste".
+	if strings.Contains(ui.transcript(), "/paste") {
+		t.Fatalf("/paste ran as a prompt: %q", ui.transcript())
+	}
+}
+
+// TestShellHostImageOnlySubmitReachesModel proves an image-only submit (a
+// pasted picture, no prose) drives a real turn and hands the model the image.
+func TestShellHostImageOnlySubmitReachesModel(t *testing.T) {
+	model := llmtest.NewScripted(llmtest.SayText("done"))
+	host, ui := newHostForTest(t, model)
+	host.submit("", []editor.Attachment{{MediaType: tuiterm.ImagePNG, Data: []byte("shot")}})
+	waitIdle(t, host)
+
+	reqs := model.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("image-only submit drove no model turn")
+	}
+	var sawImage bool
+	for _, b := range reqs[0].Messages[0].Blocks {
+		if b.Kind == llm.KindImage && b.Image != nil && string(b.Image.Data) == "shot" {
+			sawImage = true
+		}
+	}
+	if !sawImage {
+		t.Fatalf("model's opening turn did not carry the image: %+v", reqs[0].Messages[0].Blocks)
+	}
+	// The transcript echoes the image count, not a blank prompt line.
+	if !strings.Contains(ui.transcript(), "[1 image]") {
+		t.Fatalf("image-only echo missing from %q", ui.transcript())
+	}
 }
 
 // syncOut is a concurrency-safe frame sink for the end-to-end shell test.

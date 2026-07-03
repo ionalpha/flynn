@@ -66,6 +66,75 @@ func TestLargePasteBecomesChip(t *testing.T) {
 	}
 }
 
+func TestImageChipIsAttachedNotText(t *testing.T) {
+	var e editor.Editor
+	e.Insert("look at ")
+	e.InsertImage(editor.Attachment{MediaType: "image/png", Data: []byte("PNG-A")})
+	e.Insert(" and this")
+
+	// The image is not part of the prompt text; the chip contributes nothing.
+	if got, want := e.Content(), "look at  and this"; got != want {
+		t.Fatalf("Content = %q, want %q", got, want)
+	}
+	// It renders as one short label alongside the text.
+	rows, _, _ := e.Render(80)
+	if len(rows) != 1 || !strings.Contains(rows[0], "[Image #1]") {
+		t.Fatalf("rendered rows = %q, want the image chip label", rows)
+	}
+	// The bytes surface as an attachment.
+	att := e.Attachments()
+	if len(att) != 1 || string(att[0].Data) != "PNG-A" || att[0].MediaType != "image/png" {
+		t.Fatalf("Attachments = %+v, want one image/png PNG-A", att)
+	}
+}
+
+func TestImageOnlyBuffer(t *testing.T) {
+	var e editor.Editor
+	e.InsertImage(editor.Attachment{MediaType: "image/png", Data: []byte("only")})
+	if got := e.Content(); got != "" {
+		t.Fatalf("Content = %q, want empty for an image-only buffer", got)
+	}
+	if e.Empty() {
+		t.Fatal("Empty() = true, want false: an image chip is buffer content")
+	}
+	if att := e.Attachments(); len(att) != 1 {
+		t.Fatalf("Attachments = %d, want 1", len(att))
+	}
+}
+
+func TestBackspaceRemovesWholeImageChip(t *testing.T) {
+	var e editor.Editor
+	e.Insert("a")
+	e.InsertImage(editor.Attachment{MediaType: "image/png", Data: []byte("x")})
+	// One Backspace removes the whole chip, and its attachment goes with it.
+	e.Backspace()
+	if got := e.Content(); got != "a" {
+		t.Fatalf("Content after backspace = %q, want %q", got, "a")
+	}
+	if att := e.Attachments(); att != nil {
+		t.Fatalf("Attachments = %+v, want nil after the chip is deleted", att)
+	}
+}
+
+func TestAttachmentsKeepBufferOrder(t *testing.T) {
+	var e editor.Editor
+	e.InsertImage(editor.Attachment{Data: []byte("first")})
+	e.Insert(" then ")
+	e.InsertImage(editor.Attachment{Data: []byte("second")})
+	att := e.Attachments()
+	if len(att) != 2 || string(att[0].Data) != "first" || string(att[1].Data) != "second" {
+		t.Fatalf("Attachments = %+v, want first then second in buffer order", att)
+	}
+}
+
+func TestEmptyImageIgnored(t *testing.T) {
+	var e editor.Editor
+	e.InsertImage(editor.Attachment{MediaType: "image/png"})
+	if !e.Empty() {
+		t.Fatal("an image with no bytes must not insert a chip")
+	}
+}
+
 func TestKillYankYankPop(t *testing.T) {
 	var e editor.Editor
 	e.Insert("alpha")

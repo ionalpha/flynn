@@ -19,6 +19,7 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/screen"
 	tuiterm "github.com/ionalpha/flynn/internal/tui/term"
 	"github.com/ionalpha/flynn/internal/tui/theme"
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
 )
 
@@ -104,7 +105,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 	if th == nil {
 		th = theme.Default()
 	}
-	host := &sessionHost{ctx: ctx, s: s, th: th}
+	host := &sessionHost{ctx: ctx, s: s, th: th, clip: tuiterm.NewClipboard()}
 	// Shell mode runs the user's commands through the same confined sandbox
 	// every other command takes, rooted at the session's working directory. A
 	// directory the sandbox refuses is reported when shell mode is first used;
@@ -193,6 +194,7 @@ type shellUI interface {
 	Suspend(run func())
 	Draft() string
 	SetDraft(text string)
+	PasteImage(att editor.Attachment)
 }
 
 // shellRunner is the confined executor behind the composer's shell mode: the
@@ -221,13 +223,24 @@ type sessionHost struct {
 	// result; the terminal mode round trip lives inside it. Nil (no
 	// terminal to hand over) leaves Ctrl+G unclaimed.
 	edit func(initial string) (string, error)
+	// clip reads images off the OS clipboard for Ctrl+V and /paste. Nil (a
+	// host with no clipboard) leaves both unclaimed.
+	clip tuiterm.Clipboard
 
 	mu       sync.Mutex
 	busy     bool
-	queue    []string
+	queue    []queuedTurn
 	cancel   context.CancelFunc
 	quitting bool
 	turns    sync.WaitGroup
+}
+
+// queuedTurn is one submitted prompt waiting behind a running turn: its text
+// and the images attached to it, held together so a turn queued while another
+// runs keeps its pictures.
+type queuedTurn struct {
+	text   string
+	images []llm.Image
 }
 
 // greet writes the session banner and, for a resumed run, its rendered
@@ -243,29 +256,70 @@ func (h *sessionHost) greet(seed string) {
 // submit handles one submitted prompt on the shell's event loop: exit
 // commands quit, a prompt during a running turn queues behind it, and an
 // idle prompt starts its turn immediately.
-func (h *sessionHost) submit(text string) {
+func (h *sessionHost) submit(text string, images []editor.Attachment) {
 	text = strings.TrimSpace(text)
-	if text == "" {
+	imgs := toImages(images)
+	// /paste is the fallback for terminals that swallow Ctrl+V: it lands a
+	// clipboard image in the composer instead of running as a prompt. It only
+	// takes over a bare "/paste" with nothing attached, so it never eats a real
+	// turn.
+	if text == "/paste" && len(imgs) == 0 {
+		h.paste()
+		return
+	}
+	if text == "" && len(imgs) == 0 {
 		return
 	}
 	if isExit(text) {
 		h.ui.Quit()
 		return
 	}
+	turn := queuedTurn{text: text, images: imgs}
 	h.mu.Lock()
 	if h.quitting {
 		h.mu.Unlock()
 		return
 	}
 	if h.busy {
-		h.queue = append(h.queue, text)
+		h.queue = append(h.queue, turn)
 		h.mu.Unlock()
 		h.refreshStatus()
 		return
 	}
 	h.busy = true
 	h.mu.Unlock()
-	h.start(text)
+	h.start(turn)
+}
+
+// toImages converts the composer's UI-layer attachments to the model port's
+// image type at the one seam where a submitted prompt becomes a turn, so
+// nothing downstream carries the editor type.
+func toImages(atts []editor.Attachment) []llm.Image {
+	if len(atts) == 0 {
+		return nil
+	}
+	out := make([]llm.Image, len(atts))
+	for i, a := range atts {
+		out[i] = llm.Image{MediaType: a.MediaType, Data: a.Data}
+	}
+	return out
+}
+
+// promptEcho is the scrollback echo of a submitted prompt: the text, with a
+// trailing count when the turn carried images, so an image-only turn still
+// shows in the transcript instead of echoing a blank line.
+func promptEcho(t queuedTurn) string {
+	if len(t.images) == 0 {
+		return t.text
+	}
+	tag := fmt.Sprintf("[%d image]", len(t.images))
+	if len(t.images) != 1 {
+		tag = fmt.Sprintf("[%d images]", len(t.images))
+	}
+	if t.text == "" {
+		return tag
+	}
+	return t.text + " " + tag
 }
 
 // start launches text as one turn on its own goroutine. The prompt is echoed
@@ -274,8 +328,8 @@ func (h *sessionHost) submit(text string) {
 // prompt starts a shell command instead of a model turn; the branch lives
 // here so queued shell commands and prompts run in submission order. The
 // caller has already marked the host busy.
-func (h *sessionHost) start(text string) {
-	if cmd, ok := strings.CutPrefix(text, "!"); ok {
+func (h *sessionHost) start(t queuedTurn) {
+	if cmd, ok := strings.CutPrefix(t.text, "!"); ok {
 		h.startShell(strings.TrimSpace(cmd))
 		return
 	}
@@ -285,7 +339,7 @@ func (h *sessionHost) start(text string) {
 	h.mu.Unlock()
 	h.refreshStatus()
 
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, text))
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, promptEcho(t)))
 	sink := &turnSink{ui: h.ui}
 	h.s.out = sink
 	h.ui.SetLive(sink)
@@ -293,7 +347,7 @@ func (h *sessionHost) start(text string) {
 	h.turns.Add(1)
 	go func() {
 		defer h.turns.Done()
-		_, err := h.s.runTurn(turnCtx, text, nil)
+		_, err := h.s.runTurn(turnCtx, t.text, t.images, nil)
 		cancel()
 		sink.finish()
 		h.ui.SetLive(nil)
@@ -381,10 +435,10 @@ func (h *sessionHost) next() {
 		return
 	}
 	if len(h.queue) > 0 {
-		text := h.queue[0]
+		turn := h.queue[0]
 		h.queue = h.queue[1:]
 		h.mu.Unlock()
-		h.start(text)
+		h.start(turn)
 		return
 	}
 	h.busy = false
@@ -431,8 +485,30 @@ func (h *sessionHost) key(k input.Key) bool {
 			h.externalEdit()
 			return true
 		}
+	case 'v':
+		if h.clip != nil {
+			h.paste()
+			return true
+		}
 	}
 	return false
+}
+
+// paste lands a clipboard image in the composer as an image chip, the action
+// behind Ctrl+V and the /paste command. Reading the clipboard happens only
+// here, at the user's explicit keystroke, never on the agent's behalf. When
+// the clipboard holds no image (or is unavailable on this host), it says so in
+// one line rather than failing, so a stray Ctrl+V is harmless.
+func (h *sessionHost) paste() {
+	if h.clip == nil {
+		return
+	}
+	data, ok := h.clip.Image()
+	if !ok {
+		h.ui.Append(h.th.Render(theme.Status, "  no image on the clipboard"))
+		return
+	}
+	h.ui.PasteImage(editor.Attachment{MediaType: tuiterm.ImagePNG, Data: data})
 }
 
 // externalEdit hands the draft to the user's editor and puts the result
@@ -515,7 +591,7 @@ func (h *sessionHost) refreshStatus() {
 // statusLine is the one-row hint between the live output and the composer.
 func statusLine(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+g opens $EDITOR · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {

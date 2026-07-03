@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/internal/tui/app"
+	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/input"
 )
 
@@ -139,7 +140,7 @@ func expectNoSubmit(t *testing.T, ch chan string) {
 func TestSubmitDeliversThePromptAndClearsTheComposer(t *testing.T) {
 	submits := make(chan string, 1)
 	s := start(t, func(c *app.Config) {
-		c.OnSubmit = func(text string) { submits <- text }
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 	})
 	s.press(t, "hello spine\r")
 	if got := awaitSubmit(t, submits); got != "hello spine" {
@@ -153,7 +154,7 @@ func TestSubmitDeliversThePromptAndClearsTheComposer(t *testing.T) {
 func TestBlankEnterSubmitsNothing(t *testing.T) {
 	submits := make(chan string, 1)
 	s := start(t, func(c *app.Config) {
-		c.OnSubmit = func(text string) { submits <- text }
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 	})
 	s.press(t, "\r   \r")
 	expectNoSubmit(t, submits)
@@ -162,7 +163,7 @@ func TestBlankEnterSubmitsNothing(t *testing.T) {
 func TestCtrlCClearsThePromptThenQuits(t *testing.T) {
 	submits := make(chan string, 1)
 	s := start(t, func(c *app.Config) {
-		c.OnSubmit = func(text string) { submits <- text }
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 	})
 	s.press(t, "draft")
 	s.awaitOutput(t, "draft")
@@ -219,7 +220,7 @@ func TestUnclaimedKeysFallThroughToOnKey(t *testing.T) {
 func TestHistoryRecallsThePreviousPrompt(t *testing.T) {
 	submits := make(chan string, 2)
 	s := start(t, func(c *app.Config) {
-		c.OnSubmit = func(text string) { submits <- text }
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 	})
 	s.press(t, "one\r")
 	awaitSubmit(t, submits)
@@ -240,7 +241,7 @@ func TestHistoryRecallsThePreviousPrompt(t *testing.T) {
 func TestHistoryDownRestoresTheDraft(t *testing.T) {
 	submits := make(chan string, 2)
 	s := start(t, func(c *app.Config) {
-		c.OnSubmit = func(text string) { submits <- text }
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 	})
 	s.press(t, "sent\r")
 	awaitSubmit(t, submits)
@@ -277,7 +278,7 @@ func TestPlaceholderShowsUntilTyping(t *testing.T) {
 func TestPasteLandsInTheComposerAsOneUnit(t *testing.T) {
 	submits := make(chan string, 1)
 	s := start(t, func(c *app.Config) {
-		c.OnSubmit = func(text string) { submits <- text }
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
 	})
 	s.press(t, "\x1b[200~pasted text\x1b[201~\r")
 	if got := awaitSubmit(t, submits); got != "pasted text" {

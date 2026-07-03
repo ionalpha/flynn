@@ -101,7 +101,7 @@ func TestInteractiveMultiTurnContinuesOneRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	r1, err := s.runTurn(ctx, "first question", nil)
+	r1, err := s.runTurn(ctx, "first question", nil, nil)
 	if err != nil || r1 != "first answer" {
 		t.Fatalf("turn 1 = (%q, %v), want (\"first answer\", nil)\n%s", r1, err, buf.String())
 	}
@@ -110,7 +110,7 @@ func TestInteractiveMultiTurnContinuesOneRun(t *testing.T) {
 		t.Fatal("first turn did not assign a run id")
 	}
 
-	r2, err := s.runTurn(ctx, "second question", nil)
+	r2, err := s.runTurn(ctx, "second question", nil, nil)
 	if err != nil || r2 != "second answer" {
 		t.Fatalf("turn 2 = (%q, %v), want (\"second answer\", nil)\n%s", r2, err, buf.String())
 	}
@@ -156,7 +156,7 @@ func TestInteractiveStreamWellFormedAcrossTurns(t *testing.T) {
 			defer cancel()
 
 			for i := range turns {
-				if _, err := s.runTurn(ctx, fmt.Sprintf("question %d", i), nil); err != nil {
+				if _, err := s.runTurn(ctx, fmt.Sprintf("question %d", i), nil, nil); err != nil {
 					t.Fatalf("turn %d: %v\n%s", i, err, buf.String())
 				}
 			}
@@ -263,7 +263,7 @@ func TestInteractiveCancelTurnKeepsSession(t *testing.T) {
 		sig <- os.Interrupt
 	}()
 
-	_, err := s.runTurn(ctx, "long running", sig)
+	_, err := s.runTurn(ctx, "long running", nil, sig)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled turn err = %v, want context.Canceled\n%s", err, buf.String())
 	}
@@ -274,7 +274,7 @@ func TestInteractiveCancelTurnKeepsSession(t *testing.T) {
 
 	// The model is responsive now; the next line continues the same session.
 	close(m.release)
-	r2, err := s.runTurn(ctx, "carry on", sig)
+	r2, err := s.runTurn(ctx, "carry on", nil, sig)
 	if err != nil || r2 != "ok" {
 		t.Fatalf("turn after cancel = (%q, %v), want (\"ok\", nil)\n%s", r2, err, buf.String())
 	}
@@ -299,10 +299,10 @@ func TestInteractiveRecallsOnceAndReuses(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("a"), llmtest.SayText("b"))
 	s, buf := newREPL(t, dir, store, model)
 
-	if _, err := s.runTurn(ctx, "deploy the service", nil); err != nil {
+	if _, err := s.runTurn(ctx, "deploy the service", nil, nil); err != nil {
 		t.Fatalf("turn 1: %v\n%s", err, buf.String())
 	}
-	if _, err := s.runTurn(ctx, "now check it", nil); err != nil {
+	if _, err := s.runTurn(ctx, "now check it", nil, nil); err != nil {
 		t.Fatalf("turn 2: %v\n%s", err, buf.String())
 	}
 
@@ -329,7 +329,7 @@ func TestInteractiveLearnsAtSessionEnd(t *testing.T) {
 		{Kind: learn.LessonMemory, Body: "the project uses pnpm for installs"},
 	}}
 
-	if _, err := s.runTurn(ctx, "set up the project", nil); err != nil {
+	if _, err := s.runTurn(ctx, "set up the project", nil, nil); err != nil {
 		t.Fatalf("turn: %v\n%s", err, buf.String())
 	}
 	if err := s.finish(ctx); err != nil {

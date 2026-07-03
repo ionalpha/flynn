@@ -39,11 +39,30 @@ const maxUndo = 200
 // maxRing bounds the kill ring.
 const maxRing = 16
 
-// atom is one editing unit: a grapheme cluster, or a chip when chip is
-// nonzero (text then carries the chip's display label).
+// atom is one editing unit: a grapheme cluster, a paste chip when chip is
+// nonzero, or an image chip when img is nonzero. For either chip kind text
+// carries the display label; the payload is held out of the buffer (chips in
+// the chips map, images in the images map). chip and img are never both set.
 type atom struct {
 	text string
 	chip int
+	img  int
+}
+
+// opaque reports whether the atom is a chip (paste or image) rather than a
+// grapheme cluster: it moves, deletes, and bounds a completion token as one
+// unit, and is never part of a word being typed.
+func (a atom) opaque() bool { return a.chip != 0 || a.img != 0 }
+
+// Attachment is one image bound to the composer: the encoded bytes and their
+// IANA media type. The clipboard port yields PNG; the value is what a submit
+// carries alongside the prompt text so the image reaches the model. It is
+// deliberately a plain UI-layer type, not the model port's llm.Image, so the
+// reusable composer stays free of a model-port dependency; the host converts
+// it at the one seam where the prompt is turned into a turn.
+type Attachment struct {
+	MediaType string
+	Data      []byte
 }
 
 // snapshot is one undo/redo state.
@@ -74,6 +93,9 @@ type Editor struct {
 	chips    map[int]string
 	nextChip int
 
+	images  map[int]Attachment
+	nextImg int
+
 	ring   [][]atom // most recent kill first
 	ringAt int      // which ring entry the last yank inserted
 	yankAt int      // where the last yank inserted, for yank-pop replacement
@@ -89,18 +111,36 @@ type Editor struct {
 // Empty reports whether the buffer holds nothing.
 func (e *Editor) Empty() bool { return len(e.atoms) == 0 }
 
-// Content returns the buffer's text with every chip expanded to its full
-// pasted text. This is what submit sends.
+// Content returns the buffer's text with every paste chip expanded to its
+// full pasted text. Image chips contribute nothing: an image travels with the
+// turn as a separate attachment (see Attachments), not as text. This is the
+// prompt text submit sends.
 func (e *Editor) Content() string {
 	var b strings.Builder
 	for _, a := range e.atoms {
-		if a.chip != 0 {
+		switch {
+		case a.chip != 0:
 			b.WriteString(e.chips[a.chip])
-			continue
+		case a.img != 0:
+			// The image rides as an attachment, not inline text.
+		default:
+			b.WriteString(a.text)
 		}
-		b.WriteString(a.text)
 	}
 	return b.String()
+}
+
+// Attachments returns the images bound to the composer in buffer order, so
+// the order the model sees matches the order the chips appear and a chip the
+// user backspaced away is absent. It returns nil when there are none.
+func (e *Editor) Attachments() []Attachment {
+	var out []Attachment
+	for _, a := range e.atoms {
+		if a.img != 0 {
+			out = append(out, e.images[a.img])
+		}
+	}
+	return out
 }
 
 // Clear resets the buffer, history, and chips for the next prompt.
@@ -146,6 +186,33 @@ func (e *Editor) InsertPaste(text string) {
 	e.chips[id] = text
 	e.splice([]atom{{text: chipLabel(id, text), chip: id}})
 	e.last = opNone
+}
+
+// InsertImage binds an image to the composer and inserts an atomic chip for
+// it at the cursor: like a paste chip, the cursor steps over it whole and
+// Backspace removes it whole, and it holds no bytes in the buffer. The image
+// itself is carried out of line and surfaced by Attachments at submit.
+func (e *Editor) InsertImage(att Attachment) {
+	if len(att.Data) == 0 {
+		return
+	}
+	e.pushUndo()
+	if e.images == nil {
+		e.images = make(map[int]Attachment)
+	}
+	e.nextImg++
+	id := e.nextImg
+	e.images[id] = att
+	e.splice([]atom{{text: imageLabel(id), img: id}})
+	e.last = opNone
+}
+
+// imageLabel is an image chip's display text. Plain ASCII brackets, matching
+// the paste chip, so the label survives every emulator in the validation
+// matrix. The number is the chip's position among inserted images, not its
+// buffer order, so it stays stable as earlier text is edited.
+func imageLabel(id int) string {
+	return fmt.Sprintf("[Image #%d]", id)
 }
 
 // chipLabel is the chip's display text. Plain ASCII brackets on purpose:
@@ -200,7 +267,7 @@ func (e *Editor) Right() {
 // isWord reports whether the atom belongs to a word (letter, digit, or
 // underscore; a chip counts as one word).
 func isWord(a atom) bool {
-	if a.chip != 0 {
+	if a.opaque() {
 		return true
 	}
 	for _, r := range a.text {
