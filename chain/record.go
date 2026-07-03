@@ -1,9 +1,9 @@
 package chain
 
 import (
-	"github.com/transparency-dev/merkle/proof"
-
 	"bytes"
+
+	"github.com/transparency-dev/merkle/proof"
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/spine"
