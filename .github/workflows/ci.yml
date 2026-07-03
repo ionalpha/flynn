@@ -46,6 +46,21 @@ jobs:
           # race-instrumented. The step below adds restore-keys so a miss starts
           # from a near-warm build cache instead.
           cache: false
+      # Windows Defender scans every file the Go toolchain writes - a test binary
+      # per package plus all compile output - which is the main reason go test is
+      # several times slower here than on Linux or macOS. Exclude the workspace
+      # and the Go caches from real-time scanning. Windows-only, best-effort (a
+      # failure just leaves the job slower, never broken), and it changes nothing
+      # about what runs or the -race coverage.
+      - name: Exclude Go paths from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$(go env GOCACHE)", "$(go env GOMODCACHE)", "$env:RUNNER_TEMP" -ErrorAction Stop
+          } catch {
+            Write-Host "Could not set Defender exclusions (continuing): $_"
+          }
       # Resolve the module and build cache directories for this OS so the cache
       # step works identically on Linux, macOS, and Windows (their paths differ).
       - id: goenv
