@@ -98,6 +98,110 @@ func TestReaderFlushesAndClosesOnEOF(t *testing.T) {
 	}
 }
 
+// gateReader is an input source the test controls read by read: entered
+// signals each time a Read blocks, and data supplies its bytes (closing it
+// is EOF). It makes the pause protocol deterministic: once entered fires,
+// a read is in flight and a pause must take the poke path.
+type gateReader struct {
+	entered chan struct{}
+	data    chan []byte
+}
+
+func newGateReader() *gateReader {
+	return &gateReader{entered: make(chan struct{}, 8), data: make(chan []byte)}
+}
+
+func (g *gateReader) Read(p []byte) (int, error) {
+	g.entered <- struct{}{}
+	b, ok := <-g.data
+	if !ok {
+		return 0, io.EOF
+	}
+	return copy(p, b), nil
+}
+
+func (g *gateReader) awaitRead(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("no read started")
+	}
+}
+
+// TestReaderPauseParksPokesOnceAndResumes walks the whole pause protocol
+// with a read in flight: the poke runs exactly once, its answer is
+// discarded rather than decoded, the park is acknowledged, and after Resume
+// the reader decodes fresh input as if nothing happened.
+func TestReaderPauseParksPokesOnceAndResumes(t *testing.T) {
+	g := newGateReader()
+	r := input.NewReader(g, clock.System{}, escDelay)
+	defer r.Stop()
+
+	g.awaitRead(t) // a read is blocked; the token is spoken for
+	pokes := 0
+	parked := r.Pause(func() {
+		pokes++
+		go func() { g.data <- []byte("\x1b[10;1R") }() // the terminal answers the query
+	})
+	select {
+	case <-parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never parked")
+	}
+	if pokes != 1 {
+		t.Fatalf("poke ran %d times, want 1", pokes)
+	}
+	select {
+	case ev := <-r.Events():
+		t.Fatalf("event %#v leaked through the pause", ev)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	r.Resume()
+	g.awaitRead(t)
+	g.data <- []byte("b")
+	if ev := awaitEvent(t, r.Events()); ev != (input.Key{Code: 'b'}) {
+		t.Fatalf("after resume got %#v, want the b key", ev)
+	}
+
+	close(g.data) // EOF still closes the stream cleanly after a pause cycle
+	select {
+	case _, open := <-r.Events():
+		if open {
+			t.Fatal("expected the stream to close after EOF")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("stream did not close on EOF")
+	}
+}
+
+// TestReaderResumeDropsAPartialSequence proves decoding restarts fresh: a
+// partial escape sequence read just before the park never combines with
+// input typed after the resume.
+func TestReaderResumeDropsAPartialSequence(t *testing.T) {
+	g := newGateReader()
+	r := input.NewReader(g, clock.System{}, escDelay)
+	defer r.Stop()
+
+	g.awaitRead(t)
+	parked := r.Pause(func() {
+		go func() { g.data <- []byte("\x1b[") }() // half a sequence answers the poke
+	})
+	select {
+	case <-parked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reader never parked")
+	}
+	r.Resume()
+	g.awaitRead(t)
+	g.data <- []byte("A") // would complete the dropped half into KeyUp
+	if ev := awaitEvent(t, r.Events()); ev != (input.Key{Code: 'A'}) {
+		t.Fatalf("got %#v, want a plain A key, not an arrow", ev)
+	}
+	close(g.data)
+}
+
 func TestReaderStopReleasesThePump(t *testing.T) {
 	pr, pw := io.Pipe()
 	r := input.NewReader(pr, clock.System{}, escDelay)

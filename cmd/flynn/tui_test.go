@@ -20,10 +20,12 @@ import (
 
 // fakeUI records what the session host drives, standing in for a live shell.
 type fakeUI struct {
-	mu     sync.Mutex
-	lines  []string
-	status string
-	quit   bool
+	mu       sync.Mutex
+	lines    []string
+	status   string
+	quit     bool
+	draft    string
+	suspends int
 }
 
 func (f *fakeUI) Append(lines ...string) {
@@ -44,6 +46,27 @@ func (f *fakeUI) Quit() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.quit = true
+}
+
+// Suspend counts the handoff and runs the callback inline; the fake has no
+// terminal or reader to park.
+func (f *fakeUI) Suspend(run func()) {
+	f.mu.Lock()
+	f.suspends++
+	f.mu.Unlock()
+	run()
+}
+
+func (f *fakeUI) Draft() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.draft
+}
+
+func (f *fakeUI) SetDraft(text string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.draft = text
 }
 
 func (f *fakeUI) transcript() string {

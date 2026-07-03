@@ -285,6 +285,60 @@ func TestPasteLandsInTheComposerAsOneUnit(t *testing.T) {
 	}
 }
 
+// TestSuspendHandsOverThenRepaints drives the whole handoff over the pipe:
+// a hook suspends the shell, the run callback executes with the reader
+// parked, the draft survives, SetDraft replaces it, and the shell keeps
+// decoding keystrokes afterwards. The test answers the pause's cursor query
+// itself, standing in for the terminal.
+func TestSuspendHandsOverThenRepaints(t *testing.T) {
+	ran := make(chan struct{})
+	var s *shell
+	s = start(t, func(cfg *app.Config) {
+		cfg.OnKey = func(k input.Key) bool {
+			if k.Code == 's' && k.Mods == input.ModCtrl {
+				s.app.Suspend(func() { close(ran) })
+				return true
+			}
+			return false
+		}
+	})
+	s.press(t, "hello")
+	s.awaitOutput(t, "hello")
+
+	s.press(t, "\x13") // Ctrl+S triggers the suspending hook
+	// Stand in for the terminal: when the pause pokes its cursor query at
+	// the output, answer it on the input so the blocked read completes.
+	// When the pause reclaimed its token instead, no query appears and no
+	// answer is needed.
+	go func() {
+		deadline := time.After(2 * time.Second)
+		for {
+			if strings.Contains(s.out.String(), "\x1b[6n") {
+				_, _ = io.WriteString(s.in, "\x1b[5;1R")
+				return
+			}
+			select {
+			case <-deadline:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	select {
+	case <-ran:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the suspended callback never ran")
+	}
+	if got := s.app.Draft(); got != "hello" {
+		t.Fatalf("draft = %q, want %q across the suspension", got, "hello")
+	}
+
+	s.app.SetDraft("edited")
+	s.awaitOutput(t, "edited")
+	s.press(t, "!")
+	s.awaitOutput(t, "edited!")
+}
+
 func TestResizeRepaintsFromScratch(t *testing.T) {
 	s := start(t, nil)
 	s.press(t, "wide")

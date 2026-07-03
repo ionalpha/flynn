@@ -126,6 +126,8 @@ type App struct {
 	resized   bool
 	menu      menu
 	accepted  []string
+	reader    *input.Reader
+	suspended bool
 }
 
 // New builds the shell and starts its frame scheduler. Run must be called
@@ -168,6 +170,9 @@ func New(cfg Config) *App {
 // write error the painter hit, if any.
 func (a *App) Run() error {
 	reader := input.NewReader(a.cfg.Input, a.cfg.Timing, a.cfg.EscDelay)
+	a.mu.Lock()
+	a.reader = reader
+	a.mu.Unlock()
 	a.sched.Request()
 loop:
 	for {
@@ -227,6 +232,80 @@ func (a *App) SetLive(c screen.Component) {
 func (a *App) SetStatus(line string) {
 	a.mu.Lock()
 	a.status = line
+	a.mu.Unlock()
+	a.sched.Request()
+}
+
+// Draft returns the composer's current content.
+func (a *App) Draft() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.editor.Content()
+}
+
+// SetDraft replaces the composer's content, cursor at the end.
+func (a *App) SetDraft(text string) {
+	a.mu.Lock()
+	a.setContentLocked(text)
+	a.mu.Unlock()
+	a.sched.Request()
+}
+
+// cursorQuery is the poke written while pausing the reader: a cursor
+// position query the terminal answers on the input stream, completing a
+// blocked read so the read goroutine can park. The answer is discarded by
+// the paused reader (or decodes to an ignored Unknown event if it arrives
+// after resume).
+const cursorQuery = "\x1b[6n"
+
+// Suspend hands the terminal to run for its duration: painting stops, the
+// live region is cleared so run's output starts below the scrollback, and
+// the input reader is parked off the input stream so run's process can own
+// it exclusively. After run returns, the shell reclaims the input and
+// repaints from scratch. The caller owns the terminal's modes: leave raw
+// mode and the shell's terminal modes inside run before starting a child
+// process, and restore them before returning. Suspend must be called from a
+// hook (the event loop goroutine); before Run, or while already suspended,
+// it does nothing.
+func (a *App) Suspend(run func()) {
+	a.mu.Lock()
+	reader := a.reader
+	if reader == nil || a.suspended {
+		a.mu.Unlock()
+		return
+	}
+	a.suspended = true
+	// Direct painter calls are safe here: every painter call sits behind
+	// this mutex, and with suspended set the scheduler's paint is a no-op,
+	// so the poke below is the only terminal writer until resume.
+	a.painter.Repaint(nil)
+	out := a.cfg.Output
+	a.mu.Unlock()
+
+	parked := reader.Pause(func() { _, _ = out.Write([]byte(cursorQuery)) })
+	// Drain stale events while waiting so a full event buffer can never
+	// wedge the pump between Pause and the park; anything typed after the
+	// suspending keystroke was meant for run's process, not the composer.
+	for waiting := true; waiting; {
+		select {
+		case <-parked:
+			waiting = false
+		case _, ok := <-reader.Events():
+			if !ok {
+				waiting = false
+			}
+		}
+	}
+
+	run()
+
+	reader.Resume()
+	a.mu.Lock()
+	// run's process may have left the cursor mid-line; return to column
+	// zero so the repainted frame starts on a clean left edge.
+	_, _ = out.Write([]byte("\r"))
+	a.suspended = false
+	a.resized = true
 	a.mu.Unlock()
 	a.sched.Request()
 }
@@ -325,6 +404,9 @@ func (a *App) setContentLocked(text string) {
 func (a *App) paint() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.suspended {
+		return
+	}
 	resized := a.resized
 	a.resized = false
 	if resized {

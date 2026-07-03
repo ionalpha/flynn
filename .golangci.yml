@@ -63,14 +63,19 @@ linters:
               desc: "log through the observe.Logger port; log/slog is allowed only inside package observe"
         # Process execution goes through the sandbox boundary so it is confined,
         # governed, and auditable; nothing spawns a process around it. Only the
-        # sandbox (the boundary itself) and the hardware probe (which must read the
+        # sandbox (the boundary itself), the hardware probe (which must read the
         # real host, so it cannot be sandboxed, and runs a fixed command with no
-        # untrusted input) may spawn a process directly.
+        # untrusted input), and the terminal layer's editor handoff (which runs
+        # the user's own configured editor attached to their own terminal at
+        # their explicit request; the user already owns that keyboard and
+        # screen, so there is nothing to confine it away from) may spawn a
+        # process directly.
         no-direct-exec:
           files:
             - "**/*.go"
             - "!**/sandbox/**"
             - "!**/hardware/**"
+            - "!**/internal/tui/term/**"
             - "!**/*_test.go"
           deny:
             - pkg: "os/exec"

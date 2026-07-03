@@ -51,6 +51,28 @@ func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
 
 	width, height, _ := tuiterm.Size(fd) // zero on error selects the shell's defaults
 	a, host := newSessionShell(ctx, s, os.Stdin, os.Stdout, width, height)
+	// The editor handoff owns the terminal's mode round trip: cooked mode and
+	// shell modes off while the user's editor runs, raw mode and shell modes
+	// back before the shell repaints. It reassigns restore so the session's
+	// closing restore releases the latest raw state, not a stale one.
+	host.edit = func(initial string) (string, error) {
+		return editExternal(initial, func() (func() error, error) {
+			if err := tuiterm.Teardown(os.Stdout, modes); err != nil {
+				return nil, err
+			}
+			if err := restore(); err != nil {
+				return nil, err
+			}
+			return func() error {
+				again, err := tuiterm.MakeRaw(fd)
+				if err != nil {
+					return err
+				}
+				restore = again
+				return tuiterm.Setup(os.Stdout, modes)
+			}, nil
+		})
+	}
 	watcher := tuiterm.WatchResize(clock.System{}, resizePoll, func() (int, int, error) {
 		return tuiterm.Size(fd)
 	}, a.Resize)
@@ -143,6 +165,9 @@ type shellUI interface {
 	SetLive(c screen.Component)
 	SetStatus(line string)
 	Quit()
+	Suspend(run func())
+	Draft() string
+	SetDraft(text string)
 }
 
 // shellRunner is the confined executor behind the composer's shell mode: the
@@ -167,6 +192,10 @@ type sessionHost struct {
 	th     *theme.Theme
 	run    shellRunner
 	runErr error
+	// edit runs the user's editor over the given text and returns the
+	// result; the terminal mode round trip lives inside it. Nil (no
+	// terminal to hand over) leaves Ctrl+G unclaimed.
+	edit func(initial string) (string, error)
 
 	mu       sync.Mutex
 	busy     bool
@@ -351,8 +380,9 @@ func (h *sessionHost) interrupt() {
 
 // key claims the session-level keys the editor leaves alone: Ctrl+C during a
 // turn cancels the turn (idle Ctrl+C stays with the shell: clear the prompt,
-// then quit), and Ctrl+D at an empty idle prompt ends the session, matching
-// the readline EOF convention the line interface follows.
+// then quit), Ctrl+D at an empty idle prompt ends the session, matching the
+// readline EOF convention the line interface follows, and Ctrl+G hands the
+// draft to the user's editor when the session wired a handoff.
 func (h *sessionHost) key(k input.Key) bool {
 	if k.Mods != input.ModCtrl {
 		return false
@@ -371,8 +401,67 @@ func (h *sessionHost) key(k input.Key) bool {
 			h.ui.Quit()
 			return true
 		}
+	case 'g':
+		if h.edit != nil {
+			h.externalEdit()
+			return true
+		}
 	}
 	return false
+}
+
+// externalEdit hands the draft to the user's editor and puts the result
+// back in the composer. It runs on the event loop goroutine: the shell is
+// suspended for the editor's lifetime and repaints itself after. A streaming
+// turn keeps running; its output accumulates and lands after the repaint.
+func (h *sessionHost) externalEdit() {
+	initial := h.ui.Draft()
+	var text string
+	var err error
+	h.ui.Suspend(func() { text, err = h.edit(initial) })
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  editor: "+err.Error()))
+		return
+	}
+	h.ui.SetDraft(strings.TrimRight(text, "\r\n"))
+}
+
+// editExternal runs the user's editor over initial through a temp file and
+// returns the edited text. release hands the terminal back to the user
+// (cooked mode, shell modes off) and returns the reacquire that reverses
+// it; reacquire runs even when the editor fails, so the shell always gets
+// its terminal back.
+func editExternal(initial string, release func() (func() error, error)) (string, error) {
+	f, err := os.CreateTemp("", "flynn-prompt-*.md")
+	if err != nil {
+		return "", err
+	}
+	path := f.Name()
+	defer func() { _ = os.Remove(path) }()
+	_, werr := f.WriteString(initial)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return "", werr
+	}
+
+	reacquire, err := release()
+	if err != nil {
+		return "", err
+	}
+	runErr := tuiterm.RunAttached(append(tuiterm.EditorCommand(), path))
+	if err := reacquire(); err != nil {
+		return "", err
+	}
+	if runErr != nil {
+		return "", runErr
+	}
+	edited, err := os.ReadFile(path) //nolint:gosec // reads back the temp file created above
+	if err != nil {
+		return "", err
+	}
+	return string(edited), nil
 }
 
 // shutdown cancels any in-flight turn, drops the queue, and waits for the
@@ -401,7 +490,7 @@ func (h *sessionHost) refreshStatus() {
 // statusLine is the one-row hint between the live output and the composer.
 func statusLine(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+g opens $EDITOR · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {
