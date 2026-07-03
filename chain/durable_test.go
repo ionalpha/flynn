@@ -120,16 +120,16 @@ func TestDurableRecorderEvictionReloads(t *testing.T) {
 		return st
 	}
 	ckpts := newFakeCheckpointStore()
-	const cap = 4
-	rec := NewDurableRecorder(log, nodes, ckpts, signer, nil, 10).WithMaxResident(cap)
+	const capN = 4
+	rec := NewDurableRecorder(log, nodes, ckpts, signer, nil, 10).WithMaxResident(capN)
 
 	streams := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
 	// Two interleaved passes so streams are revisited after being evicted.
 	for range 2 {
 		for _, s := range streams {
 			appendDurable(t, rec, s, 15)
-			if resident := len(rec.streams); resident > cap {
-				t.Fatalf("resident streams = %d, want <= %d", resident, cap)
+			if resident := len(rec.streams); resident > capN {
+				t.Fatalf("resident streams = %d, want <= %d", resident, capN)
 			}
 		}
 	}

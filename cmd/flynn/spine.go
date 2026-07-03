@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 
@@ -219,7 +220,11 @@ func verifyCheckpointedStream(out io.Writer, store *sqlite.Store, stream string)
 		return errChecksFailed
 	}
 	// Fold the first cp.Size events and require they rebuild the signed root.
-	events, err := store.Log().Read(ctx, spine.Query{Stream: stream, Limit: int(cp.Size)})
+	limit := 0 // 0 means no limit; the fold below stops at cp.Size regardless.
+	if cp.Size <= math.MaxInt {
+		limit = int(cp.Size)
+	}
+	events, err := store.Log().Read(ctx, spine.Query{Stream: stream, Limit: limit})
 	if err != nil {
 		return err
 	}

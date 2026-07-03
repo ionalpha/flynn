@@ -190,7 +190,7 @@ func (r *DurableRecorder) streamFor(ctx context.Context, stream string, beforeSe
 	}
 	var tree *Tree
 	var afterSeq int64
-	if ok && size > 0 {
+	if ok && size > 0 && size <= math.MaxInt64 {
 		tree, err = LoadTree(store, size)
 		if err != nil {
 			return nil, err
@@ -202,7 +202,7 @@ func (r *DurableRecorder) streamFor(ctx context.Context, stream string, beforeSe
 	// Fold in events the tree does not yet cover (after the checkpoint, before the
 	// caller's event). The read is Seq-ordered, so stop at the first event at or past
 	// the exclusive bound.
-	events, err := r.Log.Read(ctx, spine.Query{Stream: stream, AfterSeq: afterSeq})
+	events, err := r.Read(ctx, spine.Query{Stream: stream, AfterSeq: afterSeq})
 	if err != nil {
 		return nil, err
 	}
