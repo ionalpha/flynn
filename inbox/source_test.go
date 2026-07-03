@@ -107,7 +107,7 @@ func TestReceiveLoopSuccessRetriesImmediately(t *testing.T) {
 	}()
 
 	// Several attempts occur back-to-back with no clock advance and no armed timer.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		<-attempts
 	}
 	if got := clk.PendingTimers(); got != 0 {

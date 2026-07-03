@@ -18,7 +18,7 @@ import (
 func TestReceiveReconnectBackoffUsesClock(t *testing.T) {
 	clk := clock.NewManual(time.Unix(0, 0))
 	var polls int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if atomic.AddInt32(&polls, 1) == 1 {
 			w.WriteHeader(http.StatusInternalServerError) // first poll fails -> backoff
 			return
