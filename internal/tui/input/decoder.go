@@ -219,6 +219,16 @@ func csiKey(params string, final byte, raw string) Event {
 			'H': KeyHome, 'F': KeyEnd,
 		}[final]
 		return Key{Code: code, Mods: paramMods(params)}
+	case 'P', 'Q', 'R', 'S':
+		// F1-F4 arrive as SS3 (ESC O P) unmodified, but as a CSI 1 ; mods form
+		// once a modifier is held (ESC [ 1 ; 2 P is Shift+F1). Only that
+		// 1-prefixed form names a function key; any other CSI ending in these
+		// finals is not a key and stays surfaced as Unknown.
+		if first, _, _ := strings.Cut(params, ";"); first != "1" {
+			return Unknown{Seq: raw}
+		}
+		code := map[byte]rune{'P': KeyF1, 'Q': KeyF2, 'R': KeyF3, 'S': KeyF4}[final]
+		return Key{Code: code, Mods: paramMods(params)}
 	case 'Z':
 		return Key{Code: KeyTab, Mods: ModShift}
 	case 'I':
@@ -237,6 +247,20 @@ func tildeKey(params, raw string) Event {
 	code, err := strconv.Atoi(fields[0])
 	if err != nil {
 		return Unknown{Seq: raw}
+	}
+	// modifyOtherKeys (xterm level 2, iTerm2): CSI 27 ; mods ; codepoint ~
+	// carries a modified key by its character code, the same keys the kitty
+	// CSI u form carries, so it maps through the same rune resolution.
+	if code == 27 && len(fields) == 3 {
+		cp, err := strconv.Atoi(fields[2])
+		if err != nil || cp < 0 || cp > utf8.MaxRune || !utf8.ValidRune(rune(cp)) { //nolint:gosec // G115: bounded to [0, MaxRune] on this line
+			return Unknown{Seq: raw}
+		}
+		m := 1
+		if v, err := strconv.Atoi(fields[1]); err == nil {
+			m = v
+		}
+		return Key{Code: functionalRune(cp), Mods: modBits(m)}
 	}
 	var mods Mod
 	if len(fields) > 1 {
@@ -282,18 +306,25 @@ func kittyKey(params, raw string) Event {
 	if event == 3 {
 		return nil // key release
 	}
-	k := Key{Code: rune(code), Mods: modBits(mods)}
+	return Key{Code: functionalRune(code), Mods: modBits(mods)}
+}
+
+// functionalRune maps a key's character codepoint to its functional key when
+// the codepoint names one (Enter, Escape, Tab, Backspace), or to the rune
+// itself otherwise. Both the kitty CSI u form and the xterm modifyOtherKeys
+// CSI 27 form carry a key by its character code, so they share this mapping.
+func functionalRune(code int) rune {
 	switch code {
 	case 13:
-		k.Code = KeyEnter
+		return KeyEnter
 	case 27:
-		k.Code = KeyEsc
+		return KeyEsc
 	case 9:
-		k.Code = KeyTab
+		return KeyTab
 	case 127:
-		k.Code = KeyBackspace
+		return KeyBackspace
 	}
-	return k
+	return rune(code) //nolint:gosec // G115: both callers validate code is a valid rune before calling
 }
 
 // ss3Key maps the SS3 (ESC O) function keys sent in application mode.
