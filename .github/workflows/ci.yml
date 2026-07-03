@@ -107,13 +107,23 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25"
-          cache: true
-      # Install the pinned linter, then run the same dev/lint script contributors
-      # run locally (which also checks `go mod tidy` is clean). Keep this version
-      # in sync with the GOLANGCI_VERSION pin in dev/lint.
-      - name: Install golangci-lint (pinned)
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2
-      - run: ./dev/lint
+          # golangci-lint-action manages the module, build, and linter-analysis
+          # caches for the lint run, so setup-go does not also cache.
+          cache: false
+      # The non-golangci half of dev/lint: go.mod and go.sum stay tidy.
+      - name: go mod tidy leaves go.mod and go.sum unchanged
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+      # Run golangci-lint from its prebuilt release binary instead of compiling
+      # it from source every run, and let the action cache the linter's own
+      # analysis cache across runs. Keep the version in sync with the
+      # GOLANGCI_VERSION pin in dev/lint so local and CI results match; it reads
+      # the same .golangci.yml, so `golangci-lint run` here is identical to
+      # dev/lint's.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
 
   vuln:
     name: govulncheck
