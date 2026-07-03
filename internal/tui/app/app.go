@@ -61,6 +61,13 @@ type Config struct {
 	// Keymap is the composer's key bindings. Nil means the default map;
 	// build a custom one with editor.LoadKeymap.
 	Keymap editor.Keymap
+	// AltScreen selects the alternate-screen renderer instead of the default
+	// inline one. The inline renderer commits the transcript to the terminal's
+	// own scrollback and is the right choice almost everywhere; the alternate
+	// screen is the fallback for emulators where inline scroll-region insertion
+	// is unsafe (Zellij-class multiplexers). The caller enters and leaves the
+	// alternate screen around Run (through the term package) when this is set.
+	AltScreen bool
 
 	// OnSubmit receives each submitted prompt: the prompt text and the images
 	// attached to it (nil when there are none), in the order their chips
@@ -117,7 +124,7 @@ type App struct {
 	quit     chan struct{}
 
 	mu        sync.Mutex
-	painter   *screen.Painter
+	painter   screen.Surface
 	editor    editor.Editor
 	history   history
 	live      screen.Component
@@ -156,13 +163,24 @@ func New(cfg Config) *App {
 	a := &App{
 		cfg:     cfg,
 		quit:    make(chan struct{}),
-		painter: screen.NewPainter(cfg.Output, cfg.Width, cfg.Height),
+		painter: newSurface(cfg),
 		width:   cfg.Width,
 		height:  cfg.Height,
 	}
 	a.editor.SetKeymap(cfg.Keymap)
 	a.sched = screen.NewScheduler(cfg.Timing, cfg.FrameInterval, a.paint)
 	return a
+}
+
+// newSurface builds the render target for the shell: the alternate-screen
+// painter when the caller asked for it, the inline scrollback-native painter
+// otherwise. Both satisfy screen.Surface, so the rest of the shell drives
+// either without caring which it holds.
+func newSurface(cfg Config) screen.Surface {
+	if cfg.AltScreen {
+		return screen.NewAltPainter(cfg.Output, cfg.Width, cfg.Height)
+	}
+	return screen.NewPainter(cfg.Output, cfg.Width, cfg.Height)
 }
 
 // Run paints the first frame, then consumes input events until Quit is

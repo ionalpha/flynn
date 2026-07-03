@@ -40,6 +40,11 @@ type Options struct {
 	// not at the edit point, so the session draws a software cursor and the
 	// hardware one stays out of sight until teardown restores it.
 	HideCursor bool
+	// AltScreen switches the session to the terminal's alternate screen buffer
+	// for its lifetime, restoring the primary screen (and its scrollback) on
+	// teardown. It pairs with the alternate-screen renderer for emulators where
+	// inline scroll-region insertion is unsafe.
+	AltScreen bool
 }
 
 // kittyFlags is the enhancement level the session uses: disambiguate escape
@@ -52,6 +57,11 @@ const kittyFlags = 1
 // disables unconditionally.
 func Setup(w io.Writer, o Options) error {
 	var seq string
+	// The alternate screen goes first so every mode below, and every frame,
+	// applies to the buffer the session actually draws in.
+	if o.AltScreen {
+		seq += ansi.SetMode(ansi.ModeAltScreenSaveCursor)
+	}
 	if o.BracketedPaste {
 		seq += ansi.SetMode(ansi.ModeBracketedPaste)
 	}
@@ -88,6 +98,11 @@ func Teardown(w io.Writer, o Options) error {
 	}
 	if o.BracketedPaste {
 		seq += ansi.ResetMode(ansi.ModeBracketedPaste)
+	}
+	// The alternate screen leaves last, restoring the primary screen and its
+	// scrollback only after every mode above it has been reset.
+	if o.AltScreen {
+		seq += ansi.ResetMode(ansi.ModeAltScreenSaveCursor)
 	}
 	if seq == "" {
 		return nil

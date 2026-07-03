@@ -44,14 +44,15 @@ func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
 		// No raw mode means no shell; the line interface still works.
 		return s.runLineMode(ctx, s.cwd)
 	}
-	modes := tuiterm.Options{BracketedPaste: true, KittyKeyboard: true, HideCursor: true}
+	alt := preferAltScreen(os.Getenv)
+	modes := tuiterm.Options{BracketedPaste: true, KittyKeyboard: true, HideCursor: true, AltScreen: alt}
 	if err := tuiterm.Setup(os.Stdout, modes); err != nil {
 		_ = restore()
 		return err
 	}
 
 	width, height, _ := tuiterm.Size(fd) // zero on error selects the shell's defaults
-	a, host := newSessionShell(ctx, s, os.Stdin, os.Stdout, width, height)
+	a, host := newSessionShell(ctx, s, os.Stdin, os.Stdout, width, height, alt)
 	// The editor handoff owns the terminal's mode round trip: cooked mode and
 	// shell modes off while the user's editor runs, raw mode and shell modes
 	// back before the shell repaints. It reassigns restore so the session's
@@ -100,7 +101,7 @@ func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
 // newSessionShell wires one replSession to a shell over the given terminal
 // streams. It is split from runInteractiveTUI so tests can drive the exact
 // production wiring over pipes, with no terminal required.
-func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int) (*app.App, *sessionHost) {
+func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.Writer, width, height int, altScreen bool) (*app.App, *sessionHost) {
 	th := s.theme
 	if th == nil {
 		th = theme.Default()
@@ -128,9 +129,26 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		OnKey:       host.key,
 		Completer:   newFileCompleter(s.cwd),
 		Marker:      shellMarker,
+		AltScreen:   altScreen,
 	})
 	host.ui = a
 	return a, host
+}
+
+// preferAltScreen decides whether the session runs on the alternate screen.
+// The inline renderer is the default because it keeps the transcript in the
+// terminal's own scrollback; the alternate screen is the fallback for
+// multiplexers where inline scroll-region insertion is unsafe. FLYNN_TUI_ALTSCREEN
+// forces the choice either way ("1"/"true"/"on" or "0"/"false"/"off"); with no
+// override it turns on inside Zellij, which sets ZELLIJ in the environment.
+func preferAltScreen(getenv func(string) string) bool {
+	switch strings.ToLower(strings.TrimSpace(getenv("FLYNN_TUI_ALTSCREEN"))) {
+	case "1", "true", "on", "yes":
+		return true
+	case "0", "false", "off", "no":
+		return false
+	}
+	return getenv("ZELLIJ") != ""
 }
 
 // loadKeymap reads the user's composer bindings from keymap.json in the data

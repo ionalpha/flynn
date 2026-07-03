@@ -20,6 +20,29 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
+func TestPreferAltScreen(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+		want bool
+	}{
+		{"default off", nil, false},
+		{"zellij on", map[string]string{"ZELLIJ": "0"}, true},
+		{"override on", map[string]string{"FLYNN_TUI_ALTSCREEN": "1"}, true},
+		{"override yes", map[string]string{"FLYNN_TUI_ALTSCREEN": " YES "}, true},
+		{"override off beats zellij", map[string]string{"FLYNN_TUI_ALTSCREEN": "off", "ZELLIJ": "0"}, false},
+		{"override false", map[string]string{"FLYNN_TUI_ALTSCREEN": "false"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			getenv := func(k string) string { return c.env[k] }
+			if got := preferAltScreen(getenv); got != c.want {
+				t.Fatalf("preferAltScreen(%v) = %v, want %v", c.env, got, c.want)
+			}
+		})
+	}
+}
+
 // fakeUI records what the session host drives, standing in for a live shell.
 type fakeUI struct {
 	mu       sync.Mutex
@@ -518,7 +541,7 @@ func TestSessionShellEndToEnd(t *testing.T) {
 	s, _ := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted(llmtest.SayText("first answer")))
 	pr, pw := io.Pipe()
 	out := &syncOut{}
-	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24)
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false)
 	host.greet("")
 
 	done := make(chan error, 1)
@@ -552,6 +575,53 @@ func TestSessionShellEndToEnd(t *testing.T) {
 	_ = pw.Close()
 }
 
+// TestSessionShellAltScreenEndToEnd drives the same production wiring with the
+// alternate-screen renderer selected: the turn still runs and its answer still
+// paints, and the output carries the absolute row addressing only the alt-screen
+// painter emits, confirming the AltScreen config reaches the renderer.
+func TestSessionShellAltScreenEndToEnd(t *testing.T) {
+	s, _ := newREPL(t, t.TempDir(), memStore(t), llmtest.NewScripted(llmtest.SayText("alt answer")))
+	pr, pw := io.Pipe()
+	out := &syncOut{}
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, true)
+	host.greet("")
+
+	done := make(chan error, 1)
+	go func() { done <- a.Run() }()
+
+	if _, err := pw.Write([]byte("hello there\r")); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(15 * time.Second)
+	for !strings.Contains(out.String(), "alt answer") {
+		select {
+		case <-deadline:
+			t.Fatalf("answer never painted:\n%s", out.String())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	// The alt-screen painter addresses rows absolutely (CSI row;1H); the inline
+	// painter never does, so this is proof the alternate renderer is in play.
+	if !strings.Contains(out.String(), ";1H") {
+		t.Fatalf("no absolute row addressing in alt-screen output:\n%q", out.String())
+	}
+	waitIdle(t, host)
+
+	if _, err := pw.Write([]byte{0x04}); err != nil { // Ctrl+D on the empty composer
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shell exited with error: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("Ctrl+D did not end the shell")
+	}
+	host.shutdown()
+	_ = pw.Close()
+}
+
 // TestSessionShellFileCompletion checks the production wiring serves the
 // session's working directory through the composer's @-menu: typing @ plus
 // a query paints matching files, and Tab splices the pick into the prompt.
@@ -563,7 +633,7 @@ func TestSessionShellFileCompletion(t *testing.T) {
 	s, _ := newREPL(t, dir, memStore(t), llmtest.NewScripted(llmtest.SayText("ok")))
 	pr, pw := io.Pipe()
 	out := &syncOut{}
-	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24)
+	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false)
 	host.greet("")
 
 	done := make(chan error, 1)

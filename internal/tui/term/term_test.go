@@ -27,12 +27,12 @@ func TestSetupAndTeardownEmitNothingForZeroOptions(t *testing.T) {
 
 func TestSetupEnablesEverySelectedMode(t *testing.T) {
 	var b strings.Builder
-	o := term.Options{BracketedPaste: true, FocusEvents: true, KittyKeyboard: true, HideCursor: true}
+	o := term.Options{BracketedPaste: true, FocusEvents: true, KittyKeyboard: true, HideCursor: true, AltScreen: true}
 	if err := term.Setup(&b, o); err != nil {
 		t.Fatal(err)
 	}
 	out := b.String()
-	for _, want := range []string{"\x1b[?2004h", "\x1b[?1004h", "\x1b[>1u", "\x1b[?25l"} {
+	for _, want := range []string{"\x1b[?1049h", "\x1b[?2004h", "\x1b[?1004h", "\x1b[>1u", "\x1b[?25l"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("setup %q missing %q", out, want)
 		}
@@ -50,6 +50,7 @@ func TestProp_TeardownReversesSetup(t *testing.T) {
 			FocusEvents:    rapid.Bool().Draw(rt, "focus"),
 			KittyKeyboard:  rapid.Bool().Draw(rt, "kitty"),
 			HideCursor:     rapid.Bool().Draw(rt, "cursor"),
+			AltScreen:      rapid.Bool().Draw(rt, "alt"),
 		}
 		var up, down strings.Builder
 		if err := term.Setup(&up, o); err != nil {
@@ -59,6 +60,7 @@ func TestProp_TeardownReversesSetup(t *testing.T) {
 			rt.Fatalf("teardown: %v", err)
 		}
 		pairs := []struct{ enable, disable string }{
+			{"\x1b[?1049h", "\x1b[?1049l"},
 			{"\x1b[?2004h", "\x1b[?2004l"},
 			{"\x1b[?1004h", "\x1b[?1004l"},
 			{"\x1b[>1u", "\x1b[<1u"},

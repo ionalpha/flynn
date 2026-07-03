@@ -24,6 +24,33 @@ package screen
 
 import "github.com/charmbracelet/x/ansi"
 
+// Surface is the render target the shell drives: it turns frames into terminal
+// writes and owns whatever region of the terminal the session paints. Two
+// implementations back it. Painter renders inline and commits finalized lines
+// to the terminal's own scrollback, so native scrolling, selection, and search
+// keep working on the whole transcript; it is the default and the full-fidelity
+// path. AltPainter renders in the alternate screen for emulators where the
+// inline path's scroll-region insertion is unsafe (Zellij-class multiplexers):
+// it keeps its own bounded scrollback and repaints a full-screen viewport.
+//
+// Both share the same contract, so the shell drives either without knowing
+// which it holds. Every method is a no-op after the first write error, which
+// Err reports.
+type Surface interface {
+	// Resize records a new terminal size; the next paint re-renders at it.
+	Resize(width, height int)
+	// Paint shows frame as the live region, writing only what changed.
+	Paint(frame []string)
+	// Insert commits finalized above the live region, then shows frame.
+	Insert(finalized, frame []string)
+	// Repaint redraws frame from scratch, discarding any stale diff base.
+	Repaint(frame []string)
+	// Close finalizes the session's last frame and releases the surface.
+	Close()
+	// Err returns the first write error the surface hit, or nil.
+	Err() error
+}
+
 // Component is anything that can render itself as lines at a given width.
 // Each returned string is one terminal row, already styled and already
 // wrapped: the painter treats every line as exactly one row and hard-guards
