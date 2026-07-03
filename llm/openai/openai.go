@@ -266,7 +266,9 @@ func encodeMessage(m llm.Message) []chatMessage {
 				}
 			default:
 				// KindToolUse becomes assistant tool_calls elsewhere; KindOpaque has
-				// no OpenAI mapping.
+				// no OpenAI mapping. KindImage is not mapped here: this adapter sends
+				// string content, and OpenAI-style vision needs the content-array form,
+				// so image blocks are carried by the Anthropic backend only for now.
 			}
 		}
 		if text != "" {

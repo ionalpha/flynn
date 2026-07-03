@@ -12,6 +12,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 
@@ -246,6 +247,14 @@ func encodeBlocks(blocks []llm.Block, markLast bool) []json.RawMessage {
 		case llm.KindToolResult:
 			if b.ToolResult != nil {
 				v = map[string]any{"type": "tool_result", "tool_use_id": b.ToolResult.ToolUseID, "content": b.ToolResult.Content, "is_error": b.ToolResult.IsError}
+			}
+		case llm.KindImage:
+			if b.Image != nil {
+				v = map[string]any{"type": "image", "source": map[string]any{
+					"type":       "base64",
+					"media_type": b.Image.MediaType,
+					"data":       base64.StdEncoding.EncodeToString(b.Image.Data),
+				}}
 			}
 		case llm.KindOpaque:
 			if len(b.Raw) > 0 {

@@ -2,6 +2,7 @@ package anthropic
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -180,6 +181,34 @@ func TestErrorClassification(t *testing.T) {
 // TestBlockMappingProperty pins that assistant content (text, tool calls, and
 // opaque provider blocks) survives the encode-into-request then decode-from-response
 // mapping unchanged. This is the fidelity the thinking-block replay depends on.
+// TestEncodeImageBlockToBase64Source pins that an image block becomes an Anthropic
+// base64 image source block: the media type is carried through and the bytes are
+// base64-encoded, which is the wire shape the vision API expects.
+func TestEncodeImageBlockToBase64Source(t *testing.T) {
+	data := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
+	enc := encodeBlocks([]llm.Block{llm.ImageBlock("image/png", data)}, false)
+	if len(enc) != 1 {
+		t.Fatalf("want 1 encoded block, got %d", len(enc))
+	}
+	var got struct {
+		Type   string `json:"type"`
+		Source struct {
+			Type      string `json:"type"`
+			MediaType string `json:"media_type"`
+			Data      string `json:"data"`
+		} `json:"source"`
+	}
+	if err := json.Unmarshal(enc[0], &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Type != "image" || got.Source.Type != "base64" || got.Source.MediaType != "image/png" {
+		t.Fatalf("image block shape wrong: %+v", got)
+	}
+	if want := base64.StdEncoding.EncodeToString(data); got.Source.Data != want {
+		t.Fatalf("data = %q, want base64 %q", got.Source.Data, want)
+	}
+}
+
 func TestBlockMappingProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(0, 5).Draw(rt, "n")
