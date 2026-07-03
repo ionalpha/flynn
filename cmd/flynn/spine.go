@@ -85,6 +85,26 @@ func snapshotEvery() int {
 	return k
 }
 
+// defaultCheckpointEvery is how many recorded events pass between automatic signed
+// checkpoints of a served stream's durable Merkle log. A checkpoint flushes the tiles
+// and signs the head, so the cadence trades write-side work against how many events a
+// restart must re-fold past the last checkpoint. Overridable with FLYNN_CHECKPOINT_EVERY.
+const defaultCheckpointEvery = 256
+
+// checkpointEvery resolves the automatic checkpoint cadence from the environment,
+// defaulting to defaultCheckpointEvery. Zero checkpoints only on an explicit call.
+func checkpointEvery() int {
+	v := os.Getenv("FLYNN_CHECKPOINT_EVERY")
+	if v == "" {
+		return defaultCheckpointEvery
+	}
+	k, err := strconv.Atoi(v)
+	if err != nil || k < 0 {
+		return defaultCheckpointEvery
+	}
+	return k
+}
+
 // sealRun seals the recorded stream and stores the signed record as one event on the
 // run's stream, so the run is verifiable from the durable store afterwards. The
 // record event is appended through the underlying log, not the recorder, so it is

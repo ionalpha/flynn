@@ -93,6 +93,64 @@ func appendDurable(t *testing.T, rec *DurableRecorder, stream string, n int) {
 	}
 }
 
+// TestDurableRecorderEvictionReloads asserts a recorder capped below the number of
+// streams it touches stays correct: evicted streams reload from their checkpoint plus the
+// log, so every stream's final head still matches an independent fold and residency never
+// exceeds the cap.
+func TestDurableRecorderEvictionReloads(t *testing.T) {
+	ctx := context.Background()
+	priv, pub := testKey(0x51)
+	signer, err := NewEd25519RootSigner("inst", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring := NewRootKeyring()
+	if err := ring.Add("inst", pub); err != nil {
+		t.Fatal(err)
+	}
+
+	log := spine.NewMemoryLog()
+	stores := map[string]*durableFlushStore{}
+	nodes := func(s string) FlushNodeStore {
+		st, ok := stores[s]
+		if !ok {
+			st = &durableFlushStore{newTiledNodeStore()}
+			stores[s] = st
+		}
+		return st
+	}
+	ckpts := newFakeCheckpointStore()
+	const cap = 4
+	rec := NewDurableRecorder(log, nodes, ckpts, signer, nil, 10).WithMaxResident(cap)
+
+	streams := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	// Two interleaved passes so streams are revisited after being evicted.
+	for range 2 {
+		for _, s := range streams {
+			appendDurable(t, rec, s, 15)
+			if resident := len(rec.streams); resident > cap {
+				t.Fatalf("resident streams = %d, want <= %d", resident, cap)
+			}
+		}
+	}
+	for _, s := range streams {
+		if err := rec.Checkpoint(ctx, s); err != nil {
+			t.Fatalf("checkpoint %s: %v", s, err)
+		}
+		_, cose, ok, err := ckpts.LatestCheckpoint(ctx, s)
+		if err != nil || !ok {
+			t.Fatalf("no checkpoint for %s (err=%v)", s, err)
+		}
+		cp, err := VerifyCheckpoint(cose, ring)
+		if err != nil {
+			t.Fatalf("checkpoint %s does not verify: %v", s, err)
+		}
+		if want := referenceRoot(t, log, s); !bytes.Equal(cp.RootHash, want) {
+			t.Fatalf("stream %s head after eviction/reload does not match the log fold", s)
+		}
+	}
+}
+
 // TestDurableRecorderCadenceAndResume is the wiring gate: a durable recorder signs a
 // checkpoint every K events and its head matches an independent fold of the log; after a
 // restart it resumes from the latest checkpoint, catches the tree up from the log's

@@ -31,22 +31,32 @@ type CheckpointStore interface {
 // from the latest checkpoint plus the events after it. It is itself a spine.Log, so it
 // drops in wherever a Log is expected.
 //
-// Recording is not best effort: a durable log that cannot persist its proof material
-// surfaces the error, because a checkpoint that is not backed by tiles would be a claim
-// the store cannot prove. The events remain the source of truth, so a stream can always
-// be caught up from the log after a transient failure.
+// Recording never fails an Append: the wrapped append is the source of truth, so a
+// recording or checkpoint error is routed to an error handler and the event is still
+// returned, exactly as the RecordingLog keeps producing events when its integrity layer
+// stumbles. A stream is caught up from the log after a transient failure, and an explicit
+// Checkpoint (used to seal a stream's tip) does surface its error.
 type DurableRecorder struct {
 	spine.Log
 
-	signer RootSigner
-	origin OriginFunc
-	ckpts  CheckpointStore
-	nodes  func(stream string) FlushNodeStore
-	every  int
+	signer      RootSigner
+	origin      OriginFunc
+	ckpts       CheckpointStore
+	nodes       func(stream string) FlushNodeStore
+	every       int
+	onErr       func(error)
+	maxResident int
 
 	mu      sync.Mutex
 	streams map[string]*durableStream
 }
+
+// defaultMaxResident bounds how many streams' live Merkle logs a recorder keeps in
+// memory at once. A server that touches many streams over its life evicts the least
+// recently loaded rather than holding a tree per stream forever; an evicted stream
+// rebuilds from its checkpoint plus the log on the next append, so eviction is only a
+// reload cost, never a loss.
+const defaultMaxResident = 128
 
 type durableStream struct {
 	tree    *Tree
@@ -63,14 +73,23 @@ var _ spine.Log = (*DurableRecorder)(nil)
 // call.
 func NewDurableRecorder(inner spine.Log, nodes func(stream string) FlushNodeStore, ckpts CheckpointStore, signer RootSigner, originFor OriginFunc, every int) *DurableRecorder {
 	return &DurableRecorder{
-		Log:     inner,
-		signer:  signer,
-		origin:  originFor,
-		ckpts:   ckpts,
-		nodes:   nodes,
-		every:   every,
-		streams: map[string]*durableStream{},
+		Log:         inner,
+		signer:      signer,
+		origin:      originFor,
+		ckpts:       ckpts,
+		nodes:       nodes,
+		every:       every,
+		maxResident: defaultMaxResident,
+		streams:     map[string]*durableStream{},
 	}
+}
+
+// WithMaxResident overrides how many streams stay resident before the recorder evicts
+// the excess. A non-positive n disables eviction (every touched stream stays resident).
+// It returns the recorder for chaining.
+func (r *DurableRecorder) WithMaxResident(n int) *DurableRecorder {
+	r.maxResident = n
+	return r
 }
 
 func (r *DurableRecorder) originFor(stream string) string {
@@ -80,8 +99,17 @@ func (r *DurableRecorder) originFor(stream string) string {
 	return stream
 }
 
+// OnError sets the handler called when best-effort recording or an automatic checkpoint
+// fails during Append. It returns the recorder for chaining. With no handler set, such an
+// error is dropped (the stream still catches up from the log later).
+func (r *DurableRecorder) OnError(fn func(error)) *DurableRecorder {
+	r.onErr = fn
+	return r
+}
+
 // Append delegates to the wrapped log, then records the assigned event's leaf into its
-// stream's durable Merkle log, checkpointing when the cadence is reached.
+// stream's durable Merkle log, checkpointing when the cadence is reached. Recording is
+// best effort: a failure never fails the append, it is routed to the error handler.
 func (r *DurableRecorder) Append(ctx context.Context, in spine.AppendInput) (spine.Event, error) {
 	e, err := r.Log.Append(ctx, in)
 	if err != nil {
@@ -89,24 +117,31 @@ func (r *DurableRecorder) Append(ctx context.Context, in spine.AppendInput) (spi
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if rerr := r.record(ctx, e); rerr != nil && r.onErr != nil {
+		r.onErr(rerr)
+	}
+	return e, nil
+}
+
+// record folds one event into its stream's durable Merkle log and checkpoints on cadence.
+// The caller holds r.mu.
+func (r *DurableRecorder) record(ctx context.Context, e spine.Event) error {
 	s, err := r.streamFor(ctx, e.Stream, e.Seq)
 	if err != nil {
-		return e, err
+		return err
 	}
 	cb, err := CanonicalBytes(e)
 	if err != nil {
-		return e, err
+		return err
 	}
 	if err := s.tree.Append(cb); err != nil {
-		return e, err
+		return err
 	}
 	s.pending++
 	if r.every > 0 && s.pending >= r.every {
-		if err := r.checkpointLocked(ctx, e.Stream, s); err != nil {
-			return e, err
-		}
+		return r.checkpointLocked(ctx, e.Stream, s)
 	}
-	return e, nil
+	return nil
 }
 
 // Checkpoint forces a signed checkpoint for a stream at its current recorded length,
@@ -121,6 +156,21 @@ func (r *DurableRecorder) Checkpoint(ctx context.Context, stream string) error {
 		return err
 	}
 	return r.checkpointLocked(ctx, stream, s)
+}
+
+// CheckpointAll seals the tip of every stream recorded in this process, so a graceful
+// shutdown persists the full length of each live stream. It returns the first error and
+// keeps going, so one stream's failure does not skip the rest.
+func (r *DurableRecorder) CheckpointAll(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var first error
+	for stream, s := range r.streams {
+		if err := r.checkpointLocked(ctx, stream, s); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
 }
 
 // streamFor returns the recorder's live Merkle log for a stream, loading it on first
@@ -170,7 +220,31 @@ func (r *DurableRecorder) streamFor(ctx context.Context, stream string, beforeSe
 	}
 	s := &durableStream{tree: tree, store: store}
 	r.streams[stream] = s
+	r.evictExcessLocked(stream)
 	return s, nil
+}
+
+// evictExcessLocked drops resident streams beyond the cap, never the one just loaded. An
+// evicted stream reloads from its checkpoint plus the log when next appended to, so this
+// bounds memory without losing any history. The caller holds r.mu.
+func (r *DurableRecorder) evictExcessLocked(keep string) {
+	if r.maxResident <= 0 {
+		return
+	}
+	for len(r.streams) > r.maxResident {
+		evicted := false
+		for k := range r.streams {
+			if k == keep {
+				continue
+			}
+			delete(r.streams, k)
+			evicted = true
+			break
+		}
+		if !evicted {
+			return
+		}
+	}
 }
 
 // checkpointLocked flushes the stream's tiles, signs its current head, and persists the

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
@@ -61,11 +62,38 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	store, err := openDataStore(ctx, dataDir)
+	// Load the instance signer so the served spine is durably chained and its resource
+	// snapshots are verified under the same key. Best effort: without an identity the
+	// server runs unsigned (no chain, unverified snapshots) rather than failing to start.
+	signer, serr := runSigner(ctx, dataDir)
+	if serr != nil {
+		signer = nil
+	}
+	store, err := openDataStore(ctx, dataDir, snapshotOptions(signer)...)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+
+	// Durably record the served spine into a per-stream RFC 6962 Merkle log with periodic
+	// signed checkpoints, so a long-lived server's proof material stays bounded and every
+	// recorded stream can be verified after a restart. Recording is best effort and never
+	// fails an append; the tip of each stream is sealed on shutdown.
+	servedLog := store.Log()
+	if signer != nil {
+		rec := chain.NewDurableRecorder(store.Log(),
+			func(s string) chain.FlushNodeStore { return store.MerkleNodes(s) },
+			store, signer, nil, checkpointEvery()).
+			OnError(func(e error) { fmt.Fprintln(os.Stderr, "serve: chain:", e) })
+		servedLog = rec
+		defer func() {
+			cctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if cerr := rec.CheckpointAll(cctx); cerr != nil {
+				fmt.Fprintln(os.Stderr, "serve: checkpoint on shutdown:", cerr)
+			}
+		}()
+	}
 
 	reg, err := missionRegistry()
 	if err != nil {
@@ -148,7 +176,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 			fmt.Fprintln(os.Stderr, "  FLYNN_API_TOKEN="+tok)
 			fmt.Fprintln(os.Stderr, "  present it as: Authorization: Bearer "+tok)
 		}
-		api := controlplane.NewServer(rstore, store.Log(), auth)
+		api := controlplane.NewServer(rstore, servedLog, auth)
 		// Bind-safe by default: the listener is opened through the inbound gate, which
 		// refuses a wildcard bind outright and a non-loopback bind unless --api-expose
 		// was passed. The bind is checked before the socket opens, so an unsafe address
@@ -195,7 +223,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	mr, err := assembleMission(model, plan, workdir, "", rstore, store.Jobs(), store.Log(), "")
+	mr, err := assembleMission(model, plan, workdir, "", rstore, store.Jobs(), servedLog, "")
 	if err != nil {
 		return err
 	}
