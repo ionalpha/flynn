@@ -69,7 +69,28 @@ func (s *resourceStore) Snapshot(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.p.Log().SaveSnapshot(ctx, spine.Snapshot{Stream: resource.ResourceStream, Seq: lastSeq, Payload: payload})
+	snap := spine.Snapshot{Stream: resource.ResourceStream, Seq: lastSeq, Payload: payload}
+	if s.p.snapCodec != nil {
+		if snap, err = s.p.snapCodec.Seal(ctx, s.p.Log(), snap); err != nil {
+			return err
+		}
+	}
+	return s.p.Log().SaveSnapshot(ctx, snap)
+}
+
+// maybeSnapshot counts one committed mutation toward the automatic snapshot
+// cadence and checkpoints the stream when the cadence is reached. It runs after
+// the mutation's transaction commits and best effort: a snapshot failure never
+// fails the write it followed.
+func (s *resourceStore) maybeSnapshot(ctx context.Context) {
+	if s.p.snapEvery <= 0 {
+		return
+	}
+	if s.p.snapPending.Add(1) < int64(s.p.snapEvery) {
+		return
+	}
+	s.p.snapPending.Store(0)
+	_ = s.Snapshot(ctx)
 }
 
 // Log exposes the shared spine so the resource stream can be observed or folded;
@@ -84,7 +105,7 @@ func (s *resourceStore) Log() spine.Log { return s.p.Log() }
 // what it just encoded; applyResourceEvent performs the identical projection
 // from the payload during Rebuild.
 func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (resource.Resource, spine.AppendInput, error)) error {
-	return s.p.tx(ctx, func(tx *sql.Tx) error {
+	err := s.p.tx(ctx, func(tx *sql.Tx) error {
 		rec, in, err := build(tx)
 		if err != nil {
 			return err
@@ -94,16 +115,31 @@ func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (reso
 		}
 		return upsertResourceRow(ctx, tx, s.p, rec)
 	})
+	if err == nil {
+		s.maybeSnapshot(ctx)
+	}
+	return err
 }
 
 // Rebuild reprojects the resources table from the resource event stream, the proof
 // the log is authoritative; idempotent (every event is a post-image applied by id).
+// It resumes from the stream's latest usable snapshot and folds only the events
+// after it, so a rebuild stays bounded as the stream grows; a snapshot that cannot
+// be verified (with a codec set) or decoded is skipped and the whole stream is
+// folded instead - only slower, never wrong. The full fold from the start remains
+// the deep audit path: rebuild with no snapshot stored and compare.
 func (s *resourceStore) Rebuild(ctx context.Context) error {
-	events, err := s.p.Log().Read(ctx, spine.Query{Stream: resource.ResourceStream})
+	restored, afterSeq := s.snapshotForRebuild(ctx)
+	events, err := s.p.Log().Read(ctx, spine.Query{Stream: resource.ResourceStream, AfterSeq: afterSeq})
 	if err != nil {
 		return err
 	}
 	return s.p.tx(ctx, func(tx *sql.Tx) error {
+		for _, r := range restored {
+			if err := upsertResourceRow(ctx, tx, s.p, r); err != nil {
+				return err
+			}
+		}
 		for _, e := range events {
 			if err := applyResourceEvent(ctx, tx, s.p, e); err != nil {
 				return err
@@ -111,6 +147,28 @@ func (s *resourceStore) Rebuild(ctx context.Context) error {
 		}
 		return nil
 	})
+}
+
+// snapshotForRebuild returns the records and seq of the latest usable resource
+// snapshot, or (nil, 0) to fold the whole stream: no snapshot, one the codec
+// rejects, or one that does not decode all fall back the same way. With a codec
+// set, a snapshot that fails verification is never restored - the fallback is the
+// fail-closed path, not an error.
+func (s *resourceStore) snapshotForRebuild(ctx context.Context) ([]resource.Resource, int64) {
+	snap, found, err := s.p.Log().LatestSnapshot(ctx, resource.ResourceStream, 0)
+	if err != nil || !found {
+		return nil, 0
+	}
+	if s.p.snapCodec != nil {
+		if snap, err = s.p.snapCodec.Open(ctx, snap); err != nil {
+			return nil, 0
+		}
+	}
+	restored, lastSeq, err := resource.UnmarshalSnapshot(snap.Payload)
+	if err != nil {
+		return nil, 0
+	}
+	return restored, lastSeq
 }
 
 func (s *resourceStore) Put(ctx context.Context, r resource.Resource) (resource.Resource, error) {
@@ -279,6 +337,9 @@ func (s *resourceStore) Merge(ctx context.Context, remote resource.Resource) (re
 	})
 	if err != nil {
 		return resource.MergeResult{}, err
+	}
+	if res.Outcome == resource.MergeApplied {
+		s.maybeSnapshot(ctx)
 	}
 	return res, nil
 }

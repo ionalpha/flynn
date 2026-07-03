@@ -69,11 +69,11 @@ const defaultCompactionBudget = 100_000
 // openStore opens the durable SQLite store at dsn, or an ephemeral in-memory one
 // when dsn is empty (used by tests and one-off runs). The same store backs the
 // runtime's resources and job queue and the learning loop's skills and memory.
-func openStore(ctx context.Context, dsn string) (*sqlite.Store, error) {
+func openStore(ctx context.Context, dsn string, opts ...sqlite.Option) (*sqlite.Store, error) {
 	if dsn == "" {
 		dsn = ":memory:"
 	}
-	return sqlite.Open(ctx, dsn)
+	return sqlite.Open(ctx, dsn, opts...)
 }
 
 // dataStoreFile is the path of the durable database file under a data directory, or empty
@@ -89,14 +89,14 @@ func dataStoreFile(dataDir string) string {
 // openDataStore opens the durable store under a data directory, creating the
 // directory and resolving the database file inside it. An empty or ":memory:"
 // dataDir opens an ephemeral store.
-func openDataStore(ctx context.Context, dataDir string) (*sqlite.Store, error) {
+func openDataStore(ctx context.Context, dataDir string, opts ...sqlite.Option) (*sqlite.Store, error) {
 	dsn := dataStoreFile(dataDir)
 	if dsn != "" {
 		if err := os.MkdirAll(dataDir, 0o750); err != nil {
 			return nil, err
 		}
 	}
-	return openStore(ctx, dsn)
+	return openStore(ctx, dsn, opts...)
 }
 
 // listRuns prints the runs recorded in the durable store: their id, phase, step
@@ -271,7 +271,8 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		log = rec
 	}
 
-	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, store.Resources(reg), store.Jobs(), log, verbose, "", fanout)
+	resources := store.Resources(reg)
+	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout)
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -300,6 +301,13 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 			_, _ = fmt.Fprintf(out, "  (run not sealed: %v)\n", serr)
 		} else {
 			_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", source)
+		}
+		// Checkpoint the resource projection alongside the sealed run, so a later
+		// rebuild resumes from a verified snapshot instead of folding the whole
+		// stream. Best effort, like the seal: a snapshot is a derived cache, and a
+		// missing one is only slower, never wrong.
+		if serr := resources.Snapshot(ctx); serr != nil {
+			_, _ = fmt.Fprintf(out, "  (resources not snapshotted: %v)\n", serr)
 		}
 	}
 

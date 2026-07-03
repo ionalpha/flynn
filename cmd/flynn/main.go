@@ -217,7 +217,16 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		return err
 	}
 
-	store, err := openDataStore(ctx, dataDir)
+	// Load the instance signer so the run is sealed into a verifiable record. This is
+	// best effort: if the identity cannot be loaded, the run proceeds unsigned rather
+	// than failing. Loaded before the store so the store's snapshots are sealed under
+	// the same key: with a signer, resource snapshots are verified (checkpoint-bound,
+	// COSE-signed) and written automatically as the stream grows.
+	signer, serr := runSigner(ctx, dataDir)
+	if serr != nil {
+		signer = nil
+	}
+	store, err := openDataStore(ctx, dataDir, snapshotOptions(signer)...)
 	if err != nil {
 		return err
 	}
@@ -235,14 +244,6 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 	var fc *fanoutConfig
 	if fanout {
 		fc = &fanoutConfig{resolveModel: childModelResolver(ctx, dataDir)}
-	}
-
-	// Load the instance signer so the run is sealed into a verifiable record. This is
-	// best effort: if the identity cannot be loaded, the run proceeds unsigned rather
-	// than failing.
-	signer, serr := runSigner(ctx, dataDir)
-	if serr != nil {
-		signer = nil
 	}
 
 	// The objective and the final answer are rendered from the run's own events

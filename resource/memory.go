@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"sync/atomic"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/hlc"
@@ -56,6 +57,29 @@ func WithIDGenerator(g *ids.Generator) Option {
 	}
 }
 
+// WithSnapshotCodec makes the store's snapshots verified: Snapshot seals the
+// projection payload through the codec before saving it, and Replay opens
+// (verifies) a stored snapshot through it before restoring - one that fails to
+// open is skipped and the stream is folded from the start instead. With a codec
+// set, an unsigned or tampered snapshot is never restored.
+func WithSnapshotCodec(c spine.SnapshotCodec) Option {
+	return func(s *memStore) {
+		s.snapCodec = c
+	}
+}
+
+// WithSnapshotEvery makes the store checkpoint itself automatically: after every
+// k successful mutations it writes a snapshot, so a later Replay folds at most k
+// events past the last checkpoint instead of the whole stream. The snapshot is
+// written after the mutation completes, outside any lock, and best effort: a
+// snapshot failure never fails the write (a missing snapshot is only slower,
+// never wrong). Zero or negative disables automatic snapshots (the default).
+func WithSnapshotEvery(k int) Option {
+	return func(s *memStore) {
+		s.snapEvery = k
+	}
+}
+
 // NewMemory returns an in-memory Store admitting against reg. Every mutation is
 // recorded on a spine.Log and projected, so the store's state is always a fold of
 // its log (see Replay). Safe for concurrent use; the zero-setup default backend.
@@ -91,6 +115,10 @@ type memStore struct {
 	gen        *ids.Generator
 	reg        *Registry
 	core       *core
+
+	snapCodec   spine.SnapshotCodec
+	snapEvery   int
+	snapPending atomic.Int64
 }
 
 // Log returns the spine this store records mutations on, so the stream can be
@@ -101,6 +129,14 @@ func (s *memStore) Log() spine.Log { return s.log }
 func (s *memStore) Close() error { return nil }
 
 func (s *memStore) Put(ctx context.Context, r Resource) (Resource, error) {
+	rec, err := s.put(ctx, r)
+	if err == nil {
+		s.maybeSnapshot(ctx)
+	}
+	return rec, err
+}
+
+func (s *memStore) put(ctx context.Context, r Resource) (Resource, error) {
 	c := s.core
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -120,6 +156,14 @@ func (s *memStore) Put(ctx context.Context, r Resource) (Resource, error) {
 }
 
 func (s *memStore) Merge(ctx context.Context, remote Resource) (MergeResult, error) {
+	res, err := s.merge(ctx, remote)
+	if err == nil && res.Outcome == MergeApplied {
+		s.maybeSnapshot(ctx)
+	}
+	return res, err
+}
+
+func (s *memStore) merge(ctx context.Context, remote Resource) (MergeResult, error) {
 	if err := ValidateForMerge(remote); err != nil {
 		return MergeResult{}, err
 	}
@@ -240,6 +284,14 @@ func (s *memStore) ListKeys(_ context.Context, kind string) ([]Key, error) {
 }
 
 func (s *memStore) Delete(ctx context.Context, kind string, scope Scope, name string) error {
+	err := s.deleteRecord(ctx, kind, scope, name)
+	if err == nil {
+		s.maybeSnapshot(ctx)
+	}
+	return err
+}
+
+func (s *memStore) deleteRecord(ctx context.Context, kind string, scope Scope, name string) error {
 	c := s.core
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -432,9 +484,22 @@ func Replay(ctx context.Context, log spine.Log, reg *Registry, opts ...Option) (
 	if err != nil {
 		return nil, err
 	}
+	if found && s.snapCodec != nil {
+		// A codec makes restore fail closed: only a snapshot the codec verifies is
+		// restored. One that fails to open (tampered, unsigned, signed by an unknown
+		// key) is skipped and the stream folds from the start - only slower, never
+		// wrong.
+		opened, oerr := s.snapCodec.Open(ctx, snap)
+		if oerr != nil {
+			found = false
+		} else {
+			snap = opened
+		}
+	}
 	if found {
 		if err := s.core.restore(snap.Payload); err != nil {
-			return nil, err
+			// A snapshot is a derived cache; an unreadable one falls back to the log.
+			s.core.reset()
 		}
 	}
 
@@ -475,7 +540,28 @@ func (s *memStore) Snapshot(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return s.log.SaveSnapshot(ctx, spine.Snapshot{Stream: ResourceStream, Seq: lastSeq, Payload: b})
+	snap := spine.Snapshot{Stream: ResourceStream, Seq: lastSeq, Payload: b}
+	if s.snapCodec != nil {
+		if snap, err = s.snapCodec.Seal(ctx, s.log, snap); err != nil {
+			return err
+		}
+	}
+	return s.log.SaveSnapshot(ctx, snap)
+}
+
+// maybeSnapshot counts one successful mutation toward the automatic snapshot
+// cadence and checkpoints the store when the cadence is reached. It runs after
+// the mutation, outside the store lock, and best effort: a snapshot failure never
+// fails the write it followed.
+func (s *memStore) maybeSnapshot(ctx context.Context) {
+	if s.snapEvery <= 0 {
+		return
+	}
+	if s.snapPending.Add(1) < int64(s.snapEvery) {
+		return
+	}
+	s.snapPending.Store(0)
+	_ = s.Snapshot(ctx)
 }
 
 // MarshalSnapshot serializes a projection (all its records, live and tombstoned,
@@ -488,19 +574,39 @@ func MarshalSnapshot(resources []Resource, lastSeq int64) ([]byte, error) {
 	return json.Marshal(snapshotPayload{Resources: resources, LastSeq: lastSeq})
 }
 
+// UnmarshalSnapshot decodes a snapshot payload back into the records and the Seq
+// it is current as of - the inverse of MarshalSnapshot, so any backend restores
+// from the one shared format.
+func UnmarshalSnapshot(payload []byte) ([]Resource, int64, error) {
+	var pay snapshotPayload
+	if err := json.Unmarshal(payload, &pay); err != nil {
+		return nil, 0, err
+	}
+	return pay.Resources, pay.LastSeq, nil
+}
+
 // restore rebuilds the read model from a snapshot payload, reconstructing the
 // name index from the records. Callers hold mu.
 func (c *core) restore(payload []byte) error {
-	var pay snapshotPayload
-	if err := json.Unmarshal(payload, &pay); err != nil {
+	resources, lastSeq, err := UnmarshalSnapshot(payload)
+	if err != nil {
 		return err
 	}
-	c.byID = make(map[string]Resource, len(pay.Resources))
-	c.nameIndex = make(map[Key]string, len(pay.Resources))
+	c.byID = make(map[string]Resource, len(resources))
+	c.nameIndex = make(map[Key]string, len(resources))
 	c.live = map[string]map[Scope]map[string]struct{}{}
-	for _, r := range pay.Resources {
+	for _, r := range resources {
 		c.project(r)
 	}
-	c.lastSeq = pay.LastSeq
+	c.lastSeq = lastSeq
 	return nil
+}
+
+// reset returns the projection to its empty state, so a failed restore leaves a
+// store that folds from the start of the stream. Callers hold mu.
+func (c *core) reset() {
+	c.byID = map[string]Resource{}
+	c.nameIndex = map[Key]string{}
+	c.live = map[string]map[Scope]map[string]struct{}{}
+	c.lastSeq = 0
 }

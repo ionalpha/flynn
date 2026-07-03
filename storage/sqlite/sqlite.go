@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
@@ -77,6 +78,30 @@ func WithIDGenerator(g *ids.Generator) Option {
 	}
 }
 
+// WithSnapshotCodec makes the resource stream's snapshots verified: Snapshot
+// seals the projection payload through the codec before saving it, and Rebuild
+// opens (verifies) a stored snapshot through it before restoring - one that fails
+// to open is skipped and the stream is folded from the start instead. With a
+// codec set, an unsigned or tampered snapshot is never restored.
+func WithSnapshotCodec(c spine.SnapshotCodec) Option {
+	return func(s *Store) {
+		s.snapCodec = c
+	}
+}
+
+// WithSnapshotEvery makes the resource store checkpoint itself automatically:
+// after every k successful mutations it writes a snapshot, so a rebuild folds at
+// most k events past the last checkpoint instead of the whole stream. The
+// snapshot is written after the mutation's transaction commits, off the hot write
+// path, and best effort: a snapshot failure never fails the write (a missing
+// snapshot is only slower, never wrong). Zero or negative disables automatic
+// snapshots (the default).
+func WithSnapshotEvery(k int) Option {
+	return func(s *Store) {
+		s.snapEvery = k
+	}
+}
+
 // Store is the SQLite backend. It implements state.Provider (sessions, skills,
 // memory) and exposes the event spine via Log(), all over one database and one
 // connection so cross-domain work shares a single file and transaction.
@@ -98,6 +123,13 @@ type Store struct {
 	// on the Store because Jobs() builds a fresh facade per call: every facade
 	// must share one channel or a worker would miss another facade's enqueues.
 	jobsReady chan struct{}
+	// snapCodec seals resource snapshots on write and verifies them on read (see
+	// WithSnapshotCodec); snapEvery/snapPending drive the automatic snapshot
+	// cadence (see WithSnapshotEvery). They live on the Store because Resources()
+	// builds a fresh facade per call and every facade must share one counter.
+	snapCodec   spine.SnapshotCodec
+	snapEvery   int
+	snapPending atomic.Int64
 }
 
 var _ state.Provider = (*Store)(nil)

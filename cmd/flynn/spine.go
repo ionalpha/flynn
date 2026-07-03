@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
@@ -33,6 +34,55 @@ func runSigner(ctx context.Context, dataDir string) (chain.RootSigner, error) {
 		return nil, err
 	}
 	return chain.NewEd25519RootSigner(id.ID(), ed25519.NewKeyFromSeed(id.Seed()))
+}
+
+// defaultSnapshotEvery is the automatic snapshot cadence: how many resource
+// mutations pass between verified checkpoints. Overridable with
+// FLYNN_SNAPSHOT_EVERY (0 disables automatic snapshots). Sealing a snapshot folds
+// the stream prefix once, so the cadence trades that write-side cost against how
+// many events a rebuild must fold past the last checkpoint.
+const defaultSnapshotEvery = 256
+
+// snapshotOptions builds the store options that activate verified snapshots under
+// the instance signer: snapshots are sealed (checkpoint-bound, COSE-signed) with
+// the run key and verified against its self-certifying public key on rebuild.
+// With no signer it returns nothing: an unverified snapshot would be a trust hole
+// ("just believe this blob"), so without a key the store folds from the log alone.
+func snapshotOptions(signer chain.RootSigner) []sqlite.Option {
+	if signer == nil {
+		return nil
+	}
+	ss, ok := signer.(chain.SnapshotSigner)
+	if !ok {
+		return nil
+	}
+	pub, err := controlplane.ParsePrincipalID(signer.KeyID())
+	if err != nil {
+		return nil
+	}
+	ring := chain.NewRootKeyring()
+	if err := ring.Add(signer.KeyID(), pub); err != nil {
+		return nil
+	}
+	sealer, err := chain.NewSnapshotSealer(ss, ring, nil)
+	if err != nil {
+		return nil
+	}
+	return []sqlite.Option{sqlite.WithSnapshotCodec(sealer), sqlite.WithSnapshotEvery(snapshotEvery())}
+}
+
+// snapshotEvery resolves the automatic snapshot cadence from the environment,
+// defaulting to defaultSnapshotEvery. Zero disables automatic snapshots.
+func snapshotEvery() int {
+	v := os.Getenv("FLYNN_SNAPSHOT_EVERY")
+	if v == "" {
+		return defaultSnapshotEvery
+	}
+	k, err := strconv.Atoi(v)
+	if err != nil || k < 0 {
+		return defaultSnapshotEvery
+	}
+	return k
 }
 
 // sealRun seals the recorded stream and stores the signed record as one event on the
