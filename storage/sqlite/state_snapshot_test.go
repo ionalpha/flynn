@@ -157,3 +157,59 @@ func TestStateRebuildTamperedSnapshotFallsBack(t *testing.T) {
 		t.Fatalf("rebuild after tamper differs from the live projection:\n live=%s\n got=%s", live, got)
 	}
 }
+
+// BenchmarkStateRebuild is the two-point flatness gate for state snapshots: history grows
+// (the same skill is revised n times) while the live projection stays a single record, and
+// a snapshot sits at the head. A rebuild then restores the one record and folds an empty
+// suffix, so its cost stays flat as history grows. Run at history sizes n and 2n; the
+// per-op time should not roughly double the way a fold from seq 0 would.
+func BenchmarkStateRebuild(b *testing.B) {
+	for _, n := range []int{200, 400} {
+		b.Run(fmt.Sprintf("history=%d", n), func(b *testing.B) {
+			ctx := context.Background()
+			store, err := Open(ctx, ":memory:", WithSnapshotCodec(benchSealer(b)))
+			if err != nil {
+				b.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+			for i := range n {
+				if _, err := store.Skills().Upsert(ctx, state.Skill{Slug: "same", Name: fmt.Sprintf("v%d", i), Body: "x"}); err != nil {
+					b.Fatal(err)
+				}
+			}
+			if err := store.SnapshotState(ctx); err != nil {
+				b.Fatal(err)
+			}
+			b.ResetTimer()
+			for range b.N {
+				if err := store.Rebuild(ctx); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
+// benchSealer builds a snapshot sealer for benchmarks, mirroring stateSealer without a
+// *testing.T.
+func benchSealer(b *testing.B) *chain.SnapshotSealer {
+	b.Helper()
+	seed := make([]byte, ed25519.SeedSize)
+	for i := range seed {
+		seed[i] = 0x3c
+	}
+	priv := ed25519.NewKeyFromSeed(seed)
+	signer, err := chain.NewEd25519RootSigner("inst-1", priv)
+	if err != nil {
+		b.Fatal(err)
+	}
+	ring := chain.NewRootKeyring()
+	if err := ring.Add("inst-1", priv.Public().(ed25519.PublicKey)); err != nil {
+		b.Fatal(err)
+	}
+	sealer, err := chain.NewSnapshotSealer(signer, ring, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	return sealer
+}
