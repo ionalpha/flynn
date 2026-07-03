@@ -130,6 +130,9 @@ type Store struct {
 	snapCodec   spine.SnapshotCodec
 	snapEvery   int
 	snapPending atomic.Int64
+	// snapPendingState drives the state stream's snapshot cadence, kept separate from
+	// snapPending so the resource and state streams checkpoint on their own counts.
+	snapPendingState atomic.Int64
 }
 
 var _ state.Provider = (*Store)(nil)
@@ -279,7 +282,7 @@ func (s *Store) Close() error {
 // carries), so the live path never decodes what it just encoded; applyEvent
 // performs the identical projection from the payload during Rebuild.
 func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.AppendInput, func(tx *sql.Tx) error, error)) error {
-	return s.tx(ctx, func(tx *sql.Tx) error {
+	err := s.tx(ctx, func(tx *sql.Tx) error {
 		in, project, err := build(tx)
 		if err != nil {
 			return err
@@ -289,19 +292,29 @@ func (s *Store) commit(ctx context.Context, build func(tx *sql.Tx) (spine.Append
 		}
 		return project(tx)
 	})
+	if err == nil {
+		s.maybeSnapshotState(ctx)
+	}
+	return err
 }
 
 // Rebuild reprojects the state tables from the event log: it folds the state
 // stream through the same applyEvent the live write path uses, so the projection
-// is reconciled to the log. It is idempotent (every event is the post-image of its
-// record, applied by id), so running it repeatedly is safe. Its existence is the
-// proof that the log is the source of truth and the tables are a derived view.
+// is reconciled to the log. It resumes from the stream's latest usable snapshot and
+// folds only the events after it, so a rebuild stays bounded as the stream grows; a
+// snapshot that cannot be verified (with a codec set) or decoded is skipped and the
+// whole stream is folded instead - only slower, never wrong. It is idempotent (every
+// record is applied by id), so running it repeatedly is safe.
 func (s *Store) Rebuild(ctx context.Context) error {
-	events, err := s.Log().Read(ctx, spine.Query{Stream: state.StateStream})
+	restored, afterSeq := s.stateSnapshotForRebuild(ctx)
+	events, err := s.Log().Read(ctx, spine.Query{Stream: state.StateStream, AfterSeq: afterSeq})
 	if err != nil {
 		return err
 	}
 	return s.tx(ctx, func(tx *sql.Tx) error {
+		if err := s.restoreStateSnapshot(ctx, tx, restored); err != nil {
+			return err
+		}
 		for _, e := range events {
 			if err := s.applyEvent(ctx, tx, e); err != nil {
 				return err
