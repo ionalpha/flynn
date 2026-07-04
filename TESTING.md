@@ -26,7 +26,7 @@ generator or a fault plan once, reuse it in every package.
 ## Deferred (planned, not yet wired)
 
 - **Deterministic concurrency:** `testing/synctest` (a fake-clock "bubble" with
-  deterministic goroutine scheduling), GA in Go 1.25 and available now, is pending
+  deterministic goroutine scheduling), now GA in the standard library, is pending
   adoption. It will replace sleep-based concurrency tests.
 - **Benchmarks:** stdlib `testing.B` + `benchstat` for dispatch and spine overhead.
 - **Mutation testing:** a CI job to verify the suite actually catches injected bugs.

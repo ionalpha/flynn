@@ -31,8 +31,8 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # Floor is Go 1.26: modernc.org/sqlite needs at least 1.25, and 1.26 makes the
-        # Green Tea GC the default and adds crypto/hpke to the standard library.
+        # Floor is Go 1.26: it makes the Green Tea GC the default and adds
+        # crypto/hpke to the standard library, and satisfies modernc.org/sqlite.
         go: ["1.26"]
     steps:
       # Actions are pinned to a full commit SHA; Dependabot (.github/dependabot.yml) bumps them.

@@ -31,7 +31,7 @@ func writePkg(t *testing.T, root, rel, pkgName string, testFiles map[string]stri
 func TestCheckDetectsViolations(t *testing.T) {
 	const mod = "example.com/m"
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+mod+"\n\ngo 1.25\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+mod+"\n\ngo 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -96,7 +96,7 @@ func TestCheckDetectsViolations(t *testing.T) {
 func TestFuzzDetection(t *testing.T) {
 	const mod = "example.com/m"
 	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+mod+"\n\ngo 1.25\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module "+mod+"\n\ngo 1.26\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	writePkg(t, root, "p", "p", map[string]string{
