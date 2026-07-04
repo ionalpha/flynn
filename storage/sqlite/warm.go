@@ -25,10 +25,11 @@ import (
 	"errors"
 	"fmt"
 
+	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
+
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/internal/sqlitex"
 	"github.com/ionalpha/flynn/spine"
-	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
 )
 
 // warmStore is the compressed archive of sealed payload bodies, backed by its own SQLite
