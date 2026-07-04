@@ -152,6 +152,19 @@ linters:
           msg: "use the observe.Logger port, not fmt.Print*"
         - pattern: '^time\.Now$'
           msg: "use the injected clock.Clock, not time.Now (deterministic replay)"
+        # Wall-clock timers defeat deterministic replay the same way time.Now does: a
+        # raw time.After/NewTicker/Tick/NewTimer cannot be driven by a clock.Manual, so
+        # a wait built on one is untestable and leaks real time into a reproducible run.
+        # Route delays through the injected clock.Timing (clk.After / clk.NewTimer;
+        # re-arm a timer for a ticker). Relaxed in clock/ (the source) and _test.go below.
+        - pattern: '^time\.After$'
+          msg: "use the injected clock.Timing (clk.After), not time.After (deterministic replay)"
+        - pattern: '^time\.NewTicker$'
+          msg: "re-arm clk.NewTimer on the injected clock.Timing, not time.NewTicker (deterministic replay)"
+        - pattern: '^time\.Tick$'
+          msg: "re-arm clk.NewTimer on the injected clock.Timing, not time.Tick (deterministic replay)"
+        - pattern: '^time\.NewTimer$'
+          msg: "use the injected clock.Timing (clk.NewTimer), not time.NewTimer (deterministic replay)"
         # Outbound connections go through netguard, the default-deny egress gate that
         # blocks SSRF to private, loopback, and cloud-metadata addresses after DNS
         # resolution. Nothing dials around it: the raw dial primitives and the
@@ -201,6 +214,30 @@ linters:
           - forbidigo
         path: '(^|/)(clock|migrate)/'
         source: 'time\.Now'
+      # clock implements the wall-clock timers every other package routes through, and
+      # bus/bustest is a conformance harness whose delivery deadlines are real-time test
+      # bounds, not agent logic; the timer forbid does not apply to either.
+      - linters:
+          - forbidigo
+        path: '(^|/)(clock|bus/bustest)/'
+        source: 'time\.(After|NewTicker|Tick|NewTimer)'
+      # The determinism forbid protects shipped code, not the test harness: a test may
+      # arm a real timer in a wait-helper guard. The no-time.Now forbid still applies in
+      # tests; only the timer forbids are relaxed here.
+      - linters:
+          - forbidigo
+        path: _test\.go
+        source: 'time\.(After|NewTicker|Tick|NewTimer)'
+      # Two live-serving loops poll real external systems in real wall time: the
+      # inference readiness wait (serve.waitReady polls a container endpoint until it
+      # answers) and the control-plane SSE watch (re-reads the log to stream new events
+      # to a connected client). Neither runs during a replayed agent turn, so a real
+      # timer here does not threaten replay determinism. time.Now stays forbidden in
+      # both, so anything they record still carries a deterministic timestamp.
+      - linters:
+          - forbidigo
+        path: '(^|/)(controlplane/server|internal/inference/serve/serve)\.go$'
+        source: 'time\.(NewTicker|NewTimer)'
       # netguard is the egress boundary itself: the one package that may hold the raw
       # dial primitives and build the hardened client every other package dials
       # through, so the egress forbids do not apply to it.
