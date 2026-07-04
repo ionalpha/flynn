@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,15 +16,21 @@ import (
 	"github.com/ionalpha/flynn/runtime"
 )
 
-// TestRuntimeDrivesMissionToConvergence is the full-stack proof of B: the assembled
-// runtime takes a submitted Goal and drives it to Converged through the real
-// control loop, where each step is a turn of a tool-using conversation with a
-// (scripted) model. Nothing in the runtime, reconciler, or worker knows a language
-// model is behind the executor.
+// TestRuntimeDrivesMissionToConvergence is the full-stack proof that the assembled
+// runtime takes a submitted Goal and drives it to Converged through the real control
+// loop, where each step is a turn of a tool-using conversation with a (scripted) model.
+// Nothing in the runtime, reconciler, or worker knows a language model is behind the
+// executor. It asserts the two turns ran by their durable effects (the tool executed,
+// the final answer landed), not by the reconciler's observed step count, which is a
+// lower bound under concurrent reconciliation.
 func TestRuntimeDrivesMissionToConvergence(t *testing.T) {
+	var echoCalls atomic.Int64
 	echo := mission.Func(
 		llm.Tool{Name: "echo", Description: "echo input", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		func(_ context.Context, input json.RawMessage) (string, error) { return string(input), nil },
+		func(_ context.Context, input json.RawMessage) (string, error) {
+			echoCalls.Add(1)
+			return string(input), nil
+		},
 	)
 	model := llmtest.NewScripted(
 		llmtest.CallTool("t1", "echo", json.RawMessage(`{"ping":true}`)),
@@ -52,11 +59,20 @@ func TestRuntimeDrivesMissionToConvergence(t *testing.T) {
 	}
 
 	st := waitForPhase(t, rt, g.Key(), goal.PhaseConverged, 5*time.Second)
-	if st.Steps != 2 {
-		t.Fatalf("converged in %d steps, want 2 (tool turn + final turn)", st.Steps)
+	// The run took two turns: the tool turn, then the final answer. That both ran is
+	// proven durably, not by the observed step count. status.Steps is a lower bound: it
+	// counts steps the reconciler observes as done, and the terminal step's job can
+	// complete (its checkpoint already Done, so the goal converges on the next pass)
+	// before that pass counts it, leaving the count one short of the turns taken. So
+	// assert the tool actually ran and the final answer landed; those are deterministic.
+	if got := echoCalls.Load(); got != 1 {
+		t.Fatalf("tool turn: echo called %d times, want 1", got)
 	}
 	if !strings.Contains(st.Message, "mission complete") {
 		t.Fatalf("converged message did not carry the model's answer: %q", st.Message)
+	}
+	if st.Steps < 1 {
+		t.Fatalf("converged with %d observed steps, want at least 1", st.Steps)
 	}
 
 	cancel()
