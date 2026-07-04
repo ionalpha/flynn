@@ -126,15 +126,16 @@ func insertEventRow(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendIn
 	return seq, nil
 }
 
-// eventsReadSQL reads a stream's events in Seq order, rehydrating each payload in the
-// same query: an inline payload comes from events.payload, an externalized one from the
-// blob its payload_blob names (see resolvePayloadStorage). The blob content id is never
-// the empty string, so the LEFT JOIN misses for an inline row and the CASE falls back to
-// the inline column. The projected columns match the Read scan order below one to one;
-// they are listed explicitly (not SELECT *) so the payload_blob column added in migration
-// 0018 stays out of the scan and rehydration happens here instead.
+// eventsReadSQL reads a stream's events in Seq order, projecting the three columns the
+// payload can come from so the read loop can resolve it across tiers: payload_blob names
+// the externalized body (empty for an inline payload), payload is the inline bytes, and
+// b.body is the hot blob when the LEFT JOIN hits. An inline row has an empty payload_blob,
+// so the join misses and the loop uses payload; a hot-blob row joins and uses b.body; a
+// row whose body has been relocated to the warm tier misses the join (b.body is NULL) and
+// the loop rehydrates it from the warm store by its content id. Columns are listed
+// explicitly (not SELECT *) so the physical row layout stays out of the scan.
 const eventsReadSQL = `SELECT e.stream, e.seq, e.time, e.type, e.actor,
-		CASE WHEN e.payload_blob = '' THEN e.payload ELSE b.body END,
+		e.payload_blob, e.payload, b.body,
 		e.trace_id, e.span_id, e.causation_id, e.origin_instance_id, e.schema_version, e.principal
 	FROM events e LEFT JOIN blobs b ON b.content_id = e.payload_blob
 	WHERE e.stream = ? AND e.seq > ? ORDER BY e.seq LIMIT ?`
@@ -160,20 +161,52 @@ func (l *eventLog) Read(ctx context.Context, q spine.Query) ([]spine.Event, erro
 			e       spine.Event
 			ts      string
 			actor   string
-			payload string
+			blobID  string
+			inline  string
+			hotBody []byte // NULL (nil) when the LEFT JOIN misses: inline row, or body tiered to warm
 		)
-		if err := rows.Scan(&e.Stream, &e.Seq, &ts, &e.Type, &actor, &payload,
+		if err := rows.Scan(&e.Stream, &e.Seq, &ts, &e.Type, &actor, &blobID, &inline, &hotBody,
 			&e.TraceID, &e.SpanID, &e.CausationID, &e.OriginInstanceID, &e.SchemaVersion, &e.Principal); err != nil {
 			return nil, err
 		}
 		e.Time = sqlitex.ParseTime(ts)
 		e.Actor = spine.ActorType(actor)
-		if err := json.Unmarshal([]byte(payload), &e.Payload); err != nil {
+		payload, err := l.resolvePayload(ctx, blobID, inline, hotBody)
+		if err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal(payload, &e.Payload); err != nil {
 			return nil, fmt.Errorf("sqlite: unmarshal event payload: %w", err)
 		}
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// resolvePayload returns an event's payload bytes across the storage tiers. An empty
+// blobID means the payload was kept inline (use it). A non-empty blobID with a hot body
+// (the LEFT JOIN hit) uses that verbatim. A non-empty blobID whose hot body is absent
+// means the body was relocated to the warm tier, so it is rehydrated (and decompressed)
+// from the warm store by its content id. A body that is in neither tier is a missing
+// archive segment: it returns an error naming the content id, so a read over relocated
+// history fails loudly at exactly the absent body rather than yielding an empty payload.
+func (l *eventLog) resolvePayload(ctx context.Context, blobID, inline string, hotBody []byte) ([]byte, error) {
+	if blobID == "" {
+		return []byte(inline), nil
+	}
+	if hotBody != nil {
+		return hotBody, nil
+	}
+	if l.p.warm != nil {
+		raw, ok, err := l.p.warm.get(ctx, blobID)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
+			return raw, nil
+		}
+	}
+	return nil, fmt.Errorf("sqlite: payload body %s is in neither the hot nor the warm tier", blobID)
 }
 
 // SaveSnapshot implements spine.Log: it stores a stream checkpoint, replacing any

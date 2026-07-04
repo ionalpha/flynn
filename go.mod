@@ -10,6 +10,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-cmp v0.7.0
+	github.com/klauspost/compress v1.19.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/veraison/go-cose v1.3.0

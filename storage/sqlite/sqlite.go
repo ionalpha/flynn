@@ -148,6 +148,11 @@ type Store struct {
 	// resolvePayloadStorage). It defaults to defaultPayloadBlobThreshold; zero or
 	// negative keeps every payload inline (see WithPayloadBlobThreshold).
 	blobThreshold int
+	// warm is the compressed archive of sealed payload bodies (see warm.go). A read that
+	// misses the hot blobs table rehydrates from it, and ArchiveSealedBlobs relocates
+	// sealed bodies into it to bound the hot file. It is opened beside the hot database
+	// and is nil only if opening it failed to be wired (never in normal operation).
+	warm *warmStore
 }
 
 var _ state.Provider = (*Store)(nil)
@@ -170,7 +175,15 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	s := &Store{db: db, readDB: readDB, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1), blobThreshold: defaultPayloadBlobThreshold}
+	warm, err := openWarm(ctx, dsn)
+	if err != nil {
+		_ = db.Close()
+		if readDB != nil {
+			_ = readDB.Close()
+		}
+		return nil, err
+	}
+	s := &Store{db: db, readDB: readDB, warm: warm, clk: clock.System{}, instanceID: "local", jobsReady: make(chan struct{}, 1), blobThreshold: defaultPayloadBlobThreshold}
 	for _, o := range opts {
 		o(s)
 	}
@@ -281,6 +294,11 @@ func (s *Store) Close() error {
 	err := s.db.Close()
 	if s.readDB != nil {
 		if rerr := s.readDB.Close(); err == nil {
+			err = rerr
+		}
+	}
+	if s.warm != nil {
+		if rerr := s.warm.close(); err == nil {
 			err = rerr
 		}
 	}
