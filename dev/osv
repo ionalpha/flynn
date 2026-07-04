@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+# Scan dependencies for known vulnerabilities via the OSV database.
+# Complements dev/vuln: govulncheck is Go/stdlib only and reachability-aware
+# (it reports a vulnerability only if the vulnerable symbol is actually called);
+# osv-scanner covers the full dependency set without reachability, so it catches
+# advisories in dependencies govulncheck prunes as unreachable. It scans go.mod,
+# the same target on every platform, so local and CI results match exactly.
+# Installs osv-scanner on demand if it is not already available.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# Pin the version so local and CI results match. go install verifies the module
+# against the Go checksum database, so the install is reproducible and tamper-evident.
+OSV_VERSION="v2.4.0"
+
+osvscanner="$(command -v osv-scanner || true)"
+if [ -z "$osvscanner" ]; then
+  gobin="$(go env GOBIN)"; [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+  if [ -x "$gobin/osv-scanner" ]; then
+    osvscanner="$gobin/osv-scanner"
+  else
+    echo "==> installing osv-scanner $OSV_VERSION"
+    go install github.com/google/osv-scanner/v2/cmd/osv-scanner@"$OSV_VERSION"
+    osvscanner="$gobin/osv-scanner"
+  fi
+fi
+
+echo "==> osv-scanner scan source --lockfile go.mod"
+"$osvscanner" scan source --lockfile go.mod

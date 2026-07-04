@@ -173,6 +173,38 @@ jobs:
           cache: true
       - run: ./dev/vuln
 
+  # Secret scan: gitleaks over the full commit history, not just the tip, so a
+  # secret that was committed and later removed is still caught (it lives on in
+  # history, which is what an attacker reads). fetch-depth: 0 pulls every commit.
+  secrets:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25"
+          cache: true
+      - run: ./dev/secrets
+
+  # Dependency scan via OSV. Complements the govulncheck job: govulncheck is
+  # Go/stdlib with reachability analysis (a vulnerability counts only if the
+  # vulnerable symbol is reachable), osv-scanner reports the whole dependency set
+  # without reachability. The two together are breadth plus reachability, not
+  # redundancy.
+  osv:
+    name: osv-scanner
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.25"
+          cache: true
+      - run: ./dev/osv
+
   # The performance gate: allocation-ceiling tests and the curated hot-path
   # benchmarks, run without the race detector (the test matrix runs -race, whose
   # instrumentation skews allocation counts, so the ceilings are !race-tagged
@@ -235,7 +267,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [test, lint, vuln, bench, pr-body]
+    needs: [test, lint, vuln, secrets, osv, bench, pr-body]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded

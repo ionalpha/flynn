@@ -3,7 +3,8 @@
 # A green `dev/check` locally means a green CI run. Run this before opening a PR.
 #
 # Steps mirror .github/workflows/ci.yml (which calls these same scripts):
-#   build -> vet -> test (race+coverage) -> lint (mod tidy + golangci-lint) -> vuln
+#   build -> vet -> test (race+coverage) -> lint (mod tidy + golangci-lint)
+#     -> vuln -> secrets (gitleaks) -> osv (osv-scanner)
 set -eu
 here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$here/.."
@@ -16,6 +17,8 @@ go vet ./...
 "$here/test"
 "$here/lint"
 "$here/vuln"
+"$here/secrets"
+"$here/osv"
 
 echo
 echo "OK: all checks passed."
