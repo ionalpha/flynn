@@ -307,6 +307,41 @@ type binding struct {
 	auth      extension.AuthSpec
 	creds     *credential.Store
 	audit     AuditFunc
+
+	// providerMu guards providers, the per-(auth type, vault reference) cache of built
+	// auth providers. The binding outlives every call, so caching the provider here lets
+	// a stateful one (oauth2) keep its access-token cache across operations instead of
+	// re-fetching a token from the endpoint on every call.
+	providerMu sync.Mutex
+	providers  map[string]auth.Provider
+}
+
+// cachedProvider returns the auth provider for a call, building it once per distinct
+// (auth type, vault reference) key and reusing it thereafter. Reuse is what preserves a
+// stateful provider's token cache: the oauth2 provider fetches a token lazily on first
+// Apply and refreshes it near expiry, so a fresh provider per call would force an extra
+// token-endpoint round trip every time. The static schemes (none/basic/bearer/api_key)
+// resolve their secret from the vault on each Apply and hold no state, so caching them
+// is harmless. A credential rotation that changes the vault reference or auth type keys
+// a new entry and rebuilds; a same-reference secret rotation is picked up when the
+// provider next resolves the secret from the vault (and, for oauth2, when the cached
+// token expires). build is pure and cheap (no network), so it runs under the lock.
+func (b *binding) cachedProvider(authType, ref string, build func() (auth.Provider, error)) (auth.Provider, error) {
+	key := authType + "\x00" + ref
+	b.providerMu.Lock()
+	defer b.providerMu.Unlock()
+	if p, ok := b.providers[key]; ok {
+		return p, nil
+	}
+	p, err := build()
+	if err != nil {
+		return nil, err
+	}
+	if b.providers == nil {
+		b.providers = make(map[string]auth.Provider, 1)
+	}
+	b.providers[key] = p
+	return p, nil
 }
 
 // run resolves the auth provider (enforcing the required role) and runs the flow.
@@ -329,8 +364,13 @@ func (b *binding) run(ctx context.Context, f flow.Flow, required credential.Role
 // reference.
 func (b *binding) resolveProvider(ctx context.Context, required credential.Role) (auth.Provider, error) {
 	if b.creds == nil || b.auth.CredentialRef == "" {
-		return providerFor(b.auth, b.transport, b.clk)
+		return b.cachedProvider(b.auth.Type, b.auth.CredentialRef, func() (auth.Provider, error) {
+			return providerFor(b.auth, b.transport, b.clk)
+		})
 	}
+	// Resolving the credential and checking its role runs on every call: the credential
+	// is the authorization gate (a rotation, a role change, or a principal that may not
+	// use it must take effect immediately), and only the built provider is cached.
 	cred, err := b.creds.Resolve(ctx, b.auth.CredentialRef)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "integration_credential", err)
@@ -350,5 +390,14 @@ func (b *binding) resolveProvider(ctx context.Context, required credential.Role)
 			fmt.Sprintf("credential %q with role %q may not perform an action requiring role %q (principal %q)",
 				cred.Ref(), cred.Spec.Role, required, principal))
 	}
-	return providerForCredential(b.auth, cred, b.transport, b.clk)
+	// The effective auth type may be overridden by the credential (see
+	// providerForCredential); include it and the effective vault reference in the key so
+	// a credential that changes either rebuilds rather than reusing a stale provider.
+	effType := b.auth.Type
+	if cred.Spec.AuthType != "" {
+		effType = cred.Spec.AuthType
+	}
+	return b.cachedProvider(effType, cred.Ref(), func() (auth.Provider, error) {
+		return providerForCredential(b.auth, cred, b.transport, b.clk)
+	})
 }
