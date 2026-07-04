@@ -365,7 +365,7 @@ func (h *sessionHost) submit(text string, images []editor.Attachment) {
 }
 
 // toImages converts the composer's UI-layer attachments to the model port's
-// image type at the one seam where a submitted prompt becomes a turn, so
+// image type at the one point where a submitted prompt becomes a turn, so
 // nothing downstream carries the editor type.
 func toImages(atts []editor.Attachment) []llm.Image {
 	if len(atts) == 0 {

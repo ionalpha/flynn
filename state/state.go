@@ -1,5 +1,5 @@
 // Package state defines the persistence boundary between the open-source agent and
-// any host. This is the open-core boundary: the agent reaches all durable state
+// any host. This is the host boundary: the agent reaches all durable state
 // - sessions, skills, memory - only through the interfaces here.
 //
 // The open agent ships a local implementation (in-memory in memory.go; a durable

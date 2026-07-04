@@ -72,8 +72,8 @@ const (
 	EventRejected = "dispatch.rejected"
 )
 
-// EventSink appends action-lifecycle events. The structural event spine
-// implements this; until it lands, a DiscardSink or MemorySink is used.
+// EventSink appends action-lifecycle events. The event spine implements this
+// (internal/spinesink); a DiscardSink or MemorySink is used in tests and headless runs.
 type EventSink interface {
 	Append(ctx context.Context, e Event) error
 }

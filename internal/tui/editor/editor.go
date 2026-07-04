@@ -59,7 +59,7 @@ func (a atom) opaque() bool { return a.chip != 0 || a.img != 0 }
 // carries alongside the prompt text so the image reaches the model. It is
 // deliberately a plain UI-layer type, not the model port's llm.Image, so the
 // reusable composer stays free of a model-port dependency; the host converts
-// it at the one seam where the prompt is turned into a turn.
+// it at the one point where the prompt is turned into a turn.
 type Attachment struct {
 	MediaType string
 	Data      []byte
