@@ -18,6 +18,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/session"
 )
 
 func TestPreferAltScreen(t *testing.T) {
@@ -101,6 +102,10 @@ func (f *fakeUI) PasteImage(att editor.Attachment) {
 	f.pasted = append(f.pasted, att)
 }
 
+// Width reports a fixed terminal width, enough for the transcript renderer to
+// wrap against without a live terminal.
+func (f *fakeUI) Width() int { return 80 }
+
 func (f *fakeUI) pastedImages() []editor.Attachment {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -138,7 +143,17 @@ func newHostForTest(t *testing.T, model llm.Model) (*sessionHost, *fakeUI) {
 	t.Helper()
 	s, _ := newREPL(t, t.TempDir(), memStore(t), model)
 	ui := &fakeUI{}
-	return &sessionHost{ctx: context.Background(), s: s, ui: ui, th: theme.Default()}, ui
+	th := theme.Default()
+	host := &sessionHost{
+		ctx:  context.Background(),
+		s:    s,
+		ui:   ui,
+		th:   th,
+		tv:   newTranscriptView(th),
+		live: &activity{th: th},
+		proj: session.NewProjection(),
+	}
+	return host, ui
 }
 
 // waitIdle blocks until the host has no running turn and an empty queue,

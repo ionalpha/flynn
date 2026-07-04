@@ -686,7 +686,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		return "", "", nil, err
 	}
 
-	result, transcript, _, runErr := renderStream(w, events, verbose)
+	result, transcript, _, runErr := renderStream(w, events, verbose, nil)
 	cancel()
 	<-done
 	return result, run.sess.ID(), transcript, runErr
@@ -906,10 +906,19 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 // or an error on stall. lastSeq is the sequence of the last event consumed, so a
 // caller tailing the same stream across turns can resume after it. A closed channel
 // before any terminal event means the run was cancelled.
-func renderStream(out io.Writer, events <-chan session.Event, verbose bool) (result string, transcript []llm.Message, lastSeq int64, err error) {
+//
+// observe, when non-nil, is called with every event before it is rendered to out.
+// It is the tap an interactive client uses to render the typed stream itself (a
+// themed transcript, a status badge) rather than the flat text this writes; the
+// text path still runs, so a caller that wants only the typed events points out at
+// io.Discard.
+func renderStream(out io.Writer, events <-chan session.Event, verbose bool, observe func(session.Event)) (result string, transcript []llm.Message, lastSeq int64, err error) {
 	var meter usageMeter
 	for ev := range events {
 		lastSeq = ev.Seq
+		if observe != nil {
+			observe(ev)
+		}
 		renderEvent(out, ev, verbose)
 		if ev.Usage != nil {
 			meter.add(*ev.Usage)

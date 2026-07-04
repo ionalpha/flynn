@@ -352,6 +352,16 @@ func (a *App) Resize(width, height int) {
 	a.sched.Request()
 }
 
+// Width returns the terminal's current width in cells. A host that renders its
+// own content to fit the terminal (wrapping markdown, laying out a transcript)
+// reads it here so its output tracks resizes, which arrive through Resize on the
+// event loop goroutine while the host renders on its own.
+func (a *App) Width() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.width
+}
+
 // handle consumes one decoded input event on the event loop goroutine. An
 // open completion menu gets first claim on the navigation keys; everything
 // else flows through the editor, and afterwards the menu re-derives itself

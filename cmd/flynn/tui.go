@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -21,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/session"
 )
 
 // resizePoll is how often the shell samples the terminal size. Polling is the
@@ -106,7 +106,15 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 	if th == nil {
 		th = theme.Default()
 	}
-	host := &sessionHost{ctx: ctx, s: s, th: th, clip: tuiterm.NewClipboard()}
+	host := &sessionHost{
+		ctx:  ctx,
+		s:    s,
+		th:   th,
+		clip: tuiterm.NewClipboard(),
+		tv:   newTranscriptView(th),
+		live: &activity{th: th},
+		proj: session.NewProjection(),
+	}
 	// Shell mode runs the user's commands through the same confined sandbox
 	// every other command takes, rooted at the session's working directory. A
 	// directory the sandbox refuses is reported when shell mode is first used;
@@ -213,6 +221,7 @@ type shellUI interface {
 	Draft() string
 	SetDraft(text string)
 	PasteImage(att editor.Attachment)
+	Width() int
 }
 
 // shellRunner is the confined executor behind the composer's shell mode: the
@@ -245,12 +254,23 @@ type sessionHost struct {
 	// host with no clipboard) leaves both unclaimed.
 	clip tuiterm.Clipboard
 
+	// tv renders the typed event stream into themed transcript lines, and live is
+	// the in-flight indicator repainted above the composer while a turn runs. Both
+	// are the shell's rendering of the session events the turn driver taps through
+	// the host's observer.
+	tv   *transcriptView
+	live *activity
+
 	mu       sync.Mutex
 	busy     bool
 	queue    []queuedTurn
 	cancel   context.CancelFunc
 	quitting bool
 	turns    sync.WaitGroup
+	// proj is the run status folded from the event stream, the source for the
+	// status badge. It persists across turns (turn count, spend, record state
+	// accumulate over the whole session) and is read and written under mu.
+	proj session.Projection
 }
 
 // queuedTurn is one submitted prompt waiting behind a running turn: its text
@@ -358,16 +378,19 @@ func (h *sessionHost) start(t queuedTurn) {
 	h.refreshStatus()
 
 	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, promptEcho(t)))
-	sink := &turnSink{ui: h.ui}
-	h.s.out = sink
-	h.ui.SetLive(sink)
+	// The turn driver taps every session event through the observer: the shell
+	// renders the typed stream itself (transcript, governance, badge), so the
+	// driver's flat text goes nowhere.
+	h.s.out = io.Discard
+	h.s.observer = h.onEvent
+	h.live.set("thinking...")
+	h.ui.SetLive(h.live)
 
 	h.turns.Add(1)
 	go func() {
 		defer h.turns.Done()
 		_, err := h.s.runTurn(turnCtx, t.text, t.images, nil)
 		cancel()
-		sink.finish()
 		h.ui.SetLive(nil)
 		switch {
 		case errors.Is(err, context.Canceled):
@@ -598,16 +621,38 @@ func (h *sessionHost) shutdown() {
 	h.turns.Wait()
 }
 
-// refreshStatus rewrites the status line from the host's current state.
-func (h *sessionHost) refreshStatus() {
+// onEvent renders one session event as the turn produces it: it folds the event
+// into the run projection that feeds the status badge, updates the in-flight
+// activity line, and appends the event's transcript lines to the scrollback. It
+// runs on the turn goroutine (turns are serial, so it is never re-entered), and
+// calls into the shell only with no host lock held.
+func (h *sessionHost) onEvent(ev session.Event) {
 	h.mu.Lock()
-	busy, queued := h.busy, len(h.queue)
+	h.proj = session.Reduce(h.proj, ev)
 	h.mu.Unlock()
-	h.ui.SetStatus(statusLine(busy, queued))
+
+	if line, ok := activityFor(ev); ok {
+		h.live.set(line)
+	}
+	if lines := h.tv.lines(ev, h.ui.Width()); len(lines) > 0 {
+		h.ui.Append(lines...)
+	}
+	h.refreshStatus()
 }
 
-// statusLine is the one-row hint between the live output and the composer.
-func statusLine(busy bool, queued int) string {
+// refreshStatus rewrites the status badge from the run projection and the
+// shell's live busy/queue state.
+func (h *sessionHost) refreshStatus() {
+	h.mu.Lock()
+	p, busy, queued := h.proj, h.busy, len(h.queue)
+	h.mu.Unlock()
+	h.ui.SetStatus(statusBadge(h.th, p, busy, queued))
+}
+
+// statusHint is the one-row action hint that trails the status badge: the
+// composer's keys at idle, the cancel affordance and queue depth while a turn
+// runs.
+func statusHint(busy bool, queued int) string {
 	if !busy {
 		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
@@ -616,62 +661,4 @@ func statusLine(busy bool, queued int) string {
 		line += fmt.Sprintf(" · %d queued", queued)
 	}
 	return line
-}
-
-// turnSink routes a turn's rendered output into the shell. Every completed
-// line is committed to the scrollback as it arrives; the trailing partial
-// line (output not yet ended by a newline) renders as the live region until
-// it completes, so mid-line progress is visible without ever committing a
-// line twice.
-type turnSink struct {
-	ui shellUI
-
-	mu  sync.Mutex
-	buf []byte
-}
-
-// Write splits the stream on newlines. It never calls into the shell while
-// holding the sink's lock: the shell's paint path calls Render under its own
-// lock, so nesting the two would invert the lock order.
-func (t *turnSink) Write(p []byte) (int, error) {
-	t.mu.Lock()
-	t.buf = append(t.buf, p...)
-	var lines []string
-	for {
-		i := bytes.IndexByte(t.buf, '\n')
-		if i < 0 {
-			break
-		}
-		lines = append(lines, strings.TrimRight(string(t.buf[:i]), "\r"))
-		t.buf = t.buf[i+1:]
-	}
-	t.mu.Unlock()
-	if len(lines) > 0 {
-		t.ui.Append(lines...)
-	}
-	return len(p), nil
-}
-
-// finish commits any trailing partial line, so output not ended by a newline
-// still lands in the transcript when the turn ends.
-func (t *turnSink) finish() {
-	t.mu.Lock()
-	rest := string(t.buf)
-	t.buf = nil
-	t.mu.Unlock()
-	if strings.TrimSpace(rest) != "" {
-		t.ui.Append(rest)
-	}
-}
-
-// Render shows the pending partial line in the live region, wrapped to the
-// terminal width.
-func (t *turnSink) Render(width int) []string {
-	t.mu.Lock()
-	rest := string(t.buf)
-	t.mu.Unlock()
-	if strings.TrimSpace(rest) == "" {
-		return nil
-	}
-	return strings.Split(screen.Wrap(rest, width), "\n")
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
@@ -136,6 +137,12 @@ type replSession struct {
 	reg       *resource.Registry
 	keys      editor.Keymap // composer bindings; nil selects the default map
 	theme     *theme.Theme  // session theme; nil selects the default theme
+
+	// observer, when set, receives every session event as the turn renders. The
+	// interactive shell installs it to render the typed stream itself (transcript,
+	// governance, status badge); the line interface leaves it nil and reads the
+	// flat text renderStream writes to out.
+	observer func(session.Event)
 
 	// Per-session run state, set on the first turn and continued by the rest.
 	started   bool
@@ -264,7 +271,7 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userTe
 		_, _ = fmt.Fprintf(s.out, "  run %s\n", s.runID)
 	}
 
-	result, transcript, lastSeq, runErr := renderStream(s.out, events, s.verbose)
+	result, transcript, lastSeq, runErr := renderStream(s.out, events, s.verbose, s.observer)
 	if lastSeq > s.lastSeq {
 		s.lastSeq = lastSeq
 	}
