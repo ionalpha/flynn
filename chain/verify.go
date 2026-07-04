@@ -14,9 +14,10 @@ const (
 
 // Verifier performs structural verification of a canonical event stream: each event
 // is well formed and in canonical form, all events belong to one stream, and Seq
-// strictly increases. It deliberately does NOT prove tamper-evidence; the
-// cryptographic checks are a separate slot the tamper-evident spine fills (see
-// verifyCrypto). A Verifier is stateless and safe for concurrent use.
+// strictly increases. It deliberately does NOT prove tamper-evidence: that is
+// composed at the record layer, where VerifyRun and VerifyEventProof pair this
+// structural check with checkpoint-signature and Merkle-root verification. A Verifier
+// is stateless and safe for concurrent use.
 type Verifier struct{}
 
 // NewVerifier returns a structural verifier.
@@ -49,10 +50,10 @@ func (v *Verifier) VerifyStream(canonicalEvents [][]byte) ([]spine.Event, error)
 					"chain: event Seq is not strictly increasing")
 			}
 		}
-		// Cryptographic verification slot. The tamper-evident spine fills this with
-		// hash-chain, Merkle inclusion, and signed-root checks. It is a no-op here:
-		// this Verifier proves STRUCTURE only and must not be relied on for
-		// tamper-evidence until that layer lands.
+		// Per-event cryptographic hook. Tamper-evidence for a sealed run is enforced
+		// at the record layer: VerifyRun checks the checkpoint signature and rebuilds
+		// the signed Merkle root, so this hook is a no-op today. It is the extension
+		// point for future per-event checks inside a single stream pass.
 		if err := v.verifyCrypto(b, e); err != nil {
 			return nil, err
 		}
@@ -62,10 +63,10 @@ func (v *Verifier) VerifyStream(canonicalEvents [][]byte) ([]spine.Event, error)
 	return events, nil
 }
 
-// verifyCrypto is the intentionally empty cryptographic-verification slot. It
-// returns nil so structural verification stands alone today, and becomes the entry
-// point for signature, hash-chain, and Merkle-inclusion checks when the
-// tamper-evident spine is built. It is a method so that future state (a keyring, a
+// verifyCrypto is the per-event cryptographic hook, empty today. Record-level
+// verification (VerifyRun, VerifyEventProof) provides tamper-evidence by checking the
+// signed checkpoint and rebuilding the Merkle root, so structural verification stands
+// alone here. The hook is kept as a method so future per-event state (a keyring, a
 // signed root) has a home without changing VerifyStream's shape.
 func (v *Verifier) verifyCrypto(canonical []byte, e spine.Event) error {
 	_ = canonical
