@@ -76,6 +76,38 @@ func TestAcceptedPickRisesToTheTop(t *testing.T) {
 	}
 }
 
+// TestFrecencyFavorsTheRecentPick pins the recency half of frecency: a file
+// picked once, most recently, outranks one picked more times but longer ago.
+// Frequency alone would keep the thrice-picked file on top; recency flips it.
+func TestFrecencyFavorsTheRecentPick(t *testing.T) {
+	fc := newFileCompleter(completionTree(t))
+	for range 3 {
+		fc.Accepted("src/main.go")
+	}
+	fc.Accepted("src/main_test.go") // once, but the most recent
+
+	got := fc.Complete("main")
+	if len(got) < 2 || got[0] != "src/main_test.go" {
+		t.Fatalf("Complete(main) = %v; want the most recently picked file first", got)
+	}
+}
+
+// TestFrecencyKeepsFrequencyWeight guards the other half: frequency still
+// carries weight. A file picked many times outranks one picked once more
+// recently, so the recency term does not erase the frequency signal.
+func TestFrecencyKeepsFrequencyWeight(t *testing.T) {
+	fc := newFileCompleter(completionTree(t))
+	for range 5 {
+		fc.Accepted("src/main_test.go")
+	}
+	fc.Accepted("src/main.go") // once, most recent, but far less frequent
+
+	got := fc.Complete("main")
+	if len(got) < 2 || got[0] != "src/main_test.go" {
+		t.Fatalf("Complete(main) = %v; want the much more frequently picked file first", got)
+	}
+}
+
 func TestEmptyQueryRefreshesTheUniverse(t *testing.T) {
 	root := completionTree(t)
 	fc := newFileCompleter(root)
