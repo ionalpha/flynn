@@ -107,13 +107,14 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		th = theme.Default()
 	}
 	host := &sessionHost{
-		ctx:  ctx,
-		s:    s,
-		th:   th,
-		clip: tuiterm.NewClipboard(),
-		tv:   newTranscriptView(th),
-		live: &activity{th: th},
-		proj: session.NewProjection(),
+		ctx:   ctx,
+		s:     s,
+		th:    th,
+		clip:  tuiterm.NewClipboard(),
+		tv:    newTranscriptView(th),
+		live:  &activity{th: th},
+		panel: &govPanel{th: th},
+		proj:  session.NewProjection(),
 	}
 	// Shell mode runs the user's commands through the same confined sandbox
 	// every other command takes, rooted at the session's working directory. A
@@ -133,7 +134,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		Placeholder: "Send a message",
 		Keymap:      s.keys,
 		OnSubmit:    host.submit,
-		OnEsc:       host.interrupt,
+		OnEsc:       host.onEsc,
 		OnKey:       host.key,
 		Completer:   newFileCompleter(s.cwd),
 		Marker:      shellMarker,
@@ -260,6 +261,17 @@ type sessionHost struct {
 	// the host's observer.
 	tv   *transcriptView
 	live *activity
+	// panel is the governance overlay toggled with Ctrl+O, an on-demand expansion of
+	// the status badge that reads the same run projection. It renders nothing while
+	// hidden, so it can sit permanently in the live region alongside the activity
+	// line without showing until the user opens it.
+	panel *govPanel
+	// liveComp is the composite installed as the shell's live region for the whole
+	// session: the governance panel above the activity line. Each part renders
+	// nothing when it has nothing to show, so re-setting this component is how the
+	// host repaints the live region after toggling the panel or clearing the
+	// activity line.
+	liveComp screen.Component
 
 	mu       sync.Mutex
 	busy     bool
@@ -281,9 +293,31 @@ type queuedTurn struct {
 	images []llm.Image
 }
 
+// liveStack composes several live-region components top to bottom into one, so the
+// shell can hold a fixed live region whose parts each render themselves (or nothing)
+// independently: the governance panel over the activity line.
+type liveStack []screen.Component
+
+// Render draws each part in order, skipping the ones with nothing to show this frame.
+func (s liveStack) Render(width int) []string {
+	var out []string
+	for _, c := range s {
+		out = append(out, c.Render(width)...)
+	}
+	return out
+}
+
+// pokeLive re-installs the live region to request a repaint after the host changed a
+// part's state directly (toggling the panel, clearing the activity line), since those
+// mutate a component's own state without going through the shell.
+func (h *sessionHost) pokeLive() { h.ui.SetLive(h.liveComp) }
+
 // greet writes the session banner and, for a resumed run, its rendered
 // history, so the conversation's context is in the scrollback from the start.
 func (h *sessionHost) greet(seed string) {
+	h.liveComp = liveStack{h.panel, h.live}
+	h.panel.set(h.proj)
+	h.ui.SetLive(h.liveComp)
 	h.ui.Append(h.th.Render(theme.Status, "flynn interactive session in "+h.s.cwd))
 	if seed != "" {
 		h.ui.Append(strings.Split(strings.TrimRight(seed, "\n"), "\n")...)
@@ -384,14 +418,15 @@ func (h *sessionHost) start(t queuedTurn) {
 	h.s.out = io.Discard
 	h.s.observer = h.onEvent
 	h.live.set("thinking...")
-	h.ui.SetLive(h.live)
+	h.pokeLive()
 
 	h.turns.Add(1)
 	go func() {
 		defer h.turns.Done()
 		_, err := h.s.runTurn(turnCtx, t.text, t.images, nil)
 		cancel()
-		h.ui.SetLive(nil)
+		h.live.set("")
+		h.pokeLive()
 		switch {
 		case errors.Is(err, context.Canceled):
 			h.ui.Append("  (turn cancelled)")
@@ -487,6 +522,19 @@ func (h *sessionHost) next() {
 	h.refreshStatus()
 }
 
+// onEsc handles the Escape key: an open governance panel closes first, so Escape is the
+// dismiss key for the overlay before it is the interrupt for a turn. With the panel
+// closed it falls through to interrupt, cancelling the in-flight turn. Ctrl+C stays the
+// unconditional cancel, so a user can still stop a turn while reading the panel.
+func (h *sessionHost) onEsc() {
+	if h.panel.isOpen() {
+		h.panel.close()
+		h.pokeLive()
+		return
+	}
+	h.interrupt()
+}
+
 // interrupt cancels the in-flight turn, if any; the session survives and the
 // composer stays live. At idle it does nothing.
 func (h *sessionHost) interrupt() {
@@ -526,6 +574,10 @@ func (h *sessionHost) key(k input.Key) bool {
 			h.externalEdit()
 			return true
 		}
+	case 'o':
+		h.panel.toggle()
+		h.pokeLive()
+		return true
 	case 'v':
 		if h.clip != nil {
 			h.paste()
@@ -629,8 +681,12 @@ func (h *sessionHost) shutdown() {
 func (h *sessionHost) onEvent(ev session.Event) {
 	h.mu.Lock()
 	h.proj = session.Reduce(h.proj, ev)
+	p := h.proj
 	h.mu.Unlock()
 
+	// The panel reads its own snapshot, so an open panel tracks the run as events
+	// arrive; a closed panel renders nothing and pays only the snapshot copy.
+	h.panel.set(p)
 	if line, ok := activityFor(ev); ok {
 		h.live.set(line)
 	}
@@ -654,7 +710,7 @@ func (h *sessionHost) refreshStatus() {
 // runs.
 func statusHint(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {

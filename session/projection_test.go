@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"reflect"
+	"testing"
+)
 
 func TestNewProjectionRecords(t *testing.T) {
 	p := NewProjection()
@@ -53,6 +56,72 @@ func TestProjectFoldsAStream(t *testing.T) {
 	}
 }
 
+// TestLedgerUpsertsByCall proves an admission and its outcome share one ledger row: a
+// completion updates the entry the admission created (matched by Call) rather than
+// adding a second row, and keeps the name the admission recorded when the completion
+// carries none.
+func TestLedgerUpsertsByCall(t *testing.T) {
+	p := Project([]Event{
+		{Kind: KindActionAdmitted, Action: "bash", Call: 7, Trust: "agent"},
+		{Kind: KindActionCompleted, Call: 7},
+	})
+	if len(p.Actions) != 1 {
+		t.Fatalf("Actions = %d rows, want 1", len(p.Actions))
+	}
+	got := p.Actions[0]
+	if got.State != ActionDone || got.Action != "bash" || got.Trust != "agent" {
+		t.Errorf("entry = %+v, want done/bash/agent", got)
+	}
+}
+
+// TestLedgerBlockedCarriesFault proves a refused action lands in the ledger as blocked
+// with its fault class, the boundary the panel highlights.
+func TestLedgerBlockedCarriesFault(t *testing.T) {
+	p := Project([]Event{{Kind: KindActionRejected, Action: "write_file", Call: 3, Trust: "model", Fault: "capability_denied"}})
+	if len(p.Actions) != 1 || p.Actions[0].State != ActionBlocked || p.Actions[0].Fault != "capability_denied" {
+		t.Errorf("Actions = %+v, want one blocked capability_denied", p.Actions)
+	}
+}
+
+// TestLedgerZeroCallAppends proves an action a waist records with no correlation id
+// (Call zero) always appends rather than colliding with an earlier zero-Call entry, so
+// two unkeyed actions stay two rows.
+func TestLedgerZeroCallAppends(t *testing.T) {
+	p := Project([]Event{
+		{Kind: KindActionAdmitted, Action: "a"},
+		{Kind: KindActionAdmitted, Action: "b"},
+	})
+	if len(p.Actions) != 2 {
+		t.Errorf("Actions = %d rows, want 2 (zero-Call entries never merge)", len(p.Actions))
+	}
+}
+
+// TestLedgerIsBounded proves the ledger keeps only its most recent maxLedger entries, so
+// a long run's projection stays a fixed size, and the newest action survives.
+func TestLedgerIsBounded(t *testing.T) {
+	p := NewProjection()
+	for i := range maxLedger + 20 {
+		p = Reduce(p, Event{Kind: KindActionAdmitted, Action: "x", Call: int64(i + 1)})
+	}
+	if len(p.Actions) != maxLedger {
+		t.Fatalf("Actions = %d rows, want capped at %d", len(p.Actions), maxLedger)
+	}
+	if last := p.Actions[len(p.Actions)-1]; last.Call != int64(maxLedger+20) {
+		t.Errorf("newest entry Call = %d, want %d", last.Call, maxLedger+20)
+	}
+}
+
+// TestReduceDoesNotMutateInputLedger proves the reducer is pure with respect to the
+// ledger: folding an event into a projection leaves an earlier copy's slice unchanged,
+// so a replay comparing successive states is not corrupted by aliasing.
+func TestReduceDoesNotMutateInputLedger(t *testing.T) {
+	before := Reduce(NewProjection(), Event{Kind: KindActionAdmitted, Action: "a", Call: 1})
+	_ = Reduce(before, Event{Kind: KindActionCompleted, Call: 1})
+	if before.Actions[0].State != ActionRunning {
+		t.Errorf("folding mutated an earlier projection's ledger: state = %q, want running", before.Actions[0].State)
+	}
+}
+
 // TestProjectionRecordOrdering pins the record lifecycle ordering: verified outranks
 // sealed, so a re-seal after verification never demotes the badge.
 func TestProjectionRecordOrdering(t *testing.T) {
@@ -88,7 +157,7 @@ func TestReduceIsIncremental(t *testing.T) {
 	for _, ev := range evs {
 		incremental = Reduce(incremental, ev)
 	}
-	if incremental != Project(evs) {
+	if !reflect.DeepEqual(incremental, Project(evs)) {
 		t.Errorf("incremental %+v != Project %+v", incremental, Project(evs))
 	}
 }

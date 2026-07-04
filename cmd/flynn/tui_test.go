@@ -145,13 +145,14 @@ func newHostForTest(t *testing.T, model llm.Model) (*sessionHost, *fakeUI) {
 	ui := &fakeUI{}
 	th := theme.Default()
 	host := &sessionHost{
-		ctx:  context.Background(),
-		s:    s,
-		ui:   ui,
-		th:   th,
-		tv:   newTranscriptView(th),
-		live: &activity{th: th},
-		proj: session.NewProjection(),
+		ctx:   context.Background(),
+		s:     s,
+		ui:    ui,
+		th:    th,
+		tv:    newTranscriptView(th),
+		live:  &activity{th: th},
+		panel: &govPanel{th: th},
+		proj:  session.NewProjection(),
 	}
 	return host, ui
 }
