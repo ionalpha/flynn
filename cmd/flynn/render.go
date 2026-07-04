@@ -54,6 +54,10 @@ func renderEvent(w io.Writer, ev session.Event, verbose bool) {
 		_, _ = fmt.Fprintf(w, "\n%s\n", ev.Text)
 	case session.KindStalled:
 		_, _ = fmt.Fprintf(w, "\nstalled: %s\n", ev.Err)
+	default:
+		// Governance and record events (action.*, record.*) share the run's stream but
+		// are not shown in the flat text transcript this renderer draws; the interactive
+		// session renders them inline and in its panels.
 	}
 }
 

@@ -32,6 +32,39 @@ const (
 	// KindStalled is the terminal failure event: the goal ran out of budget or a
 	// step failed terminally, with the reason.
 	KindStalled Kind = "session.stalled"
+
+	// KindActionAdmitted is a governed action admitted by the dispatch waist, the
+	// waist's start event projected onto the conversation stream. The waist records
+	// every governed action (a tool, the model call, a delegation) on the run's own
+	// stream, so its admission decisions interleave with the turns they belong to.
+	// This projection never changes the stored event type (dispatch.start), which
+	// stays the verifiable governance record a sealer signs and a verifier checks.
+	KindActionAdmitted Kind = "action.admitted"
+	// KindActionCompleted is a governed action that finished, carrying a fault class
+	// when it ran but errored. Projected from the waist's end event (dispatch.end).
+	KindActionCompleted Kind = "action.completed"
+	// KindActionRejected is a governed action the waist refused, carrying the denial's
+	// fault class. Projected from the waist's rejection event (dispatch.rejected).
+	KindActionRejected Kind = "action.rejected"
+
+	// KindRecordSealed marks the run's stream sealed into a signed record, projected
+	// from the spine.record event the sealer stores on the stream.
+	KindRecordSealed Kind = "record.sealed"
+	// KindRecordVerified marks a sealed record checked against its tiers. It is emitted
+	// when verification runs, so a replay reproduces the record badge's transitions.
+	KindRecordVerified Kind = "record.verified"
+)
+
+// The dispatch waist and the sealer write these event types onto a run's stream
+// alongside the conversation. They are the wire contract this package projects into
+// the session vocabulary above; the values mirror dispatch's own constants and the
+// sealer's record type, and decodeGovernance/record round-trip tests pin them so the
+// two cannot silently drift.
+const (
+	typeDispatchStart    = "dispatch.start"
+	typeDispatchEnd      = "dispatch.end"
+	typeDispatchRejected = "dispatch.rejected"
+	typeRecordSealed     = "spine.record"
 )
 
 // Event is one record on a session's event stream: an ordered, replayable view of
@@ -69,6 +102,23 @@ type Event struct {
 	Usage *Usage `json:"usage,omitempty"`
 	// Err carries the stall reason (stalled).
 	Err string `json:"error,omitempty"`
+
+	// Action is the governed action's name (action.admitted/completed/rejected): a
+	// tool, the model call, or the spawn that delegates a sub-goal. It is broader than
+	// Tool, which names only a model-requested tool.
+	Action string `json:"action,omitempty"`
+	// Call correlates an action.admitted with the action.completed or action.rejected
+	// that answers it, so a renderer pairs an admission with its outcome and a panel
+	// can show only the actions still in flight.
+	Call int64 `json:"call,omitempty"`
+	// Trust is the action's trust level (action.* events): how far the work is
+	// trusted, which is the containment a gate requires to admit it.
+	Trust string `json:"trust,omitempty"`
+	// Fault is the fault class on a refused or failed action: the denial reason on
+	// action.rejected (capability_denied, budget_exceeded, needs_approval, ...) or the
+	// failure class on an action.completed that ran but errored (transient, ...). Empty
+	// on a clean completion.
+	Fault string `json:"fault,omitempty"`
 }
 
 // Usage is the token cost of one turn, projected onto the conversation stream. It
@@ -103,16 +153,72 @@ func (e Event) toAppend(stream string) spine.AppendInput {
 	}
 }
 
-// fromSpine reconstructs a session event from a spine event, taking Seq, Time,
-// Kind, and Actor from the log's authoritative fields and the rest from the body.
+// fromSpine reconstructs a session event from a spine event, taking Seq, Time, and
+// Actor from the log's authoritative fields and the body from the payload. Two shapes
+// share a run's stream: the conversation events this package writes (the whole body
+// folded under one payload key) and the governance and record events the dispatch
+// waist and the sealer write (their own payload shape). decodeBody dispatches on the
+// stored type so both project into the one session vocabulary.
 func fromSpine(se spine.Event) Event {
-	var e Event
-	if s, ok := se.Payload[payloadKey].(string); ok {
-		_ = json.Unmarshal([]byte(s), &e)
-	}
+	e := decodeBody(se)
 	e.Seq = se.Seq
 	e.Time = se.Time
-	e.Kind = Kind(se.Type)
 	e.Actor = se.Actor
 	return e
+}
+
+// decodeBody builds the typed event body from a spine event by its stored type. The
+// governance and record types are projected without touching the stored record, so a
+// sealer still signs and a verifier still checks the original dispatch.start/end/
+// rejected and spine.record events; a session consumer just reads them in the session's
+// own vocabulary.
+func decodeBody(se spine.Event) Event {
+	switch se.Type {
+	case typeDispatchStart:
+		return governanceEvent(KindActionAdmitted, se)
+	case typeDispatchEnd:
+		// A completed action carries a fault class when it ran but errored (a transient
+		// failure, say); a clean completion leaves Fault empty.
+		return governanceEvent(KindActionCompleted, se)
+	case typeDispatchRejected:
+		return governanceEvent(KindActionRejected, se)
+	case typeRecordSealed:
+		return Event{Kind: KindRecordSealed}
+	default:
+		var e Event
+		if s, ok := se.Payload[payloadKey].(string); ok {
+			_ = json.Unmarshal([]byte(s), &e)
+		}
+		e.Kind = Kind(se.Type)
+		return e
+	}
+}
+
+// governanceEvent projects one dispatch-waist event into the session vocabulary,
+// reading the waist's payload shape (action, call, trust, error_class). The
+// correlation id survives a durable log's JSON round trip as a float, so it is read
+// through a numeric coercion rather than a direct int64 assertion.
+func governanceEvent(kind Kind, se spine.Event) Event {
+	e := Event{Kind: kind}
+	e.Action, _ = se.Payload["action"].(string)
+	e.Trust, _ = se.Payload["trust"].(string)
+	e.Fault, _ = se.Payload["error_class"].(string)
+	e.Call = asInt64(se.Payload["call"])
+	return e
+}
+
+// asInt64 reads a numeric payload value that may be an int64 (the in-memory log shares
+// the map verbatim) or a float64 (a durable log re-encodes the payload as JSON and
+// decodes numbers as floats), returning 0 for anything else.
+func asInt64(v any) int64 {
+	switch n := v.(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	case int:
+		return int64(n)
+	default:
+		return 0
+	}
 }
