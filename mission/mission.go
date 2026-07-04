@@ -567,9 +567,11 @@ type Convergence struct{}
 var _ goal.StopEvaluator = Convergence{}
 
 // Met reports whether the conversation has finished, returning the model's final
-// text as the reason.
+// text as the reason. It decodes only the outcome fields, not the whole message
+// history: convergence is checked on every reconcile tick, so folding the entire
+// (growing) transcript back into memory each time just to read two fields is waste.
 func (Convergence) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool, string, error) {
-	cp, err := decodeCheckpoint(status.Checkpoint)
+	cp, err := decodeCheckpointOutcome(status.Checkpoint)
 	if err != nil {
 		return false, "", fault.Wrap(fault.Terminal, "mission_checkpoint_decode", err)
 	}
@@ -638,6 +640,22 @@ type checkpoint struct {
 
 func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
 	var cp checkpoint
+	if len(raw) == 0 {
+		return cp, nil
+	}
+	return cp, json.Unmarshal(raw, &cp)
+}
+
+// checkpointOutcome is the minimal projection a convergence check needs: whether the
+// run finished and its final text. Decoding into it skips materializing the whole
+// message history that a full checkpoint decode would build.
+type checkpointOutcome struct {
+	Done   bool   `json:"done"`
+	Result string `json:"result,omitempty"`
+}
+
+func decodeCheckpointOutcome(raw json.RawMessage) (checkpointOutcome, error) {
+	var cp checkpointOutcome
 	if len(raw) == 0 {
 		return cp, nil
 	}

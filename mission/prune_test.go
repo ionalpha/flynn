@@ -2,6 +2,8 @@ package mission
 
 import (
 	"encoding/json"
+	"fmt"
+	"hash/fnv"
 	"reflect"
 	"strings"
 	"testing"
@@ -178,6 +180,62 @@ func TestPruneProperties(t *testing.T) {
 			rt.Fatal("pruneTranscript is not idempotent")
 		}
 	})
+}
+
+// TestHashStringMatchesFNV pins hashString to FNV-1a: it must stay byte-identical to
+// hash/fnv so a transcript prunes the same way on replay and across builds, while
+// avoiding the []byte copy. A drift here would make duplicate detection process- or
+// version-dependent.
+func TestHashStringMatchesFNV(t *testing.T) {
+	cases := []string{"", "a", "hello world", big("seed"), strings.Repeat("ab", 5000), "\x00\xff\x80\n"}
+	for _, s := range cases {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(s))
+		if got, want := hashString(s), h.Sum64(); got != want {
+			t.Fatalf("hashString(%d bytes) = %d, want fnv %d", len(s), got, want)
+		}
+	}
+}
+
+// TestPruneSkipsWhenNothingLarge proves the fast path is behavior-preserving: a
+// transcript whose results are all small or errors has nothing prunable, so the view
+// is the input unchanged. This is the same result the full pass produces, so skipping
+// it cannot alter the transcript sent to the model.
+func TestPruneSkipsWhenNothingLarge(t *testing.T) {
+	msgs := []llm.Message{
+		callMsg("1", "read"), resultMsg("1", "small", false),
+		callMsg("2", "bash"), resultMsg("2", big("err"), true), // large but an error -> never pruned
+		callMsg("3", "grep"), resultMsg("3", "also small", false),
+	}
+	out := pruneTranscript(msgs, noSummarizer)
+	if !reflect.DeepEqual(out, msgs) {
+		t.Fatal("a transcript with nothing prunable must be returned unchanged")
+	}
+}
+
+// TestPruneCommonCaseZeroAlloc is the M12 allocation-ceiling gate: pruning a
+// transcript whose results are all small (the common turn) must not allocate, and
+// that must hold as the transcript grows, so the per-turn pass stays flat instead of
+// adding O(history) allocation to every turn over a goal. The large-result summarizing
+// path is measured separately by BenchmarkPruneTranscript.
+func TestPruneCommonCaseZeroAlloc(t *testing.T) {
+	build := func(pairs int) []llm.Message {
+		msgs := make([]llm.Message, 0, pairs*2)
+		for i := range pairs {
+			id := fmt.Sprintf("t%d", i)
+			msgs = append(msgs, callMsg(id, "read"), resultMsg(id, "small result", false))
+		}
+		return msgs
+	}
+	for _, pairs := range []int{50, 100} {
+		msgs := build(pairs)
+		allocs := testing.AllocsPerRun(200, func() {
+			_ = pruneTranscript(msgs, noSummarizer)
+		})
+		if allocs != 0 {
+			t.Fatalf("pruneTranscript over %d small-result pairs allocated %.0f times; the no-large-result turn must be allocation-free and stay flat as history grows", pairs, allocs)
+		}
+	}
 }
 
 // deepCopyMessages clones a transcript so a test can detect in-place mutation. A nil

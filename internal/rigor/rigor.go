@@ -78,6 +78,7 @@ func DefaultPolicy() Policy {
 			"chain":          true,
 			"internal/flow":  true,
 			"jobs":           true,
+			"mission":        true,
 			"resource":       true,
 			"storage/sqlite": true,
 		},
