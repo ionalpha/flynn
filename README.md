@@ -145,6 +145,23 @@ so an agent only ever has the surface it needs. Define your own archetypes in co
   reconciler drives toward it and converges again after a failure or restart,
   instead of losing the thread mid-task.
 
+### The interactive session
+
+The terminal is not a chat box bolted onto an API. The session is the typed event
+spine rendered live, so you watch the agent work with the governance and record
+layers in view rather than hidden behind it.
+
+- **The governed stream, on screen.** Governance decisions and record events are
+  projected onto the conversation as they happen. A governance overlay (Ctrl+O) shows
+  the run's current posture: what was admitted, what was denied, and why.
+- **Seal and verify without leaving the shell.** `/seal` seals the current run and
+  `/verify` checks it, with a record badge showing the run's verifiable state inline.
+- **Replay in place.** `/replay` re-renders a recorded run from its events, and run
+  pickers badge each run with its record state.
+- **Built for real terminals.** An alternate-screen fallback for hostile emulators,
+  cross-emulator key handling (`modifyOtherKeys`), image paste into the composer, and
+  `@`-completion ranked by frecency.
+
 ### The learning loop
 
 - **Skills from experience.** After complex work, the agent writes reusable skills
@@ -432,6 +449,7 @@ above is filling in on top of that foundation. Follow
 - Per-run token and cost budgets with hard ceilings.
 - Deterministic replay, with golden missions guarding behavior in CI.
 - Signed, tamper-evident run records: each run's events are committed to an append-only Merkle log under a COSE signature, checkable by a standalone verifier (`flynn spine verify`), with a public conformance vector suite for the record format.
+- An interactive TUI that renders the typed session spine live: in-session `/seal` and `/verify` with a record badge, a governance overlay (Ctrl+O), `/replay`, and cross-emulator input handling with an alternate-screen fallback.
 - A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
 - Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
@@ -448,7 +466,7 @@ above is filling in on top of that foundation. Follow
 - A cost-aware model router in front of the registry.
 - Default-deny network egress and remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
 - User-facing replay and time-travel: `flynn replay`, fork-from-event, and run diff, plus re-grading captured skills by re-folding the spine.
-- An upgraded interactive REPL and TUI, and a pluggable embeddings port for stronger local semantic recall.
+- A pluggable embeddings port for stronger local semantic recall.
 
 **On the roadmap**
 
