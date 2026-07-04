@@ -2,6 +2,8 @@ package chain
 
 import (
 	"context"
+	"strconv"
+	"sync"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -130,6 +132,59 @@ func TestPropRecordingLogRoundTrip(t *testing.T) {
 			t.Fatalf("verified %d events, want %d", len(events), n)
 		}
 	})
+}
+
+// TestRecordingLogConcurrentStreams appends to many streams concurrently, then seals
+// and verifies each. Under -race it proves the per-recorder locking is sound: the
+// global lock only guards the map, and each stream's encode+hash is serialized by its
+// own recorder lock. Each stream must yield a record covering exactly its own events.
+func TestRecordingLogConcurrentStreams(t *testing.T) {
+	rl := NewRecordingLog(spine.NewMemoryLog(), nil)
+	const streams, perStream = 16, 25
+
+	var wg sync.WaitGroup
+	for s := range streams {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			stream := "run/" + strconv.Itoa(s)
+			ctx := context.Background()
+			for i := range perStream {
+				if _, err := rl.Append(ctx, spine.AppendInput{
+					Stream:  stream,
+					Type:    "action.dispatched",
+					Actor:   spine.ActorAgent,
+					Payload: map[string]any{"i": int64(i)},
+				}); err != nil {
+					t.Errorf("append %s/%d: %v", stream, i, err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	priv, pub := testKey(0x24)
+	signer, _ := NewEd25519RootSigner("inst", priv)
+	ring := NewRootKeyring()
+	_ = ring.Add("inst", pub)
+	for s := range streams {
+		sr, err := rl.Seal("run/"+strconv.Itoa(s), signer)
+		if err != nil {
+			t.Fatalf("seal run/%d: %v", s, err)
+		}
+		record, err := sr.Marshal()
+		if err != nil {
+			t.Fatal(err)
+		}
+		events, err := VerifyRun(record, ring)
+		if err != nil {
+			t.Fatalf("verify run/%d: %v", s, err)
+		}
+		if len(events) != perStream {
+			t.Fatalf("run/%d sealed %d events, want %d", s, len(events), perStream)
+		}
+	}
 }
 
 // TestRecordingLogSealAndReset rotates a recorded stream: the first segment seals

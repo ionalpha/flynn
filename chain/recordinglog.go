@@ -31,6 +31,7 @@ type RecordingLog struct {
 }
 
 type streamRecorder struct {
+	mu      sync.Mutex // guards builder+err; encode+hash runs here, not under RecordingLog.mu
 	builder *Builder
 	err     error
 }
@@ -57,17 +58,29 @@ func (r *RecordingLog) Append(ctx context.Context, in spine.AppendInput) (spine.
 	if err != nil {
 		return e, err
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	sr := r.builders[e.Stream]
-	if sr == nil {
-		sr = &streamRecorder{builder: NewBuilder(r.originFor(e.Stream))}
-		r.builders[e.Stream] = sr
-	}
+	// The global lock only fetches (or creates) the stream's recorder; the encode+hash
+	// runs under that recorder's own lock, so appends to different streams do not
+	// serialize behind one another on fan-out.
+	sr := r.recorderFor(e.Stream)
+	sr.mu.Lock()
 	if sr.err == nil {
 		sr.err = sr.builder.Add(e)
 	}
+	sr.mu.Unlock()
 	return e, nil
+}
+
+// recorderFor returns the recorder for a stream, creating it on first use. It holds
+// the global lock only for the map access.
+func (r *RecordingLog) recorderFor(stream string) *streamRecorder {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	sr := r.builders[stream]
+	if sr == nil {
+		sr = &streamRecorder{builder: NewBuilder(r.originFor(stream))}
+		r.builders[stream] = sr
+	}
+	return sr
 }
 
 // Seal signs and returns the sealed record for a stream as recorded so far. It fails
@@ -76,12 +89,12 @@ func (r *RecordingLog) Append(ctx context.Context, in spine.AppendInput) (spine.
 // returned record is an immutable snapshot: further appends to the stream do not
 // change it.
 func (r *RecordingLog) Seal(stream string, signer RootSigner) (*SealedRun, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	sr := r.builders[stream]
+	sr := r.lookup(stream)
 	if sr == nil {
 		return nil, fault.New(fault.Terminal, CodeEmptyRecord, "chain: stream was not recorded")
 	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
 	if sr.err != nil {
 		return nil, sr.err
 	}
@@ -93,16 +106,24 @@ func (r *RecordingLog) Seal(stream string, signer RootSigner) (*SealedRun, error
 // recorded so far, and later appends accumulate into a fresh run under the same
 // origin. It refuses under the same conditions as Seal.
 func (r *RecordingLog) SealAndReset(stream string, signer RootSigner) (*SealedRun, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	sr := r.builders[stream]
+	sr := r.lookup(stream)
 	if sr == nil {
 		return nil, fault.New(fault.Terminal, CodeEmptyRecord, "chain: stream was not recorded")
 	}
+	sr.mu.Lock()
+	defer sr.mu.Unlock()
 	if sr.err != nil {
 		return nil, sr.err
 	}
 	return sr.builder.SealAndReset(signer)
+}
+
+// lookup returns the recorder for a stream, or nil if the stream was never recorded.
+// It holds the global lock only for the map access.
+func (r *RecordingLog) lookup(stream string) *streamRecorder {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.builders[stream]
 }
 
 var _ spine.Log = (*RecordingLog)(nil)
