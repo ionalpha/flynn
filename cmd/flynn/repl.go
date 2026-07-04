@@ -387,6 +387,17 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		return true, nil
 	case "/verify":
 		return true, s.verify(ctx, s.out)
+	case "/replay":
+		hist, _, err := renderHistory(ctx, s.store, s.runID, s.verbose)
+		if err != nil {
+			return true, err
+		}
+		if strings.TrimSpace(hist) == "" {
+			_, _ = fmt.Fprintln(s.out, "  nothing recorded to replay yet")
+			return true, nil
+		}
+		_, _ = fmt.Fprint(s.out, hist)
+		return true, nil
 	}
 	return false, nil
 }

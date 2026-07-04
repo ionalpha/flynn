@@ -49,7 +49,7 @@ func pickSession(ctx context.Context, store *sqlite.Store, reg *resource.Registr
 		if phase == "" {
 			phase = goal.PhasePending
 		}
-		fmt.Fprintf(os.Stderr, "  %d) %-9s %s\n", i+1, phase, oneLine(spec.Objective, 60))
+		fmt.Fprintf(os.Stderr, "  %d) %-9s %-9s %s\n", i+1, phase, runRecordState(ctx, store, g.Name), oneLine(spec.Objective, 60))
 	}
 
 	in := bufio.NewReader(os.Stdin)
@@ -87,6 +87,19 @@ func parseChoice(input string, n int) int {
 		return 0
 	}
 	return v
+}
+
+// runRecordState folds a run's recorded events into its record lifecycle state, so the
+// picker can show which listed runs carry a durable signed record. Only recording and
+// sealed are reachable here: verification is an in-session act with no stored event, so
+// a past run reads back as sealed (it has a signed record) or recording (it does not),
+// never verified. A read error degrades to recording rather than failing the menu.
+func runRecordState(ctx context.Context, store *sqlite.Store, id string) session.RecordState {
+	events, err := session.History(ctx, store.Log(), id)
+	if err != nil {
+		return session.RecordRecording
+	}
+	return session.Project(events).Record
 }
 
 // renderHistory replays a run's recorded events through the same renderer a live

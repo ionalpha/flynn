@@ -413,6 +413,9 @@ func (h *sessionHost) start(t queuedTurn) {
 	case "/verify":
 		h.startRecord(h.doVerify)
 		return
+	case "/replay":
+		h.startRecord(h.doReplay)
+		return
 	}
 	turnCtx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -565,6 +568,33 @@ func (h *sessionHost) doVerify(ctx context.Context) {
 	}
 	h.foldRecord(session.Event{Kind: session.KindRecordVerified})
 	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
+}
+
+// doReplay re-renders the run's recorded events into the scrollback through the themed
+// transcript renderer, between clear delimiters. It reads the run's history from the
+// durable store and folds it through a fresh transcript view, so the replay is the run
+// as it was recorded (the same markdown and governance rendering a live turn produces),
+// independent of what is currently on screen. It is a pure read; it changes no run state.
+func (h *sessionHost) doReplay(ctx context.Context) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/replay"))
+	events, err := session.History(ctx, h.s.store.Log(), h.s.runID)
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  replay failed: "+err.Error()))
+		return
+	}
+	if len(events) == 0 {
+		h.ui.Append(h.th.Render(theme.Status, "  nothing recorded to replay yet"))
+		return
+	}
+	h.ui.Append(h.th.Render(theme.Status, fmt.Sprintf("  replay of run %s (%d events)", h.s.runID, len(events))))
+	tv := newTranscriptView(h.th)
+	width := h.ui.Width()
+	for _, ev := range events {
+		if lines := tv.lines(ev, width); len(lines) > 0 {
+			h.ui.Append(lines...)
+		}
+	}
+	h.ui.Append(h.th.Render(theme.Status, "  end of replay"))
 }
 
 // foldRecord folds a record lifecycle event into the run projection and repaints the
@@ -792,7 +822,7 @@ func (h *sessionHost) refreshStatus() {
 // runs.
 func statusHint(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · /replay re-renders it · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {
