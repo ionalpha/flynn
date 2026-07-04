@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 
+	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/tui/editor"
@@ -50,6 +51,13 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	if err != nil {
 		return err
 	}
+	// Load the instance signer so the session can seal its run into a verifiable record
+	// on demand. Best effort, exactly as the one-shot runner treats it: a session
+	// without a key still runs every turn; only /seal reports the key is missing.
+	signer, serr := runSigner(ctx, dataDir)
+	if serr != nil {
+		signer = nil
+	}
 
 	var distiller learn.Distiller
 	if learnEnabled {
@@ -76,6 +84,8 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		cwd:       cwd,
 		store:     store,
 		reg:       reg,
+		signer:    signer,
+		dataDir:   dataDir,
 	}
 
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
@@ -138,6 +148,12 @@ type replSession struct {
 	keys      editor.Keymap // composer bindings; nil selects the default map
 	theme     *theme.Theme  // session theme; nil selects the default theme
 
+	// signer is the instance identity the session seals its run under; nil when no key
+	// could be loaded, in which case /seal reports the run cannot be sealed rather than
+	// failing. dataDir roots the store the run is verified from.
+	signer  chain.RootSigner
+	dataDir string
+
 	// observer, when set, receives every session event as the turn renders. The
 	// interactive shell installs it to render the typed stream itself (transcript,
 	// governance, status badge); the line interface leaves it nil and reads the
@@ -179,6 +195,14 @@ func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.S
 		}
 		if isExit(line) {
 			return s.finish(ctx)
+		}
+		if handled, err := s.replCommand(ctx, line); handled {
+			// verify writes its own per-tier report to out; only a plain error (an
+			// unsealed run, a missing key) needs a line of its own here.
+			if err != nil && !errors.Is(err, errChecksFailed) {
+				_, _ = fmt.Fprintf(s.out, "  %v\n", err)
+			}
+			continue
 		}
 		if _, err := s.runTurn(ctx, line, nil, sigCh); err != nil {
 			if errors.Is(err, context.Canceled) {
@@ -347,6 +371,48 @@ func (s *replSession) finish(ctx context.Context) error {
 	}
 	_, _ = fmt.Fprintf(s.out, "\nsession %s ended.\n", s.runID)
 	return nil
+}
+
+// replCommand handles the session's slash commands that are not model turns: sealing
+// the run into a verifiable record, and verifying that record. It reports whether it
+// claimed the line and any error to surface, so each interface renders the outcome its
+// own way. A line that is not a command is left for the model.
+func (s *replSession) replCommand(ctx context.Context, line string) (handled bool, err error) {
+	switch strings.ToLower(strings.TrimSpace(line)) {
+	case "/seal":
+		if err := s.seal(ctx); err != nil {
+			return true, err
+		}
+		_, _ = fmt.Fprintln(s.out, "  run sealed; /verify to check it")
+		return true, nil
+	case "/verify":
+		return true, s.verify(ctx, s.out)
+	}
+	return false, nil
+}
+
+// seal signs the session's run into a verifiable record stored on its stream. It needs a
+// started run and the instance signer; without either it reports why rather than failing
+// the session. Sealing reads the run's current durable events, so it captures the whole
+// conversation, including history a resumed session continued.
+func (s *replSession) seal(ctx context.Context) error {
+	if !s.started {
+		return errors.New("nothing to seal yet; run a turn first")
+	}
+	if s.signer == nil {
+		return errors.New("cannot seal: no instance signing key is available")
+	}
+	return sealRunFromStore(ctx, s.store, s.runID, s.signer)
+}
+
+// verify checks the session's sealed record and writes its per-tier report to out. It
+// returns errChecksFailed if a tier fails (the report names which), or a plain error
+// when the run has not been sealed yet.
+func (s *replSession) verify(ctx context.Context, out io.Writer) error {
+	if !s.started {
+		return errors.New("nothing to verify yet; run a turn first")
+	}
+	return verifyStoredRun(ctx, out, s.store, s.runID)
 }
 
 // isExit reports whether a line is a command to leave the session.

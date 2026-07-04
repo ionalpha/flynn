@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -405,6 +406,14 @@ func (h *sessionHost) start(t queuedTurn) {
 		h.startShell(strings.TrimSpace(cmd))
 		return
 	}
+	switch t.text {
+	case "/seal":
+		h.startRecord(h.doSeal)
+		return
+	case "/verify":
+		h.startRecord(h.doVerify)
+		return
+	}
 	turnCtx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
 	h.cancel = cancel
@@ -496,6 +505,79 @@ func (h *sessionHost) runShell(ctx context.Context, cmdLine string) {
 	if len(lines) > 0 {
 		h.ui.Append(lines...)
 	}
+}
+
+// startRecord runs one in-process record command (seal or verify) as the current turn.
+// It holds the same turn slot a prompt does, so it runs serially after any in-flight
+// turn and never reads the run's stream while a turn is still appending to it. The
+// caller has already marked the host busy.
+func (h *sessionHost) startRecord(run func(context.Context)) {
+	turnCtx, cancel := context.WithCancel(h.ctx)
+	h.mu.Lock()
+	h.cancel = cancel
+	h.mu.Unlock()
+	h.refreshStatus()
+
+	h.turns.Add(1)
+	go func() {
+		defer h.turns.Done()
+		run(turnCtx)
+		cancel()
+		h.next()
+	}()
+}
+
+// doSeal seals the session's run into a verifiable record and moves the status badge to
+// sealed. The seal appends the record to the run's own stream; because the shell does
+// not subscribe to the stream at idle, it folds the sealed state into the projection
+// directly, the same state a live record.sealed event would produce, so the badge
+// tracks it. A failure is reported inline and leaves the badge unchanged.
+func (h *sessionHost) doSeal(ctx context.Context) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/seal"))
+	if err := h.s.seal(ctx); err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		return
+	}
+	h.foldRecord(session.Event{Kind: session.KindRecordSealed})
+	h.ui.Append(h.th.Render(theme.Success, "  run sealed; /verify to check it"))
+}
+
+// doVerify verifies the session's sealed record, prints its per-tier report to the
+// scrollback, and moves the badge to verified when every tier passes. A run not yet
+// sealed, or a tier that fails, is reported and leaves the badge unchanged.
+func (h *sessionHost) doVerify(ctx context.Context) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/verify"))
+	var buf bytes.Buffer
+	err := h.s.verify(ctx, &buf)
+	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		h.ui.Append(h.th.Render(theme.ToolOutput, "  "+line))
+	}
+	if err != nil {
+		// A failed tier is already named in the report above; only a plain error (an
+		// unsealed run) needs a line of its own.
+		if !errors.Is(err, errChecksFailed) {
+			h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		}
+		return
+	}
+	h.foldRecord(session.Event{Kind: session.KindRecordVerified})
+	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
+}
+
+// foldRecord folds a record lifecycle event into the run projection and repaints the
+// badge and panel. Sealing and verifying run in-process at idle, off the subscribed
+// event stream, so the shell folds their outcome into the projection exactly as onEvent
+// folds a streamed event, keeping the badge the single source of the record state.
+func (h *sessionHost) foldRecord(ev session.Event) {
+	h.mu.Lock()
+	h.proj = session.Reduce(h.proj, ev)
+	p := h.proj
+	h.mu.Unlock()
+	h.panel.set(p)
+	h.refreshStatus()
 }
 
 // next ends the finished turn's ownership of the shell: it starts the next
@@ -710,7 +792,7 @@ func (h *sessionHost) refreshStatus() {
 // runs.
 func statusHint(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {

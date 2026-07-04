@@ -129,6 +129,70 @@ func sealRun(ctx context.Context, store *sqlite.Store, rec *chain.RecordingLog, 
 	return err
 }
 
+// sealRunFromStore seals a run's current durable stream into a signed record stored on
+// the stream, without a live recorder. It reads the run's events, folds every one
+// except a prior seal into a fresh record builder, signs the Merkle head, and appends
+// the record. Reading the durable stream (rather than a recorder accumulated in memory)
+// lets a session seal a run in-process at any point, including one continued from a
+// resumed conversation whose earlier events predate this process. Re-sealing re-folds
+// the same events (skipping the earlier record event, which is not part of the chain it
+// attests) and appends a fresh record.
+func sealRunFromStore(ctx context.Context, store *sqlite.Store, runID string, signer chain.RootSigner) error {
+	events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
+	if err != nil {
+		return err
+	}
+	b := chain.NewBuilder(runID)
+	folded := 0
+	for _, e := range events {
+		if e.Type == recordEventType {
+			continue
+		}
+		if err := b.Add(e); err != nil {
+			return err
+		}
+		folded++
+	}
+	if folded == 0 {
+		return fmt.Errorf("run %q has no events to seal", runID)
+	}
+	sealed, err := b.Seal(signer)
+	if err != nil {
+		return err
+	}
+	record, err := sealed.Marshal()
+	if err != nil {
+		return err
+	}
+	_, err = store.Log().Append(ctx, spine.AppendInput{
+		Stream:  runID,
+		Type:    recordEventType,
+		Actor:   spine.ActorSystem,
+		Payload: map[string]any{"record": base64.StdEncoding.EncodeToString(record)},
+	})
+	return err
+}
+
+// verifyStoredRun verifies a sealed run already open in store, writing its per-tier
+// report to out. It is the in-process counterpart of verifyRun, which opens its own
+// store and writes to stdout: a session that holds the store open verifies its own run
+// without reopening. It reports errChecksFailed if a tier fails, or a plain error when
+// the run carries no sealed record yet.
+func verifyStoredRun(ctx context.Context, out io.Writer, store *sqlite.Store, runID string) error {
+	events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("no run found with id %q", runID)
+	}
+	record, err := recordFromEvents(events)
+	if err != nil {
+		return err
+	}
+	return verifyRecord(out, "run "+runID, record, "")
+}
+
 // errChecksFailed reports that a record did not pass every check. The per-tier detail
 // is written to stdout; this is the concise error that sets a non-zero exit code so
 // the command can gate a script.
