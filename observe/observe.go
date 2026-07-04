@@ -148,11 +148,20 @@ var _ Logger = slogLogger{}
 // wants real logging injects a slog.Handler through New instead.
 type NopLogger struct{}
 
+// Debug implements Logger by discarding the record.
 func (NopLogger) Debug(context.Context, string, ...Field) {}
-func (NopLogger) Info(context.Context, string, ...Field)  {}
-func (NopLogger) Warn(context.Context, string, ...Field)  {}
+
+// Info implements Logger by discarding the record.
+func (NopLogger) Info(context.Context, string, ...Field) {}
+
+// Warn implements Logger by discarding the record.
+func (NopLogger) Warn(context.Context, string, ...Field) {}
+
+// Error implements Logger by discarding the record.
 func (NopLogger) Error(context.Context, string, ...Field) {}
-func (NopLogger) With(...Field) Logger                    { return NopLogger{} }
+
+// With implements Logger by returning the same no-op logger.
+func (NopLogger) With(...Field) Logger { return NopLogger{} }
 
 var _ Logger = NopLogger{}
 
