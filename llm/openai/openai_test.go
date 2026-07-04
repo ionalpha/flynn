@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -118,7 +119,8 @@ func TestToolResultsExpandToToolMessages(t *testing.T) {
 		t.Fatalf("assistant tool_calls wrong: %+v", asst)
 	}
 	tool := sent.Messages[2]
-	if tool.Role != "tool" || tool.ToolCallID != "call_1" || tool.Content == nil || *tool.Content != "echoed" {
+	content, _ := tool.Content.(string)
+	if tool.Role != "tool" || tool.ToolCallID != "call_1" || content != "echoed" {
 		t.Fatalf("tool result message wrong: %+v", tool)
 	}
 }
@@ -184,8 +186,8 @@ func TestAssistantMappingProperty(t *testing.T) {
 			} `json:"message"`
 			FinishReason string `json:"finish_reason"`
 		}{})
-		if enc[0].Content != nil {
-			cr.Choices[0].Message.Content = *enc[0].Content
+		if s, ok := enc[0].Content.(*string); ok && s != nil {
+			cr.Choices[0].Message.Content = *s
 		}
 		cr.Choices[0].Message.ToolCalls = enc[0].ToolCalls
 
@@ -258,5 +260,92 @@ func TestCacheHitTokensFallback(t *testing.T) {
 	}
 	if resp.Usage.InputTokens != 2000 || resp.Usage.CacheReadTokens != 1920 {
 		t.Fatalf("flat cache-hit field not surfaced: %+v", resp.Usage)
+	}
+}
+
+// TestVisionEncodesImageAsContentArray checks that a vision-enabled client encodes
+// a user turn of text plus an image into OpenAI's content-array form: the message
+// content becomes an array holding a text part and an image_url part whose URL is a
+// base64 data URI carrying the media type and bytes.
+func TestVisionEncodesImageAsContentArray(t *testing.T) {
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"seen"},"finish_reason":"stop"}],"usage":{}}`}
+	c := clientWith(m, WithVision())
+
+	_, err := c.Generate(context.Background(), llm.Request{Messages: []llm.Message{
+		{Role: llm.RoleUser, Blocks: []llm.Block{
+			{Kind: llm.KindText, Text: "what is this"},
+			llm.ImageBlock("image/png", []byte{0x89, 0x50, 0x4e, 0x47}),
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Decode the wire body loosely: content must be an array, not a string.
+	var sent struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				ImageURL struct {
+					URL string `json:"url"`
+				} `json:"image_url"`
+			} `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(m.gotBody, &sent); err != nil {
+		t.Fatalf("content did not encode as an array: %v (%s)", err, m.gotBody)
+	}
+	if len(sent.Messages) != 1 || len(sent.Messages[0].Content) != 2 {
+		t.Fatalf("want one user message with two content parts, got %s", m.gotBody)
+	}
+	parts := sent.Messages[0].Content
+	if parts[0].Type != "text" || parts[0].Text != "what is this" {
+		t.Fatalf("first part should be the text: %+v", parts[0])
+	}
+	wantURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString([]byte{0x89, 0x50, 0x4e, 0x47})
+	if parts[1].Type != "image_url" || parts[1].ImageURL.URL != wantURL {
+		t.Fatalf("second part should be the image data URI %q: %+v", wantURL, parts[1])
+	}
+}
+
+// TestVisionOffRefusesImage checks that a client without vision refuses a turn
+// carrying an image with a terminal fault, and sends no request, so a picture never
+// silently disappears from a turn against a model that cannot see it.
+func TestVisionOffRefusesImage(t *testing.T) {
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`}
+	c := clientWith(m) // no WithVision
+
+	_, err := c.Generate(context.Background(), llm.Request{Messages: []llm.Message{
+		{Role: llm.RoleUser, Blocks: []llm.Block{
+			{Kind: llm.KindText, Text: "look"},
+			llm.ImageBlock("image/png", []byte{0x89, 0x50}),
+		}},
+	}})
+	if err == nil {
+		t.Fatal("expected a refusal for an image on a non-vision model")
+	}
+	if got := fault.Classify(err); got != fault.Terminal {
+		t.Fatalf("refusal classified %s, want terminal", got)
+	}
+	if m.gotBody != nil {
+		t.Fatalf("no request should be sent when the image is refused, got %s", m.gotBody)
+	}
+}
+
+// TestVisionOnTextStillSendsStringContent guards backward compatibility: enabling
+// vision must not change a plain text turn, whose content stays a JSON string (the
+// shape every OpenAI-compatible endpoint accepts), not a one-element array.
+func TestVisionOnTextStillSendsStringContent(t *testing.T) {
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],"usage":{}}`}
+	c := clientWith(m, WithVision())
+
+	_, err := c.Generate(context.Background(), llm.Request{Messages: []llm.Message{llm.Text(llm.RoleUser, "hello")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(m.gotBody), `"content":"hello"`) {
+		t.Fatalf("text-only content should stay a string: %s", m.gotBody)
 	}
 }

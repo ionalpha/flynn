@@ -63,6 +63,14 @@ func TestResolveLocalProviderNeedsNoKey(t *testing.T) {
 	if _, err := provider.Resolve("llamacpp"); err == nil {
 		t.Fatal("plaintext remote base URL should be refused for the local provider")
 	}
+
+	// The vision opt-in resolves cleanly (a local vision model, llava-class); the
+	// enable path must not error, and unset leaves it off without error either.
+	t.Setenv("LLAMACPP_BASE_URL", "")
+	t.Setenv("LLAMACPP_VISION", "1")
+	if _, err := provider.Resolve("llamacpp:llava"); err != nil {
+		t.Fatalf("local vision opt-in should resolve: %v", err)
+	}
 }
 
 // TestResolveRejectsPlaintextRemoteBaseURL guards the transport: a plaintext http

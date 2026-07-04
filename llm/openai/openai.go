@@ -9,6 +9,7 @@ package openai
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -35,6 +36,7 @@ type Client struct {
 	api         *httpapi.Client
 	maxTokens   int
 	toolGrammar bool
+	vision      bool
 }
 
 // Option configures a Client.
@@ -93,6 +95,16 @@ func WithToolGrammar() Option {
 	return func(c *Client) { c.toolGrammar = true }
 }
 
+// WithVision marks the served model as able to accept image input, so a user
+// message that carries an image is encoded as OpenAI vision content (a content
+// array with image_url parts) instead of being refused. It is off by default:
+// an arbitrary OpenAI-compatible endpoint may serve a text-only model, and
+// silently dropping an image would let a picture vanish from a turn. Enable it
+// only when the configured model can see; the hosted GPT and Gemini models do.
+func WithVision() Option {
+	return func(c *Client) { c.vision = true }
+}
+
 // New builds a Client authenticating with apiKey. The key is held as a
 // secret.Text, so it cannot leak through logging or formatting of the Client.
 // With no HTTP client injected the shared core picks the governed default
@@ -112,6 +124,11 @@ var _ llm.Model = (*Client)(nil)
 
 // Generate implements llm.Model.
 func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, error) {
+	if !c.vision {
+		if err := refuseImages(req, c.model); err != nil {
+			return llm.Response{}, err
+		}
+	}
 	chatReq, grammarActive := c.buildRequest(req)
 	var cr chatResponse
 	if err := c.api.PostJSON(ctx, "/chat/completions", chatReq, &cr); err != nil {
@@ -125,6 +142,22 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, e
 		}
 	}
 	return decodeResponse(cr, grammarTools)
+}
+
+// refuseImages returns a terminal fault when any message carries an image block,
+// used when the configured model cannot accept vision input. Refusing keeps an
+// image from silently disappearing from a turn: the caller learns the model cannot
+// see it, rather than a picture-free request going out that the user believes
+// carried the image.
+func refuseImages(req llm.Request, model string) error {
+	for _, m := range req.Messages {
+		for _, b := range m.Blocks {
+			if b.Kind == llm.KindImage {
+				return fault.New(fault.Terminal, "openai_no_vision", "openai: model "+model+" cannot accept image input")
+			}
+		}
+	}
+	return nil
 }
 
 // --- request building -------------------------------------------------------
@@ -153,10 +186,30 @@ type chatRequest struct {
 }
 
 type chatMessage struct {
-	Role       string         `json:"role"`
-	Content    *string        `json:"content,omitempty"`
+	Role string `json:"role"`
+	// Content is either a *string (the plain form every message uses) or a
+	// []contentPart (the multimodal form a user message takes when it carries an
+	// image). It is typed as any so one field serves both: a *string marshals to a
+	// JSON string exactly as before, and a []contentPart marshals to the content
+	// array the vision API needs. A nil interface is omitted.
+	Content    any            `json:"content,omitempty"`
 	ToolCalls  []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID string         `json:"tool_call_id,omitempty"`
+}
+
+// contentPart is one element of OpenAI's multimodal content array: either a run of
+// text or an image reference. A user message that carries an image is encoded as an
+// array of these instead of a plain string, which is the shape the vision API needs.
+type contentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+// imageURL carries an image as a data URI (data:<media-type>;base64,<bytes>), which
+// inlines the image so the stateless request stays self-contained.
+type imageURL struct {
+	URL string `json:"url"`
 }
 
 type chatToolCall struct {
@@ -251,14 +304,24 @@ func encodeMessage(m llm.Message) []chatMessage {
 			})
 		}
 		return []chatMessage{msg}
-	default: // user (and system, handled separately): text becomes a user message,
-		// tool results become individual tool messages.
+	default: // user (and system, handled separately): text and images become one
+		// user message, tool results become individual tool messages.
 		var out []chatMessage
-		var text string
+		var parts []contentPart
+		hasImage := false
 		for _, b := range m.Blocks {
 			switch b.Kind {
 			case llm.KindText:
-				text += b.Text
+				if b.Text != "" {
+					parts = append(parts, contentPart{Type: "text", Text: b.Text})
+				}
+			case llm.KindImage:
+				if b.Image != nil {
+					hasImage = true
+					parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURL{
+						URL: "data:" + b.Image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(b.Image.Data),
+					}})
+				}
 			case llm.KindToolResult:
 				if b.ToolResult != nil {
 					content := b.ToolResult.Content
@@ -266,13 +329,26 @@ func encodeMessage(m llm.Message) []chatMessage {
 				}
 			default:
 				// KindToolUse becomes assistant tool_calls elsewhere; KindOpaque has
-				// no OpenAI mapping. KindImage is not mapped here: this adapter sends
-				// string content, and OpenAI-style vision needs the content-array form,
-				// so image blocks are carried by the Anthropic backend only for now.
+				// no OpenAI mapping.
 			}
 		}
-		if text != "" {
-			out = append([]chatMessage{{Role: "user", Content: &text}}, out...)
+		// A user turn with no text or image (only tool results) prepends no user
+		// message. With an image present the content must be the array form; without
+		// one it collapses to a plain string, the shape every endpoint accepts and
+		// the callers that never send images keep sending.
+		if len(parts) > 0 {
+			user := chatMessage{Role: "user"}
+			if hasImage {
+				user.Content = parts
+			} else {
+				var b strings.Builder
+				for _, p := range parts {
+					b.WriteString(p.Text)
+				}
+				text := b.String()
+				user.Content = &text
+			}
+			out = append([]chatMessage{user}, out...)
 		}
 		return out
 	}

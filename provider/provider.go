@@ -54,7 +54,7 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 		if err != nil {
 			return nil, err
 		}
-		return openai.New(key, openai.WithModel(model), openai.WithBaseURL(baseURL)), nil
+		return openai.New(key, openai.WithModel(model), openai.WithBaseURL(baseURL), openai.WithVision()), nil
 	case "deepseek":
 		// DeepSeek speaks the OpenAI Chat Completions format, so the same adapter
 		// reaches it by pointing at its endpoint; its default model is the general
@@ -63,14 +63,14 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 	case "gemini":
 		// Gemini exposes an OpenAI-compatible endpoint, so the same adapter reaches it
 		// by pointing at that base URL; the default model is the fast, low-cost tier.
-		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash")
+		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", openai.WithVision())
 	case "llamacpp":
 		// A local model server speaking the OpenAI Chat Completions format. It runs on
 		// the loopback host, so no API key is required and the base URL defaults to the
 		// server's usual address. Tool calls are grammar-constrained at decode time, so
 		// even a small local model can only emit a structurally valid call; the
 		// constraint is local-only because it rides the server's grammar request field.
-		return localOpenAI(ctx, src, model, "LLAMACPP_BASE_URL", "http://localhost:8080/v1")
+		return localOpenAI(ctx, src, model, "LLAMACPP_BASE_URL", "LLAMACPP_VISION", "http://localhost:8080/v1")
 	case "":
 		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
 	default:
@@ -83,8 +83,10 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 // base URL and model. A configured base-URL override (the provider's *_BASE_URL
 // reference) wins over the default, so a proxy or a self-hosted gateway still works;
 // otherwise the provider's standard endpoint is used. Routing these through one
-// adapter keeps a single, tested mapping for every OpenAI-shaped backend.
-func openAICompatible(ctx context.Context, src secret.Source, model, keyRef, baseRef, defaultBaseURL, defaultModel string) (llm.Model, error) {
+// adapter keeps a single, tested mapping for every OpenAI-shaped backend. Extra
+// options carry a provider's per-model capabilities (for example vision, which
+// Gemini has and DeepSeek's chat model does not).
+func openAICompatible(ctx context.Context, src secret.Source, model, keyRef, baseRef, defaultBaseURL, defaultModel string, extra ...openai.Option) (llm.Model, error) {
 	key, baseURL, err := credentials(ctx, src, keyRef, baseRef)
 	if err != nil {
 		return nil, err
@@ -95,7 +97,8 @@ func openAICompatible(ctx context.Context, src secret.Source, model, keyRef, bas
 	if model == "" {
 		model = defaultModel
 	}
-	return openai.New(key, openai.WithModel(model), openai.WithBaseURL(baseURL)), nil
+	opts := append([]openai.Option{openai.WithModel(model), openai.WithBaseURL(baseURL)}, extra...)
+	return openai.New(key, opts...), nil
 }
 
 // localOpenAI resolves a local OpenAI-compatible model server: no API key is
@@ -103,8 +106,11 @@ func openAICompatible(ctx context.Context, src secret.Source, model, keyRef, bas
 // server's usual loopback address and may be overridden by baseRef, and tool calls
 // are grammar-constrained so the model can only emit a structurally valid call. A
 // configured base URL that is not safe to send to (a plaintext non-loopback host)
-// is refused, so the local-only assumption cannot be silently broken.
-func localOpenAI(ctx context.Context, src secret.Source, model, baseRef, defaultBaseURL string) (llm.Model, error) {
+// is refused, so the local-only assumption cannot be silently broken. Vision is off
+// unless visionRef is set truthy: a local server can serve any model, so an image is
+// refused rather than sent to one that cannot see it, but an operator running a
+// vision model (llava-class) opts in to enable image input.
+func localOpenAI(ctx context.Context, src secret.Source, model, baseRef, visionRef, defaultBaseURL string) (llm.Model, error) {
 	baseURL := defaultBaseURL
 	if u, err := src.Lookup(ctx, baseRef); err == nil && u.Expose() != "" {
 		baseURL = u.Expose()
@@ -112,7 +118,23 @@ func localOpenAI(ctx context.Context, src secret.Source, model, baseRef, default
 	if !llm.SafeBaseURL(baseURL) {
 		return nil, fmt.Errorf("provider: %s must be https or http to localhost", baseRef)
 	}
-	return openai.New(secret.Text{}, openai.WithModel(model), openai.WithBaseURL(baseURL), openai.WithToolGrammar()), nil
+	opts := []openai.Option{openai.WithModel(model), openai.WithBaseURL(baseURL), openai.WithToolGrammar()}
+	if u, err := src.Lookup(ctx, visionRef); err == nil && truthy(u.Expose()) {
+		opts = append(opts, openai.WithVision())
+	}
+	return openai.New(secret.Text{}, opts...), nil
+}
+
+// truthy reports whether an environment value asks to turn a flag on. It accepts
+// the usual affirmatives so an operator can write LLAMACPP_VISION=1, =true, =on,
+// or =yes; anything else (including empty or unset) leaves the flag off.
+func truthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 // credentials resolves a provider's API key (required) and base-URL override
