@@ -12,6 +12,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/learn"
@@ -374,9 +375,10 @@ func (s *replSession) finish(ctx context.Context) error {
 }
 
 // replCommand handles the session's slash commands that are not model turns: sealing
-// the run into a verifiable record, and verifying that record. It reports whether it
-// claimed the line and any error to surface, so each interface renders the outcome its
-// own way. A line that is not a command is left for the model.
+// the run into a verifiable record, verifying that record, forking the run onto a new
+// branch, and replaying its recorded history. It reports whether it claimed the line and
+// any error to surface, so each interface renders the outcome its own way. A line that is
+// not a command is left for the model.
 func (s *replSession) replCommand(ctx context.Context, line string) (handled bool, err error) {
 	switch strings.ToLower(strings.TrimSpace(line)) {
 	case "/seal":
@@ -387,6 +389,13 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		return true, nil
 	case "/verify":
 		return true, s.verify(ctx, s.out)
+	case "/fork":
+		forkID, err := s.fork(ctx)
+		if err != nil {
+			return true, err
+		}
+		_, _ = fmt.Fprintf(s.out, "  forked to run %s; the original is untouched\n", forkID)
+		return true, nil
 	case "/replay":
 		hist, _, err := renderHistory(ctx, s.store, s.runID, s.verbose)
 		if err != nil {
@@ -424,6 +433,58 @@ func (s *replSession) verify(ctx context.Context, out io.Writer) error {
 		return errors.New("nothing to verify yet; run a turn first")
 	}
 	return verifyStoredRun(ctx, out, s.store, s.runID)
+}
+
+// fork branches the current run into a new independent run seeded with a verbatim copy
+// of the conversation so far, switches the session onto it, and returns its id. The
+// original run keeps its id, its recorded history, and its seal, so a branch never
+// disturbs the run it came from. The fork opens a fresh event stream under the new id:
+// its turns record onto their own hash chain from the branch point on, while the model
+// still sees the whole prior conversation carried on the copied checkpoint. It needs a
+// started run; without one there is nothing to branch from.
+func (s *replSession) fork(ctx context.Context) (string, error) {
+	if !s.started {
+		return "", errors.New("nothing to fork yet; run a turn first")
+	}
+	rs := s.store.Resources(s.reg)
+	parent, err := rs.Get(ctx, goal.Kind, resource.Scope{}, s.runID)
+	if err != nil {
+		return "", err
+	}
+	forkID := ids.New()
+	forked := parent
+	forked.Name = forkID
+	// Clear the parent's identity and sync envelope so the store creates a new record
+	// instead of overwriting the run this branched from. Spec and Status (the
+	// conversation checkpoint) carry over verbatim, so the fork opens from the exact
+	// state the parent is in.
+	forked.ID = ""
+	forked.Envelope = resource.Envelope{}
+	forked.Annotations = withForkParent(parent.Annotations, s.runID)
+	if _, err := rs.Put(ctx, forked); err != nil {
+		return "", err
+	}
+	// Switch the session onto the fork and rewind the cursor to the start of its empty
+	// stream, so the next turn continues the copied conversation while recording onto
+	// the fork's own chain.
+	s.runID = forkID
+	s.lastSeq = 0
+	return forkID, nil
+}
+
+// forkParentAnnotation records the id of the run a fork branched from, so the lineage of
+// a branched run is auditable from its resource alone.
+const forkParentAnnotation = "flynn/forked-from"
+
+// withForkParent returns a copy of the parent run's annotations with the fork-parent id
+// set, leaving the parent's own annotation map untouched.
+func withForkParent(parent map[string]string, parentID string) map[string]string {
+	out := make(map[string]string, len(parent)+1)
+	for k, v := range parent {
+		out[k] = v
+	}
+	out[forkParentAnnotation] = parentID
+	return out
 }
 
 // isExit reports whether a line is a command to leave the session.

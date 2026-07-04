@@ -413,6 +413,9 @@ func (h *sessionHost) start(t queuedTurn) {
 	case "/verify":
 		h.startRecord(h.doVerify)
 		return
+	case "/fork":
+		h.startRecord(h.doFork)
+		return
 	case "/replay":
 		h.startRecord(h.doReplay)
 		return
@@ -568,6 +571,28 @@ func (h *sessionHost) doVerify(ctx context.Context) {
 	}
 	h.foldRecord(session.Event{Kind: session.KindRecordVerified})
 	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
+}
+
+// doFork branches the run into a new independent run seeded with the conversation so far
+// and switches the session onto it, resetting the record badge to the fork's own fresh
+// recording state. The original run keeps its history and seal. The next prompt continues
+// on the fork; a failure is reported inline and leaves the session on the original run.
+func (h *sessionHost) doFork(ctx context.Context) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/fork"))
+	forkID, err := h.s.fork(ctx)
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		return
+	}
+	// The fork's stream is empty, so its badge starts at the fresh recording state; the
+	// next turn's events repopulate the governance projection from the branch point.
+	h.mu.Lock()
+	h.proj = session.NewProjection()
+	p := h.proj
+	h.mu.Unlock()
+	h.panel.set(p)
+	h.refreshStatus()
+	h.ui.Append(h.th.Render(theme.Success, "  forked to run "+forkID+"; the original is untouched"))
 }
 
 // doReplay re-renders the run's recorded events into the scrollback through the themed
@@ -822,7 +847,7 @@ func (h *sessionHost) refreshStatus() {
 // runs.
 func statusHint(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · /replay re-renders it · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · /replay re-renders it · /fork branches it · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {
