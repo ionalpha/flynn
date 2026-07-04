@@ -700,15 +700,26 @@ type missionRun struct {
 	sess *session.Session
 }
 
-// assembleMission wires one goal runtime over the durable store ports and the
-// sandboxed toolset at workdir, with a session recording the run onto the spine.
-// runID names both the session's event stream and (via Submit/Resume) its goal
-// resource, so a single id addresses the whole run for replay, audit, and resume; an
-// empty runID gets a fresh one. The system prompt is supplied so the caller can fold
-// recalled knowledge into it. It is the shared assembly behind the one-shot runner,
-// resume, and the interactive session, so none of them reassembles the runtime by
-// hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
+// missionParts is the set of ingredients every one-shot runtime assembly shares:
+// the confined sandbox, the session that records the run onto the spine, the
+// sandboxed toolset, the capability grant that bounds every action the run may take,
+// and the governance event sink. Both the single-conversation runner and the fan-out
+// runner build from one of these, so the sandbox confinement, tool surface,
+// governance recording, and (the reason this is one function) the grant that decides
+// what a run is allowed to do are defined once and cannot drift between the two paths.
+type missionParts struct {
+	sandbox *sandbox.Local
+	sess    *session.Session
+	toolset []mission.Tool
+	grant   capability.Grant
+	sink    *spinesink.Sink
+}
+
+// newMissionParts wires the shared ingredients for a run at workdir recording onto
+// log under runID (empty gets a fresh one). withSpawn adds the delegation action to
+// the grant, so a fan-out run may spawn sub-goals and a single conversation cannot;
+// everything else is identical across the two paths.
+func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool) (*missionParts, error) {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
 		return nil, err
@@ -722,25 +733,72 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 
 	toolset := tools.New(sb).Tools()
 	// The grant lists every action the run may take: the tools, plus the model call
-	// and the distillation, so each is admitted and the grant stays the complete
-	// record of what this run can do.
-	names := make([]string, 0, len(toolset)+2)
+	// and the distillation, and (for a fan-out) the spawn that delegates a sub-goal. A
+	// child narrows from this set, so a delegation can never widen authority; a run
+	// whose grant omitted spawn could not fan out at all. Assembling the action set in
+	// one place is the point: the single and fan-out paths cannot grant different
+	// authority by drift.
+	names := make([]string, 0, len(toolset)+3)
 	for _, t := range toolset {
 		names = append(names, t.Def().Name)
 	}
 	names = append(names, mission.ActionModelGenerate, learn.DistillAction)
+	if withSpawn {
+		names = append(names, mission.ActionSpawn)
+	}
+
+	return &missionParts{
+		sandbox: sb,
+		sess:    sess,
+		toolset: toolset,
+		grant:   capability.NewGrant(names...),
+		sink:    spinesink.New(log, sess.ID()),
+	}, nil
+}
+
+// runtimeConfig returns the runtime.Config both assemblies share, with the caller's
+// executor and stop condition dropped in. Every one-shot CLI run polls at the same
+// cadence and drives only its own submitted goal (and, for a fan-out, the children
+// it spawns) - never a parked goal an earlier run left non-terminal, which would
+// contaminate this run's stream and silently resume unrelated work. Resuming a parked
+// run, or continuing a session turn, is always explicit.
+func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvaluator, rstore resource.Store, jq jobs.Queue) runtime.Config {
+	return runtime.Config{
+		Executor:           exec,
+		Stop:               stop,
+		Store:              rstore,
+		Jobs:               jq,
+		PollInterval:       200 * time.Millisecond,
+		WorkerPoll:         50 * time.Millisecond,
+		DriveSubmittedOnly: true,
+	}
+}
+
+// assembleMission wires one goal runtime over the durable store ports and the
+// sandboxed toolset at workdir, with a session recording the run onto the spine.
+// runID names both the session's event stream and (via Submit/Resume) its goal
+// resource, so a single id addresses the whole run for replay, audit, and resume; an
+// empty runID gets a fresh one. The system prompt is supplied so the caller can fold
+// recalled knowledge into it. It is the shared assembly behind the one-shot runner,
+// resume, and the interactive session, so none of them reassembles the runtime by
+// hand.
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, runID, false)
+	if err != nil {
+		return nil, err
+	}
 
 	opts := []mission.Option{
-		mission.WithTools(toolset...),
+		mission.WithTools(parts.toolset...),
 		mission.WithSystem(system),
-		mission.WithObserver(sess.Reporter()),
-		mission.WithGrant(capability.NewGrant(names...)),
+		mission.WithObserver(parts.sess.Reporter()),
+		mission.WithGrant(parts.grant),
 		// Record every governed action's lifecycle (admitted, completed, or rejected)
 		// onto the run's own stream, so the admission decisions are part of the run's
 		// recorded and sealed history rather than only the live trace. The stream is the
 		// session's, so governance events interleave with the run's other events in one
 		// ordered log.
-		mission.WithEventSink(spinesink.New(log, sess.ID())),
+		mission.WithEventSink(parts.sink),
 		// Compact the transcript when it grows past this budget so a long session
 		// stays affordable and clear of the context limit. It is a conservative floor
 		// for a model whose window is unknown; the plan below tightens it to a model
@@ -752,23 +810,11 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// absent one (the zero plan of a strong model) leaves them in place.
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
-	rt, err := runtime.New(runtime.Config{
-		Executor:     exec,
-		Stop:         mission.Convergence{},
-		Store:        rstore,
-		Jobs:         jq,
-		PollInterval: 200 * time.Millisecond,
-		WorkerPoll:   50 * time.Millisecond,
-		// A CLI run drives only its own goal; it must not adopt a goal an earlier run
-		// left non-terminal (which would contaminate this run's stream and silently
-		// resume unrelated work). Resuming a parked run, or continuing a session turn,
-		// is always explicit.
-		DriveSubmittedOnly: true,
-	})
+	rt, err := runtime.New(parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq))
 	if err != nil {
 		return nil, err
 	}
-	return &missionRun{rt: rt, sess: sess}, nil
+	return &missionRun{rt: rt, sess: parts.sess}, nil
 }
 
 // defaultFanoutWidth caps how many child runs a fan-out may have outstanding at
@@ -818,27 +864,10 @@ type fanoutConfig struct {
 // stream. The shared store backs the child goals a fan-out spawns, so they land
 // where the runtime reconciles them.
 func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resolveModel driver.ModelResolver) (*missionRun, error) {
-	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
+	parts, err := newMissionParts(workdir, log, runID, true)
 	if err != nil {
 		return nil, err
 	}
-
-	var sopts []session.Option
-	if runID != "" {
-		sopts = append(sopts, session.WithID(runID))
-	}
-	sess := session.New(log, bus.NewMemory(), sopts...)
-
-	toolset := tools.New(sb).Tools()
-	// The grant lists every action the run may take: the tools, the model call, the
-	// distillation, and the spawn that delegates a sub-goal. A child narrows from this
-	// set, so a delegation can never widen authority; a run whose grant omitted spawn
-	// could not fan out at all.
-	names := make([]string, 0, len(toolset)+3)
-	for _, t := range toolset {
-		names = append(names, t.Def().Name)
-	}
-	names = append(names, mission.ActionModelGenerate, learn.DistillAction, mission.ActionSpawn)
 
 	// The spawner is the run's fan-out: it creates governed child goals (owned by the
 	// parent, grant narrowed, depth- and concurrency-bounded) and hands them to the
@@ -855,16 +884,16 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 		DefaultModel: model,
 		ResolveModel: resolveModel,
 		Base: driver.Spec{
-			Tools:    toolset,
+			Tools:    parts.toolset,
 			System:   system,
-			Grant:    capability.NewGrant(names...),
+			Grant:    parts.grant,
 			HasGrant: true,
-			Sandbox:  sb,
-			Reporter: sess.Reporter(),
+			Sandbox:  parts.sandbox,
+			Reporter: parts.sess.Reporter(),
 			Fanout:   spawner,
 			// Record every governed action's lifecycle onto the run's own stream, so the
 			// admission decisions (including each delegation) are part of the sealed record.
-			EventSink:        spinesink.New(log, sess.ID()),
+			EventSink:        parts.sink,
 			CompactionBudget: defaultCompactionBudget,
 			// Halt a runaway from outside the model loop. The default is a generous rate
 			// backstop: a real run dispatches far fewer than this per minute, so the breaker
@@ -876,17 +905,7 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 		},
 	})
 
-	rt, err := runtime.New(runtime.Config{
-		Executor:     router,
-		Stop:         router,
-		Store:        rstore,
-		Jobs:         jq,
-		PollInterval: 200 * time.Millisecond,
-		WorkerPoll:   50 * time.Millisecond,
-		// A CLI run drives only its own goal and the children it spawns (enqueued
-		// explicitly below), never a parked goal an earlier run left non-terminal.
-		DriveSubmittedOnly: true,
-	})
+	rt, err := runtime.New(parts.runtimeConfig(router, router, rstore, jq))
 	if err != nil {
 		return nil, err
 	}
@@ -897,7 +916,7 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 		_, rerr := rt.Resume(ctx, key.Name)
 		return rerr
 	})
-	return &missionRun{rt: rt, sess: sess}, nil
+	return &missionRun{rt: rt, sess: parts.sess}, nil
 }
 
 // renderStream prints the session's events as they arrive and accumulates the
