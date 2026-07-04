@@ -89,7 +89,7 @@ func objectKeyOrder(data []byte, field string) ([]string, error) {
 		}
 		key, ok := keyTok.(string)
 		if !ok {
-			return nil, fmt.Errorf("gbnf: non-string object key")
+			return nil, errors.New("gbnf: non-string object key")
 		}
 		if key == field {
 			return objectMemberOrder(dec, field)
