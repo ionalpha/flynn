@@ -2,6 +2,8 @@
   "events": [
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "",
@@ -17,6 +19,8 @@
     },
     {
       "Kind": "tool.call",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "write",
@@ -35,6 +39,8 @@
     },
     {
       "Kind": "tool.result",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "write",
@@ -50,6 +56,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "",
@@ -65,6 +73,8 @@
     },
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "",
@@ -80,6 +90,8 @@
     },
     {
       "Kind": "tool.call",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "read",
@@ -97,6 +109,8 @@
     },
     {
       "Kind": "tool.result",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "read",
@@ -112,6 +126,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "",
@@ -127,6 +143,8 @@
     },
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 3,
       "Text": "",
       "Tool": "",
@@ -142,6 +160,8 @@
     },
     {
       "Kind": "assistant.text",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 3,
       "Text": "The file says hello.",
       "Tool": "",
@@ -157,6 +177,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 3,
       "Text": "",
       "Tool": "",

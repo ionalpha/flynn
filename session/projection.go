@@ -49,6 +49,41 @@ type ActionEntry struct {
 	Fault string
 }
 
+// FanoutState is where a delegated child stands in the fan-out tree: running from the
+// moment it is spawned until it folds back into its parent, then done or failed by the
+// outcome it folded. The states are terminal except running.
+type FanoutState string
+
+const (
+	// FanoutRunning is a spawned child that has not yet folded back into its parent.
+	FanoutRunning FanoutState = "running"
+	// FanoutDone is a child that folded back with a clean result.
+	FanoutDone FanoutState = "done"
+	// FanoutFailed is a child that folded back as an error.
+	FanoutFailed FanoutState = "failed"
+)
+
+// FanoutChild is one delegated child in a run's fan-out tree: which goal spawned it,
+// the sub-objective it was given, where it stands, how many turns it has taken, and its
+// folded answer once it finishes. The tree is flat with a Parent id on each node rather
+// than nested, so a renderer builds the hierarchy and a deeper delegation (a child that
+// itself spawns) needs no change here. Children are kept in spawn order.
+type FanoutChild struct {
+	// ID is the child goal's id, the value its own events carry in Goal.
+	ID string
+	// Parent is the id of the goal that spawned this child.
+	Parent string
+	// Objective is the sub-objective the parent delegated.
+	Objective string
+	// State is where the child stands: running, done, or failed.
+	State FanoutState
+	// Turns counts the model turns the child has completed so far.
+	Turns int
+	// Result is the child's folded answer once it is done or failed, empty while it
+	// runs.
+	Result string
+}
+
 // maxLedger bounds the projection's action ledger to its most recent entries, so a
 // long run's status stays a fixed size. The panel shows a tail of recent decisions,
 // not the whole history (the sealed record holds that); older entries fall off the
@@ -92,6 +127,12 @@ type Projection struct {
 	// It is capped at maxLedger entries; older actions fall off the front.
 	Actions []ActionEntry
 
+	// Fanout is the run's delegated children in spawn order, each with its parent, its
+	// sub-objective, where it stands, and its turn count. It is empty for a single
+	// conversation and grows as a fan-out spawns children, so a live tree view reads
+	// the run's delegation shape straight from the projection.
+	Fanout []FanoutChild
+
 	// Terminal reports whether the run reached a terminal event. Err is the stall
 	// reason when it stalled, empty on a clean convergence.
 	Terminal bool
@@ -118,6 +159,18 @@ func Reduce(p Projection, ev Event) Projection {
 			p.Usage.CacheReadTokens += ev.Usage.CacheReadTokens
 			p.Usage.CacheWriteTokens += ev.Usage.CacheWriteTokens
 		}
+		// A completed turn belonging to a spawned child advances that child's turn
+		// count in the tree; a turn on the root goal matches no child and only bumps the
+		// run total above.
+		if ev.Goal != "" {
+			p.Fanout = bumpChildTurns(p.Fanout, ev.Goal)
+		}
+	case KindChildSpawned:
+		p.Fanout = append(append([]FanoutChild(nil), p.Fanout...), FanoutChild{
+			ID: ev.Child, Parent: ev.Goal, Objective: ev.Text, State: FanoutRunning,
+		})
+	case KindChildCompleted:
+		p.Fanout = completeChild(p.Fanout, ev.Child, ev.Result, ev.IsError)
 	case KindActionAdmitted:
 		p.Admitted++
 		if ev.Trust != "" {
@@ -189,6 +242,38 @@ func upsertAction(ledger []ActionEntry, e ActionEntry) []ActionEntry {
 		out = out[len(out)-maxLedger:]
 	}
 	return out
+}
+
+// bumpChildTurns increments the turn count of the child whose id is goal, returning the
+// updated slice and leaving the input untouched (the reducer is pure). A goal that names
+// no known child, the run's root, leaves the tree unchanged.
+func bumpChildTurns(children []FanoutChild, goal string) []FanoutChild {
+	for i := range children {
+		if children[i].ID == goal {
+			out := append([]FanoutChild(nil), children...)
+			out[i].Turns++
+			return out
+		}
+	}
+	return children
+}
+
+// completeChild flips the child named by id from running to its folded outcome (failed
+// when isErr, else done) and records its result, returning the updated slice and leaving
+// the input untouched. A completion for an unknown child leaves the tree unchanged.
+func completeChild(children []FanoutChild, id, result string, isErr bool) []FanoutChild {
+	for i := range children {
+		if children[i].ID == id {
+			out := append([]FanoutChild(nil), children...)
+			out[i].State = FanoutDone
+			if isErr {
+				out[i].State = FanoutFailed
+			}
+			out[i].Result = result
+			return out
+		}
+	}
+	return children
 }
 
 // Project folds a whole event slice into the run's status, the replay counterpart of

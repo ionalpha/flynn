@@ -2,6 +2,8 @@
   "events": [
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "",
@@ -17,6 +19,8 @@
     },
     {
       "Kind": "tool.call",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "frobnicate",
@@ -32,6 +36,8 @@
     },
     {
       "Kind": "tool.result",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "frobnicate",
@@ -47,6 +53,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "",
@@ -62,6 +70,8 @@
     },
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "",
@@ -77,6 +87,8 @@
     },
     {
       "Kind": "tool.call",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "write",
@@ -95,6 +107,8 @@
     },
     {
       "Kind": "tool.result",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "write",
@@ -110,6 +124,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 2,
       "Text": "",
       "Tool": "",
@@ -125,6 +141,8 @@
     },
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 3,
       "Text": "",
       "Tool": "",
@@ -140,6 +158,8 @@
     },
     {
       "Kind": "assistant.text",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 3,
       "Text": "Recovered and wrote the file.",
       "Tool": "",
@@ -155,6 +175,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 3,
       "Text": "",
       "Tool": "",

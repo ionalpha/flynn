@@ -236,3 +236,43 @@ func TestFanoutWaitSurvivesResume(t *testing.T) {
 		t.Fatalf("resume re-spawned the child: %+v", fan.spawned)
 	}
 }
+
+// TestFanoutReportsAttributedEdge proves the executor records the delegation edge on the
+// reporter: a spawn reports EventChildSpawned (parent goal, child id, sub-objective), the
+// fold reports EventChildCompleted with the child's answer, and every conversation event
+// carries the goal it belongs to, so a live tree can be built from the stream.
+func TestFanoutReportsAttributedEdge(t *testing.T) {
+	rec := &recordingReporter{}
+	fan := &fakeFanout{}
+	model := llmtest.NewScripted(spawnCall("s1", "research the topic"), llmtest.SayText("done"))
+	exec := NewExecutor(model, WithFanout(fan), WithObserver(rec))
+
+	raw, _ := step(t, exec, nil) // spawns, now waiting
+	fan.done = true
+	raw, _ = step(t, exec, raw) // folds the child in
+	_, _ = step(t, exec, raw)   // converges
+
+	var spawned, completed *Event
+	for i := range rec.events() {
+		ev := rec.events()[i]
+		switch ev.Kind {
+		case EventChildSpawned:
+			spawned = &ev
+		case EventChildCompleted:
+			completed = &ev
+		}
+	}
+	if spawned == nil || spawned.Goal != "g" || spawned.Child != "child-1" || spawned.Text != "research the topic" {
+		t.Fatalf("child.spawned edge = %+v, want goal g child child-1 objective 'research the topic'", spawned)
+	}
+	if completed == nil || completed.Goal != "g" || completed.Child != "child-1" ||
+		!strings.Contains(completed.Result, "answer: research the topic") {
+		t.Fatalf("child.completed edge = %+v, want goal g child child-1 with the folded answer", completed)
+	}
+	// Every conversation event the parent reports is attributed to its goal.
+	for _, ev := range rec.events() {
+		if ev.Goal != "g" {
+			t.Errorf("event %q not attributed to the parent goal: Goal = %q", ev.Kind, ev.Goal)
+		}
+	}
+}

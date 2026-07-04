@@ -24,6 +24,16 @@ const (
 	EventToolResult EventKind = "tool.result"
 	// EventTurnCompleted marks the end of a turn, carrying why the model stopped.
 	EventTurnCompleted EventKind = "turn.completed"
+	// EventChildSpawned marks a fan-out delegation: the goal named by Goal spawned the
+	// child named by Child to run a sub-objective (carried in Text). It records the
+	// parent-to-child edge on the stream, so a live tree of a fan-out can be built from
+	// the record rather than a separate store.
+	EventChildSpawned EventKind = "child.spawned"
+	// EventChildCompleted marks a spawned child folding back into its parent: the child
+	// named by Child finished and its answer (in Result, with IsError set when it
+	// failed) was folded into the parent named by Goal. It is the closing half of the
+	// edge EventChildSpawned opened, so a tree can flip the child from running to done.
+	EventChildCompleted EventKind = "child.completed"
 )
 
 // Event is one observable moment in a mission's conversation: a turn boundary, the
@@ -32,6 +42,14 @@ const (
 // Kind; the rest are zero.
 type Event struct {
 	Kind EventKind
+	// Goal is the id of the goal this event belongs to: the run's root goal for a
+	// single conversation, or a delegated child's own id under fan-out. It attributes
+	// each event to its originating goal so events from concurrent children on one
+	// shared stream stay distinguishable. Empty is treated as the root.
+	Goal string
+	// Child is the id of a spawned child goal (EventChildSpawned only), the other end
+	// of the parent-to-child edge whose parent is Goal.
+	Child string
 	// Turn is the 1-based index of the model turn this event belongs to.
 	Turn int
 	// Text is the assistant's text (EventAssistantText).

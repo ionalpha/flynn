@@ -101,21 +101,25 @@ type resultSlot struct {
 func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, turn int, calls []llm.ToolUse) (blocks []llm.Block, pending []resultSlot, err error) {
 	scope := state.Scope(r.Scope)
 	if e.fanout == nil || !containsSpawn(calls) {
-		return e.runTools(ctx, scope, turn, calls), nil, nil
+		return e.runTools(ctx, r.Name, scope, turn, calls), nil, nil
 	}
 
 	slots := make([]resultSlot, 0, len(calls))
 	live := false
 	for _, c := range calls {
 		if c.Name == ActionSpawn {
-			id, serr := e.spawnChild(ctx, r, c)
+			id, objective, serr := e.spawnChild(ctx, r, c)
 			if serr != nil {
 				slots = append(slots, resultSlot{ToolUseID: c.ID, Content: serr.Error(), IsError: true})
-				e.reporter.Report(ctx, Event{Kind: EventToolResult, Turn: turn, Tool: ActionSpawn, ToolUseID: c.ID, Result: serr.Error(), IsError: true})
+				e.reporter.Report(ctx, Event{Kind: EventToolResult, Goal: r.Name, Turn: turn, Tool: ActionSpawn, ToolUseID: c.ID, Result: serr.Error(), IsError: true})
 				continue
 			}
 			live = true
 			slots = append(slots, resultSlot{ToolUseID: c.ID, ChildID: id})
+			// Record the parent-to-child edge on the stream, correlated to this spawn
+			// call by ToolUseID: the child's result folds back as the tool.result for the
+			// same id, so a tree projection pairs the child with its completion.
+			e.reporter.Report(ctx, Event{Kind: EventChildSpawned, Goal: r.Name, Child: id, Turn: turn, Tool: ActionSpawn, ToolUseID: c.ID, Text: objective})
 			continue
 		}
 		content, terr := e.invokeTool(ctx, scope, c)
@@ -123,7 +127,7 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 		if terr != nil {
 			slot.IsError, slot.Content = true, terr.Error()
 		}
-		e.reporter.Report(ctx, Event{Kind: EventToolResult, Turn: turn, Tool: c.Name, ToolUseID: c.ID, Result: slot.Content, IsError: slot.IsError})
+		e.reporter.Report(ctx, Event{Kind: EventToolResult, Goal: r.Name, Turn: turn, Tool: c.Name, ToolUseID: c.ID, Result: slot.Content, IsError: slot.IsError})
 		slots = append(slots, slot)
 	}
 	// With no live child (every spawn was rejected), there is nothing to wait for, so fold the
@@ -136,23 +140,23 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 
 // spawnChild governs a spawn through the waist and creates the child goal. The action is admitted
 // against the run's grant, so a run whose grant omits spawn cannot fan out, and it is metered and
-// recorded on the spine like any other action.
-func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.ToolUse) (string, error) {
+// recorded on the spine like any other action. It returns the child's id and the sub-objective it
+// was given, so the caller can record the parent-to-child edge on the stream.
+func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.ToolUse) (id, objective string, err error) {
 	var sub SubGoal
 	if err := json.Unmarshal(c.Input, &sub); err != nil {
-		return "", fault.New(fault.Terminal, "spawn_args", "invalid spawn arguments: "+err.Error())
+		return "", "", fault.New(fault.Terminal, "spawn_args", "invalid spawn arguments: "+err.Error())
 	}
 	if strings.TrimSpace(sub.Objective) == "" {
-		return "", fault.New(fault.Terminal, "spawn_objective", "spawn requires a non-empty objective")
+		return "", "", fault.New(fault.Terminal, "spawn_objective", "spawn requires a non-empty objective")
 	}
-	var id string
-	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionSpawn, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted},
+	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionSpawn, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			child, serr := e.fanout.Spawn(ctx, r, sub)
 			id = child
 			return dispatch.Metering{}, serr
 		})
-	return id, err
+	return id, sub.Objective, err
 }
 
 // advanceFanout is the waiting step of a fan-out: poll the children, and either fold their results
@@ -160,7 +164,7 @@ func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.To
 // running, which parks the parent (no checkpoint write, no step counted, no re-dispatch until a
 // child settles). Folding fills each spawn slot from its child and preserves call order, so the
 // model receives the spawn results as ordinary tool results in the order it issued them.
-func (e *Executor) advanceFanout(ctx context.Context, _ resource.Resource, cp checkpoint) (json.RawMessage, error) {
+func (e *Executor) advanceFanout(ctx context.Context, r resource.Resource, cp checkpoint) (json.RawMessage, error) {
 	results, allDone, err := e.fanout.Poll(ctx, childIDs(cp.Pending))
 	if err != nil {
 		return nil, fault.Wrap(fault.Transient, "mission_fanout_poll", err)
@@ -176,6 +180,11 @@ func (e *Executor) advanceFanout(ctx context.Context, _ resource.Resource, cp ch
 		if id := cp.Pending[i].ChildID; id != "" {
 			cr := byID[id]
 			cp.Pending[i].Content, cp.Pending[i].IsError = cr.Result, cr.Failed
+			// Record the child folding back into this parent, closing the edge its spawn
+			// opened. This is the only point a successful child's result reaches the
+			// stream (a rejected spawn reports its own error), so the record carries every
+			// delegation's outcome and a live tree can flip the child to done or failed.
+			e.reporter.Report(ctx, Event{Kind: EventChildCompleted, Goal: r.Name, Child: id, Tool: ActionSpawn, ToolUseID: cp.Pending[i].ToolUseID, Result: cr.Result, IsError: cr.Failed})
 		}
 	}
 	cp.Messages = append(cp.Messages, llm.Message{Role: llm.RoleUser, Blocks: slotsToBlocks(cp.Pending)})

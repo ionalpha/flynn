@@ -368,7 +368,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// The turn index is the count of model turns taken so far plus this one, derived
 	// from the persisted history so it stays correct across a crash-resumed step.
 	turn := assistantTurns(cp.Messages) + 1
-	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Turn: turn})
+	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Goal: r.Name, Turn: turn})
 
 	// Send a token-lean view of the transcript: older and duplicate large tool
 	// outputs are replaced by one-line summaries before the call, while the durable
@@ -419,10 +419,10 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	cp.Messages = append(cp.Messages, resp.Message)
 
 	if text := resp.Message.TextContent(); text != "" {
-		e.reporter.Report(ctx, Event{Kind: EventAssistantText, Turn: turn, Text: text})
+		e.reporter.Report(ctx, Event{Kind: EventAssistantText, Goal: r.Name, Turn: turn, Text: text})
 	}
 	for _, tu := range resp.Message.ToolUses() {
-		e.reporter.Report(ctx, Event{Kind: EventToolCall, Turn: turn, Tool: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
+		e.reporter.Report(ctx, Event{Kind: EventToolCall, Goal: r.Name, Turn: turn, Tool: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
 	}
 
 	switch resp.StopReason {
@@ -460,7 +460,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		}
 	}
 
-	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
+	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Goal: r.Name, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
 	return encodeCheckpoint(cp)
 }
 
@@ -493,7 +493,7 @@ func (e *Executor) summarizerFor(tool string) ResultSummarizer {
 // an error result rather than failing the step, so the model can recover on the
 // next turn. scope is the goal's scope, carried on each action for governance and
 // audit.
-func (e *Executor) runTools(ctx context.Context, scope state.Scope, turn int, calls []llm.ToolUse) []llm.Block {
+func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scope, turn int, calls []llm.ToolUse) []llm.Block {
 	out := make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
 		res := &llm.ToolResult{ToolUseID: c.ID}
@@ -504,7 +504,7 @@ func (e *Executor) runTools(ctx context.Context, scope state.Scope, turn int, ca
 			res.Content = content
 		}
 		e.reporter.Report(ctx, Event{
-			Kind: EventToolResult, Turn: turn, Tool: c.Name, ToolUseID: c.ID,
+			Kind: EventToolResult, Goal: goalID, Turn: turn, Tool: c.Name, ToolUseID: c.ID,
 			Result: res.Content, IsError: res.IsError,
 		})
 		out = append(out, llm.Block{Kind: llm.KindToolResult, ToolResult: res})

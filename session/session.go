@@ -51,7 +51,7 @@ type Session struct {
 	result         string
 	failed         error
 	done           chan struct{}
-	maxTurnStarted int
+	maxTurnStarted map[string]int
 }
 
 // Option configures a Session.
@@ -268,21 +268,27 @@ func (r reporter) Report(ctx context.Context, ev mission.Event) {
 	// turn.started idempotent, so a retry neither spams the stream nor resets the
 	// turn counter. The dedup is at write time, so a replay of the durable stream is
 	// clean too.
-	if ev.Kind == mission.EventTurnStarted && !r.s.advanceTurn(ev.Turn) {
+	if ev.Kind == mission.EventTurnStarted && !r.s.advanceTurn(ev.Goal, ev.Turn) {
 		return
 	}
 	r.s.emit(ctx, toSessionEvent(ev))
 }
 
-// advanceTurn records that turn n has started and reports whether this is the
-// first time, so a re-announced turn from a retry is dropped.
-func (s *Session) advanceTurn(n int) bool {
+// advanceTurn records that turn n has started for the given goal and reports whether
+// this is the first time, so a re-announced turn from a retry is dropped. The high-water
+// mark is per goal: under fan-out several goals share one stream and each numbers its
+// turns from one, so a single counter would drop a child's turn as a duplicate of the
+// root's. An empty goal is the run's root, keyed the same as any other.
+func (s *Session) advanceTurn(goal string, n int) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if n <= s.maxTurnStarted {
+	if n <= s.maxTurnStarted[goal] {
 		return false
 	}
-	s.maxTurnStarted = n
+	if s.maxTurnStarted == nil {
+		s.maxTurnStarted = make(map[string]int)
+	}
+	s.maxTurnStarted[goal] = n
 	return true
 }
 
@@ -290,7 +296,7 @@ func (s *Session) advanceTurn(n int) bool {
 // event is the agent acting; session-level events (started, stalled) are set by
 // the session itself.
 func toSessionEvent(ev mission.Event) Event {
-	out := Event{Actor: spine.ActorAgent, Turn: ev.Turn}
+	out := Event{Actor: spine.ActorAgent, Goal: ev.Goal, Turn: ev.Turn}
 	switch ev.Kind {
 	case mission.EventTurnStarted:
 		out.Kind = KindTurnStarted
@@ -300,6 +306,11 @@ func toSessionEvent(ev mission.Event) Event {
 		out.Kind, out.Tool, out.ToolUseID, out.Input = KindToolCall, ev.Tool, ev.ToolUseID, ev.Input
 	case mission.EventToolResult:
 		out.Kind, out.Tool, out.ToolUseID = KindToolResult, ev.Tool, ev.ToolUseID
+		out.Result, out.IsError = ev.Result, ev.IsError
+	case mission.EventChildSpawned:
+		out.Kind, out.Child, out.Tool, out.ToolUseID, out.Text = KindChildSpawned, ev.Child, ev.Tool, ev.ToolUseID, ev.Text
+	case mission.EventChildCompleted:
+		out.Kind, out.Child, out.Tool, out.ToolUseID = KindChildCompleted, ev.Child, ev.Tool, ev.ToolUseID
 		out.Result, out.IsError = ev.Result, ev.IsError
 	case mission.EventTurnCompleted:
 		out.Kind, out.StopReason = KindTurnCompleted, ev.StopReason

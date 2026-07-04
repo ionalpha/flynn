@@ -2,6 +2,8 @@
   "events": [
     {
       "Kind": "turn.started",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "",
@@ -17,6 +19,8 @@
     },
     {
       "Kind": "assistant.text",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "The answer is 42.",
       "Tool": "",
@@ -32,6 +36,8 @@
     },
     {
       "Kind": "turn.completed",
+      "Goal": "goal-0",
+      "Child": "",
       "Turn": 1,
       "Text": "",
       "Tool": "",

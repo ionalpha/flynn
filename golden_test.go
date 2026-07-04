@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -125,7 +126,39 @@ func runGoldenMission(t *testing.T, sc goldenScenario) missionRecording {
 	if err != nil {
 		t.Fatalf("scenario %q: runGoal: %v", sc.name, err)
 	}
-	return missionRecording{Events: rec.events, Result: result, Files: materializedFiles(t, dir)}
+	return missionRecording{Events: normalizeGoals(rec.events), Result: result, Files: materializedFiles(t, dir)}
+}
+
+// normalizeGoals rewrites each event's goal id to a stable label in first-seen order
+// (the root goal to "goal-0", the next distinct goal to "goal-1", and so on), leaving
+// the events otherwise unchanged. A goal id is a per-run random UUID, the same class of
+// value as the temp working directory the snapshot already avoids, so recording it raw
+// would make two runs of one scenario diverge. The order goals are first seen is itself
+// deterministic under replay, so the labels are stable and still distinguish a fan-out's
+// goals from one another.
+func normalizeGoals(evs []mission.Event) []mission.Event {
+	labels := map[string]string{}
+	out := make([]mission.Event, len(evs))
+	for i, ev := range evs {
+		if ev.Goal != "" {
+			label, ok := labels[ev.Goal]
+			if !ok {
+				label = "goal-" + strconv.Itoa(len(labels))
+				labels[ev.Goal] = label
+			}
+			ev.Goal = label
+		}
+		if ev.Child != "" {
+			label, ok := labels[ev.Child]
+			if !ok {
+				label = "goal-" + strconv.Itoa(len(labels))
+				labels[ev.Child] = label
+			}
+			ev.Child = label
+		}
+		out[i] = ev
+	}
+	return out
 }
 
 // materializedFiles returns the files left under dir, keyed by forward-slashed

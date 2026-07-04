@@ -26,6 +26,15 @@ const (
 	KindToolResult Kind = "tool.result"
 	// KindTurnCompleted marks the end of a turn, with why the model stopped.
 	KindTurnCompleted Kind = "turn.completed"
+	// KindChildSpawned is a fan-out delegation: the goal named by an event's Goal
+	// spawned the child named by Child, whose sub-objective is in Text. It records the
+	// parent-to-child edge on the stream, so a live fan-out tree is built from the
+	// record rather than a separate store.
+	KindChildSpawned Kind = "child.spawned"
+	// KindChildCompleted marks a spawned child folding back into its parent: the child
+	// named by Child finished, its answer in Result (IsError set when it failed). It
+	// closes the edge KindChildSpawned opened so the tree flips the child to done.
+	KindChildCompleted Kind = "child.completed"
 	// KindConverged is the terminal success event: the goal's stop condition was
 	// met, with the model's final answer.
 	KindConverged Kind = "session.converged"
@@ -78,6 +87,16 @@ type Event struct {
 	Kind  Kind            `json:"kind"`
 	Actor spine.ActorType `json:"actor"`
 
+	// Goal is the id of the goal the event belongs to: the run's root goal (its id is
+	// the run id) for a conversation event, or a delegated child's own id under
+	// fan-out. It attributes each event to its originating goal so a fan-out's
+	// concurrent children stay distinguishable on the one shared stream. Empty on
+	// session-level events and on a single conversation's root, both of which are the
+	// run itself.
+	Goal string `json:"goal,omitempty"`
+	// Child is the id of a spawned child goal (child.spawned only): the other end of
+	// the parent-to-child edge whose parent is Goal.
+	Child string `json:"child,omitempty"`
 	// Turn is the 1-based model turn the event belongs to (0 for session-level
 	// events: started, converged, stalled).
 	Turn int `json:"turn,omitempty"`
