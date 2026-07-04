@@ -178,3 +178,125 @@ func TestArchiveWithoutCheckpointMovesNothing(t *testing.T) {
 	}
 	canonicalEqual(t, before, after)
 }
+
+// retentionEvents reads the reserved retention stream and returns its events, so a test can
+// assert that a tiering action left an audit record and inspect what it recorded.
+func retentionEvents(t *testing.T, s *sqlite.Store) []spine.Event {
+	t.Helper()
+	evs, err := s.Log().Read(context.Background(), spine.Query{Stream: chain.RetentionStream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return evs
+}
+
+// TestArchiveRecordsGovernedRetentionEvent is the audit gate for the tiering step: a
+// relocation is never a silent mutation. After archiving six sealed bodies, the reserved
+// retention stream carries exactly one system-authored RetentionArchived event whose
+// payload names the action, the destination tier, the count moved, the bytes reclaimed and
+// gained, and a manifest digest committing to the moved set.
+func TestArchiveRecordsGovernedRetentionEvent(t *testing.T) {
+	ctx := context.Background()
+	const stream = "run/audit"
+	s, _ := sealedStore(t, 6, stream)
+	defer func() { _ = s.Close() }()
+
+	if err := s.SaveCheckpoint(ctx, stream, 6, []byte("cose")); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := s.ArchiveSealedBlobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 6 {
+		t.Fatalf("archived %d bodies, want 6", moved)
+	}
+
+	evs := retentionEvents(t, s)
+	if len(evs) != 1 {
+		t.Fatalf("retention stream has %d events, want exactly 1", len(evs))
+	}
+	e := evs[0]
+	if e.Actor != spine.ActorSystem {
+		t.Fatalf("retention event actor = %q, want system", e.Actor)
+	}
+	rec, ok := chain.DecodeRetention(e)
+	if !ok {
+		t.Fatalf("event type %q is not a retention record", e.Type)
+	}
+	if rec.Action != chain.RetentionActionArchive || rec.Tier != chain.RetentionTierWarm {
+		t.Fatalf("recorded action/tier = %q/%q, want archive/warm", rec.Action, rec.Tier)
+	}
+	if rec.Moved != 6 {
+		t.Fatalf("recorded moved = %d, want 6", rec.Moved)
+	}
+	if rec.HotBytes <= 0 || rec.WarmBytes <= 0 || rec.WarmBytes >= rec.HotBytes {
+		t.Fatalf("recorded bytes: hot=%d warm=%d, want 0 < warm < hot", rec.HotBytes, rec.WarmBytes)
+	}
+	if len(rec.Manifest) != 64 {
+		t.Fatalf("manifest = %q, want a 64-hex sha-256 digest", rec.Manifest)
+	}
+}
+
+// TestArchiveNoOpRecordsNothing proves the audit log stays quiet when nothing moves: a
+// stream with no checkpoint seals nothing, so archival relocates zero bodies and appends no
+// retention event - only a real mutation is recorded, so the stream is not padded with
+// empty "moved nothing" events every sweep.
+func TestArchiveNoOpRecordsNothing(t *testing.T) {
+	ctx := context.Background()
+	const stream = "run/quiet"
+	s, _ := sealedStore(t, 4, stream)
+	defer func() { _ = s.Close() }()
+
+	moved, err := s.ArchiveSealedBlobs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 0 {
+		t.Fatalf("archived %d bodies with no checkpoint, want 0", moved)
+	}
+	if evs := retentionEvents(t, s); len(evs) != 0 {
+		t.Fatalf("retention stream has %d events after a no-op sweep, want 0", len(evs))
+	}
+}
+
+// TestArchiveTwiceRecordsOnlyNewMoves proves the record tracks distinct mutations: sealing
+// and archiving three of six events records one event for that move; sealing the rest and
+// archiving again records a second event for the three newly sealed bodies, and re-running
+// with nothing newly sealed adds none. Each retention event corresponds to bodies that
+// actually relocated on that sweep.
+func TestArchiveTwiceRecordsOnlyNewMoves(t *testing.T) {
+	ctx := context.Background()
+	const stream = "run/incremental"
+	s, _ := sealedStore(t, 6, stream)
+	defer func() { _ = s.Close() }()
+
+	if err := s.SaveCheckpoint(ctx, stream, 3, []byte("cose")); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := s.ArchiveSealedBlobs(ctx); err != nil || moved != 3 {
+		t.Fatalf("first archive moved %d (err=%v), want 3", moved, err)
+	}
+	if moved, err := s.ArchiveSealedBlobs(ctx); err != nil || moved != 0 {
+		t.Fatalf("re-archive with nothing newly sealed moved %d (err=%v), want 0", moved, err)
+	}
+	if evs := retentionEvents(t, s); len(evs) != 1 {
+		t.Fatalf("retention stream has %d events after one real move, want 1", len(evs))
+	}
+
+	if err := s.SaveCheckpoint(ctx, stream, 6, []byte("cose")); err != nil {
+		t.Fatal(err)
+	}
+	if moved, err := s.ArchiveSealedBlobs(ctx); err != nil || moved != 3 {
+		t.Fatalf("second archive moved %d (err=%v), want 3", moved, err)
+	}
+	evs := retentionEvents(t, s)
+	if len(evs) != 2 {
+		t.Fatalf("retention stream has %d events after two real moves, want 2", len(evs))
+	}
+	for i, e := range evs {
+		if rec, ok := chain.DecodeRetention(e); !ok || rec.Moved != 3 {
+			t.Fatalf("retention event %d recorded moved=%d ok=%v, want 3", i, rec.Moved, ok)
+		}
+	}
+}

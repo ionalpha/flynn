@@ -25,6 +25,9 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/ionalpha/flynn/chain"
+	"github.com/ionalpha/flynn/internal/sqlitex"
+	"github.com/ionalpha/flynn/spine"
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
 )
 
@@ -171,73 +174,132 @@ const sealedBlobsSelectSQL = `SELECT b.content_id, b.body, b.size, b.refs
 		  AND e.seq > COALESCE((SELECT MAX(size) FROM checkpoints c WHERE c.stream = e.stream), 0)
 	)`
 
+// sealedBlob is one hot body eligible to relocate: its content id, raw bytes, original
+// (uncompressed) size, and hot reference count.
+type sealedBlob struct {
+	id   string
+	raw  []byte
+	size int64
+	refs int64
+}
+
+// selectSealedBlobs reads the hot bodies whose every referencing event is sealed (see
+// sealedBlobsSelectSQL). It runs on the read pool and materializes the result before the
+// write phase, so the archival sweep holds no read cursor while it mutates the hot store.
+func (s *Store) selectSealedBlobs(ctx context.Context) ([]sealedBlob, error) {
+	rows, err := s.reads().QueryContext(ctx, sealedBlobsSelectSQL)
+	if err != nil {
+		return nil, fmt.Errorf("sqlite: select sealed blobs: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var eligible []sealedBlob
+	for rows.Next() {
+		var b sealedBlob
+		if err := rows.Scan(&b.id, &b.raw, &b.size, &b.refs); err != nil {
+			return nil, fmt.Errorf("sqlite: scan sealed blob: %w", err)
+		}
+		eligible = append(eligible, b)
+	}
+	return eligible, rows.Err()
+}
+
 // ArchiveSealedBlobs relocates every hot payload body whose referencing events are all
-// sealed into the warm store, compressed, and returns how many bodies moved. It is the
-// hot->warm tiering step: after it runs, the hot `blobs` table holds only bodies still
-// referenced by unsealed (recent) events, so the hot file's body footprint tracks the
-// working set instead of all history.
+// sealed into the warm store, compressed, records the relocation as one governed retention
+// event, and returns how many bodies moved. It is the hot->warm tiering step: after it
+// runs, the hot `blobs` table holds only bodies still referenced by unsealed (recent)
+// events, so the hot file's body footprint tracks the working set instead of all history.
 //
-// Each body is copied to warm (idempotent by content id) and only then deleted from hot,
-// so a reader concurrent with the sweep always resolves the body and a crash mid-sweep
-// leaves it in both stores rather than neither. Relocation preserves the record exactly:
-// the body is addressed by its SHA-256, the envelope commits to that id, and the warm copy
-// rehydrates to the identical bytes - so no checkpoint, proof, or event changes. Freed hot
-// pages are returned to SQLite's free list for reuse by later appends (bounding steady-
-// state growth); reclaiming them back to the OS is a separate compaction step.
+// It runs in two phases so the mutation is atomic with its own audit record. First every
+// eligible body is copied to warm (idempotent by content id) and confirmed durable there.
+// Then, in a single write transaction, the confirmed bodies are deleted from hot and a
+// RetentionArchived event is appended to the reserved retention stream naming the count,
+// the bytes reclaimed and gained, and a manifest digest committing to exactly which bodies
+// moved. Because the delete and the event commit together, a reader never sees bodies
+// relocated with no event explaining where they went - tiering is never a silent mutation.
+//
+// The phase split preserves the crash guarantees of a copy-then-delete move. A crash after
+// phase one leaves the copied bodies in both stores (harmless - the hot read wins) and no
+// event; the retried sweep re-copies (idempotent), re-confirms, and completes phase two. A
+// crash inside phase two rolls the transaction back atomically, so the bodies stay hot and
+// no partial record is written. A body is addressed by its SHA-256 and the envelope commits
+// to that id, so the warm copy rehydrates to the identical bytes and no checkpoint, proof,
+// or event over the run streams changes. Freed hot pages return to SQLite's free list for
+// reuse by later appends (bounding steady-state growth); reclaiming them to the OS is a
+// separate compaction step. A no-op sweep (nothing sealed, or no warm tier) moves nothing
+// and records nothing - only a real relocation is worth an event.
 func (s *Store) ArchiveSealedBlobs(ctx context.Context) (moved int, err error) {
 	if s.warm == nil {
 		return 0, nil
 	}
-	rows, err := s.reads().QueryContext(ctx, sealedBlobsSelectSQL)
+	eligible, err := s.selectSealedBlobs(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("sqlite: select sealed blobs: %w", err)
-	}
-	type blob struct {
-		id   string
-		raw  []byte
-		size int64
-		refs int64
-	}
-	var eligible []blob
-	for rows.Next() {
-		var b blob
-		if err := rows.Scan(&b.id, &b.raw, &b.size, &b.refs); err != nil {
-			_ = rows.Close()
-			return moved, fmt.Errorf("sqlite: scan sealed blob: %w", err)
-		}
-		eligible = append(eligible, b)
-	}
-	if err := rows.Close(); err != nil {
-		return moved, err
-	}
-	if err := rows.Err(); err != nil {
-		return moved, err
+		return 0, err
 	}
 
+	// Phase one: copy each eligible body to warm and confirm it is durable there before it
+	// becomes a candidate for deletion from hot. A body warm reports absent after a put is
+	// left hot rather than deleted into a gap.
+	var (
+		confirmed           []sealedBlob
+		hotBytes, warmBytes int64
+	)
 	for _, b := range eligible {
-		// Copy to warm first. If this fails the body stays hot and the sweep can be
-		// retried; nothing is lost.
-		if err := s.warm.put(ctx, b.id, compressBody(b.raw), b.size, b.refs); err != nil {
-			return moved, err
+		packed := compressBody(b.raw)
+		if err := s.warm.put(ctx, b.id, packed, b.size, b.refs); err != nil {
+			return 0, err
 		}
-		// Delete from hot only now that warm holds it. The delete is guarded on the
-		// body still being sealed at delete time, so a reference appended between the
-		// select and here (only possible via a body that was NOT actually sealed, which
-		// the select already excluded) can never strand a live reference; the guard is
-		// belt-and-suspenders on the select's own predicate.
 		present, err := s.warm.has(ctx, b.id)
 		if err != nil {
-			return moved, err
+			return 0, err
 		}
 		if !present {
-			// Warm reported success but the body is absent: treat as not-yet-archived
-			// and leave it hot rather than deleting it into a gap.
 			continue
 		}
-		if _, err := s.db.ExecContext(ctx, `DELETE FROM blobs WHERE content_id = ?`, b.id); err != nil {
-			return moved, fmt.Errorf("sqlite: drop archived blob %s: %w", b.id, err)
-		}
-		moved++
+		confirmed = append(confirmed, b)
+		hotBytes += b.size
+		warmBytes += int64(len(packed))
 	}
-	return moved, nil
+	if len(confirmed) == 0 {
+		return 0, nil
+	}
+
+	// Phase two: delete the confirmed bodies from hot and record the tiering action, both
+	// in one transaction so the mutation and its audit record commit together.
+	ids := make([]string, len(confirmed))
+	for i, b := range confirmed {
+		ids[i] = b.id
+	}
+	err = sqlitex.Tx(ctx, s.db, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM blobs WHERE content_id = ?`, id); err != nil {
+				return fmt.Errorf("sqlite: drop archived blob %s: %w", id, err)
+			}
+		}
+		_, err := appendControlTx(ctx, tx, s, retentionArchivedEvent(ids, hotBytes, warmBytes))
+		return err
+	})
+	if err != nil {
+		return 0, err
+	}
+	return len(confirmed), nil
+}
+
+// retentionArchivedEvent builds the governed event recording one hot->warm relocation: the
+// action, the destination tier, the body and byte counts, and the manifest digest over the
+// moved content ids. Its payload is small and self-describing, so it is appended inline
+// (see appendControlTx) and never itself externalized into the tier it governs.
+func retentionArchivedEvent(ids []string, hotBytes, warmBytes int64) spine.AppendInput {
+	return spine.AppendInput{
+		Stream: chain.RetentionStream,
+		Type:   chain.RetentionArchived,
+		Actor:  spine.ActorSystem,
+		Payload: map[string]any{
+			chain.RetentionKeyAction:    chain.RetentionActionArchive,
+			chain.RetentionKeyTier:      chain.RetentionTierWarm,
+			chain.RetentionKeyMoved:     int64(len(ids)),
+			chain.RetentionKeyHotBytes:  hotBytes,
+			chain.RetentionKeyWarmBytes: warmBytes,
+			chain.RetentionKeyManifest:  chain.RetentionManifest(ids),
+		},
+	}
 }

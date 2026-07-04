@@ -59,6 +59,32 @@ func appendTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput) (
 	return e, nil
 }
 
+// appendControlTx appends one control-plane event inside tx and never externalizes its
+// payload into the blob tier, whatever the store's blob threshold. It is for small,
+// self-describing lifecycle records - a retention action, for one - whose payload is a
+// handful of counts and a digest: a lifecycle event that archives bodies must not itself
+// become an archivable body (that would make the audit log of tiering a thing that gets
+// tiered), and forcing it inline also keeps its footprint out of the content-addressed
+// store the sealed-blob sweep walks. It shares the Seq assignment and Materialize
+// defaulting of the ordinary append path, so the event's shape and time stamping match
+// every other event on its stream.
+func appendControlTx(ctx context.Context, tx *sql.Tx, p *Store, in spine.AppendInput) (spine.Event, error) {
+	e, raw, err := in.Materialize(p.clk, 0)
+	if err != nil {
+		return spine.Event{}, err
+	}
+	var seq int64
+	if err := tx.StmtContext(ctx, p.stmts.eventInsert).QueryRowContext(ctx,
+		in.Stream, in.Stream, sqlitex.FormatTime(e.Time.UTC()), in.Type, string(in.Actor),
+		string(raw), // inline payload, no blob id - the empty payload_blob keeps the read inline
+		in.TraceID, in.SpanID, in.CausationID, in.OriginInstanceID, e.SchemaVersion, in.Principal, "").
+		Scan(&seq); err != nil {
+		return spine.Event{}, err
+	}
+	e.Seq = seq
+	return e, nil
+}
+
 // insertEventSQL is the append statement, prepared once at Open (stmts.eventInsert).
 // Seq assignment is folded in: the scalar subquery seeks the (stream, seq) primary
 // key for the current maximum and RETURNING hands the assigned value back, so an
