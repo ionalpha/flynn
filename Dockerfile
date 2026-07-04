@@ -14,7 +14,7 @@
 # readability. Update the digest together with the tag when moving to a new base.
 
 # ---- build stage --------------------------------------------------------------
-FROM golang:1.25.11-bookworm@sha256:b96f24a8d7d010ea0acb9c3ba99064740f02b6b984612b28bd3c9c5ab9453e38 AS build
+FROM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS build
 WORKDIR /src
 
 # Download modules first so the layer caches across source-only changes.

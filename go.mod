@@ -1,8 +1,8 @@
 module github.com/ionalpha/flynn
 
-go 1.25.0
+go 1.26.0
 
-toolchain go1.25.11
+toolchain go1.26.4
 
 require (
 	github.com/alecthomas/chroma/v2 v2.27.0

@@ -31,8 +31,9 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        # Floor is Go 1.25: modernc.org/sqlite requires it (and it brings GA testing/synctest).
-        go: ["1.25"]
+        # Floor is Go 1.26: modernc.org/sqlite needs at least 1.25, and 1.26 makes the
+        # Green Tea GC the default and adds crypto/hpke to the standard library.
+        go: ["1.26"]
     steps:
       # Actions are pinned to a full commit SHA; Dependabot (.github/dependabot.yml) bumps them.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -93,7 +94,7 @@ jobs:
           COVER: ${{ matrix.os == 'ubuntu-latest' && '-covermode=atomic -coverprofile=coverage.out' || '' }}
         run: ./dev/test
       - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.25'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7
         with:
           files: coverage.out
@@ -106,7 +107,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           # Caching is handled by the explicit actions/cache step below, which one
           # cache covers all three lint passes (linux, windows, darwin); setup-go's
           # own cache would only key the host target.
@@ -134,10 +135,10 @@ jobs:
             ${{ steps.goenv.outputs.gomodcache }}
             ${{ steps.goenv.outputs.gobuildcache }}
             ~/.cache/golangci-lint
-          key: go-lint-${{ runner.os }}-1.25-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: go-lint-${{ runner.os }}-1.26-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-lint-${{ runner.os }}-1.25-${{ hashFiles('**/go.sum') }}-
-            go-lint-${{ runner.os }}-1.25-
+            go-lint-${{ runner.os }}-1.26-${{ hashFiles('**/go.sum') }}-
+            go-lint-${{ runner.os }}-1.26-
       # Run golangci-lint from its prebuilt release binary instead of compiling it
       # from source every run. Keep the version in sync with the GOLANGCI_VERSION pin
       # in dev/lint so local and CI results match; it reads the same .golangci.yml, so
@@ -168,7 +169,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: ./dev/vuln
 
@@ -184,7 +185,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: BENCHTIME=100x ./dev/bench
 
@@ -198,7 +199,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
-          go-version: "1.25"
+          go-version: "1.26"
           cache: true
       - run: go test -run=^$ -fuzz=. -fuzztime=20s ./... || true
 
