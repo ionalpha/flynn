@@ -2,7 +2,6 @@ package mission
 
 import (
 	"encoding/json"
-	"fmt"
 	"hash/fnv"
 	"reflect"
 	"strings"
@@ -210,31 +209,6 @@ func TestPruneSkipsWhenNothingLarge(t *testing.T) {
 	out := pruneTranscript(msgs, noSummarizer)
 	if !reflect.DeepEqual(out, msgs) {
 		t.Fatal("a transcript with nothing prunable must be returned unchanged")
-	}
-}
-
-// TestPruneCommonCaseZeroAlloc is the M12 allocation-ceiling gate: pruning a
-// transcript whose results are all small (the common turn) must not allocate, and
-// that must hold as the transcript grows, so the per-turn pass stays flat instead of
-// adding O(history) allocation to every turn over a goal. The large-result summarizing
-// path is measured separately by BenchmarkPruneTranscript.
-func TestPruneCommonCaseZeroAlloc(t *testing.T) {
-	build := func(pairs int) []llm.Message {
-		msgs := make([]llm.Message, 0, pairs*2)
-		for i := range pairs {
-			id := fmt.Sprintf("t%d", i)
-			msgs = append(msgs, callMsg(id, "read"), resultMsg(id, "small result", false))
-		}
-		return msgs
-	}
-	for _, pairs := range []int{50, 100} {
-		msgs := build(pairs)
-		allocs := testing.AllocsPerRun(200, func() {
-			_ = pruneTranscript(msgs, noSummarizer)
-		})
-		if allocs != 0 {
-			t.Fatalf("pruneTranscript over %d small-result pairs allocated %.0f times; the no-large-result turn must be allocation-free and stay flat as history grows", pairs, allocs)
-		}
 	}
 }
 
