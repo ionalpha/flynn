@@ -107,23 +107,59 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.25"
-          # golangci-lint-action manages the module, build, and linter-analysis
-          # caches for the lint run, so setup-go does not also cache.
+          # Caching is handled by the explicit actions/cache step below, which one
+          # cache covers all three lint passes (linux, windows, darwin); setup-go's
+          # own cache would only key the host target.
           cache: false
       # The non-golangci half of dev/lint: go.mod and go.sum stay tidy.
       - name: go mod tidy leaves go.mod and go.sum unchanged
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      # Run golangci-lint from its prebuilt release binary instead of compiling
-      # it from source every run, and let the action cache the linter's own
-      # analysis cache across runs. Keep the version in sync with the
-      # GOLANGCI_VERSION pin in dev/lint so local and CI results match; it reads
-      # the same .golangci.yml, so `golangci-lint run` here is identical to
-      # dev/lint's.
+      # One build cache shared by every lint pass. golangci-lint typechecks the tree
+      # for each GOOS it runs against, so the windows and darwin passes below compile
+      # a full second and third target; without a warm cache that tripled the job.
+      # Cache the module, build, and golangci analysis caches together (Go's build
+      # cache is content-addressed, so it holds all three targets' objects side by
+      # side and a partial restore only recompiles what changed). The run-specific
+      # suffix saves a fresh cache each run so it never goes stale; the restore-keys
+      # fall back to the newest cache for this go.sum, then to any lint cache.
+      - id: goenv
+        run: |
+          echo "gomodcache=$(go env GOMODCACHE)" >> "$GITHUB_OUTPUT"
+          echo "gobuildcache=$(go env GOCACHE)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: |
+            ${{ steps.goenv.outputs.gomodcache }}
+            ${{ steps.goenv.outputs.gobuildcache }}
+            ~/.cache/golangci-lint
+          key: go-lint-${{ runner.os }}-1.25-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            go-lint-${{ runner.os }}-1.25-${{ hashFiles('**/go.sum') }}-
+            go-lint-${{ runner.os }}-1.25-
+      # Run golangci-lint from its prebuilt release binary instead of compiling it
+      # from source every run. Keep the version in sync with the GOLANGCI_VERSION pin
+      # in dev/lint so local and CI results match; it reads the same .golangci.yml, so
+      # `golangci-lint run` here is identical to dev/lint's. Its own caching is off:
+      # the actions/cache step above is the single authority, so the cross-target
+      # objects the platform passes build are saved and restored with everything else.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
+          skip-cache: true
+      # The action above lints the host target only (GOOS=linux), so build-tagged
+      # platform files (_windows.go, _darwin.go) never reach a maintainer. Re-run the
+      # same linter, from the binary the action installed, cross-targeting the other
+      # platforms so their files are analyzed on every PR. CGO is disabled so a
+      # cgo-only dependency (a pure-Go build tag covers it) does not require a C cross
+      # toolchain on the Linux runner.
+      - name: Lint platform files (windows, darwin)
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          GOOS=windows golangci-lint run
+          GOOS=darwin golangci-lint run
 
   vuln:
     name: govulncheck

@@ -235,6 +235,16 @@ linters:
       - linters:
           - gosec
         path: _test\.go
+      # The _windows.go files are thin syscall shims that call the Win32 API
+      # directly, where passing a Go pointer to a syscall (unsafe.Pointer) and sizing
+      # a struct or handle count for a call (uint32 of unsafe.Sizeof or len) are the
+      # documented calling convention, not a memory-safety or overflow risk. G103
+      # (audit unsafe) and G115 (integer overflow) fire on every such call; the real
+      # errcheck, staticcheck, and revive findings in these files still apply.
+      - linters:
+          - gosec
+        path: _windows\.go
+        text: 'G103|G115'
       # A test switch deliberately handles only the cases that test exercises;
       # enum exhaustiveness is a production-code concern.
       - linters:

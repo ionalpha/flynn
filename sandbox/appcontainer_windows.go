@@ -235,7 +235,7 @@ func applyJobLimits(process windows.Handle) (windows.Handle, error) {
 		},
 	}
 	if _, err := windows.SetInformationJobObject(job, uint32(windows.JobObjectExtendedLimitInformation), uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
-		windows.CloseHandle(job)
+		_ = windows.CloseHandle(job)
 		return 0, fmt.Errorf("set job limits: %w", err)
 	}
 	// Deny the user-interface surfaces (clipboard, desktop, global atoms, and so on).
@@ -252,7 +252,7 @@ func applyJobLimits(process windows.Handle) (windows.Handle, error) {
 	}
 	_, _ = windows.SetInformationJobObject(job, uint32(windows.JobObjectBasicUIRestrictions), uintptr(unsafe.Pointer(&ui)), uint32(unsafe.Sizeof(ui)))
 	if err := windows.AssignProcessToJobObject(job, process); err != nil {
-		windows.CloseHandle(job)
+		_ = windows.CloseHandle(job)
 		return 0, fmt.Errorf("assign to job: %w", err)
 	}
 	return job, nil
@@ -282,9 +282,9 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	if err := windows.CreatePipe(&rd, &wr, sa, 0); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: pipe: %w", err)
 	}
-	defer windows.CloseHandle(rd)
+	defer func() { _ = windows.CloseHandle(rd) }()
 	if err := windows.SetHandleInformation(rd, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-		windows.CloseHandle(wr)
+		_ = windows.CloseHandle(wr)
 		return ExecResult{}, fmt.Errorf("sandbox: handle info: %w", err)
 	}
 
@@ -296,13 +296,13 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	var rdIn, wrIn windows.Handle
 	if len(stdin) > 0 {
 		if err := windows.CreatePipe(&rdIn, &wrIn, sa, 0); err != nil {
-			windows.CloseHandle(wr)
+			_ = windows.CloseHandle(wr)
 			return ExecResult{}, fmt.Errorf("sandbox: stdin pipe: %w", err)
 		}
 		if err := windows.SetHandleInformation(wrIn, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-			windows.CloseHandle(wr)
-			windows.CloseHandle(rdIn)
-			windows.CloseHandle(wrIn)
+			_ = windows.CloseHandle(wr)
+			_ = windows.CloseHandle(rdIn)
+			_ = windows.CloseHandle(wrIn)
 			return ExecResult{}, fmt.Errorf("sandbox: stdin handle info: %w", err)
 		}
 	}
@@ -310,10 +310,10 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	// failClose releases every handle the child will inherit (and the parent's stdin
 	// writer) on any path that fails before the child holds its own copies.
 	failClose := func() {
-		windows.CloseHandle(wr)
+		_ = windows.CloseHandle(wr)
 		if rdIn != 0 {
-			windows.CloseHandle(rdIn)
-			windows.CloseHandle(wrIn)
+			_ = windows.CloseHandle(rdIn)
+			_ = windows.CloseHandle(wrIn)
 		}
 	}
 
@@ -346,11 +346,11 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	}
 
 	si := new(windows.StartupInfoEx)
-	si.StartupInfo.Cb = uint32(unsafe.Sizeof(*si))
-	si.StartupInfo.Flags |= windows.STARTF_USESTDHANDLES
-	si.StartupInfo.StdOutput = wr
-	si.StartupInfo.StdErr = wr
-	si.StartupInfo.StdInput = rdIn // zero when no stdin: the child has no input, as before
+	si.Cb = uint32(unsafe.Sizeof(*si))
+	si.Flags |= windows.STARTF_USESTDHANDLES
+	si.StdOutput = wr
+	si.StdErr = wr
+	si.StdInput = rdIn // zero when no stdin: the child has no input, as before
 	si.ProcThreadAttributeList = al.List()
 
 	appPtr, _ := windows.UTF16PtrFromString(appName)
@@ -362,33 +362,33 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	// force, before it runs a single instruction.
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
 	err = windows.CreateProcess(appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
-	windows.CloseHandle(wr) // the parent never writes output; the child holds its own copy
+	_ = windows.CloseHandle(wr) // the parent never writes output; the child holds its own copy
 	if rdIn != 0 {
-		windows.CloseHandle(rdIn) // the child holds its own copy of the stdin reader
+		_ = windows.CloseHandle(rdIn) // the child holds its own copy of the stdin reader
 	}
 	if err != nil {
 		if wrIn != 0 {
-			windows.CloseHandle(wrIn)
+			_ = windows.CloseHandle(wrIn)
 		}
 		return ExecResult{}, fmt.Errorf("sandbox: create process: %w", err)
 	}
-	defer windows.CloseHandle(pi.Thread)
-	defer windows.CloseHandle(pi.Process)
+	defer func() { _ = windows.CloseHandle(pi.Thread) }()
+	defer func() { _ = windows.CloseHandle(pi.Process) }()
 
 	// Contain the command in a job object (fork-bomb cap, reap any child it spawns when
 	// the run ends), then start it.
 	job, err := applyJobLimits(pi.Process)
 	if err != nil {
 		if wrIn != 0 {
-			windows.CloseHandle(wrIn)
+			_ = windows.CloseHandle(wrIn)
 		}
 		_ = windows.TerminateProcess(pi.Process, 1)
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
-	defer windows.CloseHandle(job) // closing the last job handle reaps any survivors
+	defer func() { _ = windows.CloseHandle(job) }() // closing the last job handle reaps any survivors
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
 		if wrIn != 0 {
-			windows.CloseHandle(wrIn)
+			_ = windows.CloseHandle(wrIn)
 		}
 		_ = windows.TerminateProcess(pi.Process, 1)
 		return ExecResult{}, fmt.Errorf("sandbox: resume: %w", err)
@@ -409,7 +409,7 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 					break
 				}
 			}
-			windows.CloseHandle(wrIn)
+			_ = windows.CloseHandle(wrIn)
 		}()
 	}
 

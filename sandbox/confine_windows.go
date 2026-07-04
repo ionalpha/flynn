@@ -53,7 +53,7 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 	if !confined {
 		return l.runWithExecCmd(ctx, name, args, stdin, false)
 	}
-	return l.runAppContainer(ctx, name, args, stdin)
+	return l.runAppContainer(ctx, args, stdin)
 }
 
 // runAppContainer builds the AppContainer policy from the Local's options and launches
@@ -61,7 +61,7 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 // so commands in different sandbox roots cannot reach each other's files even though
 // both are confined. The network is granted only when it was not denied; the working
 // directory is the one writable location.
-func (l *Local) runAppContainer(ctx context.Context, name string, args []string, stdin []byte) (ExecResult, error) {
+func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte) (ExecResult, error) {
 	comspec := os.Getenv("ComSpec")
 	if comspec == "" {
 		comspec = `C:\Windows\System32\cmd.exe`
