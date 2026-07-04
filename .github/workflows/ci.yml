@@ -215,6 +215,21 @@ jobs:
           cache: true
       - run: ./dev/osv
 
+  # Custom Semgrep rules that encode project invariants (see .semgrep) as a
+  # machine-checked gate. Complements golangci-lint: golangci runs fixed linters,
+  # these rules assert project-specific properties that generic linters cannot,
+  # such as a secret's exposed plaintext never flowing into a formatter or logger.
+  semgrep:
+    name: Semgrep invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      # pipx is preinstalled on the runner and puts semgrep on PATH; dev/semgrep
+      # then uses that local binary (its Docker fallback is for machines without it).
+      - name: Install semgrep
+        run: pipx install semgrep==1.167.0
+      - run: ./dev/semgrep
+
   # The performance gate: allocation-ceiling tests and the curated hot-path
   # benchmarks, run without the race detector (the test matrix runs -race, whose
   # instrumentation skews allocation counts, so the ceilings are !race-tagged
@@ -278,7 +293,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [test, lint, vuln, secrets, osv, bench, pr-body]
+    needs: [test, lint, vuln, secrets, osv, semgrep, bench, pr-body]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded

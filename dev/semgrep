@@ -1,0 +1,38 @@
+#!/usr/bin/env sh
+# Run the custom Semgrep invariant rules in .semgrep. Mirrors CI.
+# These rules encode project invariants as machine-checked gates (see .semgrep for
+# what each one proves). Uses a local `semgrep` if present, otherwise the pinned
+# Docker image, so no Python setup is required. Needs either semgrep or Docker.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# Pin the version so local and CI results match.
+SEMGREP_VERSION="1.167.0"
+
+run_semgrep() {
+  if command -v semgrep >/dev/null 2>&1; then
+    semgrep "$@"
+  elif command -v docker >/dev/null 2>&1; then
+    docker run --rm -v "$(pwd):/src" -w /src "semgrep/semgrep:$SEMGREP_VERSION" semgrep "$@"
+  else
+    echo "Neither semgrep nor docker found. Install one of:" >&2
+    echo "  pipx install semgrep==$SEMGREP_VERSION" >&2
+    echo "  (or install Docker; this script then uses semgrep/semgrep:$SEMGREP_VERSION)" >&2
+    exit 1
+  fi
+}
+
+# First prove each rule still fires as intended against its fixture, then enforce
+# the rules against the tree. semgrep --test pairs a rule file with a same-named
+# fixture (secret-expose.yml <-> secret-expose.go) only when the rule file is given
+# explicitly, so iterate the pairs rather than pointing at the directory. The
+# fixtures under .semgrep carry intentional violations, so exclude that directory
+# from the enforcement scan.
+echo "==> semgrep --test (rule self-check)"
+for rule in .semgrep/*.yml; do
+  fixture="${rule%.yml}.go"
+  [ -f "$fixture" ] && run_semgrep --test --config "$rule" "$fixture"
+done
+
+echo "==> semgrep scan (.semgrep rules, whole tree)"
+run_semgrep --config .semgrep --error --exclude=.semgrep --metrics=off .
