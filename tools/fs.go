@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -237,9 +239,16 @@ func (t grepTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		if err != nil || isBinary(b) {
 			continue
 		}
-		for i, line := range strings.Split(string(b), "\n") {
-			if re.MatchString(line) {
-				matches = append(matches, fmt.Sprintf("%s:%d:%s", f, i+1, line))
+		// Scan line by line rather than splitting the whole file into a []string:
+		// the scanner reuses one buffer, so only matching lines allocate, and the
+		// per-file match loop can stop the moment the cap is hit. The buffer ceiling
+		// is the file size, so a single long line (minified JS, JSONL) never trips
+		// bufio.ErrTooLong the way the default 64KB token limit would.
+		sc := bufio.NewScanner(bytes.NewReader(b))
+		sc.Buffer(make([]byte, 0, 64*1024), len(b)+1)
+		for i := 1; sc.Scan(); i++ {
+			if re.Match(sc.Bytes()) {
+				matches = append(matches, fmt.Sprintf("%s:%d:%s", f, i, sc.Text()))
 				if len(matches) >= maxGrepMatches {
 					truncated = true
 					break

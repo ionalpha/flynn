@@ -25,11 +25,13 @@ type Observability struct {
 	Meter  Meter
 }
 
-// Default returns an Observability that discards everything: logs to io.Discard, a
-// no-op tracer, and a no-op meter. It is the zero-setup standalone default.
+// Default returns an Observability that discards everything: a no-op logger, a
+// no-op tracer, and a no-op meter. It is the zero-setup standalone default. The
+// logger is a true no-op (not slog over io.Discard), so a disabled log call on the
+// standalone path builds no attributes and reaches no handler.
 func Default() *Observability {
 	return &Observability{
-		Log:    NewSlogLogger(slog.NewTextHandler(io.Discard, nil)),
+		Log:    NopLogger{},
 		Tracer: NopTracer{},
 		Meter:  NopMeter{},
 	}
@@ -126,6 +128,12 @@ func (s slogLogger) With(f ...Field) Logger {
 }
 
 func (s slogLogger) log(ctx context.Context, level slog.Level, msg string, f []Field) {
+	// Skip the whole record when the handler has the level disabled: no attribute
+	// slice is built and nothing reaches slog. A production host that runs at Info
+	// pays nothing for the Debug calls threaded through hot paths.
+	if !s.l.Enabled(ctx, level) {
+		return
+	}
 	attrs := make([]slog.Attr, len(f))
 	for i, x := range f {
 		attrs[i] = slog.Any(x.Key, x.Value)
@@ -134,6 +142,19 @@ func (s slogLogger) log(ctx context.Context, level slog.Level, msg string, f []F
 }
 
 var _ Logger = slogLogger{}
+
+// NopLogger is a Logger that discards every record without touching its fields. It
+// is the standalone Default so the disabled-log path allocates nothing; a host that
+// wants real logging injects a slog.Handler through New instead.
+type NopLogger struct{}
+
+func (NopLogger) Debug(context.Context, string, ...Field) {}
+func (NopLogger) Info(context.Context, string, ...Field)  {}
+func (NopLogger) Warn(context.Context, string, ...Field)  {}
+func (NopLogger) Error(context.Context, string, ...Field) {}
+func (NopLogger) With(...Field) Logger                    { return NopLogger{} }
+
+var _ Logger = NopLogger{}
 
 // Tracer starts spans around units of work. It is deliberately minimal: the agent
 // depends on this interface, and an adapter maps it onto a backend such as

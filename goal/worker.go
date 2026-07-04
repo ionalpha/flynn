@@ -142,17 +142,33 @@ func (w *Worker) Run(ctx context.Context, poll time.Duration) {
 	if wk, ok := w.jobs.(jobs.Waker); ok {
 		ready = wk.Ready()
 	}
+	// One timer for the whole loop, re-armed each idle wait, instead of a fresh
+	// timer (and channel) per iteration from clk.After. Start it stopped; each idle
+	// branch Resets it, and the ctx/ready branches Stop-and-drain so the next Reset
+	// starts clean.
+	timer := w.clk.NewTimer(poll)
+	defer timer.Stop()
+	if !timer.Stop() {
+		<-timer.C()
+	}
 	for {
 		if ctx.Err() != nil {
 			return
 		}
 		processed, err := w.ProcessOnce(ctx)
 		if err != nil || !processed {
+			timer.Reset(poll)
 			select {
 			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C()
+				}
 				return
 			case <-ready:
-			case <-w.clk.After(poll):
+				if !timer.Stop() {
+					<-timer.C()
+				}
+			case <-timer.C():
 			}
 		}
 	}
