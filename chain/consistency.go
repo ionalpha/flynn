@@ -7,7 +7,7 @@ import (
 // ConsistencyProof is a standalone proof that an append-only log only ever grew
 // between two signed checkpoints: the earlier checkpoint's tree is a prefix of the
 // later one's, with no event rewritten or removed in between. It carries both signed
-// checkpoints and the RFC 9162 consistency path that connects their roots. It is the
+// checkpoints and the RFC 6962 consistency path that connects their roots. It is the
 // portable artifact a third party checks to confirm a log was not forked or rewritten
 // across two points in time, without needing the events themselves.
 type ConsistencyProof struct {

@@ -86,7 +86,7 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 - **Tampering with the run record.** The mission event spine is append-only and ordered.
   On its own that resists silent rewriting only as far as the operator of the store is
   trusted. A run is therefore also sealed into a signed, tamper-evident record: its
-  events are committed to an append-only RFC 9162 Merkle log and the head is signed as a
+  events are committed to an append-only RFC 6962 Merkle log and the head is signed as a
   COSE_Sign1 checkpoint with the instance's Ed25519 key. Any alteration, a changed,
   reordered, dropped, or inserted event, no longer reproduces the signed root, so an
   independent party can detect tampering with `flynn spine verify` without trusting the
@@ -210,7 +210,7 @@ Enforced and tested today:
   consent for a risky run with a safe default and a non-interactive refusal.
 - Credential isolation: vault-held, redacted, never in a child's environment.
 - An append-only, ordered event spine as the record of what happened, and, on a run's
-  convergence, a signed, tamper-evident sealed record of it (RFC 9162 Merkle log under a
+  convergence, a signed, tamper-evident sealed record of it (RFC 6962 Merkle log under a
   COSE/Ed25519 signed checkpoint) that a standalone verifier (`flynn spine verify`)
   checks without trusting the host, backed by a public conformance vector suite for the
   record format.

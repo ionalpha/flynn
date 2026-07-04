@@ -219,7 +219,9 @@ The pipeline is built from established primitives, not new cryptography:
    Deterministic Encoding), so the same logical event always produces the same bytes
    regardless of map order or language.
 2. **Merkle log.** Each event's canonical bytes are committed as a leaf in an
-   append-only RFC 9162 (Certificate Transparency v2) Merkle log. The log yields
+   append-only Merkle log built on the RFC 6962 tree-hash construction (domain-separated
+   SHA-256, the same construction carried forward by RFC 9162, Certificate Transparency
+   2.0). The log yields
    inclusion proofs (an event is under a signed root) and consistency proofs (the log
    only ever appended between two signed roots).
 3. **Signed checkpoint.** The Merkle head is signed as a COSE_Sign1 (RFC 9052)
@@ -292,7 +294,7 @@ is part of CI).
 - **`dispatch`** the governance waist; **`capability`** grants; **`budget`** the
   per-run spend ceiling; **`internal/spinesink`** routes dispatched actions onto
   the spine.
-- **`chain`** the verifiable-record layer: canonical CBOR encoding, the RFC 9162
+- **`chain`** the verifiable-record layer: canonical CBOR encoding, the RFC 6962
   Merkle log, COSE signing, sealed run records, and the verifier behind
   `flynn spine verify`.
 - **`learn`** the closed learning loop (capture, verify, reinforce, regrade);
