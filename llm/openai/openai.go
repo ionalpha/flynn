@@ -11,8 +11,10 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"hash/fnv"
 	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/ids"
@@ -37,6 +39,20 @@ type Client struct {
 	maxTokens   int
 	toolGrammar bool
 	vision      bool
+
+	// grammarCache memoizes the compiled tool-call grammar. The tool set is
+	// byte-identical turn to turn across a conversation, but the grammar is a pure
+	// function of the tool names and schemas, so recompiling and re-rendering it on
+	// every Generate is wasted work (gbnf compile + GBNF text render). A single-entry
+	// cache keyed by a hash of the tools reuses the last result whenever the tool set
+	// is unchanged, and simply recomputes on the rare turn it differs, so it can never
+	// return a stale grammar for a different tool set. Guarded by a mutex because
+	// Generate runs concurrently under fan-out.
+	grammarMu    sync.Mutex
+	grammarKey   uint64
+	grammarValid bool // a result (below) is cached for grammarKey
+	grammarStr   string
+	grammarOK    bool // the cached compile succeeded
 }
 
 // Option configures a Client.
@@ -264,7 +280,7 @@ func (c *Client) buildRequest(req llm.Request) (chatRequest, bool) {
 	}
 	grammarActive := false
 	if c.toolGrammar && len(req.Tools) > 0 {
-		if g, err := toolCallGrammar(req.Tools); err == nil {
+		if g, ok := c.toolGrammarCached(req.Tools); ok {
 			out.Grammar = g
 			grammarActive = true
 		}
@@ -284,6 +300,48 @@ func (c *Client) buildRequest(req llm.Request) (chatRequest, bool) {
 		out.Messages = append(out.Messages, encodeMessage(m)...)
 	}
 	return out, grammarActive
+}
+
+// toolGrammarCached returns the compiled tool-call grammar for tools, reusing the
+// last result when the tool set is unchanged. It reports whether a grammar is active
+// (compilation succeeded); a compile failure is cached too, so a tool set that cannot
+// be constrained is not recompiled every turn only to fail again. The key is a 64-bit
+// hash of the tool names and schemas; a hash collision across two genuinely different
+// tool sets is the only way to return a wrong grammar, and at 64 bits that is
+// negligible against the per-turn recompile it removes.
+func (c *Client) toolGrammarCached(tools []llm.Tool) (string, bool) {
+	key := toolsKey(tools)
+	c.grammarMu.Lock()
+	defer c.grammarMu.Unlock()
+	if c.grammarValid && c.grammarKey == key {
+		return c.grammarStr, c.grammarOK
+	}
+	g, err := toolCallGrammar(tools)
+	c.grammarKey = key
+	c.grammarValid = true
+	c.grammarStr = g
+	c.grammarOK = err == nil
+	if err != nil {
+		c.grammarStr = ""
+	}
+	return c.grammarStr, c.grammarOK
+}
+
+// toolsKey hashes the tool set into the memoization key: each tool's name and raw
+// argument schema, order-independent so a reordered but identical tool set hits the
+// cache. The grammar itself compiles tools in sorted order (see gbnf.buildToolAlts),
+// so two orderings of the same tools yield the same grammar and must share a key.
+func toolsKey(tools []llm.Tool) uint64 {
+	// XOR each tool's own hash so the combination is independent of iteration order.
+	var key uint64
+	for _, t := range tools {
+		h := fnv.New64a()
+		_, _ = h.Write([]byte(t.Name))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(t.InputSchema)
+		key ^= h.Sum64()
+	}
+	return key
 }
 
 // encodeMessage maps one neutral message to one or more Chat Completions messages.

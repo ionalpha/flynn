@@ -1,6 +1,7 @@
 package serve
 
 import (
+	"bytes"
 	"context"
 	"math"
 	"strconv"
@@ -201,8 +202,18 @@ func (n promNames) toStats(data []byte) RuntimeStats {
 // are process-wide single-series gauges and counters, so dropping labels is safe.
 func parseProm(data []byte) map[string]float64 {
 	out := map[string]float64{}
-	for _, line := range strings.Split(string(data), "\n") {
-		line = strings.TrimSpace(line)
+	// Scan line by line over the raw bytes instead of splitting the whole body into a
+	// []string first: the exposition payload holds many series and only a handful are
+	// read here, so the full split allocates a large slice and a copy of every line for
+	// nothing. Each line becomes a short-lived string only when it is non-empty.
+	for len(data) > 0 {
+		var raw []byte
+		if i := bytes.IndexByte(data, '\n'); i >= 0 {
+			raw, data = data[:i], data[i+1:]
+		} else {
+			raw, data = data, nil
+		}
+		line := strings.TrimSpace(string(raw))
 		if line == "" || line[0] == '#' {
 			continue
 		}

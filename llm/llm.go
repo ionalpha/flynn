@@ -314,13 +314,11 @@ func (m Message) ToolUses() []ToolUse {
 // TextContent concatenates the text blocks of a message, the human-readable answer
 // with any tool-call blocks dropped.
 func (m Message) TextContent() string {
-	var s string
-	var sSb170 strings.Builder
+	var sb strings.Builder
 	for _, b := range m.Blocks {
 		if b.Kind == KindText {
-			sSb170.WriteString(b.Text)
+			sb.WriteString(b.Text)
 		}
 	}
-	s += sSb170.String()
-	return s
+	return sb.String()
 }

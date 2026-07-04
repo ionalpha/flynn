@@ -7,6 +7,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/gbnf"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/secret"
 )
 
 var grammarToolReq = llm.Request{
@@ -141,6 +142,75 @@ func TestToolGrammarSkippedForUnsupportedSchema(t *testing.T) {
 	}
 	if _, ok := body["grammar"]; ok {
 		t.Fatal("a tool with an uncompilable schema should leave the request unconstrained, not partially constrained")
+	}
+}
+
+func TestToolGrammarMemoization(t *testing.T) {
+	c := New(secret.New("k"), WithToolGrammar())
+	readTool := llm.Tool{Name: "read", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)}
+	writeTool := llm.Tool{Name: "write", InputSchema: json.RawMessage(`{"type":"object","properties":{"data":{"type":"string"}}}`)}
+
+	// A repeat call with the same tool set is a cache hit and must return the same
+	// grammar bytes it compiled the first time.
+	g1, ok1 := c.toolGrammarCached([]llm.Tool{readTool})
+	g1b, ok1b := c.toolGrammarCached([]llm.Tool{readTool})
+	if !ok1 || !ok1b || g1 == "" || g1 != g1b {
+		t.Fatalf("same tool set must hit the cache with identical grammar: %q vs %q", g1, g1b)
+	}
+
+	// A different tool set must recompile, never return the previous grammar. This is
+	// the stale-cache guard: a single-entry cache that ignored the key would hand back
+	// the read-only grammar for a write-only request.
+	g2, ok2 := c.toolGrammarCached([]llm.Tool{writeTool})
+	if !ok2 || g2 == g1 {
+		t.Fatalf("changed tool set must produce a different grammar, got stale %q", g2)
+	}
+	want, err := toolCallGrammar([]llm.Tool{writeTool})
+	if err != nil || g2 != want {
+		t.Fatalf("cached grammar for the new tool set is wrong:\n got: %s\nwant: %s", g2, want)
+	}
+
+	// Order does not change the grammar (it compiles tools in sorted order), so a
+	// reordered but identical set is the same grammar.
+	set := []llm.Tool{readTool, writeTool}
+	reordered := []llm.Tool{writeTool, readTool}
+	gA, _ := c.toolGrammarCached(set)
+	gB, _ := c.toolGrammarCached(reordered)
+	if gA == "" || gA != gB {
+		t.Fatalf("reordered identical tool set must yield the same grammar:\n%s\n%s", gA, gB)
+	}
+
+	// A tool whose schema cannot be compiled caches the failure and leaves the request
+	// unconstrained; the cached miss must stay a miss on repeat.
+	bad := []llm.Tool{{Name: "weird", InputSchema: json.RawMessage(`{"type":"geo"}`)}}
+	if g, ok := c.toolGrammarCached(bad); ok || g != "" {
+		t.Fatalf("uncompilable schema must not be constrained: ok=%v g=%q", ok, g)
+	}
+	if g, ok := c.toolGrammarCached(bad); ok || g != "" {
+		t.Fatalf("cached compile failure must stay a miss: ok=%v g=%q", ok, g)
+	}
+}
+
+// TestToolGrammarCachedAllocsCeiling locks the memoization win in the shape the perf
+// gate trusts: the steady-state cache-hit path (unchanged tool set) allocates nothing,
+// so a regression that reintroduces per-turn recompilation on the local-model path
+// fails here rather than silently. Runs inside ordinary go test, no -bench needed.
+func TestToolGrammarCachedAllocsCeiling(t *testing.T) {
+	c := New(secret.New("k"), WithToolGrammar())
+	tools := []llm.Tool{
+		{Name: "read", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)},
+		{Name: "search", InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}}}`)},
+	}
+	if _, ok := c.toolGrammarCached(tools); !ok { // prime the cache
+		t.Fatal("grammar did not compile")
+	}
+	avg := testing.AllocsPerRun(100, func() {
+		if _, ok := c.toolGrammarCached(tools); !ok {
+			t.Fatal("cache miss on a primed tool set")
+		}
+	})
+	if avg != 0 {
+		t.Fatalf("cached tool-grammar lookup must not allocate, got %.0f allocs/op", avg)
 	}
 }
 

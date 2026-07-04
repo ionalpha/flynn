@@ -117,21 +117,13 @@ func TestThinkingBlockRoundTrips(t *testing.T) {
 		t.Fatalf("thinking not captured as opaque: %+v", resp.Message.Blocks)
 	}
 
-	// Send it back: the request must carry the thinking block byte-for-byte.
+	// Send it back: the request must carry the thinking block byte-for-byte. The
+	// opaque block is spliced into the content array verbatim, so the sent body
+	// contains its exact bytes.
 	if _, err := c.Generate(context.Background(), llm.Request{Messages: []llm.Message{resp.Message}}); err != nil {
 		t.Fatal(err)
 	}
-	var sent apiRequest
-	if err := json.Unmarshal(m.gotBody, &sent); err != nil {
-		t.Fatal(err)
-	}
-	found := false
-	for _, blk := range sent.Messages[0].Content {
-		if string(blk) == thinking {
-			found = true
-		}
-	}
-	if !found {
+	if !strings.Contains(string(m.gotBody), thinking) {
 		t.Fatalf("opaque thinking block not replayed verbatim: %s", m.gotBody)
 	}
 }
@@ -184,9 +176,34 @@ func TestErrorClassification(t *testing.T) {
 // TestEncodeImageBlockToBase64Source pins that an image block becomes an Anthropic
 // base64 image source block: the media type is carried through and the bytes are
 // base64-encoded, which is the wire shape the vision API expects.
+// fataler is the slice of the test handle rawContent needs, satisfied by both
+// *testing.T and *rapid.T so the helper serves ordinary and property tests alike.
+type fataler interface {
+	Helper()
+	Fatalf(string, ...any)
+}
+
+// rawContent renders the typed content blocks encodeBlocks produces into the
+// []json.RawMessage form some tests assert against (a decodeResponse round-trip, a
+// per-block wire-shape check). It mirrors what the single outer request marshal does
+// to each block, keeping those tests independent of the internal block value types.
+func rawContent(tb fataler, blocks []llm.Block, markLast bool) []json.RawMessage {
+	tb.Helper()
+	enc := encodeBlocks(blocks, markLast)
+	out := make([]json.RawMessage, len(enc))
+	for i, e := range enc {
+		b, err := json.Marshal(e)
+		if err != nil {
+			tb.Fatalf("marshal content block %d: %v", i, err)
+		}
+		out[i] = b
+	}
+	return out
+}
+
 func TestEncodeImageBlockToBase64Source(t *testing.T) {
 	data := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
-	enc := encodeBlocks([]llm.Block{llm.ImageBlock("image/png", data)}, false)
+	enc := rawContent(t, []llm.Block{llm.ImageBlock("image/png", data)}, false)
 	if len(enc) != 1 {
 		t.Fatalf("want 1 encoded block, got %d", len(enc))
 	}
@@ -227,7 +244,7 @@ func TestBlockMappingProperty(t *testing.T) {
 		}
 
 		// Encode as request content, then decode as if it were a response.
-		decoded, err := decodeResponse(apiResponse{Content: encodeBlocks(blocks, false)})
+		decoded, err := decodeResponse(apiResponse{Content: rawContent(rt, blocks, false)})
 		if err != nil {
 			rt.Fatalf("decode: %v", err)
 		}

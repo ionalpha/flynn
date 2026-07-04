@@ -65,20 +65,47 @@ func (s *schemaNode) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// objectKeyOrder returns the keys of the object named field, in source order, by
-// streaming the raw JSON. json.Unmarshal into a Go map drops order, but constrained
-// generation must emit properties in a fixed order, so the source order is recovered
-// here.
+// objectKeyOrder returns the keys of the object named field, in source order, in a
+// single streaming pass over the raw JSON. json.Unmarshal into a Go map drops order,
+// but constrained generation must emit properties in a fixed order, so the source
+// order is recovered here. The node's typed fields are already decoded by the caller's
+// struct unmarshal; this pass only walks the top-level object to reach field, without
+// the extra full map decode the previous version did before streaming.
 func objectKeyOrder(data []byte, field string) ([]string, error) {
-	var top map[string]json.RawMessage
-	if err := json.Unmarshal(data, &top); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.Token()
+	if err != nil {
 		return nil, err
 	}
-	body, ok := top[field]
-	if !ok {
+	// The caller only invokes this for an object node, so the top-level value is an
+	// object; anything else means the input is not the object we were asked to scan.
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
 		return nil, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(body))
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return nil, err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return nil, fmt.Errorf("gbnf: non-string object key")
+		}
+		if key == field {
+			return objectMemberOrder(dec, field)
+		}
+		// Not the field we want: skip its value, however nested, and continue.
+		if err := skipValue(dec); err != nil {
+			return nil, err
+		}
+	}
+	return nil, nil
+}
+
+// objectMemberOrder reads the member keys, in source order, of the object value the
+// decoder is positioned on (the value of the field just consumed by the caller). It
+// skips each member's value so it lands on the next key.
+func objectMemberOrder(dec *json.Decoder, field string) ([]string, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err

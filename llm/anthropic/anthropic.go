@@ -140,8 +140,51 @@ type apiThinking struct {
 }
 
 type apiMessage struct {
-	Role    string            `json:"role"`
-	Content []json.RawMessage `json:"content"`
+	Role string `json:"role"`
+	// Content holds one typed content block per element (textBlock, toolUseBlock,
+	// toolResultBlock, imageBlock) or a json.RawMessage for an opaque block replayed
+	// verbatim. Keeping the blocks typed lets the single outer marshal of apiRequest
+	// serialize the whole transcript in one pass, instead of marshaling every block
+	// into a map[string]any first and re-encoding the run each turn (O(T^2)).
+	Content []any `json:"content"`
+}
+
+// The typed content blocks. Field order below is the wire order; the Anthropic API
+// parses by key so order is not a contract, but the keys and values match what the
+// previous map-based encoder emitted so the request is byte-equivalent modulo key
+// order. cache_control is the only optional field: it is attached to at most one
+// block per message to mark a prompt-cache boundary (see encodeBlocks).
+type (
+	textBlock struct {
+		Type         string        `json:"type"`
+		Text         string        `json:"text"`
+		CacheControl *cacheControl `json:"cache_control,omitempty"`
+	}
+	toolUseBlock struct {
+		Type         string          `json:"type"`
+		ID           string          `json:"id"`
+		Name         string          `json:"name"`
+		Input        json.RawMessage `json:"input"`
+		CacheControl *cacheControl   `json:"cache_control,omitempty"`
+	}
+	toolResultBlock struct {
+		Type         string        `json:"type"`
+		ToolUseID    string        `json:"tool_use_id"`
+		Content      string        `json:"content"`
+		IsError      bool          `json:"is_error"`
+		CacheControl *cacheControl `json:"cache_control,omitempty"`
+	}
+	imageBlock struct {
+		Type         string        `json:"type"`
+		Source       imageSource   `json:"source"`
+		CacheControl *cacheControl `json:"cache_control,omitempty"`
+	}
+)
+
+type imageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
 }
 
 type apiTool struct {
@@ -220,12 +263,14 @@ func (c *Client) buildRequest(req llm.Request) apiRequest {
 	return out
 }
 
-// encodeBlocks maps neutral blocks to Messages-API content blocks. An opaque block
-// is spliced back verbatim (it is provider content we captured earlier). When
-// markLast is set, the last cacheable block carries a cache_control marker, which
-// makes everything up to and including it a cache boundary; opaque blocks are not
-// marked, since they are replayed byte-for-byte.
-func encodeBlocks(blocks []llm.Block, markLast bool) []json.RawMessage {
+// encodeBlocks maps neutral blocks to Messages-API content blocks as typed values,
+// so the single outer marshal of the request encodes them in one pass rather than
+// this function marshaling each block separately into a map. An opaque block is
+// spliced back verbatim (it is provider content we captured earlier). When markLast
+// is set, the last cacheable block carries a cache_control marker, which makes
+// everything up to and including it a cache boundary; opaque blocks are not marked,
+// since they are replayed byte-for-byte.
+func encodeBlocks(blocks []llm.Block, markLast bool) []any {
 	markIdx := -1
 	if markLast {
 		for i, b := range blocks {
@@ -234,42 +279,35 @@ func encodeBlocks(blocks []llm.Block, markLast bool) []json.RawMessage {
 			}
 		}
 	}
-	out := make([]json.RawMessage, 0, len(blocks))
+	out := make([]any, 0, len(blocks))
 	for i, b := range blocks {
-		var v map[string]any
+		var cc *cacheControl
+		if i == markIdx {
+			cc = ephemeral()
+		}
 		switch b.Kind {
 		case llm.KindText:
-			v = map[string]any{"type": "text", "text": b.Text}
+			out = append(out, textBlock{Type: "text", Text: b.Text, CacheControl: cc})
 		case llm.KindToolUse:
 			if b.ToolUse != nil {
-				v = map[string]any{"type": "tool_use", "id": b.ToolUse.ID, "name": b.ToolUse.Name, "input": b.ToolUse.Input}
+				out = append(out, toolUseBlock{Type: "tool_use", ID: b.ToolUse.ID, Name: b.ToolUse.Name, Input: b.ToolUse.Input, CacheControl: cc})
 			}
 		case llm.KindToolResult:
 			if b.ToolResult != nil {
-				v = map[string]any{"type": "tool_result", "tool_use_id": b.ToolResult.ToolUseID, "content": b.ToolResult.Content, "is_error": b.ToolResult.IsError}
+				out = append(out, toolResultBlock{Type: "tool_result", ToolUseID: b.ToolResult.ToolUseID, Content: b.ToolResult.Content, IsError: b.ToolResult.IsError, CacheControl: cc})
 			}
 		case llm.KindImage:
 			if b.Image != nil {
-				v = map[string]any{"type": "image", "source": map[string]any{
-					"type":       "base64",
-					"media_type": b.Image.MediaType,
-					"data":       base64.StdEncoding.EncodeToString(b.Image.Data),
-				}}
+				out = append(out, imageBlock{Type: "image", Source: imageSource{
+					Type:      "base64",
+					MediaType: b.Image.MediaType,
+					Data:      base64.StdEncoding.EncodeToString(b.Image.Data),
+				}, CacheControl: cc})
 			}
 		case llm.KindOpaque:
 			if len(b.Raw) > 0 {
 				out = append(out, b.Raw)
 			}
-			continue
-		}
-		if v == nil {
-			continue
-		}
-		if i == markIdx {
-			v["cache_control"] = ephemeral()
-		}
-		if enc, err := json.Marshal(v); err == nil {
-			out = append(out, enc)
 		}
 	}
 	return out
