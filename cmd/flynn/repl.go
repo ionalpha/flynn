@@ -375,8 +375,9 @@ func (s *replSession) finish(ctx context.Context) error {
 }
 
 // replCommand handles the session's slash commands that are not model turns: sealing
-// the run into a verifiable record, verifying that record, forking the run onto a new
-// branch, and replaying its recorded history. It reports whether it claimed the line and
+// the run into a verifiable record, verifying that record, exporting the record to a
+// portable file, forking the run onto a new branch, and replaying its recorded history.
+// It reports whether it claimed the line and
 // any error to surface, so each interface renders the outcome its own way. A line that is
 // not a command is left for the model.
 func (s *replSession) replCommand(ctx context.Context, line string) (handled bool, err error) {
@@ -389,6 +390,13 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		return true, nil
 	case "/verify":
 		return true, s.verify(ctx, s.out)
+	case "/export":
+		path, err := s.export(ctx, "")
+		if err != nil {
+			return true, err
+		}
+		_, _ = fmt.Fprintf(s.out, "  record exported to %s; verify anywhere with: flynn spine verify --file %s\n", path, path)
+		return true, nil
 	case "/fork":
 		forkID, err := s.fork(ctx)
 		if err != nil {
@@ -433,6 +441,23 @@ func (s *replSession) verify(ctx context.Context, out io.Writer) error {
 		return errors.New("nothing to verify yet; run a turn first")
 	}
 	return verifyStoredRun(ctx, out, s.store, s.runID)
+}
+
+// export writes the session's sealed record to path and returns the path written. It
+// needs a sealed run: a run not yet sealed carries no record and is reported, so a caller
+// seals before exporting. The written file is the portable, independently verifiable
+// artifact `flynn spine verify --file` (and any third party) checks.
+func (s *replSession) export(ctx context.Context, path string) (string, error) {
+	if !s.started {
+		return "", errors.New("nothing to export yet; run a turn first")
+	}
+	if path == "" {
+		path = s.runID + ".flynnrecord"
+	}
+	if err := exportRecord(ctx, s.store, s.runID, path); err != nil {
+		return "", err
+	}
+	return path, nil
 }
 
 // fork branches the current run into a new independent run seeded with a verbatim copy

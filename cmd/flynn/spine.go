@@ -200,8 +200,10 @@ var errChecksFailed = errors.New("record did not pass all checks")
 
 // dispatchSpine handles the spine subcommands.
 func dispatchSpine(args []string, dataDir string) error {
-	const usage = "usage: flynn spine verify [--file <path> [--key <hex>]] <run-id>"
-	if len(args) >= 1 && args[0] == "verify" {
+	const usage = "usage: flynn spine verify [--file <path> [--key <hex>]] <run-id>\n" +
+		"       flynn spine export [--out <path>] <run-id>"
+	switch {
+	case len(args) >= 1 && args[0] == "verify":
 		fs := flag.NewFlagSet("spine verify", flag.ContinueOnError)
 		file := fs.String("file", "", "verify a record read from this file instead of a stored run")
 		keyHex := fs.String("key", "", "hex-encoded Ed25519 public key to verify a record whose signer is not self-certifying (for example a published conformance vector)")
@@ -218,8 +220,60 @@ func dispatchSpine(args []string, dataDir string) error {
 			return errors.New(usage)
 		}
 		return verifyRun(dataDir, fs.Arg(0))
+	case len(args) >= 1 && args[0] == "export":
+		fs := flag.NewFlagSet("spine export", flag.ContinueOnError)
+		out := fs.String("out", "", "write the record to this file (default <run-id>.flynnrecord in the current directory)")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() < 1 {
+			return errors.New(usage)
+		}
+		return exportRun(dataDir, fs.Arg(0), *out)
 	}
 	return errors.New(usage)
+}
+
+// exportRun writes a sealed run's portable record to a file, so it can be verified by a
+// third party (or with `flynn spine verify --file`) without the durable store. It opens
+// the store, extracts the signed record the run carries, and writes it to path, defaulting
+// to <run-id>.flynnrecord in the current directory. A run that was never sealed is
+// reported rather than writing an empty file.
+func exportRun(dataDir, runID, path string) error {
+	ctx := context.Background()
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = store.Close() }()
+
+	if path == "" {
+		path = runID + ".flynnrecord"
+	}
+	if err := exportRecord(ctx, store, runID, path); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(os.Stdout, "exported record for run %s to %s; verify with: flynn spine verify --file %s\n", runID, path, path)
+	return nil
+}
+
+// exportRecord extracts the signed record stored on a run's stream and writes its portable
+// bytes to path. The bytes are the same canonical artifact `chain.VerifyRun` checks, so
+// the file is independently verifiable. It reports a run with no sealed record rather than
+// writing a partial file.
+func exportRecord(ctx context.Context, store *sqlite.Store, runID, path string) error {
+	events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
+	if err != nil {
+		return err
+	}
+	if len(events) == 0 {
+		return fmt.Errorf("no run found with id %q", runID)
+	}
+	record, err := recordFromEvents(events)
+	if err != nil {
+		return fmt.Errorf("run %q %w", runID, err)
+	}
+	return os.WriteFile(path, record, 0o600)
 }
 
 // verifyRun reads a run's stored signed record and reports every tier it satisfies:

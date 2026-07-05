@@ -413,6 +413,9 @@ func (h *sessionHost) start(t queuedTurn) {
 	case "/verify":
 		h.startRecord(h.doVerify)
 		return
+	case "/export":
+		h.startRecord(h.doExport)
+		return
 	case "/fork":
 		h.startRecord(h.doFork)
 		return
@@ -571,6 +574,22 @@ func (h *sessionHost) doVerify(ctx context.Context) {
 	}
 	h.foldRecord(session.Event{Kind: session.KindRecordVerified})
 	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
+}
+
+// doExport writes the session's sealed record to a portable file and reports the path
+// inline, so a run can be handed to a third party or re-verified with `flynn spine verify
+// --file` without the durable store. A run not yet sealed carries no record and is
+// reported, leaving nothing written; the file defaults to <run-id>.flynnrecord in the
+// working directory.
+func (h *sessionHost) doExport(ctx context.Context) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/export"))
+	path, err := h.s.export(ctx, "")
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		return
+	}
+	h.ui.Append(h.th.Render(theme.Success, "  record exported to "+path))
+	h.ui.Append(h.th.Render(theme.Muted, "  verify anywhere with: flynn spine verify --file "+path))
 }
 
 // doFork branches the run into a new independent run seeded with the conversation so far
