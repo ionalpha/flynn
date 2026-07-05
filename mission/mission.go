@@ -385,7 +385,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// spine. The typed request and response stay here; dispatch sees only the action
 	// name, scope, and token cost.
 	var resp llm.Response
-	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted},
+	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted, Goal: r.Name},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			// Record the decoding identity of this generation on the durable history, within the
 			// dispatch span, so a run's reproducibility parameters are kept alongside its
@@ -497,7 +497,7 @@ func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scop
 	out := make([]llm.Block, 0, len(calls))
 	for _, c := range calls {
 		res := &llm.ToolResult{ToolUseID: c.ID}
-		content, err := e.invokeTool(ctx, scope, c)
+		content, err := e.invokeTool(ctx, goalID, scope, c)
 		if err != nil {
 			res.IsError, res.Content = true, err.Error()
 		} else {
@@ -517,9 +517,9 @@ func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scop
 // tool's JSON arguments and string result stay here and never reach dispatch. This
 // is the single place tool execution happens, so the sandbox isolation boundary
 // attaches here.
-func (e *Executor) invokeTool(ctx context.Context, scope state.Scope, c llm.ToolUse) (string, error) {
+func (e *Executor) invokeTool(ctx context.Context, goalID string, scope state.Scope, c llm.ToolUse) (string, error) {
 	var content string
-	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: c.Name, Scope: scope, Trust: toolTrust(e.tools[c.Name])},
+	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: c.Name, Scope: scope, Trust: toolTrust(e.tools[c.Name]), Goal: goalID},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			tool, ok := e.tools[c.Name]
 			if !ok {

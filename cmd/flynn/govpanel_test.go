@@ -127,6 +127,38 @@ func TestGovPanelFanoutTree(t *testing.T) {
 	}
 }
 
+// TestGovPanelFanoutPerChildGovernance proves each child's tree row carries its own
+// governance posture: a child that hit a capability denial shows its trust and a blocked
+// count on its row, while a sibling that ran clean shows its trust with no block.
+func TestGovPanelFanoutPerChildGovernance(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	p.set(session.Project([]session.Event{
+		{Kind: session.KindSessionStarted, Text: "split the work"},
+		{Kind: session.KindChildSpawned, Goal: "root", Child: "a", Text: "risky write"},
+		{Kind: session.KindChildSpawned, Goal: "root", Child: "b", Text: "safe read"},
+		{Kind: session.KindActionAdmitted, Goal: "a", Call: 1, Action: "write_file", Trust: "model"},
+		{Kind: session.KindActionRejected, Goal: "a", Call: 1, Action: "write_file", Trust: "model", Fault: "capability_denied"},
+		{Kind: session.KindActionAdmitted, Goal: "b", Call: 2, Action: "read_file", Trust: "agent"},
+		{Kind: session.KindActionCompleted, Goal: "b", Call: 2, Action: "read_file", Trust: "agent"},
+	}))
+	got := panelText(p, 100)
+	for _, want := range []string{
+		"... risky write (0t, model, 1 blocked)", // child a: its own trust and the block
+		"... safe read (0t, agent)",              // child b: its own trust, no block
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("panel missing %q in:\n%s", want, got)
+		}
+	}
+	// The block must not bleed onto the clean sibling's row.
+	for _, ln := range strings.Split(got, "\n") {
+		if strings.Contains(ln, "safe read") && strings.Contains(ln, "blocked") {
+			t.Errorf("clean sibling row shows a block: %q", ln)
+		}
+	}
+}
+
 // TestGovPanelFanoutBounded proves the tree lists at most fanoutRows children and notes
 // how many more it omitted, so a wide fan-out keeps the panel a fixed height.
 func TestGovPanelFanoutBounded(t *testing.T) {

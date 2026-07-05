@@ -77,6 +77,54 @@ func TestReduceDoesNotMutateFanout(t *testing.T) {
 	}
 }
 
+// TestFanoutPerChildGovernance proves a governed action folds into the child that ran
+// it: a capability denial on one child raises that child's blocked count and sets its
+// trust, while a sibling that ran a clean action shows its trust with no block. A root
+// action attributes to no child and moves only the run-level containment.
+func TestFanoutPerChildGovernance(t *testing.T) {
+	const root = "run-1"
+	p := Project([]Event{
+		{Kind: KindSessionStarted, Text: "split the work"},
+		{Kind: KindChildSpawned, Goal: root, Child: "child-a", Text: "do A"},
+		{Kind: KindChildSpawned, Goal: root, Child: "child-b", Text: "do B"},
+		// child-a is refused a write under model trust; child-b runs a read cleanly.
+		{Kind: KindActionAdmitted, Goal: "child-a", Call: 1, Action: "write_file", Trust: "model"},
+		{Kind: KindActionRejected, Goal: "child-a", Call: 1, Action: "write_file", Trust: "model", Fault: "capability_denied"},
+		{Kind: KindActionAdmitted, Goal: "child-b", Call: 2, Action: "read_file", Trust: "agent"},
+		{Kind: KindActionCompleted, Goal: "child-b", Call: 2, Action: "read_file", Trust: "agent"},
+		// A root action attributes to no child.
+		{Kind: KindActionAdmitted, Goal: root, Call: 3, Action: "model.generate", Trust: "agent"},
+	})
+
+	if len(p.Fanout) != 2 {
+		t.Fatalf("Fanout has %d children, want 2: %+v", len(p.Fanout), p.Fanout)
+	}
+	a, b := p.Fanout[0], p.Fanout[1]
+	if a.Blocked != 1 || a.Trust != "model" {
+		t.Errorf("child A governance = %d blocked / trust %q, want 1 / model", a.Blocked, a.Trust)
+	}
+	if b.Blocked != 0 || b.Trust != "agent" {
+		t.Errorf("child B governance = %d blocked / trust %q, want 0 / agent", b.Blocked, b.Trust)
+	}
+	// The run-level tallies still count every action; the root action set containment.
+	if p.Rejected != 1 || p.Admitted != 3 {
+		t.Errorf("run tallies admitted/rejected = %d/%d, want 3/1", p.Admitted, p.Rejected)
+	}
+	if p.Containment != "agent" {
+		t.Errorf("run Containment = %q, want agent (the last admitted action's trust)", p.Containment)
+	}
+}
+
+// TestReduceDoesNotMutateChildGovernance proves folding a governed action into a child is
+// pure: it does not mutate the tree slice a caller still holds from before the fold.
+func TestReduceDoesNotMutateChildGovernance(t *testing.T) {
+	before := Project([]Event{{Kind: KindChildSpawned, Goal: "r", Child: "c1", Text: "w"}})
+	_ = Reduce(before, Event{Kind: KindActionRejected, Goal: "c1", Call: 1, Trust: "model", Fault: "capability_denied"})
+	if before.Fanout[0].Blocked != 0 || before.Fanout[0].Trust != "" {
+		t.Errorf("input tree mutated by a later governance fold: %+v", before.Fanout[0])
+	}
+}
+
 // TestChildTurnsDedupedPerGoal proves the turn.started high-water mark is per goal: a
 // child announcing its turn 1 is recorded even though the root already started turn 1
 // on the same shared stream, so a fan-out's child turns are not swallowed as duplicates.

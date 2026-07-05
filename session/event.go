@@ -214,7 +214,7 @@ func decodeBody(se spine.Event) Event {
 }
 
 // governanceEvent projects one dispatch-waist event into the session vocabulary,
-// reading the waist's payload shape (action, call, trust, error_class). The
+// reading the waist's payload shape (action, call, trust, error_class, goal). The
 // correlation id survives a durable log's JSON round trip as a float, so it is read
 // through a numeric coercion rather than a direct int64 assertion.
 func governanceEvent(kind Kind, se spine.Event) Event {
@@ -222,6 +222,7 @@ func governanceEvent(kind Kind, se spine.Event) Event {
 	e.Action, _ = se.Payload["action"].(string)
 	e.Trust, _ = se.Payload["trust"].(string)
 	e.Fault, _ = se.Payload["error_class"].(string)
+	e.Goal, _ = se.Payload["goal"].(string)
 	e.Call = asInt64(se.Payload["call"])
 	return e
 }

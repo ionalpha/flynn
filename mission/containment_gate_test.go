@@ -57,7 +57,7 @@ func TestWaistRefusesSemiWorkOnWeakHost(t *testing.T) {
 	ran := false
 	exec := NewExecutor(llmtest.NewScripted(), WithTools(shellishTool{&ran}), WithSandbox(processJailSandbox(t)))
 
-	_, err := exec.invokeTool(context.Background(), state.Scope{}, llm.ToolUse{ID: "1", Name: "shellish", Input: json.RawMessage(`{}`)})
+	_, err := exec.invokeTool(context.Background(), "g1", state.Scope{}, llm.ToolUse{ID: "1", Name: "shellish", Input: json.RawMessage(`{}`)})
 	if err == nil {
 		t.Fatal("semi-trusted work must be refused on a process-jail host")
 	}
@@ -79,7 +79,7 @@ func TestWaistAdmitsSemiWorkOnKernelHost(t *testing.T) {
 	ran := false
 	exec := NewExecutor(llmtest.NewScripted(), WithTools(shellishTool{&ran}), WithSandbox(kernelSandbox(t)))
 
-	out, err := exec.invokeTool(context.Background(), state.Scope{}, llm.ToolUse{ID: "1", Name: "shellish", Input: json.RawMessage(`{}`)})
+	out, err := exec.invokeTool(context.Background(), "g1", state.Scope{}, llm.ToolUse{ID: "1", Name: "shellish", Input: json.RawMessage(`{}`)})
 	if err != nil {
 		t.Fatalf("semi-trusted work must run on a kernel-confined host, got %v", err)
 	}
@@ -92,7 +92,7 @@ func TestWaistAdmitsSemiWorkOnKernelHost(t *testing.T) {
 // weakest host, so the gate never blocks the agent's own work.
 func TestWaistAdmitsTrustedWorkAnywhere(t *testing.T) {
 	exec := NewExecutor(llmtest.NewScripted(), WithTools(echoTool()), WithSandbox(processJailSandbox(t)))
-	out, err := exec.invokeTool(context.Background(), state.Scope{}, llm.ToolUse{ID: "1", Name: "echo", Input: json.RawMessage(`{"x":1}`)})
+	out, err := exec.invokeTool(context.Background(), "g1", state.Scope{}, llm.ToolUse{ID: "1", Name: "echo", Input: json.RawMessage(`{"x":1}`)})
 	if err != nil {
 		t.Fatalf("trusted work must run on any host, got %v", err)
 	}
@@ -107,13 +107,18 @@ func TestWaistAdmitsTrustedWorkAnywhere(t *testing.T) {
 func TestWaistRecordsTrustOnTheSpine(t *testing.T) {
 	sink := &dispatch.MemorySink{}
 	exec := NewExecutor(llmtest.NewScripted(), WithTools(echoTool()), WithEventSink(sink), WithSandbox(kernelSandbox(t)))
-	_, _ = exec.invokeTool(context.Background(), state.Scope{}, llm.ToolUse{ID: "1", Name: "echo", Input: json.RawMessage(`{}`)})
+	_, _ = exec.invokeTool(context.Background(), "child-7", state.Scope{}, llm.ToolUse{ID: "1", Name: "echo", Input: json.RawMessage(`{}`)})
 
 	var sawTrust bool
 	for _, e := range sink.Events() {
 		if e.Action == "echo" && e.Type == dispatch.EventStart {
 			if e.Trust == "" {
 				t.Fatalf("dispatch event for echo carries no trust level: %+v", e)
+			}
+			// The action also carries the goal it ran under, so a fan-out's per-child
+			// governance posture is attributable from the one stream.
+			if e.Goal != "child-7" {
+				t.Fatalf("dispatch event for echo carries goal %q, want child-7", e.Goal)
 			}
 			sawTrust = true
 		}

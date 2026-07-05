@@ -213,15 +213,17 @@ func fanoutLines(children []session.FanoutChild) []panelRow {
 
 // fanoutRow renders one fan-out child as an indented, state-styled row: a spinner mark
 // while it runs, a check when it folds back clean, a cross when it fails. The objective
-// names what the child was delegated, the turn count how far it has gotten, and a folded
-// result trails a finished child so the outcome reads without opening the record.
+// names what the child was delegated, and a parenthetical meta group carries its turn
+// count, its own trust level, and any governance block it hit, so a child's per-child
+// posture reads on its own row. A folded result trails a finished child so the outcome
+// reads without opening the record.
 func fanoutRow(c session.FanoutChild, depth int) panelRow {
 	indent := "  " + strings.Repeat("  ", depth+1)
 	obj := strings.TrimSpace(c.Objective)
 	if obj == "" {
 		obj = "child"
 	}
-	tail := fmt.Sprintf(" %s (%dt)", obj, c.Turns)
+	tail := fmt.Sprintf(" %s (%s)", obj, childMeta(c))
 	switch c.State {
 	case session.FanoutDone:
 		text := indent + "✓" + tail
@@ -238,6 +240,21 @@ func fanoutRow(c session.FanoutChild, depth int) panelRow {
 	default:
 		return panelRow{theme.StatusBusy, indent + "..." + tail}
 	}
+}
+
+// childMeta renders a fan-out child's parenthetical meta group: its turn count always,
+// then its own trust level and a blocked-action count when it has them, so a child that
+// hit a governance boundary shows the block on its own row (e.g. "2t, agent, 1 blocked")
+// and a sibling that did not stays clean. It is joined into the row by fanoutRow.
+func childMeta(c session.FanoutChild) string {
+	segs := []string{fmt.Sprintf("%dt", c.Turns)}
+	if c.Trust != "" {
+		segs = append(segs, c.Trust)
+	}
+	if c.Blocked > 0 {
+		segs = append(segs, fmt.Sprintf("%d blocked", c.Blocked))
+	}
+	return strings.Join(segs, ", ")
 }
 
 // summarizeResult flattens a child's folded result to one tidy line for its tree row:

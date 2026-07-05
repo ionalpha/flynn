@@ -122,7 +122,7 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 			e.reporter.Report(ctx, Event{Kind: EventChildSpawned, Goal: r.Name, Child: id, Turn: turn, Tool: ActionSpawn, ToolUseID: c.ID, Text: objective})
 			continue
 		}
-		content, terr := e.invokeTool(ctx, scope, c)
+		content, terr := e.invokeTool(ctx, r.Name, scope, c)
 		slot := resultSlot{ToolUseID: c.ID, Content: content}
 		if terr != nil {
 			slot.IsError, slot.Content = true, terr.Error()
@@ -150,7 +150,7 @@ func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.To
 	if strings.TrimSpace(sub.Objective) == "" {
 		return "", "", fault.New(fault.Terminal, "spawn_objective", "spawn requires a non-empty objective")
 	}
-	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionSpawn, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted},
+	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionSpawn, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted, Goal: r.Name},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			child, serr := e.fanout.Spawn(ctx, r, sub)
 			id = child

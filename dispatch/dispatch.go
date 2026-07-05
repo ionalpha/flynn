@@ -38,6 +38,10 @@ type Action struct {
 	// cannot isolate it. The zero value is sandbox.TrustTrusted: an action carries the
 	// agent's own trust unless a call site marks it as model-authored or external.
 	Trust sandbox.Trust
+	// Goal is the id of the goal this action runs under, recorded on the lifecycle
+	// event so a run's per-goal governance posture (which child hit a boundary) is
+	// derivable from the stream. Empty when a call site does not run under a goal.
+	Goal string
 }
 
 // Metering is what a governed unit reports back for accounting and the end event.
@@ -61,6 +65,7 @@ type Event struct {
 	Call   int64 // correlation id pairing one invocation's start with its end or rejection
 	Scope  state.Scope
 	Trust  string // the work's trust level, recorded so a run's containment posture is auditable
+	Goal   string // id of the goal the action ran under, empty when it ran under no goal
 	At     int64  // unix nanos, from the dispatcher's clock
 	Err    string // fault class on failure; empty on success
 }
@@ -165,12 +170,12 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 		return d.rejected(ctx, a, err, span, entered, call)
 	}
 
-	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()})
+	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano()})
 	d.ob.Log.Info(ctx, "dispatch start", observe.String("action", a.Name), observe.String("trust", a.Trust.String()))
 
 	m, err := work(ctx)
 
-	end := Event{Type: EventEnd, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano()}
+	end := Event{Type: EventEnd, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano()}
 	outcome := "ok"
 	if err != nil {
 		class := fault.Classify(err)
@@ -195,7 +200,7 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span observe.Span, entered int, call int64) error {
 	class := fault.Classify(err)
 	span.RecordError(err)
-	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), At: d.clk.Now().UnixNano(), Err: string(class)})
+	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano(), Err: string(class)})
 	d.ob.Log.Warn(ctx, "dispatch rejected",
 		observe.String("action", a.Name), observe.String("class", string(class)))
 	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))

@@ -64,8 +64,9 @@ const (
 )
 
 // FanoutChild is one delegated child in a run's fan-out tree: which goal spawned it,
-// the sub-objective it was given, where it stands, how many turns it has taken, and its
-// folded answer once it finishes. The tree is flat with a Parent id on each node rather
+// the sub-objective it was given, where it stands, how many turns it has taken, its own
+// governance posture (trust level and blocked count, folded from the actions it ran),
+// and its folded answer once it finishes. The tree is flat with a Parent id on each node rather
 // than nested, so a renderer builds the hierarchy and a deeper delegation (a child that
 // itself spawns) needs no change here. Children are kept in spawn order.
 type FanoutChild struct {
@@ -82,6 +83,13 @@ type FanoutChild struct {
 	// Result is the child's folded answer once it is done or failed, empty while it
 	// runs.
 	Result string
+	// Trust is the trust level of this child's most recent governed action, its own
+	// containment posture (the per-child analogue of the run's Containment). Empty until
+	// the child has an action admitted or rejected.
+	Trust string
+	// Blocked counts this child's governed actions the dispatch waist refused. A non-zero
+	// Blocked is the signal that this child, not a sibling, hit a governance boundary.
+	Blocked int
 }
 
 // maxLedger bounds the projection's action ledger to its most recent entries, so a
@@ -176,6 +184,7 @@ func Reduce(p Projection, ev Event) Projection {
 		if ev.Trust != "" {
 			p.Containment = ev.Trust
 		}
+		p.Fanout = foldChildGovernance(p.Fanout, ev.Goal, ev.Trust, false)
 		p.Actions = upsertAction(p.Actions, ActionEntry{
 			Call: ev.Call, Action: ev.Action, Trust: ev.Trust, State: ActionRunning,
 		})
@@ -189,6 +198,7 @@ func Reduce(p Projection, ev Event) Projection {
 		if ev.Trust != "" {
 			p.Containment = ev.Trust
 		}
+		p.Fanout = foldChildGovernance(p.Fanout, ev.Goal, ev.Trust, true)
 		p.Actions = upsertAction(p.Actions, ActionEntry{
 			Call: ev.Call, Action: ev.Action, Trust: ev.Trust, State: ActionBlocked, Fault: ev.Fault,
 		})
@@ -252,6 +262,30 @@ func bumpChildTurns(children []FanoutChild, goal string) []FanoutChild {
 		if children[i].ID == goal {
 			out := append([]FanoutChild(nil), children...)
 			out[i].Turns++
+			return out
+		}
+	}
+	return children
+}
+
+// foldChildGovernance attributes one governed action to the child whose id is goal,
+// updating that child's trust posture and, when the action was blocked, its blocked
+// count. It returns the updated slice and leaves the input untouched (the reducer is
+// pure). A goal that names no known child, the run's root, leaves the tree unchanged, so
+// a root action folds only into the run-level containment above.
+func foldChildGovernance(children []FanoutChild, goal, trust string, blocked bool) []FanoutChild {
+	if goal == "" {
+		return children
+	}
+	for i := range children {
+		if children[i].ID == goal {
+			out := append([]FanoutChild(nil), children...)
+			if trust != "" {
+				out[i].Trust = trust
+			}
+			if blocked {
+				out[i].Blocked++
+			}
 			return out
 		}
 	}

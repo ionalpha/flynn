@@ -48,6 +48,11 @@ func (s *Sink) Append(ctx context.Context, e dispatch.Event) error {
 	if e.Err != "" {
 		payload["error_class"] = e.Err
 	}
+	// Record the goal the action ran under, so a fan-out's per-child governance posture
+	// (which child was admitted, which hit a boundary) is derivable from the one stream.
+	if e.Goal != "" {
+		payload["goal"] = e.Goal
+	}
 	if e.Scope != (state.Scope{}) {
 		payload["scope"] = map[string]string{
 			"instance":  e.Scope.Instance,
