@@ -125,6 +125,66 @@ func TestReduceDoesNotMutateChildGovernance(t *testing.T) {
 	}
 }
 
+// TestFanoutPerChildSealState proves each folded child's seal state tracks the run's
+// record: recording while the run records, sealed once the run's stream is signed (the
+// child's events are then under the signed root), verified once the run is verified.
+func TestFanoutPerChildSealState(t *testing.T) {
+	const root = "run-1"
+	base := []Event{
+		{Kind: KindSessionStarted, Text: "split the work"},
+		{Kind: KindChildSpawned, Goal: root, Child: "a", Text: "do A"},
+		{Kind: KindChildSpawned, Goal: root, Child: "b", Text: "do B"},
+		{Kind: KindChildCompleted, Goal: root, Child: "a", Result: "A done"},
+		{Kind: KindChildCompleted, Goal: root, Child: "b", Result: "B broke", IsError: true},
+	}
+	// While the run records, both folded children read as recording.
+	p := Project(base)
+	if p.Fanout[0].Seal != RecordRecording || p.Fanout[1].Seal != RecordRecording {
+		t.Fatalf("child seal before run seal = %q/%q, want recording", p.Fanout[0].Seal, p.Fanout[1].Seal)
+	}
+	// Sealing the run seals both folded children (a clean fold and a failed one alike).
+	p = Reduce(p, Event{Kind: KindRecordSealed})
+	if p.Fanout[0].Seal != RecordSealed || p.Fanout[1].Seal != RecordSealed {
+		t.Fatalf("child seal after run seal = %q/%q, want sealed", p.Fanout[0].Seal, p.Fanout[1].Seal)
+	}
+	// Verifying the run verifies them.
+	p = Reduce(p, Event{Kind: KindRecordVerified})
+	if p.Fanout[0].Seal != RecordVerified || p.Fanout[1].Seal != RecordVerified {
+		t.Fatalf("child seal after run verify = %q/%q, want verified", p.Fanout[0].Seal, p.Fanout[1].Seal)
+	}
+}
+
+// TestFanoutRunningChildNotSealed proves a child still running when a seal lands stays
+// recording, since its events are not yet final, while a sibling that folded before the
+// seal is sealed. This is the genuine per-child seal variation.
+func TestFanoutRunningChildNotSealed(t *testing.T) {
+	p := Project([]Event{
+		{Kind: KindChildSpawned, Goal: "run-1", Child: "a", Text: "do A"},
+		{Kind: KindChildCompleted, Goal: "run-1", Child: "a", Result: "A done"},
+		{Kind: KindChildSpawned, Goal: "run-1", Child: "b", Text: "do B"}, // still running at seal
+		{Kind: KindRecordSealed},
+	})
+	if p.Fanout[0].Seal != RecordSealed {
+		t.Errorf("folded child seal = %q, want sealed", p.Fanout[0].Seal)
+	}
+	if p.Fanout[1].Seal != RecordRecording {
+		t.Errorf("running child seal = %q, want recording (its events are not final)", p.Fanout[1].Seal)
+	}
+}
+
+// TestReduceDoesNotMutateChildSeal proves advancing the run seal is pure over the tree:
+// it does not mutate the slice a caller still holds from before the seal.
+func TestReduceDoesNotMutateChildSeal(t *testing.T) {
+	before := Project([]Event{
+		{Kind: KindChildSpawned, Goal: "r", Child: "c1", Text: "w"},
+		{Kind: KindChildCompleted, Goal: "r", Child: "c1", Result: "done"},
+	})
+	_ = Reduce(before, Event{Kind: KindRecordSealed})
+	if before.Fanout[0].Seal != RecordRecording {
+		t.Errorf("input tree mutated by a later seal: %+v", before.Fanout[0])
+	}
+}
+
 // TestChildTurnsDedupedPerGoal proves the turn.started high-water mark is per goal: a
 // child announcing its turn 1 is recorded even though the root already started turn 1
 // on the same shared stream, so a fan-out's child turns are not swallowed as duplicates.

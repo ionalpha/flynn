@@ -214,9 +214,9 @@ func fanoutLines(children []session.FanoutChild) []panelRow {
 // fanoutRow renders one fan-out child as an indented, state-styled row: a spinner mark
 // while it runs, a check when it folds back clean, a cross when it fails. The objective
 // names what the child was delegated, and a parenthetical meta group carries its turn
-// count, its own trust level, and any governance block it hit, so a child's per-child
-// posture reads on its own row. A folded result trails a finished child so the outcome
-// reads without opening the record.
+// count, its own trust level, any governance block it hit, and its seal state, so a
+// child's per-child posture reads on its own row. A folded result trails a finished child
+// so the outcome reads without opening the record.
 func fanoutRow(c session.FanoutChild, depth int) panelRow {
 	indent := "  " + strings.Repeat("  ", depth+1)
 	obj := strings.TrimSpace(c.Objective)
@@ -243,9 +243,11 @@ func fanoutRow(c session.FanoutChild, depth int) panelRow {
 }
 
 // childMeta renders a fan-out child's parenthetical meta group: its turn count always,
-// then its own trust level and a blocked-action count when it has them, so a child that
-// hit a governance boundary shows the block on its own row (e.g. "2t, agent, 1 blocked")
-// and a sibling that did not stays clean. It is joined into the row by fanoutRow.
+// then its own trust level, a blocked-action count, and its seal state when it has them,
+// so a child that hit a governance boundary shows the block on its own row (e.g. "2t,
+// agent, 1 blocked") and a child whose events are under the run's signed root shows its
+// seal (e.g. "0t, agent, sealed"). A child still recording stays clean, matching how the
+// run badge omits the recording state. It is joined into the row by fanoutRow.
 func childMeta(c session.FanoutChild) string {
 	segs := []string{fmt.Sprintf("%dt", c.Turns)}
 	if c.Trust != "" {
@@ -253,6 +255,9 @@ func childMeta(c session.FanoutChild) string {
 	}
 	if c.Blocked > 0 {
 		segs = append(segs, fmt.Sprintf("%d blocked", c.Blocked))
+	}
+	if c.Seal == session.RecordSealed || c.Seal == session.RecordVerified {
+		segs = append(segs, string(c.Seal))
 	}
 	return strings.Join(segs, ", ")
 }

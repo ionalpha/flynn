@@ -65,8 +65,9 @@ const (
 
 // FanoutChild is one delegated child in a run's fan-out tree: which goal spawned it,
 // the sub-objective it was given, where it stands, how many turns it has taken, its own
-// governance posture (trust level and blocked count, folded from the actions it ran),
-// and its folded answer once it finishes. The tree is flat with a Parent id on each node rather
+// governance posture (trust level and blocked count, folded from the actions it ran), its
+// seal state within the run's sealed record, and its folded answer once it finishes. The
+// tree is flat with a Parent id on each node rather
 // than nested, so a renderer builds the hierarchy and a deeper delegation (a child that
 // itself spawns) needs no change here. Children are kept in spawn order.
 type FanoutChild struct {
@@ -90,6 +91,13 @@ type FanoutChild struct {
 	// Blocked counts this child's governed actions the dispatch waist refused. A non-zero
 	// Blocked is the signal that this child, not a sibling, hit a governance boundary.
 	Blocked int
+	// Seal is the child's record lifecycle within the run's sealed record: recording
+	// while its events are still being appended, sealed once it has folded back and the
+	// run's stream is signed (its events are then under the signed Merkle root, provable
+	// with a per-event proof), verified once the run's sealed record passes verification.
+	// A child still running when a seal lands stays recording, since its events are not
+	// yet final. It is the per-child analogue of the run-level Record above.
+	Seal RecordState
 }
 
 // maxLedger bounds the projection's action ledger to its most recent entries, so a
@@ -175,7 +183,7 @@ func Reduce(p Projection, ev Event) Projection {
 		}
 	case KindChildSpawned:
 		p.Fanout = append(append([]FanoutChild(nil), p.Fanout...), FanoutChild{
-			ID: ev.Child, Parent: ev.Goal, Objective: ev.Text, State: FanoutRunning,
+			ID: ev.Child, Parent: ev.Goal, Objective: ev.Text, State: FanoutRunning, Seal: RecordRecording,
 		})
 	case KindChildCompleted:
 		p.Fanout = completeChild(p.Fanout, ev.Child, ev.Result, ev.IsError)
@@ -206,9 +214,11 @@ func Reduce(p Projection, ev Event) Projection {
 		// Verified outranks sealed: a re-seal never demotes a record already checked.
 		if p.Record != RecordVerified {
 			p.Record = RecordSealed
+			p.Fanout = sealFoldedChildren(p.Fanout, RecordSealed)
 		}
 	case KindRecordVerified:
 		p.Record = RecordVerified
+		p.Fanout = sealFoldedChildren(p.Fanout, RecordVerified)
 	case KindConverged:
 		p.Terminal = true
 		p.Result = ev.Text
@@ -290,6 +300,35 @@ func foldChildGovernance(children []FanoutChild, goal, trust string, blocked boo
 		}
 	}
 	return children
+}
+
+// sealFoldedChildren advances the seal state of a run's folded children when the run's
+// record advances, returning the updated slice and leaving the input untouched (the
+// reducer is pure). On a seal, a child that has folded back has its events under the
+// signed root, so it moves to sealed; a child still running is left recording, since its
+// events are not yet final and a later seal segment will cover them. On a verify, every
+// folded child moves to verified. A run with no children leaves the tree unchanged.
+func sealFoldedChildren(children []FanoutChild, rec RecordState) []FanoutChild {
+	if len(children) == 0 {
+		return children
+	}
+	out := append([]FanoutChild(nil), children...)
+	for i := range out {
+		if out[i].State == FanoutRunning {
+			continue // a running child's events are not final; it stays recording
+		}
+		switch rec {
+		case RecordSealed:
+			if out[i].Seal == RecordRecording {
+				out[i].Seal = RecordSealed
+			}
+		case RecordVerified:
+			out[i].Seal = RecordVerified
+		case RecordRecording:
+			// Never called with recording (a run does not un-seal); leave the child as is.
+		}
+	}
+	return out
 }
 
 // completeChild flips the child named by id from running to its folded outcome (failed

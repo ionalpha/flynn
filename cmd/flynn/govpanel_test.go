@@ -159,6 +159,34 @@ func TestGovPanelFanoutPerChildGovernance(t *testing.T) {
 	}
 }
 
+// TestGovPanelFanoutPerChildSeal proves a folded child's tree row shows its seal state
+// once the run is sealed, and its verified state once the run is verified, so the tree
+// carries each child's integrity posture alongside its governance.
+func TestGovPanelFanoutPerChildSeal(t *testing.T) {
+	evs := []session.Event{
+		{Kind: session.KindSessionStarted, Text: "split the work"},
+		{Kind: session.KindChildSpawned, Goal: "root", Child: "a", Text: "gather sources"},
+		{Kind: session.KindChildCompleted, Child: "a", Result: "done"},
+	}
+
+	// After the run seals, the folded child's row reads sealed.
+	sealed := &govPanel{th: theme.Default()}
+	sealed.toggle()
+	sealed.set(session.Project(append(append([]session.Event(nil), evs...), session.Event{Kind: session.KindRecordSealed})))
+	if got := panelText(sealed, 100); !strings.Contains(got, "gather sources (0t, sealed)") {
+		t.Errorf("sealed child row missing its seal state in:\n%s", got)
+	}
+
+	// After the run verifies, the row reads verified.
+	verified := &govPanel{th: theme.Default()}
+	verified.toggle()
+	verified.set(session.Project(append(append([]session.Event(nil), evs...),
+		session.Event{Kind: session.KindRecordSealed}, session.Event{Kind: session.KindRecordVerified})))
+	if got := panelText(verified, 100); !strings.Contains(got, "gather sources (0t, verified)") {
+		t.Errorf("verified child row missing its verified state in:\n%s", got)
+	}
+}
+
 // TestGovPanelFanoutBounded proves the tree lists at most fanoutRows children and notes
 // how many more it omitted, so a wide fan-out keeps the panel a fixed height.
 func TestGovPanelFanoutBounded(t *testing.T) {
