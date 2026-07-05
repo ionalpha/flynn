@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -118,6 +119,73 @@ func TestQueueAddAfterDeterministic(t *testing.T) {
 	got, sd := q.Get()         // blocks until the firing goroutine Adds
 	if sd || got != "x" {
 		t.Fatalf("Get after delay = (%q, %v), want x", got, sd)
+	}
+	q.ShutDown()
+}
+
+// TestQueueAddAfterManyDeterministic proves that many delayed adds are each
+// registered synchronously (so the Manual clock fires them deterministically) and
+// all become ready once the clock passes their deadlines, no matter the order
+// they were scheduled in.
+func TestQueueAddAfterManyDeterministic(t *testing.T) {
+	m := clock.NewManual(epoch())
+	q := NewQueue[int](m)
+	const n = 100
+
+	// Schedule out of deadline order to exercise the heap ordering.
+	for i := range n {
+		q.AddAfter(i, time.Duration(n-i)*time.Second)
+	}
+	// Every timer is registered before its AddAfter returned.
+	if p := m.PendingTimers(); p != n {
+		t.Fatalf("PendingTimers = %d, want %d (each AddAfter registers synchronously)", p, n)
+	}
+	if q.Len() != 0 {
+		t.Fatalf("no item should be ready before its delay: Len %d", q.Len())
+	}
+
+	m.Advance(n * time.Second) // past every deadline
+	seen := map[int]bool{}
+	for range n {
+		got, sd := q.Get() // blocks until the waiting loop has enqueued each
+		if sd {
+			t.Fatal("unexpected shutdown while draining")
+		}
+		if seen[got] {
+			t.Fatalf("item %d delivered twice", got)
+		}
+		seen[got] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("drained %d distinct items, want %d", len(seen), n)
+	}
+	q.ShutDown()
+}
+
+// TestQueueAddAfterSingleGoroutine is the point of the delaying queue: a storm of
+// delayed adds must be serviced by one waiting goroutine, not one per item.
+func TestQueueAddAfterSingleGoroutine(t *testing.T) {
+	m := clock.NewManual(epoch())
+	q := NewQueue[int](m)
+
+	runtime.GC()
+	before := runtime.NumGoroutine()
+	const storm = 500
+	for i := range storm {
+		q.AddAfter(i, time.Hour) // long delay: none fire during the test
+	}
+	// Each AddAfter registers its timer before returning, so every delayed item
+	// is already accounted for without waiting on the loop.
+	if p := m.PendingTimers(); p != storm {
+		t.Fatalf("PendingTimers = %d, want %d", p, storm)
+	}
+	time.Sleep(5 * time.Millisecond) // let the one waiting loop get scheduled
+	added := runtime.NumGoroutine() - before
+	if added > 16 {
+		t.Fatalf("%d delayed adds spawned %d goroutines; want O(1) (a single waiting loop)", storm, added)
+	}
+	if q.Len() != 0 {
+		t.Fatalf("no delayed item should be ready yet: Len %d", q.Len())
 	}
 	q.ShutDown()
 }

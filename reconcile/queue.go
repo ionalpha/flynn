@@ -14,6 +14,7 @@
 package reconcile
 
 import (
+	"container/heap"
 	"sync"
 	"time"
 
@@ -43,16 +44,33 @@ type Queue[T comparable] struct {
 	processing   map[T]struct{} // items currently held by a worker
 	shuttingDown bool
 
-	clk        clock.Timing
-	shutdownCh chan struct{}
-	closeOnce  sync.Once
-	wg         sync.WaitGroup // pending AddAfter timers
+	clk         clock.Timing
+	shutdownCh  chan struct{}
+	closeOnce   sync.Once
+	waitingCh   chan waitFor[T] // delayed adds handed to the single waiting loop
+	loopStarted bool            // whether the waiting loop has been started (guarded by mu)
+	loopDone    chan struct{}   // closed by the waiting loop when it exits
 
 	rlMu      sync.Mutex
 	failures  map[T]int
 	baseDelay time.Duration
 	maxDelay  time.Duration
 }
+
+// waitFor is a single delayed add carried from AddAfter to the waiting loop: the
+// item to enqueue, the deadline it becomes ready, and the timer (created and
+// registered on the clock synchronously in AddAfter) that wakes the loop.
+type waitFor[T comparable] struct {
+	item     T
+	deadline time.Time
+	timer    clock.Timer
+}
+
+// waitingBuffer sizes the channel from AddAfter to the waiting loop. It only has
+// to absorb bursts so producers rarely block; the loop drains it immediately, so
+// a modest buffer is enough and a full buffer merely makes AddAfter wait (with a
+// shutdown escape) rather than dropping anything.
+const waitingBuffer = 1000
 
 // NewQueue returns an empty queue that schedules delays on clk.
 func NewQueue[T comparable](clk clock.Timing) *Queue[T] {
@@ -61,6 +79,7 @@ func NewQueue[T comparable](clk clock.Timing) *Queue[T] {
 		processing: map[T]struct{}{},
 		clk:        clk,
 		shutdownCh: make(chan struct{}),
+		loopDone:   make(chan struct{}),
 		failures:   map[T]int{},
 		baseDelay:  defaultBaseDelay,
 		maxDelay:   defaultMaxDelay,
@@ -138,10 +157,13 @@ func (q *Queue[T]) Len() int {
 // synchronously (registered on the clock before AddAfter returns) so a Manual
 // clock advanced past d fires it deterministically.
 //
-// The timer goroutine is registered under q.mu and gated on shuttingDown, which
-// ShutDown also sets under q.mu before it waits on the timer WaitGroup. That
-// ordering guarantees every wg.Add happens before ShutDown observes the flag, so
-// a wg.Add can never run concurrently with (or after) the wg.Wait in ShutDown.
+// Rather than one goroutine per delayed item, all delayed adds are handed to a
+// single waiting loop (started on first use) that holds them in a deadline
+// ordered heap and enqueues each when the clock reaches its deadline. The timer
+// is created here under q.mu so a concurrent ShutDown either observes it (and the
+// loop stops it) or has already set shuttingDown (and this add is dropped). Only
+// the loop ever stops a timer it is waiting on, so there is no cross-goroutine
+// race on the timer channel.
 func (q *Queue[T]) AddAfter(item T, d time.Duration) {
 	if d <= 0 {
 		q.Add(item)
@@ -152,18 +174,92 @@ func (q *Queue[T]) AddAfter(item T, d time.Duration) {
 		q.mu.Unlock()
 		return
 	}
-	t := q.clk.NewTimer(d)
-	q.wg.Add(1)
+	e := waitFor[T]{item: item, deadline: q.clk.Now().Add(d), timer: q.clk.NewTimer(d)}
+	q.ensureLoopLocked()
 	q.mu.Unlock()
-	go func() {
-		defer q.wg.Done()
-		defer t.Stop()
-		select {
-		case <-t.C():
-			q.Add(item)
-		case <-q.shutdownCh:
+	select {
+	case q.waitingCh <- e:
+	case <-q.shutdownCh:
+		e.timer.Stop() // the loop is exiting and will not consume this add
+	}
+}
+
+// ensureLoopLocked starts the single waiting loop the first time a delayed add
+// needs it, so a queue that only ever uses Add pays for no extra goroutine.
+// Caller holds q.mu, so the started flag and the shuttingDown check in AddAfter
+// are consistent with ShutDown's join decision.
+func (q *Queue[T]) ensureLoopLocked() {
+	if q.loopStarted {
+		return
+	}
+	q.loopStarted = true
+	q.waitingCh = make(chan waitFor[T], waitingBuffer)
+	go q.waitingLoop()
+}
+
+// waitingLoop is the single goroutine that owns delayed adds. It keeps a
+// deadline ordered heap, enqueues every item whose deadline the clock has
+// reached, and otherwise sleeps on the earliest timer until it fires, a new
+// delayed add arrives, or the queue shuts down. It owns every timer in the heap:
+// nothing else stops or resets them while the loop waits on one.
+func (q *Queue[T]) waitingLoop() {
+	defer close(q.loopDone)
+	pending := &waitHeap[T]{}
+	for {
+		now := q.clk.Now()
+		for pending.Len() > 0 && !(*pending)[0].deadline.After(now) {
+			e := heap.Pop(pending).(waitFor[T])
+			q.Add(e.item)
 		}
-	}()
+
+		var next <-chan time.Time
+		if pending.Len() > 0 {
+			next = (*pending)[0].timer.C()
+		}
+		select {
+		case <-q.shutdownCh:
+			q.stopPending(pending)
+			return
+		case <-next:
+			// The earliest timer fired; loop to drain everything now due.
+		case e := <-q.waitingCh:
+			heap.Push(pending, e)
+		}
+	}
+}
+
+// stopPending stops every timer the loop still holds on shutdown: those in the
+// heap plus any already handed off but not yet taken from the channel. It leaves
+// nothing armed once the loop returns. A late AddAfter that pushes after this
+// drain stops its own timer via the shutdownCh arm of its select.
+func (q *Queue[T]) stopPending(pending *waitHeap[T]) {
+	for _, e := range *pending {
+		e.timer.Stop()
+	}
+	for {
+		select {
+		case e := <-q.waitingCh:
+			e.timer.Stop()
+		default:
+			return
+		}
+	}
+}
+
+// waitHeap is a min-heap of delayed adds ordered by deadline, owned solely by the
+// waiting loop.
+type waitHeap[T comparable] []waitFor[T]
+
+func (h waitHeap[T]) Len() int           { return len(h) }
+func (h waitHeap[T]) Less(i, j int) bool { return h[i].deadline.Before(h[j].deadline) }
+func (h waitHeap[T]) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *waitHeap[T]) Push(x any)        { *h = append(*h, x.(waitFor[T])) }
+func (h *waitHeap[T]) Pop() any {
+	old := *h
+	n := len(old)
+	e := old[n-1]
+	*h = old[:n-1]
+	return e
 }
 
 // AddRateLimited enqueues item after its current backoff delay, growing the delay
@@ -206,13 +302,16 @@ func (q *Queue[T]) NumRequeues(item T) int {
 }
 
 // ShutDown stops the queue: Get returns shutdown once the ready items drain,
-// pending AddAfter timers are abandoned, and the call waits for their goroutines
-// to exit. It is idempotent.
+// pending AddAfter timers are abandoned, and the call waits for the waiting loop
+// to exit (if it was ever started). It is idempotent.
 func (q *Queue[T]) ShutDown() {
 	q.closeOnce.Do(func() { close(q.shutdownCh) })
 	q.mu.Lock()
 	q.shuttingDown = true
 	q.cond.Broadcast()
+	started := q.loopStarted
 	q.mu.Unlock()
-	q.wg.Wait()
+	if started {
+		<-q.loopDone
+	}
 }
