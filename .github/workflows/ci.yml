@@ -30,7 +30,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # TEMP (pre-public cost cut): Linux only. The macOS (10x billed) and
+        # Windows (2x billed) legs are paused while the repo is private and under
+        # heavy iteration. Restore the full list below when the repo goes public,
+        # where standard runners are free:
+        #   os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
         # Floor is Go 1.26: it makes the Green Tea GC the default and adds
         # crypto/hpke to the standard library, and satisfies modernc.org/sqlite.
         go: ["1.26"]
@@ -164,6 +169,9 @@ jobs:
 
   vuln:
     name: govulncheck
+    # TEMP (pre-public cost cut): heavy scans run on push to main only, not on
+    # every PR push. Remove this `if` (here and on secrets/osv/bench) at go-public.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -178,6 +186,7 @@ jobs:
   # history, which is what an attacker reads). fetch-depth: 0 pulls every commit.
   secrets:
     name: Secret scan
+    if: github.ref == 'refs/heads/main' # TEMP (pre-public cost cut): main only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -196,6 +205,7 @@ jobs:
   # redundancy.
   osv:
     name: osv-scanner
+    if: github.ref == 'refs/heads/main' # TEMP (pre-public cost cut): main only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -212,6 +222,7 @@ jobs:
   # proves the benchmarks run and the ceilings hold, not stable timings.
   bench:
     name: Bench smoke
+    if: github.ref == 'refs/heads/main' # TEMP (pre-public cost cut): main only
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
