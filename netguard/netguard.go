@@ -228,6 +228,15 @@ func Client(p Policy) *http.Client {
 			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   15 * time.Second,
 			ResponseHeaderTimeout: 60 * time.Second,
+			// Pool tuning: without these, concurrent calls to one API host keep
+			// only Go's default 2 idle connections and re-handshake the rest, and
+			// idle connections are never reaped. Agent tool traffic is bursty
+			// against a few hosts (one LLM endpoint, a handful of integrations), so
+			// keep enough idle connections per host to avoid re-handshaking and cap
+			// the total, reaping idle ones after 90s.
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:     90 * time.Second,
 		},
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= 5 {

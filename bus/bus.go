@@ -109,8 +109,15 @@ func Match(pattern, subject string) bool {
 	if pattern == "" || subject == "" {
 		return false
 	}
-	pt := strings.Split(pattern, ".")
-	st := strings.Split(subject, ".")
+	return matchTokens(strings.Split(pattern, "."), strings.Split(subject, "."))
+}
+
+// matchTokens is Match over already-split tokens. The hot delivery path splits
+// each subject once per publish and reuses a subscription's pattern tokens split
+// once at Subscribe, so a publish to N subscribers costs one subject split, not
+// N. Both slices are assumed non-empty (Match guards the empty-string cases, and
+// a subscription's pattern is validated non-empty at Subscribe).
+func matchTokens(pt, st []string) bool {
 	for i, p := range pt {
 		switch p {
 		case TokenTail:

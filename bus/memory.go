@@ -2,6 +2,7 @@ package bus
 
 import (
 	"context"
+	"strings"
 	"sync"
 
 	"github.com/ionalpha/flynn/clock"
@@ -100,11 +101,15 @@ func (b *MemoryBus) Publish(ctx context.Context, m Message) error {
 		b.mu.RUnlock()
 		return ErrClosed
 	}
+	// Split the subject once for the whole fan-out, then match each subscription
+	// against its pattern tokens split once at Subscribe, so delivery to N
+	// subscribers costs one subject split rather than N.
+	st := strings.Split(m.Subject, ".")
 	// Snapshot the matching subscriptions so delivery does not hold the lock (a
 	// full mailbox must not block Subscribe/Unsubscribe).
 	targets := make([]*subscription, 0, len(b.subs))
 	for s := range b.subs {
-		if Match(s.subject, m.Subject) {
+		if matchTokens(s.tokens, st) {
 			targets = append(targets, s)
 		}
 	}
@@ -139,6 +144,7 @@ func (b *MemoryBus) Subscribe(_ context.Context, pattern string, h Handler) (Sub
 	s := &subscription{
 		bus:     b,
 		subject: pattern,
+		tokens:  strings.Split(pattern, "."),
 		h:       h,
 		mailbox: make(chan Message, b.buffer),
 		done:    make(chan struct{}),
@@ -176,6 +182,7 @@ func (b *MemoryBus) Close() error {
 type subscription struct {
 	bus     *MemoryBus
 	subject string
+	tokens  []string // subject split once at Subscribe; read-only after, used by the Publish match loop
 	h       Handler
 	mailbox chan Message
 	done    chan struct{}
