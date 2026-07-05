@@ -19,10 +19,12 @@ package mission
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
@@ -82,6 +84,17 @@ type Executor struct {
 	brakes          bool
 	dispatchOpts    []dispatch.Option
 	dispatcher      *dispatch.Dispatcher
+
+	// prompter, approvalSigner, approvalHost, approvalGrace, and approvalClock resolve a
+	// privileged action the waist pauses for approval: the prompter decides, the signer
+	// mints the single-use approval, and the clock stamps its window. All are unset by
+	// default, so a NeedsApproval rejection surfaces to the model unchanged (see
+	// WithApprovalPrompter).
+	prompter       ApprovalPrompter
+	approvalSigner approval.Signer
+	approvalHost   string
+	approvalGrace  time.Duration
+	approvalClock  clock.Clock
 }
 
 // Option configures an Executor.
@@ -385,7 +398,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// spine. The typed request and response stay here; dispatch sees only the action
 	// name, scope, and token cost.
 	var resp llm.Response
-	err = e.dispatcher.Govern(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted, Goal: r.Name},
+	err = e.governWithApproval(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted, Goal: r.Name},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			// Record the decoding identity of this generation on the durable history, within the
 			// dispatch span, so a run's reproducibility parameters are kept alongside its
@@ -519,7 +532,7 @@ func (e *Executor) runTools(ctx context.Context, goalID string, scope state.Scop
 // attaches here.
 func (e *Executor) invokeTool(ctx context.Context, goalID string, scope state.Scope, c llm.ToolUse) (string, error) {
 	var content string
-	err := e.dispatcher.Govern(ctx, dispatch.Action{Name: c.Name, Scope: scope, Trust: toolTrust(e.tools[c.Name]), Goal: goalID},
+	err := e.governWithApproval(ctx, dispatch.Action{Name: c.Name, Scope: scope, Trust: toolTrust(e.tools[c.Name]), Goal: goalID},
 		func(ctx context.Context) (dispatch.Metering, error) {
 			tool, ok := e.tools[c.Name]
 			if !ok {
