@@ -60,19 +60,18 @@ func TestRuntimeDrivesMissionToConvergence(t *testing.T) {
 
 	st := waitForPhase(t, rt, g.Key(), goal.PhaseConverged, 5*time.Second)
 	// The run took two turns: the tool turn, then the final answer. That both ran is
-	// proven durably, not by the observed step count. status.Steps is a lower bound: it
-	// counts steps the reconciler observes as done, and the terminal step's job can
-	// complete (its checkpoint already Done, so the goal converges on the next pass)
-	// before that pass counts it, leaving the count one short of the turns taken. So
+	// proven durably, by their effects, not by the observed step count. status.Steps is
+	// a nondeterministic lower bound: the reconciler counts a step only when it observes
+	// that step's job as done, but the goal can converge from the durable checkpoint on a
+	// pass that never observes the job (a waiting step is excluded from the count, and a
+	// job record already reaped is cleared without counting), so the observed count can
+	// be anywhere from 0 up to the turns taken. Asserting any floor on it is a race. So
 	// assert the tool actually ran and the final answer landed; those are deterministic.
 	if got := echoCalls.Load(); got != 1 {
 		t.Fatalf("tool turn: echo called %d times, want 1", got)
 	}
 	if !strings.Contains(st.Message, "mission complete") {
 		t.Fatalf("converged message did not carry the model's answer: %q", st.Message)
-	}
-	if st.Steps < 1 {
-		t.Fatalf("converged with %d observed steps, want at least 1", st.Steps)
 	}
 
 	cancel()
