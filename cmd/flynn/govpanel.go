@@ -13,7 +13,8 @@ import (
 // govPanel is the shell's governance overlay: an on-demand multi-row view of the run's
 // current governance posture, toggled with Ctrl+O and dismissed with Escape. The status
 // badge compresses the same projection into one line; the panel expands it, naming the
-// recent governed actions the badge only counts. It is a live-region component repainted
+// recent governed actions the badge only counts and, when a run delegates, the live
+// fan-out tree of its children. It is a live-region component repainted
 // in place, so it never joins the scrollback. Its own mutex guards the snapshot and the
 // open flag, so the paint goroutine's Render and the turn goroutine's set never race and
 // Render never reaches back into the shell.
@@ -99,6 +100,9 @@ func (p *govPanel) Render(width int) []string {
 	for _, line := range ledgerLines(proj.Actions) {
 		add(line.role, line.text)
 	}
+	for _, line := range fanoutLines(proj.Fanout) {
+		add(line.role, line.text)
+	}
 	return rows
 }
 
@@ -150,6 +154,102 @@ func ledgerLines(actions []session.ActionEntry) []panelRow {
 		rows = append(rows, ledgerRow(a))
 	}
 	return rows
+}
+
+// fanoutRows bounds how many fan-out children the panel lists, so a wide or deep
+// delegation stays a fixed height. Children are shown in spawn order, parents before
+// the children they spawned; any past the cap are noted rather than dropped silently.
+const fanoutRows = 12
+
+// fanoutLines renders the run's fan-out tree from the projection's flat child list, or
+// nothing when the run has not delegated. Each child is one indented row marked by state
+// (running, done, failed) with its turn count and, once folded, a short result. The list
+// is flat with a Parent id per child, so this builds the hierarchy: a child whose parent
+// is not itself a listed child hangs off the run root at depth zero, and a deeper
+// delegation nests under the child that spawned it.
+func fanoutLines(children []session.FanoutChild) []panelRow {
+	if len(children) == 0 {
+		return nil
+	}
+	// Group children under their parent in spawn order, and treat a child whose parent
+	// is not another listed child as a root hanging off the run's own goal.
+	isChild := make(map[string]bool, len(children))
+	for _, c := range children {
+		isChild[c.ID] = true
+	}
+	byParent := map[string][]session.FanoutChild{}
+	var roots []session.FanoutChild
+	for _, c := range children {
+		if isChild[c.Parent] {
+			byParent[c.Parent] = append(byParent[c.Parent], c)
+		} else {
+			roots = append(roots, c)
+		}
+	}
+
+	rows := []panelRow{{theme.Heading, "  fan-out"}}
+	shown := 0
+	var walk func(c session.FanoutChild, depth int)
+	walk = func(c session.FanoutChild, depth int) {
+		// Cap total rows and guard the depth so a malformed parent cycle cannot loop the
+		// walk; a bounded panel is worth more than a perfect render of pathological data.
+		if shown >= fanoutRows || depth > 8 {
+			return
+		}
+		rows = append(rows, fanoutRow(c, depth))
+		shown++
+		for _, kid := range byParent[c.ID] {
+			walk(kid, depth+1)
+		}
+	}
+	for _, r := range roots {
+		walk(r, 0)
+	}
+	if shown < len(children) {
+		rows = append(rows, panelRow{theme.Muted, fmt.Sprintf("  (%d more)", len(children)-shown)})
+	}
+	return rows
+}
+
+// fanoutRow renders one fan-out child as an indented, state-styled row: a spinner mark
+// while it runs, a check when it folds back clean, a cross when it fails. The objective
+// names what the child was delegated, the turn count how far it has gotten, and a folded
+// result trails a finished child so the outcome reads without opening the record.
+func fanoutRow(c session.FanoutChild, depth int) panelRow {
+	indent := "  " + strings.Repeat("  ", depth+1)
+	obj := strings.TrimSpace(c.Objective)
+	if obj == "" {
+		obj = "child"
+	}
+	tail := fmt.Sprintf(" %s (%dt)", obj, c.Turns)
+	switch c.State {
+	case session.FanoutDone:
+		text := indent + "✓" + tail
+		if r := summarizeResult(c.Result); r != "" {
+			text += " -> " + r
+		}
+		return panelRow{theme.Admitted, text}
+	case session.FanoutFailed:
+		text := indent + "✗" + tail
+		if r := summarizeResult(c.Result); r != "" {
+			text += " -> " + r
+		}
+		return panelRow{theme.Rejected, text}
+	default:
+		return panelRow{theme.StatusBusy, indent + "..." + tail}
+	}
+}
+
+// summarizeResult flattens a child's folded result to one tidy line for its tree row:
+// runs of whitespace and newlines collapse to single spaces and a long result is clipped,
+// since the panel row is a single line and the full text lives in the sealed record.
+func summarizeResult(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	const maxLen = 40
+	if len(s) > maxLen {
+		s = strings.TrimSpace(s[:maxLen-3]) + "..."
+	}
+	return s
 }
 
 // ledgerRow renders one action entry as a marked, role-styled row: a check for a clean

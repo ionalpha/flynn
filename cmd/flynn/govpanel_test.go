@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/ionalpha/flynn/internal/tui/input"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/session"
@@ -80,6 +82,82 @@ func TestGovPanelLedgerBounded(t *testing.T) {
 	}
 	if n := strings.Count(got, "✓ step"); n != ledgerRows {
 		t.Errorf("panel showed %d ledger rows, want %d", n, ledgerRows)
+	}
+}
+
+// TestGovPanelFanoutTree proves an open panel renders the run's fan-out tree: each child
+// under its parent with its state, turn count, and folded result, so a delegating run's
+// shape reads straight from the projection.
+func TestGovPanelFanoutTree(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	p.set(session.Project([]session.Event{
+		{Kind: session.KindSessionStarted, Text: "research the topic"},
+		{Kind: session.KindChildSpawned, Goal: "root", Child: "a", Text: "gather sources"},
+		{Kind: session.KindChildSpawned, Goal: "root", Child: "b", Text: "draft outline"},
+		{Kind: session.KindChildSpawned, Goal: "a", Child: "a1", Text: "read paper"},
+		{Kind: session.KindTurnCompleted, Goal: "a"},
+		{Kind: session.KindChildCompleted, Child: "a1", Result: "found\n three refs"},
+		{Kind: session.KindChildCompleted, Child: "b", Result: "outline ready", IsError: true},
+	}))
+	got := panelText(p, 100)
+	for _, want := range []string{
+		"fan-out",
+		"... gather sources (1t)", // a: running, one turn advanced
+		"✗ draft outline (0t) -> outline ready",
+		"✓ read paper (0t) -> found three refs", // a1 nested under a, newlines collapsed
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("panel missing %q in:\n%s", want, got)
+		}
+	}
+	// a1 must render indented deeper than its parent a (strip the theme's escape codes
+	// first so the leading spaces are the row's own indentation).
+	lines := strings.Split(got, "\n")
+	depthOf := func(sub string) int {
+		for _, ln := range lines {
+			if plain := ansi.Strip(ln); strings.Contains(plain, sub) {
+				return len(plain) - len(strings.TrimLeft(plain, " "))
+			}
+		}
+		return -1
+	}
+	if da, da1 := depthOf("gather sources"), depthOf("read paper"); da1 <= da {
+		t.Errorf("nested child not indented deeper: parent indent %d, child indent %d", da, da1)
+	}
+}
+
+// TestGovPanelFanoutBounded proves the tree lists at most fanoutRows children and notes
+// how many more it omitted, so a wide fan-out keeps the panel a fixed height.
+func TestGovPanelFanoutBounded(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	proj := session.NewProjection()
+	total := fanoutRows + 4
+	for i := range total {
+		proj = session.Reduce(proj, session.Event{
+			Kind: session.KindChildSpawned, Goal: "root",
+			Child: string(rune('a' + i)), Text: "child work",
+		})
+	}
+	p.set(proj)
+	got := panelText(p, 100)
+	if n := strings.Count(got, "... child work"); n != fanoutRows {
+		t.Errorf("tree showed %d children, want %d", n, fanoutRows)
+	}
+	if !strings.Contains(got, "(4 more)") {
+		t.Errorf("tree did not note the omitted children:\n%s", got)
+	}
+}
+
+// TestGovPanelNoFanoutNoSection proves a run that never delegated draws no fan-out
+// section, so the panel stays lean for an ordinary single conversation.
+func TestGovPanelNoFanoutNoSection(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	p.set(session.Project([]session.Event{{Kind: session.KindSessionStarted, Text: "just chat"}}))
+	if got := panelText(p, 80); strings.Contains(got, "fan-out") {
+		t.Errorf("panel showed a fan-out section for a run with no children:\n%s", got)
 	}
 }
 
