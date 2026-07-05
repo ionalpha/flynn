@@ -133,6 +133,71 @@ func FuzzDialControl(f *testing.F) {
 	})
 }
 
+// TestDialControlContextReportsDecisions checks the context-aware guard both enforces
+// the policy identically and reports every decision to an observer seeded on the
+// context: a public address is allowed and reported allowed, and a private one is
+// blocked and reported blocked with a reason.
+func TestDialControlContextReportsDecisions(t *testing.T) {
+	var got []Decision
+	ctx := WithObserver(context.Background(), func(d Decision) { got = append(got, d) })
+	ctrl := DialControlContext(PublicOnly())
+
+	if err := ctrl(ctx, "tcp", "8.8.8.8:443", nil); err != nil {
+		t.Fatalf("a public address should be allowed: %v", err)
+	}
+	if err := ctrl(ctx, "tcp", "10.0.0.1:1", nil); err == nil {
+		t.Fatalf("a private address should be blocked")
+	}
+	if len(got) != 2 {
+		t.Fatalf("observer saw %d decisions, want 2: %+v", len(got), got)
+	}
+	if !got[0].Allowed || got[0].Host != "8.8.8.8" {
+		t.Fatalf("first decision = %+v, want allowed 8.8.8.8", got[0])
+	}
+	if got[1].Allowed || got[1].Host != "10.0.0.1" || got[1].Reason == "" {
+		t.Fatalf("second decision = %+v, want blocked 10.0.0.1 with a reason", got[1])
+	}
+}
+
+// TestDialControlContextNoObserver checks the guard is safe and unchanged when no
+// observer is on the context: it still enforces the policy and reports to no one.
+func TestDialControlContextNoObserver(t *testing.T) {
+	ctrl := DialControlContext(PublicOnly())
+	if err := ctrl(context.Background(), "tcp", "8.8.8.8:443", nil); err != nil {
+		t.Fatalf("a public address should be allowed with no observer: %v", err)
+	}
+	if err := ctrl(context.Background(), "tcp", "127.0.0.1:80", nil); err == nil {
+		t.Fatalf("loopback should be blocked with no observer")
+	}
+}
+
+// TestVerdictReasons pins the honest reason strings the observer reports, so a public
+// address reads "public", an allowlisted one "allowlisted", and a blocked one names why.
+func TestVerdictReasons(t *testing.T) {
+	allowlisted := Policy{Allow: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}}
+	cases := []struct {
+		name    string
+		policy  Policy
+		host    string
+		allowed bool
+		reason  string
+	}{
+		{"public", PublicOnly(), "8.8.8.8", true, "public"},
+		{"allowlisted", allowlisted, "10.1.2.3", true, "allowlisted"},
+		{"private blocked", PublicOnly(), "10.0.0.1", false, "private or reserved address"},
+		{"public not permitted", DenyAll(), "8.8.8.8", false, "public egress not permitted"},
+		{"unresolved", PublicOnly(), "not-an-ip", false, "unresolved address"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			allowed, reason := verdict(c.policy, c.host)
+			if allowed != c.allowed || reason != c.reason {
+				t.Fatalf("verdict(%s) = (%v, %q), want (%v, %q)", c.host, allowed, reason, c.allowed, c.reason)
+			}
+		})
+	}
+}
+
 func TestDialerEnforcesPolicy(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

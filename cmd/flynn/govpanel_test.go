@@ -221,6 +221,82 @@ func TestGovPanelNoFanoutNoSection(t *testing.T) {
 	}
 }
 
+// TestGovPanelEgress proves the panel names the run's egress posture: a counts line and
+// a row per recent destination, with a blocked destination showing its reason, so the
+// run's outbound network decisions read alongside its governed actions.
+func TestGovPanelEgress(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	p.set(session.Project([]session.Event{
+		{Kind: session.KindEgressDecision, Host: "api.example.com", Allowed: true, Reason: "public"},
+		{Kind: session.KindEgressDecision, Host: "api.example.com", Allowed: true, Reason: "public"},
+		{Kind: session.KindEgressDecision, Host: "10.0.0.1", Allowed: false, Reason: "private or reserved address"},
+	}))
+	got := panelText(p, 80)
+	for _, want := range []string{
+		"egress: 2 allowed, 1 blocked",
+		"✓ api.example.com",
+		"✗ 10.0.0.1 (private or reserved address)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("egress section missing %q in:\n%s", want, got)
+		}
+	}
+}
+
+// TestGovPanelNoEgressNoSection proves a run that made no egress decision draws no
+// egress row, so a local, loopback-model run's panel stays lean.
+func TestGovPanelNoEgressNoSection(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	p.set(session.Project([]session.Event{{Kind: session.KindSessionStarted, Text: "local run"}}))
+	if got := panelText(p, 80); strings.Contains(got, "egress:") {
+		t.Errorf("panel showed an egress section for a run with no egress:\n%s", got)
+	}
+}
+
+// TestGovPanelEgressBounded proves the panel lists at most egressRows destinations and
+// notes how many older ones it dropped, while the counts line still tallies every dial.
+func TestGovPanelEgressBounded(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	proj := session.NewProjection()
+	total := egressRows + 3
+	for i := range total {
+		proj = session.Reduce(proj, session.Event{
+			Kind: session.KindEgressDecision, Host: "h" + string(rune('a'+i)), Allowed: true, Reason: "public",
+		})
+	}
+	p.set(proj)
+	got := panelText(p, 100)
+	if n := strings.Count(got, "✓ h"); n != egressRows {
+		t.Errorf("egress showed %d destinations, want %d", n, egressRows)
+	}
+	if !strings.Contains(got, "(3 earlier)") {
+		t.Errorf("egress did not note the omitted destinations:\n%s", got)
+	}
+	if !strings.Contains(got, "egress: "+strings.TrimSpace("7 allowed")) {
+		t.Errorf("egress counts did not tally every dial:\n%s", got)
+	}
+}
+
+// TestGovPanelEgressBoundedToWidth proves every egress row is truncated to the panel
+// width, so a long hostname never overflows the live region.
+func TestGovPanelEgressBoundedToWidth(t *testing.T) {
+	p := &govPanel{th: theme.Default()}
+	p.toggle()
+	long := strings.Repeat("verylonghost.example.", 8) + "com"
+	p.set(session.Project([]session.Event{
+		{Kind: session.KindEgressDecision, Host: long, Allowed: false, Reason: "private or reserved address"},
+	}))
+	const width = 40
+	for _, row := range p.Render(width) {
+		if w := ansi.StringWidth(row); w > width {
+			t.Fatalf("egress row width %d exceeds %d: %q", w, width, row)
+		}
+	}
+}
+
 // TestGovPanelToggleKey proves Ctrl+O opens and closes the panel and Escape closes it,
 // so the overlay's key contract holds through the host.
 func TestGovPanelToggleKey(t *testing.T) {

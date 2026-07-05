@@ -90,6 +90,9 @@ func (p *govPanel) Render(width int) []string {
 	if tokens := badgeTokens(proj.Usage); tokens != "" {
 		add(theme.Muted, "  budget: "+tokens)
 	}
+	for _, line := range egressLines(proj) {
+		add(line.role, line.text)
+	}
 	if proj.Terminal {
 		if proj.Err != "" {
 			add(theme.Error, "  stalled: "+proj.Err)
@@ -123,6 +126,66 @@ func actionsSummary(p session.Projection) string {
 		segs = append(segs, fmt.Sprintf("%d blocked", p.Rejected))
 	}
 	return strings.Join(segs, " · ")
+}
+
+// egressRows bounds how many recent egress destinations the panel lists under the
+// counts line, so a run that dials many hosts keeps a fixed-height egress section.
+const egressRows = 4
+
+// egressLines renders the run's egress posture: a counts line ("egress: 3 allowed, 1
+// blocked") and a bounded tail of recent destinations, each marked by its verdict, or
+// nothing when the run made no egress decision at all. A blocked destination trails its
+// reason so a refusal reads on its own row. The section is silent for a run whose model
+// is local (no netguard dial) or that reached nothing.
+func egressLines(p session.Projection) []panelRow {
+	if p.EgressAllowed == 0 && p.EgressBlocked == 0 {
+		return nil
+	}
+	rows := []panelRow{{theme.Muted, "  egress: " + egressSummary(p)}}
+	shown := p.Egress
+	dropped := 0
+	if len(shown) > egressRows {
+		dropped = len(shown) - egressRows
+		shown = shown[dropped:]
+	}
+	if dropped > 0 {
+		rows = append(rows, panelRow{theme.Muted, fmt.Sprintf("    (%d earlier)", dropped)})
+	}
+	for _, e := range shown {
+		rows = append(rows, egressRow(e))
+	}
+	return rows
+}
+
+// egressSummary renders the egress tallies as one line, dropping a zero segment so a
+// run that only ever reached allowed destinations does not show "0 blocked".
+func egressSummary(p session.Projection) string {
+	var segs []string
+	if p.EgressAllowed > 0 {
+		segs = append(segs, fmt.Sprintf("%d allowed", p.EgressAllowed))
+	}
+	if p.EgressBlocked > 0 {
+		segs = append(segs, fmt.Sprintf("%d blocked", p.EgressBlocked))
+	}
+	return strings.Join(segs, ", ")
+}
+
+// egressRow renders one egress decision as an indented, verdict-styled row: a check for
+// an allowed destination, a cross for a blocked one with its reason trailing so the
+// refusal reads without opening the record.
+func egressRow(e session.EgressEntry) panelRow {
+	host := strings.TrimSpace(e.Host)
+	if host == "" {
+		host = "unknown"
+	}
+	if e.Allowed {
+		return panelRow{theme.Admitted, "    ✓ " + host}
+	}
+	text := "    ✗ " + host
+	if r := strings.TrimSpace(e.Reason); r != "" {
+		text += " (" + r + ")"
+	}
+	return panelRow{theme.Rejected, text}
 }
 
 // panelRow pairs a ledger line's text with the theme role it renders under, so the

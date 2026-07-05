@@ -35,6 +35,7 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/netguard"
 	"github.com/ionalpha/flynn/orchestration"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/resource"
@@ -654,7 +655,13 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	}
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.sess.ID())
 
-	runCtx, cancel := context.WithCancel(ctx)
+	// Record the run's own outbound-network decisions onto its stream: seed the driving
+	// context with an egress observer bound to the run's stream, so every dial netguard
+	// makes on the run's behalf (a hosted model's API call, say) reports its allow/block
+	// verdict into the same recorded history as the run's governed actions. A run whose
+	// model is local makes no netguard-gated dial, so nothing is recorded.
+	egress := spinesink.NewEgress(log, run.sess.ID())
+	runCtx, cancel := context.WithCancel(netguard.WithObserver(ctx, egress.Observe))
 	defer cancel()
 	done := make(chan struct{})
 	go func() { _ = run.rt.Start(runCtx); close(done) }()

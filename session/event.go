@@ -62,6 +62,13 @@ const (
 	// KindRecordVerified marks a sealed record checked against its tiers. It is emitted
 	// when verification runs, so a replay reproduces the record badge's transitions.
 	KindRecordVerified Kind = "record.verified"
+
+	// KindEgressDecision is one outbound-network decision netguard reached at dial time,
+	// projected onto the run's stream: the destination host, whether the dial was allowed
+	// or blocked, and a short reason. It records the run's egress posture (which
+	// destinations it reached and which the policy refused) alongside its governed
+	// actions, so the same panel that shows admission decisions shows egress ones.
+	KindEgressDecision Kind = "net.egress"
 )
 
 // The dispatch waist and the sealer write these event types onto a run's stream
@@ -74,6 +81,7 @@ const (
 	typeDispatchEnd      = "dispatch.end"
 	typeDispatchRejected = "dispatch.rejected"
 	typeRecordSealed     = "spine.record"
+	typeEgress           = "net.egress"
 )
 
 // Event is one record on a session's event stream: an ordered, replayable view of
@@ -138,6 +146,16 @@ type Event struct {
 	// failure class on an action.completed that ran but errored (transient, ...). Empty
 	// on a clean completion.
 	Fault string `json:"fault,omitempty"`
+
+	// Host is the destination an egress decision concerned (net.egress): the literal
+	// address netguard resolved before deciding whether to connect.
+	Host string `json:"host,omitempty"`
+	// Allowed reports whether an egress decision permitted the dial (net.egress). A
+	// false Allowed with a set Host is a blocked destination.
+	Allowed bool `json:"allowed,omitempty"`
+	// Reason is the short why for an egress decision (net.egress): why netguard allowed
+	// the dial (public, allowlisted) or refused it (private or reserved address, ...).
+	Reason string `json:"reason,omitempty"`
 }
 
 // Usage is the token cost of one turn, projected onto the conversation stream. It
@@ -203,6 +221,8 @@ func decodeBody(se spine.Event) Event {
 		return governanceEvent(KindActionRejected, se)
 	case typeRecordSealed:
 		return Event{Kind: KindRecordSealed}
+	case typeEgress:
+		return egressEvent(se)
 	default:
 		var e Event
 		if s, ok := se.Payload[payloadKey].(string); ok {
@@ -224,6 +244,20 @@ func governanceEvent(kind Kind, se spine.Event) Event {
 	e.Fault, _ = se.Payload["error_class"].(string)
 	e.Goal, _ = se.Payload["goal"].(string)
 	e.Call = asInt64(se.Payload["call"])
+	return e
+}
+
+// egressEvent projects one netguard egress decision into the session vocabulary,
+// reading the egress sink's payload shape (host, verdict, reason). The verdict is a
+// string on the wire ("allowed"/"blocked") so it survives a durable log's JSON round
+// trip; it maps to the Allowed bool here.
+func egressEvent(se spine.Event) Event {
+	e := Event{Kind: KindEgressDecision}
+	e.Host, _ = se.Payload["host"].(string)
+	e.Reason, _ = se.Payload["reason"].(string)
+	if v, _ := se.Payload["verdict"].(string); v == "allowed" {
+		e.Allowed = true
+	}
 	return e
 }
 

@@ -106,6 +106,24 @@ type FanoutChild struct {
 // front as newer ones arrive.
 const maxLedger = 64
 
+// maxEgress bounds the projection's egress ledger the same way maxLedger bounds the
+// action ledger: a run that dials many destinations keeps only its most recent egress
+// decisions in the projection, and the counts summarize the rest.
+const maxEgress = 16
+
+// EgressEntry is one outbound-network decision in the projection's egress ledger: the
+// destination host netguard was asked to reach, whether it allowed the dial, and its
+// short reason. The governance panel reads the ledger to name the recent destinations
+// the scalar egress counts only tally.
+type EgressEntry struct {
+	// Host is the destination the decision concerned (a resolved literal address).
+	Host string
+	// Allowed reports whether netguard permitted the dial.
+	Allowed bool
+	// Reason is netguard's short why for the verdict.
+	Reason string
+}
+
 // Projection is the current status of a run, folded from its event stream: the facts
 // an always-on status line and a governance panel read. It is a pure function of the
 // events seen so far, so a live client, a replay, and a reattached client that folds
@@ -142,6 +160,19 @@ type Projection struct {
 	// decisions the scalar counts above only tally, for a governance panel to show.
 	// It is capped at maxLedger entries; older actions fall off the front.
 	Actions []ActionEntry
+
+	// EgressAllowed and EgressBlocked count outbound dials netguard permitted and
+	// refused over the run. A non-zero EgressBlocked is the signal the run tried to reach
+	// a destination the policy denied. Both stay zero for a run that made no
+	// netguard-gated egress (a local, loopback model), so the egress row stays silent.
+	EgressAllowed int
+	EgressBlocked int
+
+	// Egress is a bounded ledger of the run's most recent egress decisions, newest last,
+	// each naming the destination host and whether it was allowed. It names the
+	// destinations the counts above only tally, for a governance panel to show. It is
+	// capped at maxEgress entries; older decisions fall off the front.
+	Egress []EgressEntry
 
 	// Fanout is the run's delegated children in spawn order, each with its parent, its
 	// sub-objective, where it stands, and its turn count. It is empty for a single
@@ -210,6 +241,13 @@ func Reduce(p Projection, ev Event) Projection {
 		p.Actions = upsertAction(p.Actions, ActionEntry{
 			Call: ev.Call, Action: ev.Action, Trust: ev.Trust, State: ActionBlocked, Fault: ev.Fault,
 		})
+	case KindEgressDecision:
+		if ev.Allowed {
+			p.EgressAllowed++
+		} else {
+			p.EgressBlocked++
+		}
+		p.Egress = appendEgress(p.Egress, EgressEntry{Host: ev.Host, Allowed: ev.Allowed, Reason: ev.Reason})
 	case KindRecordSealed:
 		// Verified outranks sealed: a re-seal never demotes a record already checked.
 		if p.Record != RecordVerified {
@@ -260,6 +298,18 @@ func upsertAction(ledger []ActionEntry, e ActionEntry) []ActionEntry {
 	out := append(append([]ActionEntry(nil), ledger...), e)
 	if len(out) > maxLedger {
 		out = out[len(out)-maxLedger:]
+	}
+	return out
+}
+
+// appendEgress folds one egress decision into the ledger and returns the updated ledger,
+// leaving the input untouched (the reducer is pure). The ledger is capped at maxEgress,
+// oldest dropped first, so the projection stays a fixed size on a run that dials many
+// destinations.
+func appendEgress(ledger []EgressEntry, e EgressEntry) []EgressEntry {
+	out := append(append([]EgressEntry(nil), ledger...), e)
+	if len(out) > maxEgress {
+		out = out[len(out)-maxEgress:]
 	}
 	return out
 }

@@ -17,6 +17,7 @@
 package netguard
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/netip"
@@ -105,6 +106,66 @@ func denied(host string) error {
 	return fault.New(fault.Forbidden, "egress_denied", "netguard: egress to "+host+" denied by policy")
 }
 
+// Decision is one egress verdict netguard reached at dial time: the host it was asked
+// to reach (the literal address resolved before connecting), whether the policy allowed
+// it, and a short reason for the verdict. It is what an Observer is handed, so a run can
+// record its own outbound network decisions without netguard depending on the recording
+// layer.
+type Decision struct {
+	Host    string
+	Allowed bool
+	Reason  string
+}
+
+// Observer is notified of each egress decision netguard makes on a dial. It is
+// registered on a context (see WithObserver), so netguard reports a run's outbound
+// verdicts without importing the recording layer, and a dial made outside any run
+// reports to no one. It runs on the dial goroutine, so an implementation must not block.
+type Observer func(Decision)
+
+// observerKey is the private context key the egress observer is carried under.
+type observerKey struct{}
+
+// WithObserver returns a context that reports every netguard egress decision made on a
+// dial using it to obs. A nil observer returns ctx unchanged, so a caller can seed
+// unconditionally.
+func WithObserver(ctx context.Context, obs Observer) context.Context {
+	if obs == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, observerKey{}, obs)
+}
+
+// observerFromContext returns the observer seeded on ctx, or nil when none is.
+func observerFromContext(ctx context.Context) Observer {
+	obs, _ := ctx.Value(observerKey{}).(Observer)
+	return obs
+}
+
+// verdict decides whether host may be dialed under p and gives a short honest reason
+// for the decision, the label the egress record and panel show. It mirrors Allows
+// exactly (allowlist first, then public), so the reported verdict can never disagree
+// with the enforcement below it; the reason only names which branch decided.
+func verdict(p Policy, host string) (allowed bool, reason string) {
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return false, "unresolved address"
+	}
+	addr = addr.Unmap()
+	for _, pre := range p.Allow {
+		if pre.Contains(addr) {
+			return true, "allowlisted"
+		}
+	}
+	if p.AllowPublic && IsPublic(addr) {
+		return true, "public"
+	}
+	if !IsPublic(addr) {
+		return false, "private or reserved address"
+	}
+	return false, "public egress not permitted"
+}
+
 // DialControl returns a net.Dialer Control function that enforces p. Because Control
 // runs after DNS resolution on the address actually being dialed, it blocks a name
 // that resolves to a denied address (a rebinding attack included), not just a
@@ -115,8 +176,29 @@ func DialControl(p Policy) func(network, address string, c syscall.RawConn) erro
 		if err != nil {
 			return fault.New(fault.Forbidden, "egress_addr", "netguard: cannot parse dial address "+address)
 		}
-		addr, err := netip.ParseAddr(host)
-		if err != nil || !p.Allows(addr) {
+		if allowed, _ := verdict(p, host); !allowed {
+			return denied(host)
+		}
+		return nil
+	}
+}
+
+// DialControlContext is the context-aware DialControl: it enforces p identically and,
+// when an Observer is seeded on ctx, reports the decision to it before returning. It is
+// the hook Dialer and Client install, so a run that seeds an observer records every dial
+// its own code makes; a dial with no observer on its context reports nothing and behaves
+// exactly as DialControl.
+func DialControlContext(p Policy) func(ctx context.Context, network, address string, c syscall.RawConn) error {
+	return func(ctx context.Context, _, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return fault.New(fault.Forbidden, "egress_addr", "netguard: cannot parse dial address "+address)
+		}
+		allowed, reason := verdict(p, host)
+		if obs := observerFromContext(ctx); obs != nil {
+			obs(Decision{Host: host, Allowed: allowed, Reason: reason})
+		}
+		if !allowed {
 			return denied(host)
 		}
 		return nil
@@ -129,7 +211,7 @@ func DialControl(p Policy) func(network, address string, c syscall.RawConn) erro
 // operator-supplied service over a loopback port grants exactly that address in p,
 // and the policy still blocks anything else, including an address a name rebinds to.
 func Dialer(p Policy) *net.Dialer {
-	return &net.Dialer{Timeout: 30 * time.Second, Control: DialControl(p)}
+	return &net.Dialer{Timeout: 30 * time.Second, ControlContext: DialControlContext(p)}
 }
 
 // Client builds a hardened HTTP client that dials only where p allows, follows a
@@ -138,7 +220,7 @@ func Dialer(p Policy) *net.Dialer {
 // policy stays authoritative. A request's own scheme is the caller's check; this
 // guards where connections may go.
 func Client(p Policy) *http.Client {
-	dialer := &net.Dialer{Timeout: 30 * time.Second, Control: DialControl(p)}
+	dialer := &net.Dialer{Timeout: 30 * time.Second, ControlContext: DialControlContext(p)}
 	return &http.Client{
 		Transport: &http.Transport{
 			Proxy:                 nil,
