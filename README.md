@@ -48,11 +48,28 @@ Four ideas run through everything it does:
 
 ## Install
 
-```sh
-# With the Go toolchain
-go install github.com/ionalpha/flynn/cmd/flynn@latest
+One line, no toolchain needed. The script downloads a prebuilt binary for your OS and
+architecture and verifies its checksum before installing.
 
-# Or download a prebuilt binary for Windows, macOS, Linux, or ARM from Releases
+```sh
+# Linux and macOS
+curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | sh
+```
+
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
+```
+
+Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.1.0`) or change the
+install directory with `FLYNN_INSTALL_DIR`. Prebuilt binaries for Windows, macOS, Linux,
+and ARM, with a `checksums.txt` you can verify by hand, are attached to every
+[release](https://github.com/ionalpha/flynn/releases).
+
+With the Go toolchain (builds from source, needs Go 1.26+):
+
+```sh
+go install github.com/ionalpha/flynn/cmd/flynn@latest
 ```
 
 ## Quick start
