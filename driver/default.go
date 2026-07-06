@@ -42,6 +42,9 @@ func (defaultDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, error
 	if s.Brakes != nil {
 		opts = append(opts, mission.WithBrakes(s.Brakes))
 	}
+	if s.Budget != nil {
+		opts = append(opts, mission.WithBudget(s.Budget))
+	}
 	if s.Fanout != nil {
 		opts = append(opts, mission.WithFanout(s.Fanout))
 	}

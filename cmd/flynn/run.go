@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/brakes"
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/chain"
@@ -212,6 +213,9 @@ func missionRegistry() (*resource.Registry, error) {
 	if err := goal.RegisterKind(reg); err != nil {
 		return nil, err
 	}
+	if err := budgetpkg.RegisterKind(reg); err != nil {
+		return nil, err
+	}
 	if err := inbox.RegisterKind(reg); err != nil {
 		return nil, err
 	}
@@ -247,7 +251,7 @@ func missionRegistry() (*resource.Registry, error) {
 // sandboxed toolset, and (when a distiller is supplied) distills the converged run
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
-func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool, fanout *fanoutConfig) (string, error) {
+func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool, fanout *fanoutConfig, opts ...driveOption) (string, error) {
 	reg, err := missionRegistry()
 	if err != nil {
 		return "", err
@@ -273,7 +277,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	}
 
 	resources := store.Resources(reg)
-	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout)
+	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout, opts...)
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run
 	// that converged earns a win; one in a run that failed earns only a use. This is
@@ -633,13 +637,38 @@ func keywords(s string) []string {
 // truncate shortens s to at most n runes, appending an ellipsis when it cut.
 func truncate(s string, n int) string { return text.Clip(strings.TrimSpace(s), n) }
 
+// driveConfig collects the optional levers a run is driven with. Its zero value (no
+// budget) drives a run exactly as before, so a caller that passes no option is
+// unaffected.
+type driveConfig struct {
+	budget budgetpkg.Limits
+}
+
+// driveOption configures a run driven by drive.
+type driveOption func(*driveConfig)
+
+// withBudget caps a run's total spend: every model and tool call the run makes (and,
+// in a fan-out, its children, which share one pool) is charged against the ceiling,
+// and an action is refused once it is reached. A zero-limit budget is unlimited, so
+// passing it leaves the run uncapped.
+func withBudget(l budgetpkg.Limits) driveOption {
+	return func(c *driveConfig) { c.budget = l }
+}
+
+// budgeted reports whether a ceiling is set on any axis.
+func (c driveConfig) budgeted() bool { return c.budget.Tokens > 0 || c.budget.Cost > 0 }
+
 // drive assembles the runtime over the given store and the sandboxed toolset,
 // streams the session live to out, and returns the converged result, the session
 // id (used as learning provenance), and the conversation transcript (so the
 // distiller can learn from how the goal was reached, not just the final summary).
 // The system prompt is supplied so the caller can fold recalled knowledge into it.
-func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string, fanout *fanoutConfig) (result, source string, transcript []llm.Message, err error) {
+func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string, fanout *fanoutConfig, opts ...driveOption) (result, source string, transcript []llm.Message, err error) {
 	w := &syncWriter{w: out}
+	var cfg driveConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
 	// A run with fan-out enabled drives the full goals engine (the Router plus a
 	// delegation spawner); otherwise it is a single governed conversation. Both seal
 	// into the same verifiable record, so fan-out adds delegation without changing how
@@ -654,6 +683,17 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		return "", "", nil, err
 	}
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.sess.ID())
+
+	// Open the run's spend pool before the goal is submitted, so the ceiling is in
+	// force from the first action rather than after a race. The pool is keyed by the
+	// run id (the root goal's name, which equals the session id), and every fan-out
+	// child inherits it, so one budget bounds the whole run. Without a ceiling nothing
+	// is opened and the always-wired budget hook is inert (an absent pool is unlimited).
+	if cfg.budgeted() {
+		if _, oerr := budgetpkg.NewLedger(rstore).Open(ctx, run.sess.ID(), resource.Scope{}, cfg.budget); oerr != nil {
+			return "", "", nil, fmt.Errorf("open run budget: %w", oerr)
+		}
+	}
 
 	// Record the run's own outbound-network decisions onto its stream: seed the driving
 	// context with an egress observer bound to the run's stream, so every dial netguard
@@ -800,6 +840,12 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 		mission.WithSystem(system),
 		mission.WithObserver(parts.sess.Reporter()),
 		mission.WithGrant(parts.grant),
+		// Charge every action against the run's spend pool, so a ceiling set for the run
+		// (flynn run --max-cost/--max-tokens) halts it once reached. It is inert until a
+		// budget is opened for the run: a pool with no budget resource is unlimited, so a
+		// run without a ceiling is unchanged, and a resumed run honours the durable budget
+		// its first run opened.
+		mission.WithBudget(budgetpkg.NewHook(rstore)),
 		// Record every governed action's lifecycle (admitted, completed, or rejected)
 		// onto the run's own stream, so the admission decisions are part of the run's
 		// recorded and sealed history rather than only the live trace. The stream is the
@@ -906,6 +952,10 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 			// backstop: a real run dispatches far fewer than this per minute, so the breaker
 			// fires only on a degenerate tight loop, never on legitimate tool use.
 			Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+			// Charge every action (root and every child, which share one pool) against the
+			// run's spend pool, so a ceiling set for the run halts the whole fan-out. Inert
+			// until a budget is opened: an absent pool is unlimited.
+			Budget: budgetpkg.NewHook(rstore),
 			// Apply the model's scaffolding plan so a weaker model is driven with the
 			// support it needs; the zero plan of a strong model adds nothing.
 			Plan: plan,

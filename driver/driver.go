@@ -25,6 +25,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/brakes"
+	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
@@ -59,6 +60,11 @@ type Spec struct {
 	// Brakes, when set, halts the run from outside the loop on a tripped breaker or
 	// the kill-switch. It applies regardless of which loop is built.
 	Brakes *brakes.Hook
+	// Budget, when set, charges every action against the run's spend pool and refuses
+	// one once the ceiling is reached. It applies regardless of which loop is built; a
+	// run whose pool has no budget resource is unlimited, so a nil Budget or an
+	// unbudgeted run is unconstrained.
+	Budget *budget.Hook
 	// Fanout, when set, lets the loop delegate sub-goals to concurrent child runs
 	// (the model is offered a spawn tool). A loop that does not fan out (a single-shot
 	// responder) ignores it. The default is nil: a goal runs as a single conversation.

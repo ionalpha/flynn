@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
@@ -39,6 +40,9 @@ func (singleShotDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, er
 	if s.Brakes != nil {
 		opts = append(opts, dispatch.WithHook(s.Brakes))
 	}
+	if s.Budget != nil {
+		opts = append(opts, dispatch.WithHook(s.Budget))
+	}
 	reporter := s.Reporter
 	if reporter == nil {
 		reporter = nopReporter{}
@@ -50,6 +54,7 @@ func (singleShotDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, er
 		dispatcher: dispatch.New(opts...),
 		grant:      s.Grant,
 		hasGrant:   s.HasGrant,
+		budgeted:   s.Budget != nil,
 	}
 	return exec, singleShotStop{}, nil
 }
@@ -65,6 +70,7 @@ type singleShotExec struct {
 	dispatcher *dispatch.Dispatcher
 	grant      capability.Grant
 	hasGrant   bool
+	budgeted   bool
 }
 
 // Execute runs the single turn. A resumed step whose checkpoint is already done
@@ -76,6 +82,17 @@ func (e *singleShotExec) Execute(ctx context.Context, r resource.Resource) (json
 	spec, err := goal.DecodeSpec(r)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "singleshot_spec_decode", err)
+	}
+	// Charge the turn against the run's budget pool (an unbudgeted run binds a pool
+	// with no budget resource, which the waist treats as unlimited). A fan-out shares
+	// one pool, so binding the pool rather than the goal's own name keeps a single
+	// ceiling over the graph; a root carries no pool of its own, so it is the pool.
+	if e.budgeted {
+		pool := spec.BudgetPool
+		if pool == "" {
+			pool = r.Name
+		}
+		ctx = budget.Into(ctx, pool)
 	}
 	status, err := goal.DecodeStatus(r)
 	if err != nil {

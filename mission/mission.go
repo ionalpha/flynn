@@ -23,6 +23,7 @@ import (
 
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/brakes"
+	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/dispatch"
@@ -82,6 +83,7 @@ type Executor struct {
 	grant           capability.Grant
 	hasGrant        bool
 	brakes          bool
+	budgeted        bool
 	dispatchOpts    []dispatch.Option
 	dispatcher      *dispatch.Dispatcher
 
@@ -173,6 +175,23 @@ func WithBrakes(h *brakes.Hook) Option {
 		if h != nil {
 			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(h))
 			e.brakes = true
+		}
+	}
+}
+
+// WithBudget wires a run's spend ceiling into the waist so every model and tool
+// call is charged against the run's pool and refused once the ceiling is reached.
+// The run id (its budget pool) is bound on the step context, so the budget tracks
+// the right run; a fan-out shares one pool, since every descendant inherits the
+// root's pool, so a single ceiling bounds the whole graph rather than a budget per
+// goal. Without it no budget is applied, which keeps the standalone agent
+// zero-config, and a run whose pool has no budget resource is unlimited. A nil hook
+// is ignored.
+func WithBudget(h *budget.Hook) Option {
+	return func(e *Executor) {
+		if h != nil {
+			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(h))
+			e.budgeted = true
 		}
 	}
 }
@@ -353,6 +372,18 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// same identity the conversation cache and budget key on.
 	if e.brakes {
 		ctx = brakes.Into(ctx, r.Name)
+	}
+	// Charge this run against its budget pool. A fan-out shares one pool: every
+	// descendant inherits the root's pool (goal.Spec.BudgetPool), so binding the pool
+	// rather than the goal's own name bounds the whole graph by one ceiling. A root
+	// carries no pool of its own, so it is the pool. An unbudgeted run binds a pool
+	// with no budget resource, which the waist treats as unlimited.
+	if e.budgeted {
+		pool := spec.BudgetPool
+		if pool == "" {
+			pool = r.Name
+		}
+		ctx = budget.Into(ctx, pool)
 	}
 	status, err := goal.DecodeStatus(r)
 	if err != nil {
