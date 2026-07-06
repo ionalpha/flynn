@@ -378,9 +378,10 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
 	}
 
-	// The turn index is the count of model turns taken so far plus this one, derived
-	// from the persisted history so it stays correct across a crash-resumed step.
-	turn := assistantTurns(cp.Messages) + 1
+	// The turn index is the count of model turns taken so far plus this one. The
+	// count is carried on the checkpoint, so it stays correct across a crash-resumed
+	// step without rescanning the history.
+	turn := cp.Turns + 1
 	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Goal: r.Name, Turn: turn})
 
 	// Send a token-lean view of the transcript: older and duplicate large tool
@@ -430,6 +431,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		return nil, err // the model classifies its own errors; the worker retries transient ones
 	}
 	cp.Messages = append(cp.Messages, resp.Message)
+	cp.Turns++ // one assistant message per model turn; keep the carried count in step
 
 	if text := resp.Message.TextContent(); text != "" {
 		e.reporter.Report(ctx, Event{Kind: EventAssistantText, Goal: r.Name, Turn: turn, Text: text})
@@ -475,18 +477,6 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 
 	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Goal: r.Name, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
 	return encodeCheckpoint(cp)
-}
-
-// assistantTurns counts the model turns already in a conversation (one assistant
-// message per turn), so the next turn's index is one more than this.
-func assistantTurns(msgs []llm.Message) int {
-	n := 0
-	for _, m := range msgs {
-		if m.Role == llm.RoleAssistant {
-			n++
-		}
-	}
-	return n
 }
 
 // summarizerFor returns the one-line result summarizer of a registered tool, or nil
@@ -635,20 +625,44 @@ func ContinueConversation(status goal.Status, text string, images ...llm.Image) 
 
 // checkpoint is the mission's resumable state: the full conversation, whether the
 // model has finished, and its final answer. It is opaque to the reconciler and
-// owned by this package; the executor writes it and Convergence reads it.
+// owned by this package; the executor writes it and Convergence reads it. It is not
+// marshaled directly: encodeCheckpoint and decodeCheckpoint own the stored form.
 type checkpoint struct {
-	Messages []llm.Message `json:"messages"`
-	Done     bool          `json:"done"`
-	Result   string        `json:"result,omitempty"`
+	Messages []llm.Message
+	Done     bool
+	Result   string
 	// VerifyUsed counts the self-check passes already taken on this run (see
 	// WithVerifyPasses). It is carried on the durable checkpoint so the budget is
 	// honored across a crash-resume rather than reset.
-	VerifyUsed int `json:"verifyUsed,omitempty"`
+	VerifyUsed int
 	// Pending holds the tool-result slots a fan-out turn owes the model while its spawned
 	// children run. Non-empty means the goal is waiting on children: the next step folds their
 	// results in once they finish rather than calling the model. It lives on the durable
 	// checkpoint so a crash mid-fan-out resumes waiting instead of re-spawning.
-	Pending []resultSlot `json:"pending,omitempty"`
+	Pending []resultSlot
+	// Turns counts the model turns taken so far, one per assistant message. Carrying
+	// it means the turn index and its telemetry survive a crash-resume without
+	// rescanning the history each step.
+	Turns int
+
+	// encoded holds the marshaled JSON of each message in Messages, in order, and is
+	// never itself marshaled onto the wire. decodeCheckpoint fills it from the stored
+	// form and encodeCheckpoint reuses it: the conversation is append-only, so a write
+	// re-serializes only the turn just appended and copies the historical prefix
+	// verbatim instead of marshaling the whole growing history every step.
+	encoded []json.RawMessage
+}
+
+// checkpointWire is the stored form of a checkpoint. Messages are held as already-
+// encoded JSON, so encoding reuses the historical prefix and marshals only the newly
+// appended turn, and decoding retains each message's bytes for the next write.
+type checkpointWire struct {
+	Messages   []json.RawMessage `json:"messages"`
+	Done       bool              `json:"done"`
+	Result     string            `json:"result,omitempty"`
+	VerifyUsed int               `json:"verifyUsed,omitempty"`
+	Pending    []resultSlot      `json:"pending,omitempty"`
+	Turns      int               `json:"turns,omitempty"`
 }
 
 func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
@@ -656,7 +670,19 @@ func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
 	if len(raw) == 0 {
 		return cp, nil
 	}
-	return cp, json.Unmarshal(raw, &cp)
+	var wire checkpointWire
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return cp, err
+	}
+	cp.Done, cp.Result, cp.VerifyUsed, cp.Pending, cp.Turns = wire.Done, wire.Result, wire.VerifyUsed, wire.Pending, wire.Turns
+	cp.Messages = make([]llm.Message, len(wire.Messages))
+	for i := range wire.Messages {
+		if err := json.Unmarshal(wire.Messages[i], &cp.Messages[i]); err != nil {
+			return cp, err
+		}
+	}
+	cp.encoded = wire.Messages
+	return cp, nil
 }
 
 // checkpointOutcome is the minimal projection a convergence check needs: whether the
@@ -676,7 +702,30 @@ func decodeCheckpointOutcome(raw json.RawMessage) (checkpointOutcome, error) {
 }
 
 func encodeCheckpoint(cp checkpoint) (json.RawMessage, error) {
-	return json.Marshal(cp)
+	// Reuse the bytes of every message already encoded on a prior step and marshal
+	// only those appended since (an appended message has no cached entry yet). The
+	// prefix copy keeps the stored bytes identical to a full re-marshal, so the form
+	// round-trips and stays replay-equivalent.
+	raws := make([]json.RawMessage, len(cp.Messages))
+	copy(raws, cp.encoded)
+	for i := range cp.Messages {
+		if raws[i] != nil {
+			continue
+		}
+		b, err := json.Marshal(cp.Messages[i])
+		if err != nil {
+			return nil, err
+		}
+		raws[i] = b
+	}
+	return json.Marshal(checkpointWire{
+		Messages:   raws,
+		Done:       cp.Done,
+		Result:     cp.Result,
+		VerifyUsed: cp.VerifyUsed,
+		Pending:    cp.Pending,
+		Turns:      cp.Turns,
+	})
 }
 
 // --- tool helpers -----------------------------------------------------------

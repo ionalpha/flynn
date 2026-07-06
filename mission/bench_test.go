@@ -47,6 +47,35 @@ func BenchmarkPruneTranscript(b *testing.B) {
 	}
 }
 
+// BenchmarkEncodeCheckpointDelta measures the per-turn checkpoint write at growing
+// history sizes with a warm cache (the prefix decoded from the prior step), so it
+// reflects the real loop: only the appended turn is marshaled, the rest is copied.
+// Allocation should stay about flat as the transcript grows rather than scaling with
+// it, which is what bounds the per-goal write cost.
+func BenchmarkEncodeCheckpointDelta(b *testing.B) {
+	for _, pairs := range []int{16, 256} {
+		cp := checkpoint{Messages: benchTranscript(pairs, true)}
+		raw, err := encodeCheckpoint(cp)
+		if err != nil {
+			b.Fatal(err)
+		}
+		dec, err := decodeCheckpoint(raw)
+		if err != nil {
+			b.Fatal(err)
+		}
+		dec.Messages = append(dec.Messages, callMsg("new", "read"), resultMsg("new", big("z"), false))
+		dec.Turns++
+		b.Run(fmt.Sprintf("pairs=%d", pairs), func(b *testing.B) {
+			b.ReportAllocs()
+			for range b.N {
+				if _, err := encodeCheckpoint(dec); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}
+
 // BenchmarkConvergenceMet measures the convergence check at two history sizes. It
 // decodes only the outcome fields, so allocs/op should stay flat as the transcript
 // grows rather than rebuilding the whole message history each tick.
