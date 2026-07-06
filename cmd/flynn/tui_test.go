@@ -53,6 +53,8 @@ type fakeUI struct {
 	draft    string
 	suspends int
 	pasted   []editor.Attachment
+	capture  func(input.Event) bool
+	live     screen.Component
 }
 
 func (f *fakeUI) Append(lines ...string) {
@@ -61,7 +63,38 @@ func (f *fakeUI) Append(lines ...string) {
 	f.lines = append(f.lines, lines...)
 }
 
-func (f *fakeUI) SetLive(screen.Component) {}
+func (f *fakeUI) SetLive(c screen.Component) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.live = c
+}
+
+// SetCapture records the modal input handler the host installs, so a test can
+// feed events through it exactly as the app's event loop would.
+func (f *fakeUI) SetCapture(fn func(input.Event) bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.capture = fn
+}
+
+// captureFn returns the currently installed modal handler, or nil.
+func (f *fakeUI) captureFn() func(input.Event) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.capture
+}
+
+// liveLines renders the installed live region at the given width, or nil when
+// none is installed, so a test can observe what the overlay paints.
+func (f *fakeUI) liveLines(width int) []string {
+	f.mu.Lock()
+	c := f.live
+	f.mu.Unlock()
+	if c == nil {
+		return nil
+	}
+	return c.Render(width)
+}
 
 func (f *fakeUI) SetStatus(line string) {
 	f.mu.Lock()
@@ -145,15 +178,17 @@ func newHostForTest(t *testing.T, model llm.Model) (*sessionHost, *fakeUI) {
 	ui := &fakeUI{}
 	th := theme.Default()
 	host := &sessionHost{
-		ctx:   context.Background(),
-		s:     s,
-		ui:    ui,
-		th:    th,
-		tv:    newTranscriptView(th),
-		live:  &activity{th: th},
-		panel: &govPanel{th: th},
-		proj:  session.NewProjection(),
+		ctx:      context.Background(),
+		s:        s,
+		ui:       ui,
+		th:       th,
+		tv:       newTranscriptView(th),
+		live:     &activity{th: th},
+		panel:    &govPanel{th: th},
+		approval: &approvalPrompt{th: th},
+		proj:     session.NewProjection(),
 	}
+	host.liveComp = liveStack{host.approval, host.panel, host.live}
 	return host, ui
 }
 

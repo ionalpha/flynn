@@ -137,6 +137,13 @@ type App struct {
 	accepted  []string
 	reader    *input.Reader
 	suspended bool
+	// capture, when set, takes first claim on every decoded input event before
+	// the completion menu and the composer: a modal overlay (an approval prompt)
+	// installs it to own the keyboard while it is up, and clears it when it
+	// resolves. It returns whether it consumed the event; an unconsumed event
+	// falls through to the normal editor path, so the modal can let keys it does
+	// not use pass. Nil is the default: no modal, input flows to the composer.
+	capture func(input.Event) bool
 }
 
 // New builds the shell and starts its frame scheduler. Run must be called
@@ -243,6 +250,19 @@ func (a *App) Append(lines ...string) {
 func (a *App) SetLive(c screen.Component) {
 	a.mu.Lock()
 	a.live = c
+	a.mu.Unlock()
+	a.sched.Request()
+}
+
+// SetCapture installs a modal input handler that takes first claim on every
+// decoded event, ahead of the completion menu and the composer, so an overlay
+// (an approval prompt) can own the keyboard while it is up. The handler reports
+// whether it consumed the event; an unconsumed event falls through to the normal
+// editor path. Passing nil clears the modal and returns input to the composer.
+// It is safe to call from any goroutine.
+func (a *App) SetCapture(fn func(input.Event) bool) {
+	a.mu.Lock()
+	a.capture = fn
 	a.mu.Unlock()
 	a.sched.Request()
 }
@@ -367,6 +387,16 @@ func (a *App) Width() int {
 // else flows through the editor, and afterwards the menu re-derives itself
 // from the composer's state.
 func (a *App) handle(ev input.Event) {
+	// A modal overlay gets first claim on every event, ahead of the menu and the
+	// composer. It runs with no lock held (it reaches back into the shell to
+	// repaint and to resolve), and a consumed event ends the frame here.
+	a.mu.Lock()
+	capture := a.capture
+	a.mu.Unlock()
+	if capture != nil && capture(ev) {
+		a.sched.Request()
+		return
+	}
 	if k, isKey := ev.(input.Key); isKey && a.menuKey(k) {
 		a.notifyAccepted()
 		a.sched.Request()

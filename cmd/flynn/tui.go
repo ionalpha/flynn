@@ -20,6 +20,7 @@ import (
 	tuiterm "github.com/ionalpha/flynn/internal/tui/term"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 )
@@ -108,14 +109,16 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		th = theme.Default()
 	}
 	host := &sessionHost{
-		ctx:   ctx,
-		s:     s,
-		th:    th,
-		clip:  tuiterm.NewClipboard(),
-		tv:    newTranscriptView(th),
-		live:  &activity{th: th},
-		panel: &govPanel{th: th},
-		proj:  session.NewProjection(),
+		ctx:      ctx,
+		s:        s,
+		th:       th,
+		clip:     tuiterm.NewClipboard(),
+		tv:       newTranscriptView(th),
+		live:     &activity{th: th},
+		panel:    &govPanel{th: th},
+		approval: &approvalPrompt{th: th},
+		timing:   clock.System{},
+		proj:     session.NewProjection(),
 	}
 	// Shell mode runs the user's commands through the same confined sandbox
 	// every other command takes, rooted at the session's working directory. A
@@ -218,6 +221,7 @@ type shellUI interface {
 	Append(lines ...string)
 	SetLive(c screen.Component)
 	SetStatus(line string)
+	SetCapture(fn func(input.Event) bool)
 	Quit()
 	Suspend(run func())
 	Draft() string
@@ -267,6 +271,16 @@ type sessionHost struct {
 	// hidden, so it can sit permanently in the live region alongside the activity
 	// line without showing until the user opens it.
 	panel *govPanel
+	// approval is the interactive approval overlay, the top of the live stack. It
+	// renders nothing until a governed action pauses for a human decision, at which
+	// point the run goroutine arms it through promptApproval and installs it as the
+	// shell's modal input capture, so the operator's keypress (allow/deny) resolves
+	// the paused action.
+	approval *approvalPrompt
+	// timing is the clock the approval prompt reads for its countdown and re-arms
+	// its repaint timer on, injectable so a test drives the grace-period display
+	// deterministically. Nil means the system clock.
+	timing clock.Timing
 	// liveComp is the composite installed as the shell's live region for the whole
 	// session: the governance panel above the activity line. Each part renders
 	// nothing when it has nothing to show, so re-setting this component is how the
@@ -316,7 +330,7 @@ func (h *sessionHost) pokeLive() { h.ui.SetLive(h.liveComp) }
 // greet writes the session banner and, for a resumed run, its rendered
 // history, so the conversation's context is in the scrollback from the start.
 func (h *sessionHost) greet(seed string) {
-	h.liveComp = liveStack{h.panel, h.live}
+	h.liveComp = liveStack{h.approval, h.panel, h.live}
 	h.panel.set(h.proj)
 	h.ui.SetLive(h.liveComp)
 	h.ui.Append(h.th.Render(theme.Status, "flynn interactive session in "+h.s.cwd))
@@ -652,6 +666,56 @@ func (h *sessionHost) foldRecord(ev session.Event) {
 	h.mu.Unlock()
 	h.panel.set(p)
 	h.refreshStatus()
+}
+
+// promptApproval drives the interactive approval overlay for one paused action
+// and blocks the run goroutine on the operator's decision. It arms the prompt,
+// installs it as the shell's modal input capture so the operator's keys reach it
+// ahead of the composer, repaints the countdown each second, and resolves when
+// the operator allows or denies. A context deadline (the grace period the waist
+// set) or cancellation resolves fail-closed: it returns the context error, which
+// the waist treats as a decline, so a paused action is never admitted on a
+// missing decision. It runs on the turn goroutine, serial with a turn's own
+// events, so the prompt is the only thing the operator is deciding on.
+func (h *sessionHost) promptApproval(ctx context.Context, req mission.ApprovalRequest) (mission.ApprovalDecision, error) {
+	var timing clock.Timing = clock.System{}
+	if h.timing != nil {
+		timing = h.timing
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		grace := req.Grace
+		if grace <= 0 {
+			grace = defaultPromptGrace
+		}
+		deadline = timing.Now().Add(grace)
+	}
+
+	done := h.approval.open(req, deadline, timing)
+	h.ui.SetCapture(h.approval.handle)
+	h.pokeLive()
+	defer func() {
+		h.approval.clear()
+		h.ui.SetCapture(nil)
+		h.pokeLive()
+	}()
+
+	// Repaint the countdown once a second so the operator watches the grace period
+	// tick down; the timer only pokes a repaint, the remaining seconds are computed
+	// from the deadline at render time.
+	timer := timing.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case dec := <-done:
+			return dec, nil
+		case <-timer.C():
+			h.pokeLive()
+			timer.Reset(time.Second)
+		case <-ctx.Done():
+			return mission.ApprovalDecision{}, ctx.Err()
+		}
+	}
 }
 
 // next ends the finished turn's ownership of the shell: it starts the next

@@ -354,3 +354,41 @@ func TestResizeRepaintsFromScratch(t *testing.T) {
 		t.Fatalf("no from-scratch repaint after resize; tail:\n%q", s.out.String()[before:])
 	})
 }
+
+// TestCaptureOwnsInputAheadOfComposer proves a modal capture installed with
+// SetCapture takes first claim on input: keys reach the capture and never the
+// composer while it is up, and clearing it returns input to the composer.
+func TestCaptureOwnsInputAheadOfComposer(t *testing.T) {
+	submits := make(chan string, 1)
+	s := start(t, func(c *app.Config) {
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
+	})
+	var mu sync.Mutex
+	var seen int
+	s.app.SetCapture(func(ev input.Event) bool {
+		if _, ok := ev.(input.Key); ok {
+			mu.Lock()
+			seen++
+			mu.Unlock()
+		}
+		return true
+	})
+
+	s.press(t, "ab\r")
+	expectNoSubmit(t, submits)
+	eventually(t, func() bool { mu.Lock(); defer mu.Unlock(); return seen >= 3 }, func() {
+		mu.Lock()
+		defer mu.Unlock()
+		t.Fatalf("capture saw %d key events, want at least 3", seen)
+	})
+	if d := s.app.Draft(); d != "" {
+		t.Fatalf("composer received input while a capture was installed: %q", d)
+	}
+
+	// Clearing the capture returns input to the composer.
+	s.app.SetCapture(nil)
+	s.press(t, "hi\r")
+	if got := awaitSubmit(t, submits); got != "hi" {
+		t.Fatalf("submit after clearing capture = %q, want hi", got)
+	}
+}
