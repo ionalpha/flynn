@@ -167,11 +167,16 @@ func (s *Store) WarmBlobStats(ctx context.Context) (count, rawBytes, packedBytes
 // tier only ever moves what is provably closed. The NOT EXISTS names an unsealed reference
 // as the disqualifier, so a body shared across streams waits until it is sealed in all of
 // them.
+//
+// The `payload_blob != ”` term is redundant with the join (a content id is never empty)
+// but explicit: it lets SQLite prove the query implies the partial index's predicate, so
+// the reference probe seeks idx_events_payload_blob instead of scanning the whole log per
+// blob (asserted by TestSealedBlobsIndex).
 const sealedBlobsSelectSQL = `SELECT b.content_id, b.body, b.size, b.refs
 	FROM blobs b
 	WHERE NOT EXISTS (
 		SELECT 1 FROM events e
-		WHERE e.payload_blob = b.content_id
+		WHERE e.payload_blob = b.content_id AND e.payload_blob != ''
 		  AND e.seq > COALESCE((SELECT MAX(size) FROM checkpoints c WHERE c.stream = e.stream), 0)
 	)`
 

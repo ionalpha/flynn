@@ -82,6 +82,28 @@ func TestSkillSlugIndex(t *testing.T) {
 	}
 }
 
+// TestSealedBlobsIndex is the query-plan gate for the tiered-storage archival
+// sweep: the correlated NOT EXISTS that names an unsealed reference must seek
+// idx_events_payload_blob, never scan the events log. events carries only its
+// (stream, seq) primary key, so before the index the probe was a full table scan
+// per distinct hot blob (O(distinct_blobs x total_events), growing with the log).
+func TestSealedBlobsIndex(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	plan := explainPlan(ctx, t, s, sealedBlobsSelectSQL)
+	if !strings.Contains(plan, "USING INDEX idx_events_payload_blob") {
+		t.Fatalf("sealed-blobs sweep does not seek idx_events_payload_blob; plan: %s", plan)
+	}
+	if strings.Contains(plan, "SCAN e") {
+		t.Fatalf("sealed-blobs sweep scans the events table instead of probing the blob index; plan: %s", plan)
+	}
+}
+
 // explainPlan runs EXPLAIN QUERY PLAN over query and joins the detail rows, the
 // shared harness of the plan-shape gates above.
 func explainPlan(ctx context.Context, t *testing.T, s *Store, query string, args ...any) string {
