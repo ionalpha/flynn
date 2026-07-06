@@ -138,6 +138,14 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "watch" {
+		if err := runWatch(*model, *dataDir, !*noLearn, vrb); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "help" {
 		printUsage(os.Stdout)
 		return
@@ -170,6 +178,7 @@ func printUsage(w io.Writer) {
   flynn ps                   list instances with their live, heartbeat-aware state
   flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id
+  flynn watch                watch the working tree for ai!/ai? comment markers and run each as a governed turn
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn spine verify <run>   report a run's record tier by tier: integrity, governance, ground truth (or --file <path> for an exported record)
   flynn spine export <run>   write a sealed run's portable record to a file (--out <path>) for third-party verification
