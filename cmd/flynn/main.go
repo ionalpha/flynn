@@ -73,13 +73,18 @@ func main() {
 		return
 	}
 
+	// The model to drive: an explicit --model wins; otherwise a previously chosen default
+	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
+	// default the flag carries. So a user need not repeat --model once one is chosen.
+	modelSpec := effectiveModelSpec(*model, flagSet("model"), *dataDir)
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "goal" {
 		objective := strings.TrimSpace(strings.Join(args[1:], " "))
 		if objective == "" {
 			fmt.Fprintln(os.Stderr, `usage: flynn goal "<objective>"`)
 			os.Exit(2)
 		}
-		if err := runGoal(*model, objective, *verify, *dataDir, !*noLearn, vrb, *fanout, *maxCost, *maxTokens, *maxMemory, *maxProcs); err != nil {
+		if err := runGoal(modelSpec, objective, *verify, *dataDir, !*noLearn, vrb, *fanout, *maxCost, *maxTokens, *maxMemory, *maxProcs); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -111,7 +116,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "usage: flynn resume <run-id>")
 			os.Exit(2)
 		}
-		if err := resumeRun(*model, args[1], *dataDir, vrb); err != nil {
+		if err := resumeRun(modelSpec, args[1], *dataDir, vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -139,7 +144,7 @@ func main() {
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
-		if err := runServe(args[1:], *model, *dataDir); err != nil {
+		if err := runServe(args[1:], modelSpec, *dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -147,7 +152,7 @@ func main() {
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "watch" {
-		if err := runWatch(*model, *dataDir, !*noLearn, vrb); err != nil {
+		if err := runWatch(modelSpec, *dataDir, !*noLearn, vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -163,7 +168,7 @@ func main() {
 	// each line is a turn of one continuing conversation. With stdin redirected (a
 	// pipe, a file, a CI step) there is no one to prompt, so print usage instead.
 	if len(flag.Args()) == 0 && stdinIsTerminal() {
-		if err := runInteractive(*model, *dataDir, !*noLearn, vrb, *plain); err != nil {
+		if err := runInteractive(modelSpec, *dataDir, !*noLearn, vrb, *plain); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			os.Exit(1)
 		}
@@ -172,6 +177,32 @@ func main() {
 
 	printUsage(os.Stderr)
 	os.Exit(2)
+}
+
+// effectiveModelSpec resolves which model to drive: the explicit --model value when the
+// user passed one, else the recorded default under dataDir, else the flag's built-in
+// default. So once a model is chosen (onboarding, /model, or `flynn models use`), a later
+// launch reuses it without repeating --model.
+func effectiveModelSpec(flagValue string, explicit bool, dataDir string) string {
+	if explicit {
+		return flagValue
+	}
+	if saved, ok := readActiveModel(dataDir); ok {
+		return saved
+	}
+	return flagValue
+}
+
+// flagSet reports whether the named flag was set on the command line, so a default can be
+// told apart from a value the user passed explicitly.
+func flagSet(name string) bool {
+	found := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			found = true
+		}
+	})
+	return found
 }
 
 // printUsage writes the command summary to w.

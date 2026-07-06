@@ -75,6 +75,9 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 	renderModels(out, cat, models)
+	if active, ok := readActiveModel(dataDir); ok {
+		_, _ = fmt.Fprintf(out, "\ndefault model: %s (change with `flynn models use <id>`, or /model in a session)\n", active)
+	}
 	return nil
 }
 

@@ -35,7 +35,7 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.
 	configured := configuredProviders(ctx, credentialSource(dataDir))
 	switch {
 	case len(configured) == 1:
-		fmt.Fprintf(os.Stderr, "Using %s (already configured). Pass --model to choose another.\n", configured[0])
+		fmt.Fprintf(os.Stderr, "Using %s (already configured). Change it with `flynn models use <provider:model>`, or /model in a session.\n", configured[0])
 		return resolveModel(ctx, configured[0], dataDir)
 	case len(configured) > 1 && term.IsTerminal(int(os.Stdin.Fd())):
 		in := bufio.NewReader(os.Stdin)

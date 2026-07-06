@@ -88,6 +88,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		reg:       reg,
 		signer:    signer,
 		dataDir:   dataDir,
+		modelSpec: modelSpec,
 	}
 
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
@@ -129,8 +130,8 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
-	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s\n", cwd)
-	_, _ = fmt.Fprintln(s.out, `type a message and press enter; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
+	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, s.modelSpec)
+	_, _ = fmt.Fprintln(s.out, `type a message and press enter; /models to list models, /model <id> to switch; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)
 }
 
@@ -155,6 +156,10 @@ type replSession struct {
 	// failing. dataDir roots the store the run is verified from.
 	signer  chain.RootSigner
 	dataDir string
+
+	// modelSpec is the "provider:model" string of the model the session currently
+	// drives, shown by /model and updated when /model switches it.
+	modelSpec string
 
 	// observer, when set, receives every session event as the turn renders. The
 	// interactive shell installs it to render the typed stream itself (transcript,
@@ -382,7 +387,15 @@ func (s *replSession) finish(ctx context.Context) error {
 // any error to surface, so each interface renders the outcome its own way. A line that is
 // not a command is left for the model.
 func (s *replSession) replCommand(ctx context.Context, line string) (handled bool, err error) {
-	switch strings.ToLower(strings.TrimSpace(line)) {
+	fields := strings.Fields(strings.TrimSpace(line))
+	if len(fields) == 0 {
+		return false, nil
+	}
+	switch strings.ToLower(fields[0]) {
+	case "/models":
+		return true, s.showCatalog()
+	case "/model":
+		return true, s.switchModel(ctx, fields[1:])
 	case "/seal":
 		if err := s.seal(ctx); err != nil {
 			return true, err
@@ -418,6 +431,44 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		return true, nil
 	}
 	return false, nil
+}
+
+// showCatalog prints the model catalog into the session, the same view as `flynn models`,
+// so a user can see what to switch to without leaving the session.
+func (s *replSession) showCatalog() error {
+	return runModels(nil, s.dataDir, s.out)
+}
+
+// switchModel changes the model the rest of the session drives. With no argument it
+// reports the current model; otherwise it resolves the requested "provider:model" spec,
+// swaps it in for the next turn, and records it as the default so a later launch reuses
+// it. A spec that cannot be resolved (an unknown provider, a missing key) is reported
+// without ending the session.
+func (s *replSession) switchModel(ctx context.Context, args []string) error {
+	if len(args) == 0 {
+		_, _ = fmt.Fprintf(s.out, "  current model: %s\n  switch with: /model <provider:model> (see /models)\n", s.modelSpec)
+		return nil
+	}
+	spec := args[0]
+	model, plan, err := resolveModel(ctx, spec, s.dataDir)
+	if err != nil {
+		return fmt.Errorf("/model %s: %w", spec, err)
+	}
+	s.model = model
+	s.plan = plan
+	s.modelSpec = spec
+	// A distilling session learns through the model, so keep the distiller on the model
+	// the session now drives.
+	if s.distiller != nil {
+		s.distiller = governedDistiller(model)
+	}
+	if err := writeActiveModel(s.dataDir, spec); err != nil {
+		// The switch still holds for this session; only persistence failed.
+		_, _ = fmt.Fprintf(s.out, "  switched to %s (could not save it as the default: %v)\n", spec, err)
+		return nil
+	}
+	_, _ = fmt.Fprintf(s.out, "  switched to %s; saved as the default for the next run\n", spec)
+	return nil
 }
 
 // seal signs the session's run into a verifiable record stored on its stream. It needs a

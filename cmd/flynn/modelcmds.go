@@ -17,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/reliability"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -277,6 +278,16 @@ func runModelUse(args []string, dataDir string, out io.Writer) error {
 	id := args[0]
 	m, err := findLocalModel(id)
 	if err != nil {
+		// Not a provisionable local catalog model. If it names a known provider
+		// (provider:model), record it as the default directly; its key is checked when a
+		// run uses it. Otherwise the id is genuinely unknown.
+		if knownProviderSpec(id) {
+			if werr := writeActiveModel(dataDir, id); werr != nil {
+				return fmt.Errorf("models use: record selection: %w", werr)
+			}
+			_, _ = fmt.Fprintf(out, "%s is set as the default model; `flynn goal` and the interactive session use it unless --model is given.\n", id)
+			return nil
+		}
 		return fmt.Errorf("models use: %w", err)
 	}
 
@@ -299,6 +310,22 @@ func runModelUse(args []string, dataDir string, out io.Writer) error {
 	}
 	_, _ = fmt.Fprintf(out, "%s is provisioned and set as the default model. `flynn goal` will use it.\n", id)
 	return nil
+}
+
+// knownProviderSpec reports whether spec names a provider Flynn can resolve, in the
+// "provider:model" form, so a hosted model can be recorded as the default without the
+// local-catalog provisioning path.
+func knownProviderSpec(spec string) bool {
+	name, _, ok := strings.Cut(spec, ":")
+	if !ok || name == "" {
+		return false
+	}
+	for _, p := range provider.Providers() {
+		if p == name {
+			return true
+		}
+	}
+	return false
 }
 
 // runModelStatus implements `flynn models status`: list the local model servers that are
