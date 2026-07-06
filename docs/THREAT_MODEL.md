@@ -144,10 +144,19 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 
 ### Denial of service (exhausting a resource)
 
-- **A runaway loop or cost blowup.** A per-command wall-clock cap is available at the
-  sandbox boundary. Full CPU, memory, and process-count limits with a runaway and cost
-  circuit breaker are planned but not yet enforced (see Coverage); until then this class
-  is only partially mitigated, and that is stated rather than implied.
+- **A runaway loop or cost blowup.** A run carries a total spend and token ceiling
+  (`--max-cost`, `--max-tokens`) enforced at the dispatch boundary: each action is checked
+  against the run's remaining budget and refused once the ceiling is reached, and a
+  fan-out's children draw on the one shared ceiling so a delegated tree cannot spend past
+  it. A runaway circuit breaker halts a run whose step count climbs without converging, on
+  both the single-conversation and fan-out paths. A per-command wall-clock cap is available
+  at the sandbox boundary. Memory and process-count caps on a command the agent runs
+  (`--max-memory`, `--max-processes`) are enforced where the platform supports it, through
+  the confined command's job object on Windows today; the Linux and macOS floors record the
+  limits but do not yet impose them (a per-run cgroup needs cgroup-v2 delegation that is not
+  guaranteed for an unprivileged agent), so a command needing a hard memory or process cap
+  there runs under the container or hardware-isolation tier. That per-platform gap is the
+  remaining piece and is stated rather than implied (see Coverage).
 
 ### Elevation of privilege (gaining capability not granted)
 
@@ -194,6 +203,17 @@ Enforced and tested today:
   Windows, and a refusal rather than a silent downgrade where it cannot be enforced.
 - A red-team containment matrix that proves, per platform on CI, that each tier denies the
   filesystem-write, network, and syscall escapes it claims to.
+- A CI-gated governance benchmark that measures the dispatch waist's attack-success rate
+  against a versioned prompt-injection and jailbreak corpus while holding a benign-request
+  pass floor, so the decision-layer guardrail is measured on every change rather than
+  asserted. It is the decision-layer analog of the containment matrix: the matrix proves
+  isolation, this measures how much the capability gate reduces a hostile instruction's
+  success over an ungoverned baseline.
+- A per-run spend and token ceiling enforced at the dispatch boundary (an action is refused
+  once the run's budget is reached, and a fan-out shares one ceiling), a runaway circuit
+  breaker on both the single-conversation and fan-out paths, and best-effort memory and
+  process-count caps on a command the agent runs where the platform supports them (a Windows
+  job object today).
 - Default-deny outbound egress for the agent's own requests, with anti-SSRF and
   metadata-endpoint blocking, plus lint rules against raw dials and unguarded HTTP clients.
 - Bind-safe inbound listeners: every listener is opened through a loopback-by-default gate
@@ -221,7 +241,11 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   hardware-isolation tier exists, untrusted work (an arbitrary downloaded model, an
   unsigned plugin) is refused rather than run, which is the safe failure, not a silent
   downgrade.
-- CPU, memory, and process-count limits with a runaway and cost circuit breaker.
+- Host CPU, memory, and process-count caps at the always-present tier on Linux and macOS.
+  Windows enforces memory and process caps through a job object today and the spend, token,
+  and runaway breakers are cross-platform; the Linux and macOS floors record the memory and
+  process limits but do not yet impose them, pending cgroup-v2 delegation (a hard cap there
+  runs under the container or hardware-isolation tier).
 - A per-run outbound allowlist for sandboxed child processes (today the child network is
   either open or denied as a whole, not host-allowlisted).
 - A signed, capability-scoped plugin sandbox.
@@ -230,6 +254,44 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   while the code that materializes each child run under the narrowed grant and the parent's
   shared budget is being landed, so the narrowing and budget guarantees above are a contract of
   the delegation interface rather than a property to rely on in a deployed run yet.
+- A defense that reduces prompt-injection and jailbreak success beyond what capability
+  admission already gives. The Tampering section covers a hostile model file rewriting the
+  prompt contract; this is the runtime case where untrusted input the agent reads (a web
+  page, a file, a tool result) carries instructions that hijack the model's next action.
+  The blast radius is already bounded: a hijacked action is still admitted against the run's
+  capability grant, contained at the sandbox boundary, and recorded, and the governance
+  benchmark above measures how often an injected instruction changes the agent's action.
+  Actively lowering that rate (input-provenance separation, instruction-versus-data
+  isolation) is not yet built.
+- Provenance-tagged durable memory treated as untrusted on retrieval. An agent's persistent
+  memory and learned skills are a distinct attack surface: content injected once can lie
+  dormant and steer a later, unrelated turn. Today durable memory is not provenance-tagged,
+  so a poisoned entry is read back with the same trust as a first-party one. A write-path
+  refusal gate and a retrieval-time trust classification for durable memory are planned.
+- Confused-deputy hardening for ambient authority. When the agent acts on input from a
+  channel it holds standing credentials for (a mailbox, a connected integration), an
+  attacker who can place input on that channel can borrow the agent's authority without
+  holding it. Capability admission bounds what any single action may do, but the binding
+  that would tie a requested action back to the principal actually allowed to ask for it is
+  not yet enforced.
+- A post-quantum migration path for the tamper-evident record. The sealed run record's
+  integrity rests on Ed25519 signatures over an RFC 6962 Merkle log. That is sound against a
+  classical adversary; a future cryptographically-relevant quantum computer would break the
+  signature, though not the hash-based log structure. Signature agility (a post-quantum or
+  hybrid signature over the same checkpoint) is named here as the intended migration rather
+  than shipped.
+- Supply-chain integrity for what the agent installs and for Flynn's own build. When the
+  agent runs a package install (`npm`, `pip`, and the like) it pulls third-party code whose
+  provenance Flynn does not yet verify; the egress and sandbox boundaries contain what that
+  code can then do but do not vet the artifact itself. Provenance verification for
+  agent-installed dependencies, and build-provenance attestation for Flynn's own release
+  artifacts, are planned.
+- Scrubbing secrets out of tool output before it returns to the model. The Information
+  disclosure section covers a credential in a child's environment, in a prompt, and in a
+  log; it does not cover a secret that a tool result itself carries back into the model's
+  context (a file read, a command's stdout, an API response), from where a later action
+  could exfiltrate it. A scan-and-redact pass on the tool-output path, the inbound mirror of
+  the outbound egress gate, is planned.
 
 ## Reporting
 
