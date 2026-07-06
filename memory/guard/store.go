@@ -1,0 +1,92 @@
+package guard
+
+import (
+	"context"
+
+	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/state"
+)
+
+// Store wraps a state.MemoryStore with the write-time ingest gate: content from an
+// untrusted source that carries a screening hit (a hidden-instruction payload or
+// overt injection phrasing) is refused before it is ever persisted, so it can never
+// be recalled later. It is a decorator, so a host opts in by wrapping its own store
+// and the underlying persistence, recall ranking, and provenance are unchanged.
+//
+// The gate fires only for untrusted-origin content. The agent's own run and the
+// operator's own instructions are allowed through even if they trip the phrase
+// screen, because a legitimate note may quote an injection string (a note about an
+// attack, a captured lesson); refusing those would tax honest work with no security
+// gain, since trusted-origin content is not the poisoning vector. This mirrors the
+// package thesis: trust is the wall, the phrase screen is a bar-raiser.
+type Store struct {
+	inner state.MemoryStore
+	audit func(context.Context, Refusal)
+}
+
+// Refusal is the record of a refused write, passed to the audit callback so a host
+// can append it to the spine (poison attempts leave a trail).
+type Refusal struct {
+	Source   string
+	Trust    sandbox.Trust
+	Findings []Finding
+}
+
+// Option configures a Store.
+type Option func(*Store)
+
+// WithAudit registers a callback invoked for every refused write, so the host can
+// record the attempt on the append-only spine. The callback runs before Write
+// returns its error. Nil callbacks are ignored.
+func WithAudit(fn func(context.Context, Refusal)) Option {
+	return func(s *Store) {
+		if fn != nil {
+			s.audit = fn
+		}
+	}
+}
+
+// Wrap returns a Store guarding inner. With no options it refuses poisoned
+// untrusted writes silently (the error is the only signal); add WithAudit to record
+// attempts.
+func Wrap(inner state.MemoryStore, opts ...Option) *Store {
+	s := &Store{inner: inner}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
+
+var _ state.MemoryStore = (*Store)(nil)
+
+// Write screens the item and refuses an untrusted-origin write that carries a
+// screening hit, returning a Forbidden fault; otherwise it delegates to the inner
+// store unchanged. The screen runs on the item's content; trust comes from its
+// Source via TrustOf.
+func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
+	trust := TrustOf(m.Source)
+	if trust == sandbox.TrustUntrusted {
+		if findings := Screen(m.Content); len(findings) > 0 {
+			if s.audit != nil {
+				s.audit(ctx, Refusal{Source: m.Source, Trust: trust, Findings: findings})
+			}
+			return state.MemoryItem{}, fault.New(fault.Forbidden, "memory_poison_refused",
+				"refused to persist untrusted-origin memory carrying a hidden-instruction payload: "+findings[0].Detail)
+		}
+	}
+	return s.inner.Write(ctx, m)
+}
+
+// Recall delegates unchanged. Retrieval-side trust is available to callers via
+// TrustOf on each item's Source, so a governance gate can treat an untrusted-origin
+// memory as data rather than as the agent's vetted intent without this store having
+// to alter the recall contract.
+func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
+	return s.inner.Recall(ctx, q)
+}
+
+// Delete delegates unchanged.
+func (s *Store) Delete(ctx context.Context, id string) error {
+	return s.inner.Delete(ctx, id)
+}
