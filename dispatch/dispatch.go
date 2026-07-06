@@ -103,6 +103,12 @@ type Dispatcher struct {
 	ob     *observe.Observability
 	clk    clock.Clock
 	hooks  []Hook
+	// tokens and actions are the two lifecycle counters, resolved once at construction
+	// instead of by string name on every governed call. Govern is the one chokepoint
+	// every tool, model, and spawn flows through, so a per-call Meter.Counter lookup is
+	// hot; a wired OTel adapter does real work to resolve an instrument by name.
+	tokens  observe.Counter
+	actions observe.Counter
 	// calls assigns each Govern invocation a correlation id, monotonic within this
 	// dispatcher, so an action's start and its end or rejection are pairable. It is a
 	// counter, not a random id, so a replay reproduces the same ids.
@@ -139,6 +145,10 @@ func New(opts ...Option) *Dispatcher {
 	for _, o := range opts {
 		o(d)
 	}
+	// Resolve the lifecycle counters once, after options so WithObservability's meter
+	// is the one used. Govern reuses these instead of a per-call name lookup.
+	d.tokens = d.ob.Meter.Counter("dispatch.tokens")
+	d.actions = d.ob.Meter.Counter("dispatch.actions")
 	return d
 }
 
@@ -186,9 +196,9 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 			observe.String("action", a.Name), observe.String("class", string(class)))
 	} else {
 		span.SetAttr("tokens", m.Tokens)
-		d.ob.Meter.Counter("dispatch.tokens").Add(ctx, int64(m.Tokens), observe.String("action", a.Name))
+		d.tokens.Add(ctx, int64(m.Tokens), observe.String("action", a.Name))
 	}
-	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", outcome))
+	d.actions.Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", outcome))
 	d.emit(ctx, end)
 	d.unwind(ctx, a, m, err, entered)
 	return err
@@ -203,7 +213,7 @@ func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span obs
 	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano(), Err: string(class)})
 	d.ob.Log.Warn(ctx, "dispatch rejected",
 		observe.String("action", a.Name), observe.String("class", string(class)))
-	d.ob.Meter.Counter("dispatch.actions").Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))
+	d.actions.Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))
 	d.unwind(ctx, a, Metering{}, err, entered)
 	return err
 }
