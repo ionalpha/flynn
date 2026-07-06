@@ -128,7 +128,11 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	if err != nil {
 		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_spec_decode", err)
 	}
-	status, err := DecodeStatus(r)
+	// Decode only the scalar status head first: the no-op skip below needs the phase
+	// and observed spec hash, not the opaque Checkpoint (the whole transcript). A
+	// settled goal's periodic resync short-circuits at the skip without ever copying
+	// the transcript. The full status is decoded once the reconcile is going to act.
+	head, err := decodeStatusHead(r)
 	if err != nil {
 		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_status_decode", err)
 	}
@@ -169,8 +173,15 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// no-op check reads a field instead of re-canonicalizing the spec each tick.
 	specHash := r.SpecHash
 	// No-op skip: spec unchanged and the goal has already settled.
-	if status.ObservedSpecHash == specHash && (status.Phase == PhaseConverged || status.Phase == PhaseStalled) {
+	if head.ObservedSpecHash == specHash && (head.Phase == PhaseConverged || head.Phase == PhaseStalled) {
 		return reconcile.Result{}, nil
+	}
+
+	// Past the skip: this reconcile is going to act, so decode the full status now
+	// (InFlight, Checkpoint, WaitingSince) from the freshest record.
+	status, err := DecodeStatus(r)
+	if err != nil {
+		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_status_decode", err)
 	}
 
 	// Observe an in-flight step.

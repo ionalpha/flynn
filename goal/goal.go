@@ -175,6 +175,27 @@ func DecodeSpec(r resource.Resource) (Spec, error) { return resource.DecodeSpec[
 // DecodeStatus reads the typed status from a resource.
 func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeStatus[Status](r) }
 
+// statusHead is the subset of Status the reconciler reads before it commits to doing
+// work: the phase and observed spec hash that decide the no-op skip. Decoding into it
+// skips over the opaque Checkpoint (which carries the whole transcript) instead of
+// copying it, so the periodic resync of already-settled goals no longer materializes
+// the transcript on every pass just to find it has nothing to do.
+type statusHead struct {
+	Phase            Phase  `json:"phase,omitempty"`
+	ObservedSpecHash string `json:"observedSpecHash,omitempty"`
+}
+
+// decodeStatusHead reads only the scalar status fields the no-op skip needs, without
+// copying the Checkpoint. The full DecodeStatus runs only once the reconcile is going
+// to act on the goal.
+func decodeStatusHead(r resource.Resource) (statusHead, error) {
+	var h statusHead
+	if len(r.Status) == 0 {
+		return h, nil
+	}
+	return h, json.Unmarshal(r.Status, &h)
+}
+
 // Encode marshals the status for writing back onto a resource.
 func (s Status) Encode() (json.RawMessage, error) { return resource.EncodeStatus(s) }
 

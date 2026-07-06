@@ -149,7 +149,7 @@ func (s *memStore) put(ctx context.Context, r Resource) (Resource, error) {
 	if err != nil {
 		return Resource{}, err
 	}
-	if err := c.record(ctx, ev); err != nil {
+	if err := c.record(ctx, ev, rec); err != nil {
 		return Resource{}, err
 	}
 	return rec, nil
@@ -306,11 +306,11 @@ func (s *memStore) deleteRecord(ctx context.Context, kind string, scope Scope, n
 	if r.DeletionTimestamp != nil {
 		return nil // already terminating; deletion completes when finalizers clear
 	}
-	_, ev, err := c.st.Delete(r)
+	rec, ev, err := c.st.Delete(r)
 	if err != nil {
 		return err
 	}
-	return c.record(ctx, ev)
+	return c.record(ctx, ev, rec)
 }
 
 // lessKey is the total order ListKeys returns: by scope (instance, project,
@@ -385,22 +385,22 @@ func (c *core) recordMerge(ctx context.Context, r Resource) error {
 	if err != nil {
 		return err
 	}
-	return c.record(ctx, in)
+	return c.record(ctx, in, r)
 }
 
-func (c *core) record(ctx context.Context, in spine.AppendInput) error {
+// record appends the event and projects its post-image onto the read model. post is
+// the canonical record the caller already holds (the stamper's output for a write,
+// the merge winner for a merge), so record projects it directly instead of decoding
+// the raw payload again under the store lock. The stamper serialized post into
+// in.RawPayload, so this is the same post-image a replay would decode from the event,
+// keeping a live projection identical to a rebuilt-from-log one (TestReplayEquivalence
+// holds the two to byte equality). Callers hold mu.
+func (c *core) record(ctx context.Context, in spine.AppendInput, post Resource) error {
 	e, err := c.log.Append(ctx, in)
 	if err != nil {
 		return err
 	}
-	// Project from the raw payload the stamper already serialized: one Unmarshal
-	// of the same bytes the event carries, so the live projection is identical to
-	// a replayed one without the event round-trip apply pays.
-	r, err := decodePayload(in.RawPayload)
-	if err != nil {
-		return err
-	}
-	c.project(r)
+	c.project(post)
 	c.lastSeq = e.Seq
 	return nil
 }

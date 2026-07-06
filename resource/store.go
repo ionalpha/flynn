@@ -128,20 +128,6 @@ func encodePayload(r Resource) (json.RawMessage, error) {
 	return p, nil
 }
 
-// decodePayload reconstructs a Resource from the raw JSON event payload with a
-// single Unmarshal: the live projection path in the in-memory core. Decoding the
-// same bytes the event stores keeps a live projection byte-for-byte identical to
-// a replayed one.
-func decodePayload(raw json.RawMessage) (Resource, error) {
-	var w struct {
-		Resource Resource `json:"resource"`
-	}
-	if err := json.Unmarshal(raw, &w); err != nil {
-		return Resource{}, err
-	}
-	return w.Resource, nil
-}
-
 // DecodeResource reconstructs a Resource from an event payload. Durable backends
 // use it to project the same records the in-memory core does.
 func DecodeResource(payload map[string]any) (Resource, error) {
