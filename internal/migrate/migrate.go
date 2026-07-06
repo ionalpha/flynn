@@ -32,6 +32,21 @@ import (
 	"time"
 )
 
+// IncompatibleSchemaError reports that the database was created by a build whose
+// migrations differ from this one's: an already-applied migration's bytes changed, or a
+// new migration sorts below one already applied. The database cannot be migrated forward
+// in place (migrations are immutable), so it must be recreated or a different data
+// directory used. It is a distinct type so a caller can recognise this case and guide the
+// user to recovery rather than surface a raw error.
+type IncompatibleSchemaError struct {
+	Migration string // the offending migration file
+	Reason    string // what is wrong with it
+}
+
+func (e *IncompatibleSchemaError) Error() string {
+	return fmt.Sprintf("migrate: %s %s - migrations are immutable", e.Migration, e.Reason)
+}
+
 // Run applies every migration in fsys not yet recorded in schema_migrations, in
 // ascending version order, after verifying the integrity of those already
 // applied. It is idempotent: once up to date, a re-run does nothing.
@@ -58,12 +73,12 @@ func Run(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	for _, m := range migs {
 		if sum, ok := applied[m.version]; ok {
 			if sum != m.checksum {
-				return fmt.Errorf("migrate: %s changed after it was applied (checksum mismatch) - migrations are immutable", m.name)
+				return &IncompatibleSchemaError{Migration: m.name, Reason: "changed after it was applied (checksum mismatch)"}
 			}
 			continue
 		}
 		if m.version < maxApplied {
-			return fmt.Errorf("migrate: %s is out of order (version %d is below the latest applied %d)", m.name, m.version, maxApplied)
+			return &IncompatibleSchemaError{Migration: m.name, Reason: fmt.Sprintf("is out of order (version %d is below the latest applied %d)", m.version, maxApplied)}
 		}
 	}
 
@@ -168,7 +183,8 @@ func apply(ctx context.Context, db *sql.DB, m migration) error {
 	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(ctx,
+	if _, err := tx.ExecContext(
+		ctx,
 		`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
 		m.version, m.name, m.checksum, time.Now().UTC().Format(time.RFC3339Nano),
 	); err != nil {

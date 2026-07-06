@@ -8,10 +8,18 @@ import "runtime/debug"
 //	go build -ldflags "-X github.com/ionalpha/flynn/internal/version.Version=v0.1.0" ./cmd/flynn
 var Version = "0.0.0-dev"
 
+// devVersion is the source default, present when no release version was stamped in.
+const devVersion = "0.0.0-dev"
+
+// IsDev reports whether this is an unstamped development build (no release version linked
+// in). A dev build keeps its durable state apart from a release build's, so an
+// in-progress schema change on a branch never touches a real installation.
+func IsDev() bool { return Version == devVersion }
+
 // String returns a human-readable version, appending the VCS revision when the
 // binary was built from a git checkout and no explicit version was set.
 func String() string {
-	if Version != "0.0.0-dev" {
+	if Version != devVersion {
 		return Version
 	}
 	if bi, ok := debug.ReadBuildInfo(); ok {

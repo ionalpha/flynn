@@ -3,6 +3,7 @@ package migrate_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"testing"
 	"testing/fstest"
 
@@ -99,6 +100,10 @@ func TestRunDetectsChecksumDrift(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected a checksum-drift error when an applied migration was edited")
 	}
+	var incompat *migrate.IncompatibleSchemaError
+	if !errors.As(err, &incompat) {
+		t.Fatalf("expected *IncompatibleSchemaError, got %T: %v", err, err)
+	}
 }
 
 func TestRunDetectsOutOfOrder(t *testing.T) {
@@ -118,6 +123,10 @@ func TestRunDetectsOutOfOrder(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected an out-of-order error for a migration inserted below the latest applied")
+	}
+	var incompat *migrate.IncompatibleSchemaError
+	if !errors.As(err, &incompat) {
+		t.Fatalf("expected *IncompatibleSchemaError, got %T: %v", err, err)
 	}
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -27,6 +28,7 @@ import (
 	"github.com/ionalpha/flynn/internal/credential"
 	"github.com/ionalpha/flynn/internal/dependency"
 	"github.com/ionalpha/flynn/internal/instance"
+	"github.com/ionalpha/flynn/internal/migrate"
 	"github.com/ionalpha/flynn/internal/playbook"
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/service"
@@ -98,7 +100,26 @@ func openDataStore(ctx context.Context, dataDir string, opts ...sqlite.Option) (
 			return nil, err
 		}
 	}
-	return openStore(ctx, dsn, opts...)
+	store, err := openStore(ctx, dsn, opts...)
+	if err != nil {
+		return nil, explainStoreOpenError(err, dataDir)
+	}
+	return store, nil
+}
+
+// explainStoreOpenError turns a store-open failure the user can act on into a clear
+// message with the recovery step, and passes anything else through unchanged. Today it
+// recognises an incompatible on-disk schema (a database created by a different build):
+// rather than a raw migrate error, it names the recovery, so a run never dead-ends on an
+// internal message.
+func explainStoreOpenError(err error, dataDir string) error {
+	var schema *migrate.IncompatibleSchemaError
+	if errors.As(err, &schema) && dataDir != "" && dataDir != ":memory:" {
+		return fmt.Errorf("the state database in %s was created by an incompatible build (%s %s).\n"+
+			"Recover with `flynn db reset` (it backs up the old database first), or run against a fresh `--data-dir`",
+			dataDir, schema.Migration, schema.Reason)
+	}
+	return err
 }
 
 // listRuns prints the runs recorded in the durable store: their id, phase, step

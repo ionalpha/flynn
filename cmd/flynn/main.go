@@ -46,6 +46,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"ps":           dispatchPs,
 	"status":       dispatchStatus,
 	"spine":        dispatchSpine,
+	"db":           runDB,
 }
 
 func main() {
@@ -201,6 +202,7 @@ func printUsage(w io.Writer) {
   flynn models use <id>      provision a local model and set it as the default
   flynn models status        list the local model servers that are running
   flynn models stop <id>     stop a running local model server
+  flynn db reset             move an unusable database aside (backed up) so the next run recreates it; also 'db path' and 'db backup'
   flynn regrade              re-grade learned skills against the working directory
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
@@ -210,12 +212,24 @@ Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, --max-cost, 
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
 // directory so learning compounds across projects. It falls back to a local
-// directory when the user config dir is unavailable.
+// directory when the user config dir is unavailable. A development build uses a
+// separate directory (dataDirName), so working on the schema on a branch never migrates,
+// or is blocked by, a real installation's database.
 func defaultDataDir() string {
 	if dir, err := os.UserConfigDir(); err == nil {
-		return filepath.Join(dir, "flynn")
+		return filepath.Join(dir, dataDirName())
 	}
-	return ".flynn"
+	return "." + dataDirName()
+}
+
+// dataDirName is the per-user directory name for durable state: "flynn" for a release
+// build, "flynn-dev" for an unstamped development build, so the two never share a
+// database.
+func dataDirName() string {
+	if version.IsDev() {
+		return "flynn-dev"
+	}
+	return "flynn"
 }
 
 // runGoal resolves the model, opens the durable store, and drives one objective to
