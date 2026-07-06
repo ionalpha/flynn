@@ -30,6 +30,15 @@ func TestHelperProcess(_ *testing.T) {
 		// stdout-only caller (Stream) does not.
 		_, _ = os.Stderr.WriteString(v + "\n")
 	}
+	if p := os.Getenv("HELPER_READFILE"); p != "" {
+		// Report whether a file outside the workspace can be read, for the readable-dir
+		// grant tests: "read:<contents>" on success, "readerr" when the confinement denies it.
+		if b, err := os.ReadFile(p); err == nil {
+			_, _ = os.Stdout.WriteString("read:" + string(b) + "\n")
+		} else {
+			_, _ = os.Stdout.WriteString("readerr\n")
+		}
+	}
 	if n, _ := strconv.Atoi(os.Getenv("HELPER_LINES")); n > 0 {
 		for i := range n {
 			_, _ = os.Stdout.WriteString("line" + strconv.Itoa(i) + "\n")

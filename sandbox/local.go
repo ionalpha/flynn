@@ -34,6 +34,12 @@ type Local struct {
 	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
 	seccomp     bool              // run commands under a syscall filter (see WithSeccomp)
 	egress      *egressConfig     // govern child egress through a netguard proxy (see WithEgress)
+	// readableDirs are directories outside the workspace that a confined child may read,
+	// granted to it on launch and revoked on Close (see WithReadableDir). They let a
+	// governed external CLI read its own auth or config home, which lives outside the
+	// sandbox root. On Linux and macOS a read-only host already permits the read, so this
+	// takes effect only where the confinement is default-deny for reads (Windows).
+	readableDirs []string
 	// confineBestEffort marks confinement as the always-on default (see
 	// WithDefaultConfinement) rather than an explicit request, so a host that cannot
 	// set it up falls back to the floor instead of failing the command.
@@ -106,6 +112,37 @@ func WithNetworkDenied() LocalOption {
 // option fails rather than running with the host filesystem silently still writable.
 func WithReadOnlyFS() LocalOption {
 	return func(l *Local) { l.readonlyFS = true }
+}
+
+// WithReadableDir grants a confined child read access to a directory outside the
+// workspace. By default confinement is default-deny for reads on the platforms that can
+// enforce it (a Windows AppContainer can read only what it is granted), so a governed
+// external CLI cannot reach its own auth or config home, which lives outside the sandbox
+// root. Naming that directory here grants the child read (and traverse) on it for the
+// life of the sandbox and revokes the grant on Close. The access is read-only: the child
+// still cannot write outside the workspace.
+//
+// On Linux and macOS a read-only host already permits reads of the whole filesystem, so
+// the child reads the directory in place and this option adds nothing; it takes effect
+// only where the confinement denies reads by default. The path is resolved to an
+// absolute, symlink-free form once, like the root. Passing a path keeps a credential in
+// its home directory rather than copying it into the workspace.
+func WithReadableDir(paths ...string) LocalOption {
+	return func(l *Local) {
+		for _, p := range paths {
+			if p == "" {
+				continue
+			}
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				continue
+			}
+			if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+				abs = resolved
+			}
+			l.readableDirs = append(l.readableDirs, abs)
+		}
+	}
 }
 
 // WithSeccomp runs commands under a syscall filter that refuses the calls a command

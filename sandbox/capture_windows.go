@@ -48,6 +48,9 @@ func (l *Local) captureAppContainer(ctx context.Context, spec CaptureSpec) (Exec
 	if err := grantDir(l.root, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
+	if err := l.grantReadableDirs(sid); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
+	}
 
 	var caps []*windows.SID
 	if !l.denyNetwork {

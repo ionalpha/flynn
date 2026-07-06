@@ -50,6 +50,7 @@ func (l *Local) confine(_ *exec.Cmd) error { return nil }
 // folder holds no command output, and a profile still in use by another sandbox on the
 // same directory is simply left in place.
 func (l *Local) closePlatform() error {
+	l.revokeReadableDirs()
 	deleteAppContainerProfile(appContainerMoniker(l.root))
 	return nil
 }
@@ -86,6 +87,9 @@ func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte
 
 	if err := grantDir(l.root, sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
+	}
+	if err := l.grantReadableDirs(sid); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 
 	var caps []*windows.SID

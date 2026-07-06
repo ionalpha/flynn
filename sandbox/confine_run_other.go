@@ -15,4 +15,12 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 
 // closePlatform releases platform confinement state on Close. No platform but Windows
 // leaves persistent state behind, so this is a no-op here.
-func (l *Local) closePlatform() error { return nil }
+func (l *Local) closePlatform() error {
+	l.revokeReadableDirs()
+	return nil
+}
+
+// revokeReadableDirs is a no-op off Windows: a read-only host already permits a confined
+// child to read directories outside the workspace, so WithReadableDir grants nothing here
+// and there is nothing to revoke. It stays defined so Close is uniform across platforms.
+func (l *Local) revokeReadableDirs() { _ = l.readableDirs }

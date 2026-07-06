@@ -50,6 +50,9 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 	if err := grantDir(l.root, sid); err != nil {
 		return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
+	if err := l.grantReadableDirs(sid); err != nil {
+		return nil, fmt.Errorf("sandbox: %w", err)
+	}
 
 	var caps []*windows.SID
 	if !l.denyNetwork {
