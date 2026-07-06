@@ -20,6 +20,7 @@ import (
 func postRPC(t *testing.T, h http.Handler, token, body string) (int, string, rawResp) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+	req.Host = "127.0.0.1:7000" // the bridge only serves the loopback interface
 	if token != "" {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -79,6 +80,7 @@ func TestHTTPBearerTokenEnforced(t *testing.T) {
 
 	// No token: rejected.
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Host = "127.0.0.1:7000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusUnauthorized {
@@ -96,6 +98,7 @@ func TestHTTPParseErrorIs400(t *testing.T) {
 	srv := NewServer(nil, nil)
 	h := srv.HTTPHandler(context.Background(), "")
 	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{not json`))
+	req.Host = "127.0.0.1:7000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
@@ -112,10 +115,63 @@ func TestHTTPGetIsMethodNotAllowed(t *testing.T) {
 	srv := NewServer(nil, nil)
 	h := srv.HTTPHandler(context.Background(), "")
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req.Host = "127.0.0.1:7000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("GET status %d, want 405", rec.Code)
+	}
+}
+
+// TestHTTPBrowserGuardsRejectRebinding proves the transport refuses a request that
+// looks like a browser reaching the loopback bridge: any request carrying an Origin,
+// or one whose Host is not the loopback interface (a DNS-rebinding request carries
+// the attacker's domain), is 403 before auth.
+func TestHTTPBrowserGuardsRejectRebinding(t *testing.T) {
+	srv := NewServer(nil, []mission.Tool{echo("echo")})
+	h := srv.HTTPHandler(context.Background(), "")
+
+	// A browser Origin is refused even on a loopback Host.
+	req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Host = "127.0.0.1:7000"
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("browser Origin should be 403, got %d", rec.Code)
+	}
+
+	// A non-loopback Host (a rebinding request carries the attacker domain) is refused.
+	req = httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"ping"}`))
+	req.Host = "attacker.example"
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-loopback Host should be 403, got %d", rec.Code)
+	}
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"127.0.0.1", true},
+		{"127.0.0.1:8080", true},
+		{"localhost", true},
+		{"localhost:1", true},
+		{"[::1]:9", true},
+		{"::1", true},
+		{"0.0.0.0", false},
+		{"10.0.0.5:80", false},
+		{"attacker.example", false},
+		{"example.com:443", false},
+		{"", false},
+	}
+	for _, tc := range cases {
+		if got := isLoopbackHost(tc.host); got != tc.want {
+			t.Errorf("isLoopbackHost(%q) = %v, want %v", tc.host, got, tc.want)
+		}
 	}
 }
 

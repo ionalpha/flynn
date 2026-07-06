@@ -3,7 +3,9 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/ionalpha/flynn/ids"
 )
@@ -45,6 +47,20 @@ const mcpSessionHeader = "Mcp-Session-Id"
 // endpoint offers no server-initiated stream and keeps no per-session state to tear
 // down, so a client that probes them gets a definite answer rather than a hang.
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// A loopback bridge is only ever driven by a local native client, never a browser.
+	// A request carrying a browser Origin, or a Host that is not the loopback
+	// interface, is a cross-origin or DNS-rebinding attempt (a page on the same host
+	// resolving an attacker domain to 127.0.0.1 to reach this port), and is refused
+	// before anything else. This is the transport's required defense against a browser
+	// reaching a local MCP server; the bearer token below is the second layer.
+	if r.Header.Get("Origin") != "" {
+		http.Error(w, "forbidden origin", http.StatusForbidden)
+		return
+	}
+	if !isLoopbackHost(r.Host) {
+		http.Error(w, "forbidden host", http.StatusForbidden)
+		return
+	}
 	if h.token != "" && r.Header.Get("Authorization") != "Bearer "+h.token {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
@@ -96,6 +112,29 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// isLoopbackHost reports whether the request's Host header names the loopback
+// interface (127.0.0.1, ::1, or localhost), with or without a port. A DNS-rebinding
+// request carries the attacker's domain in Host, not a loopback address, so this
+// refuses it even when no Origin is present. An empty Host is rejected: a conformant
+// HTTP/1.1 client always sends one.
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	h := host
+	if hostOnly, _, err := net.SplitHostPort(host); err == nil {
+		h = hostOnly
+	}
+	h = strings.TrimSuffix(strings.TrimPrefix(h, "["), "]")
+	if h == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(h); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }
 
 // mergeCancel returns a context that is done when either parent is done, so a
