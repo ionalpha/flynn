@@ -45,8 +45,8 @@ package is one plus the highest layer it imports.
 
 The valuable property is the *direction*, not the count. A primitive must never
 reach up into a domain package; that inversion is what turns a clean graph into a
-ball of mud. The direction is enforced by `depguard` (see Invariants), so the
-table cannot silently rot.
+ball of mud. That core-to-engine direction is enforced by `depguard` (see
+Invariants), so the core cannot silently invert into the engine above it.
 
 ### Surface and structure are two different controls
 
@@ -165,8 +165,11 @@ not merely encouraged.
 3. **Observability only through the port.** No `fmt.Print*`, no direct
    `log/slog` outside `observe`. *(Enforcement: `forbidigo` + `depguard`.)*
 
-4. **Layer direction holds.** A package never imports a higher layer.
-   *(Enforcement: `depguard` layer rules.)*
+4. **Layer direction holds.** The graph is acyclic, and the core bands (foundation,
+   primitives, core data) never import the engine and domain bands above them, so a
+   primitive cannot reach up into a domain package. *(Enforcement: the `depguard`
+   `layer-direction` rule guards the core-to-engine boundary; finer edges between
+   adjacent engine layers are convention, not mechanically gated.)*
 
 5. **The host boundary is interfaces only.** The engine never imports a concrete
    host. Persistence and observability cross only through `state` and `observe`.
@@ -180,10 +183,12 @@ not merely encouraged.
 7. **Process execution routes through the sandbox boundary.** Every command and
    subprocess runs through the `sandbox` port, never `os/exec` directly, so execution
    is confined, governed, and auditable, and a single change to the boundary applies
-   everywhere. The one exception is the host hardware probe, which must read the real
-   host (so it cannot be sandboxed) and runs a fixed command with no untrusted input.
-   *(Enforcement: `depguard` forbids importing `os/exec` outside `sandbox` and
-   `hardware`, so a new bypass fails CI.)*
+   everywhere. Two narrow exceptions read no untrusted input: the host hardware probe,
+   which must read the real host so it cannot be sandboxed and runs a fixed command, and
+   the terminal layer's editor handoff, which launches the user's own configured editor
+   on their own terminal at their explicit request. *(Enforcement: `depguard` forbids
+   importing `os/exec` outside `sandbox`, `hardware`, and `internal/tui/term`, so a new
+   bypass fails CI.)*
 
 ## Event evolution
 

@@ -14,9 +14,8 @@
 ---
 
 Flynn is a lightweight agent runtime and operating system written in Go. It
-runs standalone as a single static binary on anything from a $5 VPS to a
-Kubernetes cluster, works with any model provider, and stores all of its state
-locally, so you own it.
+runs standalone as a single static binary from a laptop to a $5 VPS, works with any
+model provider, and stores all of its state locally, so you own it.
 
 Four ideas run through everything it does:
 
@@ -24,8 +23,9 @@ Four ideas run through everything it does:
    skills and memory, reinforced by whether the work actually succeeded.
 2. **It scales past one task.** A goals-and-missions engine plans, fans out, and
    governs many agent runs toward a single objective.
-3. **It owns its cost.** A cost-aware router and on-demand tool loading keep token
-   usage low, so running it continuously is affordable.
+3. **It owns its cost.** Per-run token and cost budgets with hard ceilings, plus
+   native support for local open-weight models, keep continuous operation affordable
+   and a runaway spend structurally impossible.
 4. **You can trust it with autonomy.** Every action is governed, contained, and sealed
    into a verifiable, tamper-evident record, so giving it real authority is a decision
    you can audit, not a gamble.
@@ -35,16 +35,14 @@ Four ideas run through everything it does:
 - **One binary, no runtime.** No Python, no Node, no virtualenv, no
   `node_modules`. `curl | sh` drops a single file. Cross-compiles to Windows,
   macOS, Linux, and ARM, and ships in a container measured in megabytes.
-- **Bring your own model.** Provider-agnostic across hosted and local models. A
-  cost-aware router sends each step to the cheapest model that can do it, no lock-in.
-- **Learns from your work.** Captures skills and memory as you go, curates them in
-  the background, and reinforces them based on outcomes.
-- **Orchestrates, does not just chat.** Turns an instruction into a goal graph and
-  runs it in parallel under a budget.
-- **Extends itself.** Writes its own skills and integrations, tests them in a
-  sandbox, and puts them to work, without a redeploy.
-- **Acts on its own initiative.** Watches your signals and pursues your goals
-  ahead of you, within limits you set.
+- **Bring your own model.** Provider-agnostic across hosted and local models, with a
+  curated open-weight catalog and hardware-fit checks for running fully local. No lock-in.
+- **Learns from your work.** Captures skills and memory as you go and reinforces them
+  based on real outcomes.
+- **Orchestrates, does not just chat.** Turns an instruction into a plan and fans it
+  out into concurrent, governed runs under a shared budget.
+- **Extends itself.** Writes its own skills, validates them in a sandbox, and puts
+  them to work without a redeploy.
 - **Useful inside and outside a larger system.** Run it on its own, or import it
   as a Go module and embed it in your own application.
 
@@ -129,20 +127,18 @@ so an agent only ever has the surface it needs. Define your own archetypes in co
 ### Goals, missions, and orchestration
 
 - **Goals and missions.** A *goal* is one objective with a verifiable end-state.
-  A *mission* is long-horizon work that owns a graph of sub-goals and outlives any
+  A *mission* is long-horizon work that owns a tree of sub-goals and outlives any
   single session.
-- **A typed goal graph.** Goals relate through `decomposes_into`, `depends_on`,
-  and `blocks` edges, so a mission is a dependency graph, not a flat list.
+- **A goal tree.** A goal owns its sub-goals, and a mission tracks that tree as it
+  fans out and converges, so long-horizon work is structured, not a flat list.
 - **Plan and dispatch.** An instruction becomes a plan; the dispatcher fans it out
-  into governed runs, sequentially, in parallel, or in parallel within each
-  dependency level.
+  into concurrent governed runs, each bounded by the shared budget.
 - **A governor.** Every run is bounded by a shared budget pool (tokens and cost),
   an autonomy level, and an approval policy.
 - **A mission event spine.** Every decision, tool call, message, approval, and
   checkpoint is an ordered, immutable event that replays for a full audit trail
   and rolls up into live progress.
-- **Isolation.** Runs can execute in their own git worktree or sandbox, so
-  parallel agents never collide.
+- **Isolation.** Runs execute in a sandbox, so parallel agents never collide.
 - **Declarative and self-healing.** You declare a goal's desired end-state; a
   reconciler drives toward it and converges again after a failure or restart,
   instead of losing the thread mid-task.
@@ -170,8 +166,8 @@ layers in view rather than hidden behind it.
   and improves them as it reuses them.
 - **Memory.** Durable facts about you and your work, prefetched into context and
   synced after each turn.
-- **A curator.** A background pass consolidates, archives, and pins skills so the
-  library stays sharp instead of sprawling. Nothing is ever silently deleted.
+- **A curator.** An outcome-driven pass decays and archives skills that stop working,
+  so the library stays sharp instead of sprawling. Nothing is ever silently deleted.
 - **Reinforced by outcomes.** Skills and memory are strengthened or decayed by real
   signals (tests passing, a task accepted, no correction on the next turn), so the
   agent learns what works, not what it merely tried.
@@ -182,51 +178,44 @@ layers in view rather than hidden behind it.
 
 The agent treats its own capabilities as data it can author.
 
-- **Integrations are specs, not code.** A new API integration is a catalog entry
-  plus an OpenAPI document, executed by one generic engine with auth, rate limits,
-  and safety built in.
-- **It writes its own tools.** When it hits a gap, the agent can author a new skill
-  or plugin manifest, validate it in a sandbox, and put it to work without a
-  redeploy or a recompile.
-- **Open standard.** Skills follow the `agentskills.io` format, and importers
-  migrate existing skills and config from other agents.
+- **Integrations are specs, not code.** A new API integration is a catalog entry plus
+  a declarative endpoint contract, executed by one generic engine with auth, rate
+  limits, and safety built in.
+- **It writes its own skills.** When it hits a gap, the agent can author a new skill,
+  validate it in a sandbox, and put it to work without a redeploy or a recompile.
+- **Portable.** Every skill is a versioned, attributable resource you can export and
+  move between machines.
 
-### Computer use and reach
+### Channels and computer use
 
-- **Runs real tasks on a real computer.** Terminal, filesystem, and a built-in
-  browser with CDP and self-healing selectors, plus desktop GUI control, mobile
-  (ADB), and voice.
-- **Lives where you do.** Talk to it from the terminal or from Telegram, Discord,
-  Slack, and Signal through a single gateway, with voice memos transcribed
-  automatically.
-- **Scheduled automations.** Built-in cron runs reports, backups, and audits
-  unattended, delivered to any connected channel.
+- **Real tools on a real machine.** A sandboxed, path-confined toolset for the
+  terminal and filesystem: run commands, read, edit, glob, and grep, each admitted
+  at the dispatch waist against a capability grant.
+- **Lives where you do.** Run it from the terminal, or as a service (`flynn serve`)
+  that answers Telegram and Signal messages, each triaged and driven as a goal.
 
-### Proactive and ambient
+Wider reach (Discord, Slack, voice, a built-in browser, desktop GUI, and mobile
+control) is on the [roadmap](#status-and-roadmap).
 
-Most agents wait to be prompted. Flynn can take initiative.
+### Ambient triggers
 
-- **Watches your signals.** Monitors, data sources, and events feed it context
-  continuously.
-- **Forms its own goals.** When something matters, it proposes or pursues a goal on
-  your behalf, within its autonomy level, and surfaces the result.
-- **Driven, not idle.** A drives model gives it a sense of what is worth doing next
-  instead of sitting still until spoken to.
+- **React to markers.** A `flynn watch` mode picks up inbound `ai!` / `ai?` markers
+  in your files and turns them into governed goals, so work can start without a
+  prompt at the terminal.
 
-### Agent-native economy
+Autonomy that forms its own goals from monitored signals is on the
+[roadmap](#status-and-roadmap).
 
-- **A wallet and budgets.** The governor enforces hard spend ceilings per goal and
-  per mission, in tokens and in real money.
-- **Pays for what it uses.** Tools, compute, and data, with full per-run accounting.
+### Cost control
+
+- **Hard budgets.** The governor enforces spend ceilings per goal and per mission,
+  in tokens and in real money, with full per-run accounting. A run cannot exceed its
+  budget; it stops.
 
 ### Tools and standards
 
-- **MCP.** Connect any Model Context Protocol server, and expose the agent's own
-  tools to other clients.
-- **A2A.** Speak the Agent-to-Agent protocol for cross-agent coordination, governed
-  alongside MCP by the Linux Foundation's Agentic AI Foundation.
-- **Editor integration.** Run as a Zed Agent Client Protocol (ACP) server inside
-  editors.
+- **MCP server.** Expose the agent's own tools to any Model Context Protocol client
+  (`flynn mcp serve`). Consuming external MCP servers as a client is on the roadmap.
 - **Provetrail.** Implements [Provetrail](https://github.com/ionalpha/provetrail), an
   open standard for verifiable execution provenance, and ships a reference verifier and
   the standard's public conformance vectors, so a run's record can be checked by any
@@ -237,16 +226,18 @@ Most agents wait to be prompted. Flynn can take initiative.
 Flynn is built to be handed real authority over untrusted input and real tools.
 
 - **Capability-scoped tools.** An agent only ever has the tools its capabilities grant.
-- **Sandboxed runs.** Runs execute in an isolated git worktree or a sandbox backend
-  (E2B, Daytona, or Modal); plugins run read-only by default.
+- **Sandboxed runs.** Commands execute in a kernel-confined sandbox (read-only host,
+  syscall filter) with per-platform adapters, proven by a red-team containment matrix
+  in CI; plugins run read-only by default. Stronger container and microVM tiers, and
+  remote sandbox backends (E2B, Daytona, Modal) behind the same port, are on the roadmap.
+- **Contained network.** The agent's outbound requests go through a default-deny egress
+  gate that blocks private, loopback, and cloud-metadata destinations; inbound listeners
+  bind loopback-only by default and refuse a wildcard bind. Both are enforced by lint
+  rules, so no code can dial or listen around them.
 - **Governed autonomy.** Budgets, autonomy levels, and approval policies mean risky
   actions pause for a human instead of proceeding silently.
 - **Reversible by default.** Actions are recorded so they can be undone, and
   destructive steps can be rehearsed in a dry run before they execute.
-- **Adversary review.** A reviewer red-teams a plan for unsafe actions and prompt
-  injection before it runs.
-- **Untrusted channels.** Inbound messages from unknown senders are gated by
-  pairing and allowlists, not processed blindly.
 - **Secrets stay out of context.** Credentials live in a vault and are applied at
   call time, never placed in prompts or logs.
 - **Verifiable execution.** Each run is sealed into a signed, tamper-evident record:
@@ -265,11 +256,9 @@ vulnerability, see the [security policy](SECURITY.md).
 ## Reproducible by design
 
 Because the mission event spine is ordered and immutable, a run is not a black box.
+Fork-from-event and run-diff time-travel are on the [roadmap](#status-and-roadmap).
 
 - **Deterministic replay.** Re-run any mission from its recorded events.
-- **Fork from any point.** Branch a new run from any event to explore an alternative.
-- **Diff and time-travel.** Compare two runs event by event, and step backward to
-  see exactly where a decision was made.
 - **Verifiable, not just replayable.** A run is sealed into a signed record a
   standalone verifier checks (`flynn spine verify`), so replay rests on tamper-evidence
   a third party can confirm, not on trusting the operator.
@@ -330,38 +319,38 @@ result, err := a.Goal(ctx, "audit the repo for TODOs and summarize them")
 
 - **Locally** as a single binary.
 - **Docker.** A small static-binary image with no language runtime to bundle.
-- **Kubernetes.** Because runs are isolated and governed, a mission can fan its
-  worker runs out as pods, scale them independently, and tear them down when the
-  goal is met. The tiny image and fast cold start make per-run pods practical.
-- **Serverless or a $5 VPS.** Hibernates when idle and wakes on demand, so a
-  continuously available agent costs almost nothing between sessions.
+- **A $5 VPS.** The tiny image and fast cold start make a continuously available
+  agent cheap to run.
+
+Kubernetes pod fan-out and serverless hibernation are on the
+[roadmap](#status-and-roadmap): because runs are isolated and governed, a mission can
+fan its worker runs out as pods once the control plane lands.
 
 ## Observability
 
-Flynn emits OpenTelemetry traces and metrics. The mission event spine maps
-directly onto spans and structured events, and every run reports tokens, cost,
-latency, and outcome.
-
-- **Traces** export over OTLP and OpenInference to agent-eval tools such as
-  Langfuse and Arize Phoenix, for step-level tracing and evaluation.
-- **Metrics** export to [VictoriaMetrics](https://victoriametrics.com) or any
-  Prometheus-compatible backend for long-term, high-cardinality cost and performance.
-- **Dashboards** in Grafana for spend, throughput, success rate, and skill reuse.
+Flynn exposes an OpenTelemetry-style observability port: the mission event spine maps
+directly onto spans and structured events, and every run reports tokens, cost, latency,
+and outcome. The default build ships a no-op implementation. Concrete OTLP and
+OpenInference export to agent-eval tools (Langfuse, Arize Phoenix), a VictoriaMetrics or
+Prometheus metrics backend, and Grafana dashboards are on the
+[roadmap](#status-and-roadmap).
 
 ## Integrations
 
 | Area | Works with |
 | --- | --- |
-| Models | Any OpenAI-compatible or native endpoint, hosted or local; routed cost-aware |
-| Messaging | Telegram, Discord, Slack, Signal, and the terminal |
-| Computer use | Terminal, filesystem, browser (CDP), desktop GUI, mobile (ADB), voice |
-| Tools | Any MCP server; A2A peers; Zed ACP for editor integration |
-| Skills | `agentskills.io` format, with importers from other agents |
-| Payments | Per-goal budgets and agent-native payment rails |
-| Storage | SQLite (local), Postgres, or an Ion Alpha instance |
-| Observability | OpenTelemetry, OpenInference, Langfuse, Arize Phoenix, VictoriaMetrics, Grafana |
-| Runtime | Local, Docker, Kubernetes, serverless; sandboxed runs via E2B, Daytona, or Modal |
-| Source control | Git worktrees for isolated, parallel runs |
+| Models | Any OpenAI-compatible or native endpoint, hosted or local; Anthropic and OpenAI adapters |
+| Local models | Curated open-weight catalog, hardware-fit checks, fetch-and-run, grammar-constrained decoding |
+| Messaging | Telegram, Signal, and the terminal |
+| Computer use | Terminal and filesystem, sandboxed and path-confined |
+| Tools | MCP server; Provetrail reference verifier |
+| Budgets | Per-goal and per-mission token and cost ceilings, with per-run accounting |
+| Storage | SQLite (local), or a host that implements the `state` interfaces |
+| Runtime | Local binary or Docker; kernel-confined command sandbox (per-platform) |
+
+Planned integrations (Discord, Slack, browser, desktop, mobile, voice, A2A, Zed ACP,
+external MCP servers, OpenTelemetry export, Postgres, remote sandbox backends) are
+tracked in [Status and roadmap](#status-and-roadmap).
 
 ## Architecture
 
@@ -455,9 +444,12 @@ above is filling in on top of that foundation. Follow
 - A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
 - Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
-- The learning loop: skills and memory captured from work, curated in the background, and reinforced by outcomes.
+- The learning loop: skills and memory captured from work, reinforced by outcomes, with skills that stop working decayed and archived.
+- An MCP server (`flynn mcp serve`) that exposes the agent's own tools to any MCP client.
 - Credentials sealed in an OS keychain or a passphrase vault, kept out of prompts and logs.
-- Local and git-worktree isolation for runs.
+- A kernel-confined execution sandbox (read-only host, syscall filter) with per-platform adapters on Linux, macOS, and Windows, proven by a red-team containment matrix in CI, refusing rather than silently downgrading where a tier is unavailable.
+- Default-deny outbound egress that blocks SSRF to private, loopback, and cloud-metadata addresses, lint-enforced so nothing dials around it.
+- Bind-safe inbound listeners (loopback by default, wildcard binds refused, non-loopback gated on explicit opt-in) with an exposure registry that logs and lease-expires every opening, lint-enforced.
 - Inbound over the terminal, Telegram, and Signal.
 - SQLite-durable state, and importable as a Go module.
 - A published threat model, an OpenSSF Scorecard, and property, chaos, and fuzz test tiers.
@@ -466,16 +458,16 @@ above is filling in on top of that foundation. Follow
 
 - Multi-agent goal-graph orchestration: fan-out across a dependency graph and missions that outlive a single session.
 - A cost-aware model router in front of the registry.
-- Default-deny network egress and remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
+- Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
 - User-facing replay and time-travel: `flynn replay`, fork-from-event, and run diff, plus re-grading captured skills by re-folding the spine.
 - A pluggable embeddings port for stronger local semantic recall.
 
 **On the roadmap**
 
-- Standards: MCP server and client, A2A, Zed ACP, and `agentskills.io` import.
+- Standards: an MCP client for external servers, A2A, Zed ACP, and `agentskills.io` import.
 - More reach: Discord, Slack, voice, a built-in browser, desktop GUI, and mobile control.
 - Proactive operation: monitors, drives, and self-formed goals within an autonomy level.
-- The agent authoring and sandbox-testing its own tools and integrations.
+- The agent authoring and sandbox-testing its own API integrations.
 - A cross-machine control plane and Kubernetes pod fan-out.
 - OpenTelemetry export to agent-eval tools and Grafana dashboards.
 - A Postgres backend and federated, fleet-wide learning.
