@@ -150,11 +150,22 @@ func (in *instance) run(args ...string) result {
 	return in.runInput(nil, args...)
 }
 
+// baseFlags are the shared flags every invocation carries: the data dir, and the model
+// when one is set. An empty model omits the -model flag, so a test can exercise the
+// launch-time default resolution (an explicit flag versus the persisted default).
+func (in *instance) baseFlags() []string {
+	flags := []string{"-data-dir", in.dataDir}
+	if in.model != "" {
+		flags = append(flags, "-model", in.model)
+	}
+	return flags
+}
+
 // runInput is run with stdin wired to input (nil for none). A goal reads no stdin in
 // the non-interactive path, but auth and consent flows can.
 func (in *instance) runInput(stdin []byte, args ...string) result {
 	in.t.Helper()
-	full := append([]string{"-data-dir", in.dataDir, "-model", in.model}, args...)
+	full := append(in.baseFlags(), args...)
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, flynnBin, full...)
@@ -201,7 +212,7 @@ type running struct {
 // the process at a chosen point (a crash/resume scenario).
 func (in *instance) start(args ...string) *running {
 	in.t.Helper()
-	full := append([]string{"-data-dir", in.dataDir, "-model", in.model}, args...)
+	full := append(in.baseFlags(), args...)
 	cmd := exec.Command(flynnBin, full...)
 	cmd.Dir = in.workspace
 	cmd.Env = in.env
