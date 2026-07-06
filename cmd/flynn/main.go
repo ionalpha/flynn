@@ -38,6 +38,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"services":     runServices,
 	"models":       dispatchModels,
 	"get":          dispatchGet,
+	"mcp":          runMCP,
 	"describe":     dispatchDescribe,
 	"diff":         dispatchDiff,
 	"ps":           dispatchPs,
@@ -196,6 +197,7 @@ func printUsage(w io.Writer) {
   flynn models stop <id>     stop a running local model server
   flynn regrade              re-grade learned skills against the working directory
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
+  flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version
 Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, -v/--verbose, --plain (run with --help for details).`)
 }
