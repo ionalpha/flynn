@@ -312,6 +312,8 @@ func scrubbedEnv(home string) []string {
 		switch up {
 		case "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_DATA_HOME", "XDG_CONFIG_HOME":
 			continue
+		case "FLYNN_VAULT_PASSPHRASE":
+			continue // set to a fixed value below, not inherited
 		}
 		out = append(out, e)
 	}
@@ -323,6 +325,12 @@ func scrubbedEnv(home string) []string {
 		"LOCALAPPDATA="+filepath.Join(home, "AppData", "Local"),
 		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
+		// The vault falls back to a passphrase-sealed file on a host with no OS keychain
+		// (a headless CI runner). The binary needs its instance signing identity to seal
+		// a run's verifiable record, and creating that identity writes it to the vault,
+		// so without a passphrase the sealed-file path fails and runs go unsealed. A
+		// fixed passphrase lets the identity persist and every run seal on every OS.
+		"FLYNN_VAULT_PASSPHRASE=flynn-e2e-fixed-passphrase",
 	)
 	return out
 }
