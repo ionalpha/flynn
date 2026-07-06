@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 
 	"github.com/ionalpha/flynn/brakes"
+	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
@@ -99,6 +100,15 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	if e.spec.Brakes != nil {
 		dopts = append(dopts, dispatch.WithHook(e.spec.Brakes))
 	}
+	if e.spec.Budget != nil {
+		// Charge every bridged tool call against the run's spend pool and refuse one once
+		// the ceiling is reached, the same waist a native loop budgets through. The pool is
+		// keyed by the run (the goal's own pool, else its name), so `flynn --model
+		// codex:<model> --max-cost N` bounds an external run too. The external harness's own
+		// inner model calls are outside this waist (unobserved), so the ceiling bounds the
+		// governed effects, not the CLI's private provider spend.
+		dopts = append(dopts, dispatch.WithHook(e.spec.Budget))
+	}
 	d := dispatch.New(dopts...)
 
 	server := mcp.NewServer(d, e.spec.Tools, mcp.WithScope(scope), mcp.WithGoal(r.Name))
@@ -112,6 +122,17 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		ctx = capability.Into(ctx, grant)
 	}
 	ctx = brakes.Into(ctx, r.Name)
+	if e.spec.Budget != nil {
+		// Bind the run's spend pool onto the dispatching context so the budget hook can
+		// charge it: the goal's own pool when it carries one (a fan-out shares the root's),
+		// else the goal's name, which for a single external run is the run id the ceiling
+		// was opened under.
+		pool := spec.BudgetPool
+		if pool == "" {
+			pool = r.Name
+		}
+		ctx = budget.Into(ctx, pool)
+	}
 
 	res, err := runner.Run(ctx, Episode{
 		Input:   objective(spec),

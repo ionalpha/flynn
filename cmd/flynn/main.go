@@ -226,13 +226,34 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
-	if err != nil {
-		return err
-	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+
+	// Resolve the run's backend: a native model conversation, or an external agent CLI
+	// whose own harness drives the loop. A `--model codex:<model>` spec selects the
+	// latter; anything else resolves a hosted or local model as before.
+	var (
+		model    llm.Model
+		plan     harness.Plan
+		extAgent *externAgent
+	)
+	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
+		// Fan-out delegates to concurrent native child loops; an external harness owns its
+		// own loop, so the combination is refused rather than silently ignored.
+		if fanout {
+			return fmt.Errorf("--fanout is not supported with the %s external agent backend: it drives its own loop", name)
+		}
+		extAgent, err = resolveExternalAgent(ctx, name, cliModel, cwd)
+		if err != nil {
+			return err
+		}
+	} else {
+		model, plan, err = resolveModelOrOnboard(ctx, modelSpec, dataDir)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Load the instance signer so the run is sealed into a verifiable record. This is
@@ -250,8 +271,12 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 	}
 	defer func() { _ = store.Close() }()
 
+	// Learning distills a converged run through a model. An external agent exposes no
+	// model of its own (its inner loop is unobserved), so a run it drives does not
+	// distill: the run is still sealed and verifiable, only the learn-back step is
+	// skipped.
 	var distiller learn.Distiller
-	if learnEnabled {
+	if learnEnabled && extAgent == nil {
 		distiller = governedDistiller(model)
 	}
 
@@ -264,12 +289,18 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		fc = &fanoutConfig{resolveModel: childModelResolver(ctx, dataDir)}
 	}
 
+	opts := []driveOption{
+		withBudget(budgetpkg.Limits{Tokens: maxTokens, Cost: maxCost}),
+		withResourceLimits(sandbox.ResourceLimits{MemoryMiB: maxMemoryMiB, MaxProcesses: maxProcesses}),
+	}
+	if extAgent != nil {
+		opts = append(opts, withExternalAgent(extAgent))
+	}
+
 	// The objective and the final answer are rendered from the run's own events
 	// (session.started and session.converged), so the live transcript and a later
 	// `flynn inspect` of the same run read identically.
-	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, verify, store, signer, verbose, fc,
-		withBudget(budgetpkg.Limits{Tokens: maxTokens, Cost: maxCost}),
-		withResourceLimits(sandbox.ResourceLimits{MemoryMiB: maxMemoryMiB, MaxProcesses: maxProcesses})); err != nil {
+	if _, err := runLearningMission(ctx, os.Stdout, model, plan, distiller, cwd, objective, verify, store, signer, verbose, fc, opts...); err != nil {
 		return err
 	}
 	return nil

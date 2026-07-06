@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/ionalpha/flynn/budget"
+	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/resource"
@@ -106,6 +108,59 @@ func TestDriverGrantDeniesUngrantedTool(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(workdir, "nope.txt")); !os.IsNotExist(err) {
 		t.Errorf("ungranted write should not have created a file")
+	}
+}
+
+// budgetStore builds an in-memory resource store with the budget kind registered, so
+// a test can open a run's spend pool.
+func budgetStore(t *testing.T) resource.Store {
+	t.Helper()
+	reg := resource.NewRegistry()
+	if err := resource.RegisterCoreKinds(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := budget.RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	return resource.NewMemory(reg)
+}
+
+// TestDriverEnforcesBudgetCeiling proves the run's spend ceiling bounds an external
+// harness's bridged tool calls exactly as it bounds a native loop: with the pool
+// exhausted, a bridged write is refused at the waist and never touches the workspace,
+// even though the episode attempted it and still completes.
+func TestDriverEnforcesBudgetCeiling(t *testing.T) {
+	workdir := t.TempDir()
+	store := budgetStore(t)
+	ledger := budget.NewLedger(store)
+
+	// Open a pool for the goal id the episode runs under and exhaust it, so the first
+	// bridged action is over budget.
+	ctx := context.Background()
+	if _, err := ledger.Open(ctx, "g1", resource.Scope{}, budget.Limits{Tokens: 1}); err != nil {
+		t.Fatalf("open budget: %v", err)
+	}
+	if err := ledger.Charge(ctx, "g1", resource.Scope{}, dispatch.Metering{Tokens: 100}); err != nil {
+		t.Fatalf("charge budget: %v", err)
+	}
+
+	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		_, _ = bridgeClient(ep.Bridge, "write", `{"path":"over.txt","content":"x"}`)
+		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
+	})
+	d, spec := driverWith(t, workdir, spawner)
+	spec.Budget = budget.NewHook(store)
+
+	exec, _, err := d.Build(spec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	gspec := goal.Spec{Objective: "try to write", Grant: []string{"write", "read"}}
+	if _, err := exec.Execute(ctx, goalResource(t, "g1", gspec, nil)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workdir, "over.txt")); !os.IsNotExist(err) {
+		t.Errorf("a bridged action over budget must be refused at the waist")
 	}
 }
 

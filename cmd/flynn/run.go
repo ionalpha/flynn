@@ -643,6 +643,7 @@ func truncate(s string, n int) string { return text.Clip(strings.TrimSpace(s), n
 type driveConfig struct {
 	budget    budgetpkg.Limits
 	resLimits sandbox.ResourceLimits
+	extAgent  *externAgent
 }
 
 // driveOption configures a run driven by drive.
@@ -664,6 +665,15 @@ func withResourceLimits(r sandbox.ResourceLimits) driveOption {
 	return func(c *driveConfig) { c.resLimits = r }
 }
 
+// withExternalAgent drives the run through an external agent CLI backend (its own
+// harness runs the loop) instead of a native model conversation. The model llm.Model
+// passed to drive is unused in this mode: the external CLI drives its own model,
+// selected by the agent's model string. Every tool call the CLI makes still comes back
+// through the same dispatch waist, so governance is unchanged.
+func withExternalAgent(ea *externAgent) driveOption {
+	return func(c *driveConfig) { c.extAgent = ea }
+}
+
 // budgeted reports whether a ceiling is set on any axis.
 func (c driveConfig) budgeted() bool { return c.budget.Tokens > 0 || c.budget.Cost > 0 }
 
@@ -683,9 +693,15 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	// into the same verifiable record, so fan-out adds delegation without changing how
 	// a run is recorded or checked.
 	var run *missionRun
-	if fanout != nil {
+	switch {
+	case cfg.extAgent != nil:
+		// An external agent CLI drives the loop: the same sandbox, session, toolset,
+		// grant, and governance recording as a native run, but the run loop is the CLI's
+		// episode driver rather than a model conversation.
+		run, err = assembleExternalMission(cfg.extAgent, workdir, system, rstore, jq, log, resumeID, cfg.resLimits)
+	case fanout != nil:
 		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel, cfg.resLimits)
-	} else {
+	default:
 		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits)
 	}
 	if err != nil {
@@ -731,6 +747,10 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	} else if _, err := run.sess.Submit(runCtx, run.rt, goal.Spec{
 		Objective:     objective,
 		StopCondition: "the objective is fully accomplished",
+		// The model the loop drives. Empty for a native run (the host default model
+		// applies); for an external agent it is the CLI's model string, which the episode
+		// driver hands the CLI so `flynn --model codex:<model>` pins that model.
+		Model: externalModel(cfg.extAgent),
 		// A fan-out parent spends steps it would not as a single conversation: a step
 		// dispatching each delegation, and a step per poll while it waits for the
 		// children to finish (a wait makes no model call, but the reconciler still
@@ -880,6 +900,58 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
 	rt, err := runtime.New(parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq))
+	if err != nil {
+		return nil, err
+	}
+	return &missionRun{rt: rt, sess: parts.sess}, nil
+}
+
+// externalModel returns the model string an external agent CLI should drive, or empty
+// when the run is native. It is set on the submitted goal so the episode driver hands
+// it to the CLI.
+func externalModel(ea *externAgent) string {
+	if ea == nil {
+		return ""
+	}
+	return ea.model
+}
+
+// assembleExternalMission wires a one-shot run whose loop is an external agent CLI: it
+// shares the same sandbox, session, toolset, capability grant, and governance
+// recording as assembleMission (via newMissionParts), but builds the run loop from the
+// external agent's driver instead of a native model executor. The driver's episode
+// loop routes every tool call the CLI makes back through the same dispatch waist, so
+// the grant, containment gate, safety brake, and spend ceiling bound the external
+// harness exactly as they bound a native loop; the CLI's own inner model calls stay
+// unobserved-but-contained and are recorded as a declared provenance gap. A run driven
+// this way does not fan out (the external harness owns its own loop), so the spawn
+// action is withheld from the grant.
+func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, runID, false, resLimits)
+	if err != nil {
+		return nil, err
+	}
+
+	// The loop-agnostic Spec the driver builds from: the same governance ingredients a
+	// native run assembles, carried to the external episode loop. Model is intentionally
+	// unset (an llm.Model), since the external CLI drives its own model, selected by the
+	// goal's model string; the compaction budget and scaffolding plan are native-loop
+	// concerns the external CLI manages itself, so they are left unset.
+	exec, stop, err := ea.driver.Build(driver.Spec{
+		Tools:     parts.toolset,
+		System:    system,
+		Grant:     parts.grant,
+		HasGrant:  true,
+		Sandbox:   parts.sandbox,
+		Reporter:  parts.sess.Reporter(),
+		EventSink: parts.sink,
+		Brakes:    defaultBrakes(),
+		Budget:    budgetpkg.NewHook(rstore),
+	})
+	if err != nil {
+		return nil, err
+	}
+	rt, err := runtime.New(parts.runtimeConfig(exec, stop, rstore, jq))
 	if err != nil {
 		return nil, err
 	}
