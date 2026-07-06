@@ -25,6 +25,11 @@ func TestHelperProcess(_ *testing.T) {
 		// Report the granted value (empty when the variable did not survive the scrub).
 		_, _ = os.Stdout.WriteString("env:" + os.Getenv(v) + "\n")
 	}
+	if v := os.Getenv("HELPER_STDERR"); v != "" {
+		// Write to standard error so a combined-output caller (Capture) sees it and a
+		// stdout-only caller (Stream) does not.
+		_, _ = os.Stderr.WriteString(v + "\n")
+	}
 	if n, _ := strconv.Atoi(os.Getenv("HELPER_LINES")); n > 0 {
 		for i := range n {
 			_, _ = os.Stdout.WriteString("line" + strconv.Itoa(i) + "\n")
