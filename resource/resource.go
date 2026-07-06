@@ -127,8 +127,7 @@ type Envelope struct {
 	// SpecHash is a stable hash of the resource's desired state alone (see
 	// SpecHash), stamped at write time so a controller's no-op check ("has the
 	// spec I acted on changed?") reads a field instead of re-canonicalizing the
-	// spec every reconcile tick. Empty on records written before the field
-	// existed; readers fall back to computing it.
+	// spec every reconcile tick.
 	SpecHash string
 
 	// --- bitemporal time ---

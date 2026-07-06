@@ -65,7 +65,7 @@ func TestPerGoalGrantGovernsAuthority(t *testing.T) {
 		// Goal grant overrides a narrower executor default (delegation widens nothing,
 		// but the goal's own authority, not the executor's, is what governs it).
 		{"goal grant overrides exec default", capability.NewGrant("read", ActionModelGenerate), true, []string{"echo", ActionModelGenerate}, true},
-		// No goal grant: fall back to the executor default (back-compat).
+		// No goal grant: fall back to the executor's default grant.
 		{"falls back to exec default", capability.NewGrant("echo", ActionModelGenerate), true, nil, true},
 	}
 	for _, tc := range cases {
