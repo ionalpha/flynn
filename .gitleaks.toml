@@ -1,0 +1,13 @@
+# gitleaks configuration for flynn.
+# Keeps the full default ruleset and only allowlists intentional test fixtures.
+[extend]
+useDefault = true
+
+# The e2e credential tests plant a distinctive fake key and then assert it never
+# appears in any output, proving the credential path does not leak. The string is
+# a deliberate canary, not a real secret, so it is allowlisted by exact value.
+[allowlist]
+description = "e2e credential leak-probe canary (intentional fake secret)"
+regexes = [
+  '''sk-e2e-LEAK-CANARY-7f3a91''',
+]
