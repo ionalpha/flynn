@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -105,6 +106,74 @@ func TestProxyDeniesHTTPByPolicy(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Errorf("denied HTTP status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestProxyAllowsHostInAllowlist(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "provider-reply")
+	}))
+	defer upstream.Close()
+
+	// The upstream is reached by its 127.0.0.1 authority, which is both address-allowed
+	// (loopback) and name-allowed. A request routes through the proxy and returns 200.
+	p := loopbackOnly()
+	p.AllowHosts = []string{"127.0.0.1"}
+	proxyURL, stop := startProxy(t, p)
+	defer stop()
+
+	resp, err := clientThrough(proxyURL).Get(upstream.URL)
+	if err != nil {
+		t.Fatalf("GET via proxy: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "provider-reply" {
+		t.Errorf("body = %q, want provider-reply", body)
+	}
+}
+
+func TestProxyDeniesHostNotInAllowlist(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "should-not-reach")
+	}))
+	defer upstream.Close()
+
+	// The address rules admit loopback, but the name allowlist does not admit "localhost",
+	// so a request to localhost is refused at the name gate (a 403) before any lookup or
+	// dial, even though it would resolve to the allowed loopback address.
+	p := loopbackOnly()
+	p.AllowHosts = []string{"127.0.0.1"}
+	proxyURL, stop := startProxy(t, p)
+	defer stop()
+
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "http://"))
+	resp, err := clientThrough(proxyURL).Get("http://localhost:" + port + "/")
+	if err != nil {
+		t.Fatalf("request should reach the proxy (and be refused there): %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("name-denied HTTP status = %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestProxyDeniesHostNotInAllowlistOnConnect(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+	defer upstream.Close()
+
+	p := loopbackOnly()
+	p.AllowHosts = []string{"127.0.0.1"}
+	proxyURL, stop := startProxy(t, p)
+	defer stop()
+
+	// A CONNECT to a name outside the allowlist must fail the tunnel, so the HTTPS request
+	// errors rather than returning a response.
+	_, port, _ := net.SplitHostPort(strings.TrimPrefix(upstream.URL, "https://"))
+	resp, err := clientThrough(proxyURL).Get("https://localhost:" + port + "/")
+	if err == nil {
+		_ = resp.Body.Close()
+		t.Error("a name-denied HTTPS CONNECT must fail, not tunnel")
 	}
 }
 

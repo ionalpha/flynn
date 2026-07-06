@@ -25,14 +25,29 @@ import (
 // holds no listener of its own; a caller serves it on a loopback listener (through
 // bindguard), so the proxy is reachable only on the host it runs on.
 type Proxy struct {
+	policy Policy
 	dialer *net.Dialer
 }
 
 // NewProxy returns a proxy that admits only what p allows. Upstream connections are
-// dialed through a policy-enforcing dialer, so the policy is applied at connect time on
-// the resolved address (the same DialControl Client and Dialer use).
+// dialed through a policy-enforcing dialer, so the address rules are applied at connect
+// time on the resolved address (the same DialControl Client and Dialer use). The name
+// allowlist (p.AllowHosts) is applied earlier, on the requested destination name, before
+// the connection is dialed.
 func NewProxy(p Policy) *Proxy {
-	return &Proxy{dialer: Dialer(p)}
+	return &Proxy{policy: p, dialer: Dialer(p)}
+}
+
+// hostAllowed reports whether the destination the client asked to reach passes the
+// policy's name allowlist. hostport is the request authority (host or host:port); the
+// port is stripped before the name is checked. An empty allowlist admits any name, so
+// the address rules on the resolved connection alone decide.
+func (px *Proxy) hostAllowed(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	return px.policy.AllowsHost(host)
 }
 
 // Handler returns the proxy's HTTP handler: CONNECT requests are tunneled, everything
@@ -63,6 +78,13 @@ func policyRefused(err error) bool { return err != nil && fault.Classify(err) ==
 // on success, splices the client and upstream connections byte-for-byte. A policy
 // refusal is a 403; an unreachable target is a 502.
 func (px *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
+	// Gate on the requested destination name before resolving or dialing it, so a name
+	// outside the allowlist is refused without a lookup. The resolved-address rules still
+	// apply below through the policy-enforcing dialer.
+	if !px.hostAllowed(r.Host) {
+		http.Error(w, "egress denied by policy", http.StatusForbidden)
+		return
+	}
 	upstream, err := px.dialUpstream(r.Context(), r.Host)
 	if err != nil {
 		if policyRefused(err) {
@@ -96,6 +118,11 @@ func (px *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 func (px *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	if !r.URL.IsAbs() || r.URL.Host == "" {
 		http.Error(w, "proxy: expected an absolute-form request", http.StatusBadRequest)
+		return
+	}
+	// Gate on the requested origin name before resolving or dialing it.
+	if !px.hostAllowed(r.URL.Host) {
+		http.Error(w, "egress denied by policy", http.StatusForbidden)
 		return
 	}
 	addr := r.URL.Host

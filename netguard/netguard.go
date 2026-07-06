@@ -21,6 +21,7 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strings"
 	"syscall"
 	"time"
 
@@ -38,6 +39,17 @@ type Policy struct {
 	// Allow is an explicit allowlist of address ranges, permitted even when not
 	// public (a specific host's address, or a private range a run is granted).
 	Allow []netip.Prefix
+	// AllowHosts, when non-empty, restricts egress to these destination host names,
+	// checked on the name the client asked to reach before it is resolved. An entry is a
+	// host name matched case-insensitively; an entry beginning with a dot (".openai.com")
+	// also matches any subdomain of it. It composes with the address rules above rather
+	// than replacing them: a destination must pass both the name gate here and the
+	// resolved-address gate (AllowPublic/Allow), so an allowlisted name that resolves to a
+	// private or rebinding address is still denied. It is enforced where the destination
+	// name is known, the egress proxy a child process is pointed at, so it governs a
+	// process whose own code we do not control: "deny all egress except these providers".
+	// An empty AllowHosts imposes no name restriction (the address rules still apply).
+	AllowHosts []string
 }
 
 // DenyAll is the default-deny policy: no outbound connection is permitted.
@@ -58,6 +70,33 @@ func (p Policy) Allows(addr netip.Addr) bool {
 		}
 	}
 	return p.AllowPublic && IsPublic(addr)
+}
+
+// AllowsHost reports whether host (a destination name without a port) passes the name
+// allowlist. An empty allowlist permits any name, so the address rules alone decide;
+// otherwise the name must equal an entry, or be a subdomain of a dotted entry
+// (".example.com" matches example.com and any subdomain), compared case-insensitively. A
+// trailing dot on a fully-qualified name is ignored. It is a name gate only: a caller
+// still applies the address rules (Allows) on the resolved address, so this never widens
+// what an address rule denies.
+func (p Policy) AllowsHost(host string) bool {
+	if len(p.AllowHosts) == 0 {
+		return true
+	}
+	h := strings.ToLower(strings.TrimSuffix(host, "."))
+	for _, entry := range p.AllowHosts {
+		a := strings.ToLower(entry)
+		if strings.HasPrefix(a, ".") {
+			if h == a[1:] || strings.HasSuffix(h, a) {
+				return true
+			}
+			continue
+		}
+		if h == a {
+			return true
+		}
+	}
+	return false
 }
 
 // reserved are IANA special-purpose ranges that are not globally routable but are

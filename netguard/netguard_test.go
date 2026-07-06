@@ -46,6 +46,33 @@ func TestIsPublic(t *testing.T) {
 	}
 }
 
+func TestPolicyAllowsHost(t *testing.T) {
+	// An empty allowlist imposes no name restriction.
+	if !(Policy{}).AllowsHost("anything.example") {
+		t.Error("empty AllowHosts should permit any name")
+	}
+
+	p := Policy{AllowHosts: []string{"api.openai.com", ".openai.com", "127.0.0.1"}}
+	cases := map[string]bool{
+		"api.openai.com":   true,  // exact
+		"API.OpenAI.CoM":   true,  // case-insensitive
+		"api.openai.com.":  true,  // trailing FQDN dot ignored
+		"auth.openai.com":  true,  // subdomain of the dotted entry
+		"openai.com":       true,  // the dotted entry also matches the bare domain
+		"a.b.openai.com":   true,  // deeper subdomain
+		"127.0.0.1":        true,  // an IP literal entry
+		"notopenai.com":    false, // not a subdomain (suffix must be on a dot boundary)
+		"evil.com":         false, // not listed
+		"openai.com.evil":  false, // the allowlisted name is a prefix, not the host
+		"api.openai.com.x": false, // extra label after the exact name
+	}
+	for host, want := range cases {
+		if got := p.AllowsHost(host); got != want {
+			t.Errorf("AllowsHost(%q) = %v, want %v", host, got, want)
+		}
+	}
+}
+
 func TestPolicyAllows(t *testing.T) {
 	// Default-deny: the zero policy permits nothing.
 	if DenyAll().Allows(addr("8.8.8.8")) || DenyAll().Allows(addr("127.0.0.1")) {
