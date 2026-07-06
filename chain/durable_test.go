@@ -3,6 +3,8 @@ package chain
 import (
 	"bytes"
 	"context"
+	"fmt"
+	"sync"
 	"testing"
 
 	"github.com/ionalpha/flynn/spine"
@@ -147,6 +149,92 @@ func TestDurableRecorderEvictionReloads(t *testing.T) {
 		}
 		if want := referenceRoot(t, log, s); !bytes.Equal(cp.RootHash, want) {
 			t.Fatalf("stream %s head after eviction/reload does not match the log fold", s)
+		}
+	}
+}
+
+// lockedCheckpointStore makes a fakeCheckpointStore safe for the concurrent-streams test;
+// production uses the SQLite store, which serializes its own writes.
+type lockedCheckpointStore struct {
+	mu sync.Mutex
+	*fakeCheckpointStore
+}
+
+func (l *lockedCheckpointStore) SaveCheckpoint(ctx context.Context, stream string, size uint64, cose []byte) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeCheckpointStore.SaveCheckpoint(ctx, stream, size, cose)
+}
+
+func (l *lockedCheckpointStore) LatestCheckpoint(ctx context.Context, stream string) (uint64, []byte, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.fakeCheckpointStore.LatestCheckpoint(ctx, stream)
+}
+
+// TestDurableRecorderConcurrentStreams is the per-stream-lock gate: many streams record at
+// once (the fan-out shape a served log sees), one goroutine per stream so each stream stays
+// a single-writer path. A checkpoint on one stream (flush, sign, persist) must not
+// serialize or corrupt recording on the others: with the global lock scoped to the map, the
+// streams proceed concurrently, and each final head must still match an independent fold of
+// the log. Run under -race, this also proves the tree and checkpoint state are touched only
+// under their stream's lock. It caps residency below the stream count so eviction and reload
+// happen concurrently too.
+func TestDurableRecorderConcurrentStreams(t *testing.T) {
+	ctx := context.Background()
+	priv, pub := testKey(0x77)
+	signer, err := NewEd25519RootSigner("inst", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring := NewRootKeyring()
+	if err := ring.Add("inst", pub); err != nil {
+		t.Fatal(err)
+	}
+
+	log := spine.NewMemoryLog()
+	var storesMu sync.Mutex
+	stores := map[string]*durableFlushStore{}
+	nodes := func(s string) FlushNodeStore {
+		storesMu.Lock()
+		defer storesMu.Unlock()
+		st, ok := stores[s]
+		if !ok {
+			st = &durableFlushStore{newTiledNodeStore()}
+			stores[s] = st
+		}
+		return st
+	}
+	ckpts := &lockedCheckpointStore{fakeCheckpointStore: newFakeCheckpointStore()}
+
+	const streamCount, perStream = 16, 40
+	rec := NewDurableRecorder(log, nodes, ckpts, signer, nil, 7).WithMaxResident(4)
+
+	var wg sync.WaitGroup
+	for i := range streamCount {
+		wg.Add(1)
+		go func(stream string) {
+			defer wg.Done()
+			appendDurable(t, rec, stream, perStream)
+		}(fmt.Sprintf("stream-%02d", i))
+	}
+	wg.Wait()
+
+	for i := range streamCount {
+		stream := fmt.Sprintf("stream-%02d", i)
+		if err := rec.Checkpoint(ctx, stream); err != nil {
+			t.Fatalf("checkpoint %s: %v", stream, err)
+		}
+		_, cose, ok, err := ckpts.LatestCheckpoint(ctx, stream)
+		if err != nil || !ok {
+			t.Fatalf("no checkpoint for %s (err=%v)", stream, err)
+		}
+		cp, err := VerifyCheckpoint(cose, ring)
+		if err != nil {
+			t.Fatalf("checkpoint %s does not verify: %v", stream, err)
+		}
+		if want := referenceRoot(t, log, stream); !bytes.Equal(cp.RootHash, want) {
+			t.Fatalf("stream %s head does not match the independent log fold", stream)
 		}
 	}
 }
