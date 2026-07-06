@@ -105,6 +105,49 @@ jobs:
           files: coverage.out
         continue-on-error: true
 
+  e2e:
+    name: E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Same cost posture as the test job: Linux only while the repo is private and
+        # under heavy iteration. Restore the full set at public launch so the shipped
+        # binary is exercised on every release target:
+        #   os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26"
+      - name: Exclude Go paths from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$(go env GOCACHE)", "$(go env GOMODCACHE)", "$env:RUNNER_TEMP" -ErrorAction Stop
+          } catch {
+            Write-Host "Could not set Defender exclusions (continuing): $_"
+          }
+      # The e2e suite compiles ./cmd/flynn itself and drives it as a subprocess against a
+      # scripted, in-process model server, so it needs no secrets and no network. On a
+      # failure it writes the run's stdout, stderr, and a copy of the data dir under
+      # FLYNN_E2E_ARTIFACTS for triage.
+      - name: E2E
+        env:
+          FLYNN_E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+        run: go test ./e2e/ -count=1
+      # To surface the triage bundle in the GitHub UI, add an upload step here pinned to a
+      # full commit SHA (Dependabot keeps it current), matching how every other action in
+      # this workflow is pinned:
+      #   - if: failure()
+      #     uses: actions/upload-artifact@<sha> # v4
+      #     with:
+      #       name: e2e-artifacts-${{ matrix.os }}
+      #       path: ${{ runner.temp }}/e2e-artifacts
+      #       if-no-files-found: ignore
+
   lint:
     name: Lint & format
     runs-on: ubuntu-latest
@@ -293,7 +336,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [test, lint, vuln, secrets, osv, semgrep, bench, pr-body]
+    needs: [test, e2e, lint, vuln, secrets, osv, semgrep, bench, pr-body]
     runs-on: ubuntu-latest
     steps:
       - name: Verify required jobs succeeded
