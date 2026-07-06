@@ -6,11 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	"golang.org/x/term"
 
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
@@ -57,7 +59,7 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, harness.Plan{}, err
 	}
-	spec, oerr := onboardCredential(ctx, modelSpec, dataDir)
+	spec, oerr := onboardModel(ctx, modelSpec, dataDir)
 	if oerr != nil {
 		return nil, harness.Plan{}, oerr
 	}
@@ -93,54 +95,118 @@ func keyedProviders() []string {
 	return out
 }
 
-// onboardCredential is the first-run setup: it asks which provider to use
-// (defaulting to the one in modelSpec), reads its API key without echoing, and
-// seals it in the vault. It returns the model spec to resolve with: the original
-// spec when the chosen provider matches it (so a specific model is kept), or the
-// bare provider name (its default model) when the user picked a different one.
-func onboardCredential(ctx context.Context, modelSpec, dataDir string) (string, error) {
-	def, _, _ := strings.Cut(modelSpec, ":")
-	if _, ok := provider.KeyRef(def); !ok {
-		def = provider.Providers()[0]
-	}
+// onboardModel is the first-run setup: it shows the hosted models from the catalog,
+// lets the user pick one (by number, or by typing any provider:model or local model id),
+// stores the API key for the chosen provider when one is needed and not already set, and
+// records the choice as the default so a later launch reuses it without --model. It
+// returns the model spec to resolve with.
+func onboardModel(ctx context.Context, modelSpec, dataDir string) (string, error) {
+	hosted := hostedCatalogModels()
+	def := defaultOnboardSpec(modelSpec, hosted)
 
-	fmt.Fprintln(os.Stderr, "Welcome to Flynn. No model credential is set yet, so let's add one.")
-	keyed := keyedProviders()
-	fmt.Fprintf(os.Stderr, "Providers: %s\n", strings.Join(keyed, ", "))
+	fmt.Fprintln(os.Stderr, "Welcome to Flynn. No model is set up yet, so let's pick one.")
+	for i, id := range hosted {
+		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, id)
+	}
+	fmt.Fprintln(os.Stderr, "  (or type a provider:model, or a local model id from `flynn models`)")
 
 	in := bufio.NewReader(os.Stdin)
-	name, err := promptVisible(in, fmt.Sprintf("Provider [%s]: ", def))
+	choice, err := promptVisible(in, fmt.Sprintf("Model [%s]: ", def))
 	if err != nil {
 		return "", err
 	}
-	if name == "" {
-		name = def
+	spec := onboardChoiceSpec(choice, hosted, def)
+	if spec == "" {
+		return "", errors.New("no model chosen")
 	}
+
+	// If the chosen model's provider needs an API key and none is stored yet, ask for it
+	// and seal it. A local model or a keyless provider skips this.
+	if err := ensureProviderKey(ctx, spec, dataDir); err != nil {
+		return "", err
+	}
+
+	if err := writeActiveModel(dataDir, spec); err != nil {
+		return "", fmt.Errorf("record model selection: %w", err)
+	}
+	fmt.Fprintf(os.Stderr, "Using %s. Change it any time with `flynn models use <id>`, or /model in a session.\n\n", spec)
+	return spec, nil
+}
+
+// hostedCatalogModels lists the hosted (API) models from the catalog as provider:model
+// ids, the first-run pick list. If the catalog cannot be read, it falls back to the
+// default model of each keyed provider, so onboarding still offers a usable choice.
+func hostedCatalogModels() []string {
+	cat, err := catalog.Load()
+	if err == nil {
+		var ids []string
+		for _, m := range cat.Find(catalog.Query{Kind: catalog.KindAPI}) {
+			ids = append(ids, m.ID)
+		}
+		if len(ids) > 0 {
+			return ids
+		}
+	}
+	return keyedProviders()
+}
+
+// defaultOnboardSpec picks the pre-filled onboarding choice: the requested spec when it
+// names a keyed provider, else the first hosted model, else the requested spec as typed.
+func defaultOnboardSpec(modelSpec string, hosted []string) string {
+	if name, _, ok := strings.Cut(modelSpec, ":"); ok {
+		if _, keyed := provider.KeyRef(name); keyed {
+			return modelSpec
+		}
+	}
+	if len(hosted) > 0 {
+		return hosted[0]
+	}
+	return modelSpec
+}
+
+// onboardChoiceSpec turns the user's answer into a model spec: an empty answer takes the
+// default, a number selects from the offered list, and anything else is treated as a spec
+// typed directly (a provider:model or a local model id).
+func onboardChoiceSpec(choice string, hosted []string, def string) string {
+	choice = strings.TrimSpace(choice)
+	if choice == "" {
+		return def
+	}
+	if n, err := strconv.Atoi(choice); err == nil {
+		if n >= 1 && n <= len(hosted) {
+			return hosted[n-1]
+		}
+		return "" // an out-of-range number is a mistake, not a spec
+	}
+	return choice
+}
+
+// ensureProviderKey stores an API key for spec's provider when the provider takes one and
+// none is set yet, reading it without echo and sealing it in the vault. A local model or
+// a keyless provider needs nothing and returns nil.
+func ensureProviderKey(ctx context.Context, spec, dataDir string) error {
+	name, _, _ := strings.Cut(spec, ":")
 	ref, ok := provider.KeyRef(name)
 	if !ok {
-		return "", fmt.Errorf("provider %q does not take an API key here (want one of %s)", name, strings.Join(keyed, ", "))
+		return nil // keyless (a local server) or not a provider spec
+	}
+	if _, err := credentialSource(dataDir).Lookup(ctx, ref); err == nil {
+		return nil // already have a key for this provider
 	}
 
 	key, err := promptHidden(fmt.Sprintf("Enter API key for %s: ", name))
 	if err != nil {
-		return "", err
+		return err
 	}
 	if key.Empty() {
-		return "", errors.New("no key entered")
+		return errors.New("no key entered")
 	}
-
 	store := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))
 	if err := store.Set(ctx, ref, key); err != nil {
-		return "", err
+		return err
 	}
-	fmt.Fprintf(os.Stderr, "Stored %s in the vault (encrypted at rest, revealed only to call the model).\n\n", ref)
-
-	// Keep the caller's specific model when it belongs to the chosen provider;
-	// otherwise resolve the chosen provider's default model.
-	if name == def {
-		return modelSpec, nil
-	}
-	return name, nil
+	fmt.Fprintf(os.Stderr, "Stored %s in the vault (encrypted at rest, revealed only to call the model).\n", ref)
+	return nil
 }
 
 // promptVisible reads one echoed line from in and returns it trimmed. Unlike
