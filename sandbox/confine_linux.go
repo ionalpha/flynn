@@ -34,6 +34,13 @@ func kernelConfinementSupported() bool { return true }
 // yet, so a governed-egress launch refuses rather than running with direct egress open.
 func egressEnforceable() bool { return false }
 
+// backgroundConfinementExpressible reports whether kernel confinement can be applied to a
+// backgrounded process (the Serve path). On Linux it can: confine sets the isolation on
+// the child the standard library starts (namespace clone flags and, for the filesystem
+// and syscall filter, a re-exec launcher), which holds identically whether the process is
+// run to completion or started and left running. Serve carries the same tier as Exec.
+func backgroundConfinementExpressible() bool { return true }
+
 // confine applies the kernel-enforced isolation a Local was configured for to a
 // command about to run. With no options it does nothing. Network denial places the
 // command in a fresh network namespace (no interfaces, no routes, so no connection

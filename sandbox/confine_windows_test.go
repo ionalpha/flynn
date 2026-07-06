@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -218,6 +219,61 @@ func TestProfileCleanupOnClose(t *testing.T) {
 	}
 	if _, err := os.Stat(profileDir); err == nil {
 		t.Fatal("the AppContainer profile folder must be removed after Close")
+	}
+}
+
+// TestServeExplicitConfineFailsClosed proves the fail-closed rule for a backgrounded
+// server on Windows: the AppContainer tier cannot be carried onto a backgroundable
+// process, so an explicitly confined Serve must refuse rather than start the server at
+// the directory-jail floor while the sandbox still reports the confined tier. A silently
+// unconfined running process would be the bug this guards against.
+func TestServeExplicitConfineFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []LocalOption
+	}{
+		{"read-only-fs", []LocalOption{WithReadOnlyFS()}},
+		{"seccomp", []LocalOption{WithSeccomp()}},
+		{"kernel-confinement", []LocalOption{WithKernelConfinement()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := append(tc.opts, WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
+			l, err := NewLocal(t.TempDir(), opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
+			if err == nil {
+				_ = p.Stop()
+				t.Fatal("an explicitly confined Serve on Windows must fail closed, not start the server unconfined")
+			}
+			if p != nil {
+				t.Fatal("a refused Serve must not return a running process handle")
+			}
+			if !strings.Contains(err.Error(), "background process") {
+				t.Fatalf("want a background-confinement-unsupported refusal, got %v", err)
+			}
+		})
+	}
+}
+
+// TestServeDefaultConfinementDropsToFloor confirms the always-on baseline is the one
+// exception: WithDefaultConfinement carries no explicit request and no network control,
+// so a backgrounded server is allowed to run at the directory-jail floor rather than
+// being refused. The default never fails merely for asking, matching Exec's fallback.
+func TestServeDefaultConfinementDropsToFloor(t *testing.T) {
+	l, err := NewLocal(t.TempDir(), WithDefaultConfinement(), WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
+	if err != nil {
+		t.Fatalf("the always-on baseline must drop to the floor, not refuse: %v", err)
+	}
+	defer func() { _ = p.Stop() }()
+	waitFor(t, time.Second, func() bool { return strings.Contains(p.Output(), "helper-up") })
+	if !p.Running() {
+		t.Fatal("the backgrounded server should be running at the floor")
 	}
 }
 

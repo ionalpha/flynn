@@ -19,6 +19,14 @@ func kernelConfinementSupported() bool { return false }
 // running with direct egress open.
 func egressEnforceable() bool { return false }
 
+// backgroundConfinementExpressible reports whether kernel confinement can be applied to a
+// backgrounded process (the Serve path). Confinement here is expressed on the child the
+// standard library starts through confine, which holds whether the process is run to
+// completion or backgrounded. There is no separate blocking launch that would make a
+// background launch lose the tier, so this is true even though confine refuses any
+// requested confinement outright (kernel confinement is unsupported on this platform).
+func backgroundConfinementExpressible() bool { return true }
+
 // confine reports that kernel-enforced isolation is not available on this platform.
 // When a Local was configured to deny the network, confine the filesystem, or filter
 // syscalls, it fails rather than running the command without that isolation, so a

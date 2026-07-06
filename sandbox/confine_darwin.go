@@ -23,6 +23,12 @@ func kernelConfinementSupported() bool { return true }
 // it can.
 func egressEnforceable() bool { return true }
 
+// backgroundConfinementExpressible reports whether kernel confinement can be applied to a
+// backgrounded process (the Serve path). On macOS it can: confine wraps the child in the
+// sandbox launcher with a seatbelt profile, which holds identically whether the process is
+// run to completion or started and left running. Serve carries the same tier as Exec.
+func backgroundConfinementExpressible() bool { return true }
+
 // egressAddr returns the running proxy's address for the seatbelt allow-only-proxy rule,
 // or "" when egress is not configured. It reads under the egress lock, which the launch
 // path has already released after starting the proxy.

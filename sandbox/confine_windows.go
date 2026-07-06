@@ -25,6 +25,17 @@ func kernelConfinementSupported() bool { return true }
 // direct egress open.
 func egressEnforceable() bool { return false }
 
+// backgroundConfinementExpressible reports whether kernel confinement can be applied to
+// a process that is started and left running in the background (the Serve path). On
+// Windows it cannot: confinement here is an AppContainer applied at process creation
+// through launchAppContainer, whose current shape starts the child and blocks on its
+// exit to collect output, so it yields no backgroundable handle the way an exec.Cmd
+// does. confine is a no-op on this platform (see below), so a background process cannot
+// carry the container. Serve therefore refuses an explicitly confined background launch
+// rather than starting it at the directory-jail floor under a tier the trust gate relied
+// on; the foreground Exec path keeps the full AppContainer tier.
+func backgroundConfinementExpressible() bool { return false }
+
 // confine is a no-op on Windows. Kernel confinement here is an AppContainer, which is
 // applied at process creation through security attributes that an exec.Cmd cannot
 // carry, so a confined command runs through runAppContainer rather than the standard
