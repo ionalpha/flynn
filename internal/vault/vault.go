@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/secret"
@@ -82,18 +83,45 @@ func WithService(name string) Option {
 
 // New builds a Store. The sealed-file fallback lives under dir; the OS keychain is
 // used when available. By default the fallback passphrase is read from the
-// environment, so a non-interactive run can unlock a file-backed vault.
+// environment, so a non-interactive run can unlock a file-backed vault. Setting
+// FLYNN_VAULT_FILE forces the sealed-file backend and never touches the OS keychain
+// (see forceFileVault); an explicit WithKeyring still overrides it, because options are
+// applied after the default is chosen.
 func New(dir string, opts ...Option) *Store {
 	s := &Store{
 		service: DefaultService,
 		file:    filepath.Join(dir, "vault.sealed"),
-		kr:      OSKeyring(),
+		kr:      defaultKeyring(),
 		pass:    EnvPassphrase,
 	}
 	for _, o := range opts {
 		o(s)
 	}
 	return s
+}
+
+// defaultKeyring selects the backend a caller did not override: the passphrase-sealed
+// file alone when FLYNN_VAULT_FILE opts out of the keychain, otherwise the OS keychain
+// (with the file as its fallback).
+func defaultKeyring() Keyring {
+	if forceFileVault() {
+		return disabledKeyring{}
+	}
+	return OSKeyring()
+}
+
+// forceFileVault reports whether FLYNN_VAULT_FILE asks the vault to skip the OS keychain
+// and store credentials only in the passphrase-sealed file. It is the switch a container,
+// a CI job, or a user who does not want a key in the OS keychain sets; the passphrase
+// still comes from FLYNN_VAULT_PASSPHRASE (or the CLI prompt). It accepts the usual
+// affirmatives so FLYNN_VAULT_FILE=1, =true, =on, or =yes all enable it.
+func forceFileVault() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("FLYNN_VAULT_FILE"))) {
+	case "1", "true", "on", "yes":
+		return true
+	default:
+		return false
+	}
 }
 
 var _ secret.Source = (*Store)(nil)

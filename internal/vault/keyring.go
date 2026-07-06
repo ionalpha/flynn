@@ -51,3 +51,19 @@ func (osKeyring) Delete(service, key string) error {
 	}
 	return err
 }
+
+// errKeychainDisabled reports that the OS keychain has been turned off (see
+// disabledKeyring). It is distinct from ErrKeyNotFound, so the Store treats it as
+// "keychain unavailable" and falls through to the passphrase-sealed file, exactly as a
+// host with no keychain service does.
+var errKeychainDisabled = errors.New("vault: OS keychain disabled")
+
+// disabledKeyring is a Keyring whose every operation reports the keychain as unavailable,
+// so the Store uses only the sealed file. It backs the FLYNN_VAULT_FILE switch: a run
+// that opts into a file-only vault (a container, a CI job, a host whose keychain the user
+// does not want touched) never reads or writes the OS keychain.
+type disabledKeyring struct{}
+
+func (disabledKeyring) Get(_, _ string) (string, error) { return "", errKeychainDisabled }
+func (disabledKeyring) Set(_, _, _ string) error        { return errKeychainDisabled }
+func (disabledKeyring) Delete(_, _ string) error        { return errKeychainDisabled }

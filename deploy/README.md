@@ -80,6 +80,7 @@ inbound port is required for the agent to answer messages.
 | `TELEGRAM_BOT_TOKEN` | Telegram channel. Set it to answer Telegram messages; omit for a monitor-only daemon. |
 | `FLYNN_API_TOKEN` | Bearer token for the control-plane API. If unset, Flynn generates one and prints it to the logs at startup. |
 | `FLYNN_VAULT_PASSPHRASE` | Unseals the sealed credential vault non-interactively, so configured integrations work without a TTY prompt. Needed once you store an integration credential. Keep it stable: losing it makes stored credentials unrecoverable. |
+| `FLYNN_VAULT_FILE` | Set to `1` to store credentials only in the passphrase-sealed file and never touch the OS keychain. Recommended in a container or on a headless host (no keychain service), and for anyone who does not want a key in the OS keychain. Pair it with `FLYNN_VAULT_PASSPHRASE`. |
 
 The default command is `serve --data-dir=/data --api-addr=127.0.0.1:7575`. Add
 `--signal-tcp` for a Signal channel, or drop `--api-addr` entirely if you do not want

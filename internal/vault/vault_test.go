@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -216,5 +217,84 @@ func TestStoreSealedFileIsEncryptedAtRest(t *testing.T) {
 	}
 	if strings.Contains(string(blob), "sk-plaintext-must-not-appear") {
 		t.Fatalf("sealed file leaked the plaintext:\n%s", blob)
+	}
+}
+
+// --- FLYNN_VAULT_FILE switch -------------------------------------------------
+
+func TestForceFileVaultParsesEnv(t *testing.T) {
+	for _, v := range []string{"1", "true", "on", "yes", "TRUE", " yes "} {
+		t.Setenv("FLYNN_VAULT_FILE", v)
+		if !forceFileVault() {
+			t.Fatalf("FLYNN_VAULT_FILE=%q should force the file vault", v)
+		}
+	}
+	for _, v := range []string{"", "0", "false", "no", "off", "bogus"} {
+		t.Setenv("FLYNN_VAULT_FILE", v)
+		if forceFileVault() {
+			t.Fatalf("FLYNN_VAULT_FILE=%q must not force the file vault", v)
+		}
+	}
+}
+
+func TestDefaultKeyringHonorsSwitch(t *testing.T) {
+	t.Setenv("FLYNN_VAULT_FILE", "")
+	if _, ok := defaultKeyring().(osKeyring); !ok {
+		t.Fatalf("default backend should be the OS keychain, got %T", defaultKeyring())
+	}
+	t.Setenv("FLYNN_VAULT_FILE", "1")
+	if _, ok := defaultKeyring().(disabledKeyring); !ok {
+		t.Fatalf("FLYNN_VAULT_FILE should disable the keychain, got %T", defaultKeyring())
+	}
+}
+
+// TestForceFileVaultUsesSealedFile is the end-to-end switch behavior: with
+// FLYNN_VAULT_FILE set and no explicit keyring, a Set writes the passphrase-sealed file
+// and a fresh Store reads the value back, so the OS keychain is bypassed entirely.
+func TestForceFileVaultUsesSealedFile(t *testing.T) {
+	t.Setenv("FLYNN_VAULT_FILE", "1")
+	dir := t.TempDir()
+	ctx := context.Background()
+
+	s := New(dir, WithPassphrase(fixedPass("unlock-me")))
+	if err := s.Set(ctx, "OPENAI_API_KEY", secret.New("sk-secret")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "vault.sealed")); err != nil {
+		t.Fatalf("expected the sealed file to be written: %v", err)
+	}
+
+	got, err := New(dir, WithPassphrase(fixedPass("unlock-me"))).Lookup(ctx, "OPENAI_API_KEY")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Expose() != "sk-secret" {
+		t.Fatalf("Lookup got %q, want %q", got.Expose(), "sk-secret")
+	}
+
+	// The sealed bytes on disk do not contain the plaintext key.
+	blob, err := os.ReadFile(filepath.Join(dir, "vault.sealed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(blob), "sk-secret") {
+		t.Fatal("plaintext key found in the sealed file")
+	}
+}
+
+// TestWithKeyringOverridesSwitch confirms an explicit WithKeyring still wins, so the
+// switch changes only the default and does not break a caller (or a test) that injects
+// its own backend.
+func TestWithKeyringOverridesSwitch(t *testing.T) {
+	t.Setenv("FLYNN_VAULT_FILE", "1")
+	kr := fakeKeyring{}
+	ctx := context.Background()
+
+	s := New(t.TempDir(), WithKeyring(kr))
+	if err := s.Set(ctx, "K", secret.New("v")); err != nil {
+		t.Fatal(err)
+	}
+	if kr["K"] != "v" {
+		t.Fatal("WithKeyring should override FLYNN_VAULT_FILE and use the injected keyring")
 	}
 }
