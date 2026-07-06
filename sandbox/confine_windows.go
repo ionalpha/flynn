@@ -120,8 +120,18 @@ var acProfileEnvKeys = []string{
 // space writes it inside the one writable location rather than failing against the
 // read-only host.
 func (l *Local) appContainerEnv() *uint16 {
+	return l.appContainerEnvBlock(l.env())
+}
+
+// appContainerEnvBlock builds the AppContainer environment block from a base KEY=VALUE
+// environment (the sandbox's scrubbed baseline, optionally overlaid with a streamed
+// process's explicit grants), plus the profile-location variables AppContainer requires
+// and the temporary directory redirected into the working tree. It is the shared builder
+// behind appContainerEnv (the one-shot path, base = env()) and the streaming path
+// (base = streamEnv(grants)).
+func (l *Local) appContainerEnvBlock(base []string) *uint16 {
 	m := make(map[string]string)
-	for _, kv := range l.env() {
+	for _, kv := range base {
 		if i := strings.IndexByte(kv, '='); i > 0 {
 			m[kv[:i]] = kv[i+1:]
 		}

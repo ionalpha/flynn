@@ -258,13 +258,35 @@ func applyJobLimits(process windows.Handle) (windows.Handle, error) {
 	return job, nil
 }
 
-// launchAppContainer runs a command inside the AppContainer named by sid, with the
-// given capabilities, working directory, and environment, and returns its combined
-// output and exit code. A non-zero exit is a normal result; only a failure to launch
-// or a cancelled context is an error. Output is drained on a separate goroutine so a
-// command that writes more than the pipe buffer cannot deadlock, and only the single
-// output-pipe handle is inherited by the child.
-func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte) (ExecResult, error) {
+// acProcess is a started AppContainer process and the handles that own its lifetime:
+// the process and its initial thread, the job object that contains it (closing the last
+// job handle reaps any survivor the command spawned), and the read end of its combined
+// output pipe. The blocking launch (launchAppContainer) and the streaming launch
+// (startStreamAppContainer) both build on spawnAppContainer; each owns closing these
+// handles once the process is done.
+type acProcess struct {
+	pi   windows.ProcessInformation
+	job  windows.Handle
+	read windows.Handle // parent's read end of the child's combined stdout+stderr
+}
+
+// closeProcess releases the process, thread, and job handles. It does not close read,
+// whose ownership differs between the two launch paths: the blocking path drains and
+// closes it directly, the streaming path wraps it in an *os.File and closes that.
+func (p *acProcess) closeProcess() {
+	_ = windows.CloseHandle(p.pi.Thread)
+	_ = windows.CloseHandle(p.pi.Process)
+	_ = windows.CloseHandle(p.job) // closing the last job handle reaps any survivor
+}
+
+// spawnAppContainer creates and starts a command inside the AppContainer named by sid,
+// with the given capabilities, working directory, and environment, and returns a handle
+// to the running process. Only the single output-pipe write handle (and the stdin read
+// handle when present) is inherited by the child; the child is created suspended and
+// placed in its job before it runs a single instruction, and the mitigation policies are
+// applied at creation. The caller reads p.read and, when done, calls p.closeProcess and
+// closes p.read. A failure to launch is an error and leaves no handles for the caller.
+func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte) (*acProcess, error) {
 	capAttrs := make([]windows.SIDAndAttributes, 0, len(caps))
 	for _, c := range caps {
 		capAttrs = append(capAttrs, windows.SIDAndAttributes{Sid: c, Attributes: windows.SE_GROUP_ENABLED})
@@ -280,12 +302,21 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	sa := &windows.SecurityAttributes{InheritHandle: 1}
 	sa.Length = uint32(unsafe.Sizeof(*sa))
 	if err := windows.CreatePipe(&rd, &wr, sa, 0); err != nil {
-		return ExecResult{}, fmt.Errorf("sandbox: pipe: %w", err)
+		return nil, fmt.Errorf("sandbox: pipe: %w", err)
 	}
-	defer func() { _ = windows.CloseHandle(rd) }()
+	// On success rd is handed to the caller inside the returned handle; on any error path
+	// this closes it. The process, thread, and job handles below are guarded the same way,
+	// so a launch that fails leaks nothing and a launch that succeeds keeps them for the
+	// caller to close through closeProcess.
+	success := false
+	defer func() {
+		if !success {
+			_ = windows.CloseHandle(rd)
+		}
+	}()
 	if err := windows.SetHandleInformation(rd, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
 		_ = windows.CloseHandle(wr)
-		return ExecResult{}, fmt.Errorf("sandbox: handle info: %w", err)
+		return nil, fmt.Errorf("sandbox: handle info: %w", err)
 	}
 
 	// Optional standard-input pipe for a command that reads a secret on stdin (a
@@ -297,13 +328,13 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	if len(stdin) > 0 {
 		if err := windows.CreatePipe(&rdIn, &wrIn, sa, 0); err != nil {
 			_ = windows.CloseHandle(wr)
-			return ExecResult{}, fmt.Errorf("sandbox: stdin pipe: %w", err)
+			return nil, fmt.Errorf("sandbox: stdin pipe: %w", err)
 		}
 		if err := windows.SetHandleInformation(wrIn, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
 			_ = windows.CloseHandle(wr)
 			_ = windows.CloseHandle(rdIn)
 			_ = windows.CloseHandle(wrIn)
-			return ExecResult{}, fmt.Errorf("sandbox: stdin handle info: %w", err)
+			return nil, fmt.Errorf("sandbox: stdin handle info: %w", err)
 		}
 	}
 
@@ -320,12 +351,12 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	al, err := windows.NewProcThreadAttributeList(3)
 	if err != nil {
 		failClose()
-		return ExecResult{}, fmt.Errorf("sandbox: attribute list: %w", err)
+		return nil, fmt.Errorf("sandbox: attribute list: %w", err)
 	}
 	defer al.Delete()
 	if err := al.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(&sc), unsafe.Sizeof(sc)); err != nil {
 		failClose()
-		return ExecResult{}, fmt.Errorf("sandbox: security capabilities: %w", err)
+		return nil, fmt.Errorf("sandbox: security capabilities: %w", err)
 	}
 	// Inherit only the pipe handles we set up (output, and the stdin reader when present),
 	// not whatever other inheritable handles this process happens to hold.
@@ -335,14 +366,14 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	}
 	if err := al.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
 		failClose()
-		return ExecResult{}, fmt.Errorf("sandbox: handle list: %w", err)
+		return nil, fmt.Errorf("sandbox: handle list: %w", err)
 	}
 	// Harden the child with process-mitigation policies (Win32k lockdown, no code
 	// injection or DLL planting, standard exploit mitigations) on top of the container.
 	policy := uint64(sandboxMitigationPolicy)
 	if err := al.Update(procThreadAttributeMitigationPolicy, unsafe.Pointer(&policy), unsafe.Sizeof(policy)); err != nil {
 		failClose()
-		return ExecResult{}, fmt.Errorf("sandbox: mitigation policy: %w", err)
+		return nil, fmt.Errorf("sandbox: mitigation policy: %w", err)
 	}
 
 	si := new(windows.StartupInfoEx)
@@ -370,10 +401,16 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 		if wrIn != 0 {
 			_ = windows.CloseHandle(wrIn)
 		}
-		return ExecResult{}, fmt.Errorf("sandbox: create process: %w", err)
+		return nil, fmt.Errorf("sandbox: create process: %w", err)
 	}
-	defer func() { _ = windows.CloseHandle(pi.Thread) }()
-	defer func() { _ = windows.CloseHandle(pi.Process) }()
+	// The process, thread, and job handles are kept for the caller on success and closed
+	// here on any error path below, guarded by the same success flag as rd.
+	defer func() {
+		if !success {
+			_ = windows.CloseHandle(pi.Thread)
+			_ = windows.CloseHandle(pi.Process)
+		}
+	}()
 
 	// Contain the command in a job object (fork-bomb cap, reap any child it spawns when
 	// the run ends), then start it.
@@ -383,15 +420,19 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 			_ = windows.CloseHandle(wrIn)
 		}
 		_ = windows.TerminateProcess(pi.Process, 1)
-		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
+		return nil, fmt.Errorf("sandbox: %w", err)
 	}
-	defer func() { _ = windows.CloseHandle(job) }() // closing the last job handle reaps any survivors
+	defer func() {
+		if !success {
+			_ = windows.CloseHandle(job) // closing the last job handle reaps any survivors
+		}
+	}()
 	if _, err := windows.ResumeThread(pi.Thread); err != nil {
 		if wrIn != 0 {
 			_ = windows.CloseHandle(wrIn)
 		}
 		_ = windows.TerminateProcess(pi.Process, 1)
-		return ExecResult{}, fmt.Errorf("sandbox: resume: %w", err)
+		return nil, fmt.Errorf("sandbox: resume: %w", err)
 	}
 
 	// Feed the optional stdin on a separate goroutine so a value larger than the pipe
@@ -413,12 +454,29 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 		}()
 	}
 
+	success = true
+	return &acProcess{pi: pi, job: job, read: rd}, nil
+}
+
+// launchAppContainer runs a command inside the AppContainer named by sid and returns its
+// combined output and exit code. A non-zero exit is a normal result; only a failure to
+// launch or a cancelled context is an error. Output is drained on a separate goroutine so
+// a command that writes more than the pipe buffer cannot deadlock, and the process is
+// killed if ctx is cancelled before it exits.
+func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte) (ExecResult, error) {
+	p, err := spawnAppContainer(appName, cmdline, dir, env, sid, caps, stdin)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	defer p.closeProcess()
+	defer func() { _ = windows.CloseHandle(p.read) }()
+
 	outCh := make(chan []byte, 1)
 	go func() {
 		out, buf := []byte(nil), make([]byte, 4096)
 		for {
 			var n uint32
-			e := windows.ReadFile(rd, buf, &n, nil)
+			e := windows.ReadFile(p.read, buf, &n, nil)
 			if n > 0 {
 				out = append(out, buf[:n]...)
 			}
@@ -431,13 +489,13 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 
 	waited := make(chan struct{})
 	go func() {
-		_, _ = windows.WaitForSingleObject(pi.Process, windows.INFINITE)
+		_, _ = windows.WaitForSingleObject(p.pi.Process, windows.INFINITE)
 		close(waited)
 	}()
 
 	select {
 	case <-ctx.Done():
-		_ = windows.TerminateProcess(pi.Process, 1)
+		_ = windows.TerminateProcess(p.pi.Process, 1)
 		<-waited
 		<-outCh
 		return ExecResult{}, fmt.Errorf("sandbox: exec: %w", ctx.Err())
@@ -446,6 +504,6 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 
 	out := <-outCh
 	var code uint32
-	_ = windows.GetExitCodeProcess(pi.Process, &code)
+	_ = windows.GetExitCodeProcess(p.pi.Process, &code)
 	return ExecResult{Output: string(out), ExitCode: int(code)}, nil
 }
