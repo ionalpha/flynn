@@ -44,6 +44,9 @@ func RunSuite(t *testing.T, newQueue func() Harness) {
 	t.Run("FailPermanentlyDeadsAtOnce", func(t *testing.T) { testFailPermanently(t, newQueue()) })
 	t.Run("CompleteAndFailGuardState", func(t *testing.T) { testGuards(t, newQueue()) })
 	t.Run("GetUnknownIsNotFound", func(t *testing.T) { testGetNotFound(t, newQueue()) })
+	t.Run("RecoverReclaimsRunningAtOnce", func(t *testing.T) { testRecoverReclaims(t, newQueue()) })
+	t.Run("RecoverReapsExhausted", func(t *testing.T) { testRecoverReapsExhausted(t, newQueue()) })
+	t.Run("RecoverIgnoresPending", func(t *testing.T) { testRecoverIgnoresPending(t, newQueue()) })
 }
 
 const lease = int64(time.Minute)
@@ -334,5 +337,72 @@ func testGetNotFound(t *testing.T, h Harness) {
 	defer func() { _ = h.Queue.Close() }()
 	if _, err := h.Queue.Get(ctx(), "missing"); !errors.Is(err, jobs.ErrNotFound) {
 		t.Fatalf("Get unknown = %v, want ErrNotFound", err)
+	}
+}
+
+// testRecoverReclaims proves prompt crash recovery: a job left running is claimable
+// again immediately after Recover, without waiting for its lease to expire.
+func testRecoverReclaims(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k"})
+	first, ok := claimOne(t, h, "")
+	if !ok {
+		t.Fatal("first claim got nothing")
+	}
+	// The worker crashes without completing. Recover makes the running job claimable at
+	// once; the clock is NOT advanced, so this fails if recovery still needs the lease.
+	n, err := h.Queue.Recover(ctx())
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("Recover reset %d jobs, want 1", n)
+	}
+	second, ok := claimOne(t, h, "")
+	if !ok {
+		t.Fatal("running job was not reclaimable at once after Recover")
+	}
+	if second.ID != first.ID {
+		t.Fatalf("reclaimed %q, want the same job %q", second.ID, first.ID)
+	}
+	if second.Attempt != 2 {
+		t.Errorf("Attempt = %d after recover+reclaim, want 2", second.Attempt)
+	}
+}
+
+// testRecoverReapsExhausted confirms Recover does not revive a job that already spent its
+// attempts: the next Claim reaps it to dead rather than re-leasing it past MaxAttempts.
+func testRecoverReapsExhausted(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	j := mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", MaxAttempts: 1})
+	if _, ok := claimOne(t, h, ""); !ok {
+		t.Fatal("first claim got nothing")
+	}
+	if _, err := h.Queue.Recover(ctx()); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if reclaimed, ok := claimOne(t, h, ""); ok {
+		t.Fatalf("recovered an exhausted job %q past MaxAttempts", reclaimed.ID)
+	}
+	got, err := h.Queue.Get(ctx(), j.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.State != jobs.StateDead {
+		t.Fatalf("State = %q, want dead", got.State)
+	}
+}
+
+// testRecoverIgnoresPending checks Recover only touches running jobs: a pending job is
+// left as is and the count is zero.
+func testRecoverIgnoresPending(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k"})
+	n, err := h.Queue.Recover(ctx())
+	if err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("Recover reset %d jobs with none running, want 0", n)
 	}
 }

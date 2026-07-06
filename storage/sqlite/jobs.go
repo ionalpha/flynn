@@ -182,6 +182,32 @@ func (q *jobQueue) Get(ctx context.Context, id string) (jobs.Job, error) {
 	return j, err
 }
 
+// Recover implements jobs.Queue: it expires the lease of every job left running, so the
+// next Claim reclaims (or, if attempts are spent, reaps) it. A startup runs it once so a
+// step a crashed predecessor left in flight is picked up at once, not after its lease
+// lapses.
+func (q *jobQueue) Recover(ctx context.Context) (int, error) {
+	now := q.p.clk.Now().UnixNano()
+	var n int64
+	err := q.p.tx(ctx, func(tx *sql.Tx) error {
+		res, err := tx.ExecContext(ctx,
+			`UPDATE jobs SET lease_expires = 0, updated_at = ? WHERE state = ?`,
+			now, string(jobs.StateRunning))
+		if err != nil {
+			return err
+		}
+		n, _ = res.RowsAffected()
+		return nil
+	})
+	if err != nil {
+		return 0, fmt.Errorf("sqlite: recover jobs: %w", err)
+	}
+	if n > 0 {
+		jobs.Notify(q.p.jobsReady)
+	}
+	return int(n), nil
+}
+
 // Close is a no-op: the queue shares the Store's database, which the Store owns
 // and closes.
 func (q *jobQueue) Close() error { return nil }

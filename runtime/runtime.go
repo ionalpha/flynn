@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -219,6 +220,15 @@ func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, 
 // the step worker concurrently, blocking until both have stopped. It returns
 // ctx.Err() on shutdown.
 func (rt *Runtime) Start(ctx context.Context) error {
+	// Crash recovery: a previous process may have died mid-step, leaving its step job
+	// leased but never completed. Under the single-instance lock no other worker is
+	// live, so make any such orphan immediately claimable rather than waiting out its
+	// lease. This is what lets a resumed run continue at once instead of stalling until
+	// the lease lapses.
+	if _, err := rt.jobs.Recover(ctx); err != nil {
+		return fmt.Errorf("runtime: recover orphaned jobs: %w", err)
+	}
+
 	sub, err := rt.bus.Subscribe(ctx, goal.StepSubject, func(ctx context.Context, m bus.Message) error {
 		// The signal payload is the goal's resource ID. Resolve it to a key and
 		// enqueue a reconcile. A goal that has since vanished needs none; any other

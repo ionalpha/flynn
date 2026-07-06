@@ -242,5 +242,27 @@ func (q *MemoryQueue) Get(_ context.Context, id string) (Job, error) {
 	return *j, nil
 }
 
+// Recover implements Queue: it expires the lease of every job left running, so the next
+// Claim reclaims (or, if attempts are spent, reaps) it at once. Only live jobs are
+// scanned; terminal jobs already left the active index.
+func (q *MemoryQueue) Recover(context.Context) (int, error) {
+	now := q.clk.Now().UnixNano()
+	q.mu.Lock()
+	n := 0
+	for _, byID := range q.active {
+		for _, j := range byID {
+			if j.State == StateRunning {
+				MarkRecovered(j, now)
+				n++
+			}
+		}
+	}
+	q.mu.Unlock()
+	if n > 0 {
+		Notify(q.ready)
+	}
+	return n, nil
+}
+
 // Close implements Queue.
 func (q *MemoryQueue) Close() error { return nil }

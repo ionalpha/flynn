@@ -106,6 +106,13 @@ type Queue interface {
 	Fail(ctx context.Context, id, errMsg string, retryAt int64) error
 	// Get returns a job by ID.
 	Get(ctx context.Context, id string) (Job, error)
+	// Recover makes jobs left running by a crashed worker immediately claimable,
+	// returning how many were reset. Startup calls it once under the single-instance
+	// lock, where no live worker holds a lease, so a run interrupted mid-step is
+	// re-dispatched at once instead of waiting out its lease (up to several minutes). It
+	// does not change a job's attempt count; a job that already exhausted its attempts
+	// is reaped to dead by the next Claim rather than retried.
+	Recover(ctx context.Context) (int, error)
 	// Close releases the queue's resources.
 	Close() error
 }
@@ -227,6 +234,16 @@ func ExpiredExhausted(j Job, now int64) bool {
 func MarkTimedOut(j *Job, now int64) {
 	j.State = StateDead
 	j.LastError = "lease expired without completion"
+	j.LeaseExpires = 0
+	j.UpdatedAt = now
+}
+
+// MarkRecovered expires a running job's lease so the next Claim reclaims it at once,
+// leaving the attempt count untouched. Startup crash recovery uses it: under the
+// single-instance lock a job still running belongs to a dead predecessor, so its lease
+// need not be waited out. A job whose attempts are already spent is not revived; the
+// next Claim reaps it to dead (see ExpiredExhausted).
+func MarkRecovered(j *Job, now int64) {
 	j.LeaseExpires = 0
 	j.UpdatedAt = now
 }
