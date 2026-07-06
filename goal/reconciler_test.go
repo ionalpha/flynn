@@ -231,6 +231,133 @@ func TestGoalBudgetStalls(t *testing.T) {
 	}
 }
 
+// racingStore fires one out-of-band write immediately before a chosen Put, so the
+// reconciler-versus-worker version race is deterministic instead of load-dependent.
+// It stands in for a step worker that claims the just-enqueued job, takes its turn,
+// and persists that turn's checkpoint in the window between the reconciler enqueuing
+// the step and recording the step's in-flight reservation.
+type racingStore struct {
+	resource.Store
+	tripOn  func(resource.Resource) bool
+	trip    func()
+	tripped bool
+}
+
+func (s *racingStore) Put(ctx context.Context, r resource.Resource) (resource.Resource, error) {
+	if !s.tripped && s.tripOn(r) {
+		s.tripped = true
+		s.trip()
+	}
+	return s.Store.Put(ctx, r)
+}
+
+// TestGoalDispatchReservationSurvivesWorkerRace locks the budget-enforcement
+// invariant against the race that made TestSessionEmitsStalled flaky: the reconciler
+// enqueues a step before it records the step's in-flight reservation, so a worker on
+// a tight poll can complete the step and persist its checkpoint before that write
+// lands. A blind reservation write would lose that optimistic race and be dropped,
+// and the dropped reservation means the completed step is never observed or counted,
+// so a second step dispatches and the goal spends one turn past its budget (the
+// symptom: it converges where it must stall). Here the worker's checkpoint write is
+// injected exactly in that window; the reservation must still land, the step must
+// still count, and a one-step budget must still stall.
+func TestGoalDispatchReservationSurvivesWorkerRace(t *testing.T) {
+	m := clock.NewManual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	reg := resource.NewRegistry()
+	if err := resource.RegisterCoreKinds(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	inner := resource.NewMemory(reg, resource.WithClock(m))
+	ctx := context.Background()
+
+	racer := &racingStore{Store: inner}
+	// Trip on the reservation write (the first status write that carries an in-flight
+	// step), standing in for the worker persisting its turn's checkpoint out-of-band
+	// and bumping the version the reservation write is racing.
+	racer.tripOn = func(r resource.Resource) bool {
+		st, err := DecodeStatus(r)
+		return err == nil && st.InFlight != nil
+	}
+	var goalID string
+	racer.trip = func() {
+		_, _ = resource.UpdateByID(ctx, inner, goalID, func(fresh *resource.Resource) error {
+			st, err := DecodeStatus(*fresh)
+			if err != nil {
+				return err
+			}
+			st.Checkpoint = json.RawMessage(`{"raced":true}`)
+			enc, err := st.Encode()
+			if err != nil {
+				return err
+			}
+			fresh.Status = enc
+			return nil
+		})
+	}
+
+	gr := NewReconciler(racer, jobs.NewMemory(), m, stopAfter{at: 99}) // never converges on its own
+	raw, _ := json.Marshal(Spec{Objective: "o", StopCondition: "c", MaxSteps: 1})
+	created, err := inner.Put(ctx, resource.Resource{APIVersion: GroupVersion, Kind: Kind, Name: "g", Spec: raw})
+	if err != nil {
+		t.Fatalf("create goal: %v", err)
+	}
+	goalID = created.ID
+	ref := reconcile.Ref{Kind: Kind, Name: "g"}
+
+	// The first reconcile adds the finalizer and dispatches step 1 in the same pass,
+	// so the reservation write (and the injected race) happens here. It must not error:
+	// a lost reservation write surfaces as a conflict. A follow-up reconcile re-observes
+	// the still-running step and must be a no-op.
+	if _, err := gr.Reconcile(ctx, ref); err != nil {
+		t.Fatalf("dispatch reconcile lost the reservation race: %v", err)
+	}
+	if !racer.tripped {
+		t.Fatal("race was never triggered; the test no longer exercises the reservation write")
+	}
+	if _, err := gr.Reconcile(ctx, ref); err != nil {
+		t.Fatalf("re-observe reconcile: %v", err)
+	}
+	r, _ := inner.Get(ctx, Kind, resource.Scope{}, "g")
+	st, err := DecodeStatus(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.InFlight == nil || st.Phase != PhaseRunning {
+		t.Fatalf("reservation was dropped by the worker race: %+v", st)
+	}
+	if string(st.Checkpoint) != `{"raced":true}` {
+		t.Fatalf("reservation write clobbered the worker checkpoint: %q", st.Checkpoint)
+	}
+
+	// Complete the one step and reconcile: it must be observed, counted, and the
+	// one-step budget must stall rather than dispatch a second step.
+	claimed, err := gr.jobs.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 1, LeaseFor: int64(time.Minute)})
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("claim step: err=%v n=%d", err, len(claimed))
+	}
+	if err := gr.jobs.Complete(ctx, claimed[0].ID); err != nil {
+		t.Fatalf("complete step: %v", err)
+	}
+	if _, err := gr.Reconcile(ctx, ref); err != nil {
+		t.Fatalf("observe reconcile: %v", err)
+	}
+	r, _ = inner.Get(ctx, Kind, resource.Scope{}, "g")
+	st, _ = DecodeStatus(r)
+	if st.Steps != 1 {
+		t.Fatalf("completed step was not counted (budget under-enforced): Steps=%d", st.Steps)
+	}
+	if st.Phase != PhaseStalled || !hasCond(st, CondStalled, "True") {
+		t.Fatalf("one-step budget did not stall the goal: %+v", st)
+	}
+	// No second step may have been dispatched.
+	if pending, _ := gr.jobs.Claim(ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 10, LeaseFor: int64(time.Minute)}); len(pending) != 0 {
+		t.Fatalf("budget-exhausted goal dispatched an extra step: %d", len(pending))
+	}
+}
+
 func TestGoalStepFailureStalls(t *testing.T) {
 	h := newHarness(t, stopAfter{at: 99}, WithStepMaxAttempts(1))
 	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})

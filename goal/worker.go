@@ -240,22 +240,28 @@ func (w *Worker) persistCheckpoint(ctx context.Context, r resource.Resource, che
 
 // markWaiting stamps the goal's status with when its step reported it is waiting,
 // so the reconciler parks the goal instead of counting the step and dispatching
-// another. Best effort like persistCheckpoint: a write conflict means the goal
-// moved on under us, and a lost mark only degrades that one wait back to the
-// counted-and-redispatched behaviour.
+// another. Like persistCheckpoint it applies the mark against a fresh read under
+// the shared conflict-retry policy rather than blind-writing the claim-time record:
+// the reconciler records the step's in-flight reservation on its own version around
+// the same time (the job is enqueued before that write lands), so a blind Put here
+// would lose that race, drop the wait mark, and let the reconciler count the wait as
+// a spent step, which is the false-stall this mark exists to prevent. Only the
+// waiting field is written; every reconciler-owned field is carried over from fresh.
 func (w *Worker) markWaiting(ctx context.Context, r resource.Resource) {
-	status, err := DecodeStatus(r)
-	if err != nil {
-		return
-	}
 	now := w.clk.Now()
-	status.WaitingSince = &now
-	enc, err := status.Encode()
-	if err != nil {
-		return
-	}
-	r.Status = enc
-	_, _ = w.store.Put(ctx, r)
+	_, _ = resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
+		status, err := DecodeStatus(*fresh)
+		if err != nil {
+			return err
+		}
+		status.WaitingSince = &now
+		enc, err := status.Encode()
+		if err != nil {
+			return err
+		}
+		fresh.Status = enc
+		return nil
+	})
 }
 
 // fail records a failed attempt. A transient cause is retried after an exponential

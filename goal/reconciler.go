@@ -264,7 +264,7 @@ func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	status.Phase = PhaseRunning
 	status.InFlight = &InFlight{JobID: job.ID, StartedAt: g.clk.Now()}
 	status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "StepDispatched"}, g.clk.Now())
-	if err := g.persistStatus(ctx, r, status, specHash); err != nil {
+	if err := g.recordDispatch(ctx, r, status, specHash); err != nil {
 		return reconcile.Result{}, err
 	}
 	// Re-check the dispatched step after poll even if its completion signal is
@@ -289,6 +289,41 @@ func (g *Reconciler) finalize(ctx context.Context, r resource.Resource) (reconci
 		return reconcile.Result{}, putErr(err)
 	}
 	return reconcile.Result{}, nil
+}
+
+// recordDispatch persists the in-flight reservation for a step that was just
+// enqueued. Unlike a settled-status write, it must survive a race with the step's
+// own worker: the job is enqueued (Enqueue, above) before this write runs, so a
+// worker on a tight poll can claim it, take its turn, and persist that turn's
+// checkpoint before this write lands. A blind Put would then lose the optimistic
+// race and be dropped, and the dropped InFlight marker means the completed step is
+// never observed in the next pass and never counted against the step budget, so an
+// extra turn runs past MaxSteps (the goal converges where it must stall). Retrying
+// the whole reconcile does not recover it: the retry re-reads a state that has
+// already lost the job-to-reservation link. So this reapplies the reservation onto
+// a fresh read with the shared conflict-retry policy instead. Only reconciler-owned
+// fields are written; the worker-owned checkpoint and waiting mark are carried over
+// from the fresh record so neither writer clobbers the other.
+func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, status Status, specHash string) error {
+	status.ObservedSpecHash = specHash
+	_, err := resource.UpdateByID(ctx, g.store, r.ID, func(fresh *resource.Resource) error {
+		cur, err := DecodeStatus(*fresh)
+		if err != nil {
+			return err
+		}
+		status.Checkpoint = cur.Checkpoint
+		status.WaitingSince = cur.WaitingSince
+		enc, err := status.Encode()
+		if err != nil {
+			return err
+		}
+		fresh.Status = enc
+		return nil
+	})
+	if err != nil {
+		return putErr(err)
+	}
+	return nil
 }
 
 // persistStatus records the observed spec hash and persists the status via the
