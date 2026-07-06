@@ -314,6 +314,12 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ Principal) 
 // (scope then name), so the result is deterministic when the same name exists in
 // more than one scope.
 func (s *Server) getAcrossScopes(ctx context.Context, kind, name string) (resource.Resource, bool, error) {
+	// Keyed lookup when the backend offers it: seek to the name via its index instead
+	// of decoding every resource of the kind to scan names. The capability returns the
+	// first match in the same scope-then-name order the fallback would.
+	if g, ok := s.store.(resource.AnyScopeGetter); ok {
+		return g.GetAnyScope(ctx, kind, name)
+	}
 	rs, err := s.store.ListAll(ctx, kind, resource.Selector{})
 	if err != nil {
 		return resource.Resource{}, false, err

@@ -104,6 +104,33 @@ func TestSealedBlobsIndex(t *testing.T) {
 	}
 }
 
+// TestAnyScopeGetIndex is the query-plan gate for the cross-scope by-name lookup
+// (resource.AnyScopeGetter): GetAnyScope must seek idx_resources_kind_name and read its
+// single row, never scan the kind. The live-keys index leads kind then the scope columns
+// before name, so without this index the (kind, name) query seeks by kind and then scans
+// every live row of the kind to test name.
+func TestAnyScopeGetIndex(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	plan := explainPlan(ctx, t, s,
+		`SELECT `+resourceCols+` FROM resources
+		 WHERE kind = ? AND name = ? AND deleted = 0
+		 ORDER BY scope_instance, scope_project, scope_workspace, id
+		 LIMIT 1`,
+		"Widget", "w-1")
+	if !strings.Contains(plan, "USING INDEX idx_resources_kind_name") {
+		t.Fatalf("GetAnyScope does not seek idx_resources_kind_name; plan: %s", plan)
+	}
+	if strings.Contains(plan, "SCAN resources") {
+		t.Fatalf("GetAnyScope scans the resources table instead of seeking the (kind, name) index; plan: %s", plan)
+	}
+}
+
 // explainPlan runs EXPLAIN QUERY PLAN over query and joins the detail rows, the
 // shared harness of the plan-shape gates above.
 func explainPlan(ctx context.Context, t *testing.T, s *Store, query string, args ...any) string {

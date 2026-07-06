@@ -89,6 +89,18 @@ type KeyLister interface {
 	ListKeys(ctx context.Context, kind string) ([]Key, error)
 }
 
+// AnyScopeGetter is an optional Store capability: a keyed lookup of the first live
+// resource of a kind with a name in any scope, in the same scope-then-name order
+// ListAll surfaces. A caller resolving a scope-independent name (the control plane's
+// cross-scope get, when the global scope missed) reads through it when the backend
+// offers it, so the lookup seeks to the name instead of listing and scanning the whole
+// kind. found is false with a nil error when no scope has the name. A backend that
+// cannot answer this from an index simply does not implement it; the caller falls back
+// to ListAll and a name scan.
+type AnyScopeGetter interface {
+	GetAnyScope(ctx context.Context, kind, name string) (Resource, bool, error)
+}
+
 // OwnerGone reports whether r's controller owner no longer exists or is itself
 // terminating, which makes r an orphan a garbage collector should reap so an
 // owner's deletion cascades to the subtree it created. A resource with no

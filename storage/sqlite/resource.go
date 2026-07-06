@@ -32,7 +32,11 @@ type resourceStore struct {
 	st *resource.Stamper
 }
 
-var _ resource.Store = (*resourceStore)(nil)
+var (
+	_ resource.Store          = (*resourceStore)(nil)
+	_ resource.KeyLister      = (*resourceStore)(nil)
+	_ resource.AnyScopeGetter = (*resourceStore)(nil)
+)
 
 // Close closes the shared database (the resource store and the Store share it).
 func (s *resourceStore) Close() error { return s.p.Close() }
@@ -219,17 +223,9 @@ func (s *resourceStore) List(ctx context.Context, kind string, scope resource.Sc
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	out := make([]resource.Resource, 0)
-	for rows.Next() {
-		r, err := scanResource(rows)
-		if err != nil {
-			return nil, err
-		}
-		// Label selectors are matched in Go over the decoded labels; the SQL narrows
-		// to (kind, scope) first. A labels index can optimize this later.
-		if sel.Matches(r.Labels) {
-			out = append(out, r)
-		}
+	out, err := collectRows(rows, sel)
+	if err != nil {
+		return nil, err
 	}
 	return out, rows.Err()
 }
@@ -244,17 +240,56 @@ func (s *resourceStore) ListAll(ctx context.Context, kind string, sel resource.S
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
+	out, err := collectRows(rows, sel)
+	if err != nil {
+		return nil, err
+	}
+	return out, rows.Err()
+}
+
+// collectRows decodes a resource result set, applying the label selector. With a
+// selector, each row is scanned into its raw columns and only its labels are decoded
+// to test the selector; the rest of the per-row JSON (annotations, finalizers, owner
+// references) is decoded only for rows the selector keeps. A resync poll with a
+// selector discards most rows, so this skips the full decode on the rejected majority.
+// With no selector every row is kept, so it decodes fully straight away.
+func collectRows(rows *sql.Rows, sel resource.Selector) ([]resource.Resource, error) {
 	out := make([]resource.Resource, 0)
+	filtering := len(sel) > 0
 	for rows.Next() {
-		r, err := scanResource(rows)
+		row, err := scanRawResource(rows)
 		if err != nil {
 			return nil, err
 		}
-		if sel.Matches(r.Labels) {
-			out = append(out, r)
+		if filtering && !row.matchesLabels(sel) {
+			continue
 		}
+		out = append(out, row.resource())
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// GetAnyScope is the resource.AnyScopeGetter capability: the first live resource of a
+// kind with the given name in any scope, in the same scope-then-id order ListAll
+// surfaces, so a caller resolving a scope-independent name gets a keyed lookup instead
+// of listing and scanning the whole kind. Backed by the (kind, name) partial index, the
+// query seeks straight to the name. It reports found=false (no error) when no scope has
+// the name.
+func (s *resourceStore) GetAnyScope(ctx context.Context, kind, name string) (resource.Resource, bool, error) {
+	row := s.p.reads().QueryRowContext(ctx,
+		`SELECT `+resourceCols+` FROM resources
+		 WHERE kind = ? AND name = ? AND deleted = 0
+		 ORDER BY scope_instance, scope_project, scope_workspace, id
+		 LIMIT 1`,
+		kind, name)
+	r, err := scanResource(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return resource.Resource{}, false, nil
+	}
+	if err != nil {
+		return resource.Resource{}, false, err
+	}
+	return r, true, nil
 }
 
 // ListKeys is the resource.KeyLister capability: the keys of every live resource
@@ -432,47 +467,89 @@ func upsertResourceRow(ctx context.Context, tx *sql.Tx, p *Store, r resource.Res
 	return err
 }
 
-func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error) {
-	var (
-		r                resource.Resource
-		labels, annots   string
-		spec, status     sql.NullString
-		wall, counter    int64
-		writerActor      string
-		deleted          int
-		finalizers       string
-		deletionTS       sql.NullString
-		ownerRefs        string
-		validFrom        sql.NullString
-		validTo          sql.NullString
-		created, updated string
-	)
+// rawResourceRow holds a resources row's columns as scanned, deferring the JSON decode
+// of labels, annotations, finalizers, and owner references. A selector-filtered list
+// decodes only labels to test the selector (matchesLabels), then finishes the decode
+// for survivors (resource), so a row the selector rejects never pays the rest of the
+// per-row unmarshal.
+type rawResourceRow struct {
+	r                resource.Resource
+	labels, annots   string
+	spec, status     sql.NullString
+	wall, counter    int64
+	writerActor      string
+	deleted          int
+	finalizers       string
+	deletionTS       sql.NullString
+	ownerRefs        string
+	validFrom        sql.NullString
+	validTo          sql.NullString
+	created, updated string
+
+	lbls    map[string]string // decoded labels, memoized so a survivor decodes them once
+	lblsSet bool
+}
+
+// scanRawResource reads every column of a resources row into the raw holder without
+// decoding the JSON columns. The scan order matches resourceCols and migration 0003.
+func scanRawResource(sc interface{ Scan(...any) error }) (rawResourceRow, error) {
+	var row rawResourceRow
+	r := &row.r
 	if err := sc.Scan(&r.ID, &r.APIVersion, &r.Kind, &r.Name,
 		&r.Scope.Instance, &r.Scope.Project, &r.Scope.Workspace,
-		&labels, &annots, &spec, &status,
-		&r.SyncVersion, &r.OriginInstanceID, &wall, &counter, &r.LastWriterID, &writerActor, &deleted,
-		&finalizers, &deletionTS, &ownerRefs,
-		&r.Version, &r.ContentHash, &r.SpecHash, &validFrom, &validTo, &created, &updated); err != nil {
+		&row.labels, &row.annots, &row.spec, &row.status,
+		&r.SyncVersion, &r.OriginInstanceID, &row.wall, &row.counter, &r.LastWriterID, &row.writerActor, &row.deleted,
+		&row.finalizers, &row.deletionTS, &row.ownerRefs,
+		&r.Version, &r.ContentHash, &r.SpecHash, &row.validFrom, &row.validTo, &row.created, &row.updated); err != nil {
+		return rawResourceRow{}, err
+	}
+	return row, nil
+}
+
+// decodeLabels decodes the labels column once and memoizes it, so a selector test and
+// the finishing decode share a single unmarshal.
+func (row *rawResourceRow) decodeLabels() map[string]string {
+	if !row.lblsSet {
+		row.lbls = unmarshalStringMap(row.labels)
+		row.lblsSet = true
+	}
+	return row.lbls
+}
+
+// matchesLabels reports whether sel accepts this row, decoding only its labels.
+func (row *rawResourceRow) matchesLabels(sel resource.Selector) bool {
+	return sel.Matches(row.decodeLabels())
+}
+
+// resource finishes the deferred decode into the full record.
+func (row *rawResourceRow) resource() resource.Resource {
+	r := row.r
+	r.WriterActor = spine.ActorType(row.writerActor)
+	r.Finalizers = unmarshalStringSlice(row.finalizers)
+	r.DeletionTimestamp = nullToTimePtr(row.deletionTS)
+	r.OwnerReferences = unmarshalOwnerRefs(row.ownerRefs)
+	r.Labels = row.decodeLabels()
+	r.Annotations = unmarshalStringMap(row.annots)
+	if row.spec.Valid {
+		r.Spec = json.RawMessage(row.spec.String)
+	}
+	if row.status.Valid {
+		r.Status = json.RawMessage(row.status.String)
+	}
+	r.UpdatedHLC = hlcTime(row.wall, row.counter)
+	r.Deleted = row.deleted != 0
+	r.ValidFrom = nullToTimePtr(row.validFrom)
+	r.ValidTo = nullToTimePtr(row.validTo)
+	r.CreatedAt, r.UpdatedAt = parseTime(row.created), parseTime(row.updated)
+	return r
+}
+
+func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error) {
+	row, err := scanRawResource(sc)
+	if err != nil {
 		return resource.Resource{}, err
 	}
-	r.WriterActor = spine.ActorType(writerActor)
-	r.Finalizers = unmarshalStringSlice(finalizers)
-	r.DeletionTimestamp = nullToTimePtr(deletionTS)
-	r.OwnerReferences = unmarshalOwnerRefs(ownerRefs)
-	r.Labels = unmarshalStringMap(labels)
-	r.Annotations = unmarshalStringMap(annots)
-	if spec.Valid {
-		r.Spec = json.RawMessage(spec.String)
-	}
-	if status.Valid {
-		r.Status = json.RawMessage(status.String)
-	}
-	r.UpdatedHLC = hlcTime(wall, counter)
-	r.Deleted = deleted != 0
-	r.ValidFrom = nullToTimePtr(validFrom)
-	r.ValidTo = nullToTimePtr(validTo)
-	r.CreatedAt, r.UpdatedAt = parseTime(created), parseTime(updated)
-	return r, nil
+	return row.resource(), nil
 }
 
 // --- value helpers ----------------------------------------------------------
