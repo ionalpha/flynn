@@ -29,6 +29,7 @@ import (
 type Local struct {
 	root        string // absolute, symlinks resolved
 	execTimeout time.Duration
+	resLimits   ResourceLimits    // host memory/process caps applied where the platform can (see WithResourceLimits)
 	granted     map[string]string // env vars explicitly granted into commands
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
 	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
@@ -68,6 +69,40 @@ func WithExecTimeout(d time.Duration) LocalOption {
 			l.execTimeout = d
 		}
 	}
+}
+
+// ResourceLimits caps a sandboxed command's use of host resources beyond the
+// wall-clock cap (WithExecTimeout): the memory it may commit and the number of
+// processes it may spawn. A zero field applies no cap on that axis, so the zero
+// value changes nothing and the always-on floor stays out of a legitimate build's
+// way. It is the always-present tier's coarse backstop against a memory bomb or a
+// fork storm; the container and microVM tiers enforce hard CPU, memory, and PID
+// caps for untrusted work, where the runtime gives every axis a real cgroup.
+//
+// Enforcement is per platform and best effort at this tier. Windows applies it
+// through the confined command's job object (a real memory and active-process cap).
+// The Linux and macOS floors do not yet impose it (a per-run cgroup needs cgroup-v2
+// delegation that is not guaranteed for an unprivileged agent); a command that needs
+// a hard cap there runs under the container or microVM tier.
+type ResourceLimits struct {
+	// MemoryMiB caps the memory the command (and its job, where the platform caps a
+	// tree) may commit, in MiB. Zero applies no memory cap.
+	MemoryMiB int
+	// MaxProcesses caps how many processes the command may have running at once, a
+	// fork-bomb backstop. Zero uses the platform's generous default cap.
+	MaxProcesses int
+}
+
+// set reports whether any axis is capped.
+func (r ResourceLimits) set() bool { return r.MemoryMiB > 0 || r.MaxProcesses > 0 }
+
+// WithResourceLimits caps the memory and process count of commands the sandbox
+// runs, on top of the wall-clock cap. The zero value applies no cap, so a caller
+// that does not set it is unaffected. See ResourceLimits for the per-platform
+// enforcement and why the always-on floor does not impose a hard memory cap by
+// default.
+func WithResourceLimits(r ResourceLimits) LocalOption {
+	return func(l *Local) { l.resLimits = r }
 }
 
 // WithEnv grants additional environment variables into commands the sandbox runs.

@@ -64,7 +64,7 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 	}
 
 	env := l.appContainerEnvBlock(l.streamEnv(spec.Env))
-	p, err := spawnAppContainer(appPath, cmdline, l.root, env, sid, caps, spec.Stdin)
+	p, err := spawnAppContainer(appPath, cmdline, l.root, env, sid, caps, spec.Stdin, l.resLimits)
 	if err != nil {
 		return nil, err
 	}

@@ -62,5 +62,5 @@ func (l *Local) captureAppContainer(ctx context.Context, spec CaptureSpec) (Exec
 	}
 
 	env := l.appContainerEnvBlock(l.streamEnv(spec.Env))
-	return launchAppContainer(ctx, appPath, cmdline, l.root, env, sid, caps, spec.Stdin)
+	return launchAppContainer(ctx, appPath, cmdline, l.root, env, sid, caps, spec.Stdin, l.resLimits)
 }

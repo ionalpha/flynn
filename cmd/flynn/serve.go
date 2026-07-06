@@ -28,6 +28,7 @@ import (
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runServe runs the agent as a long-lived service. It answers messages from chat
@@ -223,7 +224,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	mr, err := assembleMission(model, plan, workdir, "", rstore, store.Jobs(), servedLog, "")
+	mr, err := assembleMission(model, plan, workdir, "", rstore, store.Jobs(), servedLog, "", sandbox.ResourceLimits{})
 	if err != nil {
 		return err
 	}

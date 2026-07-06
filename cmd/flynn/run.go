@@ -638,10 +638,11 @@ func keywords(s string) []string {
 func truncate(s string, n int) string { return text.Clip(strings.TrimSpace(s), n) }
 
 // driveConfig collects the optional levers a run is driven with. Its zero value (no
-// budget) drives a run exactly as before, so a caller that passes no option is
-// unaffected.
+// budget, no resource caps) drives a run exactly as before, so a caller that passes
+// no option is unaffected.
 type driveConfig struct {
-	budget budgetpkg.Limits
+	budget    budgetpkg.Limits
+	resLimits sandbox.ResourceLimits
 }
 
 // driveOption configures a run driven by drive.
@@ -653,6 +654,14 @@ type driveOption func(*driveConfig)
 // passing it leaves the run uncapped.
 func withBudget(l budgetpkg.Limits) driveOption {
 	return func(c *driveConfig) { c.budget = l }
+}
+
+// withResourceLimits caps the host memory and process count of the commands a run's
+// tools execute, on top of the always-on wall-clock and process-tree containment. The
+// zero value applies no cap, so passing it leaves a run's commands unconstrained. See
+// sandbox.ResourceLimits for the per-platform enforcement.
+func withResourceLimits(r sandbox.ResourceLimits) driveOption {
+	return func(c *driveConfig) { c.resLimits = r }
 }
 
 // budgeted reports whether a ceiling is set on any axis.
@@ -675,9 +684,9 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	// a run is recorded or checked.
 	var run *missionRun
 	if fanout != nil {
-		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel)
+		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel, cfg.resLimits)
 	} else {
-		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID)
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits)
 	}
 	if err != nil {
 		return "", "", nil, err
@@ -765,9 +774,11 @@ type missionParts struct {
 // newMissionParts wires the shared ingredients for a run at workdir recording onto
 // log under runID (empty gets a fresh one). withSpawn adds the delegation action to
 // the grant, so a fan-out run may spawn sub-goals and a single conversation cannot;
-// everything else is identical across the two paths.
-func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool) (*missionParts, error) {
-	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
+// everything else is identical across the two paths. resLimits caps the host memory
+// and process count of the commands the run's tools execute (its zero value applies
+// no cap).
+func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool, resLimits sandbox.ResourceLimits) (*missionParts, error) {
+	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement(), sandbox.WithResourceLimits(resLimits))
 	if err != nil {
 		return nil, err
 	}
@@ -829,8 +840,8 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, runID, false)
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, runID, false, resLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -846,6 +857,11 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 		// run without a ceiling is unchanged, and a resumed run honours the durable budget
 		// its first run opened.
 		mission.WithBudget(budgetpkg.NewHook(rstore)),
+		// Halt a runaway from outside the model loop: the same circuit breaker the
+		// fan-out runs under, so a single conversation cannot spin unbounded (a jailbroken
+		// or looping model hammering a tool) any more than a delegating one can. The rate
+		// is a generous backstop that never trips on legitimate use.
+		mission.WithBrakes(defaultBrakes()),
 		// Record every governed action's lifecycle (admitted, completed, or rejected)
 		// onto the run's own stream, so the admission decisions are part of the run's
 		// recorded and sealed history rather than only the live trace. The stream is the
@@ -895,6 +911,17 @@ func fanoutMaxSteps(fanout *fanoutConfig) int {
 // loop, not legitimate tool use.
 const defaultMaxActionsPerMinute = 600
 
+// defaultBrakes builds the run's safety governor: the circuit breaker that halts a
+// runaway from outside the model loop. It is a generous rate backstop (a real run
+// dispatches far fewer than this per minute), so it fires only on a degenerate tight
+// loop, never on legitimate tool use. Every run gets one, the single conversation as
+// much as the fan-out, so no run can spin unbounded even when the model is jailbroken
+// or looping. Each call returns a fresh Hook (with its own in-memory kill-switch), so
+// a run's breaker state and halt are its own.
+func defaultBrakes() *brakes.Hook {
+	return brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil)
+}
+
 // fanoutConfig enables the goals engine on a one-shot run: the model may delegate
 // self-contained sub-goals to concurrent, governed child agents, and each child is
 // routed to the model and loop its bound Agent archetype pins (resolveModel turns a
@@ -916,8 +943,8 @@ type fanoutConfig struct {
 // agent's model, while the root and every child fold into one recorded, sealable
 // stream. The shared store backs the child goals a fan-out spawns, so they land
 // where the runtime reconciles them.
-func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resolveModel driver.ModelResolver) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, runID, true)
+func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resolveModel driver.ModelResolver, resLimits sandbox.ResourceLimits) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, runID, true, resLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -948,10 +975,10 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 			// admission decisions (including each delegation) are part of the sealed record.
 			EventSink:        parts.sink,
 			CompactionBudget: defaultCompactionBudget,
-			// Halt a runaway from outside the model loop. The default is a generous rate
-			// backstop: a real run dispatches far fewer than this per minute, so the breaker
-			// fires only on a degenerate tight loop, never on legitimate tool use.
-			Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+			// Halt a runaway from outside the model loop: the same circuit breaker the
+			// single conversation runs under, shared by every child (which run under this
+			// pool), so the whole fan-out is braked as one.
+			Brakes: defaultBrakes(),
 			// Charge every action (root and every child, which share one pool) against the
 			// run's spend pool, so a ceiling set for the run halts the whole fan-out. Inert
 			// until a budget is opened: an absent pool is unlimited.

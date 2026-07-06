@@ -19,6 +19,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -251,7 +252,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		return "", err
 	}
 
-	run, err := assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID)
+	run, err := assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID, sandbox.ResourceLimits{})
 	if err != nil {
 		return "", err
 	}

@@ -5,10 +5,12 @@ package sandbox
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -286,5 +288,86 @@ func TestJobLimitFlags(t *testing.T) {
 	}
 	if jobLimitFlags&windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS == 0 || jobActiveProcessLimit == 0 {
 		t.Fatal("the job must cap the number of processes as a fork-bomb backstop")
+	}
+}
+
+// TestApplyJobLimitsResourceCaps proves a configured resource cap reaches the job
+// object: a memory cap sets the job-memory flag and the byte limit, and a process
+// cap overrides the default. It reads the limits back off the created job rather than
+// asserting on the input, so a wiring or unit-conversion mistake is caught.
+func TestApplyJobLimitsResourceCaps(t *testing.T) {
+	// A live process to assign the job to. It sleeps briefly and is killed when the
+	// job handle closes (KILL_ON_JOB_CLOSE), so nothing outlives the test.
+	cmd := exec.Command("ping", "-n", "3", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+
+	h, err := windows.OpenProcess(windows.PROCESS_ALL_ACCESS, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("open helper process: %v", err)
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+
+	const wantMiB = 256
+	const wantProcs = 7
+	job, err := applyJobLimits(h, ResourceLimits{MemoryMiB: wantMiB, MaxProcesses: wantProcs})
+	if err != nil {
+		t.Fatalf("applyJobLimits: %v", err)
+	}
+	defer func() { _ = windows.CloseHandle(job) }()
+
+	var got windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if err := windows.QueryInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&got)), uint32(unsafe.Sizeof(got)), nil); err != nil {
+		t.Fatalf("query job info: %v", err)
+	}
+
+	if got.BasicLimitInformation.LimitFlags&jobObjectLimitJobMemory == 0 {
+		t.Error("a memory cap must set the job-memory limit flag on the job")
+	}
+	if wantBytes := uintptr(wantMiB) * 1024 * 1024; got.JobMemoryLimit != wantBytes {
+		t.Errorf("job memory limit = %d bytes, want %d", got.JobMemoryLimit, wantBytes)
+	}
+	if got.BasicLimitInformation.ActiveProcessLimit != wantProcs {
+		t.Errorf("active process limit = %d, want %d (the configured override)",
+			got.BasicLimitInformation.ActiveProcessLimit, wantProcs)
+	}
+}
+
+// TestApplyJobLimitsDefaults proves the zero ResourceLimits leaves the job at its
+// generous defaults: no memory flag, and the default process cap, so a caller that
+// sets no cap is unaffected.
+func TestApplyJobLimitsDefaults(t *testing.T) {
+	cmd := exec.Command("ping", "-n", "3", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper process: %v", err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _, _ = cmd.Process.Wait() }()
+
+	h, err := windows.OpenProcess(windows.PROCESS_ALL_ACCESS, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("open helper process: %v", err)
+	}
+	defer func() { _ = windows.CloseHandle(h) }()
+
+	job, err := applyJobLimits(h, ResourceLimits{})
+	if err != nil {
+		t.Fatalf("applyJobLimits: %v", err)
+	}
+	defer func() { _ = windows.CloseHandle(job) }()
+
+	var got windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+	if err := windows.QueryInformationJobObject(job, windows.JobObjectExtendedLimitInformation,
+		uintptr(unsafe.Pointer(&got)), uint32(unsafe.Sizeof(got)), nil); err != nil {
+		t.Fatalf("query job info: %v", err)
+	}
+	if got.BasicLimitInformation.LimitFlags&jobObjectLimitJobMemory != 0 {
+		t.Error("no memory cap was set, so the job-memory limit flag must be clear")
+	}
+	if got.BasicLimitInformation.ActiveProcessLimit != jobActiveProcessLimit {
+		t.Errorf("active process limit = %d, want the default %d",
+			got.BasicLimitInformation.ActiveProcessLimit, jobActiveProcessLimit)
 	}
 }

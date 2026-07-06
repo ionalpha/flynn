@@ -109,7 +109,7 @@ func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte
 	// what the loader uses to find the binary.
 	line := args[len(args)-1]
 	cmdline := `"` + comspec + `" /s /c "` + line + `"`
-	return launchAppContainer(ctx, comspec, cmdline, l.root, l.appContainerEnv(), sid, caps, stdin)
+	return launchAppContainer(ctx, comspec, cmdline, l.root, l.appContainerEnv(), sid, caps, stdin, l.resLimits)
 }
 
 // appContainerMoniker derives a stable, unique AppContainer name from the absolute

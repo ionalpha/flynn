@@ -5,6 +5,7 @@ import (
 
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -16,11 +17,11 @@ import (
 // would silently diverge what single vs fan-out runs are allowed to do; this test
 // fails if that divergence ever returns.
 func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
-	single, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), "", false)
+	single, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), "", false, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("newMissionParts single: %v", err)
 	}
-	fanout, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), "", true)
+	fanout, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), "", true, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("newMissionParts fanout: %v", err)
 	}

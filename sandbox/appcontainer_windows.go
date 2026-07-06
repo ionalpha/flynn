@@ -215,24 +215,38 @@ const jobLimitFlags = windows.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE |
 	windows.JOB_OBJECT_LIMIT_ACTIVE_PROCESS |
 	windows.JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION
 
+// jobObjectLimitJobMemory caps the memory committed by the whole job (every process in
+// it) via JOBOBJECT_EXTENDED_LIMIT_INFORMATION.JobMemoryLimit. x/sys/windows does not
+// export the flag, so it is defined here from the Windows SDK (JOB_OBJECT_LIMIT_JOB_MEMORY).
+const jobObjectLimitJobMemory = 0x00000200
+
 // applyJobLimits places process in a new job object that contains a runaway command.
 // Every process in the job is killed when the last handle to the job closes, so a child
 // the command spawned cannot outlive the run; the number of processes is capped as a
 // fork-bomb backstop; an unhandled exception ends the process instead of hanging on an
 // error dialog; and the job is denied the user-interface surfaces a command has no need
-// for. Child processes inherit the job, so the whole tree is contained. It returns the
-// job handle, which the caller closes when the command is done; closing it reaps any
-// survivors.
-func applyJobLimits(process windows.Handle) (windows.Handle, error) {
+// for. Child processes inherit the job, so the whole tree is contained. When lim sets a
+// memory cap or a tighter process cap, the job enforces those too, so a memory bomb or a
+// fork storm is bounded at this tier as well as at the stronger tiers. It returns the job
+// handle, which the caller closes when the command is done; closing it reaps any survivors.
+func applyJobLimits(process windows.Handle, lim ResourceLimits) (windows.Handle, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return 0, fmt.Errorf("create job: %w", err)
 	}
+	activeProcs := uint32(jobActiveProcessLimit)
+	if lim.MaxProcesses > 0 {
+		activeProcs = uint32(lim.MaxProcesses)
+	}
 	limits := windows.JOBOBJECT_EXTENDED_LIMIT_INFORMATION{
 		BasicLimitInformation: windows.JOBOBJECT_BASIC_LIMIT_INFORMATION{
 			LimitFlags:         jobLimitFlags,
-			ActiveProcessLimit: jobActiveProcessLimit,
+			ActiveProcessLimit: activeProcs,
 		},
+	}
+	if lim.MemoryMiB > 0 {
+		limits.BasicLimitInformation.LimitFlags |= jobObjectLimitJobMemory
+		limits.JobMemoryLimit = uintptr(lim.MemoryMiB) * 1024 * 1024
 	}
 	if _, err := windows.SetInformationJobObject(job, uint32(windows.JobObjectExtendedLimitInformation), uintptr(unsafe.Pointer(&limits)), uint32(unsafe.Sizeof(limits))); err != nil {
 		_ = windows.CloseHandle(job)
@@ -284,9 +298,11 @@ func (p *acProcess) closeProcess() {
 // to the running process. Only the single output-pipe write handle (and the stdin read
 // handle when present) is inherited by the child; the child is created suspended and
 // placed in its job before it runs a single instruction, and the mitigation policies are
-// applied at creation. The caller reads p.read and, when done, calls p.closeProcess and
-// closes p.read. A failure to launch is an error and leaves no handles for the caller.
-func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte) (*acProcess, error) {
+// applied at creation. When resLimits sets a memory or process cap, the job object that
+// contains the child enforces it. The caller reads p.read and, when done, calls
+// p.closeProcess and closes p.read. A failure to launch is an error and leaves no handles
+// for the caller.
+func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte, resLimits ResourceLimits) (*acProcess, error) {
 	capAttrs := make([]windows.SIDAndAttributes, 0, len(caps))
 	for _, c := range caps {
 		capAttrs = append(capAttrs, windows.SIDAndAttributes{Sid: c, Attributes: windows.SE_GROUP_ENABLED})
@@ -414,7 +430,7 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 
 	// Contain the command in a job object (fork-bomb cap, reap any child it spawns when
 	// the run ends), then start it.
-	job, err := applyJobLimits(pi.Process)
+	job, err := applyJobLimits(pi.Process, resLimits)
 	if err != nil {
 		if wrIn != 0 {
 			_ = windows.CloseHandle(wrIn)
@@ -463,8 +479,8 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 // launch or a cancelled context is an error. Output is drained on a separate goroutine so
 // a command that writes more than the pipe buffer cannot deadlock, and the process is
 // killed if ctx is cancelled before it exits.
-func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte) (ExecResult, error) {
-	p, err := spawnAppContainer(appName, cmdline, dir, env, sid, caps, stdin)
+func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte, resLimits ResourceLimits) (ExecResult, error) {
+	p, err := spawnAppContainer(appName, cmdline, dir, env, sid, caps, stdin, resLimits)
 	if err != nil {
 		return ExecResult{}, err
 	}
