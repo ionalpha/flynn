@@ -13,9 +13,15 @@ import (
 // machine, so resource history forms a Merkle DAG: dedup, provenance ("which
 // version produced this"), tamper-evidence, and efficient diff-based sync.
 //
-// Spec and Status are canonicalized (re-encoded with sorted keys) so two
-// semantically equal specs that differ only in key order or whitespace hash the
-// same.
+// Spec is canonicalized (re-encoded with sorted keys) so two semantically equal
+// specs that differ only in key order or whitespace hash the same. Status is folded
+// in as a fixed-size digest of its bytes rather than canonicalized: status is
+// self-produced by one owning controller through a stable Go encoder (so byte
+// identity already equals semantic identity), and Merge decides conflicts by
+// envelope while carrying the origin's hash verbatim, so it never re-hashes a remote
+// status. Digesting it keeps a write allocation-flat no matter how large the status
+// grows (a goal embeds its whole transcript in status), instead of materializing the
+// entire status as a generic tree on every write.
 func Hash(r Resource) (string, error) {
 	return contentHash(r, canonicalJSON(r.Spec))
 }
@@ -29,7 +35,7 @@ func contentHash(r Resource, canonicalSpec any) (string, error) {
 		"labels":      r.Labels,
 		"annotations": r.Annotations,
 		"spec":        canonicalSpec,
-		"status":      canonicalJSON(r.Status),
+		"status":      statusDigest(r.Status),
 		"deleted":     r.Deleted,
 		"validFrom":   r.ValidFrom,
 		"validTo":     r.ValidTo,
@@ -40,6 +46,17 @@ func contentHash(r Resource, canonicalSpec any) (string, error) {
 	}
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+// statusDigest returns a hex SHA-256 over the status bytes verbatim. It is a
+// constant-size, constant-allocation stand-in for the status inside the content
+// hash: equal status bytes yield an equal digest on any machine, and the work does
+// not grow with an embedded transcript the way decoding status into a generic tree
+// would. Empty status hashes to the digest of no bytes, distinct from any non-empty
+// status.
+func statusDigest(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 // SpecHash returns a stable hash of a resource's desired state alone (its kind and

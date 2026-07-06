@@ -11,6 +11,8 @@ package resource_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/ionalpha/flynn/resource"
@@ -26,11 +28,50 @@ func assertAllocCeiling(t *testing.T, name string, ceiling float64, fn func()) {
 
 func TestAllocCeilingHash(t *testing.T) {
 	r := benchResource("alloc")
-	assertAllocCeiling(t, "Hash", 95, func() {
+	assertAllocCeiling(t, "Hash", 80, func() {
 		if _, err := resource.Hash(r); err != nil {
 			t.Fatal(err)
 		}
 	})
+}
+
+// statusOfDepth builds a status blob shaped like a goal's inline transcript at the
+// given message depth: the dominant, transcript-sized part of a goal's status.
+func statusOfDepth(depth int) json.RawMessage {
+	msgs := make([]map[string]string, depth)
+	for i := range msgs {
+		msgs[i] = map[string]string{"role": "assistant", "content": fmt.Sprintf("turn %d: a representative message body of some length", i)}
+	}
+	b, err := json.Marshal(map[string]any{"phase": "Running", "steps": depth, "messages": msgs})
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func hashAllocsAtDepth(t *testing.T, depth int) float64 {
+	t.Helper()
+	r := benchResource("alloc")
+	r.Status = statusOfDepth(depth)
+	return testing.AllocsPerRun(50, func() {
+		if _, err := resource.Hash(r); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+// TestAllocCeilingHashFlatInStatusSize pins the content-hash guarantee that matters
+// most for a long-running goal: the goal embeds its whole transcript in status, and
+// the content hash runs on every write (2-3 per step), so the hash must fold status
+// in as a fixed digest and cost the same at transcript depth n as at 2n. The
+// generic-tree canonicalization this replaced allocated with the transcript, making
+// a run O(history^2).
+func TestAllocCeilingHashFlatInStatusSize(t *testing.T) {
+	n := hashAllocsAtDepth(t, 200)
+	n2 := hashAllocsAtDepth(t, 400)
+	if n != n2 {
+		t.Errorf("Hash allocates %.0f/op at transcript depth 200 but %.0f/op at 400: the content hash is scaling with the status size", n, n2)
+	}
 }
 
 func TestAllocCeilingSpecHash(t *testing.T) {
@@ -44,7 +85,7 @@ func TestAllocCeilingSpecHash(t *testing.T) {
 
 func TestAllocCeilingHashes(t *testing.T) {
 	r := benchResource("alloc")
-	assertAllocCeiling(t, "Hashes", 120, func() {
+	assertAllocCeiling(t, "Hashes", 105, func() {
 		if _, _, err := resource.Hashes(r); err != nil {
 			t.Fatal(err)
 		}
