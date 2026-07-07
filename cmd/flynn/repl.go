@@ -133,6 +133,7 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 	signal.Notify(sigCh, os.Interrupt)
 	defer signal.Stop(sigCh)
 
+	s.notice = func(text string) { _, _ = fmt.Fprintf(s.out, "  %s\n", text) }
 	_, _ = fmt.Fprintf(s.out, "flynn interactive session in %s (model: %s)\n", cwd, s.modelSpec)
 	_, _ = fmt.Fprintln(s.out, `type a message and press enter; /models to list models, /model <id> to switch; Ctrl-C cancels a turn, Ctrl-D or "exit" leaves.`)
 	return s.loop(ctx, in, sigCh)
@@ -163,6 +164,11 @@ type replSession struct {
 	// modelSpec is the "provider:model" string of the model the session currently
 	// drives, shown by /model and updated when /model switches it.
 	modelSpec string
+
+	// notice, when set, surfaces an out-of-band session note (currently the recall
+	// summary) to the user. The full-screen shell appends it to the transcript; the
+	// line interface prints it. Nil discards it, so a non-interactive run is quiet.
+	notice func(string)
 
 	// observer, when set, receives every session event as the turn renders. The
 	// interactive shell installs it to render the typed stream itself (transcript,
@@ -263,9 +269,14 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		if s.carriedContext != "" {
 			s.system += "\n\n" + s.carriedContext
 		}
-		if block, recalled := recallContext(turnCtx, s.store.Skills(), s.store.Memory(), userText); block != "" {
+		if block, recalled, memN := recallContext(turnCtx, s.store.Skills(), s.store.Memory(), userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
+			// Surface what past learning was pulled into context, so the recall the
+			// agent stands on is visible rather than a silent prompt addition.
+			if s.notice != nil {
+				s.notice(fmt.Sprintf("recalled %d skill(s), %d memory item(s) from earlier runs", len(recalled), memN))
+			}
 		}
 	} else if err := s.reopen(turnCtx, userText, images); err != nil {
 		return "", err

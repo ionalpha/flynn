@@ -146,6 +146,9 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		AltScreen:   altScreen,
 	})
 	host.ui = a
+	// Recall (and any future out-of-band note) lands in the scrollback as a muted
+	// line, so what the agent pulled in from earlier runs is visible.
+	s.notice = func(text string) { a.Append(th.Render(theme.Muted, "  "+text)) }
 	return a, host
 }
 

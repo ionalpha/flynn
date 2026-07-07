@@ -282,7 +282,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// Recall first: fold what was learned before into the standing instructions, and
 	// remember which skills were surfaced so the run's outcome can reinforce them.
 	system := defaultSystemPrompt
-	block, recalled := recallContext(ctx, skills, memories, objective)
+	block, recalled, _ := recallContext(ctx, skills, memories, objective)
 	if block != "" {
 		system += "\n\n" + block
 	}
@@ -477,15 +477,15 @@ func childModelResolver(ctx context.Context, dataDir string) driver.ModelResolve
 // above unverified ones. Only the top few survive, since a long, loosely-relevant
 // context hurts the model's use of it more than it helps. This is a lexical first
 // cut; vector recall is a later refinement.
-func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string) {
+func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string, memoryCount int) {
 	terms := keywords(objective)
 	if len(terms) == 0 {
-		return "", nil
+		return "", nil, 0
 	}
 	sk := rankSkills(terms, gatherSkills(ctx, skills, terms))
 	mem := rankMemory(terms, gatherMemory(ctx, memories, terms))
 	if len(sk) == 0 && len(mem) == 0 {
-		return "", nil
+		return "", nil, 0
 	}
 
 	var b strings.Builder
@@ -503,7 +503,7 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 			fmt.Fprintf(&b, "\n- %s", truncate(m.Content, 240))
 		}
 	}
-	return b.String(), recalled
+	return b.String(), recalled, len(mem)
 }
 
 // gatherSkills unions the per-keyword full-text hits into a deduped candidate set

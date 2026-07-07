@@ -96,7 +96,7 @@ func TestRecallContext(t *testing.T) {
 	st := memStore(t)
 	ctx := context.Background()
 
-	if block, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service"); block != "" {
+	if block, _, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service"); block != "" {
 		t.Fatalf("empty store should yield no recall block, got %q", block)
 	}
 
@@ -107,7 +107,7 @@ func TestRecallContext(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	block, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
+	block, _, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
 	if !strings.Contains(block, "Deploy flow") || !strings.Contains(block, "fly.io") {
 		t.Fatalf("recall block missing learned content:\n%s", block)
 	}
@@ -163,7 +163,7 @@ func TestRecallRanksByRelevanceAndVerification(t *testing.T) {
 	mk("bravo", "Bravo", "deploy the docker image", "verified") // 2 + verified boost = 3
 	mk("charlie", "Charlie", "notes about the service")         // matches service = 1
 
-	block, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the docker service")
+	block, _, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the docker service")
 	iB, iA, iC := strings.Index(block, "Bravo"), strings.Index(block, "Alpha"), strings.Index(block, "Charlie")
 	if iB < 0 || iA < 0 || iC < 0 {
 		t.Fatalf("recall block missing entries:\n%s", block)
