@@ -33,10 +33,10 @@ func TestStampedVersionWins(t *testing.T) {
 // is used, while an absent version or Go's "(devel)" placeholder is not.
 func TestModuleVersionFallback(t *testing.T) {
 	for in, want := range map[string]string{
-		"v0.1.1":         "v0.1.1",
-		"v1.2.3-rc1":     "v1.2.3-rc1",
-		"(devel)":        "",
-		"":               "",
+		"v0.1.1":     "v0.1.1",
+		"v1.2.3-rc1": "v1.2.3-rc1",
+		"(devel)":    "",
+		"":           "",
 	} {
 		if got := moduleVersion(in); got != want {
 			t.Errorf("moduleVersion(%q) = %q, want %q", in, got, want)
