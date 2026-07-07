@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"pgregory.net/rapid"
 
@@ -35,6 +36,16 @@ var errNoKeyring = errors.New("no keyring service")
 func (downKeyring) Get(_, _ string) (string, error) { return "", errNoKeyring }
 func (downKeyring) Set(_, _, _ string) error        { return errNoKeyring }
 func (downKeyring) Delete(_, _ string) error        { return errNoKeyring }
+
+// blockingKeyring simulates a locked or headless OS keychain: every operation blocks
+// until released, standing in for go-keyring's /usr/bin/security call hanging on a
+// keychain that never unlocks. The release channel lets a test unblock the goroutines
+// so they exit rather than leak.
+type blockingKeyring struct{ release <-chan struct{} }
+
+func (b blockingKeyring) Get(_, _ string) (string, error) { <-b.release; return "", ErrKeyNotFound }
+func (b blockingKeyring) Set(_, _, _ string) error        { <-b.release; return nil }
+func (b blockingKeyring) Delete(_, _ string) error        { <-b.release; return nil }
 
 func fixedPass(p string) Passphrase {
 	return func(bool) (secret.Text, error) { return secret.New(p), nil }
@@ -188,6 +199,48 @@ func TestStoreSealedFileFallback(t *testing.T) {
 	}
 }
 
+func TestTimeoutKeyringBoundsAHang(t *testing.T) {
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) }) // let the blocked goroutines exit
+	stuck := timeoutKeyring{inner: blockingKeyring{release: release}, timeout: 20 * time.Millisecond}
+
+	if _, err := stuck.Get("svc", "k"); !errors.Is(err, errKeychainTimeout) {
+		t.Fatalf("Get on a stuck keychain: got %v, want errKeychainTimeout", err)
+	}
+	if err := stuck.Set("svc", "k", "v"); !errors.Is(err, errKeychainTimeout) {
+		t.Fatalf("Set on a stuck keychain: got %v, want errKeychainTimeout", err)
+	}
+	if err := stuck.Delete("svc", "k"); !errors.Is(err, errKeychainTimeout) {
+		t.Fatalf("Delete on a stuck keychain: got %v, want errKeychainTimeout", err)
+	}
+
+	// A responsive inner keychain passes its result straight through, so a healthy
+	// desktop keychain is never cut off by the bound.
+	fast := timeoutKeyring{inner: fakeKeyring{"k": "v"}, timeout: time.Second}
+	if got, err := fast.Get("svc", "k"); err != nil || got != "v" {
+		t.Fatalf("Get on a healthy keychain: got %q err %v, want \"v\"", got, err)
+	}
+}
+
+func TestStoreFallsBackWhenKeychainHangs(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	stuck := timeoutKeyring{inner: blockingKeyring{release: release}, timeout: 20 * time.Millisecond}
+	s := New(dir, WithKeyring(stuck), WithPassphrase(fixedPass("unlock-me")))
+
+	// A hanging keychain must not hang the Store: the write seals into the file and the
+	// read comes back from it, so a command completes instead of blocking forever.
+	if err := s.Set(ctx, "OPENAI_API_KEY", secret.New("sk-file")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Lookup(ctx, "OPENAI_API_KEY")
+	if err != nil || got.Expose() != "sk-file" {
+		t.Fatalf("lookup after keychain-timeout fallback: got %q err %v", got.Expose(), err)
+	}
+}
+
 func TestStoreSealedFileMissingPassphrase(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
@@ -239,8 +292,12 @@ func TestForceFileVaultParsesEnv(t *testing.T) {
 
 func TestDefaultKeyringHonorsSwitch(t *testing.T) {
 	t.Setenv("FLYNN_VAULT_FILE", "")
-	if _, ok := defaultKeyring().(osKeyring); !ok {
-		t.Fatalf("default backend should be the OS keychain, got %T", defaultKeyring())
+	tk, ok := defaultKeyring().(timeoutKeyring)
+	if !ok {
+		t.Fatalf("default backend should be the timeout-bounded OS keychain, got %T", defaultKeyring())
+	}
+	if _, ok := tk.inner.(osKeyring); !ok {
+		t.Fatalf("default backend should wrap the OS keychain, got inner %T", tk.inner)
 	}
 	t.Setenv("FLYNN_VAULT_FILE", "1")
 	if _, ok := defaultKeyring().(disabledKeyring); !ok {
