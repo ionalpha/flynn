@@ -21,6 +21,8 @@ var sessionCommands = []helpEntry{
 	{"/fork", "branch the run into a new one, leaving this one untouched"},
 	{"/replay", "re-render the run from its record"},
 	{"/tokens", "break down this run's token usage"},
+	{"/memory", "show what the agent remembers across runs"},
+	{"/skills", "show the skills the agent has learned"},
 	{"/compact", "summarize the conversation to continue with less context"},
 	{"/clear", "start a fresh conversation"},
 	{"/help, ?", "show this list"},

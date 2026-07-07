@@ -477,15 +477,18 @@ func childModelResolver(ctx context.Context, dataDir string) driver.ModelResolve
 // above unverified ones. Only the top few survive, since a long, loosely-relevant
 // context hurts the model's use of it more than it helps. This is a lexical first
 // cut; vector recall is a later refinement.
-func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string, memoryCount int) {
+// recallContext returns the prompt block, the slugs of the skills surfaced (for
+// outcome reinforcement), and a compact human-readable line per recalled item (a
+// skill name or a memory snippet) so the session can show the user what it pulled in.
+func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string, items []string) {
 	terms := keywords(objective)
 	if len(terms) == 0 {
-		return "", nil, 0
+		return "", nil, nil
 	}
 	sk := rankSkills(terms, gatherSkills(ctx, skills, terms))
 	mem := rankMemory(terms, gatherMemory(ctx, memories, terms))
 	if len(sk) == 0 && len(mem) == 0 {
-		return "", nil, 0
+		return "", nil, nil
 	}
 
 	var b strings.Builder
@@ -495,15 +498,17 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 		for _, s := range sk {
 			fmt.Fprintf(&b, "\n- %s: %s", s.Name, truncate(s.Body, 240))
 			recalled = append(recalled, s.Slug)
+			items = append(items, "skill: "+s.Name)
 		}
 	}
 	if len(mem) > 0 {
 		b.WriteString("\nMemory:")
 		for _, m := range mem {
 			fmt.Fprintf(&b, "\n- %s", truncate(m.Content, 240))
+			items = append(items, "memory: "+oneLine(m.Content, 100))
 		}
 	}
-	return b.String(), recalled, len(mem)
+	return b.String(), recalled, items
 }
 
 // gatherSkills unions the per-keyword full-text hits into a deduped candidate set

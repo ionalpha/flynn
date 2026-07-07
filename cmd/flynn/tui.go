@@ -493,6 +493,12 @@ func (h *sessionHost) start(t queuedTurn) {
 	case "/tokens":
 		h.startRecord(h.doTokens)
 		return
+	case "/memory":
+		h.startRecord(h.doMemory)
+		return
+	case "/skills":
+		h.startRecord(h.doSkills)
+		return
 	case "/clear":
 		h.startRecord(h.doClear)
 		return
@@ -752,6 +758,24 @@ func (h *sessionHost) doTokens(_ context.Context) {
 	h.mu.Unlock()
 	var buf bytes.Buffer
 	renderTokens(&buf, u, turns)
+	h.appendReport(buf.String())
+}
+
+// doMemory prints the agent's durable memory to the scrollback, so a user can see
+// what it remembers across runs, not just that recall happened.
+func (h *sessionHost) doMemory(ctx context.Context) {
+	h.echoPrompt("/memory")
+	var buf bytes.Buffer
+	renderMemory(ctx, &buf, h.s.store.Memory())
+	h.appendReport(buf.String())
+}
+
+// doSkills prints the agent's learned skills to the scrollback, with each one's
+// outcome record, so a user can see and judge what it has learned.
+func (h *sessionHost) doSkills(ctx context.Context) {
+	h.echoPrompt("/skills")
+	var buf bytes.Buffer
+	renderSkills(ctx, &buf, h.s.store.Skills())
 	h.appendReport(buf.String())
 }
 

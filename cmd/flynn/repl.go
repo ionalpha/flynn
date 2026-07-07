@@ -269,13 +269,16 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		if s.carriedContext != "" {
 			s.system += "\n\n" + s.carriedContext
 		}
-		if block, recalled, memN := recallContext(turnCtx, s.store.Skills(), s.store.Memory(), userText); block != "" {
+		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.store.Memory(), userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
-			// Surface what past learning was pulled into context, so the recall the
-			// agent stands on is visible rather than a silent prompt addition.
-			if s.notice != nil {
-				s.notice(fmt.Sprintf("recalled %d skill(s), %d memory item(s) from earlier runs", len(recalled), memN))
+			// Surface what past learning was pulled into context (naming each item), so
+			// the recall the agent stands on is visible rather than a silent addition.
+			if s.notice != nil && len(items) > 0 {
+				s.notice("recalled from earlier runs:")
+				for _, it := range items {
+					s.notice("  " + it)
+				}
 			}
 		}
 	} else if err := s.reopen(turnCtx, userText, images); err != nil {
@@ -430,6 +433,12 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 			return true, err
 		}
 		_, _ = fmt.Fprintf(s.out, "  compacted %d messages into a summary; continuing with less context\n", n)
+		return true, nil
+	case "/memory":
+		renderMemory(ctx, s.out, s.store.Memory())
+		return true, nil
+	case "/skills":
+		renderSkills(ctx, s.out, s.store.Skills())
 		return true, nil
 	case "/tokens":
 		u, turns := session.Usage{}, 0

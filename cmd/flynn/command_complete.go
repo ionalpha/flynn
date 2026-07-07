@@ -19,6 +19,8 @@ var completableCommands = []completableCommand{
 	{"/model", true},
 	{"/models", false},
 	{"/tokens", false},
+	{"/memory", false},
+	{"/skills", false},
 	{"/seal", false},
 	{"/verify", false},
 	{"/export", false},

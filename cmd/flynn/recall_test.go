@@ -22,7 +22,8 @@ func TestShellRecallShowsInTranscript(t *testing.T) {
 	host.submit("deploy the service now", nil)
 	waitIdle(t, host)
 
-	if !strings.Contains(ui.transcript(), "recalled") {
-		t.Fatalf("recall was not surfaced in the transcript:\n%s", ui.transcript())
+	tr := ui.transcript()
+	if !strings.Contains(tr, "recalled") || !strings.Contains(tr, "Deploy") {
+		t.Fatalf("recall did not name the recalled item in the transcript:\n%s", tr)
 	}
 }
