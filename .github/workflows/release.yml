@@ -13,6 +13,7 @@ jobs:
     permissions:
       contents: write # create the GitHub release
       id-token: write # keyless cosign signing via OIDC
+      attestations: write # write SLSA build provenance attestations
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -41,3 +42,29 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attest build provenance
+        id: attest
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          # Attest the distributable archives and native packages GoReleaser
+          # produced. This records a signed, verifiable statement that these
+          # artifacts were built from this commit by this workflow, checkable
+          # with `gh attestation verify`.
+          subject-path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.deb
+            dist/*.rpm
+            dist/*.apk
+      - name: Attach provenance to the release
+        # attest-build-provenance stores the attestation in GitHub's attestation
+        # store, which the OpenSSF Scorecard signed-releases check does not read.
+        # It scans release assets by name, so attach the provenance bundle as a
+        # *.intoto.jsonl asset for it (and any downstream verifier) to find.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+        run: |
+          cp "$BUNDLE" flynn.intoto.jsonl
+          gh release upload "$TAG" flynn.intoto.jsonl --clobber
