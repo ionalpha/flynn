@@ -15,6 +15,25 @@ import (
 // bigText returns a text body large enough to push a transcript over a small budget.
 func bigText(seed string) string { return seed + strings.Repeat("y", 4000) }
 
+// TestElisionDigestNamesTools proves the elision note carries a deterministic digest of
+// the work the elided turns did (the tools and their targets), and is empty when they
+// ran no tools.
+func TestElisionDigestNamesTools(t *testing.T) {
+	elided := []llm.Message{
+		{Role: llm.RoleAssistant, Blocks: []llm.Block{{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{Name: "read", Input: json.RawMessage(`{"path":"go.mod"}`)}}}},
+		{Role: llm.RoleAssistant, Blocks: []llm.Block{{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{Name: "edit", Input: json.RawMessage(`{"path":"main.go"}`)}}}},
+	}
+	d := elisionDigest(elided)
+	for _, want := range []string{"Work done there", "read go.mod", "edit main.go"} {
+		if !strings.Contains(d, want) {
+			t.Fatalf("digest missing %q: %q", want, d)
+		}
+	}
+	if got := elisionDigest([]llm.Message{llm.Text(llm.RoleUser, "hi")}); got != "" {
+		t.Fatalf("a toolless range should have no digest, got %q", got)
+	}
+}
+
 // userText / asstText / asstCall / userResult build the alternating turns a mission
 // produces, so a test transcript matches the real shape (user, assistant, user, ...).
 func userText(s string) llm.Message { return llm.Text(llm.RoleUser, s) }

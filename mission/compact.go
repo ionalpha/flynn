@@ -1,7 +1,9 @@
 package mission
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/ionalpha/flynn/llm"
 )
@@ -73,7 +75,7 @@ func compactView(msgs []llm.Message, budgetTokens int) []llm.Message {
 	}
 
 	out := make([]llm.Message, 0, 1+(len(msgs)-cut))
-	out = append(out, withElisionNote(msgs[0], cut-1))
+	out = append(out, withElisionNote(msgs[0], msgs[1:cut]))
 	out = append(out, msgs[cut:]...)
 
 	// Never hand back a larger view than we were given. When the transcript is already
@@ -86,14 +88,75 @@ func compactView(msgs []llm.Message, budgetTokens int) []llm.Message {
 	return out
 }
 
-// withElisionNote returns a copy of the head message with a short note that n turns
-// were elided, so the model knows the history was trimmed (and is recoverable on the
-// log) rather than silently shortened. The original message is not modified.
-func withElisionNote(head llm.Message, n int) llm.Message {
+// withElisionNote returns a copy of the head message with a short note that the elided
+// turns were trimmed, carrying a deterministic digest of the work they did so the model
+// keeps a record of what happened in the gap rather than only a count. The history is
+// recoverable on the log. The original message is not modified.
+func withElisionNote(head llm.Message, elided []llm.Message) llm.Message {
 	blocks := append([]llm.Block(nil), head.Blocks...)
-	note := fmt.Sprintf("[%d earlier turns were elided here to stay within the context budget. The full history is preserved on the run log and can be replayed.]", n)
+	note := fmt.Sprintf("[%d earlier turns were elided here to stay within the context budget.%s The full history is preserved on the run log and can be replayed.]", len(elided), elisionDigest(elided))
 	blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: note})
 	return llm.Message{Role: head.Role, Blocks: blocks}
+}
+
+// elisionDigest summarizes the elided turns deterministically as the distinct tool
+// calls they ran and what those touched, so the model retains a record of the work done
+// in the gap. It is a pure function of the messages (no model call), so the compacted
+// view stays deterministic and a replay reproduces it. It returns "" when the elided
+// turns ran no tools (nothing concrete to name).
+func elisionDigest(elided []llm.Message) string {
+	const maxActions = 10
+	var actions []string
+	seen := map[string]bool{}
+	for _, m := range elided {
+		for _, b := range m.Blocks {
+			if b.Kind != llm.KindToolUse || b.ToolUse == nil {
+				continue
+			}
+			a := b.ToolUse.Name
+			if tgt := toolArg(b.ToolUse.Input); tgt != "" {
+				a += " " + tgt
+			}
+			if seen[a] {
+				continue
+			}
+			seen[a] = true
+			actions = append(actions, a)
+		}
+	}
+	if len(actions) == 0 {
+		return ""
+	}
+	more := ""
+	if len(actions) > maxActions {
+		more = fmt.Sprintf(", and %d more", len(actions)-maxActions)
+		actions = actions[:maxActions]
+	}
+	return " Work done there: " + strings.Join(actions, "; ") + more + "."
+}
+
+// toolArg pulls the salient argument (a path, pattern, or command) from a tool call's
+// JSON input for the elision digest, so an action reads as "read go.mod" rather than
+// just "read".
+func toolArg(input json.RawMessage) string {
+	var a struct {
+		Path    string `json:"path"`
+		Pattern string `json:"pattern"`
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(input, &a)
+	switch {
+	case a.Path != "":
+		return a.Path
+	case a.Pattern != "":
+		return a.Pattern
+	case a.Command != "":
+		if len(a.Command) > 40 {
+			return a.Command[:40]
+		}
+		return a.Command
+	}
+	return ""
 }
 
 // estimateTokens approximates the token cost of a whole transcript.
