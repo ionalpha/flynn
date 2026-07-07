@@ -41,6 +41,7 @@ func pickSession(ctx context.Context, store *sqlite.Store, reg *resource.Registr
 	}
 
 	fmt.Fprintln(os.Stderr, "Resume a session, or start a new one:")
+	fmt.Fprintln(os.Stderr)
 	fmt.Fprintln(os.Stderr, "  0) new session")
 	for i, g := range goals {
 		spec, _ := goal.DecodeSpec(g)
@@ -51,6 +52,7 @@ func pickSession(ctx context.Context, store *sqlite.Store, reg *resource.Registr
 		}
 		fmt.Fprintf(os.Stderr, "  %d) %-9s %-9s %s\n", i+1, phase, runRecordState(ctx, store, g.Name), oneLine(spec.Objective, 60))
 	}
+	fmt.Fprintln(os.Stderr)
 
 	in := bufio.NewReader(os.Stdin)
 	choice, err := promptVisible(in, fmt.Sprintf("Select [0-%d, default 0]: ", len(goals)))

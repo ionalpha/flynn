@@ -39,7 +39,7 @@ const resizePoll = 250 * time.Millisecond
 // the agent behaviour is identical to the line-based session; only the
 // presentation differs. When the shell exits, output is restored to stdout
 // and the session's learning pass runs there.
-func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
+func runInteractiveTUI(ctx context.Context, s *replSession) error {
 	fd := int(os.Stdin.Fd())
 	restore, err := tuiterm.MakeRaw(fd)
 	if err != nil {
@@ -81,7 +81,7 @@ func runInteractiveTUI(ctx context.Context, s *replSession, seed string) error {
 		return tuiterm.Size(fd)
 	}, a.Resize)
 
-	host.greet(seed)
+	host.greet()
 	runErr := a.Run()
 
 	watcher.Stop()
@@ -141,6 +141,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 		OnEsc:       host.onEsc,
 		OnKey:       host.key,
 		Completer:   newFileCompleter(s.cwd),
+		Commands:    newCommandCompleter(),
 		Marker:      shellMarker,
 		AltScreen:   altScreen,
 	})
@@ -329,15 +330,43 @@ func (h *sessionHost) pokeLive() { h.ui.SetLive(h.liveComp) }
 
 // greet writes the session banner and, for a resumed run, its rendered
 // history, so the conversation's context is in the scrollback from the start.
-func (h *sessionHost) greet(seed string) {
+func (h *sessionHost) greet() {
 	h.liveComp = liveStack{h.approval, h.panel, h.live}
-	h.panel.set(h.proj)
 	h.ui.SetLive(h.liveComp)
 	h.ui.Append(h.th.Render(theme.Status, "flynn interactive session in "+h.s.cwd))
-	if seed != "" {
-		h.ui.Append(strings.Split(strings.TrimRight(seed, "\n"), "\n")...)
+	// A resumed run replays through the same renderer a live turn uses and folds into
+	// the same projection, so it opens looking as it did live: the conversation and its
+	// tool calls, with the turn and token totals in the badge, not a verbose event log.
+	if h.s.started && h.s.runID != "" {
+		h.seedHistory()
 	}
+	h.panel.set(h.proj)
 	h.refreshStatus()
+}
+
+// seedHistory replays a resumed run's recorded events into the scrollback through the
+// live transcript view and folds each into the projection. The opening prompt is echoed
+// the way the shell echoes a live prompt (the transcript view leaves prompts to the
+// shell); the rest render as the conversation and its tool calls, while the per-turn
+// bookkeeping folds into the badge rather than printing verbose lines.
+func (h *sessionHost) seedHistory() {
+	events, err := session.History(h.ctx, h.s.store.Log(), h.s.runID)
+	if err != nil {
+		return
+	}
+	width := h.ui.Width()
+	for _, ev := range events {
+		h.proj = session.Reduce(h.proj, ev)
+		if ev.Kind == session.KindSessionStarted {
+			if t := strings.TrimSpace(ev.Text); t != "" {
+				h.echoPrompt(t)
+			}
+			continue
+		}
+		if lines := h.tv.lines(ev, width); len(lines) > 0 {
+			h.ui.Append(lines...)
+		}
+	}
 }
 
 // submit handles one submitted prompt on the shell's event loop: exit
@@ -420,7 +449,23 @@ func (h *sessionHost) start(t queuedTurn) {
 		h.startShell(strings.TrimSpace(cmd))
 		return
 	}
+	// The model commands take arguments (/model provider:model), so they dispatch on
+	// the first field rather than the whole line the exact-match commands below use.
+	if fields := strings.Fields(t.text); len(fields) > 0 {
+		switch fields[0] {
+		case "/models":
+			h.startRecord(h.doModels)
+			return
+		case "/model":
+			args := append([]string(nil), fields[1:]...)
+			h.startRecord(func(ctx context.Context) { h.doModel(ctx, args) })
+			return
+		}
+	}
 	switch t.text {
+	case "/help", "?":
+		h.startRecord(h.doHelp)
+		return
 	case "/seal":
 		h.startRecord(h.doSeal)
 		return
@@ -436,6 +481,9 @@ func (h *sessionHost) start(t queuedTurn) {
 	case "/replay":
 		h.startRecord(h.doReplay)
 		return
+	case "/tokens":
+		h.startRecord(h.doTokens)
+		return
 	}
 	turnCtx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -443,7 +491,7 @@ func (h *sessionHost) start(t queuedTurn) {
 	h.mu.Unlock()
 	h.refreshStatus()
 
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, promptEcho(t)))
+	h.echoPrompt(promptEcho(t))
 	// The turn driver taps every session event through the observer: the shell
 	// renders the typed stream itself (transcript, governance, badge), so the
 	// driver's flat text goes nowhere.
@@ -481,7 +529,7 @@ func (h *sessionHost) startShell(cmdLine string) {
 	h.mu.Unlock()
 	h.refreshStatus()
 
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "! ")+h.th.Render(theme.UserText, cmdLine))
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "! ")+h.th.Render(theme.UserText, cmdLine), "")
 	h.turns.Add(1)
 	go func() {
 		defer h.turns.Done()
@@ -556,7 +604,7 @@ func (h *sessionHost) startRecord(run func(context.Context)) {
 // directly, the same state a live record.sealed event would produce, so the badge
 // tracks it. A failure is reported inline and leaves the badge unchanged.
 func (h *sessionHost) doSeal(ctx context.Context) {
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/seal"))
+	h.echoPrompt("/seal")
 	if err := h.s.seal(ctx); err != nil {
 		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
 		return
@@ -569,7 +617,7 @@ func (h *sessionHost) doSeal(ctx context.Context) {
 // scrollback, and moves the badge to verified when every tier passes. A run not yet
 // sealed, or a tier that fails, is reported and leaves the badge unchanged.
 func (h *sessionHost) doVerify(ctx context.Context) {
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/verify"))
+	h.echoPrompt("/verify")
 	var buf bytes.Buffer
 	err := h.s.verify(ctx, &buf)
 	for _, line := range strings.Split(strings.TrimRight(buf.String(), "\n"), "\n") {
@@ -590,13 +638,82 @@ func (h *sessionHost) doVerify(ctx context.Context) {
 	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
 }
 
+// doModels prints the model catalog to the scrollback, the same view as `flynn models`,
+// so a user can browse the blessed models without leaving the session.
+func (h *sessionHost) doModels(_ context.Context) {
+	h.echoPrompt("/models")
+	var buf bytes.Buffer
+	err := h.s.showCatalog(&buf)
+	h.appendReport(buf.String())
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+	}
+}
+
+// doModel reports the current model, or switches to the requested one and saves it as the
+// default, mirroring /model in line mode. Its feedback and any error land in the
+// scrollback rather than the discarded turn output.
+func (h *sessionHost) doModel(ctx context.Context, args []string) {
+	echo := "/model"
+	if len(args) > 0 {
+		echo += " " + strings.Join(args, " ")
+	}
+	h.echoPrompt(echo)
+	var buf bytes.Buffer
+	err := h.s.switchModel(ctx, args, &buf)
+	h.appendReport(buf.String())
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+	}
+}
+
+// doHelp prints the session's commands and shortcuts to the scrollback, so a user
+// can see everything available without leaving the session or reading the footer.
+func (h *sessionHost) doHelp(_ context.Context) {
+	h.echoPrompt("/help")
+	var buf bytes.Buffer
+	renderHelp(&buf)
+	h.appendReport(buf.String())
+}
+
+// echoPrompt writes the user's input to the scrollback as the head of a new block:
+// a leading blank line sets it apart from the block before, and a trailing blank
+// separates the reply or command output that follows from the line that triggered
+// it, so each exchange reads as its own group rather than one dense wall.
+func (h *sessionHost) echoPrompt(text string) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, text), "")
+}
+
+// doTokens prints this run's token breakdown to the scrollback, reading the same
+// projection the badge shows so the two always agree.
+func (h *sessionHost) doTokens(_ context.Context) {
+	h.echoPrompt("/tokens")
+	h.mu.Lock()
+	u, turns := h.proj.Usage, h.proj.Turns
+	h.mu.Unlock()
+	var buf bytes.Buffer
+	renderTokens(&buf, u, turns)
+	h.appendReport(buf.String())
+}
+
+// appendReport writes each non-empty line of a captured command's output to the
+// scrollback as tool output, the same treatment /verify gives its per-tier report.
+func (h *sessionHost) appendReport(s string) {
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		h.ui.Append(h.th.Render(theme.ToolOutput, "  "+line))
+	}
+}
+
 // doExport writes the session's sealed record to a portable file and reports the path
 // inline, so a run can be handed to a third party or re-verified with `flynn spine verify
 // --file` without the durable store. A run not yet sealed carries no record and is
 // reported, leaving nothing written; the file defaults to <run-id>.flynnrecord in the
 // working directory.
 func (h *sessionHost) doExport(ctx context.Context) {
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/export"))
+	h.echoPrompt("/export")
 	path, err := h.s.export(ctx, "")
 	if err != nil {
 		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
@@ -611,7 +728,7 @@ func (h *sessionHost) doExport(ctx context.Context) {
 // recording state. The original run keeps its history and seal. The next prompt continues
 // on the fork; a failure is reported inline and leaves the session on the original run.
 func (h *sessionHost) doFork(ctx context.Context) {
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/fork"))
+	h.echoPrompt("/fork")
 	forkID, err := h.s.fork(ctx)
 	if err != nil {
 		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
@@ -634,7 +751,7 @@ func (h *sessionHost) doFork(ctx context.Context) {
 // as it was recorded (the same markdown and governance rendering a live turn produces),
 // independent of what is currently on screen. It is a pure read; it changes no run state.
 func (h *sessionHost) doReplay(ctx context.Context) {
-	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/replay"))
+	h.echoPrompt("/replay")
 	events, err := session.History(ctx, h.s.store.Log(), h.s.runID)
 	if err != nil {
 		h.ui.Append(h.th.Render(theme.Rejected, "  replay failed: "+err.Error()))
@@ -930,7 +1047,7 @@ func (h *sessionHost) refreshStatus() {
 // runs.
 func statusHint(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · /replay re-renders it · /fork branches it · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter newline · @ file · ! shell · ? or /help for commands · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {

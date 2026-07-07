@@ -117,7 +117,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		}
 		return s.runLineMode(ctx, cwd)
 	}
-	return runInteractiveTUI(ctx, s, seed)
+	return runInteractiveTUI(ctx, s)
 }
 
 // runLineMode is the line-based session: a terminal reader giving line editing,
@@ -395,10 +395,23 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		return false, nil
 	}
 	switch strings.ToLower(fields[0]) {
+	case "/help", "?":
+		renderHelp(s.out)
+		return true, nil
+	case "/tokens":
+		u, turns := session.Usage{}, 0
+		if s.runID != "" {
+			if events, herr := session.History(ctx, s.store.Log(), s.runID); herr == nil {
+				p := session.Project(events)
+				u, turns = p.Usage, p.Turns
+			}
+		}
+		renderTokens(s.out, u, turns)
+		return true, nil
 	case "/models":
-		return true, s.showCatalog()
+		return true, s.showCatalog(s.out)
 	case "/model":
-		return true, s.switchModel(ctx, fields[1:])
+		return true, s.switchModel(ctx, fields[1:], s.out)
 	case "/seal":
 		if err := s.seal(ctx); err != nil {
 			return true, err
@@ -437,19 +450,21 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 }
 
 // showCatalog prints the model catalog into the session, the same view as `flynn models`,
-// so a user can see what to switch to without leaving the session.
-func (s *replSession) showCatalog() error {
-	return runModels(nil, s.dataDir, s.out)
+// so a user can see what to switch to without leaving the session. It writes to out so
+// both front-ends can place it: line mode prints straight through, the full-screen
+// session captures it into the scrollback.
+func (s *replSession) showCatalog(out io.Writer) error {
+	return runModels(nil, s.dataDir, out)
 }
 
 // switchModel changes the model the rest of the session drives. With no argument it
 // reports the current model; otherwise it resolves the requested "provider:model" spec,
 // swaps it in for the next turn, and records it as the default so a later launch reuses
 // it. A spec that cannot be resolved (an unknown provider, a missing key) is reported
-// without ending the session.
-func (s *replSession) switchModel(ctx context.Context, args []string) error {
+// without ending the session. Feedback goes to out so either front-end can place it.
+func (s *replSession) switchModel(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) == 0 {
-		_, _ = fmt.Fprintf(s.out, "  current model: %s\n  switch with: /model <provider:model> (see /models)\n", s.modelSpec)
+		_, _ = fmt.Fprintf(out, "  current model: %s\n  switch with: /model <provider:model> (see /models)\n", s.modelSpec)
 		return nil
 	}
 	spec := args[0]
@@ -467,10 +482,10 @@ func (s *replSession) switchModel(ctx context.Context, args []string) error {
 	}
 	if err := writeActiveModel(s.dataDir, spec); err != nil {
 		// The switch still holds for this session; only persistence failed.
-		_, _ = fmt.Fprintf(s.out, "  switched to %s (could not save it as the default: %v)\n", spec, err)
+		_, _ = fmt.Fprintf(out, "  switched to %s (could not save it as the default: %v)\n", spec, err)
 		return nil
 	}
-	_, _ = fmt.Fprintf(s.out, "  switched to %s; saved as the default for the next run\n", spec)
+	_, _ = fmt.Fprintf(out, "  switched to %s; saved as the default for the next run\n", spec)
 	return nil
 }
 

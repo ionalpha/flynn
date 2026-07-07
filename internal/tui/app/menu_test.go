@@ -51,6 +51,39 @@ func startWithCompleter(t *testing.T, universe []string, submits chan string) (*
 	return s, fc
 }
 
+// fakeCommands offers a fixed candidate set for any slash-command line, enough to drive
+// the command-completion menu mode in tests.
+type fakeCommands struct{ cands []app.CommandCandidate }
+
+func (f *fakeCommands) Suggest(line string) []app.CommandCandidate {
+	if strings.HasPrefix(strings.TrimLeft(line, " "), "/") {
+		return f.cands
+	}
+	return nil
+}
+
+// TestSlashCommandCompletionOpensAndApplies proves typing a slash command opens the
+// command menu and accepting a candidate replaces the whole composer line with it.
+func TestSlashCommandCompletionOpensAndApplies(t *testing.T) {
+	submits := make(chan string, 1)
+	fc := &fakeCommands{cands: []app.CommandCandidate{
+		{Show: "/model", Apply: "/model "},
+		{Show: "/models", Apply: "/models"},
+	}}
+	s := start(t, func(c *app.Config) {
+		c.Commands = fc
+		c.OnSubmit = func(text string, _ []editor.Attachment) { submits <- text }
+	})
+	s.press(t, "/mo")
+	s.awaitOutput(t, "/model")
+	s.awaitOutput(t, "/models")
+	// Tab accepts the highlighted candidate, replacing the line; Enter then submits it.
+	s.press(t, "\t\r")
+	if got := awaitSubmit(t, submits); got != "/model " {
+		t.Fatalf("submitted %q, want %q", got, "/model ")
+	}
+}
+
 func TestTypingATriggerOpensTheMenu(t *testing.T) {
 	s, _ := startWithCompleter(t, []string{"src/main.go", "docs/readme.md"}, nil)
 	s.press(t, "@")

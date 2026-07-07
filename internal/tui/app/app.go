@@ -88,6 +88,11 @@ type Config struct {
 	// Both methods run on the event loop goroutine with no locks held, so
 	// Complete must be fast; slow indexing belongs behind a host-built cache.
 	Completer Completer
+	// Commands supplies completion for a slash-command line. A slashed line has no
+	// trigger token the way an @-mention does, so command and argument completion look
+	// at the whole composer line instead: given that line, Suggest returns the
+	// candidates to replace it with. Nil disables slash-command completion.
+	Commands CommandCompleter
 	// Marker maps the composer's current content to its first-row gutter
 	// marker, so the host can surface an input mode the content selects
 	// ("! " while the prompt is a shell command). Empty selects the default
@@ -105,6 +110,22 @@ type Config struct {
 type Completer interface {
 	Complete(query string) []string
 	Accepted(item string)
+}
+
+// CommandCompleter is the host side of slash-command completion. Suggest returns the
+// candidates for the current composer line, best first and at most a menu's worth, or
+// nil when nothing applies (the line is not a command, or it is already complete). Each
+// candidate carries the text shown in the menu and the whole line to set when it is
+// chosen. It runs on the event loop with no lock held, so it must be fast.
+type CommandCompleter interface {
+	Suggest(line string) []CommandCandidate
+}
+
+// CommandCandidate is one slash-command completion: Show is the menu label, Apply is
+// the whole composer line the shell sets when the candidate is chosen.
+type CommandCandidate struct {
+	Show  string
+	Apply string
 }
 
 const (
@@ -508,12 +529,18 @@ func (a *App) paint() {
 // overflow guard keeps the bottom rows when the frame is taller than the
 // terminal, so the composer always survives clipping.
 func (a *App) composeLocked() []string {
-	var frame []string
+	// A blank row opens the live region so the pinned status and composer read as
+	// their own block, set apart from the transcript scrolling above them rather
+	// than glued to its last line.
+	frame := []string{""}
 	if a.live != nil {
 		frame = append(frame, a.live.Render(a.width)...)
 	}
 	if a.status != "" {
 		frame = append(frame, a.cfg.Theme.Render(theme.Status, screen.Truncate(a.status, a.width)))
+		// A blank row sets the composer apart from the status strip above it, so the
+		// input does not read as jammed onto the status line.
+		frame = append(frame, "")
 	}
 	if a.menu.open {
 		frame = append(frame, a.menuRowsLocked()...)

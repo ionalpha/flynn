@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -33,6 +34,35 @@ func newTranscriptView(th *theme.Theme) *transcriptView {
 	return &transcriptView{th: th, md: render.NewMarkdown(th)}
 }
 
+// contentGutter is the left inset shared by the transcript's prose and diffs, so
+// they line up with the tool and report lines (already inset by the same amount)
+// instead of sitting flush against the terminal's left edge. Guttered content also
+// renders to a width reduced by the gutter on each side, leaving a right margin.
+const contentGutter = 2
+
+// inset prefixes each content line with the gutter, so a block of prose or a diff
+// shares the transcript's left margin. An empty input stays empty.
+func inset(lines []string) []string {
+	if len(lines) == 0 {
+		return nil
+	}
+	prefix := strings.Repeat(" ", contentGutter)
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = prefix + l
+	}
+	return out
+}
+
+// bodyWidth is the width available to guttered content: the frame width less a
+// gutter on each side, floored at 1 so a narrow terminal still renders something.
+func bodyWidth(width int) int {
+	if w := width - 2*contentGutter; w > 0 {
+		return w
+	}
+	return 1
+}
+
 // lines renders one event into the scrollback lines that follow it, wrapped to
 // width, or nil when the event carries nothing the transcript shows. The
 // conversation events (assistant prose, tool calls, failures) render directly;
@@ -47,9 +77,9 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 			return nil
 		}
 		v.lastAssistant = text
-		return v.md.Render(text, width)
+		return inset(v.md.Render(text, bodyWidth(width)))
 	case session.KindToolCall:
-		return []string{v.th.Render(theme.ToolName, "  → "+ev.Tool)}
+		return v.toolCall(ev, width)
 	case session.KindToolResult:
 		if ev.IsError {
 			return []string{v.th.Render(theme.Rejected, "  !! "+ev.Tool+" failed: "+oneLine(ev.Result, 200))}
@@ -71,7 +101,7 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		if text == "" || text == v.lastAssistant {
 			return nil
 		}
-		return v.md.Render(text, width)
+		return inset(v.md.Render(text, bodyWidth(width)))
 	case session.KindStalled:
 		return []string{v.th.Render(theme.Error, "  stalled: "+ev.Err)}
 	default:
@@ -80,6 +110,76 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		// content lives in the status badge.
 		return nil
 	}
+}
+
+// toolCall renders a tool invocation: a header naming the tool and the target it
+// acts on (the file it touches, the pattern it searches, the command it runs), and
+// for a write or edit the diff of the change, so the transcript shows what the agent
+// did rather than only that it called a tool.
+func (v *transcriptView) toolCall(ev session.Event, width int) []string {
+	head := "  → " + ev.Tool
+	if target := toolTarget(ev.Input); target != "" {
+		head += " " + target
+	}
+	header := v.th.Render(theme.ToolName, head)
+	diff := v.toolDiff(ev, width)
+	if len(diff) == 0 {
+		return []string{header}
+	}
+	// A diff is a block, not a one-liner. A blank line before the header and after the
+	// diff set the whole change apart from the tool calls above and the reply below, so
+	// it does not read as squashed between them.
+	out := append([]string{"", header}, diff...)
+	return append(out, "")
+}
+
+// toolTarget pulls the one argument worth naming from a tool call's input: the file
+// it touches, the pattern it searches, or the command it runs. It returns "" when the
+// tool takes none of these, so the header just names the tool.
+func toolTarget(input json.RawMessage) string {
+	var a struct {
+		Path    string `json:"path"`
+		Pattern string `json:"pattern"`
+		Command string `json:"command"`
+	}
+	_ = json.Unmarshal(input, &a)
+	switch {
+	case a.Path != "":
+		return a.Path
+	case a.Pattern != "":
+		return a.Pattern
+	case a.Command != "":
+		return oneLine(a.Command, 60)
+	}
+	return ""
+}
+
+// toolDiff renders the change a write or edit makes as a themed diff, so the
+// transcript shows the exact lines added and removed. A write diffs against an empty
+// file, so a new file reads as all additions. Other tools carry no diff.
+func (v *transcriptView) toolDiff(ev session.Event, width int) []string {
+	switch ev.Tool {
+	case "write":
+		var a struct {
+			Path    string `json:"path"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal(ev.Input, &a) != nil || a.Path == "" {
+			return nil
+		}
+		return inset(render.Diff(v.th, a.Path, "", a.Content, bodyWidth(width)))
+	case "edit":
+		var a struct {
+			Path string `json:"path"`
+			Old  string `json:"old"`
+			New  string `json:"new"`
+		}
+		if json.Unmarshal(ev.Input, &a) != nil || a.Path == "" {
+			return nil
+		}
+		return inset(render.Diff(v.th, a.Path, a.Old, a.New, bodyWidth(width)))
+	}
+	return nil
 }
 
 // actionLabel names the governed action for an inline governance line, falling
@@ -111,7 +211,11 @@ func statusBadge(th *theme.Theme, p session.Projection, busy bool, queued int) s
 
 	segs = append(segs, th.Render(recordRole(p.Record), string(p.Record)))
 	if p.Containment != "" {
-		segs = append(segs, th.Render(theme.Trust, "trust "+p.Containment))
+		// The containment posture: how far the last governed action was trusted, which
+		// sets the sandbox it runs under. Rendered as "<level> code" so it reads as a
+		// plain statement (trusted / semi-trusted / untrusted code) rather than the
+		// doubled-up "trust trusted".
+		segs = append(segs, th.Render(theme.Trust, p.Containment+" code"))
 	}
 	if inflight := p.Admitted - p.Completed - p.Rejected; inflight > 0 {
 		segs = append(segs, th.Render(theme.StatusBusy, fmt.Sprintf("%d running", inflight)))

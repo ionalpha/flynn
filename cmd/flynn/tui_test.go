@@ -593,7 +593,7 @@ func TestSessionShellEndToEnd(t *testing.T) {
 	pr, pw := io.Pipe()
 	out := &syncOut{}
 	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false)
-	host.greet("")
+	host.greet()
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run() }()
@@ -635,7 +635,7 @@ func TestSessionShellAltScreenEndToEnd(t *testing.T) {
 	pr, pw := io.Pipe()
 	out := &syncOut{}
 	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, true)
-	host.greet("")
+	host.greet()
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run() }()
@@ -685,7 +685,7 @@ func TestSessionShellFileCompletion(t *testing.T) {
 	pr, pw := io.Pipe()
 	out := &syncOut{}
 	a, host := newSessionShell(context.Background(), s, pr, out, 80, 24, false)
-	host.greet("")
+	host.greet()
 
 	done := make(chan error, 1)
 	go func() { done <- a.Run() }()

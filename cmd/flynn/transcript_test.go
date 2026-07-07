@@ -1,12 +1,36 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/session"
 )
+
+// TestTranscriptViewToolCallDetail proves a tool call names the target it acts on,
+// and that a write or edit renders the diff of the change, not just the tool name.
+func TestTranscriptViewToolCallDetail(t *testing.T) {
+	v := newTranscriptView(theme.Default())
+
+	if got := renderLines(v, session.Event{Kind: session.KindToolCall, Tool: "read", Input: json.RawMessage(`{"path":"go.mod"}`)}); !strings.Contains(got, "read") || !strings.Contains(got, "go.mod") {
+		t.Fatalf("read call did not name its target: %q", got)
+	}
+	if got := renderLines(v, session.Event{Kind: session.KindToolCall, Tool: "grep", Input: json.RawMessage(`{"pattern":"TODO"}`)}); !strings.Contains(got, "TODO") {
+		t.Fatalf("grep call did not name its pattern: %q", got)
+	}
+	got := renderLines(v, session.Event{Kind: session.KindToolCall, Tool: "write", Input: json.RawMessage(`{"path":"NEW.md","content":"hello\nworld\n"}`)})
+	if !strings.Contains(got, "NEW.md") || !strings.Contains(got, "hello") || !strings.Contains(got, "world") {
+		t.Fatalf("write call did not render its content as a diff: %q", got)
+	}
+	// "one" and "two" share no prefix or suffix, so the word-level highlight leaves
+	// each whole rather than splitting it, keeping the assertion robust.
+	got = renderLines(v, session.Event{Kind: session.KindToolCall, Tool: "edit", Input: json.RawMessage(`{"path":"F.md","old":"one","new":"two"}`)})
+	if !strings.Contains(got, "one") || !strings.Contains(got, "two") {
+		t.Fatalf("edit call did not render a diff of the change: %q", got)
+	}
+}
 
 // renderLines renders one event through a fresh transcript view and joins the
 // result, so a test can assert on the text a single event produces.
@@ -32,7 +56,7 @@ func TestTranscriptViewConversation(t *testing.T) {
 	if got := renderLines(v, session.Event{Kind: session.KindTurnCompleted, Turn: 1}); got != "" {
 		t.Fatalf("turn.completed must fold into the badge, not the transcript, got %q", got)
 	}
-	if got := renderLines(v, session.Event{Kind: session.KindActionAdmitted, Action: "read_file", Trust: "workspace"}); got != "" {
+	if got := renderLines(v, session.Event{Kind: session.KindActionAdmitted, Action: "read_file", Trust: "semi-trusted"}); got != "" {
 		t.Fatalf("an admitted action folds into the badge, not the transcript, got %q", got)
 	}
 }
@@ -94,17 +118,17 @@ func TestStatusBadge(t *testing.T) {
 
 	p := session.NewProjection()
 	for _, ev := range []session.Event{
-		{Kind: session.KindActionAdmitted, Trust: "workspace"},
-		{Kind: session.KindActionAdmitted, Trust: "workspace"},
+		{Kind: session.KindActionAdmitted, Trust: "semi-trusted"},
+		{Kind: session.KindActionAdmitted, Trust: "semi-trusted"},
 		{Kind: session.KindActionCompleted},
-		{Kind: session.KindActionRejected, Trust: "workspace", Fault: "needs_approval"},
+		{Kind: session.KindActionRejected, Trust: "semi-trusted", Fault: "needs_approval"},
 		{Kind: session.KindTurnCompleted, Usage: &session.Usage{InputTokens: 1200, OutputTokens: 300}},
 		{Kind: session.KindRecordSealed},
 	} {
 		p = session.Reduce(p, ev)
 	}
 	busy := statusBadge(th, p, true, 2)
-	for _, want := range []string{"sealed", "trust workspace", "1 blocked", "1 turns", "1.2k in", "working...", "2 queued"} {
+	for _, want := range []string{"sealed", "semi-trusted code", "1 blocked", "1 turns", "1.2k in", "working...", "2 queued"} {
 		if !strings.Contains(busy, want) {
 			t.Fatalf("busy badge missing %q:\n%s", want, busy)
 		}

@@ -24,6 +24,12 @@ type menu struct {
 	sel   int
 	query string
 	top   int // first visible row, kept so the window scrolls, not jumps
+
+	// command is set when the menu completes a slash command rather than an @-token.
+	// In that mode apply holds, per item, the whole composer line to set on accept,
+	// since the replacement is the line rather than a splice of one token.
+	command bool
+	apply   []string
 }
 
 // menuKey consumes one key while the menu is open: navigation moves the
@@ -74,10 +80,15 @@ func (m *menu) move(delta int) {
 // a queued key degrades to a no-op instead of a wrong splice.
 func (a *App) acceptLocked() {
 	if a.menu.sel < len(a.menu.items) {
-		item := a.menu.items[a.menu.sel]
-		a.editor.CompleteToken(completionTrigger, item)
-		if h := a.cfg.Completer; h != nil {
-			a.accepted = append(a.accepted, item)
+		if a.menu.command {
+			// The candidate is the whole line to set, not a token to splice.
+			a.setContentLocked(a.menu.apply[a.menu.sel])
+		} else {
+			item := a.menu.items[a.menu.sel]
+			a.editor.CompleteToken(completionTrigger, item)
+			if h := a.cfg.Completer; h != nil {
+				a.accepted = append(a.accepted, item)
+			}
 		}
 	}
 	a.menu = menu{}
@@ -88,26 +99,51 @@ func (a *App) acceptLocked() {
 // closes the menu. Called on the event loop with the mutex released, since
 // the Completer is a host hook.
 func (a *App) refreshMenu() {
-	if a.cfg.Completer == nil {
+	if a.cfg.Completer == nil && a.cfg.Commands == nil {
 		return
 	}
 	a.mu.Lock()
-	query, active := a.editor.Token(completionTrigger)
-	unchanged := active && a.menu.open && query == a.menu.query
-	if !active {
-		a.menu = menu{}
+	var query string
+	var active bool
+	if a.cfg.Completer != nil {
+		query, active = a.editor.Token(completionTrigger)
 	}
+	unchanged := active && a.menu.open && !a.menu.command && query == a.menu.query
+	line := a.editor.Content()
 	a.mu.Unlock()
-	if !active || unchanged {
+
+	// An active @-token completes files; it wins over command completion.
+	if active {
+		if unchanged {
+			return
+		}
+		items := a.cfg.Completer.Complete(query)
+		a.mu.Lock()
+		if len(items) == 0 {
+			a.menu = menu{}
+		} else {
+			a.menu = menu{open: true, items: items, query: query}
+		}
+		a.mu.Unlock()
 		return
 	}
-	items := a.cfg.Completer.Complete(query)
-	a.mu.Lock()
-	if len(items) == 0 {
-		a.menu = menu{}
-	} else {
-		a.menu = menu{open: true, items: items, query: query}
+
+	// Otherwise complete a slash-command line from the whole line.
+	if a.cfg.Commands != nil {
+		if cands := a.cfg.Commands.Suggest(line); len(cands) > 0 {
+			show := make([]string, len(cands))
+			apply := make([]string, len(cands))
+			for i, c := range cands {
+				show[i], apply[i] = c.Show, c.Apply
+			}
+			a.mu.Lock()
+			a.menu = menu{open: true, items: show, apply: apply, query: line, command: true}
+			a.mu.Unlock()
+			return
+		}
 	}
+	a.mu.Lock()
+	a.menu = menu{}
 	a.mu.Unlock()
 }
 
