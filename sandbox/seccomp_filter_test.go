@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux && (amd64 || arm64)
 
 package sandbox
 
@@ -7,6 +7,15 @@ import (
 
 	"golang.org/x/sys/unix"
 )
+
+// foreignAuditArch returns an audit-architecture token that is not this build's, for
+// asserting the filter kills a program running under the wrong architecture.
+func foreignAuditArch() uint32 {
+	if seccompAuditArch == uint32(unix.AUDIT_ARCH_X86_64) {
+		return uint32(unix.AUDIT_ARCH_AARCH64)
+	}
+	return uint32(unix.AUDIT_ARCH_X86_64)
+}
 
 // evalSeccomp interprets the BPF program buildSeccompFilter produces, returning the
 // action the kernel would take for a syscall number under a given architecture. It
@@ -61,22 +70,23 @@ func deniedSet() map[int]bool {
 // every denied syscall is refused with a permission error, ordinary syscalls are
 // allowed, and a foreign architecture is killed outright regardless of the number.
 func TestSeccompFilterClassifies(t *testing.T) {
-	prog := buildSeccompFilter()
+	prog := buildSeccompFilter(seccompAuditArch, deniedSyscalls)
 	deny := retErrno | uint32(unix.EPERM)
 
 	for _, nr := range deniedSyscalls {
-		if got := evalSeccomp(prog, nr, unix.AUDIT_ARCH_X86_64); got != deny {
+		if got := evalSeccomp(prog, nr, seccompAuditArch); got != deny {
 			t.Errorf("syscall %d must be denied, got %#x", nr, got)
 		}
 	}
 
-	// A spread of syscalls an ordinary command relies on; none may be filtered.
+	// A spread of syscalls an ordinary command relies on; none may be filtered. These
+	// calls exist on both architectures the filter is built for.
 	for _, nr := range []int{
 		unix.SYS_READ, unix.SYS_WRITE, unix.SYS_OPENAT, unix.SYS_CLOSE,
 		unix.SYS_MMAP, unix.SYS_EXECVE, unix.SYS_CLONE, unix.SYS_EXIT_GROUP,
-		unix.SYS_FORK, unix.SYS_WAIT4, unix.SYS_FSTAT, unix.SYS_BRK,
+		unix.SYS_WAIT4, unix.SYS_FSTAT, unix.SYS_BRK,
 	} {
-		if got := evalSeccomp(prog, nr, unix.AUDIT_ARCH_X86_64); got != retAllow {
+		if got := evalSeccomp(prog, nr, seccompAuditArch); got != retAllow {
 			t.Errorf("ordinary syscall %d must be allowed, got %#x", nr, got)
 		}
 	}
@@ -84,7 +94,7 @@ func TestSeccompFilterClassifies(t *testing.T) {
 	// A foreign architecture is killed whatever the syscall number, since the numbers
 	// would mean something else there.
 	for _, nr := range []int{unix.SYS_READ, unix.SYS_PTRACE, 0} {
-		if got := evalSeccomp(prog, nr, unix.AUDIT_ARCH_AARCH64); got != retKillProcess {
+		if got := evalSeccomp(prog, nr, foreignAuditArch()); got != retKillProcess {
 			t.Errorf("a foreign architecture must be killed (nr %d), got %#x", nr, got)
 		}
 	}
@@ -97,7 +107,7 @@ func FuzzSeccompClassifies(f *testing.F) {
 	for _, nr := range []int{0, 1, unix.SYS_PTRACE, unix.SYS_READ, unix.SYS_BPF, 1000, 462} {
 		f.Add(nr)
 	}
-	prog := buildSeccompFilter()
+	prog := buildSeccompFilter(seccompAuditArch, deniedSyscalls)
 	denied := deniedSet()
 	deny := retErrno | uint32(unix.EPERM)
 	f.Fuzz(func(t *testing.T, nr int) {
@@ -108,7 +118,7 @@ func FuzzSeccompClassifies(f *testing.F) {
 		if denied[nr] {
 			want = deny
 		}
-		if got := evalSeccomp(prog, nr, unix.AUDIT_ARCH_X86_64); got != want {
+		if got := evalSeccomp(prog, nr, seccompAuditArch); got != want {
 			t.Fatalf("syscall %d classified as %#x, want %#x", nr, got, want)
 		}
 	})
