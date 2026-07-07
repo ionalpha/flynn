@@ -29,9 +29,15 @@ jobs:
           # the install scripts verify. The 2.x line keeps those detached outputs.
           cosign-release: "v2.6.3"
       - uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          # Pin syft so an SBOM tool upgrade cannot change or break the release.
+          syft-version: "v1.46.0"
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
-          version: "~> v2"
+          # Pin the goreleaser binary to an exact version, not a floating "~> v2",
+          # so the release is byte-for-byte reproducible and a new v2.x cannot change
+          # its behavior underneath a tag. Bump this deliberately, never automatically.
+          version: "v2.17.0"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
