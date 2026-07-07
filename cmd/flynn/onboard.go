@@ -25,10 +25,12 @@ import (
 // asking), and only when none is configured and a terminal is attached does it run
 // the first-run setup that stores a key. Without a terminal and with nothing
 // configured, the original error is returned for the caller to surface.
-func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
+func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, string, error) {
 	model, plan, err := resolveModel(ctx, modelSpec, dataDir)
 	if !errors.Is(err, provider.ErrCredentialNotSet) {
-		return model, plan, err
+		// Resolved (or failed for another reason) with the requested spec, so that is
+		// the model in use. Canonicalise it so a bare provider name reports its model.
+		return model, plan, provider.CanonicalSpec(modelSpec), err
 	}
 
 	// The requested provider has no key. If another provider is already configured,
@@ -38,32 +40,41 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec, dataDir string) (llm.
 	switch {
 	case len(configured) == 1:
 		fmt.Fprintf(os.Stderr, "Using %s (already configured). Change it with `flynn models use <provider:model>`, or /model in a session.\n", configured[0])
-		return resolveModel(ctx, configured[0], dataDir)
+		return resolveResolvedSpec(ctx, configured[0], dataDir)
 	case len(configured) > 1 && term.IsTerminal(int(os.Stdin.Fd())):
 		in := bufio.NewReader(os.Stdin)
 		fmt.Fprintf(os.Stderr, "Configured providers: %s\n", strings.Join(configured, ", "))
 		name, perr := promptVisible(in, fmt.Sprintf("Provider [%s]: ", configured[0]))
 		if perr != nil {
-			return nil, harness.Plan{}, perr
+			return nil, harness.Plan{}, "", perr
 		}
 		if name == "" {
 			name = configured[0]
 		}
-		return resolveModel(ctx, name, dataDir)
+		return resolveResolvedSpec(ctx, name, dataDir)
 	case len(configured) > 1:
 		// Non-interactive with several keys: pick deterministically rather than fail.
-		return resolveModel(ctx, configured[0], dataDir)
+		return resolveResolvedSpec(ctx, configured[0], dataDir)
 	}
 
 	// Nothing configured at all.
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
-		return nil, harness.Plan{}, err
+		return nil, harness.Plan{}, "", err
 	}
 	spec, oerr := onboardModel(ctx, modelSpec, dataDir)
 	if oerr != nil {
-		return nil, harness.Plan{}, oerr
+		return nil, harness.Plan{}, "", oerr
 	}
-	return resolveModel(ctx, spec, dataDir)
+	return resolveResolvedSpec(ctx, spec, dataDir)
+}
+
+// resolveResolvedSpec resolves spec and reports the canonical model id it resolved
+// to alongside the model, so a caller records the concrete model actually in use
+// (a bare provider name becomes "<provider>:<default model>") rather than whatever
+// default spec started the resolution.
+func resolveResolvedSpec(ctx context.Context, spec, dataDir string) (llm.Model, harness.Plan, string, error) {
+	model, plan, err := resolveModel(ctx, spec, dataDir)
+	return model, plan, provider.CanonicalSpec(spec), err
 }
 
 // configuredProviders returns the known providers that already have a credential in

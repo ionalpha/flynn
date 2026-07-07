@@ -295,7 +295,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 			return err
 		}
 	} else {
-		model, plan, err = resolveModelOrOnboard(ctx, modelSpec, dataDir)
+		model, plan, _, err = resolveModelOrOnboard(ctx, modelSpec, dataDir)
 		if err != nil {
 			return err
 		}
@@ -395,7 +395,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}

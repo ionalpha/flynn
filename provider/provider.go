@@ -26,6 +26,14 @@ import (
 // to start an interactive setup prompt instead of failing outright.
 var ErrCredentialNotSet = errors.New("provider: credential not set")
 
+// Default model ids for the OpenAI-compatible providers, the same values
+// ResolveWith hands each adapter. They live here so a bare provider name can be
+// expanded to the concrete model it resolves to without drifting from ResolveWith.
+const (
+	deepseekDefaultModel = "deepseek-chat"
+	geminiDefaultModel   = "gemini-2.5-flash"
+)
+
 // Resolve turns a "provider:model" string (e.g. "anthropic:claude-opus-4-8",
 // "openai:gpt-5.5") into an llm.Model, resolving credentials from the process
 // environment. It is the zero-config entry point; ResolveWith supplies a custom
@@ -59,11 +67,11 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 		// DeepSeek speaks the OpenAI Chat Completions format, so the same adapter
 		// reaches it by pointing at its endpoint; its default model is the general
 		// chat model.
-		return openAICompatible(ctx, src, model, "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "https://api.deepseek.com", "deepseek-chat")
+		return openAICompatible(ctx, src, model, "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "https://api.deepseek.com", deepseekDefaultModel)
 	case "gemini":
 		// Gemini exposes an OpenAI-compatible endpoint, so the same adapter reaches it
 		// by pointing at that base URL; the default model is the fast, low-cost tier.
-		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", openai.WithVision())
+		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", geminiDefaultModel, openai.WithVision())
 	case "llamacpp":
 		// A local model server speaking the OpenAI Chat Completions format. It runs on
 		// the loopback host, so no API key is required and the base URL defaults to the
@@ -76,6 +84,41 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 	default:
 		return nil, fmt.Errorf("provider: unknown provider %q (want one of %s)", name, strings.Join(Providers(), ", "))
 	}
+}
+
+// DefaultModelID returns the model id a bare provider name resolves to, and whether
+// the provider is known. A keyless local server (llamacpp) has no default id. The
+// values match the defaults ResolveWith hands each adapter.
+func DefaultModelID(name string) (string, bool) {
+	switch name {
+	case "anthropic":
+		return anthropic.DefaultModel, true
+	case "openai":
+		return openai.DefaultModel, true
+	case "deepseek":
+		return deepseekDefaultModel, true
+	case "gemini":
+		return geminiDefaultModel, true
+	case "llamacpp":
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+// CanonicalSpec expands a bare provider name to "<provider>:<default model>" and
+// leaves a full "provider:model" spec (or anything it does not recognise, such as a
+// local model id) unchanged. A caller that resolves a bare provider can record and
+// display the concrete model it actually uses instead of the provider name alone.
+func CanonicalSpec(spec string) string {
+	name, model, _ := strings.Cut(spec, ":")
+	if model != "" {
+		return spec
+	}
+	if def, ok := DefaultModelID(name); ok && def != "" {
+		return name + ":" + def
+	}
+	return spec
 }
 
 // openAICompatible resolves a provider that speaks the OpenAI Chat Completions

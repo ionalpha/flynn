@@ -36,10 +36,13 @@ import (
 func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
-	model, plan, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, resolvedSpec, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
 	if err != nil {
 		return err
 	}
+	// Report and drive the model that actually resolved, not the default spec that
+	// started resolution: a fallback to an already-configured provider changes it.
+	modelSpec = resolvedSpec
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
