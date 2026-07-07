@@ -420,6 +420,19 @@ func (h *sessionHost) start(t queuedTurn) {
 		h.startShell(strings.TrimSpace(cmd))
 		return
 	}
+	// The model commands take arguments (/model provider:model), so they dispatch on
+	// the first field rather than the whole line the exact-match commands below use.
+	if fields := strings.Fields(t.text); len(fields) > 0 {
+		switch fields[0] {
+		case "/models":
+			h.startRecord(h.doModels)
+			return
+		case "/model":
+			args := append([]string(nil), fields[1:]...)
+			h.startRecord(func(ctx context.Context) { h.doModel(ctx, args) })
+			return
+		}
+	}
 	switch t.text {
 	case "/seal":
 		h.startRecord(h.doSeal)
@@ -588,6 +601,46 @@ func (h *sessionHost) doVerify(ctx context.Context) {
 	}
 	h.foldRecord(session.Event{Kind: session.KindRecordVerified})
 	h.ui.Append(h.th.Render(theme.Success, "  record verified"))
+}
+
+// doModels prints the model catalog to the scrollback, the same view as `flynn models`,
+// so a user can browse the blessed models without leaving the session.
+func (h *sessionHost) doModels(_ context.Context) {
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, "/models"))
+	var buf bytes.Buffer
+	err := h.s.showCatalog(&buf)
+	h.appendReport(buf.String())
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+	}
+}
+
+// doModel reports the current model, or switches to the requested one and saves it as the
+// default, mirroring /model in line mode. Its feedback and any error land in the
+// scrollback rather than the discarded turn output.
+func (h *sessionHost) doModel(ctx context.Context, args []string) {
+	echo := "/model"
+	if len(args) > 0 {
+		echo += " " + strings.Join(args, " ")
+	}
+	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, echo))
+	var buf bytes.Buffer
+	err := h.s.switchModel(ctx, args, &buf)
+	h.appendReport(buf.String())
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+	}
+}
+
+// appendReport writes each non-empty line of a captured command's output to the
+// scrollback as tool output, the same treatment /verify gives its per-tier report.
+func (h *sessionHost) appendReport(s string) {
+	for _, line := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+		if line == "" {
+			continue
+		}
+		h.ui.Append(h.th.Render(theme.ToolOutput, "  "+line))
+	}
 }
 
 // doExport writes the session's sealed record to a portable file and reports the path
@@ -930,7 +983,7 @@ func (h *sessionHost) refreshStatus() {
 // runs.
 func statusHint(busy bool, queued int) string {
 	if !busy {
-		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /seal + /verify record the run · /replay re-renders it · /fork branches it · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
+		return "enter sends · alt+enter or ctrl+j newline · @ mentions a file · ! runs a shell command · /model + /models choose the model · /seal + /verify record the run · /replay re-renders it · /fork branches it · ctrl+o governance · ctrl+g opens $EDITOR · ctrl+v pastes an image · up/down history · ctrl+d quits"
 	}
 	line := "working... esc or ctrl+c cancels"
 	if queued > 0 {
