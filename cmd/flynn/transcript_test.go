@@ -38,6 +38,19 @@ func renderLines(v *transcriptView, ev session.Event) string {
 	return strings.Join(v.lines(ev, 80), "\n")
 }
 
+// TestTranscriptShortNumericAnswerNotDropped proves a short answer markdown would parse
+// as an empty ordered-list item (a bare "16.") is still shown, rather than swallowed to
+// a blank the way goldmark drops it.
+func TestTranscriptShortNumericAnswerNotDropped(t *testing.T) {
+	v := newTranscriptView(theme.Default())
+	for _, ans := range []string{"16.", "3.", "8."} {
+		got := renderLines(v, session.Event{Kind: session.KindAssistant, Text: ans})
+		if !strings.Contains(got, strings.TrimSuffix(ans, ".")) {
+			t.Fatalf("short answer %q rendered empty: %q", ans, got)
+		}
+	}
+}
+
 // TestTranscriptViewConversation covers the conversation events: the model's
 // prose renders (as markdown), a tool call names the tool, and a clean tool
 // result and the per-turn bookkeeping stay out of the transcript.

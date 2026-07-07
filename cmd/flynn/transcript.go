@@ -63,6 +63,17 @@ func bodyWidth(width int) int {
 	return 1
 }
 
+// prose renders an answer as markdown within the gutter, falling back to the plain
+// text when markdown yields nothing for a non-empty source. A bare "16." parses as an
+// empty ordered-list item and renders to no lines, so a short numeric answer would be
+// dropped; the fallback shows it verbatim instead.
+func (v *transcriptView) prose(text string, width int) []string {
+	if lines := inset(v.md.Render(text, bodyWidth(width))); len(lines) > 0 {
+		return lines
+	}
+	return inset(strings.Split(strings.TrimRight(text, "\n"), "\n"))
+}
+
 // lines renders one event into the scrollback lines that follow it, wrapped to
 // width, or nil when the event carries nothing the transcript shows. The
 // conversation events (assistant prose, tool calls, failures) render directly;
@@ -77,7 +88,7 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 			return nil
 		}
 		v.lastAssistant = text
-		return inset(v.md.Render(text, bodyWidth(width)))
+		return v.prose(text, width)
 	case session.KindToolCall:
 		return v.toolCall(ev, width)
 	case session.KindToolResult:
@@ -101,7 +112,7 @@ func (v *transcriptView) lines(ev session.Event, width int) []string {
 		if text == "" || text == v.lastAssistant {
 			return nil
 		}
-		return inset(v.md.Render(text, bodyWidth(width)))
+		return v.prose(text, width)
 	case session.KindStalled:
 		return []string{v.th.Render(theme.Error, "  stalled: "+ev.Err)}
 	default:

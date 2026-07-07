@@ -299,6 +299,12 @@ type sessionHost struct {
 	// status badge. It persists across turns (turn count, spend, record state
 	// accumulate over the whole session) and is read and written under mu.
 	proj session.Projection
+
+	// rendered reports whether the current turn has appended any transcript line
+	// yet, so a turn that produces no visible output (a weak model that emits only
+	// whitespace) is reported rather than leaving a blank. It is reset when a turn
+	// starts and set by onEvent, both on the single serial turn goroutine.
+	rendered bool
 }
 
 // queuedTurn is one submitted prompt waiting behind a running turn: its text
@@ -497,6 +503,7 @@ func (h *sessionHost) start(t queuedTurn) {
 	// driver's flat text goes nowhere.
 	h.s.out = io.Discard
 	h.s.observer = h.onEvent
+	h.rendered = false
 	h.live.set("thinking...")
 	h.pokeLive()
 
@@ -512,6 +519,10 @@ func (h *sessionHost) start(t queuedTurn) {
 			h.ui.Append("  (turn cancelled)")
 		case err != nil:
 			h.ui.Append("  error: " + err.Error())
+		case !h.rendered:
+			// The turn finished cleanly but produced nothing to show (a weak model
+			// that emitted only whitespace), so say so rather than leave a blank.
+			h.ui.Append(h.th.Render(theme.Muted, "  (no response)"))
 		}
 		h.next()
 	}()
@@ -1029,6 +1040,7 @@ func (h *sessionHost) onEvent(ev session.Event) {
 	}
 	if lines := h.tv.lines(ev, h.ui.Width()); len(lines) > 0 {
 		h.ui.Append(lines...)
+		h.rendered = true
 	}
 	h.refreshStatus()
 }
