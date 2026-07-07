@@ -136,10 +136,11 @@ versus what is in progress or planned, see [Status and roadmap](#status-and-road
 
 ### Agents and capabilities
 
-Flynn ships a set of agent archetypes (a balanced generalist, a careful
-architect, a fast shipper, a researcher, a critic, and an analyst), each defined
-by a set of **capabilities** that map to the concrete tools it is allowed to use,
-so an agent only ever has the surface it needs. Define your own archetypes in config.
+Flynn runs as an **agent**: a system prompt, the model and loop it runs on, and a
+set of **capabilities** that map to the concrete tools the agent is allowed to
+use, so it only ever has the surface it needs. Agents are versioned resources and
+compose (one can extend another), and a delegated sub-agent is granted a subset of
+its parent's authority. By default Flynn runs a general-purpose agent.
 
 ### Goals, missions, and orchestration
 
