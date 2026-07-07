@@ -21,6 +21,7 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -171,6 +172,15 @@ func (in *instance) runInput(stdin []byte, args ...string) result {
 	cmd := exec.CommandContext(ctx, flynnBin, full...)
 	cmd.Dir = in.workspace
 	cmd.Env = in.env
+	// If the process outlives its deadline, dump its goroutine stacks before killing it,
+	// so a hang is diagnosable from the captured stderr rather than an opaque timeout.
+	// SIGQUIT triggers the Go runtime's stack dump (GOTRACEBACK=all is set in the env);
+	// WaitDelay bounds the wait for it to flush and exit. Windows has no SIGQUIT, and its
+	// leg does not hang, so it keeps the default context kill.
+	if runtime.GOOS != "windows" {
+		cmd.Cancel = func() error { return cmd.Process.Signal(syscall.SIGQUIT) }
+		cmd.WaitDelay = 8 * time.Second
+	}
 	if stdin != nil {
 		cmd.Stdin = bytes.NewReader(stdin)
 	}
@@ -323,8 +333,8 @@ func scrubbedEnv(home string) []string {
 		switch up {
 		case "HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "XDG_DATA_HOME", "XDG_CONFIG_HOME":
 			continue
-		case "FLYNN_VAULT_PASSPHRASE":
-			continue // set to a fixed value below, not inherited
+		case "FLYNN_VAULT_PASSPHRASE", "FLYNN_VAULT_FILE", "GOTRACEBACK":
+			continue // set to fixed values below, not inherited
 		}
 		out = append(out, e)
 	}
@@ -336,12 +346,18 @@ func scrubbedEnv(home string) []string {
 		"LOCALAPPDATA="+filepath.Join(home, "AppData", "Local"),
 		"XDG_DATA_HOME="+filepath.Join(home, ".local", "share"),
 		"XDG_CONFIG_HOME="+filepath.Join(home, ".config"),
-		// The vault falls back to a passphrase-sealed file on a host with no OS keychain
-		// (a headless CI runner). The binary needs its instance signing identity to seal
-		// a run's verifiable record, and creating that identity writes it to the vault,
-		// so without a passphrase the sealed-file path fails and runs go unsealed. A
-		// fixed passphrase lets the identity persist and every run seal on every OS.
+		// The binary needs its instance signing identity to seal a run's verifiable
+		// record, and creating that identity writes it to the vault. FLYNN_VAULT_FILE
+		// pins the sealed-file backend so the vault never touches the host OS keychain:
+		// on a macOS runner the login keychain is locked and go-keyring's /usr/bin/security
+		// calls block on it, which would hang every command; on every OS this keeps the
+		// suite hermetic and off the developer's real keychain. The fixed passphrase below
+		// unlocks that file so the identity persists and every run seals on every OS.
+		"FLYNN_VAULT_FILE=1",
 		"FLYNN_VAULT_PASSPHRASE=flynn-e2e-fixed-passphrase",
+		// Ask the Go runtime for every goroutine's stack on an abnormal signal, so the
+		// deadline dump below shows exactly where a hung binary was blocked.
+		"GOTRACEBACK=all",
 	)
 	return out
 }
