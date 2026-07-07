@@ -24,6 +24,8 @@ var completableCommands = []completableCommand{
 	{"/export", false},
 	{"/fork", false},
 	{"/replay", false},
+	{"/compact", false},
+	{"/clear", false},
 	{"/help", false},
 }
 

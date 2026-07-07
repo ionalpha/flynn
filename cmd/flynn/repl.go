@@ -178,6 +178,11 @@ type replSession struct {
 	lastSeq   int64
 	converged bool
 
+	// carriedContext is a compacted summary a prior /compact produced, folded into the
+	// next fresh run's standing instructions so the thread continues with less context.
+	// /clear drops it; /compact sets it.
+	carriedContext string
+
 	recalled   []string
 	transcript []llm.Message
 	lastResult string
@@ -252,6 +257,12 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		// standing instructions the whole session runs under, and remember which
 		// skills were surfaced so the session's outcome can reinforce them.
 		s.system = defaultSystemPrompt
+		// A prior /compact carries a summary of the compacted conversation into the fresh
+		// run's standing instructions, so the new run continues the thread with far less
+		// context than replaying every turn.
+		if s.carriedContext != "" {
+			s.system += "\n\n" + s.carriedContext
+		}
 		if block, recalled := recallContext(turnCtx, s.store.Skills(), s.store.Memory(), userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
@@ -397,6 +408,17 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 	switch strings.ToLower(fields[0]) {
 	case "/help", "?":
 		renderHelp(s.out)
+		return true, nil
+	case "/clear":
+		s.clear()
+		_, _ = fmt.Fprintln(s.out, "  context cleared; starting a fresh conversation")
+		return true, nil
+	case "/compact":
+		n, err := s.compact(ctx)
+		if err != nil {
+			return true, err
+		}
+		_, _ = fmt.Fprintf(s.out, "  compacted %d messages into a summary; continuing with less context\n", n)
 		return true, nil
 	case "/tokens":
 		u, turns := session.Usage{}, 0

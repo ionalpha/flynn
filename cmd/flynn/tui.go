@@ -490,6 +490,12 @@ func (h *sessionHost) start(t queuedTurn) {
 	case "/tokens":
 		h.startRecord(h.doTokens)
 		return
+	case "/clear":
+		h.startRecord(h.doClear)
+		return
+	case "/compact":
+		h.startRecord(h.doCompact)
+		return
 	}
 	turnCtx, cancel := context.WithCancel(h.ctx)
 	h.mu.Lock()
@@ -693,6 +699,45 @@ func (h *sessionHost) doHelp(_ context.Context) {
 // it, so each exchange reads as its own group rather than one dense wall.
 func (h *sessionHost) echoPrompt(text string) {
 	h.ui.Append("", h.th.Render(theme.UserPrefix, "> ")+h.th.Render(theme.UserText, text), "")
+}
+
+// doClear detaches the session from its run and starts a fresh conversation, resetting
+// the badge and the transcript's dedup state. The prior run stays durable and resumable.
+func (h *sessionHost) doClear(_ context.Context) {
+	h.echoPrompt("/clear")
+	h.s.clear()
+	h.resetContext()
+	h.ui.Append(h.th.Render(theme.Status, "  context cleared; starting a fresh conversation"))
+}
+
+// doCompact summarizes the conversation and continues from the summary, so the session
+// stops resending its whole history. It calls the model, so it runs as a turn.
+func (h *sessionHost) doCompact(ctx context.Context) {
+	h.echoPrompt("/compact")
+	h.live.set("compacting...")
+	h.pokeLive()
+	n, err := h.s.compact(ctx)
+	h.live.set("")
+	h.pokeLive()
+	if err != nil {
+		h.ui.Append(h.th.Render(theme.Rejected, "  "+err.Error()))
+		return
+	}
+	h.resetContext()
+	h.ui.Append(h.th.Render(theme.Success, fmt.Sprintf("  compacted %d messages into a summary; continuing with less context", n)))
+}
+
+// resetContext resets the run projection and the transcript's converged-dedup state
+// after the session detaches from its run (clear or compact), so the badge and the
+// dedup start fresh with the next run.
+func (h *sessionHost) resetContext() {
+	h.mu.Lock()
+	h.proj = session.NewProjection()
+	p := h.proj
+	h.mu.Unlock()
+	h.tv = newTranscriptView(h.th)
+	h.panel.set(p)
+	h.refreshStatus()
 }
 
 // doTokens prints this run's token breakdown to the scrollback, reading the same
