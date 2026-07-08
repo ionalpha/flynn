@@ -1,0 +1,48 @@
+# syntax=docker/dockerfile:1
+#
+# Release image for the published multi-arch container. Unlike the top-level Dockerfile
+# (which compiles from source for a local `docker build`), this one copies the exact
+# binary the release pipeline already built and signed, so the image and the release
+# archives are the same bytes. It is driven by the `dockers:` block in .goreleaser.yaml,
+# which places the per-architecture `flynn` binary in the build context.
+#
+# The tiny prep stage only creates the data directory with the runtime user's ownership;
+# it never compiles. --platform=$BUILDPLATFORM keeps that step on the native builder so a
+# cross-arch build does not emulate it. The base is pinned by @sha256 alongside its tag,
+# matching the same digest used by the top-level Dockerfile.
+FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS prep
+RUN install -d -o 65532 -g 65532 /data
+
+# distroless static: ~2 MB, no shell or package manager, runs as a non-root user
+# (uid 65532), and ships ca-certificates and tzdata so outbound HTTPS to model
+# providers and integrations works out of the box.
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+
+# APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
+# posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits
+# the image path's ownership, so /data is writable without a chown. Some hosts instead
+# mount the data volume root-owned and offer no shell to fix it at boot (Fly.io, where
+# every app is its own isolated Firecracker microVM). Build those with
+# `--build-arg APP_USER=root` so the process can write the volume; the microVM is the
+# isolation boundary there, not the in-VM user.
+ARG APP_USER=nonroot
+
+# goreleaser copies the target-architecture binary into the build context as `flynn`.
+COPY flynn /usr/local/bin/flynn
+COPY --from=prep --chown=65532:65532 /data /data
+
+USER ${APP_USER}
+WORKDIR /data
+
+# Durable state lives here: the SQLite store, the credential vault's sealed file, and
+# accumulated learning. Mount a volume so it survives container replacement.
+VOLUME ["/data"]
+
+# The control-plane API binds loopback by default. Flynn refuses to bind a wildcard
+# address (every interface) on purpose, so the API is reachable inside the container
+# (via `docker exec` or a tunnel) and is never silently exposed. Auth is on by default:
+# a bearer token is generated and logged when FLYNN_API_TOKEN is unset. To have the
+# agent answer messages, add a channel (TELEGRAM_BOT_TOKEN) and a model key
+# (ANTHROPIC_API_KEY); see deploy/README.md for remote access and hardening.
+ENTRYPOINT ["flynn"]
+CMD ["serve", "--data-dir=/data", "--api-addr=127.0.0.1:7575"]

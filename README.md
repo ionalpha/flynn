@@ -62,15 +62,82 @@ irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 ```
 
 Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.1.0`) or change the
-install directory with `FLYNN_INSTALL_DIR`. Prebuilt binaries for Windows, macOS, Linux,
-and ARM, with a `checksums.txt` you can verify by hand, are attached to every
-[release](https://github.com/ionalpha/flynn/releases).
+install directory with `FLYNN_INSTALL_DIR`.
 
-With the Go toolchain (builds from source, needs Go 1.26+):
+Prefer another method? Each option below installs the same release.
+
+<details>
+<summary><b>Docker (GHCR or Docker Hub)</b></summary>
+
+Multi-architecture images (amd64, arm64) are published on each release. Mount a volume
+for the durable state (SQLite store, credential vault, learned skills) so it survives
+container replacement, and pass a model key:
+
+```sh
+docker run -v flynn-data:/data \
+  -e ANTHROPIC_API_KEY=your-key \
+  ghcr.io/ionalpha/flynn:latest
+```
+
+The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
+(`:0.1.0`) instead of `latest`. The API binds loopback inside the container on purpose;
+add a channel (for example `-e TELEGRAM_BOT_TOKEN=...`) to reach the agent, or see
+[`deploy/README.md`](deploy/README.md) for remote access and hardening.
+
+Every published manifest is keyless-signed with cosign and can be verified:
+
+```sh
+cosign verify ghcr.io/ionalpha/flynn:latest \
+  --certificate-identity-regexp 'https://github.com/ionalpha/flynn/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+```
+
+</details>
+
+<details>
+<summary><b>Linux packages (deb, rpm, apk)</b></summary>
+
+Native packages for Debian/Ubuntu, Fedora/RHEL, and Alpine are attached to every
+[release](https://github.com/ionalpha/flynn/releases). Download the one for your
+distribution and architecture, then:
+
+```sh
+sudo dpkg -i flynn_*_linux_amd64.deb     # Debian, Ubuntu
+sudo rpm -i  flynn_*_linux_amd64.rpm     # Fedora, RHEL
+sudo apk add --allow-untrusted flynn_*_linux_amd64.apk   # Alpine
+```
+
+</details>
+
+<details>
+<summary><b>Go toolchain (build from source)</b></summary>
+
+Needs Go 1.26+:
 
 ```sh
 go install github.com/ionalpha/flynn/cmd/flynn@latest
 ```
+
+</details>
+
+<details>
+<summary><b>Manual download and verify</b></summary>
+
+Prebuilt binaries for Windows, macOS, Linux, and ARM are attached to every
+[release](https://github.com/ionalpha/flynn/releases) alongside a `checksums.txt`. The
+checksum file is signed with cosign; verify it before trusting a binary:
+
+```sh
+cosign verify-blob checksums.txt \
+  --signature checksums.txt.sig \
+  --certificate checksums.txt.pem \
+  --certificate-identity-regexp 'https://github.com/ionalpha/flynn/.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+
+sha256sum -c checksums.txt --ignore-missing
+```
+
+</details>
 
 ## Quick start
 
@@ -336,7 +403,9 @@ result, err := a.Goal(ctx, "audit the repo for TODOs and summarize them")
 ## Run it anywhere
 
 - **Locally** as a single binary.
-- **Docker.** A small static-binary image with no language runtime to bundle.
+- **Docker.** A small static-binary image with no language runtime to bundle,
+  published multi-arch and signed as `ghcr.io/ionalpha/flynn` (also on Docker Hub as
+  `ionalpha/flynn`). See [Install](#install).
 - **A $5 VPS.** The tiny image and fast cold start make a continuously available
   agent cheap to run.
 

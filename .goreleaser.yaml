@@ -41,6 +41,76 @@ nfpms:
       - rpm
       - apk
 
+# Multi-architecture container images built from the same signed binary and pushed to
+# both GHCR and Docker Hub. Each architecture is built and pushed as its own suffixed
+# tag; the docker_manifests below fuse them into a single multi-arch tag that resolves
+# to the right image per host. Dockerfile.release copies the prebuilt binary rather than
+# recompiling, so the image and the release archives are the same bytes.
+dockers:
+  - id: amd64
+    goos: linux
+    goarch: amd64
+    dockerfile: Dockerfile.release
+    use: buildx
+    image_templates:
+      - "ghcr.io/ionalpha/flynn:{{ .Version }}-amd64"
+      - "docker.io/ionalpha/flynn:{{ .Version }}-amd64"
+    build_flag_templates:
+      - "--platform=linux/amd64"
+      - "--label=org.opencontainers.image.title=flynn"
+      - "--label=org.opencontainers.image.description=A secure agent operating system in a single Go binary."
+      - "--label=org.opencontainers.image.url=https://github.com/ionalpha/flynn"
+      - "--label=org.opencontainers.image.source=https://github.com/ionalpha/flynn"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+  - id: arm64
+    goos: linux
+    goarch: arm64
+    dockerfile: Dockerfile.release
+    use: buildx
+    image_templates:
+      - "ghcr.io/ionalpha/flynn:{{ .Version }}-arm64"
+      - "docker.io/ionalpha/flynn:{{ .Version }}-arm64"
+    build_flag_templates:
+      - "--platform=linux/arm64"
+      - "--label=org.opencontainers.image.title=flynn"
+      - "--label=org.opencontainers.image.description=A secure agent operating system in a single Go binary."
+      - "--label=org.opencontainers.image.url=https://github.com/ionalpha/flynn"
+      - "--label=org.opencontainers.image.source=https://github.com/ionalpha/flynn"
+      - "--label=org.opencontainers.image.version={{ .Version }}"
+      - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
+      - "--label=org.opencontainers.image.licenses=MIT"
+
+docker_manifests:
+  - name_template: "ghcr.io/ionalpha/flynn:{{ .Version }}"
+    image_templates:
+      - "ghcr.io/ionalpha/flynn:{{ .Version }}-amd64"
+      - "ghcr.io/ionalpha/flynn:{{ .Version }}-arm64"
+  - name_template: "ghcr.io/ionalpha/flynn:latest"
+    image_templates:
+      - "ghcr.io/ionalpha/flynn:{{ .Version }}-amd64"
+      - "ghcr.io/ionalpha/flynn:{{ .Version }}-arm64"
+  - name_template: "docker.io/ionalpha/flynn:{{ .Version }}"
+    image_templates:
+      - "docker.io/ionalpha/flynn:{{ .Version }}-amd64"
+      - "docker.io/ionalpha/flynn:{{ .Version }}-arm64"
+  - name_template: "docker.io/ionalpha/flynn:latest"
+    image_templates:
+      - "docker.io/ionalpha/flynn:{{ .Version }}-amd64"
+      - "docker.io/ionalpha/flynn:{{ .Version }}-arm64"
+
+# Keyless signature over each published manifest digest, the same Sigstore/OIDC path the
+# checksum signing uses, so the images are verifiable with `cosign verify`.
+docker_signs:
+  - cmd: cosign
+    artifacts: manifests
+    args:
+      - sign
+      - "--yes"
+      - "${artifact}@${digest}"
+    output: true
+
 checksum:
   name_template: checksums.txt
 
