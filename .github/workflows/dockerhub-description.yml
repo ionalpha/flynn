@@ -1,0 +1,32 @@
+name: Docker Hub description
+
+# Keep the Docker Hub repository overview and short description in step with the
+# README. GoReleaser pushes image bytes on a tag but never touches these text
+# fields, so this syncs them whenever the README changes on main (and on demand).
+on:
+  push:
+    branches: [main]
+    paths:
+      - README.md
+      - .github/workflows/dockerhub-description.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    name: Sync README to Docker Hub
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: peter-evans/dockerhub-description@1b9a80c056b620d92cedb9d9b5a223409c68ddfa # v5.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ionalpha/flynn
+          short-description: "A secure, sandboxed, verifiable self-hosted agent operating system in a single Go binary."
+          readme-filepath: ./README.md
+          # Rewrite the README's repo-relative links to absolute github.com URLs so
+          # they resolve on Docker Hub, which has no notion of the repository tree.
+          enable-url-completion: true
