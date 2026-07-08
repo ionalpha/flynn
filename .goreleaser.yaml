@@ -131,9 +131,37 @@ signs:
     artifacts: checksum
     output: true
 
+# Human-readable release notes: group the Conventional Commit subjects into
+# sections and drop the noise (docs, tests, formatting, chores, CI, merges) so the
+# notes summarize the user-facing changes rather than reproduce the commit log.
 changelog:
   use: github
   sort: asc
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\(.+\))??!?:.+$'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*?fix(\(.+\))??!?:.+$'
+      order: 1
+    - title: Performance
+      regexp: '^.*?perf(\(.+\))??!?:.+$'
+      order: 2
+    - title: Security
+      regexp: '^.*?sec(urity)?(\(.+\))??!?:.+$'
+      order: 3
+    - title: Other changes
+      order: 999
+  filters:
+    exclude:
+      - '^docs(\(.+\))?:'
+      - '^test(\(.+\))?:'
+      - '^style(\(.+\))?:'
+      - '^chore(\(.+\))?:'
+      - '^ci(\(.+\))?:'
+      - '^build(\(.+\))?:'
+      - '^Merge pull request'
+      - '^Merge branch'
 
 release:
   draft: false
