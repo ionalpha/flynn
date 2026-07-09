@@ -98,26 +98,35 @@ func splitSlash(s string) []string {
 	return strings.Split(s, "/")
 }
 
+// matchParts is a dynamic program over segment indices rather than a recursive
+// walk: a pattern holding several ** segments would otherwise backtrack
+// exponentially against a deep path (ignore files come from the watched tree,
+// so a hostile pattern must stay cheap). prev[j] records whether the pattern
+// consumed so far matches the first j name segments; each pattern segment
+// derives the next row in O(len(name)).
 func matchParts(pat, name []string) bool {
-	for len(pat) > 0 {
-		if pat[0] == "**" {
-			if len(pat) == 1 {
-				return true // trailing ** matches every remaining segment
+	prev := make([]bool, len(name)+1)
+	cur := make([]bool, len(name)+1)
+	prev[0] = true
+	for _, p := range pat {
+		if p == "**" {
+			// ** spans zero or more segments: matched here if already matched
+			// with the same segments consumed, or with one fewer by this **.
+			cur[0] = prev[0]
+			for j := 1; j <= len(name); j++ {
+				cur[j] = prev[j] || cur[j-1]
 			}
-			for i := 0; i <= len(name); i++ {
-				if matchParts(pat[1:], name[i:]) {
-					return true
+		} else {
+			cur[0] = false
+			for j := 1; j <= len(name); j++ {
+				cur[j] = false
+				if prev[j-1] {
+					ok, err := path.Match(p, name[j-1])
+					cur[j] = err == nil && ok
 				}
 			}
-			return false
 		}
-		if len(name) == 0 {
-			return false
-		}
-		if ok, err := path.Match(pat[0], name[0]); err != nil || !ok {
-			return false
-		}
-		pat, name = pat[1:], name[1:]
+		prev, cur = cur, prev
 	}
-	return len(name) == 0
+	return prev[len(name)]
 }

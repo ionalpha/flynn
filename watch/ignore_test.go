@@ -1,6 +1,9 @@
 package watch
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestIgnoreMatch(t *testing.T) {
 	ig := ParseIgnore([]byte(`
@@ -66,5 +69,20 @@ func TestMatchGlobDoublestar(t *testing.T) {
 		if got := matchGlob(tc.pattern, tc.name); got != tc.want {
 			t.Errorf("matchGlob(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
 		}
+	}
+}
+
+// TestMatchGlobRepeatedDoublestar pins the cost of a pattern stacking many **
+// segments: the recursive matcher this replaced backtracked exponentially and
+// hung the fuzz smoke on inputs like these. With the dynamic program the case
+// finishes instantly; a regression re-hangs the test past its deadline.
+func TestMatchGlobRepeatedDoublestar(t *testing.T) {
+	pattern := strings.TrimSuffix(strings.Repeat("**/", 16), "/") + "/z"
+	deep := strings.TrimSuffix(strings.Repeat("a/", 40), "/")
+	if matchGlob(pattern, deep) {
+		t.Errorf("matchGlob(%q, deep path) = true, want false", pattern)
+	}
+	if !matchGlob(pattern, deep+"/z") {
+		t.Errorf("matchGlob(%q, deep path ending in z) = false, want true", pattern)
 	}
 }

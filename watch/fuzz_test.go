@@ -27,6 +27,8 @@ func FuzzParseIgnore(f *testing.F) {
 		{"\x00\x01\n", "\x00", false},
 		{"   \t  \n", "  ", true},
 		{"!keep.txt\n*.txt\n", "keep.txt", false},
+		// Stacked ** segments once backtracked exponentially; keep the shape seeded.
+		{"**/**/**/**/**/**/**/**/z\n", "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a", false},
 	}
 	for _, s := range seeds {
 		f.Add([]byte(s.content), s.rel, s.isDir)
