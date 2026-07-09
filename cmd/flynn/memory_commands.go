@@ -4,9 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
+	"github.com/ionalpha/flynn/memory/guard"
 	"github.com/ionalpha/flynn/state"
 )
+
+// rememberSource is the provenance stamped on a memory item the user pinned by hand.
+// It carries the guard's user scheme, so TrustOf grades it Trusted rather than the
+// Semi a distilled item gets, and the poison screen does not gate it.
+const rememberSource = guard.SchemeUser + "session"
 
 // renderSkills writes the learned skills to w: each one's name, whether it is
 // verified, its outcome record (uses and wins), and a one-line preview of its body,
@@ -52,8 +59,34 @@ func renderMemory(ctx context.Context, w io.Writer, memories state.MemoryStore) 
 		if kind == "" {
 			kind = "fact"
 		}
-		_, _ = fmt.Fprintf(w, "  [%s] %s\n", kind, oneLine(m.Content, 160))
+		pinned := ""
+		if strings.HasPrefix(m.Source, guard.SchemeUser) {
+			pinned = " [pinned]"
+		}
+		_, _ = fmt.Fprintf(w, "  [%s]%s %s\n", kind, pinned, oneLine(m.Content, 160))
 	}
+}
+
+// rememberFact pins a fact the user stated into durable memory, so it is recalled in
+// later runs rather than waiting on the distiller to infer it. The item is stamped
+// with a user-scheme source, which the guard grades as Trusted. It reports whether
+// the fact was written, so a caller that echoes a prompt can stay quiet on a no-op.
+func rememberFact(ctx context.Context, w io.Writer, memories state.MemoryStore, fact string) bool {
+	fact = strings.TrimSpace(fact)
+	if fact == "" {
+		_, _ = fmt.Fprintln(w, "usage: /remember <fact to keep across runs>")
+		return false
+	}
+	if _, err := memories.Write(ctx, state.MemoryItem{
+		Kind:    "fact",
+		Content: fact,
+		Source:  rememberSource,
+	}); err != nil {
+		_, _ = fmt.Fprintf(w, "could not write memory: %v\n", err)
+		return false
+	}
+	_, _ = fmt.Fprintf(w, "  remembered: %s\n", oneLine(fact, 160))
+	return true
 }
 
 // hasTag reports whether tags contains tag.

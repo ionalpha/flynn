@@ -458,8 +458,9 @@ func (h *sessionHost) start(t queuedTurn) {
 		h.startShell(strings.TrimSpace(cmd))
 		return
 	}
-	// The model commands take arguments (/model provider:model), so they dispatch on
-	// the first field rather than the whole line the exact-match commands below use.
+	// The model and memory commands take arguments (/model provider:model,
+	// /remember <fact>), so they dispatch on the first field rather than the whole
+	// line the exact-match commands below use.
 	if fields := strings.Fields(t.text); len(fields) > 0 {
 		switch fields[0] {
 		case "/models":
@@ -468,6 +469,12 @@ func (h *sessionHost) start(t queuedTurn) {
 		case "/model":
 			args := append([]string(nil), fields[1:]...)
 			h.startRecord(func(ctx context.Context) { h.doModel(ctx, args) })
+			return
+		case "/remember":
+			// The fact keeps its interior spacing, so it is taken from the raw line
+			// rather than rejoined from the split fields.
+			fact := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(t.text), fields[0]))
+			h.startRecord(func(ctx context.Context) { h.doRemember(ctx, fact) })
 			return
 		}
 	}
@@ -767,6 +774,15 @@ func (h *sessionHost) doMemory(ctx context.Context) {
 	h.echoPrompt("/memory")
 	var buf bytes.Buffer
 	renderMemory(ctx, &buf, h.s.store.Memory())
+	h.appendReport(buf.String())
+}
+
+// doRemember pins the fact into durable memory and reports the outcome to the
+// scrollback, so the user sees what was kept rather than trusting a silent write.
+func (h *sessionHost) doRemember(ctx context.Context, fact string) {
+	h.echoPrompt(strings.TrimSpace("/remember " + fact))
+	var buf bytes.Buffer
+	rememberFact(ctx, &buf, h.s.store.Memory(), fact)
 	h.appendReport(buf.String())
 }
 

@@ -437,6 +437,9 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 	case "/memory":
 		renderMemory(ctx, s.out, s.store.Memory())
 		return true, nil
+	case "/remember":
+		rememberFact(ctx, s.out, s.store.Memory(), strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fields[0])))
+		return true, nil
 	case "/skills":
 		renderSkills(ctx, s.out, s.store.Skills())
 		return true, nil

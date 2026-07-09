@@ -22,6 +22,7 @@ var sessionCommands = []helpEntry{
 	{"/replay", "re-render the run from its record"},
 	{"/tokens", "break down this run's token usage"},
 	{"/memory", "show what the agent remembers across runs"},
+	{"/remember <fact>", "pin a fact into memory, so it is recalled in later runs"},
 	{"/skills", "show the skills the agent has learned"},
 	{"/compact", "summarize the conversation to continue with less context"},
 	{"/clear", "start a fresh conversation"},
