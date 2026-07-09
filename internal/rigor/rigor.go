@@ -7,10 +7,19 @@
 // and the CI test matrix with no extra wiring, so a package added without its
 // required tests turns `go test ./...` red locally and in CI.
 //
+// The fuzz requirement is not only a list. A declared list is a thing someone has
+// to remember to add a package to, and the parsers that most needed fuzzing were
+// exactly the ones nobody remembered. So the gate also infers it: a package that
+// reaches a network or host boundary and decodes what comes back is parsing input
+// it does not control, and must carry a fuzz target whether or not it was ever
+// listed. A new parser wired to a socket or a subprocess now cannot land without
+// one.
+//
 // New packages are held to the floor immediately. A grandfather allowlist covers
 // the gaps that predate the gate so it lands green; the list only ever shrinks
 // (the gate fails if a grandfathered package starts complying, forcing its
-// removal), and nothing new is added to it.
+// removal), and nothing new is added to it. The boundary-fuzz exemption list works
+// the same way.
 package rigor
 
 import (
@@ -23,6 +32,7 @@ import (
 	"io/fs"
 	"path"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -47,6 +57,32 @@ type Policy struct {
 	// regression gate cannot be deleted along with its benchmark. Grow it as
 	// hotspots gain benchmarks; never shrink it.
 	BenchRequired map[string]bool
+	// BoundaryFuzzExempt lists module-relative packages the boundary-decoder
+	// inference flags but which carry no fuzz target yet. It exists so the
+	// inference can land green over a tree that predates it. Burn it down; never
+	// add to it. The gate fails on an entry that has gained a fuzz target, and on
+	// one that no longer decodes at a boundary, so the list can only shrink.
+	BoundaryFuzzExempt map[string]bool
+}
+
+// boundaryImports are the standard-library packages whose use means bytes the
+// process did not produce cross into this one: a network peer, a subprocess.
+var boundaryImports = map[string]bool{
+	"net":      true,
+	"net/http": true,
+	"os/exec":  true,
+}
+
+// decodeFuncs maps a decoder package to the calls that turn foreign bytes or a
+// reader into Go values. A package that both reaches a boundary and calls one of
+// these is parsing input it does not control, which is the definition of a fuzz
+// target's input.
+var decodeFuncs = map[string]map[string]bool{
+	"encoding/json": {"Unmarshal": true, "NewDecoder": true},
+	"encoding/xml":  {"Unmarshal": true, "NewDecoder": true},
+	"encoding/gob":  {"NewDecoder": true},
+	"encoding/csv":  {"NewReader": true},
+	"encoding/pem":  {"Decode": true},
 }
 
 // DefaultPolicy is the policy the live gate enforces. The empty string is the
@@ -81,6 +117,18 @@ func DefaultPolicy() Policy {
 			"mission":        true,
 			"resource":       true,
 			"storage/sqlite": true,
+		},
+		// Every entry decodes a reply it does not control and predates the
+		// inference. Each one is a fuzz target waiting to be written; delete the
+		// entry with the same change that writes it.
+		BoundaryFuzzExempt: map[string]bool{
+			"externagent":               true, // a delegated agent's sealed record
+			"internal/huggingface":      true, // the model-hub API's model and file listings
+			"internal/integrations":     true, // a third-party integration's HTTP response
+			"internal/source/signalcli": true, // a signal-cli subprocess's JSON-RPC frames
+			"internal/source/telegram":  true, // the Telegram bot API's update stream
+			"llm/internal/httpapi":      true, // the shared provider transport's response body
+			"mcp":                       true, // an MCP server's JSON-RPC frames
 		},
 	}
 }
@@ -149,6 +197,29 @@ func Check(root, modulePath string, pol Policy) ([]Violation, error) {
 			}
 			if !ok {
 				vs = append(vs, Violation{label, "missing a fuzz target: declare a func FuzzXxx(*testing.F)"})
+			}
+		}
+		// The declared FuzzRequired list is a hand-maintained allowlist, so a new
+		// parser can be added without anyone remembering to list it. Infer the
+		// requirement instead: a package that reaches a network or host boundary and
+		// decodes what comes back is parsing input it does not control.
+		exemptFuzz := pol.BoundaryFuzzExempt[rel]
+		boundary, derr := decodesAtBoundary(p, pkg.GoFiles)
+		if derr != nil {
+			return derr
+		}
+		if boundary || exemptFuzz {
+			hasFuzz, ferr := hasFuncPrefix(p, testFiles, "Fuzz")
+			if ferr != nil {
+				return ferr
+			}
+			switch {
+			case boundary && !hasFuzz && !exemptFuzz:
+				vs = append(vs, Violation{label, "decodes foreign bytes at a network or host boundary but declares no fuzz target: declare a func FuzzXxx(*testing.F)"})
+			case exemptFuzz && hasFuzz:
+				vs = append(vs, Violation{label, "now has a fuzz target: remove it from the rigor boundary-fuzz exemption list (the list only shrinks)"})
+			case exemptFuzz && !boundary:
+				vs = append(vs, Violation{label, "no longer decodes at a network or host boundary: remove it from the rigor boundary-fuzz exemption list (the list only shrinks)"})
 			}
 		}
 		if pol.BenchRequired[rel] {
@@ -232,4 +303,71 @@ func hasFuncPrefix(dir string, testFiles []string, prefix string) (bool, error) 
 		}
 	}
 	return false, nil
+}
+
+// decodesAtBoundary reports whether the package's production files both reach a
+// network or host boundary (boundaryImports) and decode bytes or a reader into Go
+// values (decodeFuncs). The two are tested across the package, not per file: the
+// file that opens the connection is rarely the file that parses the reply.
+//
+// It is a conservative signal, not a proof. It cannot see a boundary crossed
+// through another package, so a false negative stays possible and the declared
+// FuzzRequired list remains the way to demand a fuzz target regardless. What it
+// does guarantee is that a new parser wired directly to a socket or a subprocess
+// cannot land without a fuzz target, which is how the existing gaps got in.
+func decodesAtBoundary(dir string, goFiles []string) (bool, error) {
+	fset := token.NewFileSet()
+	boundary, decodes := false, false
+	for _, name := range goFiles {
+		f, err := parser.ParseFile(fset, filepath.Join(dir, name), nil, 0)
+		if err != nil {
+			return false, fmt.Errorf("rigor: parse %s: %w", name, err)
+		}
+		decoders := make(map[string]string) // local name -> import path
+		for _, imp := range f.Imports {
+			p, err := strconv.Unquote(imp.Path.Value)
+			if err != nil {
+				continue
+			}
+			if boundaryImports[p] {
+				boundary = true
+			}
+			if _, ok := decodeFuncs[p]; !ok {
+				continue
+			}
+			// A named import rebinds the selector; a blank or dot import cannot
+			// produce one to match against.
+			local := path.Base(p)
+			if imp.Name != nil {
+				if imp.Name.Name == "_" || imp.Name.Name == "." {
+					continue
+				}
+				local = imp.Name.Name
+			}
+			decoders[local] = p
+		}
+		if decodes || len(decoders) == 0 {
+			continue
+		}
+		ast.Inspect(f, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := call.Fun.(*ast.SelectorExpr)
+			if !ok {
+				return true
+			}
+			id, ok := sel.X.(*ast.Ident)
+			if !ok {
+				return true
+			}
+			if imp, ok := decoders[id.Name]; ok && decodeFuncs[imp][sel.Sel.Name] {
+				decodes = true
+				return false
+			}
+			return true
+		})
+	}
+	return boundary && decodes, nil
 }
