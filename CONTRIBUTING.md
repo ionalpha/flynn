@@ -8,7 +8,8 @@ it is the canonical contribution contract (and what automated triage checks agai
 1. Open or find an issue describing the change.
 2. Fork, branch, and make a focused change.
 3. Run `./dev/check` (or `make check`) locally until it is green. It runs exactly
-   what CI runs (build, vet, test, lint, vuln).
+   what CI runs (build, vet, test, lint, vuln) and arms the repo's git hooks
+   (`.githooks/`), including a pre-commit secret scan.
 4. Open a pull request (`./dev/pr`) that links the issue and follows Conventional Commits.
 5. Sign your commits off with DCO: `git commit -s`.
 6. Sign the Contributor License Agreement. On your first pull request the CLA bot

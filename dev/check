@@ -9,6 +9,10 @@ set -eu
 here="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 cd "$here/.."
 
+# Activate the repo's git hooks (idempotent). Running the documented pre-flight
+# once is enough to arm the pre-commit secret gate in .githooks/.
+git config core.hooksPath .githooks
+
 "$here/build"
 
 echo "==> go vet ./..."

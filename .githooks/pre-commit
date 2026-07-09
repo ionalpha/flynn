@@ -1,0 +1,8 @@
+#!/usr/bin/env sh
+# Refuse to commit staged secrets. The repository sets core.hooksPath=.githooks,
+# so this runs on every commit, including --amend. CI runs the same scanner over
+# the full history (dev/secrets); this gate stops the leak before it becomes a
+# commit that only a history rewrite can remove.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+exec ./dev/secrets --staged
