@@ -357,7 +357,9 @@ func decodeResponse(ar apiResponse) (llm.Response, error) {
 			var t struct {
 				Text string `json:"text"`
 			}
-			_ = json.Unmarshal(raw, &t)
+			if err := json.Unmarshal(raw, &t); err != nil {
+				return llm.Response{}, fault.Wrap(fault.Terminal, "anthropic_block_decode", err)
+			}
 			blocks = append(blocks, llm.Block{Kind: llm.KindText, Text: t.Text})
 		case "tool_use":
 			var tu struct {
@@ -365,7 +367,9 @@ func decodeResponse(ar apiResponse) (llm.Response, error) {
 				Name  string          `json:"name"`
 				Input json.RawMessage `json:"input"`
 			}
-			_ = json.Unmarshal(raw, &tu)
+			if err := json.Unmarshal(raw, &tu); err != nil {
+				return llm.Response{}, fault.Wrap(fault.Terminal, "anthropic_block_decode", err)
+			}
 			blocks = append(blocks, llm.Block{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: tu.ID, Name: tu.Name, Input: tu.Input}})
 		default:
 			// thinking, redacted_thinking, or any future block: preserve verbatim so
