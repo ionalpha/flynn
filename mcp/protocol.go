@@ -1,6 +1,9 @@
 package mcp
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // protocolVersion is the Model Context Protocol revision this server implements.
 // On initialize the server echoes the client's requested version when it is
@@ -41,6 +44,41 @@ type response struct {
 	ID      json.RawMessage `json:"id"`
 	Result  any             `json:"result,omitempty"`
 	Error   *rpcError       `json:"error,omitempty"`
+}
+
+// frame assembles the reply as wire bytes, splicing the request's id in untouched.
+// Marshaling the whole struct would not keep the "verbatim" promise: encoding/json
+// compacts and HTML-escapes RawMessage bytes it embeds, so a string id containing
+// an ampersand comes back with the character replaced by its Unicode escape, and an
+// object id loses its interior whitespace. Only the id needs byte fidelity; the
+// result and error payloads are the server's own values and marshal normally. An
+// empty ID (the parse-error reply, which never saw a request id) is written as
+// null, per JSON-RPC 2.0.
+func (r response) frame() ([]byte, error) {
+	var b bytes.Buffer
+	b.WriteString(`{"jsonrpc":"2.0","id":`)
+	if len(r.ID) == 0 {
+		b.WriteString("null")
+	} else {
+		b.Write(r.ID)
+	}
+	if r.Error != nil {
+		e, err := json.Marshal(r.Error)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(`,"error":`)
+		b.Write(e)
+	} else {
+		res, err := json.Marshal(r.Result)
+		if err != nil {
+			return nil, err
+		}
+		b.WriteString(`,"result":`)
+		b.Write(res)
+	}
+	b.WriteByte('}')
+	return b.Bytes(), nil
 }
 
 // rpcError is the JSON-RPC error object: a numeric code and a human message, with

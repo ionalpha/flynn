@@ -74,6 +74,10 @@ func FuzzServeFrames(f *testing.F) {
 	f.Add([]byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`))
 	f.Add([]byte(`{"jsonrpc":"2.0","id":null,"method":"ping"}`))
 	f.Add([]byte(`{"jsonrpc":"2.0","id":{"deep":[1,2,3]},"method":"ping"}`))
+	// Ids that a re-marshal would alter: HTML-escapable characters and interior
+	// whitespace. The verbatim-echo bar means these must come back byte for byte.
+	f.Add([]byte(`{"jsonrpc":"2.0","id":"&<>","method":"ping"}`))
+	f.Add([]byte(`{"jsonrpc":"2.0","id":{"":1 },"method":"ping"}`))
 	f.Add([]byte("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}\n{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\"}"))
 	f.Add([]byte(`{"jsonrpc":"2.0","id":1,"method":"ping"} trailing garbage`))
 	f.Add([]byte(`not json at all`))

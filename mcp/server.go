@@ -102,7 +102,6 @@ func NewServer(d *dispatch.Dispatcher, tools []mission.Tool, opts ...Option) *Se
 // run's grant and brakes) are propagated into every tool call; a caller that wants
 // a governed session binds them before calling Serve.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
-	enc := json.NewEncoder(w)
 	msgs, errc := s.readLoop(ctx, r)
 	for {
 		select {
@@ -121,7 +120,11 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 			if !write {
 				continue
 			}
-			if err := enc.Encode(resp); err != nil {
+			frame, err := resp.frame()
+			if err != nil {
+				return fault.Wrap(fault.Transient, "mcp_write", err)
+			}
+			if _, err := w.Write(append(frame, '\n')); err != nil {
 				return fault.Wrap(fault.Transient, "mcp_write", err)
 			}
 		}

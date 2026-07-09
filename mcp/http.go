@@ -84,7 +84,7 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var in inbound
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
-		writeJSON(w, http.StatusBadRequest, response{
+		writeFrame(w, http.StatusBadRequest, response{
 			JSONRPC: "2.0",
 			Error:   &rpcError{Code: codeParse, Message: "parse error: " + err.Error()},
 		})
@@ -104,14 +104,21 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set(mcpSessionHeader, h.session)
-	writeJSON(w, http.StatusOK, resp)
+	writeFrame(w, http.StatusOK, resp)
 }
 
-// writeJSON encodes v as an application/json body with the given status.
-func writeJSON(w http.ResponseWriter, status int, v any) {
+// writeFrame writes the reply as an application/json body with the given status,
+// using response.frame so the request's id survives byte for byte. A frame that
+// fails to assemble (a result that cannot marshal, a programming error) falls back
+// to a bare internal-error frame with a null id rather than an empty body.
+func writeFrame(w http.ResponseWriter, status int, resp response) {
+	frame, err := resp.frame()
+	if err != nil {
+		frame = []byte(`{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"encode failure"}}`)
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+	_, _ = w.Write(append(frame, '\n'))
 }
 
 // isLoopbackHost reports whether the request's Host header names the loopback
