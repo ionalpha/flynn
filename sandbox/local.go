@@ -149,6 +149,14 @@ func WithReadOnlyFS() LocalOption {
 	return func(l *Local) { l.readonlyFS = true }
 }
 
+// ErrReadGrant reports that a directory named by WithReadableDir could not be granted to
+// the confined child. It fails the launch and is never absorbed by the best-effort
+// fallback: that fallback exists for a host which cannot establish confinement at all,
+// and letting it swallow this error would turn a failure to apply an explicitly requested
+// access grant into a silent, unconfined run of the very command the grant was for. A
+// caller that sees it must treat the sandbox as unusable rather than retry without it.
+var ErrReadGrant = errors.New("sandbox: cannot grant read access to a configured directory")
+
 // WithReadableDir grants a confined child read access to a directory outside the
 // workspace. By default confinement is default-deny for reads on the platforms that can
 // enforce it (a Windows AppContainer can read only what it is granted), so a governed
@@ -402,7 +410,7 @@ func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	// nonetheless cannot start here the run must fail closed rather than silently drop
 	// to the floor. The probe makes this rare, but a transient setup failure after a
 	// passing probe must not reopen the bypass.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() {
+	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
 		return l.execOnce(ctx, cmd, false)
 	}
 	return res, err

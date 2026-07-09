@@ -18,7 +18,11 @@ import (
 func (l *Local) grantReadableDirs(sid *windows.SID) error {
 	for _, dir := range l.readableDirs {
 		if err := grantReadDir(dir, sid); err != nil {
-			return fmt.Errorf("grant readable dir %s: %w", dir, err)
+			// Wrapped in ErrReadGrant so the best-effort fallback refuses to absorb it: a
+			// directory the host will not let this process grant (one whose access list it
+			// cannot rewrite, or one that does not exist) must fail the launch, never drop
+			// the child to an unconfined run.
+			return fmt.Errorf("%w: %s: %w", ErrReadGrant, dir, err)
 		}
 	}
 	return nil
@@ -38,7 +42,7 @@ func grantReadDir(dir string, sid *windows.SID) error {
 		return fmt.Errorf("access list: %w", err)
 	}
 	entries := []windows.EXPLICIT_ACCESS{{
-		AccessPermissions: windows.GENERIC_READ | windows.GENERIC_EXECUTE,
+		AccessPermissions: fileGenericReadExecute,
 		AccessMode:        windows.SET_ACCESS,
 		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 		Trustee: windows.TRUSTEE{

@@ -93,7 +93,7 @@ func (l *Local) Stream(ctx context.Context, spec StreamSpec) (*StreamProcess, er
 	// excluded here too: a governed-egress or network-denied launch, and a sandbox that
 	// reports the kernel-confined tier the trust gate already relied on, fail closed rather
 	// than dropping to an unconfined run.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() {
+	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
 		return l.startStream(ctx, spec, false)
 	}
 	return p, err

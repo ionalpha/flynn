@@ -102,7 +102,7 @@ func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	// egress and an explicit network denial must not drop to an open-network run, and a
 	// sandbox reporting the kernel-confined tier must fail closed rather than serve a
 	// process unconfined under a guarantee the trust gate already relied on.
-	if err != nil && confine && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() {
+	if err != nil && confine && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
 		return l.startProcess(spec.Argv, false)
 	}
 	return p, err

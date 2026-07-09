@@ -31,19 +31,26 @@ const errAlreadyExists = 0x800700B7
 const procThreadAttributeMitigationPolicy = 0x00020007
 
 // The process-mitigation policy bits applied to every confined command, hardening the
-// child beyond the AppContainer boundary. The headline is the Win32k system-call
-// disable, which removes the kernel's window-manager and graphics syscall surface (a
-// large, historically exploited attack surface) from a command that has no legitimate
-// need for it. The rest deny code-injection and DLL-planting avenues and enable the
-// standard exploit mitigations. Policies that would break ordinary developer commands
-// are deliberately excluded: prohibit-dynamic-code (breaks just-in-time compilers),
-// block-non-Microsoft-binaries (breaks ordinary third-party tools), and
-// strict-handle-checks (terminates a process on a double-close some tools do benignly).
+// child beyond the AppContainer boundary. They deny code-injection and DLL-planting
+// avenues and enable the standard exploit mitigations. Policies that would break
+// ordinary developer commands are deliberately excluded: prohibit-dynamic-code (breaks
+// just-in-time compilers), block-non-Microsoft-binaries (breaks ordinary third-party
+// tools), strict-handle-checks (terminates a process on a double-close some tools do
+// benignly), and the Win32k system-call disable (see below).
 const (
-	mitigationDEPEnable               = 0x01
-	mitigationSEHOPEnable             = 0x04
-	mitigationBottomUpASLR            = 0x01 << 16
-	mitigationHighEntropyASLR         = 0x01 << 20
+	mitigationDEPEnable       = 0x01
+	mitigationSEHOPEnable     = 0x04
+	mitigationBottomUpASLR    = 0x01 << 16
+	mitigationHighEntropyASLR = 0x01 << 20
+	// mitigationWin32kSystemCallDisable removes the kernel's window-manager syscall
+	// surface from the child. It is NOT applied, and must not be: user32.dll cannot
+	// initialize without those syscalls, so any command that loads it dies during DLL
+	// initialization with STATUS_DLL_INIT_FAILED before reaching main. That is most of
+	// them (node, git, python, powershell, and the external agent CLIs among them), and
+	// the failure surfaces only as an opaque 0xC0000142 exit code. The lockdown suits a
+	// purpose-built child compiled to avoid user32; it cannot be imposed on the arbitrary
+	// third-party commands this sandbox exists to run. It stays defined so the exclusion
+	// is explicit and testable rather than a silent omission.
 	mitigationWin32kSystemCallDisable = 0x01 << 28
 	mitigationExtensionPointDisable   = 0x01 << 32
 	mitigationImageLoadNoRemote       = 0x01 << 52
@@ -55,7 +62,6 @@ const sandboxMitigationPolicy = mitigationDEPEnable |
 	mitigationSEHOPEnable |
 	mitigationBottomUpASLR |
 	mitigationHighEntropyASLR |
-	mitigationWin32kSystemCallDisable |
 	mitigationExtensionPointDisable |
 	mitigationImageLoadNoRemote |
 	mitigationImageLoadNoLowLabel |
@@ -169,6 +175,19 @@ func capabilitySID(name string) (*windows.SID, error) {
 	return caps[0].Copy()
 }
 
+// fileAllAccess and fileGenericReadExecute are the file-object access masks the grants
+// use, named in specific rights rather than generic ones. A generic right stored in an
+// access-list entry is mapped to an object's specific rights only when a child object
+// inherits the entry, never for the entry on the directory it is set on. A directory
+// granted GENERIC_ALL therefore still denies the list and traverse rights that name
+// implies: files under it are readable through their inherited entries, while the
+// directory itself cannot be opened or enumerated. Naming the specific bits grants the
+// directory and its contents alike.
+const (
+	fileAllAccess          = 0x1F01FF // FILE_ALL_ACCESS
+	fileGenericReadExecute = 0x1200A9 // FILE_GENERIC_READ | FILE_GENERIC_EXECUTE
+)
+
 // grantDir adds an inheritable full-access entry for the AppContainer SID to dir's
 // access list, merged with the existing list so the user keeps its own access. This is
 // the one writable location the contained command is given; everything else on the
@@ -183,7 +202,7 @@ func grantDir(dir string, sid *windows.SID) error {
 		return fmt.Errorf("access list: %w", err)
 	}
 	entries := []windows.EXPLICIT_ACCESS{{
-		AccessPermissions: windows.GENERIC_ALL,
+		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.SET_ACCESS,
 		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
 		Trustee: windows.TRUSTEE{

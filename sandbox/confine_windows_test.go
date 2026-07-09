@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -176,21 +177,57 @@ func TestAppContainerMonikerStableAndUnique(t *testing.T) {
 }
 
 // TestMitigationPolicyShape guards the process-mitigation set applied to a confined
-// command: it must include the Win32k system-call lockdown (the headline kernel
-// attack-surface reduction) and must not include the policies that break ordinary
-// developer tools (dynamic-code prohibition, non-Microsoft-binary blocking).
+// command: it must not include any policy that breaks ordinary developer tools
+// (dynamic-code prohibition, non-Microsoft-binary blocking, strict handle checks, and
+// the Win32k system-call lockdown, which stops user32.dll from initializing).
 func TestMitigationPolicyShape(t *testing.T) {
-	if sandboxMitigationPolicy&mitigationWin32kSystemCallDisable == 0 {
-		t.Fatal("the mitigation policy must apply the Win32k system-call lockdown")
-	}
 	for name, bit := range map[string]uint64{
 		"prohibit-dynamic-code":      0x01 << 36,
 		"block-non-microsoft-binary": 0x01 << 44,
 		"strict-handle-checks":       0x01 << 24,
+		"win32k-syscall-disable":     mitigationWin32kSystemCallDisable,
 	} {
 		if sandboxMitigationPolicy&bit != 0 {
 			t.Fatalf("the mitigation policy must not enable %s (it breaks ordinary commands)", name)
 		}
+	}
+}
+
+// statusDLLInitFailed is the exit code (STATUS_DLL_INIT_FAILED) a child reports when a
+// DLL fails to initialize before main runs. A confined command that loads user32.dll
+// exits with it when the Win32k system-call lockdown is applied to the process.
+const statusDLLInitFailed = 0xC0000142
+
+// TestConfinedCommandLoadingUser32Starts proves a confined command that loads user32.dll
+// reaches main and runs, rather than dying during DLL initialization. Most real commands
+// load user32 (node, git, python, and powershell among them), so a process mitigation
+// that stops it from initializing leaves the confined tier unable to run them at all,
+// reporting only an opaque exit code. whoami.exe is a System32 binary that loads user32
+// and prints the caller's identity, so this fails loudly if the mitigation returns.
+func TestConfinedCommandLoadingUser32Starts(t *testing.T) {
+	l, err := NewLocal(t.TempDir(), WithReadOnlyFS(), WithSeccomp(), WithExecTimeout(30*time.Second))
+	if err != nil {
+		t.Fatalf("new local: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	if l.Containment() != ContainmentKernel {
+		t.Skip("host does not enforce the kernel-confined tier")
+	}
+
+	res, err := l.Capture(context.Background(), CaptureSpec{
+		Argv: []string{filepath.Join(os.Getenv("SystemRoot"), "System32", "whoami.exe")},
+	})
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	if uint32(res.ExitCode) == statusDLLInitFailed {
+		t.Fatalf("a confined command that loads user32.dll died during DLL initialization (exit %#x); the Win32k system-call lockdown must not be applied to arbitrary commands", uint32(res.ExitCode))
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("whoami exited %d, output %q", res.ExitCode, res.Output)
+	}
+	if strings.TrimSpace(res.Output) == "" {
+		t.Fatal("whoami printed nothing, so it did not reach main")
 	}
 }
 
@@ -369,5 +406,76 @@ func TestApplyJobLimitsDefaults(t *testing.T) {
 	if got.BasicLimitInformation.ActiveProcessLimit != jobActiveProcessLimit {
 		t.Errorf("active process limit = %d, want the default %d",
 			got.BasicLimitInformation.ActiveProcessLimit, jobActiveProcessLimit)
+	}
+}
+
+// TestUngrantableReadableDirFailsClosed proves a directory that cannot be granted to the
+// confined child fails the launch rather than dropping it to an unconfined run. The
+// best-effort fallback exists for a host that cannot establish confinement at all; if it
+// also absorbed a grant failure, naming a directory the process may not re-ACL (a
+// system-owned one) would silently run the command with no sandbox around it, which is
+// the opposite of what asking for the grant meant. A path that does not exist cannot have
+// its access list rewritten, so it stands in for that class deterministically.
+func TestUngrantableReadableDirFailsClosed(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-directory")
+	l, err := NewLocal(t.TempDir(), WithDefaultConfinement(), WithReadableDir(missing), WithExecTimeout(30*time.Second))
+	if err != nil {
+		t.Fatalf("new local: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+
+	res, err := l.Capture(context.Background(), CaptureSpec{
+		Argv: []string{filepath.Join(os.Getenv("SystemRoot"), "System32", "hostname.exe")},
+	})
+	if err == nil {
+		t.Fatalf("capture succeeded (exit %d, output %q); a grant that could not be applied must fail the launch, not run the command unconfined", res.ExitCode, res.Output)
+	}
+	if !errors.Is(err, ErrReadGrant) {
+		t.Fatalf("error %v does not wrap ErrReadGrant, so callers cannot tell a grant failure from a host that lacks confinement", err)
+	}
+}
+
+// TestGrantedDirIsEnumerable proves a granted directory can be opened and enumerated by
+// the confined child, not merely have its files read. A generic access right stored in an
+// access-list entry is mapped to specific rights only when a child object inherits it, so
+// an entry naming GENERIC_READ or GENERIC_ALL leaves the directory itself without the
+// list and traverse rights: files under it read fine through their inherited entries while
+// the directory cannot be opened, which breaks any command that scans its own config or
+// working directory. The grants therefore name specific rights, and this holds them to it.
+func TestGrantedDirIsEnumerable(t *testing.T) {
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "granted.txt"), []byte("readable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "inside.txt"), []byte("writable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	l, err := NewLocal(root, WithReadOnlyFS(), WithSeccomp(), WithReadableDir(outside), WithExecTimeout(30*time.Second))
+	if err != nil {
+		t.Fatalf("new local: %v", err)
+	}
+	defer func() { _ = l.Close() }()
+	if l.Containment() != ContainmentKernel {
+		t.Skip("host does not enforce the kernel-confined tier")
+	}
+
+	// "for %f in (dir\*)" enumerates without opening the volume, which "dir" also does and
+	// which the container denies for reasons unrelated to the directory's access list.
+	cases := map[string]string{
+		"workspace": `for %f in (` + root + `\*) do @echo FOUND:%f`,
+		"granted":   `for %f in (` + outside + `\*) do @echo FOUND:%f`,
+	}
+	for name, line := range cases {
+		res, err := l.Capture(context.Background(), CaptureSpec{
+			Argv: []string{filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe"), "/c", line},
+		})
+		if err != nil {
+			t.Fatalf("%s: capture: %v", name, err)
+		}
+		if res.ExitCode != 0 || !strings.Contains(res.Output, "FOUND:") {
+			t.Fatalf("the confined child could not enumerate the %s directory (exit %d, output %q); the access-list entry must name specific rights, not generic ones", name, res.ExitCode, res.Output)
+		}
 	}
 }
