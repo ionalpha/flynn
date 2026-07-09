@@ -35,7 +35,7 @@ nfpms:
     homepage: https://github.com/ionalpha/flynn
     maintainer: Ion Alpha <contact@ionalpha.io>
     description: A secure agent operating system in a single Go binary.
-    license: MIT
+    license: Apache-2.0
     formats:
       - deb
       - rpm
@@ -63,7 +63,7 @@ dockers:
       - "--label=org.opencontainers.image.source=https://github.com/ionalpha/flynn"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
   - id: arm64
     goos: linux
     goarch: arm64
@@ -80,7 +80,7 @@ dockers:
       - "--label=org.opencontainers.image.source=https://github.com/ionalpha/flynn"
       - "--label=org.opencontainers.image.version={{ .Version }}"
       - "--label=org.opencontainers.image.revision={{ .FullCommit }}"
-      - "--label=org.opencontainers.image.licenses=MIT"
+      - "--label=org.opencontainers.image.licenses=Apache-2.0"
 
 docker_manifests:
   - name_template: "ghcr.io/ionalpha/flynn:{{ .Version }}"

@@ -3,7 +3,7 @@
 <p align="center"><strong>A secure, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real authority, because every action is sandboxed, governed, and sealed into a verifiable, tamper-evident record.</strong></p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License: MIT"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License: Apache 2.0"></a>
   <img src="https://img.shields.io/badge/Go-1.26+-00ADD8.svg" alt="Go 1.26+">
   <a href="https://github.com/ionalpha/flynn/actions/workflows/ci.yml"><img src="https://github.com/ionalpha/flynn/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://pkg.go.dev/github.com/ionalpha/flynn"><img src="https://pkg.go.dev/badge/github.com/ionalpha/flynn.svg" alt="Go Reference"></a>
@@ -562,4 +562,6 @@ above is filling in on top of that foundation. Follow
 
 ## License
 
-[MIT](LICENSE) © Ion Alpha
+[Apache License 2.0](LICENSE) © Ion Alpha. See [NOTICE](NOTICE).
+
+The license grants no rights in the Ion Alpha or Flynn names, logos, or trademarks.
