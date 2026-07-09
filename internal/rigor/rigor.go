@@ -122,13 +122,7 @@ func DefaultPolicy() Policy {
 		// inference. Each one is a fuzz target waiting to be written; delete the
 		// entry with the same change that writes it.
 		BoundaryFuzzExempt: map[string]bool{
-			"externagent":               true, // a delegated agent's sealed record
-			"internal/huggingface":      true, // the model-hub API's model and file listings
-			"internal/integrations":     true, // a third-party integration's HTTP response
 			"internal/source/signalcli": true, // a signal-cli subprocess's JSON-RPC frames
-			"internal/source/telegram":  true, // the Telegram bot API's update stream
-			"llm/internal/httpapi":      true, // the shared provider transport's response body
-			"mcp":                       true, // an MCP server's JSON-RPC frames
 		},
 	}
 }
