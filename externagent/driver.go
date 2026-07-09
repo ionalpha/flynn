@@ -35,12 +35,19 @@ type Driver struct {
 	workdir string
 
 	// mu guards tiers and steering, which every episode of the run folds its projected
-	// events into. A fan-out runs episodes concurrently against the one Driver, so the
-	// tallies are locked rather than owned by a single step.
+	// events into, and the recorder's failure tally. A fan-out runs episodes concurrently
+	// against the one Driver, so these are locked rather than owned by a single step.
 	mu       sync.Mutex
 	tiers    map[Tier]int
 	steering Steering
 	drift    map[string]int
+	lost     int
+	lostErr  error
+
+	// recorder persists the harness's attested events onto the run's record. It is set
+	// by the host once the run's stream exists, before the first episode runs, and read
+	// by every episode after. Nil records nothing.
+	recorder Recorder
 }
 
 // NewDriver builds the driver for one external CLI. spawner runs the CLI confined;
@@ -118,6 +125,50 @@ func (d *Driver) Drift() map[string]int {
 		out[name] = n
 	}
 	return out
+}
+
+// SetRecorder binds the sink the harness's attested events are recorded to. The host
+// calls it once, after the run's stream exists and before the first episode runs; the
+// driver is constructed earlier (detection happens before a run is assembled), which is
+// why this is a setter rather than a constructor argument.
+func (d *Driver) SetRecorder(r Recorder) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.recorder = r
+}
+
+// recordAttested persists one attested event, counting a failure instead of failing the
+// episode: the run's effects are enforced and recorded at the waist whatever happens
+// here, so a lost line is a hole in the harness's account, not a reason to abandon the
+// work. The hole is not silent - the host reports the tally, and the record's declared
+// attested count will not match the events it carries, which `flynn spine verify` calls
+// out.
+func (d *Driver) recordAttested(ctx context.Context, ev Event) {
+	d.mu.Lock()
+	rec := d.recorder
+	d.mu.Unlock()
+	if rec == nil {
+		return
+	}
+	// Detach the append from the episode's cancellation. A halt kills the subprocess and
+	// cancels this context, but the lines the harness already wrote are still drained and
+	// projected; recording them under the cancelled context would drop exactly the events
+	// leading up to the halt, which are the ones worth reading.
+	if err := rec.Record(context.WithoutCancel(ctx), ev); err != nil {
+		d.mu.Lock()
+		d.lost++
+		d.lostErr = err
+		d.mu.Unlock()
+	}
+}
+
+// Unrecorded reports how many of the harness's attested events could not be written to
+// the record, and the last failure. Zero and nil mean the record carries the harness's
+// whole account.
+func (d *Driver) Unrecorded() (int, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.lost, d.lostErr
 }
 
 // Build assembles the episode loop from the Spec. It captures the governance
@@ -361,16 +412,28 @@ func (e *episodeExec) system(spec goal.Spec) string {
 	return e.spec.System
 }
 
-// reporter adapts the episode's typed events to the Spec's mission reporter for the
-// live trace: assistant text is forwarded as it is produced. A nil Spec reporter
-// drops the events.
+// reporter fans each of the episode's typed events out to the two places that want
+// them: the Spec's mission reporter, for the live trace (assistant text only, as it is
+// produced), and the record, which keeps every attested event with the harness's own
+// line. An event the run enforced is not recorded here - the dispatch waist records
+// those as they cross it, and writing them twice would double-count the harness's claim
+// against the run's observation.
+//
+// It returns nil only when neither destination is bound, so the runner can skip the
+// projection entirely.
 func (e *episodeExec) reporter(ctx context.Context) func(Event) {
-	if e.spec.Reporter == nil {
+	e.drv.mu.Lock()
+	recording := e.drv.recorder != nil
+	e.drv.mu.Unlock()
+	if e.spec.Reporter == nil && !recording {
 		return nil
 	}
 	return func(ev Event) {
-		if ev.Kind == EventText && ev.Text != "" {
+		if e.spec.Reporter != nil && ev.Kind == EventText && ev.Text != "" {
 			e.spec.Reporter.Report(ctx, mission.Event{Kind: mission.EventAssistantText, Text: ev.Text})
+		}
+		if ev.Tier == TierAttested {
+			e.drv.recordAttested(ctx, ev)
 		}
 	}
 }

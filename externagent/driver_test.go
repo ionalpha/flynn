@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"testing"
 
 	"github.com/ionalpha/flynn/budget"
@@ -253,4 +254,164 @@ func TestDriverResumesDoneCheckpoint(t *testing.T) {
 	if !met || reason != "already finished" {
 		t.Errorf("resume did not converge on the prior result: met=%v reason=%q", met, reason)
 	}
+}
+
+// captureRecorder collects the attested events an episode records, so a test can assert
+// what the record would hold. err, when set, fails every Record call.
+type captureRecorder struct {
+	mu     sync.Mutex
+	events []Event
+	err    error
+}
+
+func (c *captureRecorder) Record(_ context.Context, ev Event) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.err != nil {
+		return c.err
+	}
+	c.events = append(c.events, ev)
+	return nil
+}
+
+func (c *captureRecorder) recorded() []Event {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]Event{}, c.events...)
+}
+
+// TestDriverRecordsAttestedEventsVerbatim proves the record keeps the harness's own
+// account of its episode, not merely a count of it: every event the tier tally counts is
+// handed to the recorder with the CLI's original line, so a reader can see what the
+// harness claimed rather than how many claims it made.
+func TestDriverRecordsAttestedEventsVerbatim(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
+		_, _ = fmt.Fprintln(pw, `{"type":"item.completed","item":{"type":"agent_message","text":"thinking"}}`)
+		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
+	})
+	d, spec := driverWith(t, workdir, spawner)
+	rec := &captureRecorder{}
+	d.SetRecorder(rec)
+
+	exec, _, err := d.Build(spec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, err := exec.Execute(context.Background(), goalResource(t, "g1", goal.Spec{Objective: "think"}, nil)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+
+	got := rec.recorded()
+	// The invariant the sealed record rests on: the declared attested count is the number
+	// of attested events the record carries.
+	if len(got) != d.Tiers()[TierAttested] {
+		t.Fatalf("recorded %d attested event(s), tally declares %d", len(got), d.Tiers()[TierAttested])
+	}
+	var text Event
+	for _, ev := range got {
+		if ev.Tier != TierAttested {
+			t.Errorf("recorded a %s event; only the harness's own claims belong on this stream", ev.Tier)
+		}
+		if len(ev.Raw) == 0 {
+			t.Errorf("recorded a %s event with no raw line: the harness's account is what makes it worth keeping", ev.Kind)
+		}
+		if ev.Kind == EventText {
+			text = ev
+		}
+	}
+	if want := `{"type":"item.completed","item":{"type":"agent_message","text":"thinking"}}`; string(text.Raw) != want {
+		t.Errorf("raw line = %s, want the CLI's line verbatim %s", text.Raw, want)
+	}
+}
+
+// TestDriverCountsUnrecordedAttestedEvents proves a record that cannot hold the harness's
+// account says so. The episode's effects are enforced and recorded at the waist whatever
+// the attestation sink does, so a failing sink must not fail the run - but the hole it
+// leaves is counted and reported, and the record's declared count will not match the
+// events it carries, which verify calls out.
+func TestDriverCountsUnrecordedAttestedEvents(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
+		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
+	})
+	d, spec := driverWith(t, workdir, spawner)
+	d.SetRecorder(&captureRecorder{err: errors.New("disk full")})
+
+	exec, _, err := d.Build(spec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, err := exec.Execute(context.Background(), goalResource(t, "g1", goal.Spec{Objective: "think"}, nil)); err != nil {
+		t.Fatalf("an unrecordable attested event failed the episode: %v", err)
+	}
+
+	lost, lerr := d.Unrecorded()
+	if lost != d.Tiers()[TierAttested] || lost == 0 {
+		t.Fatalf("unrecorded = %d, want every one of the %d attested event(s)", lost, d.Tiers()[TierAttested])
+	}
+	if lerr == nil {
+		t.Error("the sink's failure was not reported")
+	}
+}
+
+// TestDriverRecordsAttestedEventsWithoutReporter proves the record does not depend on a
+// live trace being attached: a headless run (no mission reporter) still keeps the
+// harness's account, since the record is what a verifier reads afterwards.
+func TestDriverRecordsAttestedEventsWithoutReporter(t *testing.T) {
+	workdir := t.TempDir()
+	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
+		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
+	})
+	d, spec := driverWith(t, workdir, spawner)
+	spec.Reporter = nil
+	rec := &captureRecorder{}
+	d.SetRecorder(rec)
+
+	exec, _, err := d.Build(spec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if _, err := exec.Execute(context.Background(), goalResource(t, "g1", goal.Spec{Objective: "think"}, nil)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(rec.recorded()) == 0 {
+		t.Fatal("a run without a live trace recorded none of the harness's account")
+	}
+}
+
+// TestDriverRecordsAttestedEventsAfterHalt proves the events leading up to a halt reach
+// the record. A halt cancels the episode's context and kills the subprocess, but the
+// lines the harness already wrote are still drained and projected; recording them under
+// the cancelled context would drop exactly the account of what the harness was doing when
+// the run was stopped, which is the account worth reading.
+func TestDriverRecordsAttestedEventsAfterHalt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	d := NewDriver(NewCodex("", nil), nil, t.TempDir())
+	rec := &ctxRecorder{}
+	d.SetRecorder(rec)
+	d.recordAttested(ctx, Event{Kind: EventText, Tier: TierAttested, Raw: json.RawMessage(`{"t":1}`)})
+
+	if lost, _ := d.Unrecorded(); lost != 0 {
+		t.Fatalf("a halted episode lost %d attested event(s) to its own cancellation", lost)
+	}
+	if len(rec.recorded()) != 1 {
+		t.Fatal("the event before the halt never reached the record")
+	}
+}
+
+// ctxRecorder refuses to record under a cancelled context, the way a durable append bound
+// to the run's context would.
+type ctxRecorder struct{ captureRecorder }
+
+func (c *ctxRecorder) Record(ctx context.Context, ev Event) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return c.captureRecorder.Record(ctx, ev)
 }

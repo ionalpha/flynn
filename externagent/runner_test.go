@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/mcp"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/secret"
 	"github.com/ionalpha/flynn/tools"
 )
 
@@ -198,5 +199,59 @@ func TestRunnerHaltKillsEpisode(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("halt did not end the episode")
+	}
+}
+
+// TestRunnerRedactsBridgeTokenFromRawLines proves the bearer token the run mints for the
+// bridge never reaches the record. The harness's lines are kept verbatim in a signed,
+// durable artifact, and a CLI that echoes its own environment or quotes the header it
+// sent would otherwise write a live credential into it.
+func TestRunnerRedactsBridgeTokenFromRawLines(t *testing.T) {
+	workdir := t.TempDir()
+	srv, ctx := governedBridge(t, workdir, capability.NewGrant("read"))
+
+	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		// A CLI echoing the credential it was handed, in the shape an error line would.
+		_, _ = fmt.Fprintf(pw, `{"type":"error","message":"auth failed with bearer %s"}`+"\n", ep.Bridge.Token)
+	})
+
+	var events []Event
+	r := NewRunner(NewCodex("", nil), srv, spawner, func(e Event) { events = append(events, e) })
+	if _, err := r.Run(ctx, Episode{Input: "go", Workdir: workdir}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(events) == 0 {
+		t.Fatal("no events projected")
+	}
+	for _, ev := range events {
+		if bytes.Contains(ev.Raw, []byte("bearer ")) && !bytes.Contains(ev.Raw, []byte(secret.Redacted)) {
+			t.Fatalf("the bridge token reached the record: %s", ev.Raw)
+		}
+	}
+	// The rest of the line survives: redaction replaces the secret, it does not drop the
+	// harness's account of what went wrong.
+	if !bytes.Contains(events[0].Raw, []byte("auth failed with bearer "+secret.Redacted)) {
+		t.Errorf("raw line = %s, want the token replaced in place", events[0].Raw)
+	}
+	// A valid JSON line stays valid JSON after redaction, so the record's raw payload can
+	// still be parsed by whatever reads it.
+	if !json.Valid(events[0].Raw) {
+		t.Errorf("redaction broke the line's JSON: %s", events[0].Raw)
+	}
+}
+
+// TestRedactLeavesCleanLinesAlone proves redaction is a no-op when there is nothing to
+// remove: a line without the token, and an episode whose token was never minted, come
+// through byte-identical.
+func TestRedactLeavesCleanLinesAlone(t *testing.T) {
+	line := json.RawMessage(`{"type":"turn.completed"}`)
+	if got := redact(line, "tok"); string(got) != string(line) {
+		t.Errorf("redact rewrote a clean line: %s", got)
+	}
+	if got := redact(line, ""); string(got) != string(line) {
+		t.Errorf("redact with no token rewrote the line: %s", got)
+	}
+	if got := redact(nil, "tok"); got != nil {
+		t.Errorf("redact invented a line out of nothing: %s", got)
 	}
 }

@@ -845,6 +845,12 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		if perr := appendProvenance(runCtx, log, run.sess.ID(), observedProvenance(cfg.extAgent)); perr != nil {
 			_, _ = fmt.Fprintf(w, "  (provenance not recorded: %v)\n", perr)
 		}
+		// A harness event the record could not hold is a hole in the harness's account. The
+		// declared count still names every event the harness reported, so verify reports the
+		// gap from the record alone; saying it here tells the operator why.
+		if lost, lerr := unrecordedAttested(cfg.extAgent); lost > 0 {
+			_, _ = fmt.Fprintf(w, "  (%d attested event(s) not recorded: %v)\n", lost, lerr)
+		}
 	}
 
 	cancel()
@@ -1015,6 +1021,12 @@ func assembleExternalMission(ea *externAgent, workdir, system string, rstore res
 	if err != nil {
 		return nil, err
 	}
+
+	// Record the harness's own account of its episode onto the same stream the waist
+	// records the run's enforced effects on. The stream exists only now (the driver was
+	// built during detection, before a run was assembled), which is why the sink is bound
+	// here rather than at construction.
+	recordAttestedEvents(ea, log, parts.sess.ID())
 
 	// The loop-agnostic Spec the driver builds from: the same governance ingredients a
 	// native run assembles, carried to the external episode loop. Model is intentionally

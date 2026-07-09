@@ -2,7 +2,9 @@ package externagent
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -14,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/internal/bindguard"
 	"github.com/ionalpha/flynn/mcp"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // defaultBridgeName is the MCP server name the loopback bridge is registered under.
@@ -126,6 +129,7 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 			continue
 		}
 		for _, ev := range evs {
+			ev.Raw = redact(ev.Raw, token)
 			r.emit(ev)
 			result.absorb(ev)
 			watch.observe(ev)
@@ -164,6 +168,23 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 		result.Err = waitErr.Error()
 	}
 	return result, nil
+}
+
+// redact removes the bridge's bearer token from a harness line before the line leaves
+// the runner. The line is the harness's verbatim output and it is kept verbatim in the
+// record, so anything the CLI echoes (its own argv, its environment, an error quoting
+// the header it sent) is echoed into a signed, durable artifact. The token is the one
+// secret this run mints and hands the CLI, so it is the one this layer can remove with
+// certainty; a secret the CLI printed from its own environment is beyond what the runner
+// can recognize.
+//
+// The token is a URL-safe id with no JSON metacharacter, so replacing it inside the line
+// leaves the JSON valid and the rest of the line byte-identical.
+func redact(raw json.RawMessage, token string) json.RawMessage {
+	if len(raw) == 0 || token == "" {
+		return raw
+	}
+	return bytes.ReplaceAll(raw, []byte(token), []byte(secret.Redacted))
 }
 
 // emit forwards an event to the reporter when one is set.

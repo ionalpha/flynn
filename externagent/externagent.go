@@ -198,6 +198,29 @@ const (
 	EventNativeCommand
 )
 
+// String names the event kind for the record. The values are a wire contract the
+// record's readers match on, so they must not change.
+func (k EventKind) String() string {
+	switch k {
+	case EventProgress:
+		return "progress"
+	case EventText:
+		return "text"
+	case EventUsage:
+		return "usage"
+	case EventError:
+		return "error"
+	case EventDone:
+		return "done"
+	case EventBridgeCall:
+		return "bridge_call"
+	case EventNativeCommand:
+		return "native_command"
+	default:
+		return "unknown"
+	}
+}
+
 // Event is one typed projection of an episode's output line. The runner forwards it
 // to the reporter and, with its Tier, to the record. Raw preserves the original CLI
 // line for the attested record, so the CLI's own account is kept verbatim alongside
@@ -231,6 +254,21 @@ type Event struct {
 type Usage struct {
 	InputTokens  int
 	OutputTokens int
+}
+
+// Recorder persists the harness's own account of its episode: each event the episode
+// projected, with its tier and the CLI's original line. It is a narrow port because the
+// only thing this package knows about the record is that one exists; the host binds an
+// implementation that writes to the run's event stream.
+//
+// The dispatch waist records the effects the run enforced. This records what the harness
+// said it was doing, so a reader can hold the two accounts side by side and see where
+// they part. A nil Recorder records nothing, leaving the run's stream as it was.
+type Recorder interface {
+	// Record persists one attested event. An error is reported by the caller and does not
+	// fail the episode: losing the harness's account of a line is a gap in the record, not
+	// a reason to abandon a run whose effects are still enforced and recorded.
+	Record(ctx context.Context, ev Event) error
 }
 
 // Adapter describes how to drive one external agent CLI as a subprocess. The codex

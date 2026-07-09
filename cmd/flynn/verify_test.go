@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"strings"
 	"testing"
@@ -24,6 +25,19 @@ func vEvent(seq int64, typ string, payload map[string]any) spine.Event {
 		SchemaVersion: 1,
 		Payload:       payload,
 	}
+}
+
+// vAttested is one event the external harness reported about itself, as the record
+// keeps it: the harness's line verbatim, at the attested tier.
+func vAttested(seq int64, kind, raw string) spine.Event {
+	sum := sha256.Sum256([]byte(raw))
+	return vEvent(seq, chain.AttestedRecorded, map[string]any{
+		chain.AttestedKindKey:   kind,
+		chain.AttestedTierKey:   chain.TierAttested,
+		chain.AttestedRawKey:    raw,
+		chain.AttestedDigestKey: hex.EncodeToString(sum[:]),
+		chain.AttestedBytesKey:  len(raw),
+	})
 }
 
 // sealedRecord seals the given events under a signer with keyID and returns the
@@ -164,12 +178,14 @@ func TestVerifyRecordReportsContractDrift(t *testing.T) {
 	drifted := sealedRecord(
 		t, keyID, priv,
 		vEvent(1, "action.dispatched", map[string]any{}),
-		vEvent(2, chain.ProvenanceDeclared, map[string]any{
+		vAttested(2, "text", `{"msg":"working on it"}`),
+		vAttested(3, "native_command", `{"cmd":"ls"}`),
+		vEvent(4, chain.ProvenanceDeclared, map[string]any{
 			chain.ProvenanceHarnessKey:    "codex",
 			chain.ProvenanceEffectsKey:    chain.TierEnforced,
 			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
 			chain.ProvenanceReplayableKey: false,
-			chain.ProvenanceAttestedKey:   12,
+			chain.ProvenanceAttestedKey:   2,
 			chain.ProvenanceNativeRateKey: 0.5,
 			chain.ProvenanceDriftKey:      map[string]any{"no-native-tools": 3},
 		}),
@@ -183,7 +199,8 @@ func TestVerifyRecordReportsContractDrift(t *testing.T) {
 	out := buf.String()
 	for _, want := range []string{
 		"integrity:    VERIFIED",
-		"12 event(s) ATTESTED",
+		"2 event(s) ATTESTED",
+		"native_command x1, text x1",
 		"contract drift: no-native-tools x3",
 		"50% of the harness's tool attempts used its own tools",
 	} {
@@ -208,6 +225,41 @@ func TestVerifyRecordReportsContractDrift(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "drift") {
 		t.Errorf("a compliant run must print no drift line\n%s", buf.String())
+	}
+}
+
+// TestVerifyRecordAttestationMismatch covers a sealed, authentic record whose provenance
+// declaration claims more of the harness's events than the record carries. The signature
+// is valid over exactly that discrepancy, so integrity alone would pass it: verify must
+// call it out rather than print a count no reader can inspect.
+func TestVerifyRecordAttestationMismatch(t *testing.T) {
+	keyID, priv := selfCertKey(t)
+
+	hollow := sealedRecord(
+		t, keyID, priv,
+		vAttested(1, "text", `{"msg":"one"}`),
+		vEvent(2, chain.ProvenanceDeclared, map[string]any{
+			chain.ProvenanceHarnessKey:    "codex",
+			chain.ProvenanceEffectsKey:    chain.TierEnforced,
+			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
+			chain.ProvenanceReplayableKey: false,
+			chain.ProvenanceAttestedKey:   9,
+		}),
+	)
+	var buf bytes.Buffer
+	err := verifyRecord(&buf, "rec", hollow, "")
+	if err == nil {
+		t.Fatalf("a record claiming 9 attested events while carrying 1 passed verification\n%s", buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"integrity:    VERIFIED",
+		"attestation:  VIOLATION",
+		"declares 9 attested event(s), record carries 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("attestation report missing %q\n%s", want, out)
+		}
 	}
 }
 

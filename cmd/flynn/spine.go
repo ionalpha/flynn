@@ -445,20 +445,31 @@ func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed
 		failed = true
 	}
 
-	reportProvenance(out, events)
+	if reportProvenance(out, events) {
+		failed = true
+	}
 	return failed
 }
 
 // reportProvenance prints the provenance tier a run's record vouches for, when the run
-// was driven by an external agent harness. It is not a check that can fail: a native
-// run carries no declaration and prints nothing (so its output is unchanged), while an
-// external run states honestly that its effects are enforced but the harness's inner
-// reasoning is unobserved and the run is non-replayable, so the record never claims the
-// integrity of a native run.
-func reportProvenance(out io.Writer, events []spine.Event) {
+// was driven by an external agent harness: a native run carries no declaration and
+// prints nothing (so its output is unchanged), while an external run states honestly
+// that its effects are enforced but the harness's inner reasoning is unobserved and the
+// run is non-replayable, so the record never claims the integrity of a native run.
+//
+// One part of it is a check that can fail, and it reports whether it did: the
+// declaration's attested count must match the harness's events the record actually
+// carries. A record that claims an account it does not carry is not merely uninformative
+// - it is a record whose most quotable number, "N events attested", cannot be inspected.
+func reportProvenance(out io.Writer, events []spine.Event) bool {
+	attested := chain.AttestedEventsOf(events)
+	if aerr := chain.VerifyAttestation(events); aerr != nil {
+		_, _ = fmt.Fprintf(out, "  attestation:  VIOLATION: %v\n", aerr)
+		return true
+	}
 	p, ok := chain.ProvenanceOf(events)
 	if !ok {
-		return
+		return false
 	}
 	replay := "run is non-replayable (episode-level granularity)"
 	if p.Replayable {
@@ -468,10 +479,13 @@ func reportProvenance(out io.Writer, events []spine.Event) {
 		strings.ToUpper(p.Effects), strings.ToUpper(p.Reasoning), p.Harness, replay)
 	// The harness's own account of its episode, repeated by the record but not vouched
 	// for. Printed only when it reported something, so a run with nothing attested stays
-	// silent rather than claiming a hollow zero.
+	// silent rather than claiming a hollow zero. The breakdown by kind is what separates
+	// this from the enforced effects above it: those the run admitted and ran, these the
+	// harness merely says it did, and the record carries its lines to prove only that it
+	// said them.
 	if p.AttestedEvents > 0 {
-		_, _ = fmt.Fprintf(out, "                %d event(s) %s by the harness (its own account, unverified)\n",
-			p.AttestedEvents, strings.ToUpper(chain.TierAttested))
+		_, _ = fmt.Fprintf(out, "                %d event(s) %s by the harness (its own account, unverified): %s\n",
+			p.AttestedEvents, strings.ToUpper(chain.TierAttested), attestedKinds(attested))
 	}
 	// The harness's own prompt outranks the run's, so the behavioral contract is a request
 	// the run measures rather than a rule it imposes. A record whose harness ignored it
@@ -492,6 +506,26 @@ func reportProvenance(out io.Writer, events []spine.Event) {
 		_, _ = fmt.Fprintf(out, "                %.0f%% of the harness's tool attempts used its own tools (unobserved reads)\n",
 			p.NativeToolRate*100)
 	}
+	return false
+}
+
+// attestedKinds summarizes the harness's recorded events by kind ("text x3,
+// bridge_call x2"), in a stable order so two verifications of one record read the same.
+func attestedKinds(events []chain.AttestedEvent) string {
+	counts := map[string]int{}
+	for _, e := range events {
+		counts[e.Kind]++
+	}
+	kinds := make([]string, 0, len(counts))
+	for k := range counts {
+		kinds = append(kinds, k)
+	}
+	sort.Strings(kinds)
+	parts := make([]string, 0, len(kinds))
+	for _, k := range kinds {
+		parts = append(parts, fmt.Sprintf("%s x%d", k, counts[k]))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // resolveKey recovers the public key a record is verified against: the supplied hex
