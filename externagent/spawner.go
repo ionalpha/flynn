@@ -36,6 +36,25 @@ type SandboxConfig struct {
 	// a read-only host already permits the read, so this takes effect only where the
 	// confinement denies reads by default (a Windows AppContainer).
 	AuthDir string
+	// AuthEnv is the environment variable the external CLI reads to find its credential
+	// and config home (CODEX_HOME for codex). The confined child inherits none of the
+	// host's environment, so it has no HOME or USERPROFILE to derive that home from and
+	// would look for its credentials somewhere that does not exist, reporting itself
+	// logged out on a host where it is logged in. Granting AuthDir makes the directory
+	// readable; naming it here is what makes the child look in it. Empty passes no
+	// variable.
+	AuthEnv string
+	// ProgramDirs are the directories holding the external CLI's own executable and the
+	// helper binaries shipped beside it. The confined child is granted read (and execute)
+	// on them for the life of the launch and the grant is revoked on teardown. Without it
+	// the child cannot load the very program it is meant to run: confinement is
+	// default-deny for reads where the platform enforces it, and the CLI lives outside the
+	// episode workspace. They come from resolving the CLI to its native executable (see
+	// LocateCodex), so a launcher script's interpreter, which may sit under a system-owned
+	// directory an unprivileged process cannot grant at all, never enters the confinement.
+	// Empty grants no extra read, which is correct where the confinement leaves the host
+	// filesystem readable.
+	ProgramDirs []string
 	// MinContainment is the floor the host must actually enforce or an episode is refused
 	// rather than run less contained (refuse-rather-than-downgrade: an untrusted harness
 	// never silently drops to a weaker boundary). The zero value is treated as
@@ -72,6 +91,18 @@ func NewSandboxSpawner(cfg SandboxConfig) *SandboxSpawner {
 
 var _ Spawner = (*SandboxSpawner)(nil)
 
+// authEnv is the environment grant that points the confined child at its own credential
+// home. It is the counterpart of the read grant on AuthDir: the grant makes the directory
+// readable, this makes the CLI look there. The value is a path, never a credential; the
+// token itself stays in the directory and is never passed through the environment, the
+// command line, or the record.
+func (s *SandboxSpawner) authEnv() []string {
+	if s.cfg.AuthEnv == "" || s.cfg.AuthDir == "" {
+		return nil
+	}
+	return []string{s.cfg.AuthEnv + "=" + s.cfg.AuthDir}
+}
+
 // Probe runs path with args to completion under best-effort confinement and returns its
 // combined output, for detection (a version or auth-status probe). Detection must work
 // wherever the CLI is installed, so the probe uses the always-on baseline confinement
@@ -91,6 +122,7 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 	if s.cfg.AuthDir != "" {
 		opts = append(opts, sandbox.WithReadableDir(s.cfg.AuthDir))
 	}
+	opts = append(opts, sandbox.WithReadableDir(s.cfg.ProgramDirs...))
 	if s.cfg.ProbeTimeout > 0 {
 		opts = append(opts, sandbox.WithExecTimeout(s.cfg.ProbeTimeout))
 	}
@@ -100,7 +132,7 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 	}
 	defer func() { _ = loc.Close() }()
 
-	res, err := loc.Capture(ctx, sandbox.CaptureSpec{Argv: append([]string{path}, args...)})
+	res, err := loc.Capture(ctx, sandbox.CaptureSpec{Argv: append([]string{path}, args...), Env: s.authEnv()})
 	if err != nil {
 		return "", err
 	}
@@ -133,7 +165,7 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	proc, err := loc.Stream(ctx, sandbox.StreamSpec{
 		Argv:    append([]string{inv.Path}, inv.Args...),
 		Stdin:   []byte(inv.Stdin),
-		Env:     inv.Env,
+		Env:     append(inv.Env, s.authEnv()...),
 		Confine: true,
 	})
 	if err != nil {
@@ -157,6 +189,7 @@ func (s *SandboxSpawner) episodeOptions() []sandbox.LocalOption {
 	if s.cfg.AuthDir != "" {
 		opts = append(opts, sandbox.WithReadableDir(s.cfg.AuthDir))
 	}
+	opts = append(opts, sandbox.WithReadableDir(s.cfg.ProgramDirs...))
 	return opts
 }
 

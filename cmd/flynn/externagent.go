@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -193,9 +194,19 @@ const externalProbeTimeout = 15 * time.Second
 func externalSpawner(name string) (externagent.Spawner, error) {
 	switch name {
 	case "codex":
+		// The CLI is resolved before the envelope is built: the confined child is granted
+		// read on the directories holding the executable, so it must be located first. A
+		// CLI that is not installed still yields a spawner, so detection can report the
+		// missing install as onboarding rather than failing the command outright.
+		prog, err := externagent.LocateCodex("")
+		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
+			return nil, err
+		}
 		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
 			AllowedHosts: codexAllowedHosts,
 			AuthDir:      codexAuthDir(),
+			AuthEnv:      "CODEX_HOME",
+			ProgramDirs:  prog.ReadableDirs,
 			ProbeTimeout: externalProbeTimeout,
 		}), nil
 	default:
@@ -209,7 +220,18 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 func externalAdapter(name string, spawner externagent.Spawner) (externagent.Adapter, error) {
 	switch name {
 	case "codex":
-		return externagent.NewCodex("", spawner), nil
+		// Launch the native executable the npm launcher stands for, not the launcher: a
+		// script would need its interpreter reachable from inside the confinement, and an
+		// interpreter under a system-owned directory cannot be granted by an unprivileged
+		// process. An absent CLI leaves the name for Detect to report as not installed.
+		prog, err := externagent.LocateCodex("")
+		if err != nil {
+			if !errors.Is(err, externagent.ErrProgramNotFound) {
+				return nil, err
+			}
+			return externagent.NewCodex("", spawner), nil
+		}
+		return externagent.NewCodex(prog.Path, spawner), nil
 	default:
 		return nil, fmt.Errorf("unknown external agent backend %q", name)
 	}
