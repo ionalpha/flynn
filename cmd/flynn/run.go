@@ -405,6 +405,28 @@ func appendGroundTruth(ctx context.Context, log spine.Log, stream string, passed
 	return err
 }
 
+// appendProvenance records a run's provenance declaration on its stream using the
+// chain's provenance vocabulary: an external agent harness drove the loop, so the
+// sealed record vouches for enforced effects (every effect crossed the dispatch waist)
+// but names the harness's inner reasoning as an unobserved gap, and the run is
+// non-replayable (the run does not drive the harness's inner loop). `flynn spine
+// verify` reports this tier mix from the same record. A native run records none of it.
+func appendProvenance(ctx context.Context, log spine.Log, stream, harness string, attested int) error {
+	_, err := log.Append(ctx, spine.AppendInput{
+		Stream: stream,
+		Type:   chain.ProvenanceDeclared,
+		Actor:  spine.ActorSystem,
+		Payload: map[string]any{
+			chain.ProvenanceHarnessKey:    harness,
+			chain.ProvenanceEffectsKey:    chain.TierEnforced,
+			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
+			chain.ProvenanceReplayableKey: false,
+			chain.ProvenanceAttestedKey:   attested,
+		},
+	})
+	return err
+}
+
 // distillOutcome distills a converged run into durable skills and memory and retires
 // skills that enough runs have proven unhelpful, reporting the tally to out. It is
 // best effort: a capture or decay failure never fails the run. A captured skill's
@@ -789,6 +811,25 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	}
 
 	result, transcript, _, runErr := renderStream(w, events, verbose, nil)
+
+	// Declare the run's provenance onto its stream before it is sealed, when an external
+	// agent harness drove the loop. The record then vouches for enforced effects (every
+	// tool call crossed the dispatch waist) while naming the harness's inner reasoning as
+	// an unobserved gap, so an external run never claims the integrity of a native one.
+	// It is appended before cancel() so the run context is still live; a native run
+	// records nothing. Best effort: a failure to record it is reported, not fatal.
+	//
+	// A failed run declares its provenance too. The declaration's absence is what marks a
+	// record as natively driven, so omitting it on failure would seal a broken external
+	// episode as though Flynn's own loop had run it: the exact overclaim this declaration
+	// exists to prevent.
+	if cfg.extAgent != nil {
+		attested := attestedEvents(cfg.extAgent)
+		if perr := appendProvenance(runCtx, log, run.sess.ID(), cfg.extAgent.driver.Name(), attested); perr != nil {
+			_, _ = fmt.Fprintf(w, "  (provenance not recorded: %v)\n", perr)
+		}
+	}
+
 	cancel()
 	<-done
 	return result, run.sess.ID(), transcript, runErr

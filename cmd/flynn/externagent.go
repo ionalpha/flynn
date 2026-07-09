@@ -41,6 +41,25 @@ type externAgent struct {
 	driver driver.Driver
 }
 
+// tierTallier is an external-agent driver that tallies the provenance tiers of the
+// events its episodes projected. The driver port itself stays free of provenance (a
+// native loop has no tiers to report), so the host asks for the capability rather than
+// requiring it.
+type tierTallier interface {
+	Tiers() map[externagent.Tier]int
+}
+
+// attestedEvents is how many events the run's external harness reported about its own
+// episodes: actions the record repeats on the harness's word without having observed
+// them at the dispatch waist. A driver that does not tally reports none.
+func attestedEvents(ea *externAgent) int {
+	t, ok := ea.driver.(tierTallier)
+	if !ok {
+		return 0
+	}
+	return t.Tiers()[externagent.TierAttested]
+}
+
 // codexAllowedHosts are the destination names a codex episode's confined child may
 // reach at the egress waist: the OpenAI API and ChatGPT subscription-auth endpoints
 // codex talks to. Everything else is denied, so the external harness's own provider

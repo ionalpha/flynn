@@ -13,6 +13,7 @@ import (
 	"math"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
@@ -442,7 +443,35 @@ func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed
 		_, _ = fmt.Fprintf(out, "  ground-truth: NOT GROUNDED: %v\n", gt)
 		failed = true
 	}
+
+	reportProvenance(out, events)
 	return failed
+}
+
+// reportProvenance prints the provenance tier a run's record vouches for, when the run
+// was driven by an external agent harness. It is not a check that can fail: a native
+// run carries no declaration and prints nothing (so its output is unchanged), while an
+// external run states honestly that its effects are enforced but the harness's inner
+// reasoning is unobserved and the run is non-replayable, so the record never claims the
+// integrity of a native run.
+func reportProvenance(out io.Writer, events []spine.Event) {
+	p, ok := chain.ProvenanceOf(events)
+	if !ok {
+		return
+	}
+	replay := "run is non-replayable (episode-level granularity)"
+	if p.Replayable {
+		replay = "run is replayable"
+	}
+	_, _ = fmt.Fprintf(out, "  provenance:   effects %s, reasoning %s (external harness: %s); %s\n",
+		strings.ToUpper(p.Effects), strings.ToUpper(p.Reasoning), p.Harness, replay)
+	// The harness's own account of its episode, repeated by the record but not vouched
+	// for. Printed only when it reported something, so a run with nothing attested stays
+	// silent rather than claiming a hollow zero.
+	if p.AttestedEvents > 0 {
+		_, _ = fmt.Fprintf(out, "                %d event(s) %s by the harness (its own account, unverified)\n",
+			p.AttestedEvents, strings.ToUpper(chain.TierAttested))
+	}
 }
 
 // resolveKey recovers the public key a record is verified against: the supplied hex

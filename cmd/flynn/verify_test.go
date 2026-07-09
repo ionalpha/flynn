@@ -111,6 +111,47 @@ func TestVerifyRecordGroundTruth(t *testing.T) {
 	}
 }
 
+// TestVerifyRecordProvenance covers the provenance tier: a record from an external
+// harness run declares its tier mix, so verify reports enforced effects, unobserved
+// reasoning, the harness that drove it, and that the run is non-replayable; a native
+// record carries no declaration and the line is absent so its output is unchanged.
+func TestVerifyRecordProvenance(t *testing.T) {
+	keyID, priv := selfCertKey(t)
+
+	external := sealedRecord(t, keyID, priv,
+		vEvent(1, "action.dispatched", map[string]any{}),
+		vEvent(2, chain.ProvenanceDeclared, map[string]any{
+			chain.ProvenanceHarnessKey:    "codex",
+			chain.ProvenanceEffectsKey:    chain.TierEnforced,
+			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
+			chain.ProvenanceReplayableKey: false,
+		}),
+	)
+	var buf bytes.Buffer
+	if err := verifyRecord(&buf, "rec", external, ""); err != nil {
+		t.Fatalf("an external-harness record did not verify: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"integrity:    VERIFIED", "provenance:",
+		"effects ENFORCED", "reasoning UNOBSERVED", "external harness: codex", "non-replayable",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("external provenance report missing %q\n%s", want, out)
+		}
+	}
+
+	// A native run carries no declaration, so the provenance line is absent.
+	native := sealedRecord(t, keyID, priv, vEvent(1, "action.dispatched", map[string]any{}))
+	buf.Reset()
+	if err := verifyRecord(&buf, "rec", native, ""); err != nil {
+		t.Fatalf("a native record did not verify: %v", err)
+	}
+	if strings.Contains(buf.String(), "provenance:") {
+		t.Fatalf("a native run must not print a provenance line\n%s", buf.String())
+	}
+}
+
 // TestVerifyRecordExternalKey covers a record signed by a key that is not a
 // self-certifying principal id (a published conformance vector): it cannot be verified
 // without the key, and verifies when the key is supplied in hex.

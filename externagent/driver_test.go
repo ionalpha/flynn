@@ -90,6 +90,44 @@ func TestDriverRunsEpisodeThroughWaist(t *testing.T) {
 	}
 }
 
+// TestDriverAccumulatesAttestedTiersAcrossEpisodes proves the run's tier tally is the
+// sum of every episode's projected events, not just the last one's. The host reads this
+// tally to declare on the sealed record how much of the run rests on the harness's own
+// account, so an under-count would understate the unverified portion of the record.
+func TestDriverAccumulatesAttestedTiersAcrossEpisodes(t *testing.T) {
+	workdir := t.TempDir()
+	// Each episode projects two attested events: an agent message and a turn completion.
+	spawner := scriptSpawner(func(_ Episode, _ Invocation, pw *io.PipeWriter) {
+		_, _ = fmt.Fprintln(pw, `{"type":"item.completed","item":{"type":"agent_message","text":"step"}}`)
+		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
+	})
+	d, spec := driverWith(t, workdir, spawner)
+	exec, _, err := d.Build(spec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	gspec := goal.Spec{Objective: "think", Model: "gpt-5-codex"}
+	const episodes = 3
+	for i := range episodes {
+		// A fresh checkpoint each time, so every call runs a real episode rather than
+		// short-circuiting on an already-done one.
+		if _, err := exec.Execute(context.Background(), goalResource(t, fmt.Sprintf("g%d", i), gspec, nil)); err != nil {
+			t.Fatalf("Execute %d: %v", i, err)
+		}
+	}
+
+	tiers := d.Tiers()
+	if got := tiers[TierAttested]; got != 2*episodes {
+		t.Errorf("attested tally = %d across %d episodes, want %d", got, episodes, 2*episodes)
+	}
+	// Tiers hands back a copy: mutating it must not corrupt the run's tally.
+	tiers[TierAttested] = 999
+	if got := d.Tiers()[TierAttested]; got != 2*episodes {
+		t.Errorf("Tiers() leaked its internal map: tally now %d", got)
+	}
+}
+
 // TestDriverGrantDeniesUngrantedTool proves the bridge still governs under the
 // driver: a goal whose grant omits write cannot write through the bridge even though
 // the episode tried, and the episode still completes.

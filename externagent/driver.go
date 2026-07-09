@@ -3,6 +3,7 @@ package externagent
 import (
 	"context"
 	"encoding/json"
+	"sync"
 
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/budget"
@@ -31,6 +32,12 @@ type Driver struct {
 	adapter Adapter
 	spawner Spawner
 	workdir string
+
+	// mu guards tiers, which every episode of the run folds its projected events into.
+	// A fan-out runs episodes concurrently against the one Driver, so the tally is
+	// locked rather than owned by a single step.
+	mu    sync.Mutex
+	tiers map[Tier]int
 }
 
 // NewDriver builds the driver for one external CLI. spawner runs the CLI confined;
@@ -43,6 +50,32 @@ func NewDriver(adapter Adapter, spawner Spawner, workdir string) *Driver {
 // Name is the adapter's identifier, the name this loop is selected by and recorded
 // under on the run.
 func (d *Driver) Name() string { return d.adapter.Name() }
+
+// Tiers returns a copy of the provenance-tier tally of every event the run's episodes
+// projected: how many actions the record vouches for at each tier. The host reads it
+// after the run to declare the tier mix on the sealed record. Bridged effects are not
+// counted here; they are recorded at the dispatch waist as they happen.
+func (d *Driver) Tiers() map[Tier]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[Tier]int, len(d.tiers))
+	for t, n := range d.tiers {
+		out[t] = n
+	}
+	return out
+}
+
+// absorbTiers folds one episode's tier tally into the run's.
+func (d *Driver) absorbTiers(m map[Tier]int) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.tiers == nil {
+		d.tiers = make(map[Tier]int, len(m))
+	}
+	for t, n := range m {
+		d.tiers[t] += n
+	}
+}
 
 // Build assembles the episode loop from the Spec. It captures the governance
 // ingredients (tools, grant, sandbox gate, brake, event sink, reporter) and defers
@@ -140,6 +173,10 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		Model:   spec.Model,
 		System:  e.system(spec),
 	})
+	// Fold the episode's tier tally in before the error check: an episode that ran and
+	// failed still projected events the record must account for. A start failure yields
+	// an empty tally, which folds to nothing.
+	e.drv.absorbTiers(res.Tiers)
 	if err != nil {
 		return nil, err
 	}
