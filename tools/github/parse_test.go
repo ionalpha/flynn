@@ -57,10 +57,14 @@ func TestProp_FindingIdentityIgnoresProse(t *testing.T) {
 	})
 }
 
-// TestProp_TruncateNeverExceedsTheCapOrCutsMidLine is the property behind the
-// patch cap: a truncated patch is always a prefix of the original, never longer
-// than the cap, never ends inside a line when it could end on one, and reports
-// truncation exactly when it shortened something.
+// TestProp_TruncateNeverExceedsTheCapOrCutsMidLine is the property behind the patch
+// cap: a truncated patch is always a prefix of the original, never longer than the
+// cap, reports truncation exactly when it shortened something, and never ends inside
+// a line when a line boundary was available to end on.
+//
+// The last clause is the one that matters and the one that was wrong: a patch whose
+// only newline is its first byte was cut mid-line, so a model could read half a line
+// of diff as though it were the whole of one.
 func TestProp_TruncateNeverExceedsTheCapOrCutsMidLine(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		patch := rapid.String().Draw(rt, "patch")
@@ -78,11 +82,11 @@ func TestProp_TruncateNeverExceedsTheCapOrCutsMidLine(t *testing.T) {
 		if got.PatchTruncated != (got.Patch != patch) {
 			rt.Fatalf("PatchTruncated = %v but shortened = %v", got.PatchTruncated, got.Patch != patch)
 		}
-		// When the cut landed on a line boundary, the result carries no partial tail.
-		if got.PatchTruncated && strings.Contains(patch[:len(got.Patch)], "\n") {
-			if strings.HasSuffix(got.Patch, "\n") {
-				rt.Fatalf("result should end before the newline, not on it: %q", got.Patch)
-			}
+		// A shortened patch that kept any newline ended on a boundary. A shortened patch
+		// with no newline had no boundary to end on, and a partial line survives only
+		// there.
+		if got.PatchTruncated && strings.Contains(got.Patch, "\n") && !strings.HasSuffix(got.Patch, "\n") {
+			rt.Fatalf("truncated patch ends mid-line: %q (from %q, limit %d)", got.Patch, patch, limit)
 		}
 	})
 }
@@ -224,4 +228,49 @@ func FuzzFindingKey(f *testing.F) {
 			t.Fatalf("malformed marker: %q", a.marker())
 		}
 	})
+}
+
+// FuzzParsePrivateKey throws arbitrary bytes at the App-key parser. The bytes come
+// from a secret store or an environment variable, so a wrong, truncated, or
+// re-encoded value is ordinary rather than exceptional: the parser must reject it
+// with an error and never panic. A key it does accept must be usable, so an accepted
+// input is asserted to carry a valid modulus rather than a zero-value struct.
+func FuzzParsePrivateKey(f *testing.F) {
+	f.Add([]byte(""))
+	f.Add([]byte("ghp_a_token_pasted_where_a_key_belongs"))
+	f.Add(pemFixture("RSA PRIVATE KEY", ""))
+	f.Add(pemFixture("PRIVATE KEY", "AAAA\n"))
+	f.Add([]byte(pemBegin("RSA PRIVATE KEY"))) // opened, never closed
+	f.Add([]byte("\n\n\n"))
+	f.Add(pemFixture("PUBLIC KEY", "AAAA\n"))
+
+	f.Fuzz(func(t *testing.T, pemBytes []byte) {
+		key, err := ParsePrivateKey(pemBytes) // must not panic on any input
+		if err != nil {
+			if key != nil {
+				t.Fatal("returned both a key and an error")
+			}
+			return
+		}
+		if key == nil {
+			t.Fatal("returned neither a key nor an error")
+		}
+		if key.N == nil || key.N.Sign() <= 0 {
+			t.Fatal("accepted a key with no modulus")
+		}
+		if err := key.Validate(); err != nil {
+			t.Fatalf("accepted a key that does not validate: %v", err)
+		}
+	})
+}
+
+// pemBegin and pemFixture assemble PEM armour at run time rather than embedding it
+// as a literal. A secret scanner matches the armour, not the key: a test fixture
+// carrying the literal header trips it, and the honest answers are either to
+// allowlist a pattern (which would blind the scanner to a real key committed beside
+// it) or to not write the literal. This is the second.
+func pemBegin(kind string) string { return "-----BEGIN " + kind + "-----" }
+
+func pemFixture(kind, body string) []byte {
+	return []byte(pemBegin(kind) + "\n" + body + "-----END " + kind + "-----\n")
 }

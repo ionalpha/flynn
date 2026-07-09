@@ -23,6 +23,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/netguard"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // DefaultAPIBase is GitHub's REST API root, used when Config leaves APIBase empty.
@@ -54,8 +55,23 @@ var ErrIncompleteDiff = errors.New("github: refusing to approve a pull request w
 
 // Config describes how a Set reaches GitHub and what it is permitted to do.
 type Config struct {
-	// App identifies the GitHub App and the installation the Set acts as. Required.
+	// App identifies the GitHub App and the installation the Set acts as. Set exactly
+	// one of App and Token.
+	//
+	// The App path gives the reviewer an identity of its own, distinct from whoever
+	// authored the pull request, which is what a formal approval requires.
 	App App
+
+	// Token authenticates as whoever issued it: a workflow's ambient GITHUB_TOKEN, or
+	// a personal access token. Set exactly one of App and Token.
+	//
+	// A review posted with a workflow's GITHUB_TOKEN is authored by
+	// github-actions[bot], and a repository refuses an approving review from that
+	// identity unless an owner has enabled "Allow GitHub Actions to create and approve
+	// pull requests", which is off by default. So this path can comment and request
+	// changes anywhere, and can approve only where that setting was deliberately
+	// turned on.
+	Token secret.Text
 
 	// Owner and Repo bound the Set to a single repository. Every tool call operates
 	// on this repository; the model cannot redirect a review at another one because
@@ -128,16 +144,10 @@ type Set struct {
 
 // New builds a review toolset for the repository named in cfg, filling defaults
 // for the HTTP client, API base, clock, and context caps. It returns an error when
-// cfg omits the repository coordinates or the App credentials.
+// cfg omits the repository coordinates, or names neither credential, or names both.
 func New(cfg Config) (*Set, error) {
 	if cfg.Owner == "" || cfg.Repo == "" {
 		return nil, errors.New("github: Config.Owner and Config.Repo are required")
-	}
-	if cfg.App.InstallationID == 0 {
-		return nil, errors.New("github: Config.App.InstallationID is required")
-	}
-	if cfg.App.PrivateKey == nil {
-		return nil, errors.New("github: Config.App.PrivateKey is required")
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = netguard.Client(netguard.PublicOnly())
@@ -157,11 +167,12 @@ func New(cfg Config) (*Set, error) {
 	if cfg.MaxChangedLines == 0 {
 		cfg.MaxChangedLines = defaultMaxChangedLines
 	}
-	auth := &authenticator{
-		app:     cfg.App,
-		clock:   cfg.Clock,
-		http:    cfg.HTTPClient,
-		apiBase: cfg.APIBase,
+	// The credential is resolved last, so the defaults above are already filled in and
+	// an App authenticator is built with the same clock, client, and API base every
+	// other request uses.
+	auth, err := newTokenSource(cfg)
+	if err != nil {
+		return nil, err
 	}
 	return &Set{
 		cfg:    cfg,

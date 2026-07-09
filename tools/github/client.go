@@ -27,7 +27,7 @@ const (
 // client issues authenticated REST calls against one repository.
 type client struct {
 	cfg  Config
-	auth *authenticator
+	auth tokenSource
 }
 
 // PullRequest is the subset of a pull request a review needs. The size counts are
@@ -241,8 +241,17 @@ func (c *client) nextPage(header string) (string, error) {
 	return raw, nil
 }
 
-// truncatePatches shortens each patch to at most limit bytes, on a line boundary so
-// a hunk is never cut mid-line, and flags the ones it shortened.
+// truncatePatches shortens each patch to at most limit bytes and flags the ones it
+// shortened. A shortened patch ends on a line boundary, keeping the newline, so a
+// model never reads half a line of diff and mistakes it for the whole of one.
+//
+// The newline is kept rather than trimmed, and the cut is taken at the last one
+// rather than the last one past the start. Both matter: a patch whose only newline
+// is its first byte would otherwise be cut mid-line, which is the case this function
+// exists to prevent.
+//
+// A patch with no newline inside the limit has no boundary to cut on, so it is cut
+// where the limit falls. That is unavoidable, and PatchTruncated says it happened.
 func truncatePatches(files []ChangedFile, limit int) []ChangedFile {
 	for i := range files {
 		p := files[i].Patch
@@ -250,8 +259,8 @@ func truncatePatches(files []ChangedFile, limit int) []ChangedFile {
 			continue
 		}
 		cut := p[:limit]
-		if nl := strings.LastIndexByte(cut, '\n'); nl > 0 {
-			cut = cut[:nl]
+		if nl := strings.LastIndexByte(cut, '\n'); nl >= 0 {
+			cut = cut[:nl+1]
 		}
 		files[i].Patch = cut
 		files[i].PatchTruncated = true

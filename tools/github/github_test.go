@@ -52,6 +52,11 @@ type fakeHub struct {
 	evilNextLink string
 	followedEvil atomic.Bool
 
+	// wantAuth, when set, is the exact Authorization header every non-minting request
+	// must carry. sawAuth records the last one seen.
+	wantAuth string
+	sawAuth  atomic.Value
+
 	tokensMinted  atomic.Int64
 	created       atomic.Int64
 	updated       atomic.Int64
@@ -101,6 +106,12 @@ func (h *fakeHub) bodies(kind string) []string {
 
 func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		h.sawAuth.Store(auth)
+		if h.wantAuth != "" && !strings.HasSuffix(p, "/access_tokens") && auth != h.wantAuth {
+			h.t.Errorf("Authorization = %q, want %q", auth, h.wantAuth)
+		}
+	}
 	switch {
 	case strings.HasSuffix(p, "/access_tokens"):
 		h.tokensMinted.Add(1)
@@ -598,11 +609,41 @@ func TestPatchTruncationIsFlaggedAndCutOnALineBoundary(t *testing.T) {
 	if !f.PatchTruncated {
 		t.Fatal("truncation must be flagged")
 	}
-	if strings.HasSuffix(f.Patch, "line") || strings.Contains(f.Patch, "line t\n") {
-		t.Fatalf("patch cut mid-line: %q", f.Patch)
+	// The cut lands on the line boundary and keeps the newline, so a model reads whole
+	// lines of diff or none of a line.
+	if f.Patch != "line one\n" {
+		t.Fatalf("patch = %q, want %q", f.Patch, "line one\n")
 	}
-	if f.Patch != "line one" {
-		t.Fatalf("patch = %q, want %q", f.Patch, "line one")
+}
+
+// A patch whose only newline is its first byte has a boundary at index zero, and the
+// cut must land on it. This is the case that was cut mid-line: the boundary search
+// skipped index zero, so the result carried a partial second line.
+func TestPatchTruncationHandlesALeadingNewline(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.filePages = [][]map[string]any{{
+		{"filename": "odd.go", "patch": "\nABCDEF"},
+	}}
+	set := newSet(t, hub, func(c *github.Config) { c.MaxPatchBytes = 3 })
+
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	var res struct {
+		Files []struct {
+			Patch          string `json:"patch"`
+			PatchTruncated bool   `json:"patch_truncated"`
+		} `json:"files"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got := res.Files[0].Patch; got != "\n" {
+		t.Fatalf("patch = %q, want %q: the cut must land on the boundary at index zero", got, "\n")
+	}
+	if !res.Files[0].PatchTruncated {
+		t.Fatal("truncation must be flagged")
 	}
 }
 
