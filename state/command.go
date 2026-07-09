@@ -336,7 +336,16 @@ func encodePayload(records map[string]any) (json.RawMessage, error) {
 
 // decodeRecord reconstructs a typed record from the payload value at key.
 func decodeRecord(payload map[string]any, key string, dst any) error {
-	b, err := json.Marshal(payload[key])
+	// An absent key, or one explicitly set to null, marshals to "null", which
+	// json.Unmarshal accepts as a no-op and leaves dst zeroed. Reject it instead:
+	// the in-memory core treats a missing record as an error, and a durable
+	// backend projecting a zero-valued record from the same event would diverge
+	// from it.
+	raw, ok := payload[key]
+	if !ok || raw == nil {
+		return fmt.Errorf("state: event payload is missing %q", key)
+	}
+	b, err := json.Marshal(raw)
 	if err != nil {
 		return err
 	}
