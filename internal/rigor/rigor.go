@@ -89,14 +89,10 @@ var decodeFuncs = map[string]map[string]bool{
 // root (module) package.
 func DefaultPolicy() Policy {
 	return Policy{
-		Grandfathered: map[string]bool{
-			"clock":              true,
-			"dispatch":           true,
-			"ids":                true,
-			"internal/sqlitex":   true,
-			"internal/spinesink": true,
-			"observe":            true,
-		},
+		// Empty, and it stays empty: every package that predated the gate now
+		// carries its property test. The gate fails on an entry whose package has
+		// gained one, so the list cannot silently grow back.
+		Grandfathered: map[string]bool{},
 		FuzzRequired: map[string]bool{
 			"bus":                   true,
 			"fault":                 true,
