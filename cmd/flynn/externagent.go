@@ -42,22 +42,30 @@ type externAgent struct {
 }
 
 // tierTallier is an external-agent driver that tallies the provenance tiers of the
-// events its episodes projected. The driver port itself stays free of provenance (a
-// native loop has no tiers to report), so the host asks for the capability rather than
-// requiring it.
+// events its episodes projected, how the harness chose its tools, and which parts of the
+// session contract it ignored. The driver port itself stays free of provenance (a native
+// loop has no tiers to report and no contract to drift from), so the host asks for the
+// capability rather than requiring it.
 type tierTallier interface {
 	Tiers() map[externagent.Tier]int
+	Steering() externagent.Steering
+	Drift() map[string]int
 }
 
-// attestedEvents is how many events the run's external harness reported about its own
-// episodes: actions the record repeats on the harness's word without having observed
-// them at the dispatch waist. A driver that does not tally reports none.
-func attestedEvents(ea *externAgent) int {
+// observedProvenance is what the host can say about an external-harness run once it has
+// finished: the harness's own account of itself, and how far it strayed from the contract
+// the run gave it. A driver that reports none of this yields a bare declaration, which
+// still names the run as externally driven.
+func observedProvenance(ea *externAgent) externalProvenance {
+	d := externalProvenance{harness: ea.driver.Name()}
 	t, ok := ea.driver.(tierTallier)
 	if !ok {
-		return 0
+		return d
 	}
-	return t.Tiers()[externagent.TierAttested]
+	d.attested = t.Tiers()[externagent.TierAttested]
+	d.nativeRate = t.Steering().NativeRate()
+	d.drift = t.Drift()
+	return d
 }
 
 // codexAllowedHosts are the destination names a codex episode's confined child may

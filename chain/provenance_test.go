@@ -73,6 +73,51 @@ func TestProvenanceOfAttestedAfterJSONRoundTrip(t *testing.T) {
 	}
 }
 
+// TestProvenanceOfAcrossEncodings pins the reader against both encodings a declaration is
+// read back from. The durable store round trips a payload through JSON, where a whole
+// number arrives as float64 and a nested map as map[string]any. A sealed record round
+// trips through canonical CBOR, where the same number arrives as uint64 and the same map
+// as map[any]any. A reader that handled only one would silently report zero attested
+// events and no drift on every record of the other kind, understating exactly the part of
+// the run the declaration exists to disclose.
+func TestProvenanceOfAcrossEncodings(t *testing.T) {
+	cases := map[string]map[string]any{
+		"in memory": {
+			ProvenanceAttestedKey:   12,
+			ProvenanceNativeRateKey: 0.5,
+			ProvenanceDriftKey:      map[string]any{"no-native-tools": 3},
+		},
+		"through JSON (durable store)": {
+			ProvenanceAttestedKey:   float64(12),
+			ProvenanceNativeRateKey: 0.5,
+			ProvenanceDriftKey:      map[string]any{"no-native-tools": float64(3)},
+		},
+		"through canonical CBOR (sealed record)": {
+			ProvenanceAttestedKey:   uint64(12),
+			ProvenanceNativeRateKey: 0.5,
+			ProvenanceDriftKey:      map[any]any{any("no-native-tools"): uint64(3)},
+		},
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			payload[ProvenanceHarnessKey] = "codex"
+			p, ok := ProvenanceOf([]spine.Event{{Type: ProvenanceDeclared, Payload: payload}})
+			if !ok {
+				t.Fatal("declaration not found")
+			}
+			if p.AttestedEvents != 12 {
+				t.Errorf("attested events = %d, want 12", p.AttestedEvents)
+			}
+			if p.NativeToolRate != 0.5 {
+				t.Errorf("native tool rate = %v, want 0.5", p.NativeToolRate)
+			}
+			if p.Drift["no-native-tools"] != 3 {
+				t.Errorf("drift = %v, want no-native-tools x3", p.Drift)
+			}
+		})
+	}
+}
+
 // TestProvenanceOfAbsent proves a native run carries no declaration, so the reader
 // reports absence rather than a zero-value provenance a caller might misread as real.
 func TestProvenanceOfAbsent(t *testing.T) {

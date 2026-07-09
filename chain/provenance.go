@@ -1,6 +1,10 @@
 package chain
 
-import "github.com/ionalpha/flynn/spine"
+import (
+	"math"
+
+	"github.com/ionalpha/flynn/spine"
+)
 
 // The provenance vocabulary a record carries when a run's loop was driven by an
 // external agent harness (a CLI that runs its own inner agentic loop) rather than a
@@ -37,6 +41,16 @@ const (
 	// own episode. The run did not observe them at the waist; it has only the harness's
 	// account, so they are attested rather than enforced.
 	ProvenanceAttestedKey = "attested_events"
+	// ProvenanceDriftKey maps each conformance probe the harness failed to how many of the
+	// run's episodes it failed on. An external harness's own prompt outranks the run's, so
+	// the behavioral contract is a request; this records where the request was ignored.
+	// Absent or empty means the harness honored the contract on every episode.
+	ProvenanceDriftKey = "probe_failures"
+	// ProvenanceNativeRateKey is the share of the harness's tool attempts that reached for
+	// its own built-in tools instead of the governed bridged ones, in [0,1]. Those effects
+	// could not land, but what the harness read with them the run never saw, so a high rate
+	// means a larger unobserved surface behind the same signature.
+	ProvenanceNativeRateKey = "native_tool_rate"
 
 	// TierEnforced is the effects tier: every effect passed through the governed
 	// dispatch waist, exactly like a native action.
@@ -69,6 +83,12 @@ type Provenance struct {
 	// They are the harness's account of itself, repeated by the record but not vouched
 	// for; the enforced effects are recorded separately at the dispatch waist.
 	AttestedEvents int
+	// Drift maps each conformance probe the harness failed to the number of episodes it
+	// failed on. Empty means the harness honored the session contract throughout.
+	Drift map[string]int
+	// NativeToolRate is the share of the harness's tool attempts that reached for its own
+	// tools rather than the governed bridged ones, in [0,1].
+	NativeToolRate float64
 }
 
 // ProvenanceOf returns the provenance declaration recorded on a run's event stream and
@@ -87,19 +107,77 @@ func ProvenanceOf(events []spine.Event) (Provenance, bool) {
 		p.Reasoning, _ = e.Payload[ProvenanceReasoningKey].(string)
 		p.Replayable, _ = e.Payload[ProvenanceReplayableKey].(bool)
 		p.AttestedEvents = payloadInt(e.Payload[ProvenanceAttestedKey])
+		p.NativeToolRate = payloadFloat(e.Payload[ProvenanceNativeRateKey])
+		p.Drift = payloadCounts(e.Payload[ProvenanceDriftKey])
 		return p, true
 	}
 	return Provenance{}, false
 }
 
-// payloadInt reads a count from an event payload. A payload that has round-tripped
-// through JSON carries its numbers as float64, while one still in memory carries the
-// int the producer wrote, so both are accepted and anything else reads as zero.
+// payloadFloat reads a rate from an event payload, accepting the float64 a JSON round
+// trip produces and the int a producer may have written for a whole number.
+func payloadFloat(v any) float64 {
+	switch n := v.(type) {
+	case float64:
+		return n
+	case int:
+		return float64(n)
+	default:
+		return 0
+	}
+}
+
+// payloadCounts reads a name-to-count map from an event payload. The two encodings a
+// declaration is read back from disagree on the shape of a nested map as well as on its
+// numbers: JSON yields map[string]any, while canonical CBOR yields map[any]any with the
+// keys typed as any. Both are accepted, and the values go through payloadInt.
+func payloadCounts(v any) map[string]int {
+	switch m := v.(type) {
+	case map[string]any:
+		if len(m) == 0 {
+			return nil
+		}
+		out := make(map[string]int, len(m))
+		for name, raw := range m {
+			out[name] = payloadInt(raw)
+		}
+		return out
+	case map[any]any:
+		if len(m) == 0 {
+			return nil
+		}
+		out := make(map[string]int, len(m))
+		for name, raw := range m {
+			s, ok := name.(string)
+			if !ok {
+				continue
+			}
+			out[s] = payloadInt(raw)
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+// payloadInt reads a count from an event payload. The same declaration is read back from
+// two encodings, and each renders a whole number differently: the durable store round
+// trips through JSON, where every number is a float64, while a sealed record round trips
+// through canonical CBOR, where a non-negative number is a uint64. In memory it is still
+// the int the producer wrote. All three are accepted; anything else reads as zero.
 func payloadInt(v any) int {
 	switch n := v.(type) {
 	case int:
 		return n
 	case int64:
+		return int(n)
+	case uint64:
+		// A record is untrusted input until it verifies, and even a verified one may have
+		// been sealed by another implementation. A count that cannot fit is clamped rather
+		// than wrapped to a negative, which would read as fewer attested events than none.
+		if n > math.MaxInt {
+			return math.MaxInt
+		}
 		return int(n)
 	case float64:
 		return int(n)

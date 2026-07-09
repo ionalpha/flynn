@@ -118,7 +118,8 @@ func TestVerifyRecordGroundTruth(t *testing.T) {
 func TestVerifyRecordProvenance(t *testing.T) {
 	keyID, priv := selfCertKey(t)
 
-	external := sealedRecord(t, keyID, priv,
+	external := sealedRecord(
+		t, keyID, priv,
 		vEvent(1, "action.dispatched", map[string]any{}),
 		vEvent(2, chain.ProvenanceDeclared, map[string]any{
 			chain.ProvenanceHarnessKey:    "codex",
@@ -149,6 +150,64 @@ func TestVerifyRecordProvenance(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "provenance:") {
 		t.Fatalf("a native run must not print a provenance line\n%s", buf.String())
+	}
+}
+
+// TestVerifyRecordReportsContractDrift covers the case a sealed external record must not
+// hide: the run's integrity verifies, but its harness ignored the behavioral contract it
+// was given, so the same signature covers a larger unobserved surface. Verify names the
+// probes that drifted and the share of tool attempts that went to the harness's own
+// tools, rather than reporting a clean external run.
+func TestVerifyRecordReportsContractDrift(t *testing.T) {
+	keyID, priv := selfCertKey(t)
+
+	drifted := sealedRecord(
+		t, keyID, priv,
+		vEvent(1, "action.dispatched", map[string]any{}),
+		vEvent(2, chain.ProvenanceDeclared, map[string]any{
+			chain.ProvenanceHarnessKey:    "codex",
+			chain.ProvenanceEffectsKey:    chain.TierEnforced,
+			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
+			chain.ProvenanceReplayableKey: false,
+			chain.ProvenanceAttestedKey:   12,
+			chain.ProvenanceNativeRateKey: 0.5,
+			chain.ProvenanceDriftKey:      map[string]any{"no-native-tools": 3},
+		}),
+	)
+	var buf bytes.Buffer
+	if err := verifyRecord(&buf, "rec", drifted, ""); err != nil {
+		// Drift is not an integrity failure: the record is authentic, and it is authentic
+		// about the harness having ignored the contract.
+		t.Fatalf("a drifted record must still verify: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"integrity:    VERIFIED",
+		"12 event(s) ATTESTED",
+		"contract drift: no-native-tools x3",
+		"50% of the harness's tool attempts used its own tools",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("drift report missing %q\n%s", want, out)
+		}
+	}
+
+	// A compliant external run reports its tiers without a drift line.
+	clean := sealedRecord(
+		t, keyID, priv,
+		vEvent(1, chain.ProvenanceDeclared, map[string]any{
+			chain.ProvenanceHarnessKey:    "codex",
+			chain.ProvenanceEffectsKey:    chain.TierEnforced,
+			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
+			chain.ProvenanceReplayableKey: false,
+		}),
+	)
+	buf.Reset()
+	if err := verifyRecord(&buf, "rec", clean, ""); err != nil {
+		t.Fatalf("clean external record did not verify: %v", err)
+	}
+	if strings.Contains(buf.String(), "drift") {
+		t.Errorf("a compliant run must print no drift line\n%s", buf.String())
 	}
 }
 

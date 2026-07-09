@@ -12,6 +12,7 @@ import (
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/mcp"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
@@ -33,11 +34,13 @@ type Driver struct {
 	spawner Spawner
 	workdir string
 
-	// mu guards tiers, which every episode of the run folds its projected events into.
-	// A fan-out runs episodes concurrently against the one Driver, so the tally is
-	// locked rather than owned by a single step.
-	mu    sync.Mutex
-	tiers map[Tier]int
+	// mu guards tiers and steering, which every episode of the run folds its projected
+	// events into. A fan-out runs episodes concurrently against the one Driver, so the
+	// tallies are locked rather than owned by a single step.
+	mu       sync.Mutex
+	tiers    map[Tier]int
+	steering Steering
+	drift    map[string]int
 }
 
 // NewDriver builds the driver for one external CLI. spawner runs the CLI confined;
@@ -75,6 +78,46 @@ func (d *Driver) absorbTiers(m map[Tier]int) {
 	for t, n := range m {
 		d.tiers[t] += n
 	}
+}
+
+// absorbConformance folds one episode's conformance report into the run's: the steering
+// counts add up, and each probe the harness failed is counted by name so a run reports
+// how often the contract drifted, not merely whether it drifted last.
+func (d *Driver) absorbConformance(rep ConformanceReport) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	s := &d.steering
+	s.BridgeCalls += rep.Steering.BridgeCalls
+	s.ForeignCalls += rep.Steering.ForeignCalls
+	s.NativeCommands += rep.Steering.NativeCommands
+	s.NativeDeclined += rep.Steering.NativeDeclined
+	if d.drift == nil {
+		d.drift = map[string]int{}
+	}
+	for _, f := range rep.Failed() {
+		d.drift[f.Name]++
+	}
+}
+
+// Steering returns the run's tool-choice counts across every episode: how often the
+// harness used the bridged tools it was told to use, and how often it reached for its
+// own instead. It is the number the tool descriptions and the preamble are tuned against.
+func (d *Driver) Steering() Steering {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.steering
+}
+
+// Drift returns how many episodes failed each conformance probe, by probe name. An empty
+// map means the harness honored the session contract on every episode.
+func (d *Driver) Drift() map[string]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make(map[string]int, len(d.drift))
+	for name, n := range d.drift {
+		out[name] = n
+	}
+	return out
 }
 
 // Build assembles the episode loop from the Spec. It captures the governance
@@ -123,7 +166,10 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	// The governed dispatcher for this goal's bridged tool calls: admit against the
 	// grant, gate on the sandbox's containment, apply the brake, and record the
 	// lifecycle onto the spine. The same waist a native loop dispatches through.
-	dopts := []dispatch.Option{dispatch.WithAdmitter(capability.Admitter{})}
+	// Counts the bridged calls the harness dispatched, so the steering metrics rest on
+	// what the waist observed rather than on what the harness said about itself.
+	counter := &bridgeCounter{}
+	dopts := []dispatch.Option{dispatch.WithAdmitter(capability.Admitter{}), dispatch.WithHook(counter)}
 	if e.spec.EventSink != nil {
 		dopts = append(dopts, dispatch.WithEventSink(e.spec.EventSink))
 	}
@@ -131,7 +177,7 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		dopts = append(dopts, dispatch.WithHook(capability.NewContainmentGate(e.spec.Sandbox)))
 	}
 	if e.spec.Brakes != nil {
-		dopts = append(dopts, dispatch.WithHook(e.spec.Brakes))
+		dopts = append(dopts, dispatch.WithHook(exemptProbe{e.spec.Brakes}))
 	}
 	if e.spec.Budget != nil {
 		// Charge every bridged tool call against the run's spend pool and refuse one once
@@ -140,12 +186,20 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		// codex:<model> --max-cost N` bounds an external run too. The external harness's own
 		// inner model calls are outside this waist (unobserved), so the ceiling bounds the
 		// governed effects, not the CLI's private provider spend.
-		dopts = append(dopts, dispatch.WithHook(e.spec.Budget))
+		dopts = append(dopts, dispatch.WithHook(exemptProbe{e.spec.Budget}))
 	}
 	d := dispatch.New(dopts...)
 
-	server := mcp.NewServer(d, e.spec.Tools, mcp.WithScope(scope), mcp.WithGoal(r.Name))
-	runner := NewRunner(e.drv.adapter, server, e.drv.spawner, e.reporter(ctx))
+	// The episode opens with conformance probes: the harness's own prompt outranks
+	// anything injected here, so the contract that it route effects through the bridged
+	// tools is a request. The probes turn the request's outcome into evidence. The nonce
+	// is per episode, so compliance cannot be replayed from an earlier one.
+	probeTool := NewProbeTool(ids.New())
+	probes := SessionProbes(probeTool)
+	toolset := append(append([]mission.Tool{}, e.spec.Tools...), probeTool)
+
+	server := mcp.NewServer(d, toolset, mcp.WithScope(scope), mcp.WithGoal(r.Name))
+	runner := NewRunner(e.drv.adapter, server, e.drv.spawner, e.reporter(ctx)).WithProbes(probes)
 
 	// Bind the goal's grant and the run's brake onto the context the bridge dispatches
 	// under, the same bindings the mission executor sets before it dispatches. The
@@ -172,6 +226,7 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		Workdir: e.drv.workdir,
 		Model:   spec.Model,
 		System:  e.system(spec),
+		Probes:  Instructions(probes),
 	})
 	// Fold the episode's tier tally in before the error check: an episode that ran and
 	// failed still projected events the record must account for. A start failure yields
@@ -179,6 +234,19 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	e.drv.absorbTiers(res.Tiers)
 	if err != nil {
 		return nil, err
+	}
+	// The bridged count comes from the waist, not the episode's event stream.
+	res.Conformance.Steering.BridgeCalls = counter.count()
+	e.drv.absorbConformance(res.Conformance)
+
+	// A required probe failed: the harness could not or would not reach the bridge, so
+	// nothing it does can be enforced and its record would be entirely attested while
+	// looking like a governed run. Refuse the episode rather than produce that record.
+	// The failure is terminal, since a harness that ignores the contract on one episode
+	// will ignore it on a retry.
+	if res.Conformance.Refused() {
+		return nil, fault.New(fault.Terminal, "externagent_conformance",
+			"the external agent did not honor the session contract: "+res.Conformance.Summary())
 	}
 
 	cp.Done = true
@@ -188,17 +256,99 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	return encodeEpisodeCheckpoint(cp)
 }
 
+// bridgeCounter counts the tool calls the external harness actually dispatched through
+// the waist. It is the authoritative count of bridged calls: unlike the harness's event
+// stream, which is its account of itself, this counts what the run admitted and ran.
+//
+// The conformance probe is not counted. It is the run's own instrument, and counting it
+// would credit the harness with a bridged call it was ordered to make.
+type bridgeCounter struct {
+	mu sync.Mutex
+	n  int
+}
+
+// Before counts a dispatched call. Hooks run ahead of the admitter, so this counts every
+// call the harness attempted, including one the grant went on to deny. That is the right
+// unit: the native side of the ratio counts attempts too (a command the CLI's sandbox
+// declined is still a turn spent reaching for the wrong tool), and a ratio of bridged
+// successes to native attempts would flatter the steering.
+func (c *bridgeCounter) Before(_ context.Context, a dispatch.Action) error {
+	if a.Name == ProbeToolName {
+		return nil
+	}
+	c.mu.Lock()
+	c.n++
+	c.mu.Unlock()
+	return nil
+}
+
+// After is required by the hook port and has nothing to account for.
+func (*bridgeCounter) After(context.Context, dispatch.Action, dispatch.Metering, error) {}
+
+// count reports how many bridged calls the harness dispatched.
+func (c *bridgeCounter) count() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.n
+}
+
+// exemptProbe wraps a governance hook so it does not apply to the conformance probe.
+//
+// The probe is the run's own instrument, not work the harness asked for: it consumes no
+// model tokens, lands no effect, and exists only to measure whether the harness honors
+// the contract. Charging it against the run's spend ceiling or its runaway brake would
+// let an exhausted budget or a tripped brake deny the probe, which the run would then
+// read as the harness refusing to cooperate. The failure would be reported against the
+// harness when the run itself caused it.
+//
+// It stays under the admitter and the containment gate. Those decide whether an action
+// may run at all, and the probe should be no exception; what it is exempt from is the
+// accounting of work it does not do.
+type exemptProbe struct{ dispatch.Hook }
+
+// Before skips the wrapped hook for the probe action and applies it to everything else.
+func (h exemptProbe) Before(ctx context.Context, a dispatch.Action) error {
+	if a.Name == ProbeToolName {
+		return nil
+	}
+	return h.Hook.Before(ctx, a)
+}
+
+// After skips the wrapped hook's accounting for the probe action.
+func (h exemptProbe) After(ctx context.Context, a dispatch.Action, m dispatch.Metering, err error) {
+	if a.Name == ProbeToolName {
+		return
+	}
+	h.Hook.After(ctx, a, m, err)
+}
+
 // grant returns the capability grant to bind for this goal: the goal's own action
 // set when it carries one, else the Spec's default grant, and reports whether any
 // grant is bound at all (an unbound grant leaves the run unconstrained).
 func (e *episodeExec) grant(spec goal.Spec) (capability.Grant, bool) {
 	if len(spec.Grant) > 0 {
-		return capability.NewGrant(spec.Grant...), true
+		return capability.NewGrant(withProbeAction(spec.Grant)...), true
 	}
 	if e.spec.HasGrant {
-		return e.spec.Grant, true
+		// An unrestricted grant already allows the probe; a restricted one is widened by
+		// exactly the probe tool, which grants no authority of its own (it touches no file,
+		// runs no command, reaches no network). Without this a run whose grant omits the
+		// probe would fail its required probe on a denial the harness never caused.
+		if e.spec.Grant.Unrestricted() {
+			return e.spec.Grant, true
+		}
+		return capability.NewGrant(withProbeAction(e.spec.Grant.Actions())...), true
 	}
 	return capability.Grant{}, false
+}
+
+// withProbeAction returns the granted actions plus the probe tool, copied rather than
+// appended in place: the caller's slice is the decoded goal spec, which the run must not
+// mutate.
+func withProbeAction(actions []string) []string {
+	out := make([]string, 0, len(actions)+1)
+	out = append(out, actions...)
+	return append(out, ProbeToolName)
 }
 
 // system returns the standing instruction for the episode: the goal's own when set,

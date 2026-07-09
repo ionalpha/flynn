@@ -411,20 +411,38 @@ func appendGroundTruth(ctx context.Context, log spine.Log, stream string, passed
 // but names the harness's inner reasoning as an unobserved gap, and the run is
 // non-replayable (the run does not drive the harness's inner loop). `flynn spine
 // verify` reports this tier mix from the same record. A native run records none of it.
-func appendProvenance(ctx context.Context, log spine.Log, stream, harness string, attested int) error {
+func appendProvenance(ctx context.Context, log spine.Log, stream string, d externalProvenance) error {
+	payload := map[string]any{
+		chain.ProvenanceHarnessKey:    d.harness,
+		chain.ProvenanceEffectsKey:    chain.TierEnforced,
+		chain.ProvenanceReasoningKey:  chain.TierUnobserved,
+		chain.ProvenanceReplayableKey: false,
+		chain.ProvenanceAttestedKey:   d.attested,
+		chain.ProvenanceNativeRateKey: d.nativeRate,
+		chain.ProvenanceDriftKey:      d.drift,
+	}
+	if len(d.drift) == 0 {
+		// An empty map and an absent key both mean the harness honored the contract. Omit
+		// it, so a clean run's record carries no key inviting the reader to wonder.
+		delete(payload, chain.ProvenanceDriftKey)
+	}
 	_, err := log.Append(ctx, spine.AppendInput{
-		Stream: stream,
-		Type:   chain.ProvenanceDeclared,
-		Actor:  spine.ActorSystem,
-		Payload: map[string]any{
-			chain.ProvenanceHarnessKey:    harness,
-			chain.ProvenanceEffectsKey:    chain.TierEnforced,
-			chain.ProvenanceReasoningKey:  chain.TierUnobserved,
-			chain.ProvenanceReplayableKey: false,
-			chain.ProvenanceAttestedKey:   attested,
-		},
+		Stream:  stream,
+		Type:    chain.ProvenanceDeclared,
+		Actor:   spine.ActorSystem,
+		Payload: payload,
 	})
 	return err
+}
+
+// externalProvenance is what the host observed of an external-harness run: which harness
+// drove it, how many events the harness reported about itself, and how far it drifted
+// from the session contract it was given.
+type externalProvenance struct {
+	harness    string
+	attested   int
+	nativeRate float64
+	drift      map[string]int
 }
 
 // distillOutcome distills a converged run into durable skills and memory and retires
@@ -824,8 +842,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	// episode as though Flynn's own loop had run it: the exact overclaim this declaration
 	// exists to prevent.
 	if cfg.extAgent != nil {
-		attested := attestedEvents(cfg.extAgent)
-		if perr := appendProvenance(runCtx, log, run.sess.ID(), cfg.extAgent.driver.Name(), attested); perr != nil {
+		if perr := appendProvenance(runCtx, log, run.sess.ID(), observedProvenance(cfg.extAgent)); perr != nil {
 			_, _ = fmt.Fprintf(w, "  (provenance not recorded: %v)\n", perr)
 		}
 	}

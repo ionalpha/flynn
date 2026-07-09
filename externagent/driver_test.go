@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 
 	"github.com/ionalpha/flynn/budget"
@@ -50,6 +51,29 @@ func driverWith(t *testing.T, workdir string, spawner Spawner) (*Driver, driver.
 	return d, driver.Spec{Tools: tools.New(sb).Tools()}
 }
 
+var nonceRe = regexp.MustCompile(`nonce="([^"]+)"`)
+
+// probeNonce recovers the nonce the driver minted for an episode from the instruction it
+// was handed. A real harness reads it the same way: out of the turn text, since that is
+// the only channel it has. It returns empty when the instruction carries none, which
+// makes the probe fail rather than the test panic from a spawner goroutine.
+func probeNonce(ep Episode) string {
+	for _, instr := range ep.Probes {
+		if m := nonceRe.FindStringSubmatch(instr); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
+
+// satisfyProbe makes the bridged probe call a compliant harness would make, so a test
+// episode clears the required conformance probe and can get on with what it is testing.
+// It runs on the episode's goroutine, so a failure surfaces as the probe not passing
+// rather than as a t.Fatal from the wrong goroutine.
+func satisfyProbe(ep Episode) {
+	_, _ = bridgeClient(ep.Bridge, ProbeToolName, `{"nonce":"`+probeNonce(ep)+`"}`)
+}
+
 // TestDriverRunsEpisodeThroughWaist drives Build -> Execute end to end: the episode
 // writes to the workspace through the bridge (governed by the goal's grant), the
 // checkpoint records completion and the final message, and the stop evaluator
@@ -57,6 +81,7 @@ func driverWith(t *testing.T, workdir string, spawner Spawner) (*Driver, driver.
 func TestDriverRunsEpisodeThroughWaist(t *testing.T) {
 	workdir := t.TempDir()
 	spawner := scriptSpawner(func(ep Episode, inv Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
 		ok, _ := bridgeClient(ep.Bridge, "write", `{"path":"out.txt","content":"hi"}`)
 		_, _ = fmt.Fprintf(pw, `{"type":"item.completed","item":{"type":"agent_message","text":"wrote (ok=%v)"}}`+"\n", ok)
 		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
@@ -97,7 +122,8 @@ func TestDriverRunsEpisodeThroughWaist(t *testing.T) {
 func TestDriverAccumulatesAttestedTiersAcrossEpisodes(t *testing.T) {
 	workdir := t.TempDir()
 	// Each episode projects two attested events: an agent message and a turn completion.
-	spawner := scriptSpawner(func(_ Episode, _ Invocation, pw *io.PipeWriter) {
+	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
 		_, _ = fmt.Fprintln(pw, `{"type":"item.completed","item":{"type":"agent_message","text":"step"}}`)
 		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
 	})
@@ -134,6 +160,7 @@ func TestDriverAccumulatesAttestedTiersAcrossEpisodes(t *testing.T) {
 func TestDriverGrantDeniesUngrantedTool(t *testing.T) {
 	workdir := t.TempDir()
 	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
 		_, _ = bridgeClient(ep.Bridge, "write", `{"path":"nope.txt","content":"x"}`)
 		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
 	})
@@ -183,6 +210,10 @@ func TestDriverEnforcesBudgetCeiling(t *testing.T) {
 	}
 
 	spawner := scriptSpawner(func(ep Episode, _ Invocation, pw *io.PipeWriter) {
+		// The probe is exempt from the spend ceiling, so an exhausted pool does not read as
+		// the harness refusing to cooperate. This call must succeed even though the write
+		// below is refused.
+		satisfyProbe(ep)
 		_, _ = bridgeClient(ep.Bridge, "write", `{"path":"over.txt","content":"x"}`)
 		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
 	})

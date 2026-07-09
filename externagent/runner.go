@@ -35,6 +35,7 @@ type Runner struct {
 	server  *mcp.Server
 	spawner Spawner
 	report  func(Event)
+	probes  []Probe
 }
 
 // NewRunner builds a runner that drives adapter, hosting server as the bridge,
@@ -42,6 +43,14 @@ type Runner struct {
 // host), and forwarding each projected event to report (nil drops them).
 func NewRunner(adapter Adapter, server *mcp.Server, spawner Spawner, report func(Event)) *Runner {
 	return &Runner{adapter: adapter, server: server, spawner: spawner, report: report}
+}
+
+// WithProbes sets the conformance probes the runner watches the episode against. Their
+// instructions must also be folded into the episode (see Episode.Probes); a probe whose
+// instruction was never sent measures nothing but the model's guesswork.
+func (r *Runner) WithProbes(probes []Probe) *Runner {
+	r.probes = probes
+	return r
 }
 
 // Result is the outcome of one episode: the final assistant message, the token
@@ -55,6 +64,10 @@ type Result struct {
 	Err      string
 	Terminal bool
 	Tiers    map[Tier]int
+	// Conformance is how the harness answered the episode's probes and how it chose its
+	// tools. It is the evidence that the run's instructions took, rather than the
+	// assumption that they did.
+	Conformance ConformanceReport
 }
 
 // Run hosts the bridge, runs one episode of ep, and returns its Result. ctx must
@@ -102,6 +115,7 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 	}
 
 	result := Result{Tiers: map[Tier]int{}}
+	watch := newConformanceWatch(r.probes, ep.Bridge.Name)
 	scanner := bufio.NewScanner(proc.Stdout())
 	// An episode line (a tool result echoed in the stream) can be large; raise the
 	// scanner's line ceiling well above the default 64KiB.
@@ -114,9 +128,11 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 		for _, ev := range evs {
 			r.emit(ev)
 			result.absorb(ev)
+			watch.observe(ev)
 		}
 	}
 	waitErr := proc.Wait()
+	result.Conformance = watch.report()
 
 	// The final assistant message is read from the file the CLI wrote, which is more
 	// reliable than reconstructing it from the event stream.
@@ -175,8 +191,9 @@ func (res *Result) absorb(ev Event) {
 		res.Failed = true
 		res.Err = ev.Err
 		res.Terminal = res.Terminal || ev.Terminal
-	case EventProgress:
-		// A progress event carries no result of its own; it is counted in the tier tally
-		// above and forwarded to the reporter for the live trace.
+	case EventProgress, EventBridgeCall, EventNativeCommand:
+		// None of these carry a result of their own. They are counted in the tier tally
+		// above, folded into the steering metrics by the conformance watch, and forwarded
+		// to the reporter for the live trace.
 	}
 }

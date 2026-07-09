@@ -121,10 +121,9 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 	// not land on the command line.
 	args = append(args, "-")
 
-	stdin := ep.Input
-	if ep.System != "" {
-		stdin = ep.System + "\n\n" + ep.Input
-	}
+	// The run's instructions reach codex as part of the user turn, below its own harness
+	// prompt in authority. The translator is the one place that mapping is expressed.
+	stdin := promptLayers{system: ep.System, probes: ep.Probes, input: ep.Input}.render()
 
 	inv := Invocation{
 		Path:            c.bin,
@@ -158,9 +157,23 @@ type codexUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
+// codexItem is a thread item. codex flattens the item's typed payload into the item
+// object, so `type` selects which of the remaining fields are populated.
 type codexItem struct {
 	Type string `json:"type"`
 	Text string `json:"text"`
+
+	// mcp_tool_call
+	Server    string          `json:"server"`
+	Tool      string          `json:"tool"`
+	Arguments json.RawMessage `json:"arguments"`
+
+	// command_execution
+	Command string `json:"command"`
+
+	// shared by mcp_tool_call and command_execution: in_progress, completed, failed, or
+	// (for a command codex refused to run) declined.
+	Status string `json:"status"`
 }
 
 // Parse projects one codex exec --json line to typed events. Recognized boundaries
@@ -197,14 +210,59 @@ func (c *Codex) Parse(line []byte) ([]Event, error) {
 			msg = ev.Error.Message
 		}
 		return []Event{{Kind: EventError, Err: msg, Terminal: terminalCodexError(msg), Tier: TierAttested, Raw: raw}}, nil
-	case "item.completed", "item.started":
-		if ev.Item != nil && (ev.Item.Type == "agent_message" || ev.Item.Type == "assistant_message") && ev.Item.Text != "" {
+	case "item.completed":
+		// Only a completed item is projected to a typed tool event. codex emits
+		// item.started for the same call and item.updated as it progresses, so projecting
+		// any of those too would count one call two or three times and skew the steering
+		// metrics the tuning depends on.
+		return []Event{c.projectItem(ev.Item, raw)}, nil
+	case "item.started", "item.updated":
+		// An assistant message is projected as it appears, so the live trace streams text
+		// rather than waiting for the turn. Everything else waits for item.completed.
+		if ev.Item != nil && isAgentMessage(ev.Item.Type) && ev.Item.Text != "" && ev.Type == "item.started" {
 			return []Event{{Kind: EventText, Text: ev.Item.Text, Tier: TierAttested, Raw: raw}}, nil
 		}
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}, nil
 	default:
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}, nil
 	}
+}
+
+// projectItem projects a completed thread item to a typed event. A bridge call and a
+// natively-run command are distinguished because the tuning needs to know which tools
+// the harness reached for; everything else is attested progress. Every projection is
+// attested: the CLI is reporting on itself. A bridged call is separately enforced at the
+// dispatch waist, which records it independently of the CLI's account.
+func (c *Codex) projectItem(item *codexItem, raw json.RawMessage) Event {
+	if item == nil {
+		return Event{Kind: EventProgress, Tier: TierAttested, Raw: raw}
+	}
+	switch item.Type {
+	case "agent_message", "assistant_message":
+		if item.Text != "" {
+			return Event{Kind: EventText, Text: item.Text, Tier: TierAttested, Raw: raw}
+		}
+	case "mcp_tool_call":
+		return Event{
+			Kind: EventBridgeCall, Tier: TierAttested, Raw: raw,
+			Server: item.Server, Tool: item.Tool, Args: item.Arguments, Status: item.Status,
+		}
+	case "command_execution", "file_change":
+		// The CLI used its own shell or patch tool instead of a bridged one. Under the
+		// read-only sandbox with approvals denied a write cannot land, but a read can, and
+		// the run never sees what it read.
+		return Event{
+			Kind: EventNativeCommand, Tier: TierAttested, Raw: raw,
+			Command: item.Command, Status: item.Status,
+		}
+	}
+	return Event{Kind: EventProgress, Tier: TierAttested, Raw: raw}
+}
+
+// isAgentMessage reports whether an item type names the assistant's visible message.
+// codex names it agent_message; assistant_message is accepted for an older build.
+func isAgentMessage(t string) bool {
+	return t == "agent_message" || t == "assistant_message"
 }
 
 // terminalCodexError reports whether an error message names a permanent condition

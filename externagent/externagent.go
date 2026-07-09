@@ -115,6 +115,9 @@ type Episode struct {
 	Model   string
 	System  string
 	Bridge  Bridge
+	// Probes are conformance instructions folded into the turn the harness reads. Their
+	// compliance is checked against the episode's own event stream once it finishes.
+	Probes []string
 }
 
 // Invocation is the subprocess to run for one episode: the program to exec, its
@@ -183,6 +186,16 @@ const (
 	// EventDone marks the episode's own completion (the turn finished), carrying any
 	// final usage. It is distinct from EventError, which ends an episode abnormally.
 	EventDone
+	// EventBridgeCall is the CLI's report of a tool call it made on the loopback bridge.
+	// The call itself is enforced at the dispatch waist, which records it independently;
+	// this event is the CLI's own account of the same call, used to measure how the
+	// harness chose its tools.
+	EventBridgeCall
+	// EventNativeCommand is the CLI's report that it ran a command or edited a file with
+	// its own built-in tools rather than the bridged ones. Its effects are contained (the
+	// CLI runs read-only with native approvals denied), but the run did not observe them,
+	// so a run producing these is being steered poorly, not breached.
+	EventNativeCommand
 )
 
 // Event is one typed projection of an episode's output line. The runner forwards it
@@ -197,6 +210,20 @@ type Event struct {
 	Terminal bool // for EventError: the failure is terminal, not worth retrying
 	Tier     Tier
 	Raw      json.RawMessage
+
+	// Tool is the tool a bridge call named (EventBridgeCall), and Server the bridge it
+	// named it on. A call to another MCP server is not ours and is not counted as bridged.
+	Tool   string
+	Server string
+	// Args is the arguments a bridge call carried, verbatim, so a conformance probe can
+	// look for the nonce it asked the harness to echo.
+	Args json.RawMessage
+	// Command is the command line the CLI reported running natively (EventNativeCommand).
+	Command string
+	// Status is the CLI's terminal status for the call or command it reported: completed,
+	// failed, declined, or in_progress. A started call and its completion are two events,
+	// so counting one status avoids double counting.
+	Status string
 }
 
 // Usage is the token accounting an episode reports. It mirrors the shape a native

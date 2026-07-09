@@ -12,6 +12,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -471,6 +472,25 @@ func reportProvenance(out io.Writer, events []spine.Event) {
 	if p.AttestedEvents > 0 {
 		_, _ = fmt.Fprintf(out, "                %d event(s) %s by the harness (its own account, unverified)\n",
 			p.AttestedEvents, strings.ToUpper(chain.TierAttested))
+	}
+	// The harness's own prompt outranks the run's, so the behavioral contract is a request
+	// the run measures rather than a rule it imposes. A record whose harness ignored it
+	// carries the same signature over a larger unobserved surface, and the reader is told.
+	if len(p.Drift) > 0 {
+		names := make([]string, 0, len(p.Drift))
+		for name := range p.Drift {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		parts := make([]string, 0, len(names))
+		for _, name := range names {
+			parts = append(parts, fmt.Sprintf("%s x%d", name, p.Drift[name]))
+		}
+		_, _ = fmt.Fprintf(out, "                contract drift: %s\n", strings.Join(parts, ", "))
+	}
+	if p.NativeToolRate > 0 {
+		_, _ = fmt.Fprintf(out, "                %.0f%% of the harness's tool attempts used its own tools (unobserved reads)\n",
+			p.NativeToolRate*100)
 	}
 }
 
