@@ -40,6 +40,11 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: ${{ matrix.go }}
+          # A `1.26` spec alone resolves to whatever 1.26.x the runner already has
+          # cached, so a patch release that fixes a standard-library advisory is
+          # never picked up and `govulncheck` fails on a toolchain nobody chose.
+          # check-latest queries for the newest matching patch on every run.
+          check-latest: true
           # Caching is handled by the explicit actions/cache step below. setup-go's
           # own cache keys on the go.sum hash alone with no fallback, so any miss
           # (a dependency bump, an evicted entry, the first run on a branch)
@@ -113,6 +118,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
       - name: Exclude Go paths from Windows Defender
         if: runner.os == 'Windows'
         shell: pwsh
@@ -148,6 +154,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
           # Caching is handled by the explicit actions/cache step below, which one
           # cache covers all three lint passes (linux, windows, darwin); setup-go's
           # own cache would only key the host target.
@@ -210,6 +217,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
       - run: ./dev/vuln
 
@@ -226,6 +234,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
       - run: ./dev/secrets
 
@@ -242,6 +251,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
       - run: ./dev/osv
 
@@ -273,6 +283,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
       - run: BENCHTIME=100x ./dev/bench
 
@@ -287,6 +298,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version: "1.26"
+          check-latest: true
           cache: true
       - run: go test -run=^$ -fuzz=. -fuzztime=20s ./... || true
 
