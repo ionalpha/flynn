@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -197,11 +198,12 @@ func (c *client) doPaged(ctx context.Context, url string, out any) (string, erro
 	if err := json.NewDecoder(resp.Body).Decode(out); err != nil {
 		return "", fmt.Errorf("github: decoding response: %w", err)
 	}
-	return nextLink(resp.Header.Get("Link")), nil
+	return c.nextPage(resp.Header.Get("Link"))
 }
 
-// linkNext matches the next-page URL in a Link header.
-var linkNext = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
+// linkNext matches the next-page URL in a Link header. The URL may carry neither
+// delimiter, so a nested bracket cannot be swallowed into the captured address.
+var linkNext = regexp.MustCompile(`<([^<>]+)>;\s*rel="next"`)
 
 // nextLink extracts the rel="next" URL from a Link header, or "" when absent.
 func nextLink(header string) string {
@@ -209,6 +211,34 @@ func nextLink(header string) string {
 		return m[1]
 	}
 	return ""
+}
+
+// nextPage returns the next page's URL, having confirmed it stays on the API host.
+//
+// The Link header is part of the response, so the address a client follows is
+// chosen by whoever answered the request, while the credential it attaches is
+// ours. A next-page link pointing at another host would send the installation
+// token there. Following it only within the configured API origin closes that off;
+// the egress policy alone would not, because it refuses private addresses rather
+// than unexpected public ones.
+func (c *client) nextPage(header string) (string, error) {
+	raw := nextLink(header)
+	if raw == "" {
+		return "", nil
+	}
+	next, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("github: unparsable pagination link: %w", err)
+	}
+	base, err := url.Parse(c.cfg.APIBase)
+	if err != nil {
+		return "", fmt.Errorf("github: unparsable API base: %w", err)
+	}
+	if next.Scheme != base.Scheme || next.Host != base.Host {
+		return "", fmt.Errorf("github: pagination link %q leaves the API host %q",
+			redactURL(raw), base.Host)
+	}
+	return raw, nil
 }
 
 // truncatePatches shortens each patch to at most limit bytes, on a line boundary so

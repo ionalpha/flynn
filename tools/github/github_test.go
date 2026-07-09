@@ -48,6 +48,10 @@ type fakeHub struct {
 	// filePages serves paginated /files responses when set.
 	filePages [][]map[string]any
 
+	// evilNextLink, when set, is served as the Link header of the first /files page.
+	evilNextLink string
+	followedEvil atomic.Bool
+
 	tokensMinted  atomic.Int64
 	created       atomic.Int64
 	updated       atomic.Int64
@@ -179,6 +183,14 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *fakeHub) serveFiles(w http.ResponseWriter, r *http.Request) {
+	if h.evilNextLink != "" {
+		if r.URL.Query().Get("page") != "" {
+			h.followedEvil.Store(true)
+		}
+		w.Header().Set("Link", h.evilNextLink)
+		writeJSON(w, []map[string]any{{"filename": "a.go", "patch": "p"}})
+		return
+	}
 	if h.filePages == nil {
 		writeJSON(w, []map[string]any{
 			{"filename": "a.go", "status": "modified", "additions": 1, "deletions": 0, "patch": "@@ -1 +1 @@\n-a\n+b"},
@@ -856,5 +868,27 @@ func TestFetchReportsDiffCompleteness(t *testing.T) {
 	}
 	if res.ChangedFiles != 10 {
 		t.Fatalf("changed_files = %d, want 10", res.ChangedFiles)
+	}
+}
+
+// --- pagination safety -------------------------------------------------------
+
+// The Link header is chosen by whoever answered the request, while the credential
+// attached to the next request is ours. A next-page link pointing at another host
+// must be refused, not followed with an installation token in hand.
+func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.evilNextLink = `<https://attacker.example/steal>; rel="next"`
+	set := newSet(t, hub, nil)
+
+	_, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	if err == nil {
+		t.Fatal("a cross-host pagination link must be refused")
+	}
+	if !strings.Contains(err.Error(), "leaves the API host") {
+		t.Fatalf("error = %v, want it to name the off-host link", err)
+	}
+	if hub.followedEvil.Load() {
+		t.Fatal("the off-host link was followed with a token attached")
 	}
 }
