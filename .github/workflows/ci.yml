@@ -287,12 +287,13 @@ jobs:
           cache: true
       - run: BENCHTIME=100x ./dev/bench
 
+  # Live mutation on every fuzz target, briefly. The committed seed corpus
+  # already replays under the test job; this hunts for NEW crashers, and a
+  # found crasher fails the PR. The nightly workflow runs the same script
+  # with a longer per-target budget.
   fuzz:
     name: Fuzz smoke
     runs-on: ubuntu-latest
-    # Fuzz targets are added by the engineering-rigor work (task 6f520130).
-    # Tolerant until then so it never blocks an empty package.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -300,7 +301,15 @@ jobs:
           go-version: "1.26"
           check-latest: true
           cache: true
-      - run: go test -run=^$ -fuzz=. -fuzztime=20s ./... || true
+      - run: FUZZTIME=5s ./dev/fuzz
+      # A crasher is written to the package's testdata/fuzz/ locally on the
+      # runner; surface it so it can be committed as a regression seed.
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fuzz-crashers
+          path: "**/testdata/fuzz/**"
+          if-no-files-found: ignore
 
   # Enforce the PR template at the gate, not just in dev/pr: this catches PRs
   # opened any other way (gh directly, the web UI, an API call). The body comes

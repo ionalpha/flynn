@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+# The hostile-input gate: run every fuzz target with live mutation for a
+# short budget, so a new crasher fails the build instead of waiting for
+# someone to fuzz by hand. The committed seed corpus already replays under
+# dev/test; this adds mutation on top of it.
+#
+# `go test -fuzz` accepts exactly one target in one package per invocation,
+# so this enumerates every FuzzXxx function and runs each in turn.
+#
+# FUZZTIME sets the per-target budget (default 5s; the nightly workflow
+# raises it). With no args, covers every package that declares a fuzz
+# target; pass directories to scope, e.g. `dev/fuzz ./state`.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+: "${FUZZTIME=5s}"
+if [ "$#" -eq 0 ]; then set -- .; fi
+
+fail=0
+for dir in $(grep -rl '^func Fuzz' --include='*_test.go' "$@" | xargs -n1 dirname | sort -u); do
+	for target in $(grep -h '^func Fuzz' "$dir"/*_test.go | sed -E 's/^func (Fuzz[A-Za-z0-9_]+).*/\1/' | sort -u); do
+		echo "==> go test -fuzz=^${target}\$ -fuzztime=$FUZZTIME $dir"
+		go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}" || fail=1
+	done
+done
+
+if [ "$fail" -ne 0 ]; then
+	echo "dev/fuzz: crasher found; failing inputs are under */testdata/fuzz/ - commit the seed with the fix" >&2
+fi
+exit "$fail"
