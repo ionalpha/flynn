@@ -19,6 +19,7 @@ import (
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/internal/integrations/request"
+	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/secret"
@@ -363,3 +364,88 @@ func FaultyReader(inner io.Reader, plan *FaultPlan) io.Reader {
 type readerFunc func([]byte) (int, error)
 
 func (f readerFunc) Read(p []byte) (int, error) { return f(p) }
+
+// QueueFaults holds one FaultPlan per jobs.Queue method a durable store can fail
+// at. Each plan counts only its own method's calls, so a case can fail Complete
+// on its second call without the intervening Claims advancing that counter. A nil
+// plan never faults, so a case names only the method it is injecting at.
+type QueueFaults struct {
+	Enqueue  *FaultPlan
+	Claim    *FaultPlan
+	Complete *FaultPlan
+	Fail     *FaultPlan
+	Recover  *FaultPlan
+}
+
+// FaultyQueue wraps a jobs.Queue, injecting plan's faults before delegating, so a
+// durable queue whose backing store is failing (a disk that is full, a database
+// that is down, a write that is lost mid-commit) is modelled deterministically
+// against the worker loop that drives it.
+//
+// The faults land where at-least-once delivery is actually decided: a Complete or
+// Fail that never reaches the store leaves the job running, and it is the lapse of
+// its lease, not any bookkeeping the worker did, that returns the job to the queue.
+// A wrapped queue therefore proves the loop cannot lose a job by failing to record
+// its outcome, and cannot retry one past its attempt ceiling either, since the
+// reclaim spends an attempt exactly as a crash would.
+//
+// Get is never faulted: tests assert against it, so it stays a truthful oracle.
+func FaultyQueue(inner jobs.Queue, faults QueueFaults) jobs.Queue {
+	return &faultyQueue{inner: inner, faults: faults}
+}
+
+type faultyQueue struct {
+	inner  jobs.Queue
+	faults QueueFaults
+}
+
+// fire advances plan (if any) and reports the fault to inject on this call.
+func fire(plan *FaultPlan) error {
+	if plan == nil {
+		return nil
+	}
+	return plan.next()
+}
+
+func (q *faultyQueue) Enqueue(ctx context.Context, p jobs.EnqueueParams) (jobs.Job, error) {
+	if err := fire(q.faults.Enqueue); err != nil {
+		return jobs.Job{}, err
+	}
+	return q.inner.Enqueue(ctx, p)
+}
+
+func (q *faultyQueue) Claim(ctx context.Context, p jobs.ClaimParams) ([]jobs.Job, error) {
+	if err := fire(q.faults.Claim); err != nil {
+		return nil, err
+	}
+	return q.inner.Claim(ctx, p)
+}
+
+func (q *faultyQueue) Complete(ctx context.Context, id string) error {
+	if err := fire(q.faults.Complete); err != nil {
+		return err
+	}
+	return q.inner.Complete(ctx, id)
+}
+
+func (q *faultyQueue) Fail(ctx context.Context, id, errMsg string, retryAt int64) error {
+	if err := fire(q.faults.Fail); err != nil {
+		return err
+	}
+	return q.inner.Fail(ctx, id, errMsg, retryAt)
+}
+
+func (q *faultyQueue) Get(ctx context.Context, id string) (jobs.Job, error) {
+	return q.inner.Get(ctx, id)
+}
+
+func (q *faultyQueue) Recover(ctx context.Context) (int, error) {
+	if err := fire(q.faults.Recover); err != nil {
+		return 0, err
+	}
+	return q.inner.Recover(ctx)
+}
+
+func (q *faultyQueue) Close() error { return q.inner.Close() }
+
+var _ jobs.Queue = (*faultyQueue)(nil)
