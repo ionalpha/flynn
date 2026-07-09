@@ -54,10 +54,22 @@ func wantReplies(in []byte) []string {
 	}
 }
 
+// compactJSON strips insignificant whitespace so two spellings of the same JSON
+// value compare equal. Marshal compacts a RawMessage id on the way out, so a
+// request id carrying interior whitespace legitimately comes back tighter; a
+// client pairs replies by value, not by bytes.
+func compactJSON(s string) string {
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(s)); err != nil {
+		return s
+	}
+	return buf.String()
+}
+
 // FuzzServeFrames throws arbitrary bytes at the stdio server. The bar is that
 // Serve never panics and never hangs, and that what it writes is always a valid
-// JSON-RPC reply stream: one reply per request, in order, with the id echoed
-// verbatim, and exactly one of result or error set on each.
+// JSON-RPC reply stream: one reply per request, in order, with an id equal to the
+// request's as a JSON value, and exactly one of result or error set on each.
 //
 // A frame the decoder cannot parse ends the session with a typed transport fault,
 // which is Serve's documented contract: a JSON stream cannot be resynchronized
@@ -125,7 +137,7 @@ func FuzzServeFrames(f *testing.F) {
 			t.Fatalf("wrote %d replies for %d requests\n got %q\nwant %q", len(got), len(want), got, want)
 		}
 		for i := range want {
-			if got[i] != want[i] {
+			if compactJSON(got[i]) != compactJSON(want[i]) {
 				t.Fatalf("reply %d echoes id %s, want %s", i, got[i], want[i])
 			}
 		}
