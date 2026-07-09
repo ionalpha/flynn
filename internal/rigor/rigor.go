@@ -118,12 +118,11 @@ func DefaultPolicy() Policy {
 			"resource":       true,
 			"storage/sqlite": true,
 		},
-		// Every entry decodes a reply it does not control and predates the
-		// inference. Each one is a fuzz target waiting to be written; delete the
-		// entry with the same change that writes it.
-		BoundaryFuzzExempt: map[string]bool{
-			"internal/source/signalcli": true, // a signal-cli subprocess's JSON-RPC frames
-		},
+		// Empty, and it stays empty: every package that decodes bytes it does not
+		// control now carries a fuzz target. An entry here only ever bought time for
+		// a decoder that predated the inference, and the gate fails on one that has
+		// since gained a target, so the list cannot silently grow back.
+		BoundaryFuzzExempt: map[string]bool{},
 	}
 }
 
