@@ -2,3 +2,8 @@ Flynn
 Copyright 2026 Ion Alpha
 
 This product includes software developed at Ion Alpha (https://ionalpha.io).
+
+The syntax-highlighting definitions in internal/tui/render/lexers are generated
+from the lexers of Chroma (https://github.com/alecthomas/chroma), Copyright (C)
+2017 Alec Thomas, used under the MIT license. See internal/tui/render/lexers for
+that license text and for how the files are regenerated.

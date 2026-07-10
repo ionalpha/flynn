@@ -1,13 +1,53 @@
 package render
 
 import (
+	"embed"
+	"io/fs"
 	"strings"
+	"sync"
 
 	"github.com/alecthomas/chroma/v2"
-	"github.com/alecthomas/chroma/v2/lexers"
 
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
+
+// lexerDir is the embedded directory of serialised lexer definitions.
+const lexerDir = "lexers"
+
+// lexerFS holds the lexer definitions this renderer highlights with, produced
+// from chroma's own lexers by TestEmbeddedLexersMatchChroma (run with -update
+// after a chroma upgrade). They live here rather than coming from chroma's
+// lexers package because importing that package parses all 279 of its
+// definitions during package init, and Go runs the init of every linked
+// package: `flynn --version`, `flynn mcp serve`, and a headless CI run each
+// paid 5.2ms and 2.7MB to build a syntax registry they never used. Parsing is
+// deferred to the first code block instead, and only the languages a session
+// actually meets are carried.
+//
+//go:embed lexers/*.xml
+var lexerFS embed.FS
+
+// lexerRegistry builds the registry on first use. chroma parses only each
+// definition's config header here; a lexer's rules are compiled lazily on its
+// first Tokenise. A definition that fails to parse is skipped rather than
+// fatal, so a corrupt file costs one language its colors instead of taking
+// down the renderer mid-stream; TestEveryEmbeddedLexerRegisters is what keeps
+// that path from being reached in a shipped build.
+var lexerRegistry = sync.OnceValue(func() *chroma.LexerRegistry {
+	reg := chroma.NewLexerRegistry()
+	entries, err := fs.ReadDir(lexerFS, lexerDir)
+	if err != nil {
+		return reg
+	}
+	for _, e := range entries {
+		lex, err := chroma.NewXMLLexer(lexerFS, lexerDir+"/"+e.Name())
+		if err != nil {
+			continue
+		}
+		reg.Register(lex)
+	}
+	return reg
+})
 
 // Highlight renders source code as themed rows of at most width cells, using
 // the lexer registered for lang (or plain code styling when the language is
@@ -34,7 +74,7 @@ func highlightLines(th *theme.Theme, lang, code string) [][]span {
 	// chosen (see Markdown.Render).
 	code = strings.ToValidUTF8(strings.ReplaceAll(code, "\t", "    "), "�")
 	base := th.Style(theme.Code)
-	lexer := lexers.Get(lang)
+	lexer := lexerRegistry().Get(lang)
 	if lexer == nil {
 		return plainCodeLines(code, base)
 	}
