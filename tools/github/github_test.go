@@ -77,6 +77,10 @@ type fakeHub struct {
 	graphqlError string
 	failReviews  atomic.Bool // when set, a review submission answers 500
 	failFiles    atomic.Bool // when set, the changed-files endpoint answers 500
+
+	// endlessThreads makes the GraphQL endpoint always report another page, so a test
+	// can drive the reviewer into its pagination cap.
+	endlessThreads bool
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -366,11 +370,15 @@ func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	next := start + 1
+	hasNext := next < len(h.threads)
+	if h.endlessThreads {
+		hasNext = true
+	}
 	writeJSON(w, map[string]any{"data": map[string]any{
 		"repository": map[string]any{"pullRequest": map[string]any{
 			"reviewThreads": map[string]any{
 				"pageInfo": map[string]any{
-					"hasNextPage": next < len(h.threads),
+					"hasNextPage": hasNext,
 					"endCursor":   strconv.Itoa(next),
 				},
 				"nodes": nodes,
@@ -1443,5 +1451,26 @@ func TestAReviewerThatMayResolveDoesNotMinimize(t *testing.T) {
 	}
 	if got := hub.minimizedComments(); len(got) != 0 {
 		t.Errorf("minimized %v on top of resolving", got)
+	}
+}
+
+// A pull request with more conversations than the reviewer will page through is not a
+// pull request it has tidied up. Returning the pages it did read would report a
+// complete pass, and every thread past the cap would stay open while the reviewer said
+// otherwise. A partial read is an error.
+func TestReadingThreadsRefusesToStopAtTheCap(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.endlessThreads = true
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
+
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`)
+	if err != nil {
+		t.Fatalf("the verdict must still land: %v", err)
+	}
+	if !strings.Contains(out, "could not resolve") || !strings.Contains(out, "pages of review threads") {
+		t.Errorf("a truncated read of the conversations was reported as a clean pass: %q", out)
+	}
+	if got := hub.resolvedThreads(); len(got) != 0 {
+		t.Errorf("resolved %v from a partial read of the conversations", got)
 	}
 }

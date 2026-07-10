@@ -201,7 +201,11 @@ func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread,
 		cursor := threads.PageInfo.EndCursor
 		after = &cursor
 	}
-	return out, nil
+	// The cap was reached with pages still to come. Returning what was read would be
+	// reported as a complete pass over the conversations, and every thread past the cap
+	// would stay open forever while the reviewer said it had tidied up. A partial read
+	// is not a read.
+	return nil, fmt.Errorf("github: more than %d pages of review threads", maxThreadPages)
 }
 
 // resolveThreadMutation closes one conversation.
