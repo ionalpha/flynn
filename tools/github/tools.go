@@ -104,8 +104,9 @@ func (prFetchTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "github_pr_fetch",
 		Description: "Fetch a pull request: its metadata, the list of changed files with their diff patches, " +
-			"and the identities of findings this reviewer has already posted. Re-proposing an already-posted " +
-			"finding is a duplicate; the existing comment is updated instead.",
+			"and the identities of findings this reviewer has already posted. Post again every already-posted " +
+			"finding whose defect is still present: the existing comment is updated in place, never duplicated. " +
+			"A finding left out is treated as no longer made, and its conversation is retracted.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "required": ["number"],
@@ -236,7 +237,9 @@ func (commentTool) Def() llm.Tool {
 		Name: "github_comment",
 		Description: "Post review findings as inline comments on the lines they concern. " +
 			"Re-running reconciles: a finding already posted at the same path, line, and rule is updated in " +
-			"place, never duplicated. Every finding must carry a concrete failure scenario or it is refused. " +
+			"place, never duplicated, so a finding that still stands must be posted again on every review. " +
+			"A finding omitted is retracted: its conversation is resolved, or folded away as outdated. " +
+			"Every finding must carry a concrete failure scenario or it is refused. " +
 			"There is no separate summary comment: a finding lives on its line, and the verdict carries the " +
 			"one-line conclusion.",
 		InputSchema: json.RawMessage(`{

@@ -65,7 +65,9 @@ These are not:
 - Praise, summaries of what the diff plainly does, or restatements of the title.
 - Hypotheticals guarded by "if this is not handled elsewhere". Find out, or drop it.
 
-Do not repeat a finding you have already posted. The fetch tells you which findings are already on the pull request; posting one again is a duplicate, and the tool updates the existing comment rather than adding a second.
+Post every finding that still stands, including the ones already on the pull request. The fetch tells you which those are. Posting one again is not a duplicate: the tool updates the existing comment in place, and it never opens a second conversation about the same defect.
+
+This matters because a finding you do not post is a finding you no longer make. When you leave one out, the reviewer retracts it: the conversation it opened is closed, or folded away as outdated. So look at each finding already on the pull request, decide whether the defect is still there, and post it again if it is. Leaving out a defect that still exists retracts a live objection.
 
 A finding lives on the line it concerns and nowhere else. There is no summary comment, and nothing you say goes on the pull request's main thread. A reader sees the comment on the code, replies to it there, and resolves it there.
 

@@ -67,8 +67,15 @@ func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool,
 		return true, ""
 	default:
 		// The reviewer read the whole diff and did not raise this finding again, so the
-		// defect it described is no longer there. The caller has already established
-		// that the diff arrived complete; without that, absence would mean nothing.
+		// defect it described is no longer there. The caller has already established that
+		// the diff arrived complete; without that, absence would mean nothing.
+		//
+		// This reads a silence, so the silence has to mean something. The reviewer's
+		// standing instruction, and both tool descriptions, tell it to post again every
+		// finding whose defect is still present, and the comment tool updates the existing
+		// comment rather than opening a second conversation. Without that contract, a
+		// reviewer told not to repeat itself would say nothing about a live defect and
+		// watch its own objection be retracted.
 		return true, ""
 	}
 }

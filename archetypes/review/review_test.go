@@ -206,7 +206,7 @@ func TestSystemPromptDemandsEvidenceAndForbidsNitpicks(t *testing.T) {
 		"a file, a line, and a concrete scenario", // a finding must be evidenced
 		"you do not have a finding",               // and refused otherwise
 		"Style, naming, and formatting",           // nitpicks are named and excluded
-		"Do not repeat a finding",                 // duplicates are the top complaint
+		"never opens a second conversation",       // re-posting reconciles, it does not duplicate
 		"read the whole change",                   // approval is a claim about coverage
 	} {
 		if !strings.Contains(p, required) {
@@ -230,5 +230,24 @@ func testConfig(t *testing.T) github.Config {
 		App:   github.App{Issuer: "Iv1.test", InstallationID: 1, PrivateKey: key},
 		Owner: "ionalpha",
 		Repo:  "flynn",
+	}
+}
+
+// TestSystemPromptStatesTheRetractionContract pins the sentence the resolve rule
+// depends on. The reviewer retracts a finding it does not post again, so a prompt that
+// told it not to repeat itself would have it silently withdraw live objections. The
+// rule reads a silence; the prompt is what gives that silence a meaning.
+func TestSystemPromptStatesTheRetractionContract(t *testing.T) {
+	for _, want := range []string{
+		"Post every finding that still stands",
+		"a finding you do not post is a finding you no longer make",
+		"retracts it",
+	} {
+		if !strings.Contains(review.SystemPrompt, want) {
+			t.Errorf("the standing instruction does not say %q, so a silence means nothing", want)
+		}
+	}
+	if strings.Contains(review.SystemPrompt, "Do not repeat a finding you have already posted") {
+		t.Error("the instruction still tells the reviewer not to repeat itself, which retracts live findings")
 	}
 }
