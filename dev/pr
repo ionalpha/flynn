@@ -34,12 +34,36 @@ fi
 # impossible to skip, not merely the default. Interactive runs (no body flag) fall
 # through to gh, which opens .github/PULL_REQUEST_TEMPLATE.md as usual.
 template=".github/PULL_REQUEST_TEMPLATE.md"
+
+# An argument that follows one of these is that option's value, whatever it spells.
+# Both loops below consult this, and both forget it the moment they consume a value:
+# a value is never an option, so `--title --body` gives a pull request titled
+# "--body" and leaves the next argument to be read on its own terms. Confusing the
+# two lets `dev/pr --body "$body" --title --body --ready` read "--ready" as the body,
+# refusing a pull request whose body was there all along.
+is_value_opt() {
+  case "$1" in
+    --title|-t|--body|-b|--body-file|-F|--base|-B|--head|-H|--assignee|-a|\
+--label|-l|--milestone|-m|--project|-p|--reviewer|-r) return 0 ;;
+  esac
+  return 1
+}
+
+# Enforce the PR template. gh only opens the template when no body is passed, so a
+# scripted --body/--body-file silently bypasses it. Instead of trusting that, we
+# require any explicit body to carry the template's sections - the template becomes
+# impossible to skip, not merely the default. Interactive runs (no body flag) fall
+# through to gh, which opens .github/PULL_REQUEST_TEMPLATE.md as usual.
 body=""; have_body=0; prev=""
 for arg in "$@"; do
-  case "$prev" in
-    --body|-b)      body="$arg"; have_body=1 ;;
-    --body-file|-F) body="$(cat -- "$arg")"; have_body=1 ;;
-  esac
+  if is_value_opt "$prev"; then
+    case "$prev" in
+      --body|-b)      body="$arg"; have_body=1 ;;
+      --body-file|-F) body="$(cat -- "$arg")"; have_body=1 ;;
+    esac
+    prev=""
+    continue
+  fi
   case "$arg" in
     --body=*)       body="${arg#--body=}"; have_body=1 ;;
     --body-file=*)  body="$(cat -- "${arg#--body-file=}")"; have_body=1 ;;
@@ -75,13 +99,11 @@ while [ "$i" -lt "$n" ]; do
   # An argument that follows an option taking a value IS that value, whatever it
   # spells. `dev/pr --body --ready` asks for a pull request whose body is the text
   # "--ready", and eating it would run gh with a --body that has no value.
-  case "$prev" in
-    --title|-t|--body|-b|--body-file|-F|--base|-B|--head|-H|--assignee|-a|--label|-l|--milestone|-m|--project|-p|--reviewer|-r)
-      set -- "$@" "$arg"
-      prev="$arg"
-      continue
-      ;;
-  esac
+  if is_value_opt "$prev"; then
+    set -- "$@" "$arg"
+    prev=""
+    continue
+  fi
   case "$arg" in
     --ready) draft="" ; prev="$arg" ; continue ;;  # ours, never passed to gh
     --draft) draft="" ;;                           # the caller said it; do not say it twice
