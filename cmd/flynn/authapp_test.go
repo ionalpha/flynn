@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ionalpha/flynn/internal/vault"
@@ -121,6 +122,10 @@ func TestAuthSetAppRefusesBadInput(t *testing.T) {
 		"installation not a number": {"--issuer", "1", "--installation", "the-first-one", "--key-file", good},
 		"key file missing":          {"--issuer", "1", "--installation", "2", "--key-file", filepath.Join(t.TempDir(), "absent.pem")},
 		"key file is not a key":     {"--issuer", "1", "--installation", "2", "--key-file", notAKey},
+		"issuer zero":               {"--issuer", "0", "--installation", "2", "--key-file", good},
+		"issuer negative":           {"--issuer", "-1", "--installation", "2", "--key-file", good},
+		"installation zero":         {"--issuer", "1", "--installation", "0", "--key-file", good},
+		"installation negative":     {"--issuer", "1", "--installation", "-7", "--key-file", good},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -248,5 +253,29 @@ func TestAuthRemoveAppClearsEveryReference(t *testing.T) {
 		if _, err := store.Lookup(ctx, ref); err == nil {
 			t.Errorf("%s survived rm-app", ref)
 		}
+	}
+}
+
+// TestAppIdentityStatus: a review needs all three references and refuses a partial set,
+// so the listing must not report an App as usable when the next review will reject it.
+func TestAppIdentityStatus(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name  string
+		store map[string]string
+		want  string
+	}{
+		{"none", nil, "not set"},
+		{"key only", map[string]string{refAppKey: "k"}, "partial"},
+		{"missing key", map[string]string{refAppIssuer: "1", refAppInstallation: "2"}, "partial"},
+		{"complete", map[string]string{refAppIssuer: "1", refAppInstallation: "2", refAppKey: "k"}, "stored"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := appIdentityStatus(ctx, &faultyStore{stored: tc.store})
+			if !strings.HasPrefix(got, tc.want) {
+				t.Errorf("appIdentityStatus = %q, want it to start with %q", got, tc.want)
+			}
+		})
 	}
 }

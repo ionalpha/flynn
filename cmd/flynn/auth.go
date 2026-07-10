@@ -151,10 +151,12 @@ func authSetApp(ctx context.Context, store appStore, args []string, readFile fun
 		fs.Usage()
 		return errors.New("auth: set-app needs --issuer, --installation, and --key-file")
 	}
-	if _, err := strconv.ParseInt(*issuer, 10, 64); err != nil {
+	// GitHub numbers Apps and installations from one, so zero and negatives are not
+	// ids that failed to authenticate later, they are ids that cannot exist.
+	if n, err := strconv.ParseInt(*issuer, 10, 64); err != nil || n <= 0 {
 		return fmt.Errorf("auth: --issuer %q is not an App id", *issuer)
 	}
-	if _, err := strconv.ParseInt(*installation, 10, 64); err != nil {
+	if n, err := strconv.ParseInt(*installation, 10, 64); err != nil || n <= 0 {
 		return fmt.Errorf("auth: --installation %q is not an installation id", *installation)
 	}
 
@@ -273,6 +275,26 @@ func isKnownProvider(name string) bool {
 	return false
 }
 
+// appIdentityStatus describes the stored App identity. A review needs all three
+// references and refuses a partial set, so reporting "stored" on the strength of one
+// of them would tell the operator their App works when the next review will reject it.
+func appIdentityStatus(ctx context.Context, store appStore) string {
+	var found int
+	for _, ref := range appRefs {
+		if _, err := store.Lookup(ctx, ref); err == nil {
+			found++
+		}
+	}
+	switch found {
+	case 0:
+		return "not set"
+	case len(appRefs):
+		return "stored"
+	default:
+		return "partial, unusable (run `flynn auth rm-app`)"
+	}
+}
+
 func authList(ctx context.Context, store *vault.Store) error {
 	for _, name := range provider.Providers() {
 		ref, ok := provider.KeyRef(name)
@@ -289,10 +311,7 @@ func authList(ctx context.Context, store *vault.Store) error {
 	}
 	// A stored App identity authenticates every review, so it belongs in the same
 	// listing rather than being discoverable only by running one.
-	status := "not set"
-	if _, err := store.Lookup(ctx, refAppKey); err == nil {
-		status = "stored"
-	}
+	status := appIdentityStatus(ctx, store)
 	_, _ = fmt.Fprintf(os.Stdout, "  %-10s %s (%s)\n", "github app", status, refAppKey)
 	return nil
 }
