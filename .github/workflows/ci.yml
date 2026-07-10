@@ -382,6 +382,38 @@ jobs:
           path: fuzz-crashers/
           if-no-files-found: ignore
 
+  # Mutation testing: flip operators and delete statements in production code,
+  # then require the suite to catch each change. It is the check that a test
+  # actually BITES - a test that runs the code but asserts nothing passes the
+  # test job and coverage yet kills no mutant. Advisory for now: it is NOT in
+  # the ci-success needs list, so a surviving mutant reports without blocking a
+  # PR. Arm it by raising the thresholds in .gremlins.yaml and adding `mutate`
+  # to ci-success. A PR scopes to lines changed since its base (dev/mutate's
+  # --diff via MUTATE_BASE); a push to main mutates the full module.
+  mutate:
+    name: Mutation (advisory)
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          # dev/mutate diffs against the PR base to scope the run.
+          fetch-depth: 0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: true
+      # Pinned to match the GREMLINS_VERSION in dev/mutate so CI and local runs
+      # use the same mutator set and behavior.
+      - name: Install gremlins
+        run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      - if: github.event_name == 'pull_request'
+        run: MUTATE_BASE="${{ github.event.pull_request.base.sha }}" ./dev/mutate
+      - if: github.event_name != 'pull_request'
+        run: ./dev/mutate
+
   # Enforce the PR template at the gate, not just in dev/pr: this catches PRs
   # opened any other way (gh directly, the web UI, an API call). The body comes
   # from the event payload via env - never interpolated into the script - so a

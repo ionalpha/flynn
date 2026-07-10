@@ -1,0 +1,59 @@
+#!/usr/bin/env sh
+# The test-quality gate: mutate production code (flip operators, delete
+# statements, invert conditions) and require the suite to catch each change.
+# A test that runs the code but asserts nothing passes dev/test and coverage
+# yet kills no mutant, so this is the check that a test actually BITES. It
+# complements the rigor gate, which proves a test EXISTS, by proving it works.
+#
+# Runs gremlins (github.com/go-gremlins/gremlins), pinned to the version below
+# so a local run matches CI. With no args it mutates the whole module; pass
+# directories to scope, e.g. `dev/mutate ./dispatch`.
+#
+# MUTATE_BASE=<git ref>, if set, scopes the run to lines changed since that ref
+# using gremlins' own --diff mode. CI sets it to the PR base so a PR only pays
+# for the lines it touches. Scoping is what keeps this usable: every mutant
+# recompiles and reruns the affected tests, so a full-module run is minutes to
+# tens of minutes.
+#
+# Note: gremlins' coverage step is broken on native Windows (it mishandles the
+# package path). Run this on Linux or under WSL; CI runs it on ubuntu.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# Keep in sync with the install pin in .github/workflows/ci.yml.
+GREMLINS_VERSION="v0.6.0"
+
+gremlins="$(command -v gremlins || true)"
+if [ -z "$gremlins" ]; then
+	gobin="$(go env GOBIN)"; [ -n "$gobin" ] || gobin="$(go env GOPATH)/bin"
+	if [ -x "$gobin/gremlins" ]; then
+		gremlins="$gobin/gremlins"
+	else
+		echo "gremlins not found. Install the version CI uses:" >&2
+		echo "  go install github.com/go-gremlins/gremlins/cmd/gremlins@$GREMLINS_VERSION" >&2
+		exit 1
+	fi
+fi
+
+# Thresholds live in .gremlins.yaml (currently advisory: 0, so this reports
+# surviving mutants without failing). A nonzero exit means an armed threshold
+# was missed, or gremlins itself errored.
+set -- unleash "$@"
+if [ -n "${MUTATE_BASE:-}" ]; then
+	if base=$(git merge-base "$MUTATE_BASE" HEAD 2>/dev/null); then
+		# --diff restricts mutation to lines changed since base. A build or
+		# workflow config change is not diff-scopable, so fall back to a full run.
+		changed=$(git diff --name-only "$base" HEAD)
+		if printf '%s\n' "$changed" | grep -qE '^(go\.mod|go\.sum|dev/mutate|\.gremlins\.yaml|\.github/workflows/)'; then
+			echo "dev/mutate: build or workflow config changed since $base; mutating the full module"
+		else
+			echo "dev/mutate: scoping to lines changed since $base"
+			set -- "$@" --diff "$base"
+		fi
+	else
+		echo "dev/mutate: cannot resolve MUTATE_BASE=$MUTATE_BASE; mutating the full module" >&2
+	fi
+fi
+
+echo "==> gremlins $*"
+exec "$gremlins" "$@"

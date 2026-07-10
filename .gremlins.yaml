@@ -1,0 +1,18 @@
+# gremlins (mutation testing) config. Read from the module root by dev/mutate
+# and the CI mutation job. Keep the tool version pinned in dev/mutate and
+# .github/workflows/ci.yml in sync with what this file targets.
+unleash:
+  # Advisory to start: 0 means gremlins reports surviving mutants but never
+  # fails on the score, so the job establishes a baseline without blocking a
+  # PR. Arm the gate by raising these (efficacy = killed / (killed+lived),
+  # mcover = mutants covered by a test) once the baseline is known good, AND
+  # add the `mutate` job to the ci-success `needs` list. Do both together.
+  threshold-efficacy: 0
+  threshold-mcover: 0
+
+  # Generated and non-behavioral code has no meaningful mutants to kill;
+  # excluding it keeps the surviving-mutant list signal, not noise.
+  exclude-files:
+    - "_test\\.go$"
+    - "\\.pb\\.go$"
+    - "(^|/)internal/version/"
