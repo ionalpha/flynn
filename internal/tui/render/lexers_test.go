@@ -103,7 +103,7 @@ func marshalUpstream(t *testing.T, name string) []byte {
 		t.Fatalf("rules for %q: %v", name, err)
 	}
 	if name == "go" {
-		replaceGoRawString(t, rules)
+		rules = replaceGoRawString(t, rules)
 	}
 	data, err := chroma.Marshal(chroma.MustNewLexer(rl.Config(), func() chroma.Rules { return rules }))
 	if err != nil {
@@ -112,41 +112,57 @@ func marshalUpstream(t *testing.T, name string) []byte {
 	return canonicalLexerXML(data)
 }
 
-// replaceGoRawString swaps the one unserialisable rule in the Go lexer.
-func replaceGoRawString(t *testing.T, rules chroma.Rules) {
+// replaceGoRawString returns a copy of the Go lexer's rules with the one
+// unserialisable rule swapped.
+//
+// It copies rather than writing through the slice rl.Rules() handed back: chroma
+// returns its cached rules, so replacing a rule in place would alter the lexer for
+// the rest of the process. A second generation would then look for a pattern the
+// first had already overwritten and fail to find it. The copy leaves chroma's own
+// rules untouched, so the generator is idempotent.
+func replaceGoRawString(t *testing.T, rules chroma.Rules) chroma.Rules {
 	t.Helper()
+	out := make(chroma.Rules, len(rules))
 	found := false
 	for state, rs := range rules {
-		for i, r := range rs {
-			if r.Pattern == goRawStringPattern {
-				rules[state][i] = goRawString
+		cp := append([]chroma.Rule(nil), rs...)
+		for i := range cp {
+			if cp[i].Pattern == goRawStringPattern {
+				cp[i] = goRawString
 				found = true
 			}
 		}
+		out[state] = cp
 	}
 	if !found {
 		t.Fatalf("chroma's Go lexer no longer has the raw-string rule %q; re-check what is unserialisable before changing this", goRawStringPattern)
 	}
+	return out
 }
 
 // canonicalLexerXML sorts the <state> elements so a regenerated definition is
 // byte-identical run to run. chroma marshals its rules from a map, so the
 // state order it emits is whatever the runtime hands it.
+//
+// The states end at the rules block, and the close of that block plus the lexer
+// is the fixed tail. That boundary is found by </rules>, not by the last state's
+// </state>: an empty state marshals self-closing, as <state name="x"/> with no
+// </state>, so keying the tail off </state> misses it whenever the runtime emits
+// an empty state last, and the tail sorts into the middle of the document.
 func canonicalLexerXML(data []byte) []byte {
-	const sep = "\n    <state "
-	head, rest, ok := strings.Cut(string(data), sep)
+	const (
+		sep      = "\n    <state "
+		rulesEnd = "\n  </rules>"
+	)
+	body, tail, ok := strings.Cut(string(data), rulesEnd)
 	if !ok {
 		return append(bytes.TrimRight(data, "\n"), '\n')
 	}
-	tail := ""
-	states := strings.Split(rest, sep)
-	if last := len(states) - 1; last >= 0 {
-		if end := strings.Index(states[last], "\n    </state>"); end >= 0 {
-			cut := end + len("\n    </state>")
-			tail = states[last][cut:]
-			states[last] = states[last][:cut]
-		}
+	head, rest, ok := strings.Cut(body, sep)
+	if !ok {
+		return append(bytes.TrimRight(data, "\n"), '\n')
 	}
+	states := strings.Split(rest, sep)
 	sort.Strings(states)
 	var b strings.Builder
 	b.WriteString(head)
@@ -154,6 +170,7 @@ func canonicalLexerXML(data []byte) []byte {
 		b.WriteString(sep)
 		b.WriteString(s)
 	}
+	b.WriteString(rulesEnd)
 	b.WriteString(tail)
 	return append(bytes.TrimRight([]byte(b.String()), "\n"), '\n')
 }
