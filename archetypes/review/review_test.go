@@ -206,6 +206,8 @@ func TestSystemPromptDemandsEvidenceAndForbidsNitpicks(t *testing.T) {
 		"a file, a line, and a concrete scenario", // a finding must be evidenced
 		"you do not have a finding",               // and refused otherwise
 		"Style, naming, and formatting",           // nitpicks are named and excluded
+		"technically true but immaterial",         // a real-but-trivial finding is still noise
+		"worth an author's time",                  // materiality, not just truth, is the bar
 		"never opens a second conversation",       // re-posting reconciles, it does not duplicate
 		"read the whole change",                   // approval is a claim about coverage
 	} {
