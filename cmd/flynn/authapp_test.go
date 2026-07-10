@@ -1,0 +1,159 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/ionalpha/flynn/internal/vault"
+	"github.com/ionalpha/flynn/secret"
+	"github.com/ionalpha/flynn/tools/github"
+)
+
+// appTestVault returns a sealed-file vault in a temporary directory, so a test never
+// touches the developer's keychain.
+func appTestVault(t *testing.T) *vault.Store {
+	t.Helper()
+	t.Setenv("FLYNN_VAULT_FILE", "1")
+	return vault.New(t.TempDir(), vault.WithPassphrase(func(bool) (secret.Text, error) {
+		return secret.New("test-passphrase"), nil
+	}))
+}
+
+// appKeyFile writes a freshly generated RSA key in PEM form and returns its path. The
+// armor is produced at runtime, so no key-like literal appears in the source tree.
+func appKeyFile(t *testing.T) string {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "app.pem")
+	body := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestAuthSetAppStoresTheIdentityInTheVault is the point of the command: after it runs,
+// a review authenticates from the vault with no environment variable set anywhere.
+func TestAuthSetAppStoresTheIdentityInTheVault(t *testing.T) {
+	ctx := context.Background()
+	store := appTestVault(t)
+	keyPath := appKeyFile(t)
+
+	err := authSetApp(ctx, store,
+		[]string{"--issuer", "4259025", "--installation", "145518648", "--key-file", keyPath},
+		os.ReadFile, os.Remove)
+	if err != nil {
+		t.Fatalf("set-app: %v", err)
+	}
+
+	for ref, want := range map[string]string{
+		refAppIssuer:       "4259025",
+		refAppInstallation: "145518648",
+	} {
+		got, err := store.Lookup(ctx, ref)
+		if err != nil {
+			t.Fatalf("%s not stored: %v", ref, err)
+		}
+		if got.Expose() != want {
+			t.Errorf("%s = %q, want %q", ref, got.Expose(), want)
+		}
+	}
+	key, err := store.Lookup(ctx, refAppKey)
+	if err != nil {
+		t.Fatalf("%s not stored: %v", refAppKey, err)
+	}
+	if _, err := github.ParsePrivateKey([]byte(key.Expose())); err != nil {
+		t.Errorf("the stored key does not parse back: %v", err)
+	}
+
+	// The key file survives unless the operator asks for it to be forgotten.
+	if _, err := os.Stat(keyPath); err != nil {
+		t.Errorf("set-app deleted the key file without --forget-key-file: %v", err)
+	}
+}
+
+// TestAuthSetAppForgetsTheKeyFile: the flag exists so the key stops living in
+// plaintext on disk once the vault holds it.
+func TestAuthSetAppForgetsTheKeyFile(t *testing.T) {
+	ctx := context.Background()
+	store := appTestVault(t)
+	keyPath := appKeyFile(t)
+
+	err := authSetApp(ctx, store,
+		[]string{"--issuer", "1", "--installation", "2", "--key-file", keyPath, "--forget-key-file"},
+		os.ReadFile, os.Remove)
+	if err != nil {
+		t.Fatalf("set-app: %v", err)
+	}
+	if _, err := os.Stat(keyPath); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("the key file still exists after --forget-key-file (stat err = %v)", err)
+	}
+	if _, err := store.Lookup(ctx, refAppKey); err != nil {
+		t.Fatalf("the key was deleted from disk but is not in the vault: %v", err)
+	}
+}
+
+// TestAuthSetAppRefusesBadInput: every rejection happens before anything is written, so
+// a failed set-app cannot leave a half-configured App that a review would refuse later
+// with a confusing error.
+func TestAuthSetAppRefusesBadInput(t *testing.T) {
+	good := appKeyFile(t)
+	notAKey := filepath.Join(t.TempDir(), "notakey.pem")
+	if err := os.WriteFile(notAKey, []byte("this is not a pem\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := map[string][]string{
+		"no issuer":                 {"--installation", "2", "--key-file", good},
+		"no installation":           {"--issuer", "1", "--key-file", good},
+		"no key file":               {"--issuer", "1", "--installation", "2"},
+		"issuer not a number":       {"--issuer", "vouchbot", "--installation", "2", "--key-file", good},
+		"installation not a number": {"--issuer", "1", "--installation", "the-first-one", "--key-file", good},
+		"key file missing":          {"--issuer", "1", "--installation", "2", "--key-file", filepath.Join(t.TempDir(), "absent.pem")},
+		"key file is not a key":     {"--issuer", "1", "--installation", "2", "--key-file", notAKey},
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			store := appTestVault(t)
+			if err := authSetApp(ctx, store, args, os.ReadFile, os.Remove); err == nil {
+				t.Fatal("expected an error")
+			}
+			for _, ref := range []string{refAppIssuer, refAppInstallation, refAppKey} {
+				if _, err := store.Lookup(ctx, ref); err == nil {
+					t.Errorf("a rejected set-app stored %s", ref)
+				}
+			}
+		})
+	}
+}
+
+// TestAuthRemoveAppClearsEveryReference is the rotation path, and it must clear a
+// partial identity too: a key removed but an issuer left behind would make the next
+// review fail on a half-configured App rather than fall through to a token.
+func TestAuthRemoveAppClearsEveryReference(t *testing.T) {
+	ctx := context.Background()
+	store := appTestVault(t)
+
+	if err := store.Set(ctx, refAppIssuer, secret.New("4259025")); err != nil {
+		t.Fatal(err)
+	}
+	if err := authRemoveApp(ctx, store); err != nil {
+		t.Fatalf("rm-app with a partial identity: %v", err)
+	}
+	for _, ref := range []string{refAppIssuer, refAppInstallation, refAppKey} {
+		if _, err := store.Lookup(ctx, ref); err == nil {
+			t.Errorf("%s survived rm-app", ref)
+		}
+	}
+}
