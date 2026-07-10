@@ -12,7 +12,18 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 : "${COVER=-covermode=atomic -coverprofile=coverage.out}"
+# Randomize test order within each package. A suite that only passes in a fixed
+# order (shared package-level state, an init-order dependency) fails here rather
+# than mysteriously later or on another machine. Go prints the chosen seed as
+# "-test.shuffle <seed>"; replay an exact order with SHUFFLE=<seed>. Off by
+# default nowhere: it costs no extra run, so it is always on.
+: "${SHUFFLE=on}"
+# COUNT re-runs each test N times in the same process, surfacing state that
+# leaks between repetitions and non-deterministic (flaky) tests. Unset by
+# default (a single, cache-eligible run); set COUNT=2 to double-run. CI scopes
+# a COUNT=2 pass to a subset rather than paying it on the whole -race suite.
+count=${COUNT:+-count=$COUNT}
 if [ "$#" -eq 0 ]; then set -- ./...; fi
-# shellcheck disable=SC2086  # COVER is intentionally split into separate flags.
-echo "==> go test -race $COVER $*"
-go test -race $COVER "$@"
+# shellcheck disable=SC2086  # COVER and count are intentionally split into flags.
+echo "==> go test -race -shuffle=$SHUFFLE $count $COVER $*"
+go test -race -shuffle="$SHUFFLE" $count $COVER "$@"
