@@ -1340,8 +1340,14 @@ func TestATransientFilesFailureDoesNotBlockABlockingVerdict(t *testing.T) {
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 	hub.failFiles.Store(true)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"A real defect."}`); err != nil {
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"A real defect."}`)
+	if err != nil {
 		t.Fatalf("a transient files failure blocked the verdict: %v", err)
+	}
+	// Resolution was skipped, and the reviewer must say so: a repository whose merge is
+	// blocked by its stale conversations would otherwise see it choose to leave them.
+	if !strings.Contains(out, "the diff could not be read") {
+		t.Errorf("the skipped resolution was not reported: %q", out)
 	}
 	if got, _ := hub.submittedBody.Load().(string); got != "REQUEST_CHANGES" {
 		t.Fatalf("verdict submitted = %q, want REQUEST_CHANGES", got)

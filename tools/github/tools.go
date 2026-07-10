@@ -510,6 +510,7 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	// service of housekeeping that runs after the verdict anyway. An unreadable diff is
 	// treated as incomplete, so nothing is resolved on the strength of it.
 	var complete bool
+	var coverageErr error
 	if in.Event == "APPROVE" {
 		ok, why, err := t.s.diffCoverage(ctx, pr)
 		if err != nil {
@@ -519,8 +520,15 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 			return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
 		}
 		complete = true
-	} else if ok, _, err := t.s.diffCoverage(ctx, pr); err == nil {
-		complete = ok
+	} else {
+		// The error is kept, not discarded. It leaves the diff unread, which skips thread
+		// resolution below, and a reviewer that said nothing about that would look like it
+		// had chosen to leave its stale conversations open on a repository whose merge is
+		// blocked by them.
+		complete, _, coverageErr = t.s.diffCoverage(ctx, pr)
+		if coverageErr != nil {
+			complete = false
+		}
 	}
 	// Validated last, after every refusal above. A reviewer denied the authority to
 	// approve must be told that, not that its sentence was missing: the weaker error
@@ -547,6 +555,11 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	// requires thread resolution would otherwise be wedged by a reviewer that had
 	// nothing left to say.
 	resolved, rerr := t.s.resolveStaleThreads(ctx, in.Number, complete, posted)
+	if coverageErr != nil {
+		// Resolution never ran: the diff could not be read, so a finding's absence proved
+		// nothing about whether it was fixed.
+		rerr = fmt.Errorf("the diff could not be read, so no stale conversation was retracted: %w", coverageErr)
+	}
 	out := fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, in.Number, len(posted))
 	if resolved > 0 {
 		out += fmt.Sprintf(", resolved %d stale thread(s)", resolved)
