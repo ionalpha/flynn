@@ -2,10 +2,13 @@ package render
 
 import (
 	"bytes"
+	"encoding/xml"
 	"flag"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -102,6 +105,11 @@ func marshalUpstream(t *testing.T, name string) []byte {
 	if err != nil {
 		t.Fatalf("rules for %q: %v", name, err)
 	}
+	// Rules hands back the lexer's own map, and lexers.Get returns the one
+	// registry entry every caller shares. Rewriting a rule in place would edit
+	// chroma's Go lexer for the rest of the process, so the second marshal in a
+	// `-count=2` run would find no raw-string rule to replace and fail.
+	rules = cloneRules(rules)
 	if name == "go" {
 		replaceGoRawString(t, rules)
 	}
@@ -110,6 +118,16 @@ func marshalUpstream(t *testing.T, name string) []byte {
 		t.Fatalf("marshal %q: %v", name, err)
 	}
 	return canonicalLexerXML(data)
+}
+
+// cloneRules copies a lexer's rules deeply enough that rewriting one rule
+// cannot reach the shared lexer it came from.
+func cloneRules(rules chroma.Rules) chroma.Rules {
+	out := make(chroma.Rules, len(rules))
+	for state, rs := range rules {
+		out[state] = slices.Clone(rs)
+	}
+	return out
 }
 
 // replaceGoRawString swaps the one unserialisable rule in the Go lexer.
@@ -129,33 +147,103 @@ func replaceGoRawString(t *testing.T, rules chroma.Rules) {
 	}
 }
 
+// stateElement matches one marshalled <state> element and nothing beyond it.
+// A state with rules closes with </state>; a state with none is emitted
+// self-closing on a single line, which cmake's empty "string" state is the
+// only embedded lexer to have. Matching both is what keeps the closing
+// </rules></lexer> out of the sorted region.
+var stateElement = regexp.MustCompile(`(?s)\n    <state [^>]*?(?:/>|>.*?\n    </state>)`)
+
 // canonicalLexerXML sorts the <state> elements so a regenerated definition is
 // byte-identical run to run. chroma marshals its rules from a map, so the
-// state order it emits is whatever the runtime hands it.
+// state order it emits is whatever the runtime hands it, and without this the
+// drift gate compares against a different file on every run.
+//
+// Everything before the first state and everything after the last is left
+// where it is: the header carries the lexer's config, and the trailer carries
+// the closing tags that make the document well-formed.
 func canonicalLexerXML(data []byte) []byte {
-	const sep = "\n    <state "
-	head, rest, ok := strings.Cut(string(data), sep)
-	if !ok {
+	states := stateElement.FindAll(data, -1)
+	if len(states) == 0 {
 		return append(bytes.TrimRight(data, "\n"), '\n')
 	}
-	tail := ""
-	states := strings.Split(rest, sep)
-	if last := len(states) - 1; last >= 0 {
-		if end := strings.Index(states[last], "\n    </state>"); end >= 0 {
-			cut := end + len("\n    </state>")
-			tail = states[last][cut:]
-			states[last] = states[last][:cut]
+	loc := stateElement.FindAllIndex(data, -1)
+	head, tail := data[:loc[0][0]], data[loc[len(loc)-1][1]:]
+
+	sort.Slice(states, func(i, j int) bool { return bytes.Compare(states[i], states[j]) < 0 })
+
+	var b bytes.Buffer
+	b.Write(head)
+	for _, s := range states {
+		b.Write(s)
+	}
+	b.Write(tail)
+	return append(bytes.TrimRight(b.Bytes(), "\n"), '\n')
+}
+
+// TestCanonicalLexerXMLIsOrderIndependent. chroma emits a lexer's states in
+// map order, so the canonical form has to be the same document whichever order
+// it arrives in. The empty self-closing state is cmake's, and it is the one
+// that used to carry the closing tags into the sorted region and leave the
+// document unterminated whenever the map handed it over last.
+func TestCanonicalLexerXMLIsOrderIndependent(t *testing.T) {
+	const (
+		header  = "<lexer>\n  <config>\n    <name>cmake</name>\n  </config>\n  <rules>"
+		trailer = "\n  </rules>\n</lexer>\n"
+
+		ws    = "\n    <state name=\"ws\">\n      <rule pattern=\"[ \\t]+\">\n        <token type=\"Text\"/>\n      </rule>\n    </state>"
+		root  = "\n    <state name=\"root\">\n      <rule>\n        <include state=\"ws\"/>\n      </rule>\n    </state>"
+		empty = "\n    <state name=\"string\"/>"
+	)
+
+	orders := [][]string{
+		{ws, root, empty},
+		{empty, ws, root},
+		{root, empty, ws},
+		{empty, root, ws},
+		{ws, empty, root},
+		{root, ws, empty},
+	}
+
+	var want []byte
+	for i, order := range orders {
+		got := canonicalLexerXML([]byte(header + strings.Join(order, "") + trailer))
+		if i == 0 {
+			want = got
+			continue
+		}
+		if !bytes.Equal(got, want) {
+			t.Fatalf("state order %d canonicalised differently:\n got %s\nwant %s", i, got, want)
 		}
 	}
-	sort.Strings(states)
-	var b strings.Builder
-	b.WriteString(head)
-	for _, s := range states {
-		b.WriteString(sep)
-		b.WriteString(s)
+
+	// The document must survive the sort intact, which is exactly what the
+	// self-closing state used to break.
+	if err := xml.Unmarshal(want, new(struct {
+		XMLName xml.Name `xml:"lexer"`
+	})); err != nil {
+		t.Fatalf("canonical form is not well-formed XML: %v\n%s", err, want)
 	}
-	b.WriteString(tail)
-	return append(bytes.TrimRight([]byte(b.String()), "\n"), '\n')
+	if !bytes.HasSuffix(want, []byte("\n  </rules>\n</lexer>\n")) {
+		t.Errorf("canonical form does not end with its closing tags:\n%s", want)
+	}
+	if n := bytes.Count(want, []byte("</lexer>")); n != 1 {
+		t.Errorf("canonical form carries %d closing lexer tags, want 1:\n%s", n, want)
+	}
+}
+
+// TestMarshalUpstreamIsDeterministic. The drift gate compares an embedded file
+// against a freshly marshalled one, so a marshal that varies run to run turns
+// the gate into a coin flip. cmake is the lexer that used to lose it.
+func TestMarshalUpstreamIsDeterministic(t *testing.T) {
+	for _, name := range []string{"cmake", "go"} {
+		want := marshalUpstream(t, name)
+		for i := range 50 {
+			if got := marshalUpstream(t, name); !bytes.Equal(got, want) {
+				t.Fatalf("marshal %d of %q differs from the first:\n got %s\nwant %s", i, name, got, want)
+			}
+		}
+	}
 }
 
 // TestEmbeddedLexersMatchChroma is the drift gate: every embedded definition
