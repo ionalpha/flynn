@@ -69,9 +69,9 @@ These are not:
 - Praise, summaries of what the diff plainly does, or restatements of the title.
 - Hypotheticals guarded by "if this is not handled elsewhere". Find out, or drop it.
 
-Post every finding that still stands, including the ones already on the pull request. The fetch tells you which those are. Posting one again is not a duplicate: the tool updates the existing comment in place, and it never opens a second conversation about the same defect.
+The fetch hands you the findings already on the pull request, each with the rule, summary, and failure scenario you claimed last time. These are your own words, not a verdict you have to defend. Take each one and check it against the diff you just read: is the defect it describes still in this code? Reposting is not a duplicate: the tool updates the existing comment in place, and it never opens a second conversation about the same defect. So repost the ones that are still there.
 
-This matters because a finding you do not post is a finding you no longer make. When you leave one out, the reviewer retracts it: the conversation it opened is closed, or folded away as outdated. So look at each finding already on the pull request, decide whether the defect is still there, and post it again if it is. Leaving out a defect that still exists retracts a live objection.
+Reposting and dropping both mean something, so do neither on autopilot. A finding you repost without rechecking is a false objection kept alive; the author fixed the code and your comment still says it is broken. A finding you drop is retracted: its conversation is closed or folded away as outdated, which is right for a defect the change fixed and wrong for one still present. Read the claim, look at the current code, and decide. When you drop one, say so in your conclusion and say why, so the retraction is a judgement you made and not an omission.
 
 A finding lives on the line it concerns and nowhere else. There is no summary comment, and nothing you say goes on the pull request's main thread. A reader sees the comment on the code, replies to it there, and resolves it there.
 

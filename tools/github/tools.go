@@ -82,27 +82,43 @@ func (f Finding) validate() error {
 	return nil
 }
 
-// PostedFinding identifies a finding already on the pull request. Path, Line, and Rule
-// are what regenerate its marker, so a reviewer that posts them again updates the
-// existing comment rather than opening a second conversation about the same defect.
+// PostedFinding is a finding already on the pull request, handed back so the reviewer
+// can decide whether its defect is still there. Path, Line, and Rule regenerate the
+// marker, so reposting updates the existing comment rather than opening a second
+// conversation about the same defect. Summary and Failure are the claim the reviewer
+// made last time: without them it would have only a hash of the location and would
+// restate the finding on faith instead of re-reading what it said and checking the
+// current diff against it.
 type PostedFinding struct {
-	Path string `json:"path"`
-	Line int    `json:"line"`
-	Rule string `json:"rule"`
+	Path    string `json:"path"`
+	Line    int    `json:"line"`
+	Rule    string `json:"rule"`
+	Summary string `json:"summary,omitempty"`
+	Failure string `json:"failure,omitempty"`
 }
 
-// ruleIn reads the rule out of a finding's rendered comment body. render writes it as
-// the first bold run on the line after the marker.
-func ruleIn(body string) string {
+// bodyParts recovers the rule, summary, and failure scenario from a finding's rendered
+// comment body. render wrote them as:
+//
+//	<marker>
+//	**<rule>** <summary>
+//
+//	<failure>
+//
+// so the reviewer can re-read the claim it posted last time rather than reconstruct it
+// from the location hash. Any part render did not write comes back "".
+func bodyParts(body string) (rule, summary, failure string) {
 	_, rest, ok := strings.Cut(body, "-->\n**")
 	if !ok {
-		return ""
+		return "", "", ""
 	}
-	rule, _, ok := strings.Cut(rest, "**")
+	rule, rest, ok = strings.Cut(rest, "**")
 	if !ok {
-		return ""
+		return rule, "", ""
 	}
-	return rule
+	rest = strings.TrimPrefix(rest, " ")
+	summary, failure, _ = strings.Cut(rest, "\n\n")
+	return rule, summary, failure
 }
 
 // markerIn extracts the reviewer's marker from a comment body, or "" when it carries
@@ -127,9 +143,11 @@ func (prFetchTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "github_pr_fetch",
 		Description: "Fetch a pull request: its metadata, the list of changed files with their diff patches, " +
-			"and the identities of findings this reviewer has already posted. Post again every already-posted " +
-			"finding whose defect is still present: the existing comment is updated in place, never duplicated. " +
-			"A finding left out is treated as no longer made, and its conversation is retracted.",
+			"and the findings this reviewer has already posted, each with the rule, summary, and failure " +
+			"scenario it claimed. For each one, decide against the fetched diff whether the defect is still " +
+			"there. Repost the ones that are (the existing comment is updated in place, never duplicated) and " +
+			"drop the ones the change has fixed. Do not repost a finding without checking; a stale finding " +
+			"reposted is a false objection kept alive.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
   "required": ["number"],
@@ -161,10 +179,11 @@ type prFetchResult struct {
 	DiffComplete bool `json:"diff_complete"`
 
 	// PostedFindings are the findings this reviewer already has on the pull request,
-	// with everything needed to post them again. A marker alone would not do: it is a
-	// hash of path, line, and rule, and a reviewer handed only the hash cannot state the
-	// finding it stands for. It would then stay silent about a defect that is still
-	// there, and silence retracts the finding.
+	// each carrying the claim it made: its rule, summary, and failure scenario, not
+	// just the location. The reviewer re-reads that claim and checks the current diff
+	// against it, reposting the ones whose defect is still there and dropping the ones
+	// the change has fixed. Handed only a location hash it could not tell the two apart
+	// and would restate stale findings on faith.
 	PostedFindings []PostedFinding `json:"posted_findings,omitempty"`
 }
 
@@ -248,7 +267,10 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 		if c.Line <= 0 {
 			continue
 		}
-		posted = append(posted, PostedFinding{Path: c.Path, Line: c.Line, Rule: ruleIn(c.Body)})
+		rule, summary, failure := bodyParts(c.Body)
+		posted = append(posted, PostedFinding{
+			Path: c.Path, Line: c.Line, Rule: rule, Summary: summary, Failure: failure,
+		})
 	}
 	// Ordered so a pull request nothing has happened to reads the same way twice. Two
 	// findings may share a path and a line and differ only in their rule, and each keys
@@ -295,8 +317,10 @@ func (commentTool) Def() llm.Tool {
 		Name: "github_comment",
 		Description: "Post review findings as inline comments on the lines they concern. " +
 			"Re-running reconciles: a finding already posted at the same path, line, and rule is updated in " +
-			"place, never duplicated, so a finding that still stands must be posted again on every review. " +
-			"A finding omitted is retracted: its conversation is resolved, or folded away as outdated. " +
+			"place, never duplicated, so post again every finding whose defect the current diff still shows. " +
+			"A finding you omit is retracted: its conversation is resolved, or folded away as outdated, which " +
+			"is what you want for a defect the change has fixed and not for one still present. Decide per " +
+			"finding against the diff; do not repost one you have not rechecked. " +
 			"Every finding must carry a concrete failure scenario or it is refused. " +
 			"There is no separate summary comment: a finding lives on its line, and the verdict carries the " +
 			"one-line conclusion.",

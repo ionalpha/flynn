@@ -233,21 +233,32 @@ func testConfig(t *testing.T) github.Config {
 	}
 }
 
-// TestSystemPromptStatesTheRetractionContract pins the sentence the resolve rule
-// depends on. The reviewer retracts a finding it does not post again, so a prompt that
-// told it not to repeat itself would have it silently withdraw live objections. The
-// rule reads a silence; the prompt is what gives that silence a meaning.
+// TestSystemPromptStatesTheRetractionContract pins the contract the resolve rule
+// depends on, and the shape that keeps it honest. The reviewer retracts a finding it
+// does not post again, so both moves have to be deliberate: a prompt that said only
+// "repost or it is retracted" pushes the model to repost on doubt, and it kept a false
+// finding alive across three runs of #352. The instruction must frame each standing
+// finding as a claim to recheck against the diff, repost when the defect is still
+// there, drop when the change fixed it.
 func TestSystemPromptStatesTheRetractionContract(t *testing.T) {
+	p := review.SystemPrompt
 	for _, want := range []string{
-		"Post every finding that still stands",
-		"a finding you do not post is a finding you no longer make",
-		"retracts it",
+		"check it against the diff you just read", // the standing finding is rechecked, not restated
+		"still in this code",                      // the test the reviewer applies to each one
+		"repost the ones that are still there",    // reposting follows from the recheck
+		"A finding you drop is retracted",         // dropping is what retracts, and it is a decision
+		"a false objection kept alive",            // reposting on faith has its own cost, named
 	} {
-		if !strings.Contains(review.SystemPrompt, want) {
-			t.Errorf("the standing instruction does not say %q, so a silence means nothing", want)
+		if !strings.Contains(p, want) {
+			t.Errorf("the standing instruction does not say %q, so the recheck contract is missing", want)
 		}
 	}
-	if strings.Contains(review.SystemPrompt, "Do not repeat a finding you have already posted") {
+	// The old framing made silence the whole story. If it comes back, the model has a
+	// reason to repost rather than recheck, and the loop returns.
+	if strings.Contains(p, "a finding you do not post is a finding you no longer make") {
+		t.Error("the instruction still frames omission alone as retraction, which pushes the model to repost on doubt")
+	}
+	if strings.Contains(p, "Do not repeat a finding you have already posted") {
 		t.Error("the instruction still tells the reviewer not to repeat itself, which retracts live findings")
 	}
 }

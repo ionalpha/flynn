@@ -727,9 +727,11 @@ func TestPRFetchReturnsDiffAndPostedMarkers(t *testing.T) {
 		AuthorLogin    string `json:"author_login"`
 		HeadSHA        string `json:"head_sha"`
 		PostedFindings []struct {
-			Path string `json:"path"`
-			Line int    `json:"line"`
-			Rule string `json:"rule"`
+			Path    string `json:"path"`
+			Line    int    `json:"line"`
+			Rule    string `json:"rule"`
+			Summary string `json:"summary"`
+			Failure string `json:"failure"`
 		} `json:"posted_findings"`
 		Files []struct {
 			Filename string `json:"filename"`
@@ -745,16 +747,19 @@ func TestPRFetchReturnsDiffAndPostedMarkers(t *testing.T) {
 	if len(res.Files) != 1 || res.Files[0].Filename != "a.go" || !strings.Contains(res.Files[0].Patch, "+b") {
 		t.Fatalf("diff wrong: %+v", res.Files)
 	}
-	// A finding already on the pull request is reported with everything needed to post
-	// it again: a marker alone is a hash of path, line, and rule, and a reviewer handed
-	// only the hash cannot state the finding it stands for. It would stay silent about a
-	// defect that is still there, and silence retracts the finding.
+	// A finding already on the pull request is reported with the whole claim it made:
+	// path, line, and rule to repost it in place, and the summary and failure so the
+	// reviewer can re-read what it said and judge the current diff against it rather than
+	// restate a bare location on faith.
 	if len(res.PostedFindings) != 1 {
 		t.Fatalf("posted findings = %v, want exactly 1", res.PostedFindings)
 	}
 	got := res.PostedFindings[0]
 	if got.Path == "" || got.Line == 0 || got.Rule == "" {
 		t.Fatalf("posted finding %+v cannot be posted again: it names no path, line, or rule", got)
+	}
+	if got.Summary == "" || got.Failure == "" {
+		t.Fatalf("posted finding %+v carries no claim to re-judge: summary or failure is empty", got)
 	}
 }
 
@@ -786,8 +791,8 @@ func TestPostedFindingsOnOneLineAreOrderedByRule(t *testing.T) {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	want := []github.PostedFinding{
-		{Path: "a.go", Line: 12, Rule: "alpha"},
-		{Path: "a.go", Line: 12, Rule: "zeta"},
+		{Path: "a.go", Line: 12, Rule: "alpha", Summary: "s", Failure: "f"},
+		{Path: "a.go", Line: 12, Rule: "zeta", Summary: "s", Failure: "f"},
 	}
 	if !reflect.DeepEqual(res.PostedFindings, want) {
 		t.Fatalf("posted findings = %+v, want %+v", res.PostedFindings, want)

@@ -275,16 +275,30 @@ func pemFixture(kind, body string) []byte {
 	return []byte(pemBegin(kind) + "\n" + body + "-----END " + kind + "-----\n")
 }
 
-// ruleIn reads back the rule from a rendered finding, which is what lets a fetch tell
-// the reviewer how to post the same finding again instead of only that it exists.
-func TestRuleInRoundTripsARenderedFinding(t *testing.T) {
-	f := Finding{Path: "a.go", Line: 3, Rule: "swallowed-error", Summary: "s", Failure: "f"}
-	if got := ruleIn(f.render()); got != "swallowed-error" {
-		t.Errorf("ruleIn(render) = %q, want the rule back", got)
+// bodyParts reads the rule, summary, and failure back out of a rendered finding, which
+// is what lets a fetch hand the reviewer its own prior claim to re-judge rather than a
+// bare location it can only restate. A multi-line failure must survive whole: the diff
+// the reviewer checks against is exactly the scenario it wrote down.
+func TestBodyPartsRoundTripsARenderedFinding(t *testing.T) {
+	f := Finding{
+		Path: "a.go", Line: 3, Rule: "swallowed-error",
+		Summary: "err is discarded and the caller reads a zero value",
+		Failure: "cfg=nil reaches Load\nLoad returns (nil, err), err dropped\nnext line dereferences the nil cfg and panics",
 	}
+	rule, summary, failure := bodyParts(f.render())
+	if rule != f.Rule {
+		t.Errorf("rule = %q, want %q", rule, f.Rule)
+	}
+	if summary != f.Summary {
+		t.Errorf("summary = %q, want %q", summary, f.Summary)
+	}
+	if failure != f.Failure {
+		t.Errorf("failure = %q, want %q", failure, f.Failure)
+	}
+	// A comment render never wrote gives nothing back rather than a fabricated claim.
 	for _, body := range []string{"", "a human comment", markerPrefix + "abc -->", "**bold** but no marker"} {
-		if got := ruleIn(body); got != "" {
-			t.Errorf("ruleIn(%q) = %q, want empty", body, got)
+		if r, s, fl := bodyParts(body); r != "" || s != "" || fl != "" {
+			t.Errorf("bodyParts(%q) = (%q,%q,%q), want all empty", body, r, s, fl)
 		}
 	}
 }
