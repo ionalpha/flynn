@@ -325,8 +325,15 @@ func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nodes := make([]map[string]any, 0, len(h.threads))
-	for _, t := range h.threads {
+	// One thread per page, so a test that seeds two threads proves the reviewer follows
+	// the cursor. GitHub returns 100 per page; the count is not what is under test.
+	start := 0
+	if cursor, ok := in.Variables["after"].(string); ok && cursor != "" {
+		start, _ = strconv.Atoi(cursor)
+	}
+	nodes := make([]map[string]any, 0, 1)
+	if start < len(h.threads) {
+		t := h.threads[start]
 		comments := make([]map[string]any, 0, len(t.comments))
 		for _, c := range t.comments {
 			comments = append(comments, map[string]any{
@@ -338,9 +345,16 @@ func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 			"comments": map[string]any{"nodes": comments},
 		})
 	}
+	next := start + 1
 	writeJSON(w, map[string]any{"data": map[string]any{
 		"repository": map[string]any{"pullRequest": map[string]any{
-			"reviewThreads": map[string]any{"nodes": nodes},
+			"reviewThreads": map[string]any{
+				"pageInfo": map[string]any{
+					"hasNextPage": next < len(h.threads),
+					"endCursor":   strconv.Itoa(next),
+				},
+				"nodes": nodes,
+			},
 		}},
 	}})
 }
@@ -1339,5 +1353,26 @@ func TestAThreadIsNotOursBecauseItCarriesOurMarker(t *testing.T) {
 	}
 	if got := hub.resolvedThreads(); len(got) != 0 {
 		t.Fatalf("resolved %v: a copied marker is not authorship", got)
+	}
+}
+
+// A pull request with more conversations than one page must still have all of them
+// read. A reviewer that stopped at the first page would leave every later thread open
+// forever, blocking the merge wherever thread resolution is required.
+func TestReviewThreadsFollowPagination(t *testing.T) {
+	hub := newFakeHub(t)
+	for _, id := range []string{"T1", "T2", "T3"} {
+		hub.addThread(fakeThread{id: id, outdated: true, comments: []fakeThreadComment{
+			{body: "<!-- flynn-review:" + id + " -->\n**r** an old finding", author: "vouchbot"},
+		}})
+	}
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
+
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	got := hub.resolvedThreads()
+	if len(got) != 3 {
+		t.Fatalf("resolved %v, want all three: the reviewer stopped at the first page", got)
 	}
 }

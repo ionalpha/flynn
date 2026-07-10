@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 // Resolving a thread is a write the model never makes.
@@ -12,6 +13,18 @@ import (
 // deterministically, from what the run actually found. The rule below is the whole of
 // the reviewer's authority to close a conversation, and it is readable in one screen
 // on purpose.
+
+// sameLogin reports whether two logins name the same actor.
+//
+// The two GitHub APIs disagree about a bot's name. REST reports an App's login with
+// the suffix ("vouchbot[bot]"), which is what a reviewer is configured with and what
+// appears on a pull request. GraphQL reports the Bot actor's login without it
+// ("vouchbot"). Comparing them literally makes a reviewer a stranger to its own
+// conversations, and it resolves nothing, silently: every thread simply looks like
+// somebody else's. The suffix is not part of the identity, so it is not compared.
+func sameLogin(a, b string) bool {
+	return strings.TrimSuffix(a, "[bot]") == strings.TrimSuffix(b, "[bot]")
+}
 
 // resolvableThread reports whether the reviewer may close this thread, and why not
 // when it may not. The reason is returned for the error path and for tests: a rule
@@ -30,7 +43,7 @@ func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool,
 		// Without an identity there is nothing to compare the author against, so the
 		// reviewer cannot tell its own conversation from anyone else's, and closes none.
 		return false, "the reviewer has no identity to check the author against"
-	case t.Author != self:
+	case !sameLogin(t.Author, self):
 		return false, "opened by someone else"
 	case t.Marker == "":
 		// The reviewer's own comment, but not one of its findings.

@@ -115,6 +115,44 @@ func TestResolvableThread(t *testing.T) {
 	}
 }
 
+// The two GitHub APIs disagree about a bot's name: REST says "vouchbot[bot]", GraphQL
+// says "vouchbot". A reviewer configured from one and reading threads from the other
+// must still recognise itself, or it resolves nothing and never says why.
+func TestSameLoginIgnoresTheBotSuffix(t *testing.T) {
+	same := [][2]string{
+		{"vouchbot", "vouchbot[bot]"},
+		{"vouchbot[bot]", "vouchbot"},
+		{"vouchbot", "vouchbot"},
+		{"vouchbot[bot]", "vouchbot[bot]"},
+	}
+	for _, p := range same {
+		if !sameLogin(p[0], p[1]) {
+			t.Errorf("sameLogin(%q, %q) = false, want true", p[0], p[1])
+		}
+	}
+	different := [][2]string{
+		{"vouchbot", "someone-else"},
+		{"vouchbot", "vouchbot2"},
+		{"a-maintainer", "vouchbot[bot]"},
+	}
+	for _, p := range different {
+		if sameLogin(p[0], p[1]) {
+			t.Errorf("sameLogin(%q, %q) = true, want false", p[0], p[1])
+		}
+	}
+}
+
+// A thread GraphQL attributes to "vouchbot" belongs to the reviewer configured as
+// "vouchbot[bot]". This is the live failure: the reviewer read its own threads as
+// strangers' and closed none.
+func TestAThreadIsOursDespiteTheGraphQLLoginLackingTheSuffix(t *testing.T) {
+	thread := ReviewThread{ID: "T", Marker: ourMarker, Author: "vouchbot", Participants: 1, Outdated: true}
+	ok, reason := resolvableThread(thread, "vouchbot[bot]", map[string]bool{})
+	if !ok {
+		t.Fatalf("the reviewer did not recognise its own thread: %s", reason)
+	}
+}
+
 // A reviewer with no configured identity cannot tell its own conversation from anyone
 // else's, so it closes none rather than guessing from a marker anybody can copy.
 func TestNothingResolvesWithoutAnIdentity(t *testing.T) {

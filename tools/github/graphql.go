@@ -93,14 +93,16 @@ type ReviewThread struct {
 	Participants int
 }
 
-// reviewThreadsQuery reads every thread on a pull request. 100 threads and 100
-// comments per thread is well past what a reviewable pull request carries; a diff
-// with more unresolved conversations than that has a problem no bot should paper over
-// by resolving things.
-const reviewThreadsQuery = `query($owner:String!,$repo:String!,$number:Int!){
+// reviewThreadsQuery reads a page of threads on a pull request. It is paginated: a
+// long-running pull request accumulates conversations, and a reviewer that read only
+// the first page would leave every thread past it open forever, blocking the merge on
+// any repository that requires resolution. The page cursor is threads; 100 comments
+// per thread is a bound on participation, not on the pull request.
+const reviewThreadsQuery = `query($owner:String!,$repo:String!,$number:Int!,$after:String){
   repository(owner:$owner,name:$repo){
     pullRequest(number:$number){
-      reviewThreads(first:100){
+      reviewThreads(first:100, after:$after){
+        pageInfo{ hasNextPage endCursor }
         nodes{
           id
           isResolved
@@ -112,53 +114,74 @@ const reviewThreadsQuery = `query($owner:String!,$repo:String!,$number:Int!){
   }
 }`
 
-// reviewThreads lists the pull request's review threads.
+// maxThreadPages bounds pagination so a pathological response cannot loop forever,
+// the same guard the REST pagination uses.
+const maxThreadPages = 20
+
+// reviewThreads lists every review thread on a pull request, following pagination.
 func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread, error) {
-	var resp struct {
-		Repository struct {
-			PullRequest struct {
-				ReviewThreads struct {
-					Nodes []struct {
-						ID         string `json:"id"`
-						IsResolved bool   `json:"isResolved"`
-						IsOutdated bool   `json:"isOutdated"`
-						Comments   struct {
-							Nodes []struct {
-								Body   string `json:"body"`
-								Author struct {
-									Login string `json:"login"`
-								} `json:"author"`
-							} `json:"nodes"`
-						} `json:"comments"`
-					} `json:"nodes"`
-				} `json:"reviewThreads"`
-			} `json:"pullRequest"`
-		} `json:"repository"`
-	}
-	vars := map[string]any{"owner": c.cfg.Owner, "repo": c.cfg.Repo, "number": number}
-	if err := c.graphql(ctx, reviewThreadsQuery, vars, &resp); err != nil {
-		return nil, err
-	}
+	var out []ReviewThread
+	var after *string
 
-	nodes := resp.Repository.PullRequest.ReviewThreads.Nodes
-	out := make([]ReviewThread, 0, len(nodes))
-	for _, n := range nodes {
-		t := ReviewThread{ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated}
-		if len(n.Comments.Nodes) == 0 {
-			// A thread with no comments cannot be attributed, so it is nobody's to close.
+	for range maxThreadPages {
+		var resp struct {
+			Repository struct {
+				PullRequest struct {
+					ReviewThreads struct {
+						PageInfo struct {
+							HasNextPage bool   `json:"hasNextPage"`
+							EndCursor   string `json:"endCursor"`
+						} `json:"pageInfo"`
+						Nodes []struct {
+							ID         string `json:"id"`
+							IsResolved bool   `json:"isResolved"`
+							IsOutdated bool   `json:"isOutdated"`
+							Comments   struct {
+								Nodes []struct {
+									Body   string `json:"body"`
+									Author struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"comments"`
+						} `json:"nodes"`
+					} `json:"reviewThreads"`
+				} `json:"pullRequest"`
+			} `json:"repository"`
+		}
+		vars := map[string]any{"owner": c.cfg.Owner, "repo": c.cfg.Repo, "number": number}
+		if after != nil {
+			vars["after"] = *after
+		}
+		if err := c.graphql(ctx, reviewThreadsQuery, vars, &resp); err != nil {
+			return nil, err
+		}
+
+		threads := resp.Repository.PullRequest.ReviewThreads
+		for _, n := range threads.Nodes {
+			t := ReviewThread{ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated}
+			if len(n.Comments.Nodes) == 0 {
+				// A thread with no comments cannot be attributed, so it is nobody's to close.
+				out = append(out, t)
+				continue
+			}
+			first := n.Comments.Nodes[0]
+			t.Marker = markerIn(first.Body)
+			t.Author = first.Author.Login
+
+			seen := make(map[string]struct{}, len(n.Comments.Nodes))
+			for _, cm := range n.Comments.Nodes {
+				seen[cm.Author.Login] = struct{}{}
+			}
+			t.Participants = len(seen)
 			out = append(out, t)
-			continue
 		}
-		first := n.Comments.Nodes[0]
-		t.Marker = markerIn(first.Body)
-		t.Author = first.Author.Login
 
-		seen := make(map[string]struct{}, len(n.Comments.Nodes))
-		for _, cm := range n.Comments.Nodes {
-			seen[cm.Author.Login] = struct{}{}
+		if !threads.PageInfo.HasNextPage || threads.PageInfo.EndCursor == "" {
+			return out, nil
 		}
-		t.Participants = len(seen)
-		out = append(out, t)
+		cursor := threads.PageInfo.EndCursor
+		after = &cursor
 	}
 	return out, nil
 }
