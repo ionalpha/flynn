@@ -44,23 +44,38 @@ func egressProbe(t *testing.T, root, name, script string) Command {
 	return Command{Line: "bash ./" + name}
 }
 
-// requireEgressHost skips when this host cannot run the leg at all: the launcher needs
-// unprivileged user namespaces to create the network namespace, and the probes need bash.
+// requireEgressHost skips when this host cannot run the leg at all, for a reason that is
+// the host's rather than the code's: the probes need bash, and the launcher needs to
+// perform privileged setup inside its user namespace.
+//
+// Creating the namespace is not enough to go on. Ubuntu 24.04 and its CI runner let an
+// unprivileged CLONE_NEWUSER succeed and then deny the capabilities inside it, so the
+// launcher's mount and its SIOCSIFFLAGS both come back EPERM. This probe therefore asks
+// for a read-only filesystem, whose setup needs the same in-namespace privilege that
+// raising loopback does, by a different mechanism. Where that cannot be established,
+// governed egress cannot be either, and these tests would be reporting on the host rather
+// than on the code. Where it can, an egress failure below is ours.
 func requireEgressHost(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is not installed; the egress probes need it")
 	}
-	l, err := NewLocal(t.TempDir(), WithNetworkDenied())
+	l, err := NewLocal(t.TempDir(), WithReadOnlyFS())
 	if err != nil {
 		t.Fatalf("NewLocal: %v", err)
 	}
 	defer func() { _ = l.Close() }()
-	if _, err := l.Exec(context.Background(), Command{Line: "true"}); err != nil {
+	// The launcher reports a setup failure as a non-zero exit; a namespace that could not
+	// be created at all is the error path.
+	res, err := l.Exec(context.Background(), Command{Line: "true"})
+	if err != nil {
 		if namespaceUnavailable(err.Error()) {
 			t.Skip("unprivileged user namespaces unavailable on this host")
 		}
-		t.Fatalf("probing namespace support: %v", err)
+		t.Fatalf("probing confinement support: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Skipf("this host denies the launcher's privileged setup inside a user namespace, so governed egress cannot be established here: %s", strings.TrimSpace(res.Output))
 	}
 }
 

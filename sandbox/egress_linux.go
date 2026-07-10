@@ -58,8 +58,26 @@ func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
 	if err != nil {
 		return func() {}, fmt.Errorf("sandbox: egress handoff socketpair: %w", err)
 	}
-	parent := os.NewFile(uintptr(pair[0]), "flynn-egress-handoff")
+	parentFile := os.NewFile(uintptr(pair[0]), "flynn-egress-handoff")
 	child := os.NewFile(uintptr(pair[1]), "flynn-egress-handoff-child")
+
+	// This end becomes a net.UnixConn, not a bare descriptor. serve blocks on it while
+	// release may close it (a launcher that dies before sending never unblocks the
+	// receive), and only a poller-managed connection makes that safe: closing a raw
+	// descriptor another goroutine is blocked on is a use-after-close, and the descriptor
+	// number can be reused underneath it. FileConn dups, so the original is closed here.
+	conn, err := net.FileConn(parentFile)
+	_ = parentFile.Close()
+	if err != nil {
+		_ = child.Close()
+		return func() {}, fmt.Errorf("sandbox: egress handoff conn: %w", err)
+	}
+	parent, ok := conn.(*net.UnixConn)
+	if !ok {
+		_ = conn.Close()
+		_ = child.Close()
+		return func() {}, fmt.Errorf("sandbox: egress handoff is %T, not a unix socket", conn)
+	}
 
 	c.ExtraFiles = append(c.ExtraFiles, child)
 	childFD := 2 + len(c.ExtraFiles) // ExtraFiles[i] is descriptor 3+i in the child
@@ -105,7 +123,7 @@ func (e *egressConfig) liveChildren() int {
 // egressHandoff owns one child's proxy: the socketpair the launcher hands its listening
 // socket back on, the proxy serving that socket, and the teardown of both.
 type egressHandoff struct {
-	parent *os.File // this end of the handoff socketpair
+	parent *net.UnixConn // this end of the handoff socketpair
 	// child is the launcher's end. It belongs to the exec.Cmd from the moment it is put in
 	// ExtraFiles: Start reads its descriptor to dup into the child, so closing it anywhere
 	// but release (which runs after the launch is done with it) races that read and can
@@ -179,12 +197,15 @@ var errNoListener = errors.New("sandbox: egress handoff closed without a listeni
 // returns the received descriptor. Exactly one descriptor is expected; anything else is a
 // protocol error rather than something to guess at, and any descriptors received
 // alongside are closed rather than leaked.
-func recvListener(sock *os.File) (int, error) {
+//
+// It reads through the net.UnixConn rather than the raw descriptor so that a release
+// racing this receive (a launcher that died before sending) unblocks it through the
+// runtime poller instead of closing a descriptor this goroutine is sitting in a syscall
+// on.
+func recvListener(sock *net.UnixConn) (int, error) {
 	oob := make([]byte, unix.CmsgSpace(4))
 	buf := make([]byte, 1)
-	// Fd puts the file into blocking mode, which is what this read wants: it waits for
-	// the launcher rather than spinning.
-	n, oobn, _, _, err := unix.Recvmsg(int(sock.Fd()), buf, oob, 0)
+	n, oobn, _, _, err := sock.ReadMsgUnix(buf, oob)
 	if err != nil {
 		return -1, fmt.Errorf("sandbox: egress handoff receive: %w", err)
 	}
