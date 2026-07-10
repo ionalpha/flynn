@@ -92,14 +92,16 @@ func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool,
 // posted is the set of findings this review raised, passed in rather than read back
 // from the Set: submitting the verdict ends the review and takes its record with it.
 func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete bool, posted []ReviewComment) (int, error) {
-	// Without a configured identity the reviewer cannot tell its own conversation from
-	// anyone else's, so it closes none and does not spend a request finding that out.
-	if !diffComplete || s.cfg.SelfLogin == "" {
+	if !diffComplete {
 		return 0, nil
 	}
-	threads, err := s.client.reviewThreads(ctx, number)
+	self, err := s.selfLogin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("read review threads: %w", err)
+		return 0, err
+	}
+	threads, terr := s.client.reviewThreads(ctx, number)
+	if terr != nil {
+		return 0, fmt.Errorf("read review threads: %w", terr)
 	}
 
 	found := make(map[string]bool)
@@ -111,7 +113,7 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 
 	var resolved, minimized int
 	for _, t := range threads {
-		if ok, _ := resolvableThread(t, s.cfg.SelfLogin, found); !ok {
+		if ok, _ := resolvableThread(t, self, found); !ok {
 			continue
 		}
 		// Resolving needs write access to the repository. A reviewer granted only
@@ -145,4 +147,31 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 		)
 	}
 	return resolved, nil
+}
+
+// selfLogin returns the login this reviewer acts as, asking GitHub once and caching it.
+//
+// Config.SelfLogin overrides it, for a host that knows better. Otherwise the credential
+// is asked who it belongs to, because a reviewer that does not know its own name cannot
+// tell its own comments from a maintainer's, and every authorship check below it would
+// have to be skipped or guessed.
+func (s *Set) selfLogin(ctx context.Context) (string, error) {
+	if s.cfg.SelfLogin != "" {
+		return s.cfg.SelfLogin, nil
+	}
+	s.mu.Lock()
+	cached := s.self
+	s.mu.Unlock()
+	if cached != "" {
+		return cached, nil
+	}
+
+	login, err := s.client.viewerLogin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve the reviewer's own login: %w", err)
+	}
+	s.mu.Lock()
+	s.self = login
+	s.mu.Unlock()
+	return login, nil
 }

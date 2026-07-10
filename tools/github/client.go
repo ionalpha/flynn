@@ -82,6 +82,12 @@ type ReviewComment struct {
 	// HTMLURL addresses the comment on the pull request, so a verdict can point at a
 	// finding instead of repeating it.
 	HTMLURL string `json:"html_url"`
+
+	// User is who wrote the comment. A marker in a body proves nothing about that: it
+	// is plain text anyone can copy.
+	User struct {
+		Login string `json:"login"`
+	} `json:"user"`
 }
 
 // do issues an authenticated request and decodes a JSON response into out. A nil
@@ -260,19 +266,27 @@ func truncatePatches(files []ChangedFile, limit int) []ChangedFile {
 }
 
 // reviewComments lists the pull request's existing inline review comments.
+//
+// Running out of pages is an error, not an answer. The caller uses this list to know
+// which of its findings are already posted, and a short list is a finding the reviewer
+// cannot restate. It would then say nothing about a defect that is still there, and a
+// finding not restated is a finding retracted.
 func (c *client) reviewComments(ctx context.Context, number int) ([]ReviewComment, error) {
 	var all []ReviewComment
 	url := fmt.Sprintf("%s?per_page=%d", c.prURL(number, "/comments"), perPage)
-	for page := 0; page < maxPages && url != ""; page++ {
+	for range maxPages {
 		var batch []ReviewComment
 		next, err := c.doPaged(ctx, url, &batch)
 		if err != nil {
 			return nil, err
 		}
 		all = append(all, batch...)
+		if next == "" {
+			return all, nil
+		}
 		url = next
 	}
-	return all, nil
+	return nil, fmt.Errorf("github: more than %d pages of review comments", maxPages)
 }
 
 // createReviewComment posts a new inline comment anchored to a line of the diff.

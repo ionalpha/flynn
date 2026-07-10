@@ -81,6 +81,15 @@ type fakeHub struct {
 	// endlessThreads makes the GraphQL endpoint always report another page, so a test
 	// can drive the reviewer into its pagination cap.
 	endlessThreads bool
+
+	// commentAuthor is who REST says wrote the inline comments, and viewerLogin is who
+	// the credential authenticates as. They match by default, which is the ordinary case
+	// of a reviewer reading back its own comments.
+	commentAuthor string
+	viewerLogin   string
+
+	// endlessComments makes the inline-comment listing always advertise another page.
+	endlessComments bool
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -95,6 +104,8 @@ func newFakeHub(t *testing.T) *fakeHub {
 		changedFiles:   1,
 		additions:      1,
 		deletions:      0,
+		commentAuthor:  "reviewer[bot]",
+		viewerLogin:    "reviewer[bot]",
 	}
 }
 
@@ -177,6 +188,11 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
 		})
 
+	case strings.HasSuffix(p, "/pulls/7/comments") && r.Method == http.MethodGet && h.endlessComments:
+		// Always another page, so a test can drive the client into its pagination cap.
+		w.Header().Set("Link", "<http://"+r.Host+"/repos/ionalpha/flynn/pulls/7/comments?page=2>; rel=\"next\"")
+		writeJSON(w, []map[string]any{})
+
 	case strings.HasSuffix(p, "/pulls/7/comments") && r.Method == http.MethodGet:
 		h.mu.Lock()
 		out := []map[string]any{}
@@ -184,6 +200,8 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out = append(out, map[string]any{
 				"id": id, "body": b, "path": "a.go", "line": 1,
 				"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
+				// REST reports the App with its suffix, and the viewer query answers the same.
+				"user": map[string]any{"login": h.commentAuthor},
 			})
 		}
 		h.mu.Unlock()
@@ -321,6 +339,13 @@ func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	if h.graphqlError != "" {
 		// GitHub answers a failed GraphQL request with 200 and an errors array.
 		writeJSON(w, map[string]any{"errors": []map[string]any{{"message": h.graphqlError}}})
+		return
+	}
+
+	if strings.Contains(in.Query, "viewer { login") {
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"viewer": map[string]any{"login": h.viewerLogin},
+		}})
 		return
 	}
 
@@ -1489,5 +1514,73 @@ func TestReadingThreadsRefusesToStopAtTheCap(t *testing.T) {
 	}
 	if got := hub.resolvedThreads(); len(got) != 0 {
 		t.Errorf("resolved %v from a partial read of the conversations", got)
+	}
+}
+
+// A maintainer's comment carrying a copied marker is neither adopted as a finding nor
+// rewritten in place. The marker says which finding a comment stands for; it says
+// nothing about who wrote it, and it is plain text anyone can copy out of a body.
+func TestAMaintainersCommentIsNeverAdoptedOrOverwritten(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.commentAuthor = "a-maintainer" // everything REST reports was written by a person
+	set := newSet(t, hub, nil)
+
+	// Seed a comment carrying the exact marker the finding below produces.
+	f := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	// The reviewer's own comment is stored, but REST attributes it to the maintainer, so
+	// on the next pass it must not be treated as the reviewer's.
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
+		t.Fatalf("re-post: %v", err)
+	}
+	if got := hub.updated.Load(); got != 0 {
+		t.Errorf("the reviewer rewrote a comment it did not write (%d update(s))", got)
+	}
+
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if strings.Contains(out, "posted_findings") {
+		t.Errorf("the reviewer claimed a maintainer's comment as its own finding: %s", out)
+	}
+}
+
+// The reviewer learns its own login from the credential when none is configured. REST's
+// /user refuses an installation token, so viewer{login} is the one question both a
+// personal token and an App installation answer.
+func TestTheReviewerLearnsItsOwnLoginFromTheCredential(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.viewerLogin = "vouchbot[bot]"
+	hub.commentAuthor = "vouchbot" // GraphQL drops the suffix; REST keeps it
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "" })
+
+	f := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
+		t.Fatalf("re-post: %v", err)
+	}
+	if got := hub.created.Load(); got != 1 {
+		t.Errorf("created = %d, want 1: the reviewer did not recognise its own comment", got)
+	}
+	if got := hub.updated.Load(); got != 1 {
+		t.Errorf("updated = %d, want 1", got)
+	}
+}
+
+// Running out of pages while listing inline comments is an error, not an answer. The
+// list tells the reviewer which of its findings are already posted; a short list is a
+// finding it cannot restate, and a finding not restated is a finding retracted.
+func TestReviewCommentsRefuseToStopAtTheCap(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.endlessComments = true
+	set := newSet(t, hub, nil)
+
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err == nil {
+		t.Fatal("a truncated listing of the reviewer's own comments must fail the fetch")
 	}
 }

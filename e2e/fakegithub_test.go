@@ -183,6 +183,13 @@ func (f *fakeGitHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if strings.Contains(in.Query, "viewer { login") {
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"viewer": map[string]any{"login": "vouchbot[bot]"},
+		}})
+		return
+	}
+
 	if strings.Contains(in.Query, "minimizeComment") {
 		id, _ := in.Variables["subjectId"].(string)
 		f.minimized = append(f.minimized, id)
@@ -337,7 +344,10 @@ func (f *fakeGitHub) listComments(w http.ResponseWriter, store *[]gh) {
 	f.mu.Lock()
 	out := make([]map[string]any, 0, len(*store))
 	for _, c := range *store {
-		out = append(out, map[string]any{"id": c.ID, "path": c.Path, "line": c.Line, "body": c.Body, "html_url": c.HTMLURL})
+		out = append(out, map[string]any{
+			"id": c.ID, "path": c.Path, "line": c.Line, "body": c.Body, "html_url": c.HTMLURL,
+			"user": map[string]any{"login": "vouchbot[bot]"},
+		})
 	}
 	f.mu.Unlock()
 	writeJSON(w, out)

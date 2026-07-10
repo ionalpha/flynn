@@ -219,6 +219,28 @@ func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread,
 	return nil, fmt.Errorf("github: more than %d pages of review threads", maxThreadPages)
 }
 
+// viewerQuery asks GitHub who the credential belongs to. An installation token
+// answers with the App's login, suffix included ("vouchbot[bot]"), and a personal
+// token answers with the user's. REST's /user refuses an installation token (403), so
+// this is the one question both credentials answer.
+const viewerQuery = `{ viewer { login } }`
+
+// viewerLogin returns the login the credential authenticates as.
+func (c *client) viewerLogin(ctx context.Context) (string, error) {
+	var resp struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+	}
+	if err := c.graphql(ctx, viewerQuery, nil, &resp); err != nil {
+		return "", err
+	}
+	if resp.Viewer.Login == "" {
+		return "", errors.New("github: the credential names no viewer")
+	}
+	return resp.Viewer.Login, nil
+}
+
 // resolveThreadMutation closes one conversation.
 const resolveThreadMutation = `mutation($threadId:ID!){
   resolveReviewThread(input:{threadId:$threadId}){ thread{ id isResolved } }

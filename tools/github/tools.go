@@ -226,9 +226,17 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 	if err != nil {
 		return "", err
 	}
+	// A marker says which finding a comment stands for, never who wrote it: it is plain
+	// text in a body anyone can copy. Without an identity to check the author against,
+	// the reviewer cannot tell its own findings from a maintainer's, and reports none
+	// rather than inviting itself to stand behind or retract somebody else's comment.
+	self, err := t.s.selfLogin(ctx)
+	if err != nil {
+		return "", err
+	}
 	posted := make([]PostedFinding, 0, len(existing))
 	for _, c := range existing {
-		if markerIn(c.Body) == "" {
+		if markerIn(c.Body) == "" || !sameLogin(c.User.Login, self) {
 			continue
 		}
 		posted = append(posted, PostedFinding{Path: c.Path, Line: c.Line, Rule: ruleIn(c.Body)})
@@ -353,8 +361,20 @@ func (t commentTool) reconcileFindings(ctx context.Context, number int, findings
 	if err != nil {
 		return 0, 0, err
 	}
+	// Only the reviewer's own comments are reconciled. The marker says which finding a
+	// comment stands for, not who wrote it, and a maintainer quoting a finding back has
+	// quoted the key to their own comment. Matching on the marker alone would rewrite
+	// their words in place. Without an identity to check the author against, nothing is
+	// adopted: a new comment is posted rather than someone else's overwritten.
+	self, err := t.s.selfLogin(ctx)
+	if err != nil {
+		return 0, 0, err
+	}
 	byMarker := make(map[string]int64, len(existing))
 	for _, c := range existing {
+		if !sameLogin(c.User.Login, self) {
+			continue
+		}
 		if m := markerIn(c.Body); m != "" {
 			byMarker[m] = c.ID
 		}
@@ -523,10 +543,18 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	if err != nil {
 		return "", err
 	}
-	// The self-approval check reads the live author rather than trusting the caller,
-	// so a model cannot talk its way past it by misreporting who opened the change.
-	if in.Event == "APPROVE" && t.s.cfg.SelfLogin != "" && pr.AuthorLogin == t.s.cfg.SelfLogin {
-		return "", ErrSelfApproval
+	// The self-approval check reads the live author rather than trusting the caller, so
+	// a model cannot talk its way past it by misreporting who opened the change. The
+	// reviewer's own login is resolved from the credential, so the check cannot be
+	// switched off by leaving it unconfigured.
+	if in.Event == "APPROVE" {
+		self, serr := t.s.selfLogin(ctx)
+		if serr != nil {
+			return "", serr
+		}
+		if sameLogin(pr.AuthorLogin, self) {
+			return "", ErrSelfApproval
+		}
 	}
 	// Whether the whole diff reached this review. It gates the approval below, and it
 	// gates whether a finding's absence is evidence the defect is gone (see

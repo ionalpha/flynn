@@ -142,6 +142,11 @@ type Set struct {
 	cfg    Config
 	client *client
 
+	// self is the login the credential authenticates as, resolved once and cached. It
+	// answers "is this comment mine", which a marker cannot: a marker is plain text in a
+	// body anyone can copy.
+	self string
+
 	// mu guards findings, which the comment tool records into and the verdict reads.
 	// Tools of one Set run on one review, but not necessarily on one goroutine.
 	//
