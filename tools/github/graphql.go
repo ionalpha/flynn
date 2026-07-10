@@ -103,6 +103,11 @@ type ReviewThread struct {
 	// what minimizeComment takes, and minimizing is the retraction available to a
 	// reviewer that may not resolve.
 	CommentNodeIDs []string
+
+	// Truncated reports that the thread carries more comments than were read. Whether
+	// anybody replied is then unknown, and a reviewer that guessed would eventually
+	// retract a finding somebody was still arguing with.
+	Truncated bool
 }
 
 // reviewThreadsQuery reads a page of threads on a pull request. It is paginated: a
@@ -120,7 +125,7 @@ const reviewThreadsQuery = `query($owner:String!,$repo:String!,$number:Int!,$aft
           isResolved
           isOutdated
           viewerCanResolve
-          comments(first:100){ nodes{ id body author{ login } } }
+          comments(first:100){ pageInfo{ hasNextPage } nodes{ id body author{ login } } }
         }
       }
     }
@@ -151,6 +156,9 @@ func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread,
 							IsOutdated       bool   `json:"isOutdated"`
 							ViewerCanResolve bool   `json:"viewerCanResolve"`
 							Comments         struct {
+								PageInfo struct {
+									HasNextPage bool `json:"hasNextPage"`
+								} `json:"pageInfo"`
 								Nodes []struct {
 									ID     string `json:"id"`
 									Body   string `json:"body"`
@@ -174,7 +182,10 @@ func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread,
 
 		threads := resp.Repository.PullRequest.ReviewThreads
 		for _, n := range threads.Nodes {
-			t := ReviewThread{ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated, CanResolve: n.ViewerCanResolve}
+			t := ReviewThread{
+				ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated,
+				CanResolve: n.ViewerCanResolve, Truncated: n.Comments.PageInfo.HasNextPage,
+			}
 			for _, cm := range n.Comments.Nodes {
 				t.CommentNodeIDs = append(t.CommentNodeIDs, cm.ID)
 			}

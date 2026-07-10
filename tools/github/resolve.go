@@ -50,6 +50,10 @@ func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool,
 		return false, "not a finding"
 	case t.Resolved:
 		return false, "already resolved"
+	case t.Truncated:
+		// More comments than were read, so whether anybody replied is unknown. Silence is
+		// only evidence when the whole conversation was heard.
+		return false, "the conversation is longer than one page"
 	case t.Participants > 1:
 		// Someone replied. A bot closing a conversation under a person talking in it is
 		// worse than a stale comment: it destroys the reply's context and reads as the
@@ -130,7 +134,8 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 	if minimized > 0 {
 		return resolved, fmt.Errorf(
 			"%d stale finding(s) were folded away but left unresolved: resolving a conversation needs write access to the repository, and this reviewer has none",
-			minimized)
+			minimized,
+		)
 	}
 	return resolved, nil
 }

@@ -81,6 +81,15 @@ func TestResolvableThread(t *testing.T) {
 			reason: "not a finding",
 		},
 		{
+			// A thread longer than one page: the reply that matters may be on page two, and
+			// a reviewer that assumed silence would retract a finding still being argued.
+			name:   "ours, but the conversation was not read in full",
+			thread: func() ReviewThread { t := ours(ourMarker); t.Truncated = true; t.Outdated = true; return t }(),
+			found:  nothingFound,
+			want:   false,
+			reason: "the conversation is longer than one page",
+		},
+		{
 			name:   "ours, but someone replied",
 			thread: func() ReviewThread { t := ours(ourMarker); t.Participants = 2; t.Outdated = true; return t }(),
 			found:  nothingFound,
