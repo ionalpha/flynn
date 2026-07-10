@@ -962,6 +962,17 @@ func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool
 	sess := session.New(log, bus.NewMemory(), sopts...)
 
 	toolset := tools.New(sb).Tools()
+	// Optional capabilities mount here through the registry each one self-registers
+	// into under its own build tag (none in the default build), so their actions flow
+	// into the grant below exactly like a built-in tool and adding a capability never
+	// touches this assembly. A capability that is configured but cannot be built fails
+	// the run rather than silently vanishing.
+	extraTools, err := optionalTools()
+	if err != nil {
+		_ = sb.Close()
+		return nil, err
+	}
+	toolset = append(toolset, extraTools...)
 	// The grant lists every action the run may take: the tools, plus the model call
 	// and the distillation, and (for a fan-out) the spawn that delegates a sub-goal. A
 	// child narrows from this set, so a delegation can never widen authority; a run

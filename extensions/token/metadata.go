@@ -1,0 +1,61 @@
+//go:build token
+
+package token
+
+import (
+	"context"
+	"fmt"
+
+	solana "github.com/gagliardetto/solana-go"
+)
+
+// CreateMetadata attaches Metaplex metadata (name/symbol/logo+links URI) to a mint.
+// It requires the mint authority to sign, so it must run BEFORE the mint authority
+// is revoked. The metadata is created mutable so the update authority (held by a
+// host in a multisig) can fix links later.
+func (e *Engine) CreateMetadata(ctx context.Context, mint solana.PublicKey, name, symbol, uri string) error {
+	pda, err := metadataPDA(mint)
+	if err != nil {
+		return fmt.Errorf("metadata PDA: %w", err)
+	}
+	pk := e.payer.PublicKey()
+	// accounts: metadata(w), mint, mintAuthority(s), payer(s,w), updateAuthority, systemProgram
+	accts := solana.AccountMetaSlice{
+		solana.Meta(pda).WRITE(),
+		solana.Meta(mint),
+		solana.Meta(pk).SIGNER(),
+		solana.Meta(pk).SIGNER().WRITE(),
+		solana.Meta(pk),
+		solana.Meta(solana.SystemProgramID),
+	}
+	inst := solana.NewInstruction(metadataProgram, accts, createV3Data(name, symbol, uri))
+	_, err = e.send(ctx, []solana.Instruction{inst})
+	return err
+}
+
+// UpdateMetadata edits the metadata via the modern Update instruction, which needs
+// only the update authority, so it works after the mint authority is revoked.
+func (e *Engine) UpdateMetadata(ctx context.Context, mint solana.PublicKey, name, symbol, uri string) error {
+	pda, err := metadataPDA(mint)
+	if err != nil {
+		return fmt.Errorf("metadata PDA: %w", err)
+	}
+	pk := e.payer.PublicKey()
+	ph := metadataProgram // program id doubles as the "none" placeholder for optional accounts
+	accts := solana.AccountMetaSlice{
+		solana.Meta(pk).SIGNER(),            // 0 authority (update authority)
+		solana.Meta(ph),                     // 1 delegate_record (none)
+		solana.Meta(ph),                     // 2 token (none)
+		solana.Meta(mint),                   // 3 mint
+		solana.Meta(pda).WRITE(),            // 4 metadata
+		solana.Meta(ph),                     // 5 edition (none)
+		solana.Meta(pk).SIGNER().WRITE(),    // 6 payer
+		solana.Meta(solana.SystemProgramID), // 7 system program
+		solana.Meta(sysvarInstructions),     // 8 sysvar instructions
+		solana.Meta(ph),                     // 9 auth rules program (none)
+		solana.Meta(ph),                     // 10 auth rules (none)
+	}
+	inst := solana.NewInstruction(metadataProgram, accts, updateData(name, symbol, uri))
+	_, err = e.send(ctx, []solana.Instruction{inst})
+	return err
+}
