@@ -67,6 +67,7 @@ type fakeHub struct {
 	updated       atomic.Int64
 	submittedBody atomic.Value // string: the last review event submitted
 	submittedText atomic.Value // string: the last review body submitted
+	failReviews   atomic.Bool  // when set, a review submission answers 500
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -134,6 +135,10 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveFiles(w, r)
 
 	case strings.HasSuffix(p, "/reviews") && r.Method == http.MethodPost:
+		if h.failReviews.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		var in map[string]any
 		decode(h.t, r, &in)
 		h.submittedBody.Store(fmt.Sprint(in["event"]))
@@ -947,6 +952,53 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 	}
 	if hub.followedEvil.Load() {
 		t.Fatal("the off-host link was followed with a token attached")
+	}
+}
+
+// A verdict ends a review. A second review of the same pull request through the same
+// Set starts with nothing recorded, so it cannot link a finding the first review made
+// and the author has since fixed.
+func TestASubmittedVerdictEndsTheReviewsRecord(t *testing.T) {
+	hub := newFakeHub(t)
+	set := newSet(t, hub, nil)
+	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err != nil {
+		t.Fatalf("first submit: %v", err)
+	}
+
+	// A second review, after the author fixed it, finding nothing.
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+		t.Fatalf("second submit: %v", err)
+	}
+	body, _ := hub.submittedText.Load().(string)
+	if body != "Nothing blocking." {
+		t.Fatalf("second verdict = %q, want just the conclusion: the first review's finding was linked again", body)
+	}
+}
+
+// A failed submission keeps the record, so a retry still links what the review found.
+func TestAFailedVerdictKeepsTheFindings(t *testing.T) {
+	hub := newFakeHub(t)
+	set := newSet(t, hub, nil)
+	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+
+	hub.failReviews.Store(true)
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err == nil {
+		t.Fatal("a failing submission must error")
+	}
+	hub.failReviews.Store(false)
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	body, _ := hub.submittedText.Load().(string)
+	if !strings.Contains(body, "One finding:") {
+		t.Fatalf("retried verdict = %q, want it to still link the finding", body)
 	}
 }
 

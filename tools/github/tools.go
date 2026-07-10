@@ -446,6 +446,20 @@ func (s *Set) currentFindings(number int) []ReviewComment {
 	return append([]ReviewComment(nil), s.findings[number]...)
 }
 
+// takeFindings returns the findings recorded for a pull request and forgets them.
+//
+// Submitting a verdict ends a review, so what it found belongs to the review that just
+// ended. A host that reviews the same pull request twice through one Set starts the
+// second review with nothing recorded, and cannot link a finding the first review made
+// and the author has since fixed.
+func (s *Set) takeFindings(number int) []ReviewComment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := s.findings[number]
+	delete(s.findings, number)
+	return out
+}
+
 func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Number     int    `json:"number"`
@@ -504,7 +518,11 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	// it covers without restating any of it.
 	posted := t.s.currentFindings(in.Number)
 	if err := t.s.client.submitReview(ctx, in.Number, pr.HeadSHA, in.Event, verdictBody(in.Conclusion, posted)); err != nil {
+		// The record survives a failed submission, so a retry still links what this
+		// review found rather than submitting a verdict that cites nothing.
 		return "", err
 	}
+	// The verdict landed, so the review is over and its findings belong to it alone.
+	t.s.takeFindings(in.Number)
 	return fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, in.Number, len(posted)), nil
 }
