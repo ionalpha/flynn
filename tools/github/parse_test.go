@@ -274,3 +274,17 @@ func pemBegin(kind string) string { return "-----BEGIN " + kind + "-----" }
 func pemFixture(kind, body string) []byte {
 	return []byte(pemBegin(kind) + "\n" + body + "-----END " + kind + "-----\n")
 }
+
+// ruleIn reads back the rule from a rendered finding, which is what lets a fetch tell
+// the reviewer how to post the same finding again instead of only that it exists.
+func TestRuleInRoundTripsARenderedFinding(t *testing.T) {
+	f := Finding{Path: "a.go", Line: 3, Rule: "swallowed-error", Summary: "s", Failure: "f"}
+	if got := ruleIn(f.render()); got != "swallowed-error" {
+		t.Errorf("ruleIn(render) = %q, want the rule back", got)
+	}
+	for _, body := range []string{"", "a human comment", markerPrefix + "abc -->", "**bold** but no marker"} {
+		if got := ruleIn(body); got != "" {
+			t.Errorf("ruleIn(%q) = %q, want empty", body, got)
+		}
+	}
+}

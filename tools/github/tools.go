@@ -82,6 +82,29 @@ func (f Finding) validate() error {
 	return nil
 }
 
+// PostedFinding identifies a finding already on the pull request. Path, Line, and Rule
+// are what regenerate its marker, so a reviewer that posts them again updates the
+// existing comment rather than opening a second conversation about the same defect.
+type PostedFinding struct {
+	Path string `json:"path"`
+	Line int    `json:"line"`
+	Rule string `json:"rule"`
+}
+
+// ruleIn reads the rule out of a finding's rendered comment body. render writes it as
+// the first bold run on the line after the marker.
+func ruleIn(body string) string {
+	_, rest, ok := strings.Cut(body, "-->\n**")
+	if !ok {
+		return ""
+	}
+	rule, _, ok := strings.Cut(rest, "**")
+	if !ok {
+		return ""
+	}
+	return rule
+}
+
 // markerIn extracts the reviewer's marker from a comment body, or "" when it carries
 // none, which is how a human's comment is distinguished from the reviewer's.
 func markerIn(body string) string {
@@ -137,7 +160,12 @@ type prFetchResult struct {
 	// and an APPROVE verdict will be refused.
 	DiffComplete bool `json:"diff_complete"`
 
-	PostedFindings []string `json:"posted_findings,omitempty"`
+	// PostedFindings are the findings this reviewer already has on the pull request,
+	// with everything needed to post them again. A marker alone would not do: it is a
+	// hash of path, line, and rule, and a reviewer handed only the hash cannot state the
+	// finding it stands for. It would then stay silent about a defect that is still
+	// there, and silence retracts the finding.
+	PostedFindings []PostedFinding `json:"posted_findings,omitempty"`
 }
 
 // oversize reports whether the pull request exceeds the configured review budget.
@@ -198,13 +226,19 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 	if err != nil {
 		return "", err
 	}
-	posted := make([]string, 0, len(existing))
+	posted := make([]PostedFinding, 0, len(existing))
 	for _, c := range existing {
-		if m := markerIn(c.Body); m != "" {
-			posted = append(posted, m)
+		if markerIn(c.Body) == "" {
+			continue
 		}
+		posted = append(posted, PostedFinding{Path: c.Path, Line: c.Line, Rule: ruleIn(c.Body)})
 	}
-	sort.Strings(posted)
+	sort.Slice(posted, func(i, j int) bool {
+		if posted[i].Path != posted[j].Path {
+			return posted[i].Path < posted[j].Path
+		}
+		return posted[i].Line < posted[j].Line
+	})
 
 	complete := !truncated && pr.ChangedFiles <= t.s.cfg.MaxFiles
 	for _, f := range files {

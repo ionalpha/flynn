@@ -692,11 +692,15 @@ func TestPRFetchReturnsDiffAndPostedMarkers(t *testing.T) {
 		t.Fatalf("fetch: %v", err)
 	}
 	var res struct {
-		Number         int      `json:"number"`
-		AuthorLogin    string   `json:"author_login"`
-		HeadSHA        string   `json:"head_sha"`
-		PostedFindings []string `json:"posted_findings"`
-		Files          []struct {
+		Number         int    `json:"number"`
+		AuthorLogin    string `json:"author_login"`
+		HeadSHA        string `json:"head_sha"`
+		PostedFindings []struct {
+			Path string `json:"path"`
+			Line int    `json:"line"`
+			Rule string `json:"rule"`
+		} `json:"posted_findings"`
+		Files []struct {
 			Filename string `json:"filename"`
 			Patch    string `json:"patch"`
 		} `json:"files"`
@@ -710,9 +714,16 @@ func TestPRFetchReturnsDiffAndPostedMarkers(t *testing.T) {
 	if len(res.Files) != 1 || res.Files[0].Filename != "a.go" || !strings.Contains(res.Files[0].Patch, "+b") {
 		t.Fatalf("diff wrong: %+v", res.Files)
 	}
-	// The already-posted finding is reported so the model does not re-propose it.
+	// A finding already on the pull request is reported with everything needed to post
+	// it again: a marker alone is a hash of path, line, and rule, and a reviewer handed
+	// only the hash cannot state the finding it stands for. It would stay silent about a
+	// defect that is still there, and silence retracts the finding.
 	if len(res.PostedFindings) != 1 {
 		t.Fatalf("posted findings = %v, want exactly 1", res.PostedFindings)
+	}
+	got := res.PostedFindings[0]
+	if got.Path == "" || got.Line == 0 || got.Rule == "" {
+		t.Fatalf("posted finding %+v cannot be posted again: it names no path, line, or rule", got)
 	}
 }
 
