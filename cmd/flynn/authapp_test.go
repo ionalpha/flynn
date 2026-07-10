@@ -146,6 +146,13 @@ type faultyStore struct {
 	deletes []string
 }
 
+func (f *faultyStore) Lookup(_ context.Context, ref string) (secret.Text, error) {
+	if v, ok := f.stored[ref]; ok {
+		return secret.New(v), nil
+	}
+	return secret.Text{}, secret.ErrNotFound
+}
+
 func (f *faultyStore) Set(_ context.Context, ref string, value secret.Text) error {
 	if ref == f.failOn {
 		return errors.New("vault is unavailable")
@@ -185,6 +192,42 @@ func TestAuthSetAppRollsBackAPartialWrite(t *testing.T) {
 				t.Errorf("set-app did not roll back what it had written before failing on %s", failOn)
 			}
 		})
+	}
+}
+
+// TestAuthSetAppRestoresTheReplacedIdentityOnFailure is the rotation case. set-app over
+// an existing App is how a key is rotated, so a write that fails part-way is replacing
+// something that worked. Rolling back by deleting would destroy the working identity
+// and leave the operator with no App at all, which is strictly worse than the failed
+// rotation they asked for.
+func TestAuthSetAppRestoresTheReplacedIdentityOnFailure(t *testing.T) {
+	keyPath := appKeyFile(t)
+	store := &faultyStore{failOn: refAppKey, stored: map[string]string{
+		refAppIssuer:       "1111",
+		refAppInstallation: "2222",
+		refAppKey:          "the-old-key",
+	}}
+
+	err := authSetApp(context.Background(), store,
+		[]string{"--issuer", "9999", "--installation", "8888", "--key-file", keyPath},
+		os.ReadFile, os.Remove)
+	if err == nil {
+		t.Fatal("a failing vault write must fail the command")
+	}
+	want := map[string]string{
+		refAppIssuer:       "1111",
+		refAppInstallation: "2222",
+		refAppKey:          "the-old-key",
+	}
+	for ref, value := range want {
+		got, ok := store.stored[ref]
+		if !ok {
+			t.Errorf("a failed rotation deleted %s, destroying the App that still worked", ref)
+			continue
+		}
+		if got != value {
+			t.Errorf("%s = %q after a failed rotation, want the previous %q", ref, got, value)
+		}
 	}
 }
 
