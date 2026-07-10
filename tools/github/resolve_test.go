@@ -7,9 +7,12 @@ const (
 	otherMarker = markerPrefix + "def456 -->"
 )
 
+// self is the reviewer's own login in these tests.
+const self = "vouchbot[bot]"
+
 // ours builds a thread the reviewer opened, with no reply.
 func ours(marker string) ReviewThread {
-	return ReviewThread{ID: "T1", Marker: marker, Author: "vouchbot", Participants: 1}
+	return ReviewThread{ID: "T1", Marker: marker, Author: self, Participants: 1}
 }
 
 // TestResolvableThread is the whole of the reviewer's authority to close a
@@ -58,7 +61,24 @@ func TestResolvableThread(t *testing.T) {
 			thread: ReviewThread{ID: "T2", Marker: "", Author: "a-person", Participants: 1, Outdated: true},
 			found:  nothingFound,
 			want:   false,
-			reason: "opened by a human",
+			reason: "opened by someone else",
+		},
+		{
+			// The marker is plain text in a comment body. A person who quotes a finding
+			// back at the reviewer has quoted the key to their own conversation, and the
+			// reviewer must not take that as licence to close it. The author is the fact.
+			name:   "a human's thread carrying a copied marker",
+			thread: ReviewThread{ID: "T3", Marker: ourMarker, Author: "a-person", Participants: 1, Outdated: true},
+			found:  nothingFound,
+			want:   false,
+			reason: "opened by someone else",
+		},
+		{
+			name:   "our own comment, but not a finding",
+			thread: ReviewThread{ID: "T4", Marker: "", Author: self, Participants: 1, Outdated: true},
+			found:  nothingFound,
+			want:   false,
+			reason: "not a finding",
 		},
 		{
 			name:   "ours, but someone replied",
@@ -84,7 +104,7 @@ func TestResolvableThread(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, reason := resolvableThread(tc.thread, tc.found)
+			got, reason := resolvableThread(tc.thread, self, tc.found)
 			if got != tc.want {
 				t.Fatalf("resolvableThread = %v (%s), want %v", got, reason, tc.want)
 			}
@@ -92,6 +112,18 @@ func TestResolvableThread(t *testing.T) {
 				t.Errorf("refused for %q, want %q", reason, tc.reason)
 			}
 		})
+	}
+}
+
+// A reviewer with no configured identity cannot tell its own conversation from anyone
+// else's, so it closes none rather than guessing from a marker anybody can copy.
+func TestNothingResolvesWithoutAnIdentity(t *testing.T) {
+	ok, reason := resolvableThread(ours(ourMarker), "", map[string]bool{})
+	if ok {
+		t.Fatal("a reviewer with no identity must not resolve anything")
+	}
+	if reason != "the reviewer has no identity to check the author against" {
+		t.Errorf("refused for %q", reason)
 	}
 }
 

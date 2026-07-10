@@ -19,11 +19,22 @@ import (
 //
 // found is the set of markers the run posted or updated. A finding still present is a
 // finding still open, whatever GitHub thinks about the diff hunk moving.
-func resolvableThread(t ReviewThread, found map[string]bool) (bool, string) {
+//
+// self is the reviewer's own login. The marker alone does not establish who wrote a
+// comment: it is plain text in a body anyone can read and copy, so a person quoting a
+// finding back at the reviewer would be quoting the key to their own conversation. The
+// author is the fact; the marker only says which finding the thread belongs to.
+func resolvableThread(t ReviewThread, self string, found map[string]bool) (bool, string) {
 	switch {
+	case self == "":
+		// Without an identity there is nothing to compare the author against, so the
+		// reviewer cannot tell its own conversation from anyone else's, and closes none.
+		return false, "the reviewer has no identity to check the author against"
+	case t.Author != self:
+		return false, "opened by someone else"
 	case t.Marker == "":
-		// No marker: a human opened this. Never ours to close.
-		return false, "opened by a human"
+		// The reviewer's own comment, but not one of its findings.
+		return false, "not a finding"
 	case t.Resolved:
 		return false, "already resolved"
 	case t.Participants > 1:
@@ -57,7 +68,9 @@ func resolvableThread(t ReviewThread, found map[string]bool) (bool, string) {
 // posted is the set of findings this review raised, passed in rather than read back
 // from the Set: submitting the verdict ends the review and takes its record with it.
 func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete bool, posted []ReviewComment) (int, error) {
-	if !diffComplete {
+	// Without a configured identity the reviewer cannot tell its own conversation from
+	// anyone else's, so it closes none and does not spend a request finding that out.
+	if !diffComplete || s.cfg.SelfLogin == "" {
 		return 0, nil
 	}
 	threads, err := s.client.reviewThreads(ctx, number)
@@ -74,7 +87,7 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 
 	var resolved int
 	for _, t := range threads {
-		if ok, _ := resolvableThread(t, found); !ok {
+		if ok, _ := resolvableThread(t, s.cfg.SelfLogin, found); !ok {
 			continue
 		}
 		if err := s.client.resolveThread(ctx, t.ID); err != nil {

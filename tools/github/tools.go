@@ -491,20 +491,33 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	if in.Event == "APPROVE" && t.s.cfg.SelfLogin != "" && pr.AuthorLogin == t.s.cfg.SelfLogin {
 		return "", ErrSelfApproval
 	}
-	// Whether the whole diff reached this review. It gates two things: the approval
-	// below, and whether a finding's absence is evidence the defect is gone (see
-	// resolveStaleThreads). Read once, because it costs a fetch of the changed files.
-	complete, why, err := t.s.diffCoverage(ctx, pr)
-	if err != nil {
-		return "", err
-	}
-	// An APPROVE asserts the change was reviewed. If the diff was truncated on the
-	// way in, that assertion is false, and it is the assertion a signed verdict would
-	// go on to attest. Blocking verdicts stay available on partial evidence: seeing
-	// one real defect is enough to say no, but seeing most of a diff is never enough
-	// to say yes. No configuration relaxes this.
-	if in.Event == "APPROVE" && !complete {
-		return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
+	// Whether the whole diff reached this review. It gates the approval below, and it
+	// gates whether a finding's absence is evidence the defect is gone (see
+	// resolveStaleThreads).
+	//
+	// An APPROVE asserts the change was reviewed. If the diff was truncated on the way
+	// in, that assertion is false, and it is the assertion a signed verdict would go on
+	// to attest. Blocking verdicts stay available on partial evidence: seeing one real
+	// defect is enough to say no, but seeing most of a diff is never enough to say yes.
+	// No configuration relaxes this.
+	//
+	// For every other verdict the coverage read is advisory, and its failure must not
+	// cost the review its verdict. A transient error on the changed-files endpoint would
+	// otherwise stop a reviewer that had found a real defect from ever saying so, in
+	// service of housekeeping that runs after the verdict anyway. An unreadable diff is
+	// treated as incomplete, so nothing is resolved on the strength of it.
+	var complete bool
+	if in.Event == "APPROVE" {
+		ok, why, err := t.s.diffCoverage(ctx, pr)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
+		}
+		complete = true
+	} else if ok, _, err := t.s.diffCoverage(ctx, pr); err == nil {
+		complete = ok
 	}
 	// Validated last, after every refusal above. A reviewer denied the authority to
 	// approve must be told that, not that its sentence was missing: the weaker error

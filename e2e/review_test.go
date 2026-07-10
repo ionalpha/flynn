@@ -319,7 +319,7 @@ func TestReviewSurfacesAnAPIFailure(t *testing.T) {
 func TestReviewResolvesItsOwnStaleThreads(t *testing.T) {
 	gh := newFakeGitHub(t, defaultPR())
 	gh.addThread(ghThread{ID: "T-stale", Outdated: true, Comments: []ghThreadComment{
-		{Body: "<!-- flynn-review:deadbe -->\n**old-rule** a finding since fixed", Author: "vouchbot[bot]"},
+		{Body: "<!-- flynn-review:deadbe -->\n**old-rule** a finding since fixed", Author: reviewerName},
 	}})
 	gh.addThread(ghThread{ID: "T-human", Outdated: true, Comments: []ghThreadComment{
 		{Body: "why is this here?", Author: "a-maintainer"},
@@ -333,7 +333,9 @@ func TestReviewResolvesItsOwnStaleThreads(t *testing.T) {
 	)
 	in := reviewInstance(t, model)
 
-	if res := in.run(reviewArgs(gh)...); res.code != 0 {
+	// Resolution needs the reviewer's own login: a marker is text anyone can copy, so
+	// the author is what proves a conversation is the reviewer's to close.
+	if res := in.run(reviewArgs(gh, "--as", reviewerName)...); res.code != 0 {
 		t.Fatalf("review failed: exit %d\n%s", res.code, res.combined())
 	}
 	got := gh.resolvedThreads()
@@ -356,7 +358,7 @@ func TestReviewKeepsAThreadItRaisedAgain(t *testing.T) {
 
 	// Run once so the finding's comment exists, then seed its thread with the exact
 	// body the binary posted, so the marker is the real one.
-	if res := in.run(reviewArgs(gh)...); res.code != 3 {
+	if res := in.run(reviewArgs(gh, "--as", reviewerName)...); res.code != 3 {
 		t.Fatalf("first review: exit %d\n%s", res.code, res.combined())
 	}
 	posted := gh.inlineComments()
@@ -364,7 +366,7 @@ func TestReviewKeepsAThreadItRaisedAgain(t *testing.T) {
 		t.Fatalf("want 1 inline comment, got %d", len(posted))
 	}
 	gh.addThread(ghThread{ID: "T-open", Outdated: true, Comments: []ghThreadComment{
-		{Body: posted[0].Body, Author: "vouchbot[bot]"},
+		{Body: posted[0].Body, Author: reviewerName},
 	}})
 
 	// A second review raises the same finding. Outdated or not, it is still open.
@@ -376,7 +378,7 @@ func TestReviewKeepsAThreadItRaisedAgain(t *testing.T) {
 		finalText("Requested changes."),
 	)
 	in2 := reviewInstance(t, model2)
-	if res := in2.run(reviewArgs(gh)...); res.code != 3 {
+	if res := in2.run(reviewArgs(gh, "--as", reviewerName)...); res.code != 3 {
 		t.Fatalf("second review: exit %d\n%s", res.code, res.combined())
 	}
 	if got := gh.resolvedThreads(); len(got) != 0 {

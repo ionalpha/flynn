@@ -75,6 +75,7 @@ type fakeHub struct {
 	resolved     []string
 	graphqlError string
 	failReviews  atomic.Bool // when set, a review submission answers 500
+	failFiles    atomic.Bool // when set, the changed-files endpoint answers 500
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -142,6 +143,10 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case strings.HasSuffix(p, "/files"):
+		if h.failFiles.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		h.serveFiles(w, r)
 
 	case strings.HasSuffix(p, "/reviews") && r.Method == http.MethodPost:
@@ -1199,7 +1204,7 @@ func TestVerdictListsOnlyTheReviewersOwnComments(t *testing.T) {
 // leaves a human's alone, and leaves open the one it just raised again.
 func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 	hub := newFakeHub(t)
-	set := newSet(t, hub, nil)
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 
 	// Post the finding first, so the thread below carries the marker the tool really
 	// writes rather than one the test guessed.
@@ -1267,7 +1272,7 @@ func TestNoThreadIsResolvedWhenTheDiffWasTruncated(t *testing.T) {
 func TestAFailedResolutionDoesNotFailTheVerdict(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.graphqlError = "Resource not accessible by integration"
-	set := newSet(t, hub, nil)
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 
 	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Looks fine."}`)
 	if err != nil {
@@ -1278,5 +1283,61 @@ func TestAFailedResolutionDoesNotFailTheVerdict(t *testing.T) {
 	}
 	if !strings.Contains(out, "could not resolve") || !strings.Contains(out, "not accessible") {
 		t.Errorf("the failure was swallowed: %q", out)
+	}
+}
+
+// A blocking verdict must survive a transient failure of the changed-files endpoint.
+// Diff coverage gates an approval and gates thread resolution, which is housekeeping
+// that runs after the verdict. A reviewer that found a real defect must still be able
+// to say so when GitHub hiccups on a request the verdict does not depend on.
+func TestATransientFilesFailureDoesNotBlockABlockingVerdict(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
+	}})
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
+	hub.failFiles.Store(true)
+
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"A real defect."}`); err != nil {
+		t.Fatalf("a transient files failure blocked the verdict: %v", err)
+	}
+	if got, _ := hub.submittedBody.Load().(string); got != "REQUEST_CHANGES" {
+		t.Fatalf("verdict submitted = %q, want REQUEST_CHANGES", got)
+	}
+	// The diff could not be read, so its completeness is unknown and nothing is closed.
+	if got := hub.resolvedThreads(); len(got) != 0 {
+		t.Errorf("resolved %v on a diff that could not be read", got)
+	}
+}
+
+// An approval still depends on reading the diff: it asserts the whole change was
+// reviewed, so a coverage read that fails refuses the approval rather than guessing.
+func TestATransientFilesFailureRefusesAnApproval(t *testing.T) {
+	hub := newFakeHub(t)
+	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true; c.SelfLogin = "vouchbot" })
+	hub.failFiles.Store(true)
+
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Looks fine."}`); err == nil {
+		t.Fatal("an approval must not be submitted when the diff could not be read")
+	}
+	if got, _ := hub.submittedBody.Load().(string); got == "APPROVE" {
+		t.Fatal("an approval reached the API on an unread diff")
+	}
+}
+
+// A maintainer who quotes a finding back at the reviewer has copied the marker into
+// their own comment. The reviewer must not read that as licence to close their thread.
+func TestAThreadIsNotOursBecauseItCarriesOurMarker(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.addThread(fakeThread{id: "T-copied", outdated: true, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:deadbe -->\nquoting your finding back at you", author: "a-maintainer"},
+	}})
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
+
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if got := hub.resolvedThreads(); len(got) != 0 {
+		t.Fatalf("resolved %v: a copied marker is not authorship", got)
 	}
 }
