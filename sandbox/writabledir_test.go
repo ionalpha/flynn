@@ -33,9 +33,26 @@ func writeAttempt(t *testing.T, l *Local, target string) string {
 	return res.Output
 }
 
+// requireConfinedRun skips unless this host can actually establish kernel confinement for
+// l. Whether a platform has a confinement mechanism (kernelConfinementSupported) is a
+// compile-time fact; whether this host will let an unprivileged process use it is not.
+// Ubuntu 24.04 and its GitHub runner restrict unprivileged user namespaces, and the
+// always-on baseline (WithDefaultConfinement) is documented to fall back to the floor on a
+// host that cannot set confinement up. On such a host an ungranted write is not denied and
+// a granted one proves nothing, because the child ran unconfined. Both directions have to
+// gate on the runtime probe rather than the platform predicate: otherwise the denial test
+// fails for the wrong reason and the grant test passes for the wrong reason.
+func requireConfinedRun(t *testing.T, l *Local) {
+	t.Helper()
+	if !l.kernelConfinementEnforceable() {
+		t.Skip("this host cannot establish kernel confinement (unprivileged user namespaces are likely restricted); the always-on baseline runs at the floor, where a write outside the workspace is not denied")
+	}
+}
+
 func TestWritableDirGrantsConfinedWrite(t *testing.T) {
 	ext, target := externalWritable(t)
 	l := newTestLocal(t, WithDefaultConfinement(), WithWritableDir(ext))
+	requireConfinedRun(t, l)
 	if out := writeAttempt(t, l, target); !strings.Contains(out, "wrote") {
 		t.Fatalf("confined child could not write the granted external dir: %q", out)
 	}
@@ -48,11 +65,9 @@ func TestWritableDirGrantsConfinedWrite(t *testing.T) {
 }
 
 func TestWritableDirDeniedWithoutGrant(t *testing.T) {
-	if !kernelConfinementSupported() {
-		t.Skip("no kernel confinement on this host; writes outside the workspace are not denied")
-	}
 	_, target := externalWritable(t)
 	l := newTestLocal(t, WithDefaultConfinement()) // no WithWritableDir
+	requireConfinedRun(t, l)
 	if out := writeAttempt(t, l, target); strings.Contains(out, "wrote") {
 		t.Fatalf("confined child wrote an ungranted external dir; the confinement is not denying writes: %q", out)
 	}
