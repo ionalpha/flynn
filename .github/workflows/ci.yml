@@ -421,7 +421,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, bench, pr-body]
+    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, bench, fuzz, pr-body]
     runs-on: ubuntu-latest
     steps:
       - name: The full suite has not run
@@ -452,6 +452,7 @@ jobs:
             osv=${{ needs.osv.result }}
             semgrep=${{ needs.semgrep.result }}
             bench=${{ needs.bench.result }}
+            fuzz=${{ needs.fuzz.result }}
         run: |
           failed=0
           for entry in $RESULTS; do
