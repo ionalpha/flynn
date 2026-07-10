@@ -138,6 +138,56 @@ func TestAuthSetAppRefusesBadInput(t *testing.T) {
 	}
 }
 
+// faultyStore is a vault whose Set fails on the reference it is told to fail on, so a
+// write that succeeds part-way can be exercised.
+type faultyStore struct {
+	failOn  string
+	stored  map[string]string
+	deletes []string
+}
+
+func (f *faultyStore) Set(_ context.Context, ref string, value secret.Text) error {
+	if ref == f.failOn {
+		return errors.New("vault is unavailable")
+	}
+	if f.stored == nil {
+		f.stored = map[string]string{}
+	}
+	f.stored[ref] = value.Expose()
+	return nil
+}
+
+func (f *faultyStore) Delete(_ context.Context, ref string) error {
+	f.deletes = append(f.deletes, ref)
+	delete(f.stored, ref)
+	return nil
+}
+
+// TestAuthSetAppRollsBackAPartialWrite: a vault that fails on the second reference
+// must leave nothing behind. A stored issuer with no key is worse than no App at all,
+// because a review refuses a part-configured App instead of falling back to a token,
+// so a failed set-app would break the next review rather than leave it as it was.
+func TestAuthSetAppRollsBackAPartialWrite(t *testing.T) {
+	keyPath := appKeyFile(t)
+	for _, failOn := range []string{refAppInstallation, refAppKey} {
+		t.Run(failOn, func(t *testing.T) {
+			store := &faultyStore{failOn: failOn}
+			err := authSetApp(context.Background(), store,
+				[]string{"--issuer", "1", "--installation", "2", "--key-file", keyPath},
+				os.ReadFile, os.Remove)
+			if err == nil {
+				t.Fatal("a failing vault write must fail the command")
+			}
+			if len(store.stored) != 0 {
+				t.Errorf("set-app left %v in the vault after failing on %s", store.stored, failOn)
+			}
+			if len(store.deletes) == 0 {
+				t.Errorf("set-app did not roll back what it had written before failing on %s", failOn)
+			}
+		})
+	}
+}
+
 // TestAuthRemoveAppClearsEveryReference is the rotation path, and it must clear a
 // partial identity too: a key removed but an issuer left behind would make the next
 // review fail on a half-configured App rather than fall through to a token.

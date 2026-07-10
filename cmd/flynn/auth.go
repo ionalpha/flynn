@@ -72,6 +72,13 @@ func runAuth(args []string, dataDir string) error {
 	}
 }
 
+// appStore is the slice of the vault the App verbs use. Naming it lets a test supply
+// a vault whose second write fails, which is the case the rollback below exists for.
+type appStore interface {
+	Set(ctx context.Context, ref string, value secret.Text) error
+	Delete(ctx context.Context, ref string) error
+}
+
 // authSetApp stores a GitHub App identity in the vault: the App id it signs its
 // assertions with, the installation it acts as, and the private key it signs with.
 //
@@ -84,7 +91,7 @@ func runAuth(args []string, dataDir string) error {
 //
 // The key is parsed before it is stored. A file that is not an RSA private key fails
 // here, where the operator is watching, rather than on the first review.
-func authSetApp(ctx context.Context, store *vault.Store, args []string, readFile func(string) ([]byte, error), removeFile func(string) error) error {
+func authSetApp(ctx context.Context, store appStore, args []string, readFile func(string) ([]byte, error), removeFile func(string) error) error {
 	fs := flag.NewFlagSet("auth set-app", flag.ContinueOnError)
 	var (
 		issuer       = fs.String("issuer", "", "the App id, which signs its assertions (App settings: \"App ID\")")
@@ -118,8 +125,12 @@ func authSetApp(ctx context.Context, store *vault.Store, args []string, readFile
 		return fmt.Errorf("auth: %s is not an App private key: %w", *keyFile, err)
 	}
 
-	// The key is written last. A failure part-way leaves no key in the vault, and the
-	// review's own check refuses a part-configured App rather than acting on one.
+	// The three references are written as a unit. A vault that fails on the second
+	// write would otherwise leave an issuer with no key behind, and a review refuses a
+	// part-configured App rather than falling back to a token, so a failed set-app
+	// would break the next review instead of leaving it as it was. Undo what was
+	// written before reporting the failure.
+	var written []string
 	for _, entry := range []struct {
 		ref   string
 		value secret.Text
@@ -129,8 +140,12 @@ func authSetApp(ctx context.Context, store *vault.Store, args []string, readFile
 		{refAppKey, secret.New(string(pemBytes))},
 	} {
 		if err := store.Set(ctx, entry.ref, entry.value); err != nil {
+			for _, ref := range written {
+				_ = store.Delete(ctx, ref)
+			}
 			return fmt.Errorf("auth: store %s: %w", entry.ref, err)
 		}
+		written = append(written, entry.ref)
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "Stored the GitHub App identity in the vault (%s, %s, %s).\n",
 		refAppIssuer, refAppInstallation, refAppKey)
@@ -150,7 +165,7 @@ func authSetApp(ctx context.Context, store *vault.Store, args []string, readFile
 // key is rotated: remove, then set-app with the newly generated one. Removing a
 // reference that was never stored is not an error, so a partial identity left by an
 // interrupted set-app can always be cleared.
-func authRemoveApp(ctx context.Context, store *vault.Store) error {
+func authRemoveApp(ctx context.Context, store appStore) error {
 	for _, ref := range []string{refAppIssuer, refAppInstallation, refAppKey} {
 		if err := store.Delete(ctx, ref); err != nil {
 			return fmt.Errorf("auth: remove %s: %w", ref, err)
