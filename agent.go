@@ -20,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/internal/archetype"
@@ -269,7 +270,7 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan struct{})
-	go func() { _ = rt.Start(runCtx); close(done) }()
+	go func() { _ = rt.Start(diag.LabelGoroutine(runCtx, "component", "goal-runtime")); close(done) }()
 
 	if _, err := sess.Submit(runCtx, rt, goal.Spec{
 		Objective:     objective,

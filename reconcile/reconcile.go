@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/fault"
 )
 
@@ -92,7 +93,9 @@ func (c *Controller[T]) Run(ctx context.Context) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			c.worker(ctx)
+			// A stalled controller shows up as N identical worker stacks; the label is
+			// what says which controller they belong to.
+			c.worker(diag.LabelGoroutine(ctx, "component", "reconcile", "controller", c.name))
 		}()
 	}
 	wg.Wait()

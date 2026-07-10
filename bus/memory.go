@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/observe"
 )
 
@@ -152,7 +153,9 @@ func (b *MemoryBus) Subscribe(_ context.Context, pattern string, h Handler) (Sub
 	b.subs[s] = struct{}{}
 	b.mu.Unlock()
 
-	go s.run()
+	// The pump outlives the Subscribe call by design: it stops at Unsubscribe or
+	// Close, never at the caller's cancellation.
+	go s.run() //nolint:gosec // G118: a subscription pump is a background service, not request-scoped
 	return s, nil
 }
 
@@ -214,6 +217,11 @@ func (s *subscription) stop() {
 // run delivers mailbox messages to the handler in order until the subscription is
 // stopped. done wins ties so a stop is prompt even with a backlog.
 func (s *subscription) run() {
+	// Label this pump for the life of the goroutine, so a goroutine profile of a
+	// process holding thousands of them says which subject they are parked on
+	// rather than showing one anonymous stack repeated.
+	diag.LabelGoroutine(context.Background(), "component", "bus", "subject", s.subject)
+
 	for {
 		select {
 		case <-s.done:

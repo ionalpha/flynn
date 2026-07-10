@@ -64,6 +64,7 @@ const (
 	MemberAllocs       = "allocs.pprof"
 	MemberGoroutine    = "goroutine.pprof"
 	MemberGoroutineTxt = "goroutine.txt"
+	MemberGoroutineLbl = "goroutine.labels.txt"
 	MemberThreadcreate = "threadcreate.pprof"
 	MemberBlock        = "block.pprof"
 	MemberMutex        = "mutex.pprof"
@@ -191,6 +192,12 @@ func Start(cfg Config) (*Bundle, error) {
 		b.timeline = tl
 	}
 
+	// Labelling is live only while a bundle is open, so the waist and the long-lived
+	// goroutine loops pay nothing for it in an unprofiled process. Set it last: every
+	// failure above returns without a bundle, and a process with no bundle must not
+	// be paying for labels.
+	profiling.Store(true)
+
 	return b, nil
 }
 
@@ -242,6 +249,10 @@ func (b *Bundle) Stop() error {
 	b.stopped = true
 	b.mu.Unlock()
 
+	// Nothing after this point can be labelled into a profile that is already being
+	// written, and the process may keep running after its bundle is sealed.
+	profiling.Store(false)
+
 	var errs []error
 
 	// Stop the sampler before the exit-time profiles so the timeline's last line
@@ -267,6 +278,10 @@ func (b *Bundle) Stop() error {
 		// debug=2 renders every goroutine's full stack as text. It is the member a
 		// human reads first on a hang, and no pprof tooling is needed to read it.
 		b.writeProfile(MemberGoroutineTxt, "goroutine", 2),
+		// debug=1 folds identical stacks into counts and prints the pprof labels
+		// each carries, which debug=2 omits. It is the member that answers "which
+		// action left 1,900 goroutines parked", again with no pprof tooling.
+		b.writeProfile(MemberGoroutineLbl, "goroutine", 1),
 		b.writeProfile(MemberThreadcreate, "threadcreate", 0),
 	)
 

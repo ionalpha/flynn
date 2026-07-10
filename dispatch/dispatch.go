@@ -17,9 +17,11 @@ package dispatch
 
 import (
 	"context"
+	"strconv"
 	"sync/atomic"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/observe"
 	"github.com/ionalpha/flynn/sandbox"
@@ -183,7 +185,7 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 	d.emit(ctx, Event{Type: EventStart, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano()})
 	d.ob.Log.Info(ctx, "dispatch start", observe.String("action", a.Name), observe.String("trust", a.Trust.String()))
 
-	m, err := work(ctx)
+	m, err := d.labelled(ctx, a, call, work)
 
 	end := Event{Type: EventEnd, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano()}
 	outcome := "ok"
@@ -202,6 +204,44 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 	d.emit(ctx, end)
 	d.unwind(ctx, a, m, err, entered)
 	return err
+}
+
+// labelled runs work under pprof labels naming the action, so every CPU sample
+// taken inside it and every goroutine it starts is attributable to this
+// invocation rather than to an anonymous stack. The waist is the only place that
+// knows what an action is, which is why the labels are applied here and nowhere
+// else.
+//
+// The guard is not an optimization detail: pprof.Do allocates a label map per
+// call, and the waist runs on every tool call, so an unprofiled process must take
+// the direct path. dispatch/alloc_test.go holds that ceiling.
+func (d *Dispatcher) labelled(ctx context.Context, a Action, call int64, work func(context.Context) (Metering, error)) (Metering, error) {
+	if !diag.Profiling() {
+		return work(ctx)
+	}
+	var (
+		m   Metering
+		err error
+	)
+	diag.Labeled(ctx, func(ctx context.Context) { m, err = work(ctx) }, actionLabels(a, call)...)
+	return m, err
+}
+
+// actionLabels is the label set a governed action carries into a profile. Goal is
+// omitted when empty rather than emitted as an empty string, so a profile grouped
+// by goal does not grow a bucket of everything that ran under none. There is no
+// run id yet: the waist has no ambient run context to read one from, and inventing
+// a second carrier for it here would be the wrong place to put it.
+func actionLabels(a Action, call int64) []string {
+	kv := []string{
+		"action", a.Name,
+		"trust", a.Trust.String(),
+		"call", strconv.FormatInt(call, 10),
+	}
+	if a.Goal != "" {
+		kv = append(kv, "goal", a.Goal)
+	}
+	return kv
 }
 
 // rejected records a pre-execution rejection (a Before hook or admission) and

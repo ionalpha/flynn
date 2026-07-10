@@ -89,7 +89,7 @@ func TestBundleWritesEveryMemberAndAHashedManifest(t *testing.T) {
 	}
 
 	// Contention was off, so neither contention member exists.
-	want := []string{MemberCPU, MemberHeap, MemberAllocs, MemberGoroutine, MemberGoroutineTxt, MemberThreadcreate, MemberTimeline, MemberManifest}
+	want := []string{MemberCPU, MemberHeap, MemberAllocs, MemberGoroutine, MemberGoroutineTxt, MemberGoroutineLbl, MemberThreadcreate, MemberTimeline, MemberManifest}
 	for _, name := range want {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("member %s missing: %v", name, err)
@@ -114,6 +114,12 @@ func TestBundleWritesEveryMemberAndAHashedManifest(t *testing.T) {
 	txt := string(readFile(t, dir, MemberGoroutineTxt))
 	if !strings.HasPrefix(txt, "goroutine ") || !strings.Contains(txt, "[running]") {
 		t.Errorf("%s is not a full goroutine stack dump, got %.60q", MemberGoroutineTxt, txt)
+	}
+
+	// debug=1 folds stacks into counts and prints the labels each carries.
+	lbl := string(readFile(t, dir, MemberGoroutineLbl))
+	if !strings.HasPrefix(lbl, "goroutine profile: total ") {
+		t.Errorf("%s is not a debug=1 goroutine summary, got %.60q", MemberGoroutineLbl, lbl)
 	}
 
 	m := readManifest(t, dir)

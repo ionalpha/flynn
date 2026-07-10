@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -110,7 +111,7 @@ func (m *Manager) Start(ctx context.Context) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		m.resyncLoop(ctx)
+		m.resyncLoop(diag.LabelGoroutine(ctx, "component", "reconcile", "loop", "resync"))
 	}()
 	wg.Wait()
 }
