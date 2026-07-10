@@ -7,6 +7,9 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
+	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/internal/credential"
 	"github.com/ionalpha/flynn/internal/vault"
+	"github.com/ionalpha/flynn/netguard"
 	"github.com/ionalpha/flynn/secret"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/tools/github"
@@ -48,6 +52,13 @@ const (
 // github`) authenticate a review when no App is configured.
 const githubIntegration = "github"
 
+// envAPIBase names the REST API root to review against. It is not a credential, so
+// it is read from the environment rather than the vault. GitHub Actions exports it
+// into every job, holding github.com's API root on the hosted service and the
+// appliance's own root on GitHub Enterprise, so a workflow that sets nothing still
+// reviews against the API it is running under.
+const envAPIBase = "GITHUB_API_URL"
+
 // runReview reviews one pull request with the reviewer archetype and submits a
 // formal verdict. The archetype supplies the standing instruction and the exact
 // authority (package review); this command only assembles: parse the target, build
@@ -64,6 +75,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 		maxCost   = fs.Float64("max-cost", 0, "cap the review's total model spend; 0 is unlimited")
 		maxTokens = fs.Int64("max-tokens", 0, "cap the review's total metered tokens; 0 is unlimited")
 		credRef   = fs.String("credential", "", "the stored github credential to authenticate with (github/<name>); default is the integration's default credential")
+		apiBase   = fs.String("api-base", os.Getenv(envAPIBase), "the GitHub REST API root; a GitHub Enterprise host points this at its own API. Defaults to $"+envAPIBase+", else "+github.DefaultAPIBase)
 	)
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "usage: flynn review <pull-request> [flags]")
@@ -71,18 +83,31 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 		fmt.Fprintln(os.Stderr, "  auth: a GitHub App ("+refAppIssuer+" + "+refAppInstallation+" + "+refAppKey+" or "+refAppKeyFile+"),")
 		fmt.Fprintln(os.Stderr, "        else a stored credential (flynn auth add github), else "+refToken+";")
 		fmt.Fprintln(os.Stderr, "        every reference resolves vault first, environment second")
+		fmt.Fprintln(os.Stderr, "  host: "+github.DefaultAPIBase+" unless --api-base or $"+envAPIBase+" names another")
 		fmt.Fprintf(os.Stderr, "  exit: 0 clean, %d changes requested, 1 failure\n", exitChangesRequested)
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		return err
+	// The flag package stops parsing at the first argument that is not a flag, so a
+	// single Parse of "<pull-request> --approve" would take --approve for a second
+	// pull request. The usage line puts the pull request first because that is how the
+	// command is written, so collect positionals and keep parsing what follows them.
+	var positional []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return err
+		}
+		if fs.NArg() == 0 {
+			break
+		}
+		positional = append(positional, fs.Arg(0))
+		args = fs.Args()[1:]
 	}
-	if fs.NArg() != 1 {
+	if len(positional) != 1 {
 		fs.Usage()
 		return errors.New("expected exactly one pull request")
 	}
 
-	owner, repoName, number, err := parsePRRef(fs.Arg(0), *repo)
+	owner, repoName, number, err := parsePRRef(positional[0], *repo)
 	if err != nil {
 		return err
 	}
@@ -135,6 +160,9 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	cfg.AllowApprove = *approve
 	cfg.MaxChangedLines = *maxLines
 	cfg.ReviewOversize = *oversize
+	if err := configureAPIBase(ctx, &cfg, *apiBase, resolveHost); err != nil {
+		return err
+	}
 
 	log := store.Log()
 	var rec *chain.RecordingLog
@@ -267,6 +295,89 @@ func parsePRRef(arg, repoFlag string) (owner, repo string, number int, err error
 		return "", "", 0, fmt.Errorf("pull request number %q is not a positive integer", numPart)
 	}
 	return owner, repo, number, nil
+}
+
+// hostResolver maps a host name to the addresses it answers on. resolveHost is the
+// real one; a test supplies its own to fix what a name resolves to.
+type hostResolver func(ctx context.Context, host string) ([]netip.Addr, error)
+
+// resolveHost resolves a host name, or parses it when it is already an address
+// literal, which the resolver would otherwise have to be trusted to pass through.
+func resolveHost(ctx context.Context, host string) ([]netip.Addr, error) {
+	if addr, err := netip.ParseAddr(host); err == nil {
+		return []netip.Addr{addr}, nil
+	}
+	return net.DefaultResolver.LookupNetIP(ctx, "ip", host)
+}
+
+// configureAPIBase points the toolset at an API root other than github.com's, and
+// widens the egress policy just far enough to reach it.
+//
+// The default toolset dials through a public-only policy, which refuses private,
+// loopback, and cloud-metadata addresses. That is the right default against a public
+// API and the wrong one against a GitHub Enterprise appliance, which commonly answers
+// on an internal address the policy would refuse. An empty base, or github.com's own,
+// changes nothing and keeps that default.
+//
+// A configured base widens the policy by address rather than by class: the policy
+// permits exactly the addresses this host resolves to, and nothing else, so naming an
+// internal appliance does not also open the run to the rest of the private network or
+// to the metadata endpoint. Pagination is separately pinned to the API origin by the
+// client, so a response cannot redirect the credential elsewhere.
+func configureAPIBase(ctx context.Context, cfg *github.Config, base string, resolve hostResolver) error {
+	base = strings.TrimSuffix(strings.TrimSpace(base), "/")
+	if base == "" || base == github.DefaultAPIBase {
+		return nil
+	}
+	policy, err := apiEgressPolicy(ctx, base, resolve)
+	if err != nil {
+		return err
+	}
+	cfg.APIBase = base
+	cfg.HTTPClient = netguard.Client(policy)
+	return nil
+}
+
+// apiEgressPolicy builds the outbound policy for reaching base, and refuses a base
+// that would carry the credential unsafely.
+//
+// Every request to the API root attaches the reviewer's token, so the scheme is not a
+// preference. Plain http is permitted only when every address the host resolves to is
+// loopback, where the request never leaves the machine; against any other address it
+// would put the token on the wire in the clear, and an internal network is not a
+// trusted one.
+func apiEgressPolicy(ctx context.Context, base string, resolve hostResolver) (netguard.Policy, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return netguard.Policy{}, fmt.Errorf("api base %q is not a URL: %w", base, err)
+	}
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return netguard.Policy{}, fmt.Errorf("api base %q must be an http or https URL", base)
+	}
+	host := u.Hostname()
+	if host == "" {
+		return netguard.Policy{}, fmt.Errorf("api base %q names no host", base)
+	}
+	addrs, err := resolve(ctx, host)
+	if err != nil {
+		return netguard.Policy{}, fmt.Errorf("resolve api base host %q: %w", host, err)
+	}
+	if len(addrs) == 0 {
+		return netguard.Policy{}, fmt.Errorf("api base host %q resolves to no address", host)
+	}
+
+	policy := netguard.Policy{Allow: make([]netip.Prefix, 0, len(addrs))}
+	for _, addr := range addrs {
+		addr = addr.Unmap()
+		if u.Scheme == "http" && !addr.IsLoopback() {
+			return netguard.Policy{}, fmt.Errorf(
+				"api base %q is http and %q is not loopback: a GitHub credential would cross the network in the clear; use https",
+				base, addr,
+			)
+		}
+		policy.Allow = append(policy.Allow, netip.PrefixFrom(addr, addr.BitLen()))
+	}
+	return policy, nil
 }
 
 // tokenLookup resolves a stored GitHub token, returning secret.ErrNotFound when

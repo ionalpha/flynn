@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -26,6 +27,115 @@ import (
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/tools/github"
 )
+
+// fixedResolver resolves every host to the given addresses, so a test can state what a
+// name answers with instead of asking the network.
+func fixedResolver(addrs ...string) hostResolver {
+	return func(context.Context, string) ([]netip.Addr, error) {
+		out := make([]netip.Addr, 0, len(addrs))
+		for _, a := range addrs {
+			out = append(out, netip.MustParseAddr(a))
+		}
+		return out, nil
+	}
+}
+
+// TestConfigureAPIBaseLeavesTheDefaultAlone: the public API keeps the public-only
+// policy the toolset builds for itself. Nothing is widened, and no name is resolved.
+func TestConfigureAPIBaseLeavesTheDefaultAlone(t *testing.T) {
+	unreachable := func(context.Context, string) ([]netip.Addr, error) {
+		t.Fatal("the default API base must not be resolved")
+		return nil, nil
+	}
+	for _, base := range []string{"", "  ", github.DefaultAPIBase, github.DefaultAPIBase + "/"} {
+		var cfg github.Config
+		if err := configureAPIBase(context.Background(), &cfg, base, unreachable); err != nil {
+			t.Fatalf("base %q: %v", base, err)
+		}
+		if cfg.APIBase != "" || cfg.HTTPClient != nil {
+			t.Errorf("base %q changed the config: APIBase=%q client=%v", base, cfg.APIBase, cfg.HTTPClient != nil)
+		}
+	}
+}
+
+// TestConfigureAPIBaseWidensEgressToTheNamedHostOnly: an enterprise appliance on a
+// private address is reachable, and nothing else private becomes reachable with it.
+// The metadata endpoint is the one that matters: a policy that admitted the whole
+// private range would admit it too.
+func TestConfigureAPIBaseWidensEgressToTheNamedHostOnly(t *testing.T) {
+	var cfg github.Config
+	err := configureAPIBase(context.Background(), &cfg,
+		"https://ghe.internal.example/api/v3", fixedResolver("10.1.2.3"))
+	if err != nil {
+		t.Fatalf("configure: %v", err)
+	}
+	if cfg.APIBase != "https://ghe.internal.example/api/v3" {
+		t.Errorf("APIBase = %q", cfg.APIBase)
+	}
+	if cfg.HTTPClient == nil {
+		t.Fatal("an explicit API base must install a client carrying the widened policy")
+	}
+
+	policy, err := apiEgressPolicy(context.Background(), "https://ghe.internal.example/api/v3", fixedResolver("10.1.2.3"))
+	if err != nil {
+		t.Fatalf("policy: %v", err)
+	}
+	allowed := map[string]bool{
+		"10.1.2.3":        true,  // the appliance itself
+		"10.1.2.4":        false, // its neighbour on the same private network
+		"169.254.169.254": false, // cloud metadata
+		"127.0.0.1":       false, // loopback
+		"140.82.121.5":    false, // a public address: naming a host is not a licence to roam
+	}
+	for addr, want := range allowed {
+		if got := policy.Allows(netip.MustParseAddr(addr)); got != want {
+			t.Errorf("policy.Allows(%s) = %v, want %v", addr, got, want)
+		}
+	}
+}
+
+// TestAPIEgressPolicyRefusesPlaintextOffTheMachine: every request carries the
+// reviewer's token, so http is permitted only where the request cannot leave the host.
+func TestAPIEgressPolicyRefusesPlaintextOffTheMachine(t *testing.T) {
+	if _, err := apiEgressPolicy(context.Background(), "http://127.0.0.1:8080", fixedResolver("127.0.0.1")); err != nil {
+		t.Errorf("http to loopback must be allowed: %v", err)
+	}
+	if _, err := apiEgressPolicy(context.Background(), "http://ghe.internal.example", fixedResolver("10.1.2.3")); err == nil {
+		t.Error("http to a private address must be refused: the token would cross the network in the clear")
+	}
+	if _, err := apiEgressPolicy(context.Background(), "https://ghe.internal.example", fixedResolver("10.1.2.3")); err != nil {
+		t.Errorf("https to a private address must be allowed: %v", err)
+	}
+	// A host that answers on both loopback and something else is not a loopback host.
+	if _, err := apiEgressPolicy(context.Background(), "http://mixed.example", fixedResolver("127.0.0.1", "10.1.2.3")); err == nil {
+		t.Error("http must be refused when any resolved address leaves the machine")
+	}
+}
+
+// TestAPIEgressPolicyRejectsUnusableBases: a base that names no reachable https host is
+// an error at startup, not a confusing failure on the first request.
+func TestAPIEgressPolicyRejectsUnusableBases(t *testing.T) {
+	cases := map[string]struct {
+		base    string
+		resolve hostResolver
+	}{
+		"not a url":       {":// nope", fixedResolver("10.1.2.3")},
+		"wrong scheme":    {"ftp://ghe.example", fixedResolver("10.1.2.3")},
+		"file scheme":     {"file:///etc/passwd", fixedResolver("10.1.2.3")},
+		"no host":         {"https://", fixedResolver("10.1.2.3")},
+		"resolves to nil": {"https://ghe.example", fixedResolver()},
+		"resolver fails": {"https://ghe.example", func(context.Context, string) ([]netip.Addr, error) {
+			return nil, errors.New("no such host")
+		}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := apiEgressPolicy(context.Background(), tc.base, tc.resolve); err == nil {
+				t.Errorf("base %q was accepted", tc.base)
+			}
+		})
+	}
+}
 
 func TestParsePRRef(t *testing.T) {
 	cases := []struct {
@@ -399,7 +509,8 @@ func TestReviewRunSubmitsVerdictAndRefusesShell(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	result, _, _, err := drive(ctx, &out, &reviewScript{}, harness.Plan{}, "",
+	result, _, _, err := drive(
+		ctx, &out, &reviewScript{}, harness.Plan{}, "",
 		"Review pull request #7.", review.SystemPrompt,
 		store.Resources(reg), store.Jobs(), store.Log(), true, "", nil,
 		withToolset(&boundToolset{tools: toolset, grant: review.Grant()}),

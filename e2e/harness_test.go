@@ -315,6 +315,11 @@ func (in *instance) dumpOnFailure(args []string, res result) {
 // isolated home, so an inherited key or config on the developer's machine can neither
 // leak into a run nor make it non-deterministic. Everything else (PATH, SYSTEMROOT,
 // TEMP) is kept, which the binary and its sandboxed child processes need.
+//
+// The GitHub variables are dropped for the same reason and one more: this suite runs
+// inside GitHub Actions, which exports GITHUB_TOKEN and GITHUB_API_URL into every job.
+// Left in place they would point a review at the live API with a live credential, so a
+// test that meant to talk to a scripted server would talk to github.com instead.
 func scrubbedEnv(home string) []string {
 	drop := map[string]bool{
 		"ANTHROPIC_API_KEY": true, "ANTHROPIC_BASE_URL": true,
@@ -322,6 +327,9 @@ func scrubbedEnv(home string) []string {
 		"DEEPSEEK_API_KEY": true, "DEEPSEEK_BASE_URL": true,
 		"GEMINI_API_KEY": true, "GEMINI_BASE_URL": true,
 		"LLAMACPP_BASE_URL": true, "LLAMACPP_VISION": true,
+		"GITHUB_TOKEN": true, "GITHUB_API_URL": true,
+		"FLYNN_GITHUB_APP_ISSUER": true, "FLYNN_GITHUB_APP_INSTALLATION": true,
+		"FLYNN_GITHUB_APP_KEY": true, "FLYNN_GITHUB_APP_KEY_FILE": true,
 	}
 	var out []string
 	for _, e := range os.Environ() {
