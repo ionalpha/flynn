@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +21,10 @@ import (
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/tools/github"
 )
+
+// prPath matches a pull request's own endpoint, for any number, so a test can drive
+// more than one pull request through a Set.
+var prPath = regexp.MustCompile(`/pulls/(\d+)$`)
 
 // fakeHub is a stand-in GitHub API: enough of the REST surface for the review
 // tools, plus counters so a test can assert what was called.
@@ -187,9 +192,10 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		writeJSON(w, map[string]any{"id": 1})
 
-	case strings.HasSuffix(p, "/pulls/7"):
+	case prPath.MatchString(p):
+		n, _ := strconv.Atoi(prPath.FindStringSubmatch(p)[1])
 		writeJSON(w, map[string]any{
-			"number": 7, "title": "t", "body": "b", "state": "open", "draft": false,
+			"number": n, "title": "t", "body": "b", "state": "open", "draft": false,
 			"changed_files": h.changedFiles, "additions": h.additions, "deletions": h.deletions,
 			"head": map[string]any{"sha": h.headSHA},
 			"user": map[string]any{"login": h.prAuthor},
@@ -941,6 +947,29 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 	}
 	if hub.followedEvil.Load() {
 		t.Fatal("the off-host link was followed with a token attached")
+	}
+}
+
+// A Set is bound to a repository, not a pull request. A host reviewing several pull
+// requests through one Set must not have one pull request's finding appear in another's
+// verdict, linking a reader to a discussion on a change they are not reviewing.
+func TestFindingsDoNotLeakBetweenPullRequests(t *testing.T) {
+	hub := newFakeHub(t)
+	set := newSet(t, hub, nil)
+
+	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
+		t.Fatalf("post on #7: %v", err)
+	}
+	// A different pull request, reviewed through the same Set, with nothing found.
+	verdict := `{"number":8,"event":"COMMENT","conclusion":"Nothing blocking."}`
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
+		t.Fatalf("submit on #8: %v", err)
+	}
+
+	body, _ := hub.submittedText.Load().(string)
+	if body != "Nothing blocking." {
+		t.Fatalf("verdict on #8 = %q, want just the conclusion: a finding from #7 leaked", body)
 	}
 }
 

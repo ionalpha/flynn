@@ -330,7 +330,7 @@ func (t commentTool) reconcileFindings(ctx context.Context, number int, findings
 			if err != nil {
 				return created, updated, err
 			}
-			t.s.recordFinding(c)
+			t.s.recordFinding(number, c)
 			updated++
 			continue
 		}
@@ -338,7 +338,7 @@ func (t commentTool) reconcileFindings(ctx context.Context, number int, findings
 		if err != nil {
 			return created, updated, err
 		}
-		t.s.recordFinding(c)
+		t.s.recordFinding(number, c)
 		created++
 	}
 	return created, updated, nil
@@ -417,16 +417,19 @@ func verdictBody(conclusion string, findings []ReviewComment) string {
 // tool more than once in a run, re-proposing a finding it already posted; that updates
 // the one comment rather than adding a second, and the verdict must count it once. A
 // list that grew per call would report "2 findings" and link the same line twice.
-func (s *Set) recordFinding(c ReviewComment) {
+func (s *Set) recordFinding(number int, c ReviewComment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i, existing := range s.findings {
+	if s.findings == nil {
+		s.findings = make(map[int][]ReviewComment)
+	}
+	for i, existing := range s.findings[number] {
 		if existing.ID == c.ID {
-			s.findings[i] = c
+			s.findings[number][i] = c
 			return
 		}
 	}
-	s.findings = append(s.findings, c)
+	s.findings[number] = append(s.findings[number], c)
 }
 
 // currentFindings are the findings this run posted or updated.
@@ -437,10 +440,10 @@ func (s *Set) recordFinding(c ReviewComment) {
 // an obsolete finding says both that nothing blocks the merge and that something does.
 // Comments from earlier rounds stay on the pull request until they are resolved; what
 // they do not do is speak for this verdict.
-func (s *Set) currentFindings() []ReviewComment {
+func (s *Set) currentFindings(number int) []ReviewComment {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return append([]ReviewComment(nil), s.findings...)
+	return append([]ReviewComment(nil), s.findings[number]...)
 }
 
 func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
@@ -499,7 +502,7 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 
 	// The body links the findings already on the pull request, so the verdict says what
 	// it covers without restating any of it.
-	posted := t.s.currentFindings()
+	posted := t.s.currentFindings(in.Number)
 	if err := t.s.client.submitReview(ctx, in.Number, pr.HeadSHA, in.Event, verdictBody(in.Conclusion, posted)); err != nil {
 		return "", err
 	}

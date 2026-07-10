@@ -142,10 +142,15 @@ type Set struct {
 	cfg    Config
 	client *client
 
-	// mu guards findings, which the comment tool appends to and the verdict reads.
+	// mu guards findings, which the comment tool records into and the verdict reads.
 	// Tools of one Set run on one review, but not necessarily on one goroutine.
+	//
+	// A Set is bound to a repository, not to a pull request, and a host may review
+	// several pull requests through one Set. Findings are therefore keyed by pull
+	// request: without that, a verdict on one pull request would link a finding posted
+	// on another.
 	mu       sync.Mutex
-	findings []ReviewComment
+	findings map[int][]ReviewComment
 }
 
 // New builds a review toolset for the repository named in cfg, filling defaults
