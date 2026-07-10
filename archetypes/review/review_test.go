@@ -236,10 +236,10 @@ func testConfig(t *testing.T) github.Config {
 // TestSystemPromptStatesTheRetractionContract pins the contract the resolve rule
 // depends on, and the shape that keeps it honest. The reviewer retracts a finding it
 // does not post again, so both moves have to be deliberate: a prompt that said only
-// "repost or it is retracted" pushes the model to repost on doubt, and it kept a false
-// finding alive across three runs of #352. The instruction must frame each standing
-// finding as a claim to recheck against the diff, repost when the defect is still
-// there, drop when the change fixed it.
+// "repost or it is retracted" pushes the model to repost on doubt, and a false finding
+// can then survive review after review while the diff disproves it. The instruction
+// must frame each standing finding as a claim to recheck against the diff, repost when
+// the defect is still there, drop when the change fixed it.
 func TestSystemPromptStatesTheRetractionContract(t *testing.T) {
 	p := review.SystemPrompt
 	for _, want := range []string{
