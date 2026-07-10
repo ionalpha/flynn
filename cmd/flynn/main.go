@@ -28,6 +28,7 @@ import (
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/observe"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
@@ -72,6 +73,39 @@ func sweepStaleSandboxProfiles() {
 	go func() { _, _ = sandbox.CleanStaleProfiles(cutoff) }()
 }
 
+// profileConfig assembles the diagnostics config from the flags and the environment,
+// returning a usage message (and no config) for a combination that cannot be honoured.
+// The flags win over the environment, except that neither can disable a watchdog the
+// other turned on.
+func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Config, string) {
+	cfg := diag.FromEnv(diag.Config{
+		Dir:        dir,
+		Contention: contention,
+		Args:       os.Args,
+		Clock:      clock.System{},
+	})
+	if leakWatch && cfg.Leak == nil {
+		cfg.Leak = &diag.LeakConfig{}
+	}
+	if cfg.Leak == nil {
+		return cfg, ""
+	}
+
+	// The watchdog samples the bundle's timeline and dumps into the bundle, so it has
+	// nowhere to look and nowhere to write without one. Refuse rather than run a long
+	// soak that was quietly watching nothing.
+	if cfg.Dir == "" {
+		return diag.Config{}, "usage: --leak-watch needs a bundle to watch; add --profile <dir> or set FLYNN_PROFILE"
+	}
+	if leakRepeat {
+		cfg.Leak.Repeat = true
+	}
+	// A leak goes to stderr, where an unattended operator's log collector is already
+	// looking, and never to stdout, which carries the command's own output.
+	cfg.Leak.Logger = observe.NewWarnLogger(os.Stderr)
+	return cfg, ""
+}
+
 // main exists only to turn run's exit code into a process exit. Every path out of the
 // command returns through run, so a --profile bundle's deferred Stop always executes:
 // os.Exit runs no defers, and a bundle that is never stopped is never written.
@@ -97,6 +131,8 @@ func run() int {
 		showVersion = flag.Bool("version", false, "print version and exit")
 		profileDir  = flag.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
 		profileCont = flag.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
+		leakWatch   = flag.Bool("leak-watch", false, "watch the --profile bundle's timeline for sustained growth in goroutines, live heap, open descriptors, or child processes, and dump a labelled goroutine profile, a heap profile, and the offending window into the bundle when one of them grows; requires --profile")
+		leakRepeat  = flag.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
 	)
 	flag.Parse()
 	vrb := *verbose || *verboseLong
@@ -109,12 +145,13 @@ func run() int {
 	// A profile bundle spans the whole command, so it opens before any work and closes
 	// on the single exit path below. With no --profile and no FLYNN_PROFILE this costs
 	// nothing: Start returns a nil bundle and Stop on it is a no-op.
-	bundle, err := diag.Start(diag.FromEnv(diag.Config{
-		Dir:        *profileDir,
-		Contention: *profileCont,
-		Args:       os.Args,
-		Clock:      clock.System{},
-	}))
+	profileCfg, usage := profileConfig(*profileDir, *profileCont, *leakWatch, *leakRepeat)
+	if usage != "" {
+		fmt.Fprintln(os.Stderr, usage)
+		return 2
+	}
+
+	bundle, err := diag.Start(profileCfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 1

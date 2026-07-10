@@ -35,6 +35,7 @@ type bundleSample struct {
 	T              string `json:"t"`
 	Goroutines     int    `json:"goroutines"`
 	HeapAllocBytes uint64 `json:"heap_alloc_bytes"`
+	HeapLiveBytes  int64  `json:"heap_live_bytes"`
 	OpenFDs        int    `json:"open_fds"`
 	ChildProcs     int    `json:"child_procs"`
 }
@@ -165,6 +166,65 @@ func TestNoProfileWritesNothing(t *testing.T) {
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Errorf("a run with no --profile created %s (err=%v)", dir, err)
 	}
+}
+
+// TestLeakWatchStaysQuietThroughAnHonestRun is the false-positive gate, run against
+// the real binary rather than a synthetic series. A goal loop allocates, spawns, and
+// opens descriptors; none of that is a leak, and a watchdog that says otherwise is a
+// watchdog an operator turns off. The run must finish with its own exit code, its
+// own output, no dump in the bundle, and no warning on stderr.
+func TestLeakWatchStaysQuietThroughAnHonestRun(t *testing.T) {
+	fake := newFakeOpenAI(t, finalText("The answer is 42."))
+	in := newInstance(t).withModel(fake)
+	dir := filepath.Join(t.TempDir(), "bundle")
+
+	res := in.run("-no-learn", "-profile", dir, "-leak-watch", "goal", "state the answer")
+	requireExit(t, res, 0, "goal --profile --leak-watch")
+	requireContains(t, res.stdout, "The answer is 42.", "goal output")
+
+	if strings.Contains(res.stderr, "possible leak") {
+		t.Errorf("the watchdog fired on an honest run:\n%s", res.stderr)
+	}
+	dumps, err := filepath.Glob(filepath.Join(dir, "leak.*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dumps) != 0 {
+		t.Errorf("the watchdog dumped %v on an honest run", dumps)
+	}
+
+	// The bundle is otherwise exactly the bundle --profile alone produces: watching
+	// a timeline does not change what is recorded in it.
+	requireManifestIntact(t, dir)
+	requirePprofParses(t, dir, pprofMembers)
+
+	// The heap counter the detector fits is the live heap, not the allocated heap.
+	// Zero is a legitimate reading only before the first collection, so at least one
+	// sample must carry a real one for the counter to be worth watching.
+	samples := readBundleTimeline(t, dir)
+	live := false
+	for _, s := range samples {
+		if s.HeapLiveBytes > 0 {
+			live = true
+		}
+		if s.HeapLiveBytes < 0 && s.HeapLiveBytes != -1 {
+			t.Errorf("sample carries heap_live_bytes = %d, which is neither a size nor the unknown marker", s.HeapLiveBytes)
+		}
+	}
+	if !live && len(samples) > 1 {
+		t.Error("no sample carries a live heap; the heap detector would be watching a flat zero")
+	}
+}
+
+// TestLeakWatchWithoutABundleIsAUsageError. The watchdog samples the bundle's
+// timeline and dumps into the bundle. Without one it would watch nothing, silently,
+// which is the one failure an operator leaving a week-long soak would never notice.
+func TestLeakWatchWithoutABundleIsAUsageError(t *testing.T) {
+	in := newInstance(t)
+
+	res := in.run("-leak-watch", "runs")
+	requireExit(t, res, 2, "--leak-watch with no --profile")
+	requireContains(t, res.stderr, "--profile", "the error names the flag that is missing")
 }
 
 // --- helpers -----------------------------------------------------------------

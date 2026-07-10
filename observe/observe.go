@@ -103,6 +103,15 @@ type slogLogger struct{ l *slog.Logger }
 // NewSlogLogger returns a Logger backed by the slog.Handler h.
 func NewSlogLogger(h slog.Handler) Logger { return slogLogger{slog.New(h)} }
 
+// NewWarnLogger returns a Logger that writes Warn and Error records to w as text
+// and discards Debug and Info. It exists so a command can report a condition an
+// operator must see (a leak the watchdog found, a bundle that failed to seal)
+// without importing log/slog itself and without turning on the agent's own logging,
+// which belongs to a host that asked for it.
+func NewWarnLogger(w io.Writer) Logger {
+	return NewSlogLogger(slog.NewTextHandler(w, &slog.HandlerOptions{Level: slog.LevelWarn}))
+}
+
 func (s slogLogger) Debug(ctx context.Context, msg string, f ...Field) {
 	s.log(ctx, slog.LevelDebug, msg, f)
 }

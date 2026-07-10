@@ -11,15 +11,21 @@
 // names and hashes every member, so a bundle can be moved off the machine and
 // still be shown intact.
 //
+// A bundle can also watch itself. With Config.Leak set, the timeline sampler fits
+// a growth slope across every counter it records and writes a labelled goroutine
+// profile, a heap profile, and the offending window into the bundle at the moment
+// growth starts, unattended. See leak.go.
+//
 // Nothing here runs unless a bundle is explicitly started: there is no init, no
 // background goroutine, and no allocation on the disabled path. Start with an
 // empty Config returns a nil *Bundle, and every method on a nil *Bundle is a
 // no-op, so the caller never branches on whether profiling is on.
 //
 // The package depends only on the standard library, the clock port (so the
-// timeline sampler is driven by an injected clock and stays testable), and the
-// secret port (so an argv recorded in the manifest is redacted by the same
-// redactor the rest of the agent uses).
+// timeline sampler is driven by an injected clock and stays testable), the secret
+// port (so an argv recorded in the manifest is redacted by the same redactor the
+// rest of the agent uses), and the observe port (so a leak the watchdog finds is
+// reported through the same logger as everything else).
 package diag
 
 import (
@@ -96,6 +102,17 @@ type Config struct {
 	// sampler deterministically.
 	Clock clock.Timing
 
+	// Leak turns the leak watchdog on. Nil is the disabled watchdog. The watchdog
+	// rides the timeline sampler, so it needs one: a Config with a Leak and a
+	// negative Interval is an error rather than a silently inert watchdog.
+	Leak *LeakConfig
+
+	// Counters are application-supplied gauges sampled into every timeline line
+	// alongside the built-in ones, and watched by the watchdog when Leak's thresholds
+	// name them. This is where a counter this package cannot know about (unremoved
+	// temporary directories, the event log's size on disk) is registered.
+	Counters []Counter
+
 	// sampled, when non-nil, receives once after every timeline sample. It is
 	// unexported because only this package's tests set it: it lets a test step a
 	// Manual clock one tick at a time without racing the sampler's timer re-arm.
@@ -112,6 +129,11 @@ func FromEnv(cfg Config) Config {
 	if !cfg.Contention {
 		if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(EnvContention))); err == nil {
 			cfg.Contention = v
+		}
+	}
+	if cfg.Leak == nil {
+		if v, err := strconv.ParseBool(strings.TrimSpace(os.Getenv(EnvLeakWatch))); err == nil && v {
+			cfg.Leak = &LeakConfig{}
 		}
 	}
 	return cfg
@@ -133,6 +155,7 @@ type Bundle struct {
 
 	mu          sync.Mutex
 	annotations map[string]string
+	leakDumps   map[string]int
 	stopped     bool
 }
 
@@ -154,15 +177,39 @@ func Start(cfg Config) (*Bundle, error) {
 		cfg.Interval = DefaultInterval
 	}
 
+	// A watchdog with no sampler would never see a sample. Say so here rather than
+	// let an operator run a week-long soak that was never watching anything.
+	if cfg.Leak != nil && cfg.Interval < 0 {
+		return nil, errors.New("diag: leak watch needs the timeline sampler, but Interval disables it")
+	}
+
+	// The watchdog is built before anything is created, so a rejected threshold costs
+	// no bundle directory, no CPU profile, and nothing for a reader to half-trust. Its
+	// dump target is wired below, once there is a bundle to dump into.
+	var wd *watchdog
+	if cfg.Leak != nil {
+		var err error
+		if wd, err = newWatchdog(*cfg.Leak, nil); err != nil {
+			return nil, err
+		}
+	}
+
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
 		return nil, fmt.Errorf("diag: create bundle dir: %w", err)
 	}
 
 	b := &Bundle{
-		cfg:     cfg,
-		clk:     cfg.Clock,
-		id:      ids.New(),
-		started: cfg.Clock.Now(),
+		cfg:       cfg,
+		clk:       cfg.Clock,
+		id:        ids.New(),
+		started:   cfg.Clock.Now(),
+		leakDumps: make(map[string]int),
+	}
+
+	var observer func(Sample)
+	if wd != nil {
+		wd.dump = b.dumpLeak
+		observer = wd.push
 	}
 
 	cpu, err := b.create(MemberCPU)
@@ -183,7 +230,7 @@ func Start(cfg Config) (*Bundle, error) {
 	}
 
 	if cfg.Interval > 0 {
-		tl, err := b.startTimeline()
+		tl, err := b.startTimeline(observer)
 		if err != nil {
 			pprof.StopCPUProfile()
 			_ = cpu.Close()
