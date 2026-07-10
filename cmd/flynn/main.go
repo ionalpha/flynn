@@ -20,6 +20,8 @@ import (
 	"strings"
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
+	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
@@ -50,7 +52,15 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"db":           runDB,
 }
 
-func main() {
+// main exists only to turn run's exit code into a process exit. Every path out of the
+// command returns through run, so a --profile bundle's deferred Stop always executes:
+// os.Exit runs no defers, and a bundle that is never stopped is never written.
+func main() { os.Exit(run()) }
+
+// run dispatches the command line and returns the process exit code: 0 on success, 1 on
+// a command error, 2 on a usage error, and exitChangesRequested for a review that asked
+// for changes.
+func run() int {
 	var (
 		model       = flag.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
 		dataDir     = flag.String("data-dir", defaultDataDir(), "directory for the durable state database")
@@ -65,14 +75,37 @@ func main() {
 		maxMemory   = flag.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today).")
 		maxProcs    = flag.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop.")
 		showVersion = flag.Bool("version", false, "print version and exit")
+		profileDir  = flag.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
+		profileCont = flag.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
 	)
 	flag.Parse()
 	vrb := *verbose || *verboseLong
 
 	if *showVersion {
 		_, _ = fmt.Fprintln(os.Stdout, version.String())
-		return
+		return 0
 	}
+
+	// A profile bundle spans the whole command, so it opens before any work and closes
+	// on the single exit path below. With no --profile and no FLYNN_PROFILE this costs
+	// nothing: Start returns a nil bundle and Stop on it is a no-op.
+	bundle, err := diag.Start(diag.FromEnv(diag.Config{
+		Dir:        *profileDir,
+		Contention: *profileCont,
+		Args:       os.Args,
+		Clock:      clock.System{},
+	}))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 1
+	}
+	defer func() {
+		// A bundle that failed to seal is a warning, not a failed command: the work the
+		// user asked for already happened, and its exit code is theirs, not the profiler's.
+		if err := bundle.Stop(); err != nil {
+			fmt.Fprintln(os.Stderr, "warning: profile bundle:", err)
+		}
+	}()
 
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
@@ -83,98 +116,98 @@ func main() {
 		objective := strings.TrimSpace(strings.Join(args[1:], " "))
 		if objective == "" {
 			fmt.Fprintln(os.Stderr, `usage: flynn goal "<objective>"`)
-			os.Exit(2)
+			return 2
 		}
 		if err := runGoal(modelSpec, objective, *verify, *dataDir, !*noLearn, vrb, *fanout, *maxCost, *maxTokens, *maxMemory, *maxProcs); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && (args[0] == "inspect" || args[0] == "replay") {
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: flynn inspect <run-id>")
-			os.Exit(2)
+			return 2
 		}
 		if err := inspectRun(*dataDir, args[1], vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && (args[0] == "runs" || args[0] == "sessions") {
 		if err := listRuns(*dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "resume" {
 		if len(args) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: flynn resume <run-id>")
-			os.Exit(2)
+			return 2
 		}
 		if err := resumeRun(modelSpec, args[1], *dataDir, vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "regrade" {
 		if err := regradeSkills(*dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	// Subcommands that take only the data directory share one dispatch path, so
-	// adding one is a table entry rather than another branch in main.
+	// adding one is a table entry rather than another branch in run.
 	if args := flag.Args(); len(args) >= 1 {
 		if fn, ok := dataDirCommands[args[0]]; ok {
 			if err := fn(args[1:], *dataDir); err != nil {
 				fmt.Fprintln(os.Stderr, "error:", err)
-				os.Exit(1)
+				return 1
 			}
-			return
+			return 0
 		}
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
 		if err := runServe(args[1:], modelSpec, *dataDir); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "watch" {
 		if err := runWatch(modelSpec, *dataDir, !*noLearn, vrb); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "review" {
 		err := runReview(args[1:], modelSpec, *dataDir, vrb)
 		switch {
 		case errors.Is(err, errChangesRequested):
-			os.Exit(exitChangesRequested)
+			return exitChangesRequested
 		case err != nil:
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "help" {
 		printUsage(os.Stdout)
-		return
+		return 0
 	}
 
 	// No subcommand: start an interactive session when attached to a terminal, where
@@ -183,13 +216,13 @@ func main() {
 	if len(flag.Args()) == 0 && stdinIsTerminal() {
 		if err := runInteractive(modelSpec, *dataDir, !*noLearn, vrb, *plain); err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
-			os.Exit(1)
+			return 1
 		}
-		return
+		return 0
 	}
 
 	printUsage(os.Stderr)
-	os.Exit(2)
+	return 2
 }
 
 // effectiveModelSpec resolves which model to drive: the explicit --model value when the
@@ -252,7 +285,7 @@ func printUsage(w io.Writer) {
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user

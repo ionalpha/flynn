@@ -41,6 +41,26 @@ func moduleVersion(v string) string {
 // installed with `go install ...@<version>` is a real release, not a dev build.
 func IsDev() bool { return released() == "" }
 
+// Revision returns the short VCS revision the binary was built from, or "" when it was
+// not built from a checkout the toolchain could stamp (a released archive, a
+// `go install`, or a build with VCS stamping disabled). A diagnostic artifact records it
+// so a captured profile can be read against the source that produced it.
+func Revision() string {
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return ""
+	}
+	for _, s := range bi.Settings {
+		if s.Key == "vcs.revision" && s.Value != "" {
+			if len(s.Value) > 12 {
+				return s.Value[:12]
+			}
+			return s.Value
+		}
+	}
+	return ""
+}
+
 // String returns a human-readable version: the release version when one is present,
 // otherwise the source default with the VCS revision appended when the binary was built
 // from a git checkout.
@@ -48,16 +68,8 @@ func String() string {
 	if v := released(); v != "" {
 		return v
 	}
-	if bi, ok := debug.ReadBuildInfo(); ok {
-		for _, s := range bi.Settings {
-			if s.Key == "vcs.revision" && s.Value != "" {
-				rev := s.Value
-				if len(rev) > 12 {
-					rev = rev[:12]
-				}
-				return Version + "+" + rev
-			}
-		}
+	if rev := Revision(); rev != "" {
+		return Version + "+" + rev
 	}
 	return Version
 }
