@@ -3,7 +3,12 @@ name: CI
 on:
   push:
     branches: [main]
+  # ready_for_review is not one of the default types, and the full suite only runs
+  # once a pull request leaves draft. Without this trigger, marking a draft ready
+  # fires no run, and the draft's own result would stand as the gate for a change
+  # the full suite never saw. synchronize covers every push after that.
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
 
 permissions:
   contents: read
@@ -24,13 +29,48 @@ defaults:
     shell: bash
 
 jobs:
+  # Which platforms this run covers, and whether the expensive jobs run at all.
+  #
+  # A draft pull request is work in progress: it gets the checks that catch a mistake
+  # while it is still cheap to fix (build, lint, unit tests on one platform, secret
+  # scan). It does not get the cross-platform matrices, the end-to-end suite, fuzz,
+  # bench, or the security scanners, because a change that is still being written will
+  # run them again on its next push and tell nobody anything new in between.
+  #
+  # Everything else runs the lot: a push to main, and any pull request that is not a
+  # draft. `github.event.pull_request.draft` is empty on a push, so every guard is
+  # written as `!= true` rather than `== false`, or main would quietly run the cheap
+  # tier only.
+  setup:
+    name: Plan
+    runs-on: ubuntu-latest
+    outputs:
+      # A JSON array, consumed by the matrices below via fromJSON.
+      platforms: ${{ steps.plan.outputs.platforms }}
+      full: ${{ steps.plan.outputs.full }}
+    steps:
+      - id: plan
+        env:
+          DRAFT: ${{ github.event.pull_request.draft }}
+        run: |
+          if [ "$DRAFT" = "true" ]; then
+            echo 'platforms=["ubuntu-latest"]' >> "$GITHUB_OUTPUT"
+            echo 'full=false' >> "$GITHUB_OUTPUT"
+            echo "Draft pull request: running the fast tier on ubuntu only."
+          else
+            echo 'platforms=["ubuntu-latest","macos-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
+            echo 'full=true' >> "$GITHUB_OUTPUT"
+            echo "Running the full suite on every platform."
+          fi
+
   test:
     name: Test (${{ matrix.os }} / Go ${{ matrix.go }})
+    needs: setup
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.setup.outputs.platforms) }}
         # Floor is Go 1.26: it makes the Green Tea GC the default and adds
         # crypto/hpke to the standard library, and satisfies modernc.org/sqlite.
         go: ["1.26"]
@@ -107,12 +147,14 @@ jobs:
 
   e2e:
     name: E2E (${{ matrix.os }})
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         # Exercise the shipped binary on every release target.
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: ${{ fromJSON(needs.setup.outputs.platforms) }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -211,6 +253,8 @@ jobs:
 
   vuln:
     name: govulncheck
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -245,6 +289,8 @@ jobs:
   # redundancy.
   osv:
     name: osv-scanner
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -261,6 +307,8 @@ jobs:
   # such as a secret's exposed plaintext never flowing into a formatter or logger.
   semgrep:
     name: Semgrep invariants
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -277,6 +325,8 @@ jobs:
   # proves the benchmarks run and the ceilings hold, not stable timings.
   bench:
     name: Bench smoke
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -295,6 +345,8 @@ jobs:
   # a longer per-target budget.
   fuzz:
     name: Fuzz smoke
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -359,15 +411,57 @@ jobs:
   # A single, stable gate to require in branch protection. Because it depends on
   # the real jobs rather than naming them, the test matrix (OS / Go version) can
   # change freely without ever breaking the required-checks list.
+  #
+  # On a draft it runs and fails, rather than being skipped. A draft runs the fast
+  # tier only, so a gate that passed there would assert something it never checked,
+  # and GitHub counts a skipped required check as satisfied. Failing is the honest
+  # answer to "has this change passed CI", and it is not a nuisance: a draft is not
+  # trying to merge. Marking the pull request ready fires a fresh run (see the
+  # ready_for_review trigger) and this gate then reports on the full suite.
   ci-success:
     name: CI success
     if: always()
-    needs: [test, e2e, lint, vuln, secrets, osv, semgrep, bench, pr-body]
+    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, bench, pr-body]
     runs-on: ubuntu-latest
     steps:
+      - name: The full suite has not run
+        if: ${{ needs.setup.outputs.full != 'true' }}
+        run: |
+          echo "::notice::This is a draft pull request: only the fast tier ran."
+          echo "Mark it ready for review to run the full suite."
+          exit 1
       - name: Verify required jobs succeeded
         if: ${{ contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') }}
         run: |
           echo "A required job failed or was cancelled."
           exit 1
+      # A skipped job is not a passing job. The step above only catches failure and
+      # cancellation, so a job that never ran would sail through it. Every job below
+      # must have actually succeeded on a run that claims the full suite; pr-body is
+      # absent because it is legitimately skipped on a push to main, where there is no
+      # pull request body to check.
+      - name: Verify no required job was skipped
+        if: ${{ needs.setup.outputs.full == 'true' }}
+        env:
+          RESULTS: >-
+            test=${{ needs.test.result }}
+            e2e=${{ needs.e2e.result }}
+            lint=${{ needs.lint.result }}
+            vuln=${{ needs.vuln.result }}
+            secrets=${{ needs.secrets.result }}
+            osv=${{ needs.osv.result }}
+            semgrep=${{ needs.semgrep.result }}
+            bench=${{ needs.bench.result }}
+        run: |
+          failed=0
+          for entry in $RESULTS; do
+            job=${entry%%=*}
+            result=${entry#*=}
+            if [ "$result" != "success" ]; then
+              echo "::error::Required job '$job' did not succeed (result: $result)."
+              failed=1
+            fi
+          done
+          [ "$failed" -eq 0 ] || exit 1
+          echo "Every required job ran and succeeded."
       - run: echo "All required CI jobs passed."
