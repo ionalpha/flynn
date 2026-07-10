@@ -95,9 +95,11 @@ func (l *Local) captureExec(ctx context.Context, spec CaptureSpec, confined bool
 	// compose the allow-only-proxy rule into the same enforcement action; then apply the
 	// platform confinement.
 	if l.egressActive() {
-		if err := l.startEgress(c); err != nil {
+		release, err := l.startEgress(c)
+		if err != nil {
 			return ExecResult{}, fmt.Errorf("sandbox: capture: egress: %w", err)
 		}
+		defer release() // this command runs to completion below, so its proxy ends with it
 	}
 	if confined {
 		if err := l.confine(c); err != nil {

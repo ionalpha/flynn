@@ -30,10 +30,11 @@ const (
 // filesystem, and syscall confinement, which it can on Linux.
 func kernelConfinementSupported() bool { return true }
 
-// egressEnforceable reports whether governed child egress can be enforced here. The Linux
-// leg (a network namespace plus a userspace stack that admits only the proxy) is not built
-// yet, so a governed-egress launch refuses rather than running with direct egress open.
-func egressEnforceable() bool { return false }
+// egressEnforceable reports whether governed child egress can be enforced here. On Linux
+// the child runs in a network namespace holding no interface but loopback and no route at
+// all, so its only way out is the proxy endpoint the launcher creates on that loopback: a
+// direct dial has nothing to leave through and fails. It can.
+func egressEnforceable() bool { return true }
 
 // backgroundConfinementExpressible reports whether kernel confinement can be applied to a
 // backgrounded process (the Serve path). On Linux it can: confine sets the isolation on
@@ -54,7 +55,7 @@ func backgroundConfinementExpressible() bool { return true }
 // unprivileged agent sets up the isolation without real root and the command gains
 // no privilege on the host.
 func (l *Local) confine(c *exec.Cmd) error {
-	if !l.denyNetwork && !l.readonlyFS && !l.seccomp {
+	if !l.denyNetwork && !l.readonlyFS && !l.seccomp && !l.egressActive() {
 		return nil
 	}
 	if c.SysProcAttr == nil {
@@ -67,14 +68,18 @@ func (l *Local) confine(c *exec.Cmd) error {
 	// Writing "deny" to setgroups is required before an unprivileged gid mapping is
 	// accepted; the Go runtime does this when this flag is false.
 	sp.GidMappingsEnableSetgroups = false
-	if l.denyNetwork {
+	// Governed egress needs the same fresh network namespace that denial does, for the
+	// same reason: it is what leaves the child with no route of its own. Denial stops
+	// there; egress then reopens exactly one path, a proxy endpoint on the namespace's
+	// loopback that the launcher creates and this process serves under policy.
+	if l.denyNetwork || l.egressActive() {
 		sp.Cloneflags |= syscall.CLONE_NEWNET
 	}
-	// Filesystem and syscall confinement have to be set up from inside the new
-	// process, after the clone and before the command runs, which the standard
-	// library does not expose. They go through the re-exec launcher; the mount view
-	// additionally needs its own mount namespace.
-	if l.readonlyFS || l.seccomp {
+	// Filesystem confinement, syscall confinement, and the egress endpoint all have to be
+	// set up from inside the new process, after the clone and before the command runs,
+	// which the standard library does not expose. They go through the re-exec launcher;
+	// the mount view additionally needs its own mount namespace.
+	if l.readonlyFS || l.seccomp || l.egressActive() {
 		if l.readonlyFS {
 			sp.Cloneflags |= syscall.CLONE_NEWNS
 		}
@@ -146,6 +151,21 @@ func runConfinedChild() int {
 			return 126
 		}
 	}
+	// Governed egress: build the proxy endpoint on this network namespace's loopback and
+	// hand the listening socket to the sandbox, which serves it under policy. It happens
+	// here, in the namespace, because nothing outside it can create a socket inside it. A
+	// failure fails the launch rather than running the command: this namespace has no
+	// route, so a command launched without its endpoint would reach nothing anyway, and a
+	// silent no-network run is a worse answer than a loud one.
+	env := strippedEnv()
+	if os.Getenv(envEgress) == "1" {
+		proxy, err := serveEgressFromNetns()
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
+			return 126
+		}
+		env = mergeEnv(env, proxy)
+	}
 	if err := syscall.Chdir(dir); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: chdir:", err)
 		return 126
@@ -170,7 +190,7 @@ func runConfinedChild() int {
 	// Exec replaces this process, so on success nothing below runs and the control
 	// variables never reach the command (they are stripped from the environment).
 	//nolint:gosec // running the sandbox's command is the launcher's purpose; it runs inside the confinement just built (read-only host, isolated mounts, syscall filter), which is the point
-	if err := syscall.Exec(bin, argv, strippedEnv()); err != nil {
+	if err := syscall.Exec(bin, argv, env); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: exec:", err)
 		return 126
 	}
@@ -356,6 +376,8 @@ func strippedEnv() []string {
 			strings.HasPrefix(kv, envArgv+"="),
 			strings.HasPrefix(kv, envReadonly+"="),
 			strings.HasPrefix(kv, envWritable+"="),
+			strings.HasPrefix(kv, envEgress+"="),
+			strings.HasPrefix(kv, envEgressFD+"="),
 			strings.HasPrefix(kv, envSeccomp+"="):
 			continue
 		}

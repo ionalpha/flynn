@@ -128,20 +128,27 @@ func (l *Local) startStreamExec(ctx context.Context, spec StreamSpec, confined b
 	// compose the allow-only-proxy rule into the same enforcement action; then apply the
 	// platform confinement. The stdout pipe fd is inherited across the confinement re-exec,
 	// so it stays connected to the real command the launcher execs.
+	release := func() {}
 	if l.egressActive() {
-		if err := l.startEgress(c); err != nil {
+		var err error
+		if release, err = l.startEgress(c); err != nil {
 			return nil, fmt.Errorf("sandbox: stream: egress: %w", err)
 		}
 	}
 	if confined {
 		if err := l.confine(c); err != nil {
+			release()
 			return nil, fmt.Errorf("sandbox: stream: confine: %w", err)
 		}
 	}
 	if err := c.Start(); err != nil {
+		release()
 		return nil, fmt.Errorf("sandbox: stream: start: %w", err)
 	}
-	return &StreamProcess{stdout: stdout, wait: c.Wait}, nil
+	// The proxy serving this child alone is released when the child is waited on, which is
+	// the moment the caller learns it has exited.
+	wait := func() error { defer release(); return c.Wait() }
+	return &StreamProcess{stdout: stdout, wait: wait}, nil
 }
 
 // streamEnv builds the environment for a streamed process: the deny-by-default baseline

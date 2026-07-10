@@ -547,9 +547,11 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 	// confine can read the proxy address and compose the allow-only-proxy network rule
 	// into the same enforcement action (one seatbelt profile / one namespace).
 	if l.egressActive() {
-		if err := l.startEgress(c); err != nil {
+		release, err := l.startEgress(c)
+		if err != nil {
 			return ExecResult{}, err
 		}
+		defer release() // this command runs to completion below, so its proxy ends with it
 	}
 	if confined {
 		if err := l.confine(c); err != nil {

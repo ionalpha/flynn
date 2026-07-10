@@ -42,12 +42,15 @@ type ServeSpec struct {
 // process is not tied to the context passed to Serve; it runs until it exits on its
 // own or Stop is called, so a server outlives the call that started it.
 type Process struct {
-	cmd    *exec.Cmd
-	tail   *tailBuffer
-	done   chan struct{}
-	mu     sync.Mutex
-	waited bool
-	exwait error
+	cmd  *exec.Cmd
+	tail *tailBuffer
+	done chan struct{}
+	// release frees what the launch holds for this process alone, notably a governed-egress
+	// proxy serving only this child. It runs once the process is reaped.
+	release func()
+	mu      sync.Mutex
+	waited  bool
+	exwait  error
 }
 
 // tailBufferCap bounds how much of a server's combined output is retained for
@@ -122,20 +125,24 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 	c.Stderr = tail
 	// Start the egress proxy and inject its variables before confine, so confine can
 	// compose the allow-only-proxy rule into the same enforcement action.
+	release := func() {}
 	if l.egressActive() {
-		if err := l.startEgress(c); err != nil {
+		var err error
+		if release, err = l.startEgress(c); err != nil {
 			return nil, fmt.Errorf("sandbox: serve: egress: %w", err)
 		}
 	}
 	if confined {
 		if err := l.confine(c); err != nil {
+			release()
 			return nil, fmt.Errorf("sandbox: serve: confine: %w", err)
 		}
 	}
 	if err := c.Start(); err != nil {
+		release()
 		return nil, fmt.Errorf("sandbox: serve: start: %w", err)
 	}
-	p := &Process{cmd: c, tail: tail, done: make(chan struct{})}
+	p := &Process{cmd: c, tail: tail, done: make(chan struct{}), release: release}
 	go p.reap()
 	return p, nil
 }
@@ -145,6 +152,7 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 // the OS-level Wait is never called twice.
 func (p *Process) reap() {
 	err := p.cmd.Wait()
+	p.release()
 	p.mu.Lock()
 	p.waited, p.exwait = true, err
 	p.mu.Unlock()
