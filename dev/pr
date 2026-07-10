@@ -67,15 +67,27 @@ fi
 draft="--draft"
 n=$#
 i=0
+prev=""
 while [ "$i" -lt "$n" ]; do
   arg="$1"
   shift
   i=$((i + 1))
+  # An argument that follows an option taking a value IS that value, whatever it
+  # spells. `dev/pr --body --ready` asks for a pull request whose body is the text
+  # "--ready", and eating it would run gh with a --body that has no value.
+  case "$prev" in
+    --title|-t|--body|-b|--body-file|-F|--base|-B|--head|-H|--assignee|-a|--label|-l|--milestone|-m|--project|-p|--reviewer|-r)
+      set -- "$@" "$arg"
+      prev="$arg"
+      continue
+      ;;
+  esac
   case "$arg" in
-    --ready) draft="" ; continue ;;  # ours, never passed to gh
-    --draft) draft="" ;;             # the caller said it; do not say it twice
+    --ready) draft="" ; prev="$arg" ; continue ;;  # ours, never passed to gh
+    --draft) draft="" ;;                           # the caller said it; do not say it twice
   esac
   set -- "$@" "$arg"
+  prev="$arg"
 done
 
 # gh auto-detects the PR template; --fill-first seeds title from the first commit
