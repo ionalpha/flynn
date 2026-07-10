@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ionalpha/flynn/netguard"
@@ -76,8 +77,10 @@ func redteamTiers() []redteamTier {
 			// Governed egress: the child may reach only the policy proxy, and a DenyAll
 			// policy admits nothing, so an outbound connection is contained at the proxy
 			// and a direct dial is blocked by the OS. The tier is enforceable only where a
-			// platform egress leg exists; elsewhere tierEnforceable skips it (the launch
-			// refuses), so this never misjudges a platform without the leg.
+			// platform egress leg exists and this host permits it; elsewhere tierEnforceable
+			// skips it, whether the launch refuses outright (no leg) or the launcher cannot
+			// build the endpoint (a host that denies privilege inside a user namespace). So
+			// this never misjudges a host that could not run the child at all.
 			name:     "egress-governed",
 			opts:     []LocalOption{WithEgress(netguard.DenyAll())},
 			confines: map[containAxis]bool{axisEgress: true},
@@ -132,11 +135,20 @@ func TestContainmentRedTeamMatrix(t *testing.T) {
 	}
 }
 
-// tierEnforceable reports whether this host actually sets up the tier's confinement. The
-// kernel confinements fail loudly where the platform cannot provide them (for example
-// where unprivileged user namespaces are restricted), so a benign command that errors
-// means the tier is not enforceable here and its escapes must be skipped rather than
-// judged against a floor fallback. The process jail is always enforceable.
+// tierEnforceable reports whether this host actually sets up the tier's confinement, by
+// running a benign command under it and requiring that the command ran. The escapes are
+// judged only where it does: a tier whose confinement could not be established would
+// otherwise be judged against a floor fallback, or against a child that never started.
+// The process jail is always enforceable.
+//
+// A benign command that ran is the only sound evidence. Neither half of it is enough on
+// its own. Some setups fail loudly with an error (a namespace that cannot be created).
+// Others fail inside the launcher, after the command has been dispatched but before it is
+// executed, and the launcher reports that as an exit code, not as an error: Ubuntu 24.04
+// grants an unprivileged user namespace and then denies the capabilities inside it, so the
+// mount and the interface configuration both come back EPERM and the launcher exits 126.
+// Exec returns no error for that, so a probe that only checked the error would call the
+// tier enforceable and then read every escape's failure-to-run as containment.
 func tierEnforceable(t *testing.T, tr redteamTier) bool {
 	t.Helper()
 	if len(tr.opts) == 0 {
@@ -153,8 +165,8 @@ func tierEnforceable(t *testing.T, tr redteamTier) bool {
 		t.Fatalf("build %q for enforceability probe: %v", tr.name, err)
 	}
 	defer func() { _ = sb.Close() }()
-	_, err = sb.Exec(context.Background(), Command{Line: "echo ok"})
-	return err == nil
+	res, err := sb.Exec(context.Background(), Command{Line: "echo ok"})
+	return err == nil && res.ExitCode == 0 && strings.Contains(res.Output, "ok")
 }
 
 // fsWriteEscape attempts to write a file outside the working-directory grant. It is shared
