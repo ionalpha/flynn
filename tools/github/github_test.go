@@ -88,6 +88,10 @@ type fakeHub struct {
 	commentAuthor string
 	viewerLogin   string
 
+	// commentLine is the line REST reports for an inline comment. GitHub reports null,
+	// decoding to zero, once the comment's anchor has left the diff.
+	commentLine int
+
 	// endlessComments makes the inline-comment listing always advertise another page.
 	endlessComments bool
 }
@@ -106,6 +110,7 @@ func newFakeHub(t *testing.T) *fakeHub {
 		deletions:      0,
 		commentAuthor:  "reviewer[bot]",
 		viewerLogin:    "reviewer[bot]",
+		commentLine:    1,
 	}
 }
 
@@ -198,7 +203,7 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out := []map[string]any{}
 		for id, b := range h.reviewComments {
 			out = append(out, map[string]any{
-				"id": id, "body": b, "path": "a.go", "line": 1,
+				"id": id, "body": b, "path": "a.go", "line": h.commentLine,
 				"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
 				// REST reports the App with its suffix, and the viewer query answers the same.
 				"user": map[string]any{"login": h.commentAuthor},
@@ -1582,5 +1587,27 @@ func TestReviewCommentsRefuseToStopAtTheCap(t *testing.T) {
 
 	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err == nil {
 		t.Fatal("a truncated listing of the reviewer's own comments must fail the fetch")
+	}
+}
+
+// GitHub reports line as null for a comment whose anchor no longer exists in the diff,
+// which decodes to zero. Offering it back as a posted finding would have the reviewer
+// repost a finding with no line, which the validator refuses, so it could never restate
+// it. The comment is omitted; its thread is retracted as outdated instead.
+func TestAnOutdatedCommentIsNotOfferedBackAsAPostedFinding(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.commentLine = 0 // GitHub's null, decoded
+	set := newSet(t, hub, nil)
+
+	f := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if strings.Contains(out, "posted_findings") {
+		t.Errorf("a finding with no line was offered back, and cannot be reposted: %s", out)
 	}
 }

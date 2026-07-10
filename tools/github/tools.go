@@ -239,6 +239,12 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 		if markerIn(c.Body) == "" || !sameLogin(c.User.Login, self) {
 			continue
 		}
+		// GitHub reports line as null for a comment whose anchor no longer exists in the
+		// diff, which decodes to zero. Such a finding cannot be restated where it was
+		// made, and offering it back with a line of zero would have the reviewer repost
+		// something the finding validator refuses. It is left out: GitHub already reports
+		// the thread as outdated, and an outdated thread is retracted on that evidence
+		// rather than on the reviewer's silence.
 		posted = append(posted, PostedFinding{Path: c.Path, Line: c.Line, Rule: ruleIn(c.Body)})
 	}
 	sort.Slice(posted, func(i, j int) bool {
