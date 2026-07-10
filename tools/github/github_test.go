@@ -1285,7 +1285,7 @@ func TestVerdictCountsARepostedFindingOnce(t *testing.T) {
 func TestVerdictDoesNotLinkStaleFindingsFromEarlierRounds(t *testing.T) {
 	hub := newFakeHub(t)
 	// A marked comment left over from a previous review round, on a defect since fixed.
-	hub.add("review", "<!-- flynn-review:abc123 -->\n**r** the old finding")
+	hub.add("review", "<!-- flynn-review:abc123 -->\n<!-- flynn-rule:r -->\nthe old finding")
 	set := newSet(t, hub, nil)
 
 	// This round finds nothing and submits its verdict directly.
@@ -1352,7 +1352,7 @@ func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 	hub.addThread(fakeThread{id: "T-open", canResolve: true, comments: []fakeThreadComment{{body: bodies[0], author: "vouchbot"}}})
 	// A finding from an earlier round, fixed since: a different marker, not re-raised.
 	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
-		{body: "<!-- flynn-review:deadbe -->\n**r** the old finding", author: "vouchbot"},
+		{body: "<!-- flynn-review:deadbe -->\n<!-- flynn-rule:r -->\nthe old finding", author: "vouchbot"},
 	}})
 	// A maintainer's own thread. Never ours to close.
 	hub.addThread(fakeThread{id: "T-human", outdated: true, canResolve: true, comments: []fakeThreadComment{
@@ -1360,7 +1360,7 @@ func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 	}})
 	// Ours, but a person replied in it. Somebody is talking.
 	hub.addThread(fakeThread{id: "T-reply", outdated: true, canResolve: true, comments: []fakeThreadComment{
-		{body: "<!-- flynn-review:c0ffee -->\n**r** a finding", author: "vouchbot"},
+		{body: "<!-- flynn-review:c0ffee -->\n<!-- flynn-rule:r -->\na finding", author: "vouchbot"},
 		{body: "disagree, this is intentional", author: "a-maintainer"},
 	}})
 
@@ -1385,7 +1385,7 @@ func TestNoThreadIsResolvedWhenTheDiffWasTruncated(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.changedFiles = 4000 // GitHub's own count, past the fetch cap
 	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
-		{body: "<!-- flynn-review:deadbe -->\n**r** the old finding", author: "vouchbot"},
+		{body: "<!-- flynn-review:deadbe -->\n<!-- flynn-rule:r -->\nthe old finding", author: "vouchbot"},
 	}})
 	set := newSet(t, hub, nil)
 
@@ -1424,7 +1424,7 @@ func TestAFailedResolutionDoesNotFailTheVerdict(t *testing.T) {
 func TestATransientFilesFailureDoesNotBlockABlockingVerdict(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
-		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
+		{body: "<!-- flynn-review:deadbe -->\n<!-- flynn-rule:r -->\nan old finding", author: "vouchbot"},
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 	hub.failFiles.Store(true)
@@ -1486,7 +1486,7 @@ func TestReviewThreadsFollowPagination(t *testing.T) {
 	hub := newFakeHub(t)
 	for _, id := range []string{"T1", "T2", "T3"} {
 		hub.addThread(fakeThread{id: id, outdated: true, canResolve: true, comments: []fakeThreadComment{
-			{body: "<!-- flynn-review:" + id + " -->\n**r** an old finding", author: "vouchbot"},
+			{body: "<!-- flynn-review:" + id + " -->\n<!-- flynn-rule:r -->\nan old finding", author: "vouchbot"},
 		}})
 	}
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
@@ -1510,7 +1510,7 @@ func TestReviewThreadsFollowPagination(t *testing.T) {
 func TestAReviewerThatMayNotResolveMinimizesInstead(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: false, comments: []fakeThreadComment{
-		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
+		{body: "<!-- flynn-review:deadbe -->\n<!-- flynn-rule:r -->\nan old finding", author: "vouchbot"},
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
 
@@ -1534,7 +1534,7 @@ func TestAReviewerThatMayNotResolveMinimizesInstead(t *testing.T) {
 func TestAReviewerThatMayResolveDoesNotMinimize(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
-		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
+		{body: "<!-- flynn-review:deadbe -->\n<!-- flynn-rule:r -->\nan old finding", author: "vouchbot"},
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
 

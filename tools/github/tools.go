@@ -52,13 +52,23 @@ func (f Finding) key() string {
 // marker is the invisible identity tag embedded in the finding's comment body.
 func (f Finding) marker() string { return markerPrefix + f.key() + " -->" }
 
-// render builds the comment body for a finding, marker included.
+// ruleTagPrefix opens the HTML comment that carries a finding's rule. Like the marker
+// it renders invisibly, so the rule stays out of the author's view: a reader sees the
+// defect and the failure it causes, not an internal slug shouted in bold above them. A
+// re-review still reads the rule back from here to repost the same finding in place.
+const ruleTagPrefix = "<!-- flynn-rule:"
+
+// render builds the comment body for a finding. The marker and the rule are invisible
+// HTML comments, so the visible comment is the defect and the failure it causes and
+// nothing else; a re-review recovers both from the body to reconcile in place. See
+// bodyParts, which reads them back.
 func (f Finding) render() string {
 	var b strings.Builder
 	b.WriteString(f.marker())
-	b.WriteString("\n**")
+	b.WriteByte('\n')
+	b.WriteString(ruleTagPrefix)
 	b.WriteString(f.Rule)
-	b.WriteString("** ")
+	b.WriteString(" -->\n")
 	b.WriteString(f.Summary)
 	b.WriteString("\n\n")
 	b.WriteString(f.Failure)
@@ -74,6 +84,11 @@ func (f Finding) validate() error {
 		return fmt.Errorf("github: finding on %s has no line", f.Path)
 	case f.Rule == "":
 		return fmt.Errorf("github: finding at %s:%d has no rule", f.Path, f.Line)
+	case strings.Contains(f.Rule, "-->") || strings.ContainsRune(f.Rule, '\n'):
+		// The rule renders inside an HTML comment, so a "-->" or a newline in it would
+		// close the tag early and detach the finding from its own claim. A rule is a short
+		// slug; reject anything that cannot live in the tag rather than post a broken one.
+		return fmt.Errorf("github: finding at %s:%d has a rule that cannot be embedded: %q", f.Path, f.Line, f.Rule)
 	case strings.TrimSpace(f.Summary) == "":
 		return fmt.Errorf("github: finding at %s:%d has no summary", f.Path, f.Line)
 	case strings.TrimSpace(f.Failure) == "":
@@ -101,22 +116,24 @@ type PostedFinding struct {
 // comment body. render wrote them as:
 //
 //	<marker>
-//	**<rule>** <summary>
+//	<rule tag>
+//	<summary>
 //
 //	<failure>
 //
-// so the reviewer can re-read the claim it posted last time rather than reconstruct it
-// from the location hash. Any part render did not write comes back "".
+// with the marker and rule as invisible HTML comments, so the reviewer can re-read the
+// claim it posted last time rather than reconstruct it from the location hash. A body
+// without the rule tag (a human's comment, or a comment from before this format) comes
+// back all "".
 func bodyParts(body string) (rule, summary, failure string) {
-	_, rest, ok := strings.Cut(body, "-->\n**")
-	if !ok {
+	i := strings.Index(body, ruleTagPrefix)
+	if i < 0 {
 		return "", "", ""
 	}
-	rule, rest, ok = strings.Cut(rest, "**")
+	rule, rest, ok := strings.Cut(body[i+len(ruleTagPrefix):], " -->\n")
 	if !ok {
 		return rule, "", ""
 	}
-	rest = strings.TrimPrefix(rest, " ")
 	summary, failure, _ = strings.Cut(rest, "\n\n")
 	return rule, summary, failure
 }

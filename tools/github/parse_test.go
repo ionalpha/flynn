@@ -275,6 +275,43 @@ func pemFixture(kind, body string) []byte {
 	return []byte(pemBegin(kind) + "\n" + body + "-----END " + kind + "-----\n")
 }
 
+// The rule is an internal slug the model invents per finding; the author does not need
+// it shouted above the comment. render must keep it inside an HTML comment, so the
+// visible body is the defect and the failure it causes and nothing else, while a fetch
+// can still read the rule back to reconcile a re-review in place.
+func TestRenderKeepsTheRuleOutOfTheVisibleComment(t *testing.T) {
+	f := Finding{
+		Path: "a.go", Line: 3, Rule: "CHILD_COUNT_ON_FAILED_START",
+		Summary: "a failed start is counted as a live child",
+		Failure: "exec fails, the count reads one for a process that never ran",
+	}
+	body := f.render()
+
+	// Strip every HTML comment; what is left is what a reader sees.
+	visible := body
+	for {
+		i := strings.Index(visible, "<!--")
+		if i < 0 {
+			break
+		}
+		j := strings.Index(visible[i:], "-->")
+		if j < 0 {
+			break
+		}
+		visible = visible[:i] + visible[i+j+len("-->"):]
+	}
+	if strings.Contains(visible, f.Rule) {
+		t.Errorf("the rule %q is visible in the comment; it must live only in the hidden tag:\n%s", f.Rule, visible)
+	}
+	if !strings.Contains(visible, f.Summary) || !strings.Contains(visible, f.Failure) {
+		t.Errorf("the visible comment lost the defect or its failure scenario:\n%s", visible)
+	}
+	// The rule still round-trips out of the body, or a re-review cannot repost in place.
+	if rule, _, _ := bodyParts(body); rule != f.Rule {
+		t.Errorf("bodyParts recovered rule %q, want %q", rule, f.Rule)
+	}
+}
+
 // bodyParts reads the rule, summary, and failure back out of a rendered finding, which
 // is what lets a fetch hand the reviewer its own prior claim to re-judge rather than a
 // bare location it can only restate. A multi-line failure must survive whole: the diff
