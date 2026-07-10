@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -158,10 +159,11 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	}
 	defer func() { _ = os.Remove(manPath) }()           //nolint:gosec // manPath is from os.CreateTemp under the private control dir, not caller-controlled
 	cmd := exec.CommandContext(ctx, c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path; the guest, not this exec, is the boundary
-	reaped := procs.Started()
-	out, err := cmd.CombinedOutput()
-	reaped()
-	if err != nil {
+	// runCounted brackets the child-process registry around a confirmed start, so a
+	// runtime that fails to launch is never counted as a live child.
+	var buf bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	if err = runCounted(cmd); err != nil {
 		// A cancelled or timed-out context (the caller's deadline, or the wall-clock breaker)
 		// surfaces as the context error so callers can tell "the guest was stopped" from "the
 		// runtime is broken", rather than misreading a cancellation as a terminal failure.
@@ -169,7 +171,7 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 			return ExecResult{}, ctxErr
 		}
 		return ExecResult{}, fault.Wrap(fault.Terminal, "microvm_run",
-			fmt.Errorf("microvm: runtime failed to boot or run the guest: %w: %s", err, strings.TrimSpace(string(out))))
+			fmt.Errorf("microvm: runtime failed to boot or run the guest: %w: %s", err, strings.TrimSpace(buf.String())))
 	}
 	data, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is a Flynn-controlled path under the private control dir
 	if err != nil {

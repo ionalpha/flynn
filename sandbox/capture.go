@@ -83,6 +83,21 @@ func (l *Local) Capture(ctx context.Context, spec CaptureSpec) (ExecResult, erro
 // caller's Env grants. It is the launch path for every platform's exec.Cmd confinement
 // (Linux and macOS) and for Windows's unconfined case; Windows confinement is an
 // AppContainer, which cannot be expressed on an exec.Cmd, so it takes its own path.
+// runCounted starts c and brackets the child-process registry around a confirmed start:
+// a spawn whose start fails is never counted, because a process that never ran is not a
+// live child, and the reap is deferred so an early return cannot leak the count. It is
+// the one-shot analogue of what serve.go does for a long-running child, which starts the
+// process before it records it. The caller wires c.Stdout and c.Stderr (a combined buffer
+// for the capture paths, separate ones for the container engine) before calling.
+func runCounted(c *exec.Cmd) error {
+	if err := c.Start(); err != nil {
+		return err
+	}
+	reaped := procs.Started()
+	defer reaped()
+	return c.Wait()
+}
+
 func (l *Local) captureExec(ctx context.Context, spec CaptureSpec, confined bool) (ExecResult, error) {
 	//nolint:gosec // running the gated external CLI is this primitive's purpose; isolation is the sandbox's job, applied by confine below
 	c := exec.CommandContext(ctx, spec.Argv[0], spec.Argv[1:]...)
@@ -108,13 +123,14 @@ func (l *Local) captureExec(ctx context.Context, spec CaptureSpec, confined bool
 			return ExecResult{}, fmt.Errorf("sandbox: capture: confine: %w", err)
 		}
 	}
-	// CombinedOutput starts and waits in one call, so the child is live only for its
-	// duration; it is still counted, because the registry answers "children right now"
-	// and a hung one-shot command is exactly what an operator is looking for.
-	reaped := procs.Started()
-	out, err := c.CombinedOutput()
-	reaped()
-	res := ExecResult{Output: string(out)}
+	// The child is counted for the duration it actually runs, because the registry
+	// answers "children right now" and a hung one-shot command is exactly what an
+	// operator is looking for. runCounted brackets a confirmed start, so a spawn that
+	// fails to start is never counted and stdout+stderr are combined as before.
+	var buf bytes.Buffer
+	c.Stdout, c.Stderr = &buf, &buf
+	err := runCounted(c)
+	res := ExecResult{Output: buf.String()}
 	if err != nil {
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
