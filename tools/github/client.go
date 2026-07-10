@@ -276,7 +276,7 @@ func (c *client) reviewComments(ctx context.Context, number int) ([]ReviewCommen
 }
 
 // createReviewComment posts a new inline comment anchored to a line of the diff.
-func (c *client) createReviewComment(ctx context.Context, number int, headSHA string, f Finding) error {
+func (c *client) createReviewComment(ctx context.Context, number int, headSHA string, f Finding) (ReviewComment, error) {
 	in := map[string]any{
 		"body":      f.render(),
 		"commit_id": headSHA,
@@ -284,14 +284,27 @@ func (c *client) createReviewComment(ctx context.Context, number int, headSHA st
 		"line":      f.Line,
 		"side":      "RIGHT",
 	}
-	return c.do(ctx, http.MethodPost, c.prURL(number, "/comments"), in, nil)
+	var out ReviewComment
+	if err := c.do(ctx, http.MethodPost, c.prURL(number, "/comments"), in, &out); err != nil {
+		return ReviewComment{}, err
+	}
+	// GitHub echoes the created comment, but a fake or a proxy may not. The finding's
+	// own coordinates are known here, so a caller can always name it even when the
+	// response carried no address to link.
+	out.Path, out.Line = f.Path, f.Line
+	return out, nil
 }
 
 // updateReviewComment rewrites an existing inline comment in place.
-func (c *client) updateReviewComment(ctx context.Context, id int64, f Finding) error {
+func (c *client) updateReviewComment(ctx context.Context, id int64, f Finding) (ReviewComment, error) {
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls/comments/%d",
 		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, id)
-	return c.do(ctx, http.MethodPatch, url, map[string]any{"body": f.render()}, nil)
+	var out ReviewComment
+	if err := c.do(ctx, http.MethodPatch, url, map[string]any{"body": f.render()}, &out); err != nil {
+		return ReviewComment{}, err
+	}
+	out.ID, out.Path, out.Line = id, f.Path, f.Line
+	return out, nil
 }
 
 // submitReview posts a formal review carrying a verdict. The event is one of

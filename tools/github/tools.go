@@ -326,15 +326,19 @@ func (t commentTool) reconcileFindings(ctx context.Context, number int, findings
 	var created, updated int
 	for _, f := range findings {
 		if id, ok := byMarker[f.marker()]; ok {
-			if err := t.s.client.updateReviewComment(ctx, id, f); err != nil {
+			c, err := t.s.client.updateReviewComment(ctx, id, f)
+			if err != nil {
 				return created, updated, err
 			}
+			t.s.recordFinding(c)
 			updated++
 			continue
 		}
-		if err := t.s.client.createReviewComment(ctx, number, pr.HeadSHA, f); err != nil {
+		c, err := t.s.client.createReviewComment(ctx, number, pr.HeadSHA, f)
+		if err != nil {
 			return created, updated, err
 		}
+		t.s.recordFinding(c)
 		created++
 	}
 	return created, updated, nil
@@ -406,21 +410,26 @@ func verdictBody(conclusion string, findings []ReviewComment) string {
 	return b.String()
 }
 
-// postedFindings returns the reviewer's own inline comments on the pull request,
-// identified by the marker it embeds. A human's comment carries no marker and is never
-// listed as one of the reviewer's findings.
-func (s *Set) postedFindings(ctx context.Context, number int) ([]ReviewComment, error) {
-	all, err := s.client.reviewComments(ctx, number)
-	if err != nil {
-		return nil, err
-	}
-	mine := make([]ReviewComment, 0, len(all))
-	for _, c := range all {
-		if markerIn(c.Body) != "" {
-			mine = append(mine, c)
-		}
-	}
-	return mine, nil
+// recordFinding remembers a finding this run posted or updated, so the verdict can
+// link exactly what this review had to say.
+func (s *Set) recordFinding(c ReviewComment) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.findings = append(s.findings, c)
+}
+
+// currentFindings are the findings this run posted or updated.
+//
+// It is deliberately not "every comment on the pull request carrying our marker". A
+// finding the author has since fixed is not re-proposed, so it is not in this list,
+// and a verdict that listed it would contradict itself: an approval whose body links
+// an obsolete finding says both that nothing blocks the merge and that something does.
+// Comments from earlier rounds stay on the pull request until they are resolved; what
+// they do not do is speak for this verdict.
+func (s *Set) currentFindings() []ReviewComment {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]ReviewComment(nil), s.findings...)
 }
 
 func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
@@ -479,10 +488,7 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 
 	// The body links the findings already on the pull request, so the verdict says what
 	// it covers without restating any of it.
-	posted, err := t.s.postedFindings(ctx, in.Number)
-	if err != nil {
-		return "", err
-	}
+	posted := t.s.currentFindings()
 	if err := t.s.client.submitReview(ctx, in.Number, pr.HeadSHA, in.Event, verdictBody(in.Conclusion, posted)); err != nil {
 		return "", err
 	}

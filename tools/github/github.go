@@ -19,6 +19,7 @@ package github
 import (
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/mission"
@@ -140,6 +141,11 @@ const (
 type Set struct {
 	cfg    Config
 	client *client
+
+	// mu guards findings, which the comment tool appends to and the verdict reads.
+	// Tools of one Set run on one review, but not necessarily on one goroutine.
+	mu       sync.Mutex
+	findings []ReviewComment
 }
 
 // New builds a review toolset for the repository named in cfg, filling defaults

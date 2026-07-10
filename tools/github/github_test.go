@@ -140,9 +140,12 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var in map[string]any
 		decode(h.t, r, &in)
 		h.created.Add(1)
-		h.add("review", fmt.Sprint(in["body"]))
+		id := h.add("review", fmt.Sprint(in["body"]))
 		w.WriteHeader(http.StatusCreated)
-		writeJSON(w, map[string]any{"id": 1})
+		writeJSON(w, map[string]any{
+			"id":       id,
+			"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
+		})
 
 	case strings.HasSuffix(p, "/pulls/7/comments") && r.Method == http.MethodGet:
 		h.mu.Lock()
@@ -159,7 +162,7 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.Contains(p, "/pulls/comments/") && r.Method == http.MethodPatch:
 		h.updated.Add(1)
 		w.WriteHeader(http.StatusOK)
-		writeJSON(w, map[string]any{"id": 1})
+		writeJSON(w, map[string]any{"id": 1, "html_url": "https://github.com/o/r/pull/7#discussion_r1"})
 
 	case strings.HasSuffix(p, "/issues/7/comments") && r.Method == http.MethodPost:
 		var in map[string]any
@@ -938,6 +941,27 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 	}
 	if hub.followedEvil.Load() {
 		t.Fatal("the off-host link was followed with a token attached")
+	}
+}
+
+// A finding from an earlier round is not this verdict's finding. The author fixed it,
+// so the reviewer does not re-propose it, and a verdict that linked it anyway would
+// contradict itself: an approval whose body cites an obsolete defect says both that
+// nothing blocks the merge and that something does.
+func TestVerdictDoesNotLinkStaleFindingsFromEarlierRounds(t *testing.T) {
+	hub := newFakeHub(t)
+	// A marked comment left over from a previous review round, on a defect since fixed.
+	hub.add("review", "<!-- flynn-review:abc123 -->\n**r** the old finding")
+	set := newSet(t, hub, nil)
+
+	// This round finds nothing and submits its verdict directly.
+	verdict := `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	body, _ := hub.submittedText.Load().(string)
+	if body != "Nothing blocking." {
+		t.Fatalf("verdict body = %q, want just the conclusion: a stale finding was linked", body)
 	}
 }
 

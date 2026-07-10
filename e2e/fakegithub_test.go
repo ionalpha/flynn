@@ -295,7 +295,7 @@ func (f *fakeGitHub) updateComment(w http.ResponseWriter, r *http.Request, store
 	for i := range *store {
 		if (*store)[i].ID == id {
 			(*store)[i].Body = in.Body
-			writeJSON(w, map[string]any{"id": id})
+			writeJSON(w, map[string]any{"id": id, "html_url": (*store)[i].HTMLURL})
 			return
 		}
 	}
