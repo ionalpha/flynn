@@ -24,9 +24,20 @@ jobs:
           check-latest: true
           cache: true
       - run: FUZZTIME=2m ./dev/fuzz
+      # Collect only new inputs, not the committed seed corpus; see the
+      # matching step in ci.yml.
+      - name: Collect new crasher inputs
+        if: failure()
+        run: |
+          new=$(git ls-files --others --exclude-standard | grep -E '(^|/)testdata/fuzz/' || true)
+          [ -z "$new" ] && exit 0
+          for f in $new; do
+            mkdir -p "fuzz-crashers/$(dirname "$f")"
+            cp "$f" "fuzz-crashers/$f"
+          done
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: fuzz-crashers
-          path: "**/testdata/fuzz/**"
+          path: fuzz-crashers/
           if-no-files-found: ignore

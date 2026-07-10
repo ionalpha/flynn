@@ -10,20 +10,99 @@
 # FUZZTIME sets the per-target budget (default 5s; the nightly workflow
 # raises it). With no args, covers every package that declares a fuzz
 # target; pass directories to scope, e.g. `dev/fuzz ./state`.
+#
+# FUZZ_BASE=<git ref>, if set, scopes the run to targets that the diff since
+# the merge-base with that ref can affect: packages whose own directory
+# changed (including seed corpora) or whose test import graph reaches a
+# package with changed Go files. Build or workflow config changes fall back
+# to the full sweep. CI sets this to the PR base so a PR only pays for the
+# targets it can break; pushes to main and the nightly keep the full sweep.
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 : "${FUZZTIME=5s}"
 if [ "$#" -eq 0 ]; then set -- .; fi
 
+# New (untracked) inputs under a package's testdata/fuzz/ are the one
+# reliable crasher signal: `go test -fuzz` writes the failing input there
+# and nowhere else.
+new_inputs() {
+	git ls-files --others --exclude-standard -- "$1/testdata/fuzz" 2>/dev/null
+}
+
+dirs=$(grep -rl '^func Fuzz' --include='*_test.go' "$@" | xargs -n1 dirname | sort -u)
+
+if [ -n "${FUZZ_BASE:-}" ]; then
+	if ! base=$(git merge-base "$FUZZ_BASE" HEAD 2>/dev/null); then
+		echo "dev/fuzz: cannot resolve FUZZ_BASE=$FUZZ_BASE; running the full sweep" >&2
+	else
+		changed=$(git diff --name-only "$base" HEAD)
+		if printf '%s\n' "$changed" | grep -qE '^(go\.mod|go\.sum|dev/fuzz|\.github/workflows/)'; then
+			echo "dev/fuzz: build or workflow config changed since $base; running the full sweep"
+		else
+			module=$(go list -m)
+			changedpkgs=$(printf '%s\n' "$changed" | grep '\.go$' | xargs -r -n1 dirname |
+				sort -u | awk -v m="$module" '{ print $0 == "." ? m : m "/" $0 }')
+			scoped=''
+			for dir in $dirs; do
+				rel=${dir#./}
+				# A change inside the package itself (seed corpus included)
+				# always counts; otherwise walk the test import graph. The
+				# module root owns only its own testdata; its Go files are
+				# covered by the import-graph check like any other package.
+				case $rel in .) prefix='testdata/' ;; *) prefix="$rel/" ;; esac
+				if printf '%s\n' "$changed" | grep -q "^$prefix"; then
+					scoped="$scoped $dir"
+					continue
+				fi
+				# Test variants print as "path [pkg.test]"; keep the path.
+				deps=$(go list -deps -test "./$rel" | awk '{ print $1 }')
+				for pkg in $changedpkgs; do
+					if printf '%s\n' "$deps" | grep -qxF "$pkg"; then
+						scoped="$scoped $dir"
+						break
+					fi
+				done
+			done
+			dirs=$scoped
+			if [ -z "$dirs" ]; then
+				echo "dev/fuzz: no fuzz target is affected by the diff since $base; nothing to run"
+				exit 0
+			fi
+		fi
+	fi
+fi
+
 fail=0
-for dir in $(grep -rl '^func Fuzz' --include='*_test.go' "$@" | xargs -n1 dirname | sort -u); do
+for dir in $dirs; do
 	for target in $(grep -h '^func Fuzz' "$dir"/*_test.go | sed -E 's/^func (Fuzz[A-Za-z0-9_]+).*/\1/' | sort -u); do
 		echo "==> go test -fuzz=^${target}\$ -fuzztime=$FUZZTIME $dir"
-		go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}" || fail=1
+		if go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}"; then
+			continue
+		fi
+		if [ -n "$(new_inputs "$dir")" ]; then
+			echo "dev/fuzz: $target found a crasher; failing input is under $dir/testdata/fuzz/" >&2
+			fail=1
+			continue
+		fi
+		# A failure that writes no input is usually the toolchain's shutdown
+		# race at -fuzztime expiry ("context deadline exceeded", the
+		# golang/go#56238 family), not a crasher. One retry separates the
+		# two: the race passes on a second run, a deterministic failure
+		# does not.
+		echo "==> retrying $target: failed without writing an input"
+		if go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}"; then
+			continue
+		fi
+		fail=1
+		if [ -n "$(new_inputs "$dir")" ]; then
+			echo "dev/fuzz: $target found a crasher; failing input is under $dir/testdata/fuzz/" >&2
+		else
+			echo "dev/fuzz: $target failed twice without writing an input; not a mutation crasher, inspect the output above" >&2
+		fi
 	done
 done
 
 if [ "$fail" -ne 0 ]; then
-	echo "dev/fuzz: crasher found; failing inputs are under */testdata/fuzz/ - commit the seed with the fix" >&2
+	echo "dev/fuzz: failures above; commit any new input under */testdata/fuzz/ together with the fix" >&2
 fi
 exit "$fail"
