@@ -228,6 +228,7 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = mr.Close() }()
 	rt := mr.rt
 
 	// Triage turns each recorded entry into a goal and replies with its answer on the

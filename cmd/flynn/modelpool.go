@@ -63,6 +63,7 @@ func runModelPool(args []string, dataDir string, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "keeping %d model(s) resident within %s; Ctrl-C to stop\n", len(pp.desired), b.source)
 
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 	adapter := orchestrate.NewServeAdapter(runner.manager, poolLauncher(runner, pp.specs), pp.footprint)
 	provider := staticPoolProvider{ds: orchestrate.DesiredState{Models: pp.desired, Budget: b.bytes}}
 	ctrl := orchestrate.NewController(provider, adapter, clock.System{}, orchestrate.WithClassifier(classifyLaunchFailure))

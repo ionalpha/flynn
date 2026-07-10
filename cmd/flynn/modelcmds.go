@@ -76,6 +76,7 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 	defer stop()
 
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 
 	// The one admission gate: classify, surface the risk, gate on isolation, obtain
 	// consent, then provision and serve. Shared with `models probe` and the goal path.
@@ -122,6 +123,7 @@ func runModelProbe(args []string, dataDir string, out io.Writer) error {
 	defer stop()
 
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 	m, ep, err := runner.gateAndServe(ctx, id, consentFor(autoApprove), 0, false)
 	if err != nil {
 		return fmt.Errorf("models probe: %w", err)
@@ -216,6 +218,7 @@ func runModelInspect(args []string, dataDir string, out io.Writer) error {
 	}
 	ref := args[0]
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 
 	src, err := modelsource.Parse(ref, isLocalModelID)
 	if err != nil {
@@ -295,6 +298,7 @@ func runModelUse(args []string, dataDir string, out io.Writer) error {
 	defer stop()
 
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 	q, _ := m.SmallestQuant()
 	if q.URL == "" {
 		return fmt.Errorf("models use: %q has no pinned direct download, so it cannot be provisioned for local serving yet", id)
@@ -335,6 +339,7 @@ func runModelStatus(_ []string, dataDir string, out io.Writer) error {
 	defer cancel()
 
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 	live, err := runner.manager.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("models status: %w", err)
@@ -361,6 +366,7 @@ func runModelStop(args []string, dataDir string, out io.Writer) error {
 	}
 	id := args[0]
 	runner := newLocalRunner(dataDir, out)
+	defer func() { _ = runner.Close() }()
 	stopped, err := runner.manager.Stop(id)
 	if err != nil {
 		return fmt.Errorf("models stop: %w", err)

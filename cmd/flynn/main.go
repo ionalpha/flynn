@@ -18,6 +18,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
+	"time"
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/clock"
@@ -50,6 +51,25 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"status":       dispatchStatus,
 	"spine":        dispatchSpine,
 	"db":           runDB,
+}
+
+// staleSandboxProfileAge is how old a sandbox's operating-system profile must be before
+// the startup sweep collects it. A profile belongs to a live sandbox until that sandbox
+// closes, so the cutoff is set far beyond any plausible confined command rather than close
+// to it: collecting one out from under a running command would break the command, and
+// waiting a day to reclaim a directory costs nothing.
+const staleSandboxProfileAge = 24 * time.Hour
+
+// sweepStaleSandboxProfiles collects the sandbox profiles that earlier runs left behind.
+// A sandbox unregisters its own profile when it closes, but a run that crashed or was
+// killed never got the chance, and on Windows each survivor keeps a registered container
+// identity whose access entries stay live. The sweep runs in the background because it is
+// housekeeping, not part of the command the user asked for: a short command may well exit
+// before it finishes, and the next run picks up where this one stopped. Failures are not
+// reported for the same reason, and no sandbox depends on the sweep having run.
+func sweepStaleSandboxProfiles() {
+	cutoff := clock.System{}.Now().Add(-staleSandboxProfileAge)
+	go func() { _, _ = sandbox.CleanStaleProfiles(cutoff) }()
 }
 
 // main exists only to turn run's exit code into a process exit. Every path out of the
@@ -106,6 +126,8 @@ func run() int {
 			fmt.Fprintln(os.Stderr, "warning: profile bundle:", err)
 		}
 	}()
+
+	sweepStaleSandboxProfiles()
 
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in

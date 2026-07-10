@@ -76,6 +76,7 @@ func runMCP(args []string, dataDir string) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = parts.Close() }()
 
 	// The grant the client's calls are admitted against. The default is the full
 	// toolset the agent itself may use in this directory; --read-only narrows it to the

@@ -37,7 +37,7 @@ func TestMain(m *testing.M) {
 		_, _ = os.Stderr.WriteString("boom: cannot bind\n")
 		os.Exit(3)
 	}
-	os.Exit(m.Run())
+	os.Exit(runSuiteWithProfileGuard(m))
 }
 
 func newServeSandbox(t *testing.T, mode string) *Local {

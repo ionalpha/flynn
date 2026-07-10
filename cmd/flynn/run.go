@@ -381,6 +381,9 @@ func runVerification(ctx context.Context, workdir, command string) bool {
 	if err != nil {
 		return false
 	}
+	// Closing releases whatever the confinement registered with the operating system for
+	// this check. Without it, every verified run leaves a container profile behind.
+	defer func() { _ = sb.Close() }()
 	res, err := sb.Exec(ctx, sandbox.Command{Line: command})
 	return err == nil && res.ExitCode == 0
 }
@@ -806,6 +809,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	if err != nil {
 		return "", "", nil, err
 	}
+	defer func() { _ = run.Close() }()
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.sess.ID())
 
 	// Open the run's spend pool before the goal is submitted, so the ceiling is in
@@ -897,6 +901,20 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 type missionRun struct {
 	rt   *runtime.Runtime
 	sess *session.Session
+	// parts holds the ingredients whose lifetime is the run's, so closing the run closes
+	// them. The sandbox among them registers operating-system objects that outlive the
+	// process unless they are released.
+	parts *missionParts
+}
+
+// Close releases the run's sandbox. A caller owns a missionRun for the length of one run
+// (a goal, a resumed run, an interactive session, a served conversation) and closes it
+// when that run ends.
+func (m *missionRun) Close() error {
+	if m == nil {
+		return nil
+	}
+	return m.parts.Close()
 }
 
 // missionParts is the set of ingredients every one-shot runtime assembly shares:
@@ -912,6 +930,17 @@ type missionParts struct {
 	toolset []mission.Tool
 	grant   capability.Grant
 	sink    *spinesink.Sink
+}
+
+// Close releases the run's sandbox, which is what hands back the operating-system objects
+// its confinement registered (on Windows, the container profile whose identity outlives
+// the process that made it). Every caller of newMissionParts owns the parts for the length
+// of a run and closes them when it ends.
+func (p *missionParts) Close() error {
+	if p == nil || p.sandbox == nil {
+		return nil
+	}
+	return p.sandbox.Close()
 }
 
 // newMissionParts wires the shared ingredients for a run at workdir recording onto
@@ -1026,7 +1055,7 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	if err != nil {
 		return nil, err
 	}
-	return &missionRun{rt: rt, sess: parts.sess}, nil
+	return &missionRun{rt: rt, sess: parts.sess, parts: parts}, nil
 }
 
 // assembleToolsetMission wires one goal runtime over a caller-supplied toolset and
@@ -1064,7 +1093,7 @@ func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset
 	if err != nil {
 		return nil, err
 	}
-	return &missionRun{rt: rt, sess: parts.sess}, nil
+	return &missionRun{rt: rt, sess: parts.sess, parts: parts}, nil
 }
 
 // externalModel returns the model string an external agent CLI should drive, or empty
@@ -1122,7 +1151,7 @@ func assembleExternalMission(ea *externAgent, workdir, system string, rstore res
 	if err != nil {
 		return nil, err
 	}
-	return &missionRun{rt: rt, sess: parts.sess}, nil
+	return &missionRun{rt: rt, sess: parts.sess, parts: parts}, nil
 }
 
 // defaultFanoutWidth caps how many child runs a fan-out may have outstanding at
@@ -1239,7 +1268,7 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 		_, rerr := rt.Resume(ctx, key.Name)
 		return rerr
 	})
-	return &missionRun{rt: rt, sess: parts.sess}, nil
+	return &missionRun{rt: rt, sess: parts.sess, parts: parts}, nil
 }
 
 // renderStream prints the session's events as they arrive and accumulates the

@@ -289,6 +289,9 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	if err != nil {
 		return "", err
 	}
+	// One assembly per turn, so one sandbox per turn: without this an interactive session
+	// accumulates a container profile for every message the user sends.
+	defer func() { _ = run.Close() }()
 	done := make(chan struct{})
 	go func() { _ = run.rt.Start(turnCtx); close(done) }()
 

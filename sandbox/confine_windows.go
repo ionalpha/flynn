@@ -45,10 +45,12 @@ func backgroundConfinementExpressible() bool { return false }
 func (l *Local) confine(_ *exec.Cmd) error { return nil }
 
 // closePlatform removes the per-working-directory AppContainer profile registered for
-// confined commands, so profiles do not accumulate across runs. It is best-effort: the
-// container's temporary directory is redirected into the working tree, so the profile
-// folder holds no command output, and a profile still in use by another sandbox on the
-// same directory is simply left in place.
+// confined commands, so profiles do not accumulate across runs. The revokes are
+// best-effort (both SIDs are unique to this workspace, so an entry left behind is a dead
+// one), but a profile that fails to delete is returned: it keeps a registered container
+// identity and a growing folder on disk, and it is the one part of teardown whose failure
+// a caller cannot see any other way. A run that ends without Close, or that crashes,
+// still leaves one behind; CleanStaleProfiles is what collects those.
 func (l *Local) closePlatform() error {
 	if l.hostReadable {
 		// The write-restricted tier registers no container profile and needs no read
@@ -60,8 +62,7 @@ func (l *Local) closePlatform() error {
 	}
 	l.revokeReadableDirs()
 	l.revokeWritableDirs()
-	deleteAppContainerProfile(appContainerMoniker(l.root))
-	return nil
+	return deleteAppContainerProfile(appContainerMoniker(l.root))
 }
 
 // runShell runs a shell command, choosing the execution path by whether confinement
@@ -154,7 +155,7 @@ func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte
 // identity.
 func appContainerMoniker(root string) string {
 	sum := sha256.Sum256([]byte(root))
-	return "flynn.sbx." + hex.EncodeToString(sum[:])[:16]
+	return profilePrefix + hex.EncodeToString(sum[:])[:16]
 }
 
 // acProfileEnvKeys are the AppContainer profile-location variables that have to be

@@ -60,6 +60,18 @@ type localRunner struct {
 	box hardware.Box
 }
 
+// Close releases the runner's sandbox once the command that built it is done. The sandbox
+// registers operating-system objects for the confined servers it starts (on Windows, a
+// container profile), and a command that returns without releasing them leaves one behind
+// on every invocation. A server the runner left running keeps the handles it already holds,
+// so a teardown failure here is not worth failing the command over.
+func (r *localRunner) Close() error {
+	if r == nil || r.sb == nil {
+		return nil
+	}
+	return r.sb.Close()
+}
+
 // newLocalRunner builds a runner wired to the real runtime provisioner, weights fetcher,
 // and a serve manager whose servers run inside a sandbox rooted under the data directory.
 func newLocalRunner(dataDir string, out io.Writer) *localRunner {
@@ -436,6 +448,7 @@ func findLocalModel(id string) (catalog.ModelSpec, error) {
 // corrupt a piped run transcript on stdout.
 func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, harness.Plan, error) {
 	runner := newLocalRunner(dataDir, os.Stderr)
+	defer func() { _ = runner.Close() }()
 	// The goal path goes through the same admission gate as `models run`, so no
 	// model-run route skips classification, provenance, or the containment check. It
 	// is trust-gate-only: only catalog models resolve here, and a catalog model is

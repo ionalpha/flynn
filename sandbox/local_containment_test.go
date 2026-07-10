@@ -23,6 +23,7 @@ func TestBestEffortConfinementFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	sb.readonlyFS = true // ensure a confined attempt is made even where the default left it off
 	sb.selfExe = filepath.Join(t.TempDir(), "no-such-binary")
 
@@ -51,6 +52,7 @@ func TestExplicitConfinementFailsLoud(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	sb.selfExe = filepath.Join(t.TempDir(), "no-such-binary") // force setup failure on Linux
 
 	if _, err := sb.Exec(context.Background(), Command{Line: "echo nope"}); err == nil {
@@ -69,6 +71,7 @@ func TestDefaultConfinementPreservesExitCode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	for _, want := range []int{0, 3} {
 		res, err := sb.Exec(context.Background(), Command{Line: exitCmd(want)})
 		if err != nil {
@@ -95,6 +98,7 @@ func TestContainmentReportsNoneWhenConfinementCannotStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	sb.selfExe = filepath.Join(t.TempDir(), "no-such-binary") // a host that cannot set confinement up
 
 	if got := sb.Containment(); got != ContainmentNone {
@@ -120,6 +124,7 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = bare.Close() })
 	if got := bare.Containment(); got != ContainmentNone {
 		t.Fatalf("a bare Local must be a process jail, got %v", got)
 	}
@@ -131,12 +136,14 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = ref.Close() })
 	wantFull := ref.Containment()
 
 	full, err := NewLocal(t.TempDir(), WithNetworkDenied(), WithReadOnlyFS(), WithSeccomp())
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = full.Close() })
 	if got := full.Containment(); got != wantFull {
 		t.Fatalf("a fully confined Local must report %v, got %v", wantFull, got)
 	}
@@ -146,6 +153,7 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = preset.Close() })
 	if got := preset.Containment(); got != wantFull {
 		t.Fatalf("WithKernelConfinement must report %v, got %v", wantFull, got)
 	}
@@ -159,6 +167,7 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = netOpen.Close() })
 	if got := netOpen.Containment(); got != wantFull {
 		t.Fatalf("a read-only, syscall-filtered sandbox must report %v regardless of network, got %v", wantFull, got)
 	}
@@ -166,6 +175,7 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = deflt.Close() })
 	if got := deflt.Containment(); got != wantFull {
 		t.Fatalf("the secure-by-default confinement must report %v where the platform enforces it, got %v", wantFull, got)
 	}
@@ -184,6 +194,7 @@ func TestLocalContainmentReflectsConfinement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		t.Cleanup(func() { _ = sb.Close() })
 		if got := sb.Containment(); got != ContainmentNone {
 			t.Fatalf("%s must not claim kernel confinement, got %v", tc.name, got)
 		}

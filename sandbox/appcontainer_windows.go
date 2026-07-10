@@ -5,6 +5,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -87,6 +88,19 @@ var (
 	procDeriveCapabilitySidsFromName = kernelbase.NewProc("DeriveCapabilitySidsFromName")
 )
 
+// liveProfiles counts the AppContainer profiles this process has registered and not yet
+// deleted. Registering one creates an operating-system object that outlives the process,
+// so a sandbox that is never closed leaks it. The counter makes that leak observable from
+// inside the process, which a count of the profile directory cannot be: helper child
+// processes and concurrently running test binaries register profiles of their own there.
+var liveProfiles atomic.Int64
+
+// LiveProfileCount reports how many AppContainer profiles this process has registered and
+// not yet deleted. It is zero for a process whose sandboxes were all closed, and it is the
+// only leak signal that is not confounded by other processes on the machine. Off Windows
+// no profile is ever registered and it is always zero.
+func LiveProfileCount() int { return int(liveProfiles.Load()) }
+
 // createOrDeriveACSID registers the AppContainer profile for a moniker and returns its
 // package SID. Registering the profile is what creates the container's object
 // namespace, without which the launch cannot set up the container. The call is
@@ -105,6 +119,7 @@ func createOrDeriveACSID(moniker string) (*windows.SID, error) {
 		0, 0, uintptr(unsafe.Pointer(&sid)),
 	)
 	if r == 0 {
+		liveProfiles.Add(1)
 		return sid, nil
 	}
 	if uint32(r) == errAlreadyExists {
@@ -129,14 +144,25 @@ func deriveACSID(moniker string) (*windows.SID, error) {
 }
 
 // deleteAppContainerProfile removes the registered AppContainer profile for a moniker
-// and its on-disk folder. It is best-effort: a profile that was never created, or is
-// in use by another sandbox on the same working directory, is left as is.
-func deleteAppContainerProfile(moniker string) {
+// and its on-disk folder. Deleting a profile that was never created succeeds, so an error
+// here means a profile is still registered: its folder stays on disk and, because the
+// moniker is derived from the workspace path, its SID stays re-derivable and any access
+// entry granted to it stays live rather than becoming a dead one. The caller reports the
+// failure rather than dropping it.
+func deleteAppContainerProfile(moniker string) error {
 	m, err := windows.UTF16PtrFromString(moniker)
 	if err != nil {
-		return
+		return fmt.Errorf("DeleteAppContainerProfile %q: %w", moniker, err)
 	}
-	_, _, _ = procDeleteAppContainerProfile.Call(uintptr(unsafe.Pointer(m)))
+	if r, _, _ := procDeleteAppContainerProfile.Call(uintptr(unsafe.Pointer(m))); r != 0 {
+		return fmt.Errorf("DeleteAppContainerProfile %q: hresult=0x%x", moniker, uint32(r))
+	}
+	// Never below zero: deleting a profile this process did not register (an earlier run's,
+	// swept by the janitor) succeeds too, and must not make the counter lie.
+	if liveProfiles.Load() > 0 {
+		liveProfiles.Add(-1)
+	}
+	return nil
 }
 
 // capabilitySID returns the capability SID for a well-known capability name (for

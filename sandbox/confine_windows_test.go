@@ -25,6 +25,7 @@ func TestConfinedCommandRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	res, err := sb.Exec(context.Background(), Command{Line: "echo confined"})
 	if err != nil {
 		t.Fatalf("a benign confined command must run: %v", err)
@@ -42,6 +43,7 @@ func TestConfinedReportsKernelContainment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	if got := sb.Containment(); got != ContainmentKernel {
 		t.Fatalf("a fully confined Windows sandbox must report kernel-confined, got %s", got)
 	}
@@ -60,6 +62,7 @@ func TestReadOnlyFSWritesOnlyWorkdir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 
 	res, err := sb.Exec(ctx, Command{Line: `echo data> made.txt && type made.txt`})
 	if err != nil {
@@ -101,6 +104,7 @@ func TestNetworkDeniedBlocksConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = denied.Close() })
 	res, err := denied.Exec(context.Background(), Command{Line: probe})
 	if err != nil {
 		t.Fatalf("denied exec: %v", err)
@@ -115,6 +119,7 @@ func TestNetworkDeniedBlocksConnect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = open.Close() })
 	res, err = open.Exec(context.Background(), Command{Line: probe})
 	if err != nil {
 		t.Fatalf("open exec: %v", err)
@@ -132,6 +137,7 @@ func TestNetworkAllowedWhenNotDenied(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	res, err := sb.Exec(context.Background(), Command{Line: `curl --max-time 6 -s -o NUL http://1.1.1.1`})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
@@ -149,6 +155,7 @@ func TestUnconfinedCommandStillRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	res, err := sb.Exec(context.Background(), Command{Line: "echo plain"})
 	if err != nil {
 		t.Fatalf("exec: %v", err)
@@ -240,6 +247,7 @@ func TestProfileCleanupOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = sb.Close() })
 	if _, err := sb.Exec(context.Background(), Command{Line: "echo make-profile"}); err != nil {
 		t.Fatalf("confined exec (registers the profile): %v", err)
 	}
@@ -281,6 +289,7 @@ func TestServeExplicitConfineFailsClosed(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = l.Close() })
 			p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
 			if err == nil {
 				_ = p.Stop()
@@ -305,6 +314,7 @@ func TestServeDefaultConfinementDropsToFloor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = l.Close() })
 	p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
 	if err != nil {
 		t.Fatalf("the always-on baseline must drop to the floor, not refuse: %v", err)
