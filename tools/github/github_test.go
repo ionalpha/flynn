@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -754,6 +755,42 @@ func TestPRFetchReturnsDiffAndPostedMarkers(t *testing.T) {
 	got := res.PostedFindings[0]
 	if got.Path == "" || got.Line == 0 || got.Rule == "" {
 		t.Fatalf("posted finding %+v cannot be posted again: it names no path, line, or rule", got)
+	}
+}
+
+// Two findings can share a path and a line and differ only in their rule. Each keys a
+// conversation of its own, so both are reported back, and their order cannot be left to
+// the sort: a pull request nothing has happened to must read the same way twice.
+func TestPostedFindingsOnOneLineAreOrderedByRule(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.commentLine = 12
+	set := newSet(t, hub, nil)
+
+	// Seeded worst-first, so an order that merely preserves the input would come back
+	// wrong.
+	seed := `{"number":7,"findings":[
+      {"path":"a.go","line":12,"rule":"zeta","summary":"s","failure":"f"},
+      {"path":"a.go","line":12,"rule":"alpha","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), seed); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	var res struct {
+		PostedFindings []github.PostedFinding `json:"posted_findings"`
+	}
+	if err := json.Unmarshal([]byte(out), &res); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	want := []github.PostedFinding{
+		{Path: "a.go", Line: 12, Rule: "alpha"},
+		{Path: "a.go", Line: 12, Rule: "zeta"},
+	}
+	if !reflect.DeepEqual(res.PostedFindings, want) {
+		t.Fatalf("posted findings = %+v, want %+v", res.PostedFindings, want)
 	}
 }
 

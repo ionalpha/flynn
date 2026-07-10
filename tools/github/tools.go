@@ -250,11 +250,18 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 		}
 		posted = append(posted, PostedFinding{Path: c.Path, Line: c.Line, Rule: ruleIn(c.Body)})
 	}
+	// Ordered so a pull request nothing has happened to reads the same way twice. Two
+	// findings may share a path and a line and differ only in their rule, and each keys
+	// a conversation of its own. The rule breaks that tie: without it sort.Slice, which
+	// is not stable, hands the reviewer a different list on every run.
 	sort.Slice(posted, func(i, j int) bool {
 		if posted[i].Path != posted[j].Path {
 			return posted[i].Path < posted[j].Path
 		}
-		return posted[i].Line < posted[j].Line
+		if posted[i].Line != posted[j].Line {
+			return posted[i].Line < posted[j].Line
+		}
+		return posted[i].Rule < posted[j].Rule
 	})
 
 	complete := !truncated && pr.ChangedFiles <= t.s.cfg.MaxFiles
