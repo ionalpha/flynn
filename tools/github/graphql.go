@@ -91,6 +91,18 @@ type ReviewThread struct {
 	// Participants counts the distinct logins that have commented. More than one means
 	// somebody replied.
 	Participants int
+
+	// CanResolve reports whether the authenticated identity may close this thread.
+	// Resolving a conversation needs write access to the repository, which a reviewer
+	// holding only pull_requests:write does not have. A reviewer that can never push is
+	// therefore a reviewer that can never resolve, and must retract its finding another
+	// way. GitHub answers this per thread, so the capability is read rather than guessed.
+	CanResolve bool
+
+	// CommentNodeIDs are the GraphQL ids of the thread's comments, in order. They are
+	// what minimizeComment takes, and minimizing is the retraction available to a
+	// reviewer that may not resolve.
+	CommentNodeIDs []string
 }
 
 // reviewThreadsQuery reads a page of threads on a pull request. It is paginated: a
@@ -107,7 +119,8 @@ const reviewThreadsQuery = `query($owner:String!,$repo:String!,$number:Int!,$aft
           id
           isResolved
           isOutdated
-          comments(first:100){ nodes{ body author{ login } } }
+          viewerCanResolve
+          comments(first:100){ nodes{ id body author{ login } } }
         }
       }
     }
@@ -133,11 +146,13 @@ func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread,
 							EndCursor   string `json:"endCursor"`
 						} `json:"pageInfo"`
 						Nodes []struct {
-							ID         string `json:"id"`
-							IsResolved bool   `json:"isResolved"`
-							IsOutdated bool   `json:"isOutdated"`
-							Comments   struct {
+							ID               string `json:"id"`
+							IsResolved       bool   `json:"isResolved"`
+							IsOutdated       bool   `json:"isOutdated"`
+							ViewerCanResolve bool   `json:"viewerCanResolve"`
+							Comments         struct {
 								Nodes []struct {
+									ID     string `json:"id"`
 									Body   string `json:"body"`
 									Author struct {
 										Login string `json:"login"`
@@ -159,7 +174,10 @@ func (c *client) reviewThreads(ctx context.Context, number int) ([]ReviewThread,
 
 		threads := resp.Repository.PullRequest.ReviewThreads
 		for _, n := range threads.Nodes {
-			t := ReviewThread{ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated}
+			t := ReviewThread{ID: n.ID, Resolved: n.IsResolved, Outdated: n.IsOutdated, CanResolve: n.ViewerCanResolve}
+			for _, cm := range n.Comments.Nodes {
+				t.CommentNodeIDs = append(t.CommentNodeIDs, cm.ID)
+			}
 			if len(n.Comments.Nodes) == 0 {
 				// A thread with no comments cannot be attributed, so it is nobody's to close.
 				out = append(out, t)
@@ -194,4 +212,20 @@ const resolveThreadMutation = `mutation($threadId:ID!){
 // resolveThread marks a review thread resolved.
 func (c *client) resolveThread(ctx context.Context, threadID string) error {
 	return c.graphql(ctx, resolveThreadMutation, map[string]any{"threadId": threadID}, nil)
+}
+
+// minimizeCommentMutation collapses a comment as outdated.
+const minimizeCommentMutation = `mutation($subjectId:ID!){
+  minimizeComment(input:{subjectId:$subjectId, classifier:OUTDATED}){ minimizedComment{ isMinimized } }
+}`
+
+// minimizeComment collapses one of the reviewer's own comments, marking it outdated.
+//
+// It is the retraction available to a reviewer that may not resolve. Resolving a
+// conversation needs write access to the repository; a reviewer holding only
+// pull_requests:write can still minimize its own comment, which folds it away and
+// labels it outdated without deleting what it said. The conversation stays on the
+// record, and stays unresolved.
+func (c *client) minimizeComment(ctx context.Context, commentNodeID string) error {
+	return c.graphql(ctx, minimizeCommentMutation, map[string]any{"subjectId": commentNodeID}, nil)
 }

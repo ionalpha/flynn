@@ -47,17 +47,19 @@ type fakeGitHub struct {
 
 	// threads is what the GraphQL endpoint reports, and resolved records the ids the
 	// reviewer asked GitHub to close.
-	threads  []ghThread
-	resolved []string
+	threads   []ghThread
+	resolved  []string
+	minimized []string
 }
 
 // ghThread is a review thread as the GraphQL endpoint reports it. A thread is a
 // conversation; the reviewer closes its own once the finding is gone.
 type ghThread struct {
-	ID       string
-	Outdated bool
-	Resolved bool
-	Comments []ghThreadComment
+	ID         string
+	Outdated   bool
+	Resolved   bool
+	CanResolve bool
+	Comments   []ghThreadComment
 }
 
 type ghThreadComment struct {
@@ -152,6 +154,13 @@ func (f *fakeGitHub) addThread(t ghThread) {
 	f.threads = append(f.threads, t)
 }
 
+// minimizedComments returns the comment ids the binary asked GitHub to fold away.
+func (f *fakeGitHub) minimizedComments() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.minimized...)
+}
+
 // resolvedThreads returns the thread ids the binary asked GitHub to close.
 func (f *fakeGitHub) resolvedThreads() []string {
 	f.mu.Lock()
@@ -174,6 +183,15 @@ func (f *fakeGitHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
+	if strings.Contains(in.Query, "minimizeComment") {
+		id, _ := in.Variables["subjectId"].(string)
+		f.minimized = append(f.minimized, id)
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"minimizeComment": map[string]any{"minimizedComment": map[string]any{"isMinimized": true}},
+		}})
+		return
+	}
+
 	if strings.Contains(in.Query, "resolveReviewThread") {
 		id, _ := in.Variables["threadId"].(string)
 		f.resolved = append(f.resolved, id)
@@ -191,12 +209,16 @@ func (f *fakeGitHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	nodes := make([]map[string]any, 0, len(f.threads))
 	for _, t := range f.threads {
 		comments := make([]map[string]any, 0, len(t.Comments))
-		for _, c := range t.Comments {
-			comments = append(comments, map[string]any{"body": c.Body, "author": map[string]any{"login": c.Author}})
+		for i, c := range t.Comments {
+			comments = append(comments, map[string]any{
+				"id": fmt.Sprintf("%s-c%d", t.ID, i), "body": c.Body,
+				"author": map[string]any{"login": c.Author},
+			})
 		}
 		nodes = append(nodes, map[string]any{
 			"id": t.ID, "isResolved": t.Resolved, "isOutdated": t.Outdated,
-			"comments": map[string]any{"nodes": comments},
+			"viewerCanResolve": t.CanResolve,
+			"comments":         map[string]any{"nodes": comments},
 		})
 	}
 	writeJSON(w, map[string]any{"data": map[string]any{

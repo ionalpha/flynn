@@ -98,19 +98,39 @@ func (s *Set) resolveStaleThreads(ctx context.Context, number int, diffComplete 
 		}
 	}
 
-	var resolved int
+	var resolved, minimized int
 	for _, t := range threads {
 		if ok, _ := resolvableThread(t, s.cfg.SelfLogin, found); !ok {
 			continue
 		}
-		if err := s.client.resolveThread(ctx, t.ID); err != nil {
-			// Report the failure rather than swallowing it. An unresolved thread blocks
-			// the merge on any repository that requires thread resolution, so a reviewer
-			// that quietly failed to close its own conversations would look like it had
-			// wedged the pull request for no reason.
-			return resolved, fmt.Errorf("resolve thread: %w", err)
+		// Resolving needs write access to the repository. A reviewer granted only
+		// pull_requests:write cannot resolve, and GitHub says so per thread rather than
+		// leaving it to be discovered as a 403. Where it may not resolve, it retracts the
+		// finding the way it can: it folds its own comment away, marked outdated. That
+		// leaves the conversation on the record and leaves it unresolved, so a repository
+		// requiring resolution still waits for someone who can.
+		if t.CanResolve {
+			if err := s.client.resolveThread(ctx, t.ID); err != nil {
+				// Report the failure rather than swallowing it. An unresolved thread blocks
+				// the merge on any repository that requires thread resolution, so a reviewer
+				// that quietly failed to close its own conversations would look like it had
+				// wedged the pull request for no reason.
+				return resolved, fmt.Errorf("resolve thread: %w", err)
+			}
+			resolved++
+			continue
 		}
-		resolved++
+		for _, id := range t.CommentNodeIDs {
+			if err := s.client.minimizeComment(ctx, id); err != nil {
+				return resolved, fmt.Errorf("minimize comment: %w", err)
+			}
+		}
+		minimized++
+	}
+	if minimized > 0 {
+		return resolved, fmt.Errorf(
+			"%d stale finding(s) were folded away but left unresolved: resolving a conversation needs write access to the repository, and this reviewer has none",
+			minimized)
 	}
 	return resolved, nil
 }

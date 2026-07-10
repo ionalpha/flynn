@@ -73,6 +73,7 @@ type fakeHub struct {
 	// answer 200 with an errors array, the way GitHub reports a failure.
 	threads      []fakeThread
 	resolved     []string
+	minimized    []string
 	graphqlError string
 	failReviews  atomic.Bool // when set, a review submission answers 500
 	failFiles    atomic.Bool // when set, the changed-files endpoint answers 500
@@ -267,10 +268,11 @@ func schemeOf(r *http.Request) string {
 
 // fakeThread is one review thread as the GraphQL endpoint reports it.
 type fakeThread struct {
-	id       string
-	resolved bool
-	outdated bool
-	comments []fakeThreadComment
+	id         string
+	resolved   bool
+	outdated   bool
+	canResolve bool
+	comments   []fakeThreadComment
 }
 
 type fakeThreadComment struct {
@@ -292,6 +294,13 @@ func (h *fakeHub) resolvedThreads() []string {
 	return append([]string(nil), h.resolved...)
 }
 
+// minimizedComments returns the comment ids the reviewer asked GitHub to fold away.
+func (h *fakeHub) minimizedComments() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.minimized...)
+}
+
 // serveGraphQL answers the two operations the reviewer issues: reading the review
 // threads, and resolving one. It matches on the query text rather than parsing
 // GraphQL, which is enough to tell a read from a write.
@@ -308,6 +317,15 @@ func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	if h.graphqlError != "" {
 		// GitHub answers a failed GraphQL request with 200 and an errors array.
 		writeJSON(w, map[string]any{"errors": []map[string]any{{"message": h.graphqlError}}})
+		return
+	}
+
+	if strings.Contains(in.Query, "minimizeComment") {
+		id, _ := in.Variables["subjectId"].(string)
+		h.minimized = append(h.minimized, id)
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"minimizeComment": map[string]any{"minimizedComment": map[string]any{"isMinimized": true}},
+		}})
 		return
 	}
 
@@ -335,14 +353,16 @@ func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
 	if start < len(h.threads) {
 		t := h.threads[start]
 		comments := make([]map[string]any, 0, len(t.comments))
-		for _, c := range t.comments {
+		for i, c := range t.comments {
 			comments = append(comments, map[string]any{
-				"body": c.body, "author": map[string]any{"login": c.author},
+				"id": fmt.Sprintf("%s-c%d", t.id, i), "body": c.body,
+				"author": map[string]any{"login": c.author},
 			})
 		}
 		nodes = append(nodes, map[string]any{
 			"id": t.id, "isResolved": t.resolved, "isOutdated": t.outdated,
-			"comments": map[string]any{"nodes": comments},
+			"viewerCanResolve": t.canResolve,
+			"comments":         map[string]any{"nodes": comments},
 		})
 	}
 	next := start + 1
@@ -1232,17 +1252,17 @@ func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 	}
 
 	// The thread for the finding this review just raised again.
-	hub.addThread(fakeThread{id: "T-open", comments: []fakeThreadComment{{body: bodies[0], author: "vouchbot"}}})
+	hub.addThread(fakeThread{id: "T-open", canResolve: true, comments: []fakeThreadComment{{body: bodies[0], author: "vouchbot"}}})
 	// A finding from an earlier round, fixed since: a different marker, not re-raised.
-	hub.addThread(fakeThread{id: "T-stale", outdated: true, comments: []fakeThreadComment{
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
 		{body: "<!-- flynn-review:deadbe -->\n**r** the old finding", author: "vouchbot"},
 	}})
 	// A maintainer's own thread. Never ours to close.
-	hub.addThread(fakeThread{id: "T-human", outdated: true, comments: []fakeThreadComment{
+	hub.addThread(fakeThread{id: "T-human", outdated: true, canResolve: true, comments: []fakeThreadComment{
 		{body: "why is this here?", author: "a-maintainer"},
 	}})
 	// Ours, but a person replied in it. Somebody is talking.
-	hub.addThread(fakeThread{id: "T-reply", outdated: true, comments: []fakeThreadComment{
+	hub.addThread(fakeThread{id: "T-reply", outdated: true, canResolve: true, comments: []fakeThreadComment{
 		{body: "<!-- flynn-review:c0ffee -->\n**r** a finding", author: "vouchbot"},
 		{body: "disagree, this is intentional", author: "a-maintainer"},
 	}})
@@ -1267,7 +1287,7 @@ func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 func TestNoThreadIsResolvedWhenTheDiffWasTruncated(t *testing.T) {
 	hub := newFakeHub(t)
 	hub.changedFiles = 4000 // GitHub's own count, past the fetch cap
-	hub.addThread(fakeThread{id: "T-stale", outdated: true, comments: []fakeThreadComment{
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
 		{body: "<!-- flynn-review:deadbe -->\n**r** the old finding", author: "vouchbot"},
 	}})
 	set := newSet(t, hub, nil)
@@ -1306,7 +1326,7 @@ func TestAFailedResolutionDoesNotFailTheVerdict(t *testing.T) {
 // to say so when GitHub hiccups on a request the verdict does not depend on.
 func TestATransientFilesFailureDoesNotBlockABlockingVerdict(t *testing.T) {
 	hub := newFakeHub(t)
-	hub.addThread(fakeThread{id: "T-stale", outdated: true, comments: []fakeThreadComment{
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
 		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
@@ -1343,7 +1363,7 @@ func TestATransientFilesFailureRefusesAnApproval(t *testing.T) {
 // their own comment. The reviewer must not read that as licence to close their thread.
 func TestAThreadIsNotOursBecauseItCarriesOurMarker(t *testing.T) {
 	hub := newFakeHub(t)
-	hub.addThread(fakeThread{id: "T-copied", outdated: true, comments: []fakeThreadComment{
+	hub.addThread(fakeThread{id: "T-copied", outdated: true, canResolve: true, comments: []fakeThreadComment{
 		{body: "<!-- flynn-review:deadbe -->\nquoting your finding back at you", author: "a-maintainer"},
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
@@ -1362,7 +1382,7 @@ func TestAThreadIsNotOursBecauseItCarriesOurMarker(t *testing.T) {
 func TestReviewThreadsFollowPagination(t *testing.T) {
 	hub := newFakeHub(t)
 	for _, id := range []string{"T1", "T2", "T3"} {
-		hub.addThread(fakeThread{id: id, outdated: true, comments: []fakeThreadComment{
+		hub.addThread(fakeThread{id: id, outdated: true, canResolve: true, comments: []fakeThreadComment{
 			{body: "<!-- flynn-review:" + id + " -->\n**r** an old finding", author: "vouchbot"},
 		}})
 	}
@@ -1374,5 +1394,54 @@ func TestReviewThreadsFollowPagination(t *testing.T) {
 	got := hub.resolvedThreads()
 	if len(got) != 3 {
 		t.Fatalf("resolved %v, want all three: the reviewer stopped at the first page", got)
+	}
+}
+
+// Resolving a conversation needs write access to the repository. A reviewer holding
+// only pull_requests:write cannot resolve, and must not pretend it did. It folds its
+// own stale comment away, marked outdated, and reports that the thread is still open.
+//
+// This is not hypothetical: GitHub reports viewerCanResolve=false for an App installed
+// with contents:read, which is exactly the permission set that lets a reviewer review
+// without ever being able to push.
+func TestAReviewerThatMayNotResolveMinimizesInstead(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: false, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
+	}})
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
+
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`)
+	if err != nil {
+		t.Fatalf("a reviewer that may not resolve must still submit its verdict: %v", err)
+	}
+	if got := hub.resolvedThreads(); len(got) != 0 {
+		t.Errorf("resolved %v without permission to resolve", got)
+	}
+	if got := hub.minimizedComments(); len(got) != 1 || got[0] != "T-stale-c0" {
+		t.Fatalf("minimized %v, want the stale finding's own comment", got)
+	}
+	if !strings.Contains(out, "folded away but left unresolved") || !strings.Contains(out, "write access") {
+		t.Errorf("the reviewer did not say the thread is still open: %q", out)
+	}
+}
+
+// A reviewer that may resolve resolves, and minimizes nothing: folding a comment away
+// on top of closing its thread would be noise.
+func TestAReviewerThatMayResolveDoesNotMinimize(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, canResolve: true, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:deadbe -->\n**r** an old finding", author: "vouchbot"},
+	}})
+	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
+
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if got := hub.resolvedThreads(); len(got) != 1 || got[0] != "T-stale" {
+		t.Fatalf("resolved %v, want [T-stale]", got)
+	}
+	if got := hub.minimizedComments(); len(got) != 0 {
+		t.Errorf("minimized %v on top of resolving", got)
 	}
 }

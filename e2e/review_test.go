@@ -318,10 +318,10 @@ func TestReviewSurfacesAnAPIFailure(t *testing.T) {
 // never closes them wedges every pull request it touches.
 func TestReviewResolvesItsOwnStaleThreads(t *testing.T) {
 	gh := newFakeGitHub(t, defaultPR())
-	gh.addThread(ghThread{ID: "T-stale", Outdated: true, Comments: []ghThreadComment{
+	gh.addThread(ghThread{ID: "T-stale", Outdated: true, CanResolve: true, Comments: []ghThreadComment{
 		{Body: "<!-- flynn-review:deadbe -->\n**old-rule** a finding since fixed", Author: reviewerName},
 	}})
-	gh.addThread(ghThread{ID: "T-human", Outdated: true, Comments: []ghThreadComment{
+	gh.addThread(ghThread{ID: "T-human", Outdated: true, CanResolve: true, Comments: []ghThreadComment{
 		{Body: "why is this here?", Author: "a-maintainer"},
 	}})
 
@@ -365,7 +365,7 @@ func TestReviewKeepsAThreadItRaisedAgain(t *testing.T) {
 	if len(posted) != 1 {
 		t.Fatalf("want 1 inline comment, got %d", len(posted))
 	}
-	gh.addThread(ghThread{ID: "T-open", Outdated: true, Comments: []ghThreadComment{
+	gh.addThread(ghThread{ID: "T-open", Outdated: true, CanResolve: true, Comments: []ghThreadComment{
 		{Body: posted[0].Body, Author: reviewerName},
 	}})
 
@@ -383,5 +383,33 @@ func TestReviewKeepsAThreadItRaisedAgain(t *testing.T) {
 	}
 	if got := gh.resolvedThreads(); len(got) != 0 {
 		t.Fatalf("resolved %v, want none: the finding was raised again", got)
+	}
+}
+
+// A reviewer that may not resolve folds its stale finding away instead, and the review
+// still succeeds. GitHub refuses resolveReviewThread to an App that cannot write to the
+// repository, which is exactly the App that can never push.
+func TestReviewMinimizesWhenItMayNotResolve(t *testing.T) {
+	gh := newFakeGitHub(t, defaultPR())
+	gh.addThread(ghThread{ID: "T-stale", Outdated: true, CanResolve: false, Comments: []ghThreadComment{
+		{Body: "<!-- flynn-review:deadbe -->\n**old-rule** a finding since fixed", Author: reviewerName},
+	}})
+
+	model := newFakeOpenAIQueue(
+		t,
+		fetchCall(),
+		verdictCall("call-2", "COMMENT"),
+		finalText("Left a comment."),
+	)
+	in := reviewInstance(t, model)
+
+	if res := in.run(reviewArgs(gh, "--as", reviewerName)...); res.code != 0 {
+		t.Fatalf("review failed: exit %d\n%s", res.code, res.combined())
+	}
+	if got := gh.resolvedThreads(); len(got) != 0 {
+		t.Errorf("resolved %v without permission to resolve", got)
+	}
+	if got := gh.minimizedComments(); len(got) != 1 || got[0] != "T-stale-c0" {
+		t.Fatalf("minimized %v, want the stale finding's own comment", got)
 	}
 }
