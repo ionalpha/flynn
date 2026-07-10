@@ -44,6 +44,25 @@ type fakeGitHub struct {
 
 	// fail, when set, answers the request whose method+path it matches with status.
 	fail map[string]int
+
+	// threads is what the GraphQL endpoint reports, and resolved records the ids the
+	// reviewer asked GitHub to close.
+	threads  []ghThread
+	resolved []string
+}
+
+// ghThread is a review thread as the GraphQL endpoint reports it. A thread is a
+// conversation; the reviewer closes its own once the finding is gone.
+type ghThread struct {
+	ID       string
+	Outdated bool
+	Resolved bool
+	Comments []ghThreadComment
+}
+
+type ghThreadComment struct {
+	Body   string
+	Author string
 }
 
 // fakePR is the pull request the server serves.
@@ -126,6 +145,67 @@ func newFakeGitHub(t *testing.T, pr fakePR) *fakeGitHub {
 // baseURL is the value to pass as --api-base.
 func (f *fakeGitHub) baseURL() string { return f.srv.URL }
 
+// addThread registers a review thread for the GraphQL endpoint to report.
+func (f *fakeGitHub) addThread(t ghThread) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.threads = append(f.threads, t)
+}
+
+// resolvedThreads returns the thread ids the binary asked GitHub to close.
+func (f *fakeGitHub) resolvedThreads() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.resolved...)
+}
+
+// serveGraphQL answers the two operations the reviewer issues: reading the review
+// threads, and resolving one. Resolving has no REST endpoint, so this is the only way
+// the binary can close a conversation, and the only way a test can see that it did.
+func (f *fakeGitHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if !decodeBody(w, r, &in) {
+		return
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	if strings.Contains(in.Query, "resolveReviewThread") {
+		id, _ := in.Variables["threadId"].(string)
+		f.resolved = append(f.resolved, id)
+		for i := range f.threads {
+			if f.threads[i].ID == id {
+				f.threads[i].Resolved = true
+			}
+		}
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"resolveReviewThread": map[string]any{"thread": map[string]any{"id": id, "isResolved": true}},
+		}})
+		return
+	}
+
+	nodes := make([]map[string]any, 0, len(f.threads))
+	for _, t := range f.threads {
+		comments := make([]map[string]any, 0, len(t.Comments))
+		for _, c := range t.Comments {
+			comments = append(comments, map[string]any{"body": c.Body, "author": map[string]any{"login": c.Author}})
+		}
+		nodes = append(nodes, map[string]any{
+			"id": t.ID, "isResolved": t.Resolved, "isOutdated": t.Outdated,
+			"comments": map[string]any{"nodes": comments},
+		})
+	}
+	writeJSON(w, map[string]any{"data": map[string]any{
+		"repository": map[string]any{"pullRequest": map[string]any{
+			"reviewThreads": map[string]any{"nodes": nodes},
+		}},
+	}})
+}
+
 // failOn makes the next and every later request matching "METHOD /path" answer with
 // status, so a test can drive the binary's error path on a specific call.
 func (f *fakeGitHub) failOn(methodPath string, status int) {
@@ -166,6 +246,9 @@ func (f *fakeGitHub) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch {
+	case r.Method == http.MethodPost && strings.HasSuffix(path, "/graphql"):
+		f.serveGraphQL(w, r)
+
 	case r.Method == http.MethodGet && rePR.MatchString(path):
 		f.getPR(w)
 	case r.Method == http.MethodGet && rePRFiles.MatchString(path):

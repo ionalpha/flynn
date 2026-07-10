@@ -67,7 +67,14 @@ type fakeHub struct {
 	updated       atomic.Int64
 	submittedBody atomic.Value // string: the last review event submitted
 	submittedText atomic.Value // string: the last review body submitted
-	failReviews   atomic.Bool  // when set, a review submission answers 500
+
+	// threads is what the GraphQL endpoint reports, and resolved records the ids the
+	// reviewer asked to close. graphqlError, when set, makes every GraphQL request
+	// answer 200 with an errors array, the way GitHub reports a failure.
+	threads      []fakeThread
+	resolved     []string
+	graphqlError string
+	failReviews  atomic.Bool // when set, a review submission answers 500
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -120,6 +127,9 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	switch {
+	case strings.HasSuffix(p, "/graphql") && r.Method == http.MethodPost:
+		h.serveGraphQL(w, r)
+
 	case strings.HasSuffix(p, "/access_tokens"):
 		h.tokensMinted.Add(1)
 		if got := r.Header.Get("Authorization"); !strings.HasPrefix(got, "Bearer ey") {
@@ -248,6 +258,86 @@ func schemeOf(r *http.Request) string {
 		return "https"
 	}
 	return "http"
+}
+
+// fakeThread is one review thread as the GraphQL endpoint reports it.
+type fakeThread struct {
+	id       string
+	resolved bool
+	outdated bool
+	comments []fakeThreadComment
+}
+
+type fakeThreadComment struct {
+	body   string
+	author string
+}
+
+// addThread registers a review thread for the GraphQL endpoint to report.
+func (h *fakeHub) addThread(t fakeThread) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.threads = append(h.threads, t)
+}
+
+// resolvedThreads returns the ids the reviewer asked GitHub to close.
+func (h *fakeHub) resolvedThreads() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.resolved...)
+}
+
+// serveGraphQL answers the two operations the reviewer issues: reading the review
+// threads, and resolving one. It matches on the query text rather than parsing
+// GraphQL, which is enough to tell a read from a write.
+func (h *fakeHub) serveGraphQL(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	decode(h.t, r, &in)
+
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.graphqlError != "" {
+		// GitHub answers a failed GraphQL request with 200 and an errors array.
+		writeJSON(w, map[string]any{"errors": []map[string]any{{"message": h.graphqlError}}})
+		return
+	}
+
+	if strings.Contains(in.Query, "resolveReviewThread") {
+		id, _ := in.Variables["threadId"].(string)
+		h.resolved = append(h.resolved, id)
+		for i := range h.threads {
+			if h.threads[i].id == id {
+				h.threads[i].resolved = true
+			}
+		}
+		writeJSON(w, map[string]any{"data": map[string]any{
+			"resolveReviewThread": map[string]any{"thread": map[string]any{"id": id, "isResolved": true}},
+		}})
+		return
+	}
+
+	nodes := make([]map[string]any, 0, len(h.threads))
+	for _, t := range h.threads {
+		comments := make([]map[string]any, 0, len(t.comments))
+		for _, c := range t.comments {
+			comments = append(comments, map[string]any{
+				"body": c.body, "author": map[string]any{"login": c.author},
+			})
+		}
+		nodes = append(nodes, map[string]any{
+			"id": t.id, "isResolved": t.resolved, "isOutdated": t.outdated,
+			"comments": map[string]any{"nodes": comments},
+		})
+	}
+	writeJSON(w, map[string]any{"data": map[string]any{
+		"repository": map[string]any{"pullRequest": map[string]any{
+			"reviewThreads": map[string]any{"nodes": nodes},
+		}},
+	}})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -1102,5 +1192,91 @@ func TestVerdictListsOnlyTheReviewersOwnComments(t *testing.T) {
 	}
 	if !strings.Contains(body, "One finding:") {
 		t.Errorf("verdict does not list its finding: %q", body)
+	}
+}
+
+// A stale finding is a thread the reviewer no longer stands behind. It closes its own,
+// leaves a human's alone, and leaves open the one it just raised again.
+func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
+	hub := newFakeHub(t)
+	set := newSet(t, hub, nil)
+
+	// Post the finding first, so the thread below carries the marker the tool really
+	// writes rather than one the test guessed.
+	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	bodies := hub.bodies("review")
+	if len(bodies) != 1 {
+		t.Fatalf("want 1 posted comment, got %d", len(bodies))
+	}
+
+	// The thread for the finding this review just raised again.
+	hub.addThread(fakeThread{id: "T-open", comments: []fakeThreadComment{{body: bodies[0], author: "vouchbot"}}})
+	// A finding from an earlier round, fixed since: a different marker, not re-raised.
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:deadbe -->\n**r** the old finding", author: "vouchbot"},
+	}})
+	// A maintainer's own thread. Never ours to close.
+	hub.addThread(fakeThread{id: "T-human", outdated: true, comments: []fakeThreadComment{
+		{body: "why is this here?", author: "a-maintainer"},
+	}})
+	// Ours, but a person replied in it. Somebody is talking.
+	hub.addThread(fakeThread{id: "T-reply", outdated: true, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:c0ffee -->\n**r** a finding", author: "vouchbot"},
+		{body: "disagree, this is intentional", author: "a-maintainer"},
+	}})
+
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Still one thing."}`)
+	if err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	got := hub.resolvedThreads()
+	if len(got) != 1 || got[0] != "T-stale" {
+		t.Fatalf("resolved %v, want exactly [T-stale]", got)
+	}
+	if !strings.Contains(out, "resolved 1 stale thread") {
+		t.Errorf("tool result does not report the resolution: %q", out)
+	}
+}
+
+// A truncated diff means the reviewer never saw the whole change. A finding it did not
+// raise may be a defect it did not read, so nothing is resolved. Same invariant that
+// refuses an approval on a partial diff.
+func TestNoThreadIsResolvedWhenTheDiffWasTruncated(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.changedFiles = 4000 // GitHub's own count, past the fetch cap
+	hub.addThread(fakeThread{id: "T-stale", outdated: true, comments: []fakeThreadComment{
+		{body: "<!-- flynn-review:deadbe -->\n**r** the old finding", author: "vouchbot"},
+	}})
+	set := newSet(t, hub, nil)
+
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Partial read."}`); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+	if got := hub.resolvedThreads(); len(got) != 0 {
+		t.Fatalf("resolved %v on a truncated diff, want none", got)
+	}
+}
+
+// The verdict is the review's output; resolving is housekeeping after it. A GraphQL
+// failure must not cost a submitted verdict its success, and must not be silent: an
+// unresolved thread blocks the merge wherever thread resolution is required.
+func TestAFailedResolutionDoesNotFailTheVerdict(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.graphqlError = "Resource not accessible by integration"
+	set := newSet(t, hub, nil)
+
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Looks fine."}`)
+	if err != nil {
+		t.Fatalf("a failed resolution must not fail the verdict: %v", err)
+	}
+	if got, _ := hub.submittedBody.Load().(string); got != "COMMENT" {
+		t.Fatalf("verdict submitted = %q, want COMMENT", got)
+	}
+	if !strings.Contains(out, "could not resolve") || !strings.Contains(out, "not accessible") {
+		t.Errorf("the failure was swallowed: %q", out)
 	}
 }

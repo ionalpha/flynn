@@ -308,3 +308,78 @@ func TestReviewSurfacesAnAPIFailure(t *testing.T) {
 		t.Fatalf("a review whose verdict never landed must not exit 0:\n%s", res.combined())
 	}
 }
+
+// TestReviewResolvesItsOwnStaleThreads drives the built binary through the resolve
+// path end to end. A finding from an earlier round is no longer raised, so its
+// conversation is closed; a maintainer's own conversation is not.
+//
+// This matters beyond tidiness: a repository that requires review-thread resolution
+// cannot merge while the reviewer's stale conversations stay open, so a reviewer that
+// never closes them wedges every pull request it touches.
+func TestReviewResolvesItsOwnStaleThreads(t *testing.T) {
+	gh := newFakeGitHub(t, defaultPR())
+	gh.addThread(ghThread{ID: "T-stale", Outdated: true, Comments: []ghThreadComment{
+		{Body: "<!-- flynn-review:deadbe -->\n**old-rule** a finding since fixed", Author: "vouchbot[bot]"},
+	}})
+	gh.addThread(ghThread{ID: "T-human", Outdated: true, Comments: []ghThreadComment{
+		{Body: "why is this here?", Author: "a-maintainer"},
+	}})
+
+	model := newFakeOpenAIQueue(
+		t,
+		fetchCall(),
+		verdictCall("call-2", "COMMENT"),
+		finalText("Left a comment."),
+	)
+	in := reviewInstance(t, model)
+
+	if res := in.run(reviewArgs(gh)...); res.code != 0 {
+		t.Fatalf("review failed: exit %d\n%s", res.code, res.combined())
+	}
+	got := gh.resolvedThreads()
+	if len(got) != 1 || got[0] != "T-stale" {
+		t.Fatalf("resolved %v, want exactly [T-stale]: the maintainer's thread is not the reviewer's to close", got)
+	}
+}
+
+// A finding the reviewer raises again is a finding still open. Its conversation stays.
+func TestReviewKeepsAThreadItRaisedAgain(t *testing.T) {
+	gh := newFakeGitHub(t, defaultPR())
+	model := newFakeOpenAIQueue(
+		t,
+		fetchCall(),
+		commentCall("always-allows"),
+		verdictCall("call-3", "REQUEST_CHANGES"),
+		finalText("Requested changes."),
+	)
+	in := reviewInstance(t, model)
+
+	// Run once so the finding's comment exists, then seed its thread with the exact
+	// body the binary posted, so the marker is the real one.
+	if res := in.run(reviewArgs(gh)...); res.code != 3 {
+		t.Fatalf("first review: exit %d\n%s", res.code, res.combined())
+	}
+	posted := gh.inlineComments()
+	if len(posted) != 1 {
+		t.Fatalf("want 1 inline comment, got %d", len(posted))
+	}
+	gh.addThread(ghThread{ID: "T-open", Outdated: true, Comments: []ghThreadComment{
+		{Body: posted[0].Body, Author: "vouchbot[bot]"},
+	}})
+
+	// A second review raises the same finding. Outdated or not, it is still open.
+	model2 := newFakeOpenAIQueue(
+		t,
+		fetchCall(),
+		commentCall("always-allows"),
+		verdictCall("call-3", "REQUEST_CHANGES"),
+		finalText("Requested changes."),
+	)
+	in2 := reviewInstance(t, model2)
+	if res := in2.run(reviewArgs(gh)...); res.code != 3 {
+		t.Fatalf("second review: exit %d\n%s", res.code, res.combined())
+	}
+	if got := gh.resolvedThreads(); len(got) != 0 {
+		t.Fatalf("resolved %v, want none: the finding was raised again", got)
+	}
+}

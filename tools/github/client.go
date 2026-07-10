@@ -291,7 +291,7 @@ func (c *client) createReviewComment(ctx context.Context, number int, headSHA st
 	// GitHub echoes the created comment, but a fake or a proxy may not. The finding's
 	// own coordinates are known here, so a caller can always name it even when the
 	// response carried no address to link.
-	out.Path, out.Line = f.Path, f.Line
+	out.Path, out.Line, out.Body = f.Path, f.Line, f.render()
 	return out, nil
 }
 
@@ -303,7 +303,7 @@ func (c *client) updateReviewComment(ctx context.Context, id int64, f Finding) (
 	if err := c.do(ctx, http.MethodPatch, url, map[string]any{"body": f.render()}, &out); err != nil {
 		return ReviewComment{}, err
 	}
-	out.ID, out.Path, out.Line = id, f.Path, f.Line
+	out.ID, out.Path, out.Line, out.Body = id, f.Path, f.Line, f.render()
 	return out, nil
 }
 

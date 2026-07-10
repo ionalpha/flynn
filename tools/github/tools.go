@@ -491,19 +491,20 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	if in.Event == "APPROVE" && t.s.cfg.SelfLogin != "" && pr.AuthorLogin == t.s.cfg.SelfLogin {
 		return "", ErrSelfApproval
 	}
+	// Whether the whole diff reached this review. It gates two things: the approval
+	// below, and whether a finding's absence is evidence the defect is gone (see
+	// resolveStaleThreads). Read once, because it costs a fetch of the changed files.
+	complete, why, err := t.s.diffCoverage(ctx, pr)
+	if err != nil {
+		return "", err
+	}
 	// An APPROVE asserts the change was reviewed. If the diff was truncated on the
 	// way in, that assertion is false, and it is the assertion a signed verdict would
 	// go on to attest. Blocking verdicts stay available on partial evidence: seeing
 	// one real defect is enough to say no, but seeing most of a diff is never enough
 	// to say yes. No configuration relaxes this.
-	if in.Event == "APPROVE" {
-		complete, why, err := t.s.diffCoverage(ctx, pr)
-		if err != nil {
-			return "", err
-		}
-		if !complete {
-			return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
-		}
+	if in.Event == "APPROVE" && !complete {
+		return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
 	}
 	// Validated last, after every refusal above. A reviewer denied the authority to
 	// approve must be told that, not that its sentence was missing: the weaker error
@@ -524,5 +525,20 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 	}
 	// The verdict landed, so the review is over and its findings belong to it alone.
 	t.s.takeFindings(in.Number)
-	return fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, in.Number, len(posted)), nil
+
+	// Close the conversations this review no longer stands behind. It runs after the
+	// verdict, so a failure here cannot cost the review its verdict; a repository that
+	// requires thread resolution would otherwise be wedged by a reviewer that had
+	// nothing left to say.
+	resolved, rerr := t.s.resolveStaleThreads(ctx, in.Number, complete, posted)
+	out := fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, in.Number, len(posted))
+	if resolved > 0 {
+		out += fmt.Sprintf(", resolved %d stale thread(s)", resolved)
+	}
+	if rerr != nil {
+		// The verdict is in. Say what did not happen rather than failing the review, and
+		// say it in the tool's result so the reviewer's own record carries it.
+		out += fmt.Sprintf("; could not resolve every stale thread: %v", rerr)
+	}
+	return out, nil
 }
