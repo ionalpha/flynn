@@ -183,6 +183,22 @@ func Start(cfg Config) (*Bundle, error) {
 		return nil, errors.New("diag: leak watch needs the timeline sampler, but Interval disables it")
 	}
 
+	// Validate the application-supplied counters before anything is created, so a bad
+	// one costs no bundle directory. Two ways a counter breaks the sampler, both caught
+	// here rather than at the first sample or the first leak dump: a nil Read panics the
+	// moment the baseline sample calls it, and a name that is not a plain filename
+	// component becomes part of a leak dump path (leak.<name>.<seq>.<member>), so a name
+	// with a slash writes into a directory that does not exist and a name with ".."
+	// escapes the bundle.
+	for _, c := range cfg.Counters {
+		if c.Read == nil {
+			return nil, fmt.Errorf("diag: counter %q has no Read function", c.Name)
+		}
+		if !safeCounterName(c.Name) {
+			return nil, fmt.Errorf("diag: counter name %q must be a plain filename component: it becomes part of a leak dump path", c.Name)
+		}
+	}
+
 	// The watchdog is built before anything is created, so a rejected threshold costs
 	// no bundle directory, no CPU profile, and nothing for a reader to half-trust. Its
 	// dump target is wired below, once there is a bundle to dump into.

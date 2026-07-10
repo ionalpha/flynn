@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/observe"
@@ -70,6 +71,18 @@ type Threshold struct {
 type Counter struct {
 	Name string
 	Read func() float64
+}
+
+// safeCounterName reports whether name may be spliced into a leak dump filename. A
+// firing counter's name becomes part of the path leak.<name>.<seq>.<member>, so it has
+// to be a single plain filename component: a name carrying a path separator writes into
+// a directory that was never created, and "." or ".." walks out of the bundle. Start
+// checks this so an unsafe name is refused before any evidence is written.
+func safeCounterName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	return !strings.ContainsAny(name, `/\`)
 }
 
 // DefaultThresholds are the floors for the built-in counters, chosen so that a

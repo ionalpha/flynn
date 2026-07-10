@@ -355,6 +355,72 @@ func TestStartRejectsABadThresholdBeforeTouchingTheBundle(t *testing.T) {
 	}
 }
 
+// TestStartRejectsACounterWithNoRead. A Counter with a nil Read would be called on
+// the baseline sample and panic before Start could return. Reject it at Start, with an
+// error naming the counter, and touch no bundle.
+func TestStartRejectsACounterWithNoRead(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	cfg := Config{
+		Dir:      dir,
+		Interval: time.Second,
+		Clock:    clock.NewManual(epoch),
+		Counters: []Counter{{Name: "queued"}}, // Read is nil
+	}
+
+	b, err := Start(cfg)
+	if err == nil {
+		_ = b.Stop()
+		t.Fatal("Start accepted a counter with no Read function")
+	}
+	if !strings.Contains(err.Error(), "queued") {
+		t.Errorf("error %q does not name the offending counter", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("a rejected config created the bundle directory")
+	}
+}
+
+// TestStartRejectsACounterNameThatEscapesTheBundle. A firing counter's name is spliced
+// into a leak dump filename, so a name with a path separator or ".." would write
+// outside the bundle or into a directory that does not exist, and the evidence would be
+// silently lost. Reject such a name at Start.
+func TestStartRejectsACounterNameThatEscapesTheBundle(t *testing.T) {
+	for _, name := range []string{"cache/entries", `a\b`, "..", ".", ""} {
+		t.Run(name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "bundle")
+			cfg := Config{
+				Dir:      dir,
+				Interval: time.Second,
+				Clock:    clock.NewManual(epoch),
+				Counters: []Counter{{Name: name, Read: func() float64 { return 0 }}},
+			}
+			if b, err := Start(cfg); err == nil {
+				_ = b.Stop()
+				t.Fatalf("Start accepted the unsafe counter name %q", name)
+			}
+			if _, err := os.Stat(dir); !os.IsNotExist(err) {
+				t.Error("a rejected config created the bundle directory")
+			}
+		})
+	}
+}
+
+// TestSafeCounterNameAcceptsPlainNamesAndRejectsPaths pins the rule directly: a plain
+// name is a valid filename component, and anything that could steer a dump out of the
+// bundle is not.
+func TestSafeCounterNameAcceptsPlainNamesAndRejectsPaths(t *testing.T) {
+	for _, ok := range []string{"queued", "temp_dirs", "event.log.bytes", CounterGoroutines} {
+		if !safeCounterName(ok) {
+			t.Errorf("safeCounterName(%q) = false, want a plain name accepted", ok)
+		}
+	}
+	for _, bad := range []string{"", ".", "..", "a/b", `a\b`, "../escape", "dir/leak"} {
+		if safeCounterName(bad) {
+			t.Errorf("safeCounterName(%q) = true, want an unsafe name rejected", bad)
+		}
+	}
+}
+
 // TestFromEnvEnablesTheWatchdog: a hosted instance whose command line an operator
 // cannot change is still watchable.
 func TestFromEnvEnablesTheWatchdog(t *testing.T) {
