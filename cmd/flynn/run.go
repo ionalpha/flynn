@@ -710,6 +710,8 @@ type driveConfig struct {
 	budget    budgetpkg.Limits
 	resLimits sandbox.ResourceLimits
 	extAgent  *externAgent
+	toolset   *boundToolset
+	observe   func(session.Event)
 }
 
 // driveOption configures a run driven by drive.
@@ -740,6 +742,33 @@ func withExternalAgent(ea *externAgent) driveOption {
 	return func(c *driveConfig) { c.extAgent = ea }
 }
 
+// withToolset drives the run over a caller-supplied toolset and grant instead of
+// the sandboxed working-tree tools. This is how a specialised run (a pull-request
+// review) holds exactly the authority its archetype declares: the toolset carries
+// no shell and no filesystem, and the grant it comes with is the complete list of
+// what the waist admits. The working directory is untouched; a toolset run never
+// reads or writes the tree.
+func withToolset(t *boundToolset) driveOption {
+	return func(c *driveConfig) { c.toolset = t }
+}
+
+// withEventObserver invokes fn on every session event as the run streams, in
+// addition to rendering. A caller uses it to read an outcome off the run's own
+// recorded events (a submitted review verdict, say) rather than re-deriving it
+// out of band, so what the caller acts on and what the record says cannot differ.
+func withEventObserver(fn func(session.Event)) driveOption {
+	return func(c *driveConfig) { c.observe = fn }
+}
+
+// boundToolset is a toolset paired with the grant that bounds it. They travel
+// together so a caller cannot hand drive a toolset while forgetting the authority
+// that is supposed to confine it: the default-permissive trap this pairing exists
+// to avoid.
+type boundToolset struct {
+	tools []mission.Tool
+	grant capability.Grant
+}
+
 // budgeted reports whether a ceiling is set on any axis.
 func (c driveConfig) budgeted() bool { return c.budget.Tokens > 0 || c.budget.Cost > 0 }
 
@@ -760,6 +789,10 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	// a run is recorded or checked.
 	var run *missionRun
 	switch {
+	case cfg.toolset != nil:
+		// A caller-supplied toolset and grant: no sandbox, no working-tree tools, the
+		// same session recording and governance as every other path.
+		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID)
 	case cfg.extAgent != nil:
 		// An external agent CLI drives the loop: the same sandbox, session, toolset,
 		// grant, and governance recording as a native run, but the run loop is the CLI's
@@ -828,7 +861,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		return "", "", nil, err
 	}
 
-	result, transcript, _, runErr := renderStream(w, events, verbose, nil)
+	result, transcript, _, runErr := renderStream(w, events, verbose, cfg.observe)
 
 	// Declare the run's provenance onto its stream before it is sealed, when an external
 	// agent harness drove the loop. The record then vouches for enforced effects (every
@@ -987,6 +1020,44 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// Apply the model's scaffolding plan last so a present field (a tighter context
 	// budget, simplified schemas, verify passes) overrides the lean defaults, while an
 	// absent one (the zero plan of a strong model) leaves them in place.
+	opts = append(opts, mission.PlanOptions(plan)...)
+	exec := mission.NewExecutor(model, opts...)
+	rt, err := runtime.New(parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq))
+	if err != nil {
+		return nil, err
+	}
+	return &missionRun{rt: rt, sess: parts.sess}, nil
+}
+
+// assembleToolsetMission wires one goal runtime over a caller-supplied toolset and
+// the grant bound to it, recording onto the spine exactly as assembleMission does.
+// There is no sandbox: the toolset holds every action the run may take, and the
+// grant it arrived with is the complete authority the waist consults. Budget,
+// brakes, governance recording, and compaction are identical to the sandboxed
+// path, so a specialised run is not a less-governed run.
+func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
+	var sopts []session.Option
+	if runID != "" {
+		sopts = append(sopts, session.WithID(runID))
+	}
+	sess := session.New(log, bus.NewMemory(), sopts...)
+	parts := &missionParts{
+		sess:    sess,
+		toolset: ts.tools,
+		grant:   ts.grant,
+		sink:    spinesink.New(log, sess.ID()),
+	}
+
+	opts := []mission.Option{
+		mission.WithTools(parts.toolset...),
+		mission.WithSystem(system),
+		mission.WithObserver(parts.sess.Reporter()),
+		mission.WithGrant(parts.grant),
+		mission.WithBudget(budgetpkg.NewHook(rstore)),
+		mission.WithBrakes(defaultBrakes()),
+		mission.WithEventSink(parts.sink),
+		mission.WithCompactionBudget(defaultCompactionBudget),
+	}
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
 	rt, err := runtime.New(parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq))

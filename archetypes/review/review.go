@@ -13,6 +13,11 @@
 // and the dispatch waist refuses an action the grant does not name. That refusal is
 // structural: it holds whatever the model is talked into asking for.
 //
+// This directory, archetypes/, is the home of the archetypes Flynn ships: each
+// package is one authored agent (its instruction and its authority) built on the
+// Agent kind that internal/archetype defines. The engine lives there; the content
+// lives here.
+//
 // The grant only binds once a caller puts it on the context. An unbound context is
 // permissive by design, the zero-config default of package capability, so assembling
 // a reviewer without binding its grant produces an unconstrained run that looks

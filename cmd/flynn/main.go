@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -159,6 +160,18 @@ func main() {
 		return
 	}
 
+	if args := flag.Args(); len(args) >= 1 && args[0] == "review" {
+		err := runReview(args[1:], modelSpec, *dataDir, vrb)
+		switch {
+		case errors.Is(err, errChangesRequested):
+			os.Exit(exitChangesRequested)
+		case err != nil:
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if args := flag.Args(); len(args) >= 1 && args[0] == "help" {
 		printUsage(os.Stdout)
 		return
@@ -218,6 +231,7 @@ func printUsage(w io.Writer) {
   flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn watch                watch the working tree for ai!/ai? comment markers and run each as a governed turn
+  flynn review <pr>          review a pull request and submit a formal verdict (APPROVE gated behind --approve --as); exits 3 on changes requested
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
   flynn spine verify <run>   report a run's record tier by tier: integrity, governance, ground truth (or --file <path> for an exported record)
   flynn spine export <run>   write a sealed run's portable record to a file (--out <path>) for third-party verification

@@ -10,12 +10,12 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/ionalpha/flynn/archetypes/review"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/review"
 	"github.com/ionalpha/flynn/tools/github"
 )
 
