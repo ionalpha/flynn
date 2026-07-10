@@ -944,6 +944,33 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 	}
 }
 
+// A reviewer may re-propose a finding it already posted in the same run: the comment is
+// updated, not duplicated, so the verdict must count it once. A per-call list would say
+// "2 findings" and link the same line twice.
+func TestVerdictCountsARepostedFindingOnce(t *testing.T) {
+	hub := newFakeHub(t)
+	set := newSet(t, hub, nil)
+	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+
+	for range 2 {
+		if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
+			t.Fatalf("post: %v", err)
+		}
+	}
+	verdict := `{"number":7,"event":"REQUEST_CHANGES","conclusion":"One thing to fix."}`
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	body, _ := hub.submittedText.Load().(string)
+	if !strings.Contains(body, "One finding:") {
+		t.Errorf("verdict body = %q, want one finding counted once", body)
+	}
+	if n := strings.Count(body, "`a.go:1`"); n != 1 {
+		t.Errorf("verdict links a.go:1 %d times, want 1: %q", n, body)
+	}
+}
+
 // A finding from an earlier round is not this verdict's finding. The author fixed it,
 // so the reviewer does not re-propose it, and a verdict that linked it anyway would
 // contradict itself: an approval whose body cites an obsolete defect says both that

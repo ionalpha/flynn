@@ -412,9 +412,20 @@ func verdictBody(conclusion string, findings []ReviewComment) string {
 
 // recordFinding remembers a finding this run posted or updated, so the verdict can
 // link exactly what this review had to say.
+//
+// It is keyed by the comment the finding lives on. A reviewer may call the comment
+// tool more than once in a run, re-proposing a finding it already posted; that updates
+// the one comment rather than adding a second, and the verdict must count it once. A
+// list that grew per call would report "2 findings" and link the same line twice.
 func (s *Set) recordFinding(c ReviewComment) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	for i, existing := range s.findings {
+		if existing.ID == c.ID {
+			s.findings[i] = c
+			return
+		}
+	}
 	s.findings = append(s.findings, c)
 }
 
