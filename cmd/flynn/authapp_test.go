@@ -126,6 +126,7 @@ func TestAuthSetAppRefusesBadInput(t *testing.T) {
 		"issuer negative":           {"--issuer", "-1", "--installation", "2", "--key-file", good},
 		"installation zero":         {"--issuer", "1", "--installation", "0", "--key-file", good},
 		"installation negative":     {"--issuer", "1", "--installation", "-7", "--key-file", good},
+		"stray positional":          {"--issuer", "1", "--installation", "2", "--key-file", good, "extra.pem"},
 	}
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {

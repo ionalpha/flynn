@@ -147,6 +147,10 @@ func authSetApp(ctx context.Context, store appStore, args []string, readFile fun
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		fs.Usage()
+		return fmt.Errorf("auth: set-app takes no arguments, got %q; every value is passed by flag", fs.Arg(0))
+	}
 	if *issuer == "" || *installation == "" || *keyFile == "" {
 		fs.Usage()
 		return errors.New("auth: set-app needs --issuer, --installation, and --key-file")
