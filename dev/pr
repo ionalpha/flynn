@@ -6,7 +6,14 @@
 # skipped by passing --body. Any extra args pass straight through to gh, e.g.:
 #   dev/pr                                  # interactive, opens the template
 #   dev/pr --title "feat: x" --body-file b  # scripted
+#   dev/pr --ready                          # skip the draft, run the full suite now
 #   dev/pr --web                            # finish in the browser
+#
+# A pull request opens as a draft. CI runs its fast tier on a draft (build, lint,
+# unit tests on one platform, secret scan) and the full cross-platform suite once
+# the pull request is marked ready, so review and revision happen before the
+# expensive jobs run, and they run once on the code that is actually proposed.
+# Pass --ready to open a pull request that is ready for review immediately.
 #
 # Requires the GitHub CLI: https://cli.github.com
 set -eu
@@ -51,6 +58,27 @@ if [ "$have_body" -eq 1 ]; then
   done
 fi
 
+# --ready is ours, not gh's: drop it and open a pull request that is ready for review.
+# Otherwise the pull request opens as a draft, unless the caller already said --draft.
+#
+# The arguments are rotated through the positional parameters rather than collected
+# into a string. A PR body is multi-line and contains quotes; re-splitting it through
+# a variable or eval truncates it at the first newline.
+draft="--draft"
+n=$#
+i=0
+while [ "$i" -lt "$n" ]; do
+  arg="$1"
+  shift
+  i=$((i + 1))
+  case "$arg" in
+    --ready) draft="" ; continue ;;  # ours, never passed to gh
+    --draft) draft="" ;;             # the caller said it; do not say it twice
+  esac
+  set -- "$@" "$arg"
+done
+
 # gh auto-detects the PR template; --fill-first seeds title from the first commit
 # when the caller doesn't pass one. Push happens via gh if there's no upstream.
-exec gh pr create --base main "$@"
+# shellcheck disable=SC2086 # $draft is one word or empty, and must vanish when empty.
+exec gh pr create --base main $draft "$@"
