@@ -218,6 +218,35 @@ func TestSystemPromptDemandsEvidenceAndForbidsNitpicks(t *testing.T) {
 	}
 }
 
+// TestSystemPromptRefusesToActAsACompiler pins the rule that keeps a review from
+// inventing compile errors. The reviewer runs on pull requests in languages and
+// language versions it was not trained on, so a construct it has not seen is far more
+// often a version it does not know than a real defect. Without this rule the model
+// posts confident "this will not compile" findings on valid code, which is the fastest
+// way to make a reviewer nobody trusts. The rule is deliberately general: it names no
+// language and no version, so it holds for every project the reviewer is pointed at.
+func TestSystemPromptRefusesToActAsACompiler(t *testing.T) {
+	p := review.SystemPrompt
+	for _, want := range []string{
+		"You are not a compiler",               // the reviewer disclaims the role it is worst at
+		"is not valid for the language",        // and the specific class of claim it must not make
+		"a version you do not know",            // unfamiliar syntax is a knowledge gap, not a defect
+		"a defect that survives a clean build", // what a finding must be instead
+	} {
+		if !strings.Contains(p, want) {
+			t.Errorf("the reviewer's instruction lost its rule about %q", want)
+		}
+	}
+	// The rule must not hard-code the reviewer to one language or toolchain: it runs on
+	// code that is not ours, so a Go-specific or version-specific carve-out would be a
+	// bug, not a fix.
+	for _, mustNotName := range []string{"Go 1.", "range over", "rangefunc"} {
+		if strings.Contains(p, mustNotName) {
+			t.Errorf("the instruction names %q; the not-a-compiler rule must stay language-agnostic", mustNotName)
+		}
+	}
+}
+
 // testConfig is a Config complete enough to build a toolset. It reaches no network:
 // nothing here calls the API.
 func testConfig(t *testing.T) github.Config {
