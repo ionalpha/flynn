@@ -50,6 +50,12 @@ func (l *Local) confine(_ *exec.Cmd) error { return nil }
 // folder holds no command output, and a profile still in use by another sandbox on the
 // same directory is simply left in place.
 func (l *Local) closePlatform() error {
+	if l.hostReadable {
+		// The write-restricted tier registers no container profile and needs no read
+		// grants: its only access entry is the workspace write grant, removed here.
+		_ = revokeRestrictedDir(l.root, l.root)
+		return nil
+	}
 	l.revokeReadableDirs()
 	deleteAppContainerProfile(appContainerMoniker(l.root))
 	return nil
@@ -65,7 +71,28 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 	if !confined {
 		return l.runWithExecCmd(ctx, name, args, stdin, false)
 	}
+	if l.hostReadable {
+		return l.runWriteRestricted(ctx, args, stdin)
+	}
 	return l.runAppContainer(ctx, args, stdin)
+}
+
+// runWriteRestricted runs a shell command under the write-restricted tier: the host stays
+// readable, and the working directory is the one place the child can write. It is the
+// tier for a program the container's deny-by-default reads would break (see
+// restricted_windows.go); the command line is composed exactly as the container path
+// composes it, so the two tiers run identical text.
+func (l *Local) runWriteRestricted(ctx context.Context, args []string, stdin []byte) (ExecResult, error) {
+	comspec := os.Getenv("ComSpec")
+	if comspec == "" {
+		comspec = `C:\Windows\System32\cmd.exe`
+	}
+	if err := grantRestrictedDir(l.root, l.root); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
+	}
+	line := args[len(args)-1]
+	cmdline := `"` + comspec + `" /s /c "` + line + `"`
+	return launchWriteRestricted(ctx, comspec, cmdline, l.root, l.appContainerEnv(), stdin, l.resLimits)
 }
 
 // runAppContainer builds the AppContainer policy from the Local's options and launches
@@ -182,4 +209,16 @@ func envBlock(m map[string]string) *uint16 {
 	}
 	b = append(b, 0) // final NUL closes the block
 	return &b[0]
+}
+
+// platformConfinementTier names the Windows kernel-confinement mechanism the sandbox's
+// configuration selects: the AppContainer by default, or the write-restricted token when
+// the host must stay readable (see WithHostReadable). The two bound an exploit equally
+// (both report ContainmentKernel) but confine reads differently, so a governed run
+// records the name, not just the level.
+func (l *Local) platformConfinementTier() string {
+	if l.hostReadable {
+		return "write-restricted-token"
+	}
+	return "appcontainer"
 }

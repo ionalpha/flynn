@@ -21,7 +21,26 @@ func (l *Local) captureRun(ctx context.Context, spec CaptureSpec, confined bool)
 	if !confined {
 		return l.captureExec(ctx, spec, false)
 	}
+	if l.hostReadable {
+		return l.captureWriteRestricted(ctx, spec)
+	}
 	return l.captureAppContainer(ctx, spec)
+}
+
+// captureWriteRestricted runs spec.Argv to completion under the write-restricted tier and
+// returns its combined output and exit code. It resolves and invokes the program exactly
+// as the container path does; only the confinement mechanism differs.
+func (l *Local) captureWriteRestricted(ctx context.Context, spec CaptureSpec) (ExecResult, error) {
+	appPath, err := exec.LookPath(spec.Argv[0])
+	if err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: capture: command not found: %s: %w", spec.Argv[0], err)
+	}
+	if err := grantRestrictedDir(l.root, l.root); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
+	}
+	cmdline := windows.ComposeCommandLine(spec.Argv)
+	env := l.appContainerEnvBlock(l.streamEnv(spec.Env))
+	return launchWriteRestricted(ctx, appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
 }
 
 // captureAppContainer runs spec.Argv to completion inside the working directory's

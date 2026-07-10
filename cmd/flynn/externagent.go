@@ -208,6 +208,12 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 			AuthEnv:      "CODEX_HOME",
 			ProgramDirs:  prog.ReadableDirs,
 			ProbeTimeout: externalProbeTimeout,
+			// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
+			// process can do inside a Windows AppContainer, so it runs under the tier that
+			// confines its writes to the workspace and leaves the host readable. Its writes,
+			// its egress, and its tools stay gated; only the read posture is traded, and the
+			// episode records the tier that ran.
+			HostReadable: true,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown external agent backend %q", name)

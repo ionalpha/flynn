@@ -41,6 +41,11 @@ type Local struct {
 	// sandbox root. On Linux and macOS a read-only host already permits the read, so this
 	// takes effect only where the confinement is default-deny for reads (Windows).
 	readableDirs []string
+	// hostReadable selects a confinement tier that leaves the host readable while still
+	// confining writes to the workspace (see WithHostReadable). It changes nothing on the
+	// platforms whose kernel tier is already read-permitting; on Windows it selects the
+	// write-restricted token in place of the AppContainer.
+	hostReadable bool
 	// confineBestEffort marks confinement as the always-on default (see
 	// WithDefaultConfinement) rather than an explicit request, so a host that cannot
 	// set it up falls back to the floor instead of failing the command.
@@ -147,6 +152,41 @@ func WithNetworkDenied() LocalOption {
 // option fails rather than running with the host filesystem silently still writable.
 func WithReadOnlyFS() LocalOption {
 	return func(l *Local) { l.readonlyFS = true }
+}
+
+// WithHostReadable selects the confinement tier that confines writes to the workspace
+// but leaves the host filesystem readable to the child, for a program the deny-by-default
+// read posture would break. Writes are still kernel-enforced: outside the workspace the
+// child cannot create, modify, or delete anything.
+//
+// It is a deliberate, recorded weakening of the read posture, so a caller names it only
+// for a child that needs it. Linux and macOS already read-permit under WithReadOnlyFS,
+// so there the option only makes that explicit and changes no behavior. On Windows it
+// replaces the AppContainer with a write-restricted token, because the container's read
+// posture is not merely strict but incomplete: a contained token cannot query the
+// drive-letter objects that map an NT path back to a DOS path, so canonicalizing any
+// path fails inside it. Programs that canonicalize on startup (every Rust program calling
+// std::fs::canonicalize, external agent CLIs among them) cannot run under the container
+// at all, and no filesystem grant can fix it, because the object denied is not a file.
+//
+// Callers that gate on containment should record which tier ran (see ConfinementTier):
+// both are kernel-enforced over a shared kernel and report ContainmentKernel, but this
+// one does not confine reads.
+func WithHostReadable() LocalOption {
+	return func(l *Local) { l.hostReadable = true }
+}
+
+// ConfinementTier names the mechanism that will confine a command this sandbox runs, for
+// the record a governed run keeps. It reports the tier the configuration selects, not a
+// weaker fallback a host might drop to, and it is a name rather than a level: two tiers
+// can bound a code-execution exploit equally (both report ContainmentKernel) while
+// confining reads differently, and a record that stored only the level could not tell
+// them apart.
+func (l *Local) ConfinementTier() string {
+	if !l.kernelConfinementEnforceable() {
+		return "process-jail"
+	}
+	return l.platformConfinementTier()
 }
 
 // ErrReadGrant reports that a directory named by WithReadableDir could not be granted to

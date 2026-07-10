@@ -319,3 +319,8 @@ func strippedEnv() []string {
 	}
 	return out
 }
+
+// platformConfinementTier names the Linux kernel-confinement mechanism. The tier
+// read-permits the host by construction (a read-only mount namespace), so
+// WithHostReadable selects no different mechanism here.
+func (l *Local) platformConfinementTier() string { return "namespace-seccomp" }

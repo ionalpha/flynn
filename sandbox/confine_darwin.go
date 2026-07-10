@@ -70,3 +70,8 @@ func (l *Local) confine(c *exec.Cmd) error {
 	c.Path = sandboxExec
 	return nil
 }
+
+// platformConfinementTier names the macOS kernel-confinement mechanism. The tier
+// read-permits the host by construction (a Seatbelt profile that denies writes), so
+// WithHostReadable selects no different mechanism here.
+func (l *Local) platformConfinementTier() string { return "seatbelt" }

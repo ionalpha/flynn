@@ -41,32 +41,46 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 	}
 	cmdline := windows.ComposeCommandLine(spec.Argv)
 
-	sid, err := createOrDeriveACSID(appContainerMoniker(l.root))
-	if err != nil {
-		return nil, fmt.Errorf("sandbox: appcontainer profile: %w", err)
-	}
-	defer func() { _ = windows.FreeSid(sid) }() // the child holds its own token once created
-
-	if err := grantDir(l.root, sid); err != nil {
-		return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
-	}
-	if err := l.grantReadableDirs(sid); err != nil {
-		return nil, fmt.Errorf("sandbox: %w", err)
-	}
-
-	var caps []*windows.SID
-	if !l.denyNetwork {
-		netCap, err := capabilitySID("internetClient")
-		if err != nil {
-			return nil, fmt.Errorf("sandbox: network capability: %w", err)
-		}
-		caps = append(caps, netCap)
-	}
-
 	env := l.appContainerEnvBlock(l.streamEnv(spec.Env))
-	p, err := spawnAppContainer(appPath, cmdline, l.root, env, sid, caps, spec.Stdin, l.resLimits)
-	if err != nil {
-		return nil, err
+
+	var p *acProcess
+	if l.hostReadable {
+		// The write-restricted tier: no container identity, no read grants (the host is
+		// readable by the user's own access), only the workspace write grant.
+		if err := grantRestrictedDir(l.root, l.root); err != nil {
+			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
+		}
+		p, err = spawnWriteRestricted(appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		sid, err := createOrDeriveACSID(appContainerMoniker(l.root))
+		if err != nil {
+			return nil, fmt.Errorf("sandbox: appcontainer profile: %w", err)
+		}
+		defer func() { _ = windows.FreeSid(sid) }() // the child holds its own token once created
+
+		if err := grantDir(l.root, sid); err != nil {
+			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
+		}
+		if err := l.grantReadableDirs(sid); err != nil {
+			return nil, fmt.Errorf("sandbox: %w", err)
+		}
+
+		var caps []*windows.SID
+		if !l.denyNetwork {
+			netCap, err := capabilitySID("internetClient")
+			if err != nil {
+				return nil, fmt.Errorf("sandbox: network capability: %w", err)
+			}
+			caps = append(caps, netCap)
+		}
+
+		p, err = spawnAppContainer(appPath, cmdline, l.root, env, sid, caps, spec.Stdin, l.resLimits)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// Bind the process to ctx: a cancellation (a halt or shutdown) terminates it, which

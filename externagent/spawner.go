@@ -55,6 +55,18 @@ type SandboxConfig struct {
 	// Empty grants no extra read, which is correct where the confinement leaves the host
 	// filesystem readable.
 	ProgramDirs []string
+	// HostReadable selects the confinement tier that confines the child's writes to the
+	// episode workspace but leaves the host filesystem readable to it (see
+	// sandbox.WithHostReadable). It is set for a CLI whose runtime cannot start under a
+	// deny-by-default read posture: the codex CLI is a Rust program, and every Rust program
+	// that canonicalizes a path fails inside a Windows AppContainer, whose token cannot
+	// perform the final step that maps a file handle back to a DOS path. The weakening is
+	// real (the harness can read the host user's files) and bounded (it can still write
+	// nothing outside the workspace, and its egress is still gated), so it is named per
+	// backend rather than defaulted, and the tier that ran is recorded on the episode. On
+	// Linux and macOS the kernel tier already leaves the host readable, so this changes
+	// nothing there.
+	HostReadable bool
 	// MinContainment is the floor the host must actually enforce or an episode is refused
 	// rather than run less contained (refuse-rather-than-downgrade: an untrusted harness
 	// never silently drops to a weaker boundary). The zero value is treated as
@@ -119,6 +131,9 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 	defer func() { _ = os.RemoveAll(root) }()
 
 	opts := []sandbox.LocalOption{sandbox.WithDefaultConfinement()}
+	if s.cfg.HostReadable {
+		opts = append(opts, sandbox.WithHostReadable())
+	}
 	if s.cfg.AuthDir != "" {
 		opts = append(opts, sandbox.WithReadableDir(s.cfg.AuthDir))
 	}
@@ -162,6 +177,7 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 		_ = loc.Close()
 		return nil, fmt.Errorf("externagent: host containment is %s, below the required %s; refusing to start an untrusted harness less contained than required", got, s.cfg.MinContainment)
 	}
+	tier := loc.ConfinementTier()
 	proc, err := loc.Stream(ctx, sandbox.StreamSpec{
 		Argv:    append([]string{inv.Path}, inv.Args...),
 		Stdin:   []byte(inv.Stdin),
@@ -172,7 +188,7 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 		_ = loc.Close()
 		return nil, err
 	}
-	return &confinedProcess{proc: proc, closer: loc}, nil
+	return &confinedProcess{proc: proc, closer: loc, tier: tier}, nil
 }
 
 // episodeOptions is the sandbox configuration for a live episode: the kernel-confined
@@ -185,6 +201,9 @@ func (s *SandboxSpawner) episodeOptions() []sandbox.LocalOption {
 		sandbox.WithReadOnlyFS(),
 		sandbox.WithSeccomp(),
 		sandbox.WithEgress(episodePolicy(s.cfg.AllowedHosts)),
+	}
+	if s.cfg.HostReadable {
+		opts = append(opts, sandbox.WithHostReadable())
 	}
 	if s.cfg.AuthDir != "" {
 		opts = append(opts, sandbox.WithReadableDir(s.cfg.AuthDir))
@@ -214,10 +233,18 @@ func episodePolicy(hosts []string) netguard.Policy {
 type confinedProcess struct {
 	proc   *sandbox.StreamProcess
 	closer io.Closer
+	tier   string
 }
 
 // Stdout is the confined child's live standard output.
 func (p *confinedProcess) Stdout() io.Reader { return p.proc.Stdout() }
+
+// ConfinementTier names the mechanism that actually confined this episode's child, so a
+// run's record states the boundary it ran behind rather than the strongest one the
+// platform has. The two Windows tiers bound a code-execution exploit alike but confine
+// reads differently (see sandbox.WithHostReadable), and a record that named only the
+// containment level could not tell a reader which one held.
+func (p *confinedProcess) ConfinementTier() string { return p.tier }
 
 // Wait blocks until the child exits, then releases the per-episode sandbox. It returns
 // the process's outcome; a close error is surfaced only when the process itself exited

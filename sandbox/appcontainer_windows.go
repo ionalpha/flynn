@@ -314,13 +314,8 @@ func (p *acProcess) closeProcess() {
 
 // spawnAppContainer creates and starts a command inside the AppContainer named by sid,
 // with the given capabilities, working directory, and environment, and returns a handle
-// to the running process. Only the single output-pipe write handle (and the stdin read
-// handle when present) is inherited by the child; the child is created suspended and
-// placed in its job before it runs a single instruction, and the mitigation policies are
-// applied at creation. When resLimits sets a memory or process cap, the job object that
-// contains the child enforces it. The caller reads p.read and, when done, calls
-// p.closeProcess and closes p.read. A failure to launch is an error and leaves no handles
-// for the caller.
+// to the running process. It is the AppContainer face of spawnConfined: the container
+// identity and capabilities become the process's security-capabilities attribute.
 func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.SID, caps []*windows.SID, stdin []byte, resLimits ResourceLimits) (*acProcess, error) {
 	capAttrs := make([]windows.SIDAndAttributes, 0, len(caps))
 	for _, c := range caps {
@@ -330,7 +325,21 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 	if len(capAttrs) > 0 {
 		sc.Capabilities = &capAttrs[0]
 	}
+	return spawnConfined(appName, cmdline, dir, env, &sc, 0, stdin, resLimits)
+}
 
+// spawnConfined creates and starts a confined command and returns a handle to the
+// running process. The confinement identity comes from exactly one of two mechanisms:
+// a non-nil sc launches the child inside that AppContainer (the security-capabilities
+// attribute builds the container token at creation), while a non-zero token launches
+// the child with that token as its primary token (the write-restricted tier). Only the
+// single output-pipe write handle (and the stdin read handle when present) is inherited
+// by the child; the child is created suspended and placed in its job before it runs a
+// single instruction, and the mitigation policies are applied at creation. When
+// resLimits sets a memory or process cap, the job object that contains the child
+// enforces it. The caller reads p.read and, when done, calls p.closeProcess and closes
+// p.read. A failure to launch is an error and leaves no handles for the caller.
+func spawnConfined(appName, cmdline, dir string, env *uint16, sc *securityCapabilities, token windows.Token, stdin []byte, resLimits ResourceLimits) (*acProcess, error) {
 	// Combined-output pipe. The write end is inheritable so the child can use it; the
 	// read end is made non-inheritable so it does not leak into the child.
 	var rd, wr windows.Handle
@@ -389,9 +398,11 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 		return nil, fmt.Errorf("sandbox: attribute list: %w", err)
 	}
 	defer al.Delete()
-	if err := al.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(&sc), unsafe.Sizeof(sc)); err != nil {
-		failClose()
-		return nil, fmt.Errorf("sandbox: security capabilities: %w", err)
+	if sc != nil {
+		if err := al.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(sc), unsafe.Sizeof(*sc)); err != nil {
+			failClose()
+			return nil, fmt.Errorf("sandbox: security capabilities: %w", err)
+		}
 	}
 	// Inherit only the pipe handles we set up (output, and the stdin reader when present),
 	// not whatever other inheritable handles this process happens to hold.
@@ -427,7 +438,14 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 	// The child is created suspended so it is placed in its job, with the limits in
 	// force, before it runs a single instruction.
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
-	err = windows.CreateProcess(appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
+	if token != 0 {
+		// The write-restricted tier: the child's primary token is the restricted one.
+		// CreateProcessAsUser accepts a restricted version of the caller's own token
+		// without any assign-primary-token privilege.
+		err = windows.CreateProcessAsUser(token, appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
+	} else {
+		err = windows.CreateProcess(appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
+	}
 	_ = windows.CloseHandle(wr) // the parent never writes output; the child holds its own copy
 	if rdIn != 0 {
 		_ = windows.CloseHandle(rdIn) // the child holds its own copy of the stdin reader
@@ -503,6 +521,25 @@ func launchAppContainer(ctx context.Context, appName, cmdline, dir string, env *
 	if err != nil {
 		return ExecResult{}, err
 	}
+	return drainProcess(ctx, p)
+}
+
+// launchWriteRestricted runs a command under the workspace's write-restricted token and
+// returns its combined output and exit code, with the same draining and cancellation
+// semantics as launchAppContainer.
+func launchWriteRestricted(ctx context.Context, appName, cmdline, root string, env *uint16, stdin []byte, resLimits ResourceLimits) (ExecResult, error) {
+	p, err := spawnWriteRestricted(appName, cmdline, root, env, stdin, resLimits)
+	if err != nil {
+		return ExecResult{}, err
+	}
+	return drainProcess(ctx, p)
+}
+
+// drainProcess waits for a started confined process, collecting its combined output. A
+// non-zero exit is a normal result; only a cancelled context is an error. Output is
+// drained on a separate goroutine so a command that writes more than the pipe buffer
+// cannot deadlock, and the process is killed if ctx is cancelled before it exits.
+func drainProcess(ctx context.Context, p *acProcess) (ExecResult, error) {
 	defer p.closeProcess()
 	defer func() { _ = windows.CloseHandle(p.read) }()
 

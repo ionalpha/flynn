@@ -39,3 +39,8 @@ func (l *Local) confine(_ *exec.Cmd) error {
 	}
 	return nil
 }
+
+// platformConfinementTier names this platform's kernel-confinement mechanism, of which
+// it has none: kernelConfinementSupported reports false, so ConfinementTier never reaches
+// this and it names the floor.
+func (l *Local) platformConfinementTier() string { return "process-jail" }
