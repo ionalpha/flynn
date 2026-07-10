@@ -37,9 +37,10 @@ func reviewArgs(gh *fakeGitHub, extra ...string) []string {
 // fetchCall is the model's first turn: fetch the pull request.
 func fetchCall() oaiReply { return toolCall("call-1", "github_pr_fetch", `{"number":7}`) }
 
-// commentCall posts one inline finding and the summary.
+// commentCall posts one inline finding. There is no summary: a finding lives on its
+// line, and the verdict links it.
 func commentCall(rule string) oaiReply {
-	args := fmt.Sprintf(`{"number":7,"summary":"One blocking finding.","findings":[{"path":"limiter.go","line":4,`+
+	args := fmt.Sprintf(`{"number":7,"findings":[{"path":"limiter.go","line":4,`+
 		`"rule":%q,"summary":"Allow always returns true, so no client is ever limited.",`+
 		`"failure":"Allow(\"c\") returns true for every call, so a client sending 10k requests per second is never throttled."}]}`, rule)
 	return toolCall("call-2", "github_comment", args)
@@ -47,7 +48,7 @@ func commentCall(rule string) oaiReply {
 
 // verdictCall submits the given verdict.
 func verdictCall(id, event string) oaiReply {
-	return toolCall(id, "github_submit_review", fmt.Sprintf(`{"number":7,"event":%q,"body":"Reviewed."}`, event))
+	return toolCall(id, "github_submit_review", fmt.Sprintf(`{"number":7,"event":%q,"conclusion":"Reviewed."}`, event))
 }
 
 // TestReviewPostsFindingsAndRequestsChanges is the whole happy path for a blocking
@@ -83,8 +84,20 @@ func TestReviewPostsFindingsAndRequestsChanges(t *testing.T) {
 	if !strings.Contains(inline[0].Body, "never throttled") {
 		t.Errorf("inline comment body lost the failure scenario: %q", inline[0].Body)
 	}
-	if got := gh.summaries(); len(got) != 1 {
-		t.Fatalf("want exactly 1 summary comment, got %d: %v", len(got), got)
+	if got := gh.summaries(); len(got) != 0 {
+		t.Fatalf("a review wrote %d comment(s) to the main thread, want 0: %v", len(got), got)
+	}
+
+	// The verdict carries the conclusion and a link to the finding, and says it once.
+	body := gh.verdictBodies()[0]
+	if !strings.HasPrefix(body, "Reviewed.") {
+		t.Errorf("verdict body does not open with the conclusion: %q", body)
+	}
+	if !strings.Contains(body, "One finding:") || !strings.Contains(body, "limiter.go:4") {
+		t.Errorf("verdict body does not link the finding: %q", body)
+	}
+	if strings.Contains(body, "never throttled") {
+		t.Errorf("verdict body restates the finding instead of linking it: %q", body)
 	}
 }
 
@@ -251,8 +264,8 @@ func TestReviewReconcilesRatherThanDuplicating(t *testing.T) {
 	if got := gh.inlineComments(); len(got) != 1 {
 		t.Fatalf("two reviews of the same finding left %d inline comments, want 1: %+v", len(got), got)
 	}
-	if got := gh.summaries(); len(got) != 1 {
-		t.Fatalf("two reviews left %d summary comments, want 1: %v", len(got), got)
+	if got := gh.summaries(); len(got) != 0 {
+		t.Fatalf("two reviews wrote %d comment(s) to the main thread, want 0: %v", len(got), got)
 	}
 }
 

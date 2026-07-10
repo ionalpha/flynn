@@ -61,6 +61,7 @@ type fakeHub struct {
 	created       atomic.Int64
 	updated       atomic.Int64
 	submittedBody atomic.Value // string: the last review event submitted
+	submittedText atomic.Value // string: the last review body submitted
 }
 
 func newFakeHub(t *testing.T) *fakeHub {
@@ -131,6 +132,7 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		var in map[string]any
 		decode(h.t, r, &in)
 		h.submittedBody.Store(fmt.Sprint(in["event"]))
+		h.submittedText.Store(fmt.Sprint(in["body"]))
 		w.WriteHeader(http.StatusOK)
 		writeJSON(w, map[string]any{"id": 1})
 
@@ -146,7 +148,10 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		out := []map[string]any{}
 		for id, b := range h.reviewComments {
-			out = append(out, map[string]any{"id": id, "body": b, "path": "a.go", "line": 1})
+			out = append(out, map[string]any{
+				"id": id, "body": b, "path": "a.go", "line": 1,
+				"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
+			})
 		}
 		h.mu.Unlock()
 		writeJSON(w, out)
@@ -298,7 +303,7 @@ func TestSubmitReviewApproveRefusedByDefault(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrApproveNotEnabled) {
 		t.Fatalf("want ErrApproveNotEnabled, got %v", err)
 	}
@@ -311,7 +316,7 @@ func TestSubmitReviewApproveAllowedWhenEnabled(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "APPROVE" {
@@ -326,7 +331,7 @@ func TestSubmitReviewRefusesSelfApproval(t *testing.T) {
 	hub.prAuthor = "reviewer[bot]"
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true })
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrSelfApproval) {
 		t.Fatalf("want ErrSelfApproval, got %v", err)
 	}
@@ -342,7 +347,7 @@ func TestSubmitReviewRequestChangesNeedsNoOptIn(t *testing.T) {
 	hub.prAuthor = "reviewer[bot]" // even on its own PR, blocking is fine
 	set := newSet(t, hub, nil)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES"}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "REQUEST_CHANGES" {
@@ -428,26 +433,28 @@ func TestCommentDistinctLinesAreDistinctFindings(t *testing.T) {
 	}
 }
 
-// The summary is sticky: posted once, then rewritten in place.
-func TestSummaryIsStickyAndUpdatedInPlace(t *testing.T) {
+// A review posts nothing to the pull request's main thread. Findings live on their
+// lines, and the verdict carries the conclusion, so a summary comment would be the
+// same words a third time. The tool refuses an empty batch rather than treating it as
+// a summary-only review.
+func TestCommentPostsNothingToTheMainThread(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	if _, err := invoke(t, tool, `{"number":7,"summary":"first pass"}`); err != nil {
-		t.Fatalf("first: %v", err)
+	if _, err := invoke(t, tool, `{"number":7,"findings":[]}`); err == nil {
+		t.Fatal("a review with no findings must not post a comment")
 	}
-	if n := len(hub.bodies("issue")); n != 1 {
-		t.Fatalf("issue comments = %d, want 1", n)
+	if n := len(hub.bodies("issue")); n != 0 {
+		t.Fatalf("issue comments = %d, want 0: a review never writes to the main thread", n)
 	}
-	if _, err := invoke(t, tool, `{"number":7,"summary":"second pass"}`); err != nil {
-		t.Fatalf("second: %v", err)
+
+	one := `{"number":7,"findings":[{"path":"a.go","line":3,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, tool, one); err != nil {
+		t.Fatalf("posting a finding: %v", err)
 	}
-	if n := len(hub.bodies("issue")); n != 1 {
-		t.Fatalf("issue comments = %d after re-run, want 1 (summary duplicated)", n)
-	}
-	if got := hub.updated.Load(); got != 1 {
-		t.Fatalf("updated = %d, want 1", got)
+	if n := len(hub.bodies("issue")); n != 0 {
+		t.Fatalf("issue comments = %d after posting a finding, want 0", n)
 	}
 }
 
@@ -459,7 +466,7 @@ func TestReconcileIgnoresHumanComments(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	in := `{"number":7,"summary":"sum","findings":[{"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"}]}`
+	in := `{"number":7,"findings":[{"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, tool, in); err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -815,7 +822,7 @@ func TestApproveRefusedWhenFileListTruncated(t *testing.T) {
 		c.MaxFiles = 2
 	})
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrIncompleteDiff) {
 		t.Fatalf("want ErrIncompleteDiff, got %v", err)
 	}
@@ -834,7 +841,7 @@ func TestApproveRefusedWhenAPatchWasTruncated(t *testing.T) {
 		c.MaxPatchBytes = 12
 	})
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrIncompleteDiff) {
 		t.Fatalf("want ErrIncompleteDiff, got %v", err)
 	}
@@ -847,7 +854,7 @@ func TestRequestChangesAllowedOnTruncatedDiff(t *testing.T) {
 	hub.changedFiles = 10
 	set := newSet(t, hub, func(c *github.Config) { c.MaxFiles = 2 })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES"}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
 		t.Fatalf("REQUEST_CHANGES on a partial diff must be allowed: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "REQUEST_CHANGES" {
@@ -861,7 +868,7 @@ func TestApproveAllowedOnCompleteDiff(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("approve on a complete diff: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "APPROVE" {
@@ -880,7 +887,7 @@ func TestOversizeButCompleteDiffCanBeApproved(t *testing.T) {
 		c.ReviewOversize = true
 	})
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "APPROVE" {
@@ -931,5 +938,37 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 	}
 	if hub.followedEvil.Load() {
 		t.Fatal("the off-host link was followed with a token attached")
+	}
+}
+
+// The verdict lists only the reviewer's own findings. A maintainer's inline comment
+// carries no marker, and a verdict that claimed it as a finding would be citing someone
+// else's words as its own.
+func TestVerdictListsOnlyTheReviewersOwnComments(t *testing.T) {
+	hub := newFakeHub(t)
+	hub.add("review", "a human asking a question")
+	set := newSet(t, hub, nil)
+
+	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
+		t.Fatalf("post: %v", err)
+	}
+	verdict := `{"number":7,"event":"REQUEST_CHANGES","conclusion":"One thing to fix."}`
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	body, _ := hub.submittedText.Load().(string)
+	if !strings.HasPrefix(body, "One thing to fix.") {
+		t.Errorf("verdict body does not open with the conclusion: %q", body)
+	}
+	if strings.Contains(body, "human asking") {
+		t.Errorf("the verdict claimed a human's comment as its finding: %q", body)
+	}
+	if n := strings.Count(body, "#discussion_r"); n != 1 {
+		t.Errorf("verdict links %d comments, want exactly its own 1: %q", n, body)
+	}
+	if !strings.Contains(body, "One finding:") {
+		t.Errorf("verdict does not list its finding: %q", body)
 	}
 }

@@ -105,7 +105,7 @@ func FuzzMarkerIn(f *testing.F) {
 		markerPrefix + "-->", // empty key
 		"-->" + markerPrefix, // closer before opener
 		markerPrefix + "a -->" + markerPrefix + "b -->", // two markers
-		summaryMarker,
+		markerPrefix + "summary -->",                    // the marker shape a previous release used
 		"<!-- flynn-review\x00 -->",
 		"prefix <!-- flynn-review:🔥 --> suffix",
 		strings.Repeat(markerPrefix, 8),

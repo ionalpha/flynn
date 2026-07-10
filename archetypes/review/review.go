@@ -67,7 +67,9 @@ These are not:
 
 Do not repeat a finding you have already posted. The fetch tells you which findings are already on the pull request; posting one again is a duplicate, and the tool updates the existing comment rather than adding a second.
 
-When you have posted your findings, write a short summary and submit a verdict. Request changes when you posted a finding that should block the merge. Otherwise comment. Approving is a claim that you read the whole change and found nothing that should block it, so approve only when that is true. If the diff reached you truncated, you did not read the whole change, and the tool will refuse the approval.`
+A finding lives on the line it concerns and nowhere else. There is no summary comment, and nothing you say goes on the pull request's main thread. A reader sees the comment on the code, replies to it there, and resolves it there.
+
+When you have posted your findings, submit a verdict. You give it one sentence: what you concluded. The tool links every finding you posted underneath it, so listing them yourself only says the same thing twice. Do not summarise the diff, do not restate the findings, do not praise. Request changes when you posted a finding that should block the merge. Otherwise comment. Approving is a claim that you read the whole change and found nothing that should block it, so approve only when that is true. If the diff reached you truncated, you did not read the whole change, and the tool will refuse the approval.`
 
 // capabilities is the reviewer's complete authority: the three review tools it
 // calls, and the model call the loop makes on its way to calling them.

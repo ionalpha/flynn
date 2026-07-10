@@ -75,7 +75,7 @@ func TestTokenAuthDrivesTheWholeToolset(t *testing.T) {
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), in); err != nil {
 		t.Fatalf("comment: %v", err)
 	}
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES"}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.created.Load(); got != 1 {
@@ -96,7 +96,7 @@ func TestApproveGateHoldsOnTheTokenPath(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newTokenSet(t, hub, "ghp_x", nil)
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE"}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrApproveNotEnabled) {
 		t.Fatalf("want ErrApproveNotEnabled, got %v", err)
 	}
@@ -104,7 +104,7 @@ func TestApproveGateHoldsOnTheTokenPath(t *testing.T) {
 	hub2 := newFakeHub(t)
 	hub2.prAuthor = "reviewer[bot]"
 	set2 := newTokenSet(t, hub2, "ghp_x", func(c *github.Config) { c.AllowApprove = true })
-	_, err = invoke(t, toolNamed(t, set2, "github_submit_review"), `{"number":7,"event":"APPROVE"}`)
+	_, err = invoke(t, toolNamed(t, set2, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrSelfApproval) {
 		t.Fatalf("want ErrSelfApproval, got %v", err)
 	}

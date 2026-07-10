@@ -21,9 +21,6 @@ import (
 // every comment.
 const markerPrefix = "<!-- flynn-review:"
 
-// summaryMarker keys the single sticky summary comment a review maintains.
-const summaryMarker = markerPrefix + "summary -->"
-
 // Finding is one reviewable defect anchored to a line of the diff.
 type Finding struct {
 	// Path and Line locate the finding on the right-hand side of the diff.
@@ -237,18 +234,19 @@ type commentTool struct{ s *Set }
 func (commentTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "github_comment",
-		Description: "Post review findings as inline comments and maintain the single summary comment. " +
+		Description: "Post review findings as inline comments on the lines they concern. " +
 			"Re-running reconciles: a finding already posted at the same path, line, and rule is updated in " +
-			"place, never duplicated. Every finding must carry a concrete failure scenario or it is refused.",
+			"place, never duplicated. Every finding must carry a concrete failure scenario or it is refused. " +
+			"There is no separate summary comment: a finding lives on its line, and the verdict carries the " +
+			"one-line conclusion.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
-  "required": ["number"],
+  "required": ["number", "findings"],
   "properties": {
     "number": {"type": "integer", "description": "Pull request number."},
-    "summary": {"type": "string", "description": "The review summary. Replaces the previous summary comment in place."},
     "findings": {
       "type": "array",
-      "description": "Inline findings. Omit for a summary-only review.",
+      "description": "Inline findings, each anchored to the line it concerns.",
       "items": {
         "type": "object",
         "required": ["path", "line", "rule", "summary", "failure"],
@@ -268,10 +266,16 @@ func (commentTool) Def() llm.Tool {
 	}
 }
 
+// Invoke posts the findings inline and nothing else.
+//
+// A review used to also keep a summary comment on the pull request's main thread,
+// restating what the inline comments already said and what the verdict says again
+// underneath. Three messages for one defect reads as a chatty bot and buries the
+// comment that mattered. A finding belongs on its line; the conclusion belongs to the
+// verdict; the main thread gets neither.
 func (t commentTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
 		Number   int       `json:"number"`
-		Summary  string    `json:"summary"`
 		Findings []Finding `json:"findings"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
@@ -279,6 +283,9 @@ func (t commentTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 	}
 	if in.Number <= 0 {
 		return "", errors.New("github: pull request number must be positive")
+	}
+	if len(in.Findings) == 0 {
+		return "", errors.New("github: no findings to post; a review with nothing to say submits its verdict directly")
 	}
 	// Validate every finding before posting any, so a malformed batch does not leave
 	// the pull request half-reviewed.
@@ -291,11 +298,6 @@ func (t commentTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 	created, updated, err := t.reconcileFindings(ctx, in.Number, in.Findings)
 	if err != nil {
 		return "", err
-	}
-	if s := strings.TrimSpace(in.Summary); s != "" {
-		if err := t.reconcileSummary(ctx, in.Number, s); err != nil {
-			return "", err
-		}
 	}
 	return fmt.Sprintf("posted %d new finding(s), updated %d existing", created, updated), nil
 }
@@ -338,21 +340,6 @@ func (t commentTool) reconcileFindings(ctx context.Context, number int, findings
 	return created, updated, nil
 }
 
-// reconcileSummary rewrites the sticky summary comment, or posts it the first time.
-func (t commentTool) reconcileSummary(ctx context.Context, number int, summary string) error {
-	body := summaryMarker + "\n" + summary
-	existing, err := t.s.client.issueComments(ctx, number)
-	if err != nil {
-		return err
-	}
-	for _, c := range existing {
-		if markerIn(c.Body) == summaryMarker {
-			return t.s.client.updateIssueComment(ctx, c.ID, body)
-		}
-	}
-	return t.s.client.createIssueComment(ctx, number, body)
-}
-
 // --- submit_review ----------------------------------------------------------
 
 type submitReviewTool struct{ s *Set }
@@ -361,26 +348,86 @@ func (submitReviewTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "github_submit_review",
 		Description: "Submit the formal review verdict on a pull request: COMMENT, REQUEST_CHANGES, or APPROVE. " +
+			"The verdict links to the findings already posted inline; do not restate them in the body. " +
 			"APPROVE is refused unless the reviewer was configured to allow it, and is always refused on a pull " +
 			"request the reviewer authored.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
-  "required": ["number", "event"],
+  "required": ["number", "event", "conclusion"],
   "properties": {
     "number": {"type": "integer", "description": "Pull request number."},
     "event": {"type": "string", "enum": ["COMMENT", "REQUEST_CHANGES", "APPROVE"], "description": "The verdict."},
-    "body": {"type": "string", "description": "Optional verdict message."}
+    "conclusion": {"type": "string", "description": "One sentence stating what you concluded. Not a summary of the findings: they are linked automatically."}
   },
   "additionalProperties": false
 }`),
 	}
 }
 
+// verdictBody builds the review body: the reviewer's one-sentence conclusion, then a
+// link to each finding it has posted inline on this pull request.
+//
+// The list is built here rather than written by the model, which is the point. GitHub
+// requires a body on a COMMENT or REQUEST_CHANGES review, and a model handed an empty
+// text field fills it, restating on the main thread what the inline comments already
+// say. Linking states what the verdict covers without saying any of it twice, and a
+// list the tool constructs cannot grow prose.
+//
+// Findings are ordered by file and line so the list reads in the order a reader walks
+// the diff, not in the order the reviewer happened to find them.
+func verdictBody(conclusion string, findings []ReviewComment) string {
+	var b strings.Builder
+	b.WriteString(strings.TrimSpace(conclusion))
+	if len(findings) == 0 {
+		return b.String()
+	}
+	ordered := append([]ReviewComment(nil), findings...)
+	sort.Slice(ordered, func(i, j int) bool {
+		if ordered[i].Path != ordered[j].Path {
+			return ordered[i].Path < ordered[j].Path
+		}
+		return ordered[i].Line < ordered[j].Line
+	})
+	if len(ordered) == 1 {
+		b.WriteString("\n\nOne finding:\n")
+	} else {
+		fmt.Fprintf(&b, "\n\n%d findings:\n", len(ordered))
+	}
+	for _, c := range ordered {
+		anchor := fmt.Sprintf("`%s:%d`", c.Path, c.Line)
+		if c.HTMLURL == "" {
+			// A comment GitHub gave no address to cannot be linked; naming it still
+			// tells the reader where to look, which is better than dropping it.
+			fmt.Fprintf(&b, "- %s\n", anchor)
+			continue
+		}
+		fmt.Fprintf(&b, "- [%s](%s)\n", anchor, c.HTMLURL)
+	}
+	return b.String()
+}
+
+// postedFindings returns the reviewer's own inline comments on the pull request,
+// identified by the marker it embeds. A human's comment carries no marker and is never
+// listed as one of the reviewer's findings.
+func (s *Set) postedFindings(ctx context.Context, number int) ([]ReviewComment, error) {
+	all, err := s.client.reviewComments(ctx, number)
+	if err != nil {
+		return nil, err
+	}
+	mine := make([]ReviewComment, 0, len(all))
+	for _, c := range all {
+		if markerIn(c.Body) != "" {
+			mine = append(mine, c)
+		}
+	}
+	return mine, nil
+}
+
 func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
-		Number int    `json:"number"`
-		Event  string `json:"event"`
-		Body   string `json:"body"`
+		Number     int    `json:"number"`
+		Event      string `json:"event"`
+		Conclusion string `json:"conclusion"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
@@ -421,8 +468,23 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 			return "", fmt.Errorf("%w: %s", ErrIncompleteDiff, why)
 		}
 	}
-	if err := t.s.client.submitReview(ctx, in.Number, pr.HeadSHA, in.Event, in.Body); err != nil {
+	// Validated last, after every refusal above. A reviewer denied the authority to
+	// approve must be told that, not that its sentence was missing: the weaker error
+	// would send a model off rewriting prose to get past a gate that is not about
+	// prose. GitHub refuses a COMMENT or REQUEST_CHANGES review with no body, so an
+	// absent conclusion is caught here rather than as a 422 the model cannot read.
+	if strings.TrimSpace(in.Conclusion) == "" {
+		return "", errors.New("github: a verdict needs a one-sentence conclusion")
+	}
+
+	// The body links the findings already on the pull request, so the verdict says what
+	// it covers without restating any of it.
+	posted, err := t.s.postedFindings(ctx, in.Number)
+	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("submitted %s on #%d", in.Event, in.Number), nil
+	if err := t.s.client.submitReview(ctx, in.Number, pr.HeadSHA, in.Event, verdictBody(in.Conclusion, posted)); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, in.Number, len(posted)), nil
 }

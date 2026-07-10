@@ -417,7 +417,7 @@ func (m *reviewScript) Generate(_ context.Context, _ llm.Request) (llm.Response,
 	case 2:
 		return call("t2", "github_pr_fetch", `{"number":7}`), nil
 	case 3:
-		return call("t3", "github_submit_review", `{"number":7,"event":"REQUEST_CHANGES","body":"one blocking defect"}`), nil
+		return call("t3", "github_submit_review", `{"number":7,"event":"REQUEST_CHANGES","conclusion":"One blocking defect."}`), nil
 	default:
 		return llm.Response{Message: llm.Text(llm.RoleAssistant, "review submitted"), StopReason: llm.StopEndTurn}, nil
 	}

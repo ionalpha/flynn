@@ -71,16 +71,28 @@ type fakeFile struct {
 
 // gh is a stored comment.
 type gh struct {
-	ID   int64
-	Path string
-	Line int
-	Body string
+	ID      int64
+	Path    string
+	Line    int
+	Body    string
+	HTMLURL string
 }
 
 // ghReview is a submitted review verdict.
 type ghReview struct {
 	Event string
 	Body  string
+}
+
+// verdictBodies returns the body of each submitted review, in order.
+func (f *fakeGitHub) verdictBodies() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.reviews))
+	for _, rv := range f.reviews {
+		out = append(out, rv.Body)
+	}
+	return out
 }
 
 // defaultPR is a small, clean pull request authored by someone other than the
@@ -218,7 +230,10 @@ func (f *fakeGitHub) getFiles(w http.ResponseWriter) {
 
 func (f *fakeGitHub) listComments(w http.ResponseWriter, store *[]gh) {
 	f.mu.Lock()
-	out := append([]gh(nil), (*store)...)
+	out := make([]map[string]any, 0, len(*store))
+	for _, c := range *store {
+		out = append(out, map[string]any{"id": c.ID, "path": c.Path, "line": c.Line, "body": c.Body, "html_url": c.HTMLURL})
+	}
 	f.mu.Unlock()
 	writeJSON(w, out)
 }
@@ -243,7 +258,10 @@ func (f *fakeGitHub) createReviewComment(w http.ResponseWriter, r *http.Request)
 	}
 	id := f.nextID
 	f.nextID++
-	f.reviewComments = append(f.reviewComments, gh{ID: id, Path: in.Path, Line: in.Line, Body: in.Body})
+	f.reviewComments = append(f.reviewComments, gh{
+		ID: id, Path: in.Path, Line: in.Line, Body: in.Body,
+		HTMLURL: fmt.Sprintf("https://github.com/acme/widgets/pull/7#discussion_r%d", id),
+	})
 	f.mu.Unlock()
 	writeJSON(w, map[string]any{"id": id})
 }

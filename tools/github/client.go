@@ -78,12 +78,10 @@ type ReviewComment struct {
 	Path string `json:"path"`
 	Line int    `json:"line"`
 	Body string `json:"body"`
-}
 
-// IssueComment is an existing top-level comment on a pull request.
-type IssueComment struct {
-	ID   int64  `json:"id"`
-	Body string `json:"body"`
+	// HTMLURL addresses the comment on the pull request, so a verdict can point at a
+	// finding instead of repeating it.
+	HTMLURL string `json:"html_url"`
 }
 
 // do issues an authenticated request and decodes a JSON response into out. A nil
@@ -133,13 +131,6 @@ func (c *client) do(ctx context.Context, method, url string, in, out any) error 
 // prURL builds a pull-request-scoped API URL from the bound repository.
 func (c *client) prURL(number int, suffix string) string {
 	return fmt.Sprintf("%s/repos/%s/%s/pulls/%d%s",
-		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, number, suffix)
-}
-
-// issueURL builds an issue-scoped API URL. A pull request is an issue for the
-// purpose of top-level comments.
-func (c *client) issueURL(number int, suffix string) string {
-	return fmt.Sprintf("%s/repos/%s/%s/issues/%d%s",
 		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, number, suffix)
 }
 
@@ -284,22 +275,6 @@ func (c *client) reviewComments(ctx context.Context, number int) ([]ReviewCommen
 	return all, nil
 }
 
-// issueComments lists the pull request's existing top-level comments.
-func (c *client) issueComments(ctx context.Context, number int) ([]IssueComment, error) {
-	var all []IssueComment
-	url := fmt.Sprintf("%s?per_page=%d", c.issueURL(number, "/comments"), perPage)
-	for page := 0; page < maxPages && url != ""; page++ {
-		var batch []IssueComment
-		next, err := c.doPaged(ctx, url, &batch)
-		if err != nil {
-			return nil, err
-		}
-		all = append(all, batch...)
-		url = next
-	}
-	return all, nil
-}
-
 // createReviewComment posts a new inline comment anchored to a line of the diff.
 func (c *client) createReviewComment(ctx context.Context, number int, headSHA string, f Finding) error {
 	in := map[string]any{
@@ -317,18 +292,6 @@ func (c *client) updateReviewComment(ctx context.Context, id int64, f Finding) e
 	url := fmt.Sprintf("%s/repos/%s/%s/pulls/comments/%d",
 		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, id)
 	return c.do(ctx, http.MethodPatch, url, map[string]any{"body": f.render()}, nil)
-}
-
-// createIssueComment posts a new top-level comment.
-func (c *client) createIssueComment(ctx context.Context, number int, body string) error {
-	return c.do(ctx, http.MethodPost, c.issueURL(number, "/comments"), map[string]any{"body": body}, nil)
-}
-
-// updateIssueComment rewrites an existing top-level comment in place.
-func (c *client) updateIssueComment(ctx context.Context, id int64, body string) error {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/comments/%d",
-		c.cfg.APIBase, c.cfg.Owner, c.cfg.Repo, id)
-	return c.do(ctx, http.MethodPatch, url, map[string]any{"body": body}, nil)
 }
 
 // submitReview posts a formal review carrying a verdict. The event is one of
