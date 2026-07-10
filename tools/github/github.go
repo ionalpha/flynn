@@ -80,6 +80,13 @@ type Config struct {
 	Owner string
 	Repo  string
 
+	// Number is the pull request the reviewer was invoked for. Like Owner and Repo it
+	// binds the whole review: no tool takes a pull-request number from the model, so
+	// the diff a review reads cannot steer a comment or a verdict onto a different pull
+	// request by naming its number. A review whose own diff mentions "#123" still writes
+	// only to the pull request it was launched against. Must be positive.
+	Number int
+
 	// SelfLogin is the reviewer's own login, such as "my-reviewer[bot]". When a pull
 	// request's author matches it, an APPROVE verdict is refused. Empty disables the
 	// check, which is only correct in tests.
@@ -150,10 +157,10 @@ type Set struct {
 	// mu guards findings, which the comment tool records into and the verdict reads.
 	// Tools of one Set run on one review, but not necessarily on one goroutine.
 	//
-	// A Set is bound to a repository, not to a pull request, and a host may review
-	// several pull requests through one Set. Findings are therefore keyed by pull
-	// request: without that, a verdict on one pull request would link a finding posted
-	// on another.
+	// A Set is bound to one pull request (Config.Number). Findings are still keyed by
+	// pull-request number, which is always that bound number, so the verdict links only
+	// the findings this review posted and the key doubles as a check that a record and a
+	// verdict are talking about the same pull request.
 	mu       sync.Mutex
 	findings map[int][]ReviewComment
 }
@@ -164,6 +171,9 @@ type Set struct {
 func New(cfg Config) (*Set, error) {
 	if cfg.Owner == "" || cfg.Repo == "" {
 		return nil, errors.New("github: Config.Owner and Config.Repo are required")
+	}
+	if cfg.Number <= 0 {
+		return nil, errors.New("github: Config.Number (the pull request under review) must be positive")
 	}
 	if cfg.HTTPClient == nil {
 		cfg.HTTPClient = netguard.Client(netguard.PublicOnly())

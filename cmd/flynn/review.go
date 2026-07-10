@@ -155,7 +155,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	cfg.Owner, cfg.Repo = owner, repoName
+	cfg.Owner, cfg.Repo, cfg.Number = owner, repoName, number
 	cfg.SelfLogin = *selfLogin
 	cfg.AllowApprove = *approve
 	cfg.MaxChangedLines = *maxLines

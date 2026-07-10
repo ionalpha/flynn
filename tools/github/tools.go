@@ -142,18 +142,16 @@ type prFetchTool struct{ s *Set }
 func (prFetchTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: "github_pr_fetch",
-		Description: "Fetch a pull request: its metadata, the list of changed files with their diff patches, " +
-			"and the findings this reviewer has already posted, each with the rule, summary, and failure " +
-			"scenario it claimed. For each one, decide against the fetched diff whether the defect is still " +
-			"there. Repost the ones that are (the existing comment is updated in place, never duplicated) and " +
-			"drop the ones the change has fixed. Do not repost a finding without checking; a stale finding " +
-			"reposted is a false objection kept alive.",
+		Description: "Fetch the pull request under review: its metadata, the list of changed files with their " +
+			"diff patches, and the findings this reviewer has already posted, each with the rule, summary, and " +
+			"failure scenario it claimed. The pull request is fixed for this run; the fetch takes no arguments " +
+			"and echoes its number back. For each posted finding, decide against the fetched diff whether the " +
+			"defect is still there. Repost the ones that are (the existing comment is updated in place, never " +
+			"duplicated) and drop the ones the change has fixed. Do not repost a finding without checking; a " +
+			"stale finding reposted is a false objection kept alive.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
-  "required": ["number"],
-  "properties": {
-    "number": {"type": "integer", "description": "Pull request number."}
-  },
+  "properties": {},
   "additionalProperties": false
 }`),
 	}
@@ -216,17 +214,12 @@ func (s *Set) diffCoverage(ctx context.Context, pr PullRequest) (bool, string, e
 	return true, "", nil
 }
 
-func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
-	var in struct {
-		Number int `json:"number"`
-	}
-	if err := json.Unmarshal(input, &in); err != nil {
-		return "", err
-	}
-	if in.Number <= 0 {
-		return "", errors.New("github: pull request number must be positive")
-	}
-	pr, err := t.s.client.pullRequest(ctx, in.Number)
+func (t prFetchTool) Invoke(ctx context.Context, _ json.RawMessage) (string, error) {
+	// The pull request is bound to the run, not read from the tool input. A review that
+	// mentions another pull request's number in its own diff cannot fetch (or later
+	// comment on) that pull request instead of the one it was invoked for.
+	number := t.s.cfg.Number
+	pr, err := t.s.client.pullRequest(ctx, number)
 	if err != nil {
 		return "", err
 	}
@@ -237,11 +230,11 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 		return "", fmt.Errorf("%w: %d changed lines exceeds the %d-line budget",
 			ErrDiffTooLarge, pr.ChangedLines(), t.s.cfg.MaxChangedLines)
 	}
-	files, truncated, err := t.s.client.changedFiles(ctx, in.Number)
+	files, truncated, err := t.s.client.changedFiles(ctx, number)
 	if err != nil {
 		return "", err
 	}
-	existing, err := t.s.client.reviewComments(ctx, in.Number)
+	existing, err := t.s.client.reviewComments(ctx, number)
 	if err != nil {
 		return "", err
 	}
@@ -326,9 +319,8 @@ func (commentTool) Def() llm.Tool {
 			"one-line conclusion.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
-  "required": ["number", "findings"],
+  "required": ["findings"],
   "properties": {
-    "number": {"type": "integer", "description": "Pull request number."},
     "findings": {
       "type": "array",
       "description": "Inline findings, each anchored to the line it concerns.",
@@ -360,14 +352,10 @@ func (commentTool) Def() llm.Tool {
 // verdict; the main thread gets neither.
 func (t commentTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
-		Number   int       `json:"number"`
 		Findings []Finding `json:"findings"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
-	}
-	if in.Number <= 0 {
-		return "", errors.New("github: pull request number must be positive")
 	}
 	if len(in.Findings) == 0 {
 		return "", errors.New("github: no findings to post; a review with nothing to say submits its verdict directly")
@@ -380,7 +368,8 @@ func (t commentTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 		}
 	}
 
-	created, updated, err := t.reconcileFindings(ctx, in.Number, in.Findings)
+	// The pull request is the run's bound one, never a number the model supplied.
+	created, updated, err := t.reconcileFindings(ctx, t.s.cfg.Number, in.Findings)
 	if err != nil {
 		return "", err
 	}
@@ -454,9 +443,8 @@ func (submitReviewTool) Def() llm.Tool {
 			"request the reviewer authored.",
 		InputSchema: json.RawMessage(`{
   "type": "object",
-  "required": ["number", "event", "conclusion"],
+  "required": ["event", "conclusion"],
   "properties": {
-    "number": {"type": "integer", "description": "Pull request number."},
     "event": {"type": "string", "enum": ["COMMENT", "REQUEST_CHANGES", "APPROVE"], "description": "The verdict."},
     "conclusion": {"type": "string", "description": "One sentence stating what you concluded. Not a summary of the findings: they are linked automatically."}
   },
@@ -559,16 +547,14 @@ func (s *Set) takeFindings(number int) []ReviewComment {
 
 func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	var in struct {
-		Number     int    `json:"number"`
 		Event      string `json:"event"`
 		Conclusion string `json:"conclusion"`
 	}
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	if in.Number <= 0 {
-		return "", errors.New("github: pull request number must be positive")
-	}
+	// The verdict lands on the run's bound pull request, never a number the model chose.
+	number := t.s.cfg.Number
 	switch in.Event {
 	case "COMMENT", "REQUEST_CHANGES":
 	case "APPROVE":
@@ -579,7 +565,7 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 		return "", fmt.Errorf("github: unknown review event %q", in.Event)
 	}
 
-	pr, err := t.s.client.pullRequest(ctx, in.Number)
+	pr, err := t.s.client.pullRequest(ctx, number)
 	if err != nil {
 		return "", err
 	}
@@ -643,26 +629,26 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 
 	// The body links the findings already on the pull request, so the verdict says what
 	// it covers without restating any of it.
-	posted := t.s.currentFindings(in.Number)
-	if err := t.s.client.submitReview(ctx, in.Number, pr.HeadSHA, in.Event, verdictBody(in.Conclusion, posted)); err != nil {
+	posted := t.s.currentFindings(number)
+	if err := t.s.client.submitReview(ctx, number, pr.HeadSHA, in.Event, verdictBody(in.Conclusion, posted)); err != nil {
 		// The record survives a failed submission, so a retry still links what this
 		// review found rather than submitting a verdict that cites nothing.
 		return "", err
 	}
 	// The verdict landed, so the review is over and its findings belong to it alone.
-	t.s.takeFindings(in.Number)
+	t.s.takeFindings(number)
 
 	// Close the conversations this review no longer stands behind. It runs after the
 	// verdict, so a failure here cannot cost the review its verdict; a repository that
 	// requires thread resolution would otherwise be wedged by a reviewer that had
 	// nothing left to say.
-	resolved, rerr := t.s.resolveStaleThreads(ctx, in.Number, complete, posted)
+	resolved, rerr := t.s.resolveStaleThreads(ctx, number, complete, posted)
 	if coverageErr != nil {
 		// Resolution never ran: the diff could not be read, so a finding's absence proved
 		// nothing about whether it was fixed.
 		rerr = fmt.Errorf("the diff could not be read, so no stale conversation was retracted: %w", coverageErr)
 	}
-	out := fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, in.Number, len(posted))
+	out := fmt.Sprintf("submitted %s on #%d, linking %d finding(s)", in.Event, number, len(posted))
 	if resolved > 0 {
 		out += fmt.Sprintf(", resolved %d stale thread(s)", resolved)
 	}

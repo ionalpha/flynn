@@ -445,6 +445,7 @@ func newSet(t *testing.T, hub *fakeHub, mutate func(*github.Config)) *github.Set
 		App:        github.App{Issuer: "Iv1.test", InstallationID: 42, PrivateKey: key},
 		Owner:      "ionalpha",
 		Repo:       "flynn",
+		Number:     7,
 		SelfLogin:  "reviewer[bot]",
 		HTTPClient: srv.Client(),
 		APIBase:    srv.URL,
@@ -485,7 +486,7 @@ func TestSubmitReviewApproveRefusedByDefault(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrApproveNotEnabled) {
 		t.Fatalf("want ErrApproveNotEnabled, got %v", err)
 	}
@@ -498,7 +499,7 @@ func TestSubmitReviewApproveAllowedWhenEnabled(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "APPROVE" {
@@ -513,7 +514,7 @@ func TestSubmitReviewRefusesSelfApproval(t *testing.T) {
 	hub.prAuthor = "reviewer[bot]"
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true })
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrSelfApproval) {
 		t.Fatalf("want ErrSelfApproval, got %v", err)
 	}
@@ -529,7 +530,7 @@ func TestSubmitReviewRequestChangesNeedsNoOptIn(t *testing.T) {
 	hub.prAuthor = "reviewer[bot]" // even on its own PR, blocking is fine
 	set := newSet(t, hub, nil)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "REQUEST_CHANGES" {
@@ -541,7 +542,7 @@ func TestSubmitReviewRejectsUnknownEvent(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"LGTM"}`); err == nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"LGTM"}`); err == nil {
 		t.Fatal("want an error for an unknown event")
 	}
 }
@@ -555,7 +556,7 @@ func TestCommentReconcilesInsteadOfDuplicating(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	const findings = `{"number":7,"findings":[
+	const findings = `{"findings":[
       {"path":"a.go","line":12,"rule":"nil-deref","summary":"cfg may be nil","failure":"cfg=nil panics at a.go:12"}]}`
 
 	if _, err := invoke(t, tool, findings); err != nil {
@@ -584,8 +585,8 @@ func TestCommentIdentityExcludesBody(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	first := `{"number":7,"findings":[{"path":"a.go","line":12,"rule":"nil-deref","summary":"cfg may be nil","failure":"panics"}]}`
-	second := `{"number":7,"findings":[{"path":"a.go","line":12,"rule":"nil-deref","summary":"cfg is nil on the error path","failure":"cfg=nil panics"}]}`
+	first := `{"findings":[{"path":"a.go","line":12,"rule":"nil-deref","summary":"cfg may be nil","failure":"panics"}]}`
+	second := `{"findings":[{"path":"a.go","line":12,"rule":"nil-deref","summary":"cfg is nil on the error path","failure":"cfg=nil panics"}]}`
 
 	if _, err := invoke(t, tool, first); err != nil {
 		t.Fatalf("first: %v", err)
@@ -604,7 +605,7 @@ func TestCommentDistinctLinesAreDistinctFindings(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	in := `{"number":7,"findings":[
+	in := `{"findings":[
       {"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"},
       {"path":"a.go","line":30,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, tool, in); err != nil {
@@ -624,14 +625,14 @@ func TestCommentPostsNothingToTheMainThread(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	if _, err := invoke(t, tool, `{"number":7,"findings":[]}`); err == nil {
+	if _, err := invoke(t, tool, `{"findings":[]}`); err == nil {
 		t.Fatal("a review with no findings must not post a comment")
 	}
 	if n := len(hub.bodies("issue")); n != 0 {
 		t.Fatalf("issue comments = %d, want 0: a review never writes to the main thread", n)
 	}
 
-	one := `{"number":7,"findings":[{"path":"a.go","line":3,"rule":"r","summary":"s","failure":"f"}]}`
+	one := `{"findings":[{"path":"a.go","line":3,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, tool, one); err != nil {
 		t.Fatalf("posting a finding: %v", err)
 	}
@@ -648,7 +649,7 @@ func TestReconcileIgnoresHumanComments(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	in := `{"number":7,"findings":[{"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"}]}`
+	in := `{"findings":[{"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, tool, in); err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -670,11 +671,11 @@ func TestFindingWithoutFailureScenarioIsRefused(t *testing.T) {
 	tool := toolNamed(t, set, "github_comment")
 
 	cases := map[string]string{
-		"no failure": `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"  "}]}`,
-		"no summary": `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"","failure":"f"}]}`,
-		"no rule":    `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"","summary":"s","failure":"f"}]}`,
-		"no line":    `{"number":7,"findings":[{"path":"a.go","line":0,"rule":"r","summary":"s","failure":"f"}]}`,
-		"no path":    `{"number":7,"findings":[{"path":"","line":1,"rule":"r","summary":"s","failure":"f"}]}`,
+		"no failure": `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"  "}]}`,
+		"no summary": `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"","failure":"f"}]}`,
+		"no rule":    `{"findings":[{"path":"a.go","line":1,"rule":"","summary":"s","failure":"f"}]}`,
+		"no line":    `{"findings":[{"path":"a.go","line":0,"rule":"r","summary":"s","failure":"f"}]}`,
+		"no path":    `{"findings":[{"path":"","line":1,"rule":"r","summary":"s","failure":"f"}]}`,
 	}
 	for name, in := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -695,7 +696,7 @@ func TestInvalidFindingInBatchPostsNothing(t *testing.T) {
 	set := newSet(t, hub, nil)
 	tool := toolNamed(t, set, "github_comment")
 
-	in := `{"number":7,"findings":[
+	in := `{"findings":[
       {"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"},
       {"path":"b.go","line":2,"rule":"r","summary":"s","failure":""}]}`
 	if _, err := invoke(t, tool, in); err == nil {
@@ -714,11 +715,11 @@ func TestPRFetchReturnsDiffAndPostedMarkers(t *testing.T) {
 
 	// Seed a comment the reviewer previously posted.
 	tool := toolNamed(t, set, "github_comment")
-	if _, err := invoke(t, tool, `{"number":7,"findings":[{"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"}]}`); err != nil {
+	if _, err := invoke(t, tool, `{"findings":[{"path":"a.go","line":12,"rule":"r","summary":"s","failure":"f"}]}`); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -773,14 +774,14 @@ func TestPostedFindingsOnOneLineAreOrderedByRule(t *testing.T) {
 
 	// Seeded worst-first, so an order that merely preserves the input would come back
 	// wrong.
-	seed := `{"number":7,"findings":[
+	seed := `{"findings":[
       {"path":"a.go","line":12,"rule":"zeta","summary":"s","failure":"f"},
       {"path":"a.go","line":12,"rule":"alpha","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), seed); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -807,7 +808,7 @@ func TestPRFetchFollowsPaginationAndCapsFiles(t *testing.T) {
 	}
 	set := newSet(t, hub, func(c *github.Config) { c.MaxFiles = 3 })
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -833,7 +834,7 @@ func TestPatchTruncationIsFlaggedAndCutOnALineBoundary(t *testing.T) {
 	}}
 	set := newSet(t, hub, func(c *github.Config) { c.MaxPatchBytes = 14 })
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -867,7 +868,7 @@ func TestPatchTruncationHandlesALeadingNewline(t *testing.T) {
 	}}
 	set := newSet(t, hub, func(c *github.Config) { c.MaxPatchBytes = 3 })
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -897,7 +898,7 @@ func TestInstallationTokenIsCached(t *testing.T) {
 	set := newSet(t, hub, nil)
 
 	for range 3 {
-		if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err != nil {
+		if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err != nil {
 			t.Fatalf("fetch: %v", err)
 		}
 	}
@@ -912,7 +913,7 @@ func TestInstallationTokenRefreshesBeforeExpiry(t *testing.T) {
 	clk := clock.NewManual(time.Unix(1_700_000_000, 0).UTC())
 	set := newSet(t, hub, func(c *github.Config) { c.Clock = clk })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got := hub.tokensMinted.Load(); got != 1 {
@@ -921,7 +922,7 @@ func TestInstallationTokenRefreshesBeforeExpiry(t *testing.T) {
 
 	// The hub issues tokens expiring an hour from the test clock; advance past it.
 	clk.Advance(2 * time.Hour)
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got := hub.tokensMinted.Load(); got != 2 {
@@ -939,12 +940,13 @@ func TestNewRejectsIncompleteConfig(t *testing.T) {
 	full := func() github.Config {
 		return github.Config{
 			App:   github.App{Issuer: "i", InstallationID: 1, PrivateKey: key},
-			Owner: "o", Repo: "r",
+			Owner: "o", Repo: "r", Number: 7,
 		}
 	}
 	cases := map[string]func(*github.Config){
 		"no owner":        func(c *github.Config) { c.Owner = "" },
 		"no repo":         func(c *github.Config) { c.Repo = "" },
+		"no number":       func(c *github.Config) { c.Number = 0 },
 		"no installation": func(c *github.Config) { c.App.InstallationID = 0 },
 		"no private key":  func(c *github.Config) { c.App.PrivateKey = nil },
 	}
@@ -992,7 +994,7 @@ func TestFetchRefusesOversizeDiff(t *testing.T) {
 	hub.additions, hub.deletions = 9000, 1000
 	set := newSet(t, hub, func(c *github.Config) { c.MaxChangedLines = 3000 })
 
-	_, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	_, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if !errors.Is(err, github.ErrDiffTooLarge) {
 		t.Fatalf("want ErrDiffTooLarge, got %v", err)
 	}
@@ -1007,7 +1009,7 @@ func TestFetchReviewsOversizeWhenExplicitlyAllowed(t *testing.T) {
 		c.ReviewOversize = true
 	})
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -1028,7 +1030,7 @@ func TestNegativeBudgetDisablesTheLimit(t *testing.T) {
 	hub.additions, hub.deletions = 500000, 0
 	set := newSet(t, hub, func(c *github.Config) { c.MaxChangedLines = -1 })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 }
@@ -1041,7 +1043,7 @@ func TestBudgetUsesAuthoritativeCountsNotTheFetchedDiff(t *testing.T) {
 	hub.filePages = [][]map[string]any{{{"filename": "a.go", "patch": "p"}}} // ... tiny fetched diff
 	set := newSet(t, hub, func(c *github.Config) { c.MaxChangedLines = 100 })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); !errors.Is(err, github.ErrDiffTooLarge) {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); !errors.Is(err, github.ErrDiffTooLarge) {
 		t.Fatalf("want ErrDiffTooLarge from the authoritative count, got %v", err)
 	}
 }
@@ -1056,7 +1058,7 @@ func TestApproveRefusedWhenFileListTruncated(t *testing.T) {
 		c.MaxFiles = 2
 	})
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrIncompleteDiff) {
 		t.Fatalf("want ErrIncompleteDiff, got %v", err)
 	}
@@ -1075,7 +1077,7 @@ func TestApproveRefusedWhenAPatchWasTruncated(t *testing.T) {
 		c.MaxPatchBytes = 12
 	})
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrIncompleteDiff) {
 		t.Fatalf("want ErrIncompleteDiff, got %v", err)
 	}
@@ -1088,7 +1090,7 @@ func TestRequestChangesAllowedOnTruncatedDiff(t *testing.T) {
 	hub.changedFiles = 10
 	set := newSet(t, hub, func(c *github.Config) { c.MaxFiles = 2 })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
 		t.Fatalf("REQUEST_CHANGES on a partial diff must be allowed: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "REQUEST_CHANGES" {
@@ -1102,7 +1104,7 @@ func TestApproveAllowedOnCompleteDiff(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("approve on a complete diff: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "APPROVE" {
@@ -1121,7 +1123,7 @@ func TestOversizeButCompleteDiffCanBeApproved(t *testing.T) {
 		c.ReviewOversize = true
 	})
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
 	if got := hub.submittedBody.Load(); got != "APPROVE" {
@@ -1134,7 +1136,7 @@ func TestFetchReportsDiffCompleteness(t *testing.T) {
 	hub.changedFiles = 10
 	set := newSet(t, hub, func(c *github.Config) { c.MaxFiles = 2 })
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -1163,7 +1165,7 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 	hub.evilNextLink = `<https://attacker.example/steal>; rel="next"`
 	set := newSet(t, hub, nil)
 
-	_, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	_, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err == nil {
 		t.Fatal("a cross-host pagination link must be refused")
 	}
@@ -1181,16 +1183,16 @@ func TestPaginationLinkOffTheAPIHostIsRefused(t *testing.T) {
 func TestASubmittedVerdictEndsTheReviewsRecord(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
-	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	post := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err != nil {
 		t.Fatalf("first submit: %v", err)
 	}
 
 	// A second review, after the author fixed it, finding nothing.
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("second submit: %v", err)
 	}
 	body, _ := hub.submittedText.Load().(string)
@@ -1203,17 +1205,17 @@ func TestASubmittedVerdictEndsTheReviewsRecord(t *testing.T) {
 func TestAFailedVerdictKeepsTheFindings(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
-	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	post := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
 		t.Fatalf("post: %v", err)
 	}
 
 	hub.failReviews.Store(true)
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err == nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err == nil {
 		t.Fatal("a failing submission must error")
 	}
 	hub.failReviews.Store(false)
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Fix it."}`); err != nil {
 		t.Fatalf("retry: %v", err)
 	}
 	body, _ := hub.submittedText.Load().(string)
@@ -1222,26 +1224,30 @@ func TestAFailedVerdictKeepsTheFindings(t *testing.T) {
 	}
 }
 
-// A Set is bound to a repository, not a pull request. A host reviewing several pull
-// requests through one Set must not have one pull request's finding appear in another's
-// verdict, linking a reader to a discussion on a change they are not reviewing.
-func TestFindingsDoNotLeakBetweenPullRequests(t *testing.T) {
+// The pull request is bound to the run (Config.Number), never taken from a tool call.
+// A number in a tool's input is ignored, so a review whose diff names another pull
+// request cannot be steered into commenting or casting a verdict there. The fake hub
+// routes only the bound pull request (#7); that these writes succeed is the proof they
+// landed on #7 and not on the #999 the input names.
+func TestToolInputCannotRedirectToAnotherPullRequest(t *testing.T) {
 	hub := newFakeHub(t)
-	set := newSet(t, hub, nil)
+	set := newSet(t, hub, nil) // bound to #7
 
-	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
-	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
-		t.Fatalf("post on #7: %v", err)
+	comment := `{"number":999,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	if _, err := invoke(t, toolNamed(t, set, "github_comment"), comment); err != nil {
+		t.Fatalf("comment: %v", err)
 	}
-	// A different pull request, reviewed through the same Set, with nothing found.
-	verdict := `{"number":8,"event":"COMMENT","conclusion":"Nothing blocking."}`
+	if got := hub.created.Load(); got != 1 {
+		t.Fatalf("created = %d, want 1: the comment did not land on the bound pull request", got)
+	}
+
+	verdict := `{"number":999,"event":"REQUEST_CHANGES","conclusion":"Fix it."}`
 	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
-		t.Fatalf("submit on #8: %v", err)
+		t.Fatalf("submit: %v", err)
 	}
-
 	body, _ := hub.submittedText.Load().(string)
-	if body != "Nothing blocking." {
-		t.Fatalf("verdict on #8 = %q, want just the conclusion: a finding from #7 leaked", body)
+	if !strings.Contains(body, "One finding:") {
+		t.Fatalf("verdict body = %q, want it to link the finding posted on the bound pull request", body)
 	}
 }
 
@@ -1251,14 +1257,14 @@ func TestFindingsDoNotLeakBetweenPullRequests(t *testing.T) {
 func TestVerdictCountsARepostedFindingOnce(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newSet(t, hub, nil)
-	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	post := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 
 	for range 2 {
 		if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
 			t.Fatalf("post: %v", err)
 		}
 	}
-	verdict := `{"number":7,"event":"REQUEST_CHANGES","conclusion":"One thing to fix."}`
+	verdict := `{"event":"REQUEST_CHANGES","conclusion":"One thing to fix."}`
 	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -1283,7 +1289,7 @@ func TestVerdictDoesNotLinkStaleFindingsFromEarlierRounds(t *testing.T) {
 	set := newSet(t, hub, nil)
 
 	// This round finds nothing and submits its verdict directly.
-	verdict := `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`
+	verdict := `{"event":"COMMENT","conclusion":"Nothing blocking."}`
 	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -1301,11 +1307,11 @@ func TestVerdictListsOnlyTheReviewersOwnComments(t *testing.T) {
 	hub.add("review", "a human asking a question")
 	set := newSet(t, hub, nil)
 
-	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	post := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	verdict := `{"number":7,"event":"REQUEST_CHANGES","conclusion":"One thing to fix."}`
+	verdict := `{"event":"REQUEST_CHANGES","conclusion":"One thing to fix."}`
 	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), verdict); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -1333,7 +1339,7 @@ func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 
 	// Post the finding first, so the thread below carries the marker the tool really
 	// writes rather than one the test guessed.
-	post := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	post := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), post); err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -1358,7 +1364,7 @@ func TestVerdictResolvesItsOwnStaleThreadsOnly(t *testing.T) {
 		{body: "disagree, this is intentional", author: "a-maintainer"},
 	}})
 
-	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Still one thing."}`)
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Still one thing."}`)
 	if err != nil {
 		t.Fatalf("submit: %v", err)
 	}
@@ -1383,7 +1389,7 @@ func TestNoThreadIsResolvedWhenTheDiffWasTruncated(t *testing.T) {
 	}})
 	set := newSet(t, hub, nil)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Partial read."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Partial read."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.resolvedThreads(); len(got) != 0 {
@@ -1399,7 +1405,7 @@ func TestAFailedResolutionDoesNotFailTheVerdict(t *testing.T) {
 	hub.graphqlError = "Resource not accessible by integration"
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 
-	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Looks fine."}`)
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Looks fine."}`)
 	if err != nil {
 		t.Fatalf("a failed resolution must not fail the verdict: %v", err)
 	}
@@ -1423,7 +1429,7 @@ func TestATransientFilesFailureDoesNotBlockABlockingVerdict(t *testing.T) {
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 	hub.failFiles.Store(true)
 
-	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"A real defect."}`)
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"A real defect."}`)
 	if err != nil {
 		t.Fatalf("a transient files failure blocked the verdict: %v", err)
 	}
@@ -1448,7 +1454,7 @@ func TestATransientFilesFailureRefusesAnApproval(t *testing.T) {
 	set := newSet(t, hub, func(c *github.Config) { c.AllowApprove = true; c.SelfLogin = "vouchbot" })
 	hub.failFiles.Store(true)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Looks fine."}`); err == nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Looks fine."}`); err == nil {
 		t.Fatal("an approval must not be submitted when the diff could not be read")
 	}
 	if got, _ := hub.submittedBody.Load().(string); got == "APPROVE" {
@@ -1465,7 +1471,7 @@ func TestAThreadIsNotOursBecauseItCarriesOurMarker(t *testing.T) {
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot" })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.resolvedThreads(); len(got) != 0 {
@@ -1485,7 +1491,7 @@ func TestReviewThreadsFollowPagination(t *testing.T) {
 	}
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	got := hub.resolvedThreads()
@@ -1508,7 +1514,7 @@ func TestAReviewerThatMayNotResolveMinimizesInstead(t *testing.T) {
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
 
-	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`)
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Nothing blocking."}`)
 	if err != nil {
 		t.Fatalf("a reviewer that may not resolve must still submit its verdict: %v", err)
 	}
@@ -1532,7 +1538,7 @@ func TestAReviewerThatMayResolveDoesNotMinimize(t *testing.T) {
 	}})
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
 
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Nothing blocking."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.resolvedThreads(); len(got) != 1 || got[0] != "T-stale" {
@@ -1552,7 +1558,7 @@ func TestReadingThreadsRefusesToStopAtTheCap(t *testing.T) {
 	hub.endlessThreads = true
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "vouchbot[bot]" })
 
-	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"COMMENT","conclusion":"Nothing blocking."}`)
+	out, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"COMMENT","conclusion":"Nothing blocking."}`)
 	if err != nil {
 		t.Fatalf("the verdict must still land: %v", err)
 	}
@@ -1573,7 +1579,7 @@ func TestAMaintainersCommentIsNeverAdoptedOrOverwritten(t *testing.T) {
 	set := newSet(t, hub, nil)
 
 	// Seed a comment carrying the exact marker the finding below produces.
-	f := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	f := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -1586,7 +1592,7 @@ func TestAMaintainersCommentIsNeverAdoptedOrOverwritten(t *testing.T) {
 		t.Errorf("the reviewer rewrote a comment it did not write (%d update(s))", got)
 	}
 
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -1604,7 +1610,7 @@ func TestTheReviewerLearnsItsOwnLoginFromTheCredential(t *testing.T) {
 	hub.commentAuthor = "vouchbot" // GraphQL drops the suffix; REST keeps it
 	set := newSet(t, hub, func(c *github.Config) { c.SelfLogin = "" })
 
-	f := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	f := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
 		t.Fatalf("post: %v", err)
 	}
@@ -1627,7 +1633,7 @@ func TestReviewCommentsRefuseToStopAtTheCap(t *testing.T) {
 	hub.endlessComments = true
 	set := newSet(t, hub, nil)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err == nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err == nil {
 		t.Fatal("a truncated listing of the reviewer's own comments must fail the fetch")
 	}
 }
@@ -1641,11 +1647,11 @@ func TestAnOutdatedCommentIsNotOfferedBackAsAPostedFinding(t *testing.T) {
 	hub.commentLine = 0 // GitHub's null, decoded
 	set := newSet(t, hub, nil)
 
-	f := `{"number":7,"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	f := `{"findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), f); err != nil {
 		t.Fatalf("post: %v", err)
 	}
-	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`)
+	out, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}

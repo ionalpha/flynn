@@ -29,6 +29,7 @@ func newTokenSet(t *testing.T, hub *fakeHub, token string, mutate func(*github.C
 		Token:      secret.New(token),
 		Owner:      "ionalpha",
 		Repo:       "flynn",
+		Number:     7,
 		SelfLogin:  "reviewer[bot]",
 		HTTPClient: srv.Client(),
 		APIBase:    srv.URL,
@@ -54,7 +55,7 @@ func TestTokenAuthCarriesTheTokenAndMintsNothing(t *testing.T) {
 	hub.wantAuth = "Bearer ghp_supplied_token"
 	set := newTokenSet(t, hub, "ghp_supplied_token", nil)
 
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got := hub.tokensMinted.Load(); got != 0 {
@@ -71,11 +72,11 @@ func TestTokenAuthDrivesTheWholeToolset(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newTokenSet(t, hub, "ghp_x", nil)
 
-	in := `{"number":7,"summary":"looks fine","findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
+	in := `{"summary":"looks fine","findings":[{"path":"a.go","line":1,"rule":"r","summary":"s","failure":"f"}]}`
 	if _, err := invoke(t, toolNamed(t, set, "github_comment"), in); err != nil {
 		t.Fatalf("comment: %v", err)
 	}
-	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"REQUEST_CHANGES","conclusion":"Findings need addressing."}`); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
 	if got := hub.created.Load(); got != 1 {
@@ -96,7 +97,7 @@ func TestApproveGateHoldsOnTheTokenPath(t *testing.T) {
 	hub := newFakeHub(t)
 	set := newTokenSet(t, hub, "ghp_x", nil)
 
-	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	_, err := invoke(t, toolNamed(t, set, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrApproveNotEnabled) {
 		t.Fatalf("want ErrApproveNotEnabled, got %v", err)
 	}
@@ -104,7 +105,7 @@ func TestApproveGateHoldsOnTheTokenPath(t *testing.T) {
 	hub2 := newFakeHub(t)
 	hub2.prAuthor = "reviewer[bot]"
 	set2 := newTokenSet(t, hub2, "ghp_x", func(c *github.Config) { c.AllowApprove = true })
-	_, err = invoke(t, toolNamed(t, set2, "github_submit_review"), `{"number":7,"event":"APPROVE","conclusion":"Nothing blocking."}`)
+	_, err = invoke(t, toolNamed(t, set2, "github_submit_review"), `{"event":"APPROVE","conclusion":"Nothing blocking."}`)
 	if !errors.Is(err, github.ErrSelfApproval) {
 		t.Fatalf("want ErrSelfApproval, got %v", err)
 	}
@@ -121,7 +122,7 @@ func TestExactlyOneCredentialIsRequired(t *testing.T) {
 		t.Fatalf("generate key: %v", err)
 	}
 	base := func() github.Config {
-		return github.Config{Owner: "o", Repo: "r"}
+		return github.Config{Owner: "o", Repo: "r", Number: 7}
 	}
 	app := github.App{Issuer: "i", InstallationID: 1, PrivateKey: key}
 
@@ -167,7 +168,7 @@ func TestPartlyFilledAppIsRefusedRatherThanIgnored(t *testing.T) {
 	}
 	for name, app := range cases {
 		t.Run(name, func(t *testing.T) {
-			_, err := github.New(github.Config{Owner: "o", Repo: "r", App: app})
+			_, err := github.New(github.Config{Owner: "o", Repo: "r", Number: 7, App: app})
 			if err == nil {
 				t.Fatal("want an error")
 			}
@@ -183,7 +184,7 @@ func TestPartlyFilledAppIsRefusedRatherThanIgnored(t *testing.T) {
 // An empty token is no token. It must not build a Set that sends "Bearer " and gets
 // a confusing 401 on the first call.
 func TestEmptyTokenIsNoCredential(t *testing.T) {
-	cfg := github.Config{Owner: "o", Repo: "r", Token: secret.New("")}
+	cfg := github.Config{Owner: "o", Repo: "r", Number: 7, Token: secret.New("")}
 	if _, err := github.New(cfg); !errors.Is(err, github.ErrNoCredential) {
 		t.Fatalf("want ErrNoCredential, got %v", err)
 	}
@@ -272,7 +273,7 @@ func TestParsedKeyAuthenticatesAnApp(t *testing.T) {
 
 	hub := newFakeHub(t)
 	set := newSet(t, hub, func(c *github.Config) { c.App.PrivateKey = parsed })
-	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{"number":7}`); err != nil {
+	if _, err := invoke(t, toolNamed(t, set, "github_pr_fetch"), `{}`); err != nil {
 		t.Fatalf("fetch with a parsed key: %v", err)
 	}
 	if got := hub.tokensMinted.Load(); got != 1 {

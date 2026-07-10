@@ -415,9 +415,9 @@ func (m *reviewScript) Generate(_ context.Context, _ llm.Request) (llm.Response,
 	case 1:
 		return call("t1", "exec", `{"command":"cat /etc/passwd"}`), nil
 	case 2:
-		return call("t2", "github_pr_fetch", `{"number":7}`), nil
+		return call("t2", "github_pr_fetch", `{}`), nil
 	case 3:
-		return call("t3", "github_submit_review", `{"number":7,"event":"REQUEST_CHANGES","conclusion":"One blocking defect."}`), nil
+		return call("t3", "github_submit_review", `{"event":"REQUEST_CHANGES","conclusion":"One blocking defect."}`), nil
 	default:
 		return llm.Response{Message: llm.Text(llm.RoleAssistant, "review submitted"), StopReason: llm.StopEndTurn}, nil
 	}
@@ -543,7 +543,7 @@ func TestReviewRunSubmitsVerdictAndRefusesShell(t *testing.T) {
 // token auth against the fake server, approval not enabled.
 func reviewTestConfig(srv *httptest.Server) (cfg github.Config) {
 	cfg.Token = secret.New("test-token")
-	cfg.Owner, cfg.Repo = "o", "r"
+	cfg.Owner, cfg.Repo, cfg.Number = "o", "r", 7
 	cfg.APIBase = srv.URL
 	cfg.HTTPClient = srv.Client()
 	return cfg

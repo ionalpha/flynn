@@ -227,9 +227,10 @@ func testConfig(t *testing.T) github.Config {
 		t.Fatalf("generate key: %v", err)
 	}
 	return github.Config{
-		App:   github.App{Issuer: "Iv1.test", InstallationID: 1, PrivateKey: key},
-		Owner: "ionalpha",
-		Repo:  "flynn",
+		App:    github.App{Issuer: "Iv1.test", InstallationID: 1, PrivateKey: key},
+		Owner:  "ionalpha",
+		Repo:   "flynn",
+		Number: 7,
 	}
 }
 
