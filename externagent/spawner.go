@@ -2,9 +2,12 @@ package externagent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/ionalpha/flynn/netguard"
@@ -44,6 +47,27 @@ type SandboxConfig struct {
 	// readable; naming it here is what makes the child look in it. Empty passes no
 	// variable.
 	AuthEnv string
+	// AuthSeedFiles names the files inside AuthDir that an episode's credential home must
+	// contain (for codex: the OAuth token and the CLI's own config). Naming them switches
+	// an episode from pointing the child straight at AuthDir to giving it a per-episode
+	// copy of just these files, in a writable directory outside the workspace that the run
+	// creates and deletes.
+	//
+	// An episode needs this because the CLI writes its own home as it runs (a session
+	// rollout, a log, a PATH shim) and every confinement tier denies writes outside the
+	// workspace, so pointing it at a read-only AuthDir fails partway through the episode.
+	// The two obvious fixes are both worse. Granting write on the host's AuthDir hands an
+	// untrusted harness the credential file it authenticates with, to corrupt or replace,
+	// and leaves whatever it wrote behind after the run. Putting the home inside the
+	// workspace copies the OAuth token into the tree the record captures. The per-episode
+	// copy has neither problem: the child can write all it likes, it writes only a copy
+	// that dies with the episode, and the copy sits outside the recorded workspace.
+	//
+	// The cost is that a token the CLI refreshes mid-episode is refreshed only in the copy,
+	// so the host's credential stays as it was; the refresh token it was issued from
+	// remains valid, so the next episode still authenticates. Empty keeps the read-only
+	// AuthDir behaviour (correct for a detection probe, which writes nothing).
+	AuthSeedFiles []string
 	// ProgramDirs are the directories holding the external CLI's own executable and the
 	// helper binaries shipped beside it. The confined child is granted read (and execute)
 	// on them for the life of the launch and the grant is revoked on teardown. Without it
@@ -108,11 +132,61 @@ var _ Spawner = (*SandboxSpawner)(nil)
 // readable, this makes the CLI look there. The value is a path, never a credential; the
 // token itself stays in the directory and is never passed through the environment, the
 // command line, or the record.
-func (s *SandboxSpawner) authEnv() []string {
-	if s.cfg.AuthEnv == "" || s.cfg.AuthDir == "" {
+func (s *SandboxSpawner) authEnv(home string) []string {
+	if s.cfg.AuthEnv == "" || home == "" {
 		return nil
 	}
-	return []string{s.cfg.AuthEnv + "=" + s.cfg.AuthDir}
+	return []string{s.cfg.AuthEnv + "=" + home}
+}
+
+// episodeAuthHome returns the directory an episode's child should use as its credential
+// home, and true when that directory is a per-episode copy this Spawner created and must
+// delete. With no AuthSeedFiles configured it is the host's AuthDir, read-only and owned
+// by nobody here. Otherwise it is a fresh directory beside the workspace (never inside it,
+// which the record captures) holding a copy of the seed files and nothing else.
+//
+// A seed file that does not exist is skipped rather than failing: a CLI that has never
+// been configured has no config file, and whether it is authenticated at all is the
+// adapter's question to answer through Probe, not a launch precondition here.
+func (s *SandboxSpawner) episodeAuthHome(workdir string) (string, bool, error) {
+	if s.cfg.AuthDir == "" || len(s.cfg.AuthSeedFiles) == 0 {
+		return s.cfg.AuthDir, false, nil
+	}
+	home, err := os.MkdirTemp(filepath.Dir(workdir), "flynn-authhome-")
+	if err != nil {
+		return "", false, fmt.Errorf("externagent: episode credential home: %w", err)
+	}
+	for _, name := range s.cfg.AuthSeedFiles {
+		// A seed names one file directly inside AuthDir. Rejecting anything else keeps the
+		// copy from reaching outside the credential home in either direction: a name like
+		// "../../.ssh/id_ed25519" would otherwise pull a file the harness was never meant
+		// to see into a directory it can write.
+		if name != filepath.Base(name) || name == "." || name == ".." {
+			_ = os.RemoveAll(home)
+			return "", false, fmt.Errorf("externagent: credential seed %q must be a file name, not a path", name)
+		}
+		if err := copyIfPresent(filepath.Join(s.cfg.AuthDir, name), filepath.Join(home, name)); err != nil {
+			_ = os.RemoveAll(home)
+			return "", false, fmt.Errorf("externagent: seed credential home: %w", err)
+		}
+	}
+	return home, true, nil
+}
+
+// copyIfPresent copies one seed file, doing nothing when the source does not exist. The
+// destination is created readable and writable by its owner alone, because the file it
+// most often carries is an OAuth token.
+func copyIfPresent(src, dst string) error {
+	//nolint:gosec // both paths are a caller-configured directory joined with a name the caller already constrained to a single path element, so neither can escape the credential home
+	data, err := os.ReadFile(src)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	//nolint:gosec // dst is the per-episode home joined with that same constrained name
+	return os.WriteFile(dst, data, 0o600)
 }
 
 // Probe runs path with args to completion under best-effort confinement and returns its
@@ -147,7 +221,7 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 	}
 	defer func() { _ = loc.Close() }()
 
-	res, err := loc.Capture(ctx, sandbox.CaptureSpec{Argv: append([]string{path}, args...), Env: s.authEnv()})
+	res, err := loc.Capture(ctx, sandbox.CaptureSpec{Argv: append([]string{path}, args...), Env: s.authEnv(s.cfg.AuthDir)})
 	if err != nil {
 		return "", err
 	}
@@ -169,34 +243,58 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 // the CLI, and the per-episode sandbox (its egress proxy and read grant) is released when
 // Wait returns.
 func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) (Process, error) {
-	loc, err := sandbox.NewLocal(ep.Workdir, s.episodeOptions()...)
+	home, owned, err := s.episodeAuthHome(ep.Workdir)
 	if err != nil {
+		return nil, err
+	}
+	scratch := ""
+	if owned {
+		scratch = home
+	}
+	loc, err := sandbox.NewLocal(ep.Workdir, s.episodeOptions(home, owned)...)
+	if err != nil {
+		removeScratch(scratch)
 		return nil, fmt.Errorf("externagent: episode sandbox: %w", err)
 	}
 	if got := loc.Containment(); got < s.cfg.MinContainment {
 		_ = loc.Close()
+		removeScratch(scratch)
 		return nil, fmt.Errorf("externagent: host containment is %s, below the required %s; refusing to start an untrusted harness less contained than required", got, s.cfg.MinContainment)
 	}
 	tier := loc.ConfinementTier()
 	proc, err := loc.Stream(ctx, sandbox.StreamSpec{
 		Argv:    append([]string{inv.Path}, inv.Args...),
 		Stdin:   []byte(inv.Stdin),
-		Env:     append(inv.Env, s.authEnv()...),
+		Env:     append(inv.Env, s.authEnv(home)...),
 		Confine: true,
 	})
 	if err != nil {
 		_ = loc.Close()
+		removeScratch(scratch)
 		return nil, err
 	}
-	return &confinedProcess{proc: proc, closer: loc, tier: tier}, nil
+	return &confinedProcess{proc: proc, closer: loc, tier: tier, scratch: scratch}, nil
+}
+
+// removeScratch deletes a per-episode credential home, and does nothing when the episode
+// pointed the child at the host's AuthDir instead. It runs on every path out of a launch,
+// so a copied token never outlives the episode it was copied for.
+func removeScratch(dir string) {
+	if dir != "" {
+		_ = os.RemoveAll(dir)
+	}
 }
 
 // episodeOptions is the sandbox configuration for a live episode: the kernel-confined
 // tier (a read-only host and the syscall filter) plus the governed egress gate and the
-// auth-home read grant. Network denial is deliberately not set: egress is governed by the
-// proxy gate, not blocked wholesale, so the child can still reach the allowlisted
-// provider and the loopback bridge.
-func (s *SandboxSpawner) episodeOptions() []sandbox.LocalOption {
+// grants for the child's credential home. Network denial is deliberately not set: egress
+// is governed by the proxy gate, not blocked wholesale, so the child can still reach the
+// allowlisted provider and the loopback bridge.
+//
+// The credential home is granted write only when it is the per-episode copy this Spawner
+// owns and deletes; the host's own AuthDir is never made writable, so an untrusted harness
+// cannot rewrite the credential it authenticates with.
+func (s *SandboxSpawner) episodeOptions(home string, owned bool) []sandbox.LocalOption {
 	opts := []sandbox.LocalOption{
 		sandbox.WithReadOnlyFS(),
 		sandbox.WithSeccomp(),
@@ -205,8 +303,11 @@ func (s *SandboxSpawner) episodeOptions() []sandbox.LocalOption {
 	if s.cfg.HostReadable {
 		opts = append(opts, sandbox.WithHostReadable())
 	}
-	if s.cfg.AuthDir != "" {
-		opts = append(opts, sandbox.WithReadableDir(s.cfg.AuthDir))
+	if home != "" {
+		opts = append(opts, sandbox.WithReadableDir(home))
+		if owned {
+			opts = append(opts, sandbox.WithWritableDir(home))
+		}
 	}
 	opts = append(opts, sandbox.WithReadableDir(s.cfg.ProgramDirs...))
 	return opts
@@ -231,9 +332,10 @@ func episodePolicy(hosts []string) netguard.Policy {
 // the egress proxy is stopped and the auth-home read grant is revoked once the process
 // ends (including after a context-driven kill).
 type confinedProcess struct {
-	proc   *sandbox.StreamProcess
-	closer io.Closer
-	tier   string
+	proc    *sandbox.StreamProcess
+	closer  io.Closer
+	tier    string
+	scratch string
 }
 
 // Stdout is the confined child's live standard output.
@@ -254,5 +356,8 @@ func (p *confinedProcess) Wait() error {
 	if cerr := p.closer.Close(); cerr != nil && err == nil {
 		err = cerr
 	}
+	// After the sandbox is closed, so the grants on the credential home are dropped before
+	// the copied token is deleted with it.
+	removeScratch(p.scratch)
 	return err
 }

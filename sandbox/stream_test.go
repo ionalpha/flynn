@@ -39,6 +39,15 @@ func TestHelperProcess(_ *testing.T) {
 			_, _ = os.Stdout.WriteString("readerr\n")
 		}
 	}
+	if p := os.Getenv("HELPER_WRITEFILE"); p != "" {
+		// Report whether a file outside the workspace can be written, for the writable-dir
+		// grant tests: "wrote" on success, "writeerr" when the confinement denies it.
+		if err := os.WriteFile(p, []byte("written"), 0o600); err == nil {
+			_, _ = os.Stdout.WriteString("wrote\n")
+		} else {
+			_, _ = os.Stdout.WriteString("writeerr\n")
+		}
+	}
 	if n, _ := strconv.Atoi(os.Getenv("HELPER_LINES")); n > 0 {
 		for i := range n {
 			_, _ = os.Stdout.WriteString("line" + strconv.Itoa(i) + "\n")

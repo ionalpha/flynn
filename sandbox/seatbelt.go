@@ -29,7 +29,10 @@ import (
 // proxyAddr, so the command can reach only the policy-enforcing proxy and nothing else.
 // This is the macOS leg of governed child egress: the kernel, not the cooperation of the
 // child, makes the proxy the single way out.
-func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, proxyAddr string) string {
+// The trailing writable paths are the directories named by WithWritableDir: each becomes
+// a writable subpath alongside the working tree, and nothing else about the profile
+// changes. They are variadic because the common case names none.
+func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, proxyAddr string, writable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")
 	b.WriteString("(allow default)\n")
@@ -61,6 +64,9 @@ func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, 
 		b.WriteString("(deny file-write*)\n")
 		b.WriteString("(allow file-write*\n")
 		b.WriteString("    (subpath " + sbplString(root) + ")\n")
+		for _, w := range writable {
+			b.WriteString("    (subpath " + sbplString(w) + ")\n")
+		}
 		for _, dev := range seatbeltWritableDevices {
 			b.WriteString("    (literal " + sbplString(dev) + ")\n")
 		}

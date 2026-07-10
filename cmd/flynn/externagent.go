@@ -182,6 +182,14 @@ func codexAuthDir() string {
 	return filepath.Join(home, ".codex")
 }
 
+// codexAuthSeedFiles are the only files an episode copies out of the codex home into the
+// per-episode credential home the confined child writes: the OAuth token it authenticates
+// with and the user's CLI config. Everything else in the home (session rollouts, logs,
+// caches) is state the CLI regenerates, so it is left behind rather than handed to an
+// untrusted harness. See externagent.SandboxConfig.AuthSeedFiles for why an episode gets a
+// copy instead of the real directory.
+var codexAuthSeedFiles = []string{"auth.json", "config.toml"}
+
 // externalProbeTimeout caps a single detection probe (a version or auth-status check)
 // so a hung CLI cannot stall onboarding.
 const externalProbeTimeout = 15 * time.Second
@@ -203,11 +211,12 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 			return nil, err
 		}
 		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
-			AllowedHosts: codexAllowedHosts,
-			AuthDir:      codexAuthDir(),
-			AuthEnv:      "CODEX_HOME",
-			ProgramDirs:  prog.ReadableDirs,
-			ProbeTimeout: externalProbeTimeout,
+			AllowedHosts:  codexAllowedHosts,
+			AuthDir:       codexAuthDir(),
+			AuthEnv:       "CODEX_HOME",
+			AuthSeedFiles: codexAuthSeedFiles,
+			ProgramDirs:   prog.ReadableDirs,
+			ProbeTimeout:  externalProbeTimeout,
 			// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
 			// process can do inside a Windows AppContainer, so it runs under the tier that
 			// confines its writes to the workspace and leaves the host readable. Its writes,

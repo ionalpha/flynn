@@ -23,6 +23,7 @@ const (
 	envArgv     = "FLYNN_SANDBOX_ARGV"
 	envReadonly = "FLYNN_SANDBOX_READONLY"
 	envSeccomp  = "FLYNN_SANDBOX_SECCOMP"
+	envWritable = "FLYNN_SANDBOX_WRITABLE"
 )
 
 // kernelConfinementSupported reports whether this platform can enforce the network,
@@ -105,6 +106,9 @@ func (l *Local) reexecConfined(c *exec.Cmd) {
 	if l.seccomp {
 		c.Env = append(c.Env, envSeccomp+"=1")
 	}
+	if len(l.writableDirs) > 0 {
+		c.Env = append(c.Env, envWritable+"="+encodeArgv(l.writableDirs))
+	}
 	c.Path = self
 	c.Args = []string{self}
 }
@@ -132,7 +136,12 @@ func runConfinedChild() int {
 		return 126
 	}
 	if os.Getenv(envReadonly) == "1" {
-		if err := confineMounts(dir); err != nil {
+		writable, err := decodeArgv(os.Getenv(envWritable))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: malformed writable directories")
+			return 126
+		}
+		if err := confineMounts(dir, writable); err != nil {
 			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
 			return 126
 		}
@@ -169,12 +178,13 @@ func runConfinedChild() int {
 }
 
 // confineMounts turns the launcher's mount namespace into a read-only view of the
-// host with a single writable area: the working directory. It first makes mount
-// changes private to this namespace, then remounts every existing mount read-only,
-// gives the command a fresh private scratch area so ordinary tooling still works
-// (isolated from the host's, and never placed so as to hide the working directory),
-// and finally re-grants write access to the working directory alone.
-func confineMounts(dir string) error {
+// host with a single writable area: the working directory, plus any directory the
+// caller named with WithWritableDir. It first makes mount changes private to this
+// namespace, then remounts every existing mount read-only, gives the command a fresh
+// private scratch area so ordinary tooling still works (isolated from the host's, and
+// never placed so as to hide the working directory), and finally re-grants write
+// access to the working directory and to those extra directories.
+func confineMounts(dir string, writable []string) error {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("make mounts private: %w", err)
 	}
@@ -188,18 +198,51 @@ func confineMounts(dir string) error {
 		_ = syscall.Mount("", mp, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_RDONLY, "")
 	}
 	for _, scratch := range []string{"/dev/shm", "/tmp"} {
-		if pathWithin(dir, scratch) {
-			continue // never shadow the working directory with a scratch mount
+		if shadows(scratch, append([]string{dir}, writable...)) {
+			continue // never shadow a writable area with a scratch mount
 		}
 		_ = syscall.Mount("tmpfs", scratch, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, "")
 	}
-	if err := syscall.Mount(dir, dir, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
-		return fmt.Errorf("bind working directory: %w", err)
+	if err := remountWritable(dir); err != nil {
+		return fmt.Errorf("working directory: %w", err)
 	}
-	if err := syscall.Mount("", dir, "", syscall.MS_REMOUNT|syscall.MS_BIND, ""); err != nil {
-		return fmt.Errorf("make working directory writable: %w", err)
+	// The extra directories are remounted after the working directory so that one nested
+	// inside it cannot undo the grant above, and a failure here fails the launch: a child
+	// told it may write a directory must actually be able to, never discover it cannot
+	// halfway through the work.
+	for _, w := range writable {
+		if pathWithin(w, dir) {
+			continue // already writable as part of the working directory
+		}
+		if err := remountWritable(w); err != nil {
+			return fmt.Errorf("writable directory %s: %w", w, err)
+		}
 	}
 	return nil
+}
+
+// remountWritable re-grants write access to one directory inside the read-only view, by
+// binding it onto itself (which gives it a mount of its own) and remounting that bind
+// without the read-only flag.
+func remountWritable(dir string) error {
+	if err := syscall.Mount(dir, dir, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
+		return fmt.Errorf("bind: %w", err)
+	}
+	if err := syscall.Mount("", dir, "", syscall.MS_REMOUNT|syscall.MS_BIND, ""); err != nil {
+		return fmt.Errorf("make writable: %w", err)
+	}
+	return nil
+}
+
+// shadows reports whether mounting at mp would hide any of the given directories, which
+// is the case when the directory is the mount point or lies beneath it.
+func shadows(mp string, dirs []string) bool {
+	for _, d := range dirs {
+		if pathWithin(d, mp) {
+			return true
+		}
+	}
+	return false
 }
 
 // mountPoints reads the current mount points from /proc/self/mountinfo. The mount
@@ -312,6 +355,7 @@ func strippedEnv() []string {
 			strings.HasPrefix(kv, envDir+"="),
 			strings.HasPrefix(kv, envArgv+"="),
 			strings.HasPrefix(kv, envReadonly+"="),
+			strings.HasPrefix(kv, envWritable+"="),
 			strings.HasPrefix(kv, envSeccomp+"="):
 			continue
 		}

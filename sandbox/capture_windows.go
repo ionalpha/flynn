@@ -38,6 +38,9 @@ func (l *Local) captureWriteRestricted(ctx context.Context, spec CaptureSpec) (E
 	if err := grantRestrictedDir(l.root, l.root); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
+	if err := l.grantRestrictedWritableDirs(); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
+	}
 	cmdline := windows.ComposeCommandLine(spec.Argv)
 	env := l.appContainerEnvBlock(l.streamEnv(spec.Env))
 	return launchWriteRestricted(ctx, appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
@@ -68,6 +71,9 @@ func (l *Local) captureAppContainer(ctx context.Context, spec CaptureSpec) (Exec
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
 	if err := l.grantReadableDirs(sid); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
+	}
+	if err := l.grantWritableDirs(sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 

@@ -41,6 +41,13 @@ type Local struct {
 	// sandbox root. On Linux and macOS a read-only host already permits the read, so this
 	// takes effect only where the confinement is default-deny for reads (Windows).
 	readableDirs []string
+	// writableDirs are directories outside the workspace that a confined child may write,
+	// granted on launch and revoked on Close (see WithWritableDir). They let a governed
+	// external CLI keep its own mutable state (a refreshed credential, a session log)
+	// somewhere the run controls, without widening the workspace itself. Unlike
+	// readableDirs this takes effect on every platform, because every confinement tier
+	// denies writes outside the workspace by default.
+	writableDirs []string
 	// hostReadable selects a confinement tier that leaves the host readable while still
 	// confining writes to the workspace (see WithHostReadable). It changes nothing on the
 	// platforms whose kernel tier is already read-permitting; on Windows it selects the
@@ -226,6 +233,59 @@ func WithReadableDir(paths ...string) LocalOption {
 			l.readableDirs = append(l.readableDirs, abs)
 		}
 	}
+}
+
+// ErrWriteGrant reports that a directory named by WithWritableDir could not be granted to
+// the confined child. Like ErrReadGrant it fails the launch and is never absorbed by the
+// best-effort fallback: a write grant that silently did not apply would leave the child
+// unable to save state it is expected to save, and a fallback that dropped confinement
+// instead would hand it the whole host to write to.
+var ErrWriteGrant = errors.New("sandbox: cannot grant write access to a configured directory")
+
+// WithWritableDir grants a confined child write access to a directory outside the
+// workspace, in addition to the workspace itself. Every confinement tier denies writes
+// outside the workspace by default, so an external CLI that must persist its own state
+// (a refreshed OAuth token, a session rollout, a log) has nowhere to put it. Naming that
+// directory here grants the child write on it for the life of the sandbox and revokes the
+// grant on Close.
+//
+// This is the one option that widens what a confined child can change on the host, so it
+// is deliberately not part of any default tier and the caller names an exact directory.
+// Point it at a directory the run owns and can destroy, never at a host location whose
+// contents outlive the sandbox: a confined child is untrusted, and whatever it can write
+// it can also corrupt. The path is resolved to an absolute, symlink-free form once, like
+// the root, so a symlink swapped in later cannot redirect the grant.
+func WithWritableDir(paths ...string) LocalOption {
+	return func(l *Local) {
+		for _, p := range paths {
+			if p == "" {
+				continue
+			}
+			abs, err := filepath.Abs(p)
+			if err != nil {
+				continue
+			}
+			if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+				abs = resolved
+			}
+			l.writableDirs = append(l.writableDirs, abs)
+		}
+	}
+}
+
+// WritableDirs reports the directories outside the workspace that a confined child of
+// this sandbox may write, in the resolved form the grants were made against. It is the
+// audit surface of WithWritableDir: these are the only host locations a confined child
+// could have changed, so a caller can state them next to the confinement tier rather than
+// leaving the widening implicit. The slice is a copy, so a caller cannot widen the grants
+// by writing to it.
+func (l *Local) WritableDirs() []string {
+	if len(l.writableDirs) == 0 {
+		return nil
+	}
+	out := make([]string, len(l.writableDirs))
+	copy(out, l.writableDirs)
+	return out
 }
 
 // WithSeccomp runs commands under a syscall filter that refuses the calls a command

@@ -47,6 +47,24 @@ func TestSeatbeltProfileReadOnlyGrantsWorkingDir(t *testing.T) {
 	}
 }
 
+// TestSeatbeltProfileGrantsWritableDirs proves a directory named by WithWritableDir
+// becomes a writable subpath beside the working tree, after the blanket write denial so
+// the grant wins, and that naming none grants none.
+func TestSeatbeltProfileGrantsWritableDirs(t *testing.T) {
+	p := seatbeltProfile("/work/proj", false, true, false, "", "/home/u/.codex-episode")
+	denyAt := strings.Index(p, "(deny file-write*)")
+	grantAt := strings.Index(p, `(subpath "/home/u/.codex-episode")`)
+	if grantAt < 0 {
+		t.Fatalf("profile must grant the writable directory, got:\n%s", p)
+	}
+	if denyAt > grantAt {
+		t.Fatalf("the blanket write denial must come before the writable-directory grant, got:\n%s", p)
+	}
+	if bare := seatbeltProfile("/work/proj", false, true, false, ""); strings.Contains(bare, ".codex-episode") {
+		t.Fatalf("a profile with no writable directories must grant none, got:\n%s", bare)
+	}
+}
+
 // TestSeatbeltProfileNoWriteDenialWithoutReadOnly proves writes are only denied under
 // the read-only option, so a command not asked to run read-only keeps writing.
 func TestSeatbeltProfileNoWriteDenialWithoutReadOnly(t *testing.T) {

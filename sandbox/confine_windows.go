@@ -52,11 +52,14 @@ func (l *Local) confine(_ *exec.Cmd) error { return nil }
 func (l *Local) closePlatform() error {
 	if l.hostReadable {
 		// The write-restricted tier registers no container profile and needs no read
-		// grants: its only access entry is the workspace write grant, removed here.
+		// grants: its access entries are the workspace write grant and any extra write
+		// grants, all removed here.
 		_ = revokeRestrictedDir(l.root, l.root)
+		l.revokeWritableDirs()
 		return nil
 	}
 	l.revokeReadableDirs()
+	l.revokeWritableDirs()
 	deleteAppContainerProfile(appContainerMoniker(l.root))
 	return nil
 }
@@ -90,6 +93,9 @@ func (l *Local) runWriteRestricted(ctx context.Context, args []string, stdin []b
 	if err := grantRestrictedDir(l.root, l.root); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
+	if err := l.grantRestrictedWritableDirs(); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
+	}
 	line := args[len(args)-1]
 	cmdline := `"` + comspec + `" /s /c "` + line + `"`
 	return launchWriteRestricted(ctx, comspec, cmdline, l.root, l.appContainerEnv(), stdin, l.resLimits)
@@ -116,6 +122,9 @@ func (l *Local) runAppContainer(ctx context.Context, args []string, stdin []byte
 		return ExecResult{}, fmt.Errorf("sandbox: grant working directory: %w", err)
 	}
 	if err := l.grantReadableDirs(sid); err != nil {
+		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
+	}
+	if err := l.grantWritableDirs(sid); err != nil {
 		return ExecResult{}, fmt.Errorf("sandbox: %w", err)
 	}
 

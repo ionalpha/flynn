@@ -17,6 +17,7 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 // leaves persistent state behind, so this is a no-op here.
 func (l *Local) closePlatform() error {
 	l.revokeReadableDirs()
+	l.revokeWritableDirs()
 	return nil
 }
 
@@ -24,3 +25,10 @@ func (l *Local) closePlatform() error {
 // child to read directories outside the workspace, so WithReadableDir grants nothing here
 // and there is nothing to revoke. It stays defined so Close is uniform across platforms.
 func (l *Local) revokeReadableDirs() { _ = l.readableDirs }
+
+// revokeWritableDirs is a no-op off Windows. WithWritableDir does take effect here (a
+// read-only host denies the write until the directory is granted), but the grant lives in
+// the confinement the child runs under (a rw bind mount on Linux, a profile rule on
+// macOS) rather than in a host access list, so it disappears with the process and leaves
+// nothing to revoke. It stays defined so Close is uniform across platforms.
+func (l *Local) revokeWritableDirs() { _ = l.writableDirs }

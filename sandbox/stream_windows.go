@@ -50,6 +50,9 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 		if err := grantRestrictedDir(l.root, l.root); err != nil {
 			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 		}
+		if err := l.grantRestrictedWritableDirs(); err != nil {
+			return nil, fmt.Errorf("sandbox: %w", err)
+		}
 		p, err = spawnWriteRestricted(appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
 		if err != nil {
 			return nil, err
@@ -65,6 +68,9 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 		}
 		if err := l.grantReadableDirs(sid); err != nil {
+			return nil, fmt.Errorf("sandbox: %w", err)
+		}
+		if err := l.grantWritableDirs(sid); err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
 
