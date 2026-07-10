@@ -245,6 +245,9 @@ func (t prFetchTool) Invoke(ctx context.Context, input json.RawMessage) (string,
 		// something the finding validator refuses. It is left out: GitHub already reports
 		// the thread as outdated, and an outdated thread is retracted on that evidence
 		// rather than on the reviewer's silence.
+		if c.Line <= 0 {
+			continue
+		}
 		posted = append(posted, PostedFinding{Path: c.Path, Line: c.Line, Rule: ruleIn(c.Body)})
 	}
 	sort.Slice(posted, func(i, j int) bool {
