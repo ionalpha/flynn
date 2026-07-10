@@ -11,6 +11,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/procs"
 )
 
 // This file is the concrete OCI backend for the container tier: it drives the host's docker
@@ -58,7 +59,10 @@ func execRunner(ctx context.Context, argv []string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	reaped := procs.Started()
+	err := cmd.Run()
+	reaped()
+	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return "", ctxErr
 		}

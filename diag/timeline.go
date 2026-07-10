@@ -54,9 +54,10 @@ type Sample struct {
 	// the platform does not expose it. A rise here outlives any Go-level leak: it
 	// ends in "too many open files".
 	OpenFDs int `json:"open_fds"`
-	// ChildProcs is how many live processes name this one as parent, or -1 where the
-	// platform does not expose it. The agent spawns sandboxed commands; one that is
-	// never reaped shows up here and nowhere else.
+	// ChildProcs is how many child processes the application has started and not yet
+	// reaped, as reported by Config.Children, or -1 when no Children was supplied. The
+	// agent spawns sandboxed commands; one that is never reaped shows up here and
+	// nowhere else.
 	ChildProcs int `json:"child_procs"`
 	// Extra carries the application-supplied counters from Config.Counters, keyed by
 	// counter name. It is absent from a sample taken with no such counters, and a
@@ -70,6 +71,7 @@ type timelineWriter struct {
 	clk      clock.Timing
 	interval time.Duration
 	counters []Counter
+	children func() int
 
 	// observe, when non-nil, receives every sample after it is written. The leak
 	// watchdog is the only observer: it rides this sampler rather than starting a
@@ -103,6 +105,7 @@ func (b *Bundle) startTimeline(observer func(Sample)) (*timelineWriter, error) {
 		clk:      b.clk,
 		interval: b.cfg.Interval,
 		counters: b.cfg.Counters,
+		children: b.cfg.Children,
 		observe:  observer,
 		quit:     make(chan struct{}),
 		done:     make(chan struct{}),
@@ -190,6 +193,16 @@ func (w *timelineWriter) write(observed bool) {
 	}
 }
 
+// childProcs reads the application's live-child count, or Unknown when the application
+// supplied no Children. A missing Children is not evidence of no children, so it is not
+// reported as zero: see Config.Children.
+func (w *timelineWriter) childProcs() int {
+	if w.children == nil {
+		return Unknown
+	}
+	return w.children()
+}
+
 // sample reads the process's current runtime shape.
 //
 // ReadMemStats briefly stops the world. That is the reason this samples on an
@@ -225,7 +238,7 @@ func (w *timelineWriter) sample() Sample {
 		NumGC:          ms.NumGC,
 		GCPauseTotalNs: ms.PauseTotalNs,
 		OpenFDs:        openFDs(),
-		ChildProcs:     childProcs(),
+		ChildProcs:     w.childProcs(),
 		Extra:          extra,
 	}
 }

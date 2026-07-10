@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/procs"
 )
 
 // errServeConfineUnsupported is returned when a confined background server is requested
@@ -48,9 +49,12 @@ type Process struct {
 	// release frees what the launch holds for this process alone, notably a governed-egress
 	// proxy serving only this child. It runs once the process is reaped.
 	release func()
-	mu      sync.Mutex
-	waited  bool
-	exwait  error
+	// reaped tells the process registry this child is no longer live. It runs from reap,
+	// the one goroutine that waits on the command, and never from a diagnostics sampler.
+	reaped func()
+	mu     sync.Mutex
+	waited bool
+	exwait error
 }
 
 // tailBufferCap bounds how much of a server's combined output is retained for
@@ -142,7 +146,7 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 		release()
 		return nil, fmt.Errorf("sandbox: serve: start: %w", err)
 	}
-	p := &Process{cmd: c, tail: tail, done: make(chan struct{}), release: release}
+	p := &Process{cmd: c, tail: tail, done: make(chan struct{}), release: release, reaped: procs.Started()}
 	go p.reap()
 	return p, nil
 }
@@ -152,6 +156,7 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 // the OS-level Wait is never called twice.
 func (p *Process) reap() {
 	err := p.cmd.Wait()
+	p.reaped()
 	p.release()
 	p.mu.Lock()
 	p.waited, p.exwait = true, err

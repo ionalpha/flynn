@@ -29,6 +29,7 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/observe"
+	"github.com/ionalpha/flynn/procs"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
@@ -84,6 +85,11 @@ func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Con
 		Contention: contention,
 		Args:       os.Args,
 		Clock:      clock.System{},
+		// The sandbox is the only thing in this binary that spawns a process, and it
+		// records every one it starts and reaps in the process registry. Reading that
+		// registry is an atomic load, so a bundle left on for days costs nothing per
+		// sample; diag has no other way to learn the count without walking the machine.
+		Children: procs.Live,
 	})
 	if leakWatch && cfg.Leak == nil {
 		cfg.Leak = &diag.LeakConfig{}

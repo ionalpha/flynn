@@ -111,6 +111,12 @@ func TestProfileBundleFromAGoalRun(t *testing.T) {
 		if s.OpenFDs == 0 {
 			t.Errorf("sample %d reports 0 open fds; a live process holds at least one, and an unmeasurable count is -1", i)
 		}
+		// -1 here means the binary opened a bundle without telling it how to read the
+		// process registry. That is the only way a built binary can report a child count:
+		// nothing in the bundle walks the machine's process table to find one.
+		if s.ChildProcs < 0 {
+			t.Errorf("sample %d reports child_procs %d; the binary must wire its child-process counter into the bundle", i, s.ChildProcs)
+		}
 	}
 }
 

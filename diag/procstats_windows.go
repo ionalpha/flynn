@@ -3,7 +3,6 @@
 package diag
 
 import (
-	"os"
 	"syscall"
 	"unsafe"
 )
@@ -16,6 +15,13 @@ var (
 // openFDs counts the process's open kernel handles, which is what a descriptor is
 // on Windows. GetProcessHandleCount answers for the current process without a
 // snapshot of the whole system.
+//
+// That "without a snapshot" is why there is deliberately no childProcs here. Counting
+// children meant a CreateToolhelp32Snapshot of every process on the machine, on every
+// sample, and it answered the wrong question: a snapshot entry can name a parent pid
+// that has already exited and been reused, so the count included processes that merely
+// claim this pid as a parent. The count comes from the spawners instead, through
+// Config.Children.
 func openFDs() int {
 	self, err := syscall.GetCurrentProcess()
 	if err != nil {
@@ -27,35 +33,4 @@ func openFDs() int {
 		return Unknown
 	}
 	return int(count)
-}
-
-// childProcs counts live processes whose parent is this one, by walking a
-// process snapshot. Windows does not reparent orphans, so a snapshot entry can name
-// a parent pid that has already exited and been reused; the count is therefore of
-// processes that currently claim this pid as parent, which is exactly the set an
-// unreaped sandboxed command lands in.
-func childProcs() int {
-	snapshot, err := syscall.CreateToolhelp32Snapshot(syscall.TH32CS_SNAPPROCESS, 0)
-	if err != nil {
-		return Unknown
-	}
-	defer func() { _ = syscall.CloseHandle(snapshot) }()
-
-	var entry syscall.ProcessEntry32
-	entry.Size = uint32(unsafe.Sizeof(entry))
-	if err := syscall.Process32First(snapshot, &entry); err != nil {
-		return Unknown
-	}
-
-	self := uint32(os.Getpid()) //nolint:gosec // a pid fits a DWORD; that is the type Windows gave it
-	count := 0
-	for {
-		if entry.ParentProcessID == self {
-			count++
-		}
-		if err := syscall.Process32Next(snapshot, &entry); err != nil {
-			break // ERROR_NO_MORE_FILES ends the walk
-		}
-	}
-	return count
 }

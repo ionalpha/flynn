@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ionalpha/flynn/procs"
 )
 
 // Local is the in-process sandbox tier: the floor that runs everywhere with no
@@ -558,7 +560,12 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 			return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
 		}
 	}
+	// CombinedOutput starts and waits in one call, so the child is live only for its
+	// duration; it is still counted, because the registry answers "children right now"
+	// and a bash tool call that never returns is exactly what an operator is looking for.
+	reaped := procs.Started()
 	out, err := c.CombinedOutput()
+	reaped()
 	res := ExecResult{Output: string(out)}
 	if err != nil {
 		var exit *exec.ExitError

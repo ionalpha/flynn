@@ -111,6 +111,7 @@ func DefaultPolicy() Policy {
 			"internal/flow":  true,
 			"jobs":           true,
 			"mission":        true,
+			"procs":          true,
 			"resource":       true,
 			"storage/sqlite": true,
 		},

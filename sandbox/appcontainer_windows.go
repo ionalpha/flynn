@@ -9,6 +9,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"github.com/ionalpha/flynn/procs"
 )
 
 // This file holds the low-level Windows calls that run a command inside an
@@ -333,6 +335,9 @@ type acProcess struct {
 	// launches, whose stderr is folded into read and whose stdin is fed once and closed.
 	errRead windows.Handle
 	writeIn windows.Handle
+	// reaped tells the process registry this child is no longer live. Both launch paths
+	// reach closeProcess only after the child has been waited on, so that is where it runs.
+	reaped func()
 }
 
 // confinedIO configures how a confined child's standard streams are wired. The zero value
@@ -354,6 +359,7 @@ func (p *acProcess) closeProcess() {
 	_ = windows.CloseHandle(p.pi.Thread)
 	_ = windows.CloseHandle(p.pi.Process)
 	_ = windows.CloseHandle(p.job) // closing the last job handle reaps any survivor
+	p.reaped()
 }
 
 // spawnAppContainer creates and starts a command inside the AppContainer named by sid,
@@ -586,7 +592,7 @@ func spawnConfined(appName, cmdline, dir string, env *uint16, sc *securityCapabi
 	}
 
 	success = true
-	return &acProcess{pi: pi, job: job, read: rdOut, errRead: rdErr, writeIn: wrIn}, nil
+	return &acProcess{pi: pi, job: job, read: rdOut, errRead: rdErr, writeIn: wrIn, reaped: procs.Started()}, nil
 }
 
 // launchAppContainer runs a command inside the AppContainer named by sid and returns its

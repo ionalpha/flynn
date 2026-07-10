@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+
+	"github.com/ionalpha/flynn/procs"
 )
 
 // CaptureSpec is a program to run to completion under the sandbox with its combined
@@ -106,7 +108,12 @@ func (l *Local) captureExec(ctx context.Context, spec CaptureSpec, confined bool
 			return ExecResult{}, fmt.Errorf("sandbox: capture: confine: %w", err)
 		}
 	}
+	// CombinedOutput starts and waits in one call, so the child is live only for its
+	// duration; it is still counted, because the registry answers "children right now"
+	// and a hung one-shot command is exactly what an operator is looking for.
+	reaped := procs.Started()
 	out, err := c.CombinedOutput()
+	reaped()
 	res := ExecResult{Output: string(out)}
 	if err != nil {
 		var exit *exec.ExitError

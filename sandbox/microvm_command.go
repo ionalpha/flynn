@@ -15,6 +15,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/procs"
 )
 
 // commandMachine drives a host-provided microVM runtime over a small, product-neutral
@@ -157,7 +158,9 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	}
 	defer func() { _ = os.Remove(manPath) }()           //nolint:gosec // manPath is from os.CreateTemp under the private control dir, not caller-controlled
 	cmd := exec.CommandContext(ctx, c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path; the guest, not this exec, is the boundary
+	reaped := procs.Started()
 	out, err := cmd.CombinedOutput()
+	reaped()
 	if err != nil {
 		// A cancelled or timed-out context (the caller's deadline, or the wall-clock breaker)
 		// surfaces as the context error so callers can tell "the guest was stopped" from "the
@@ -208,7 +211,7 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 	if err := cmd.Start(); err != nil {
 		return nil, fault.Wrap(fault.Terminal, "microvm_serve_start", err)
 	}
-	s := &cmdServing{cmd: cmd, tail: tail, done: make(chan struct{}), clk: clock.System{}}
+	s := &cmdServing{cmd: cmd, tail: tail, done: make(chan struct{}), clk: clock.System{}, reaped: procs.Started()}
 	addrCh := make(chan string, 1)
 	go s.readAddr(stdout, tail, addrCh)
 	go s.reap()
@@ -329,6 +332,9 @@ type cmdServing struct {
 	tail *tailBuffer
 	done chan struct{}
 	clk  clock.Timing
+	// reaped tells the process registry this child is no longer live. It runs from reap,
+	// the one goroutine that waits on the command.
+	reaped func()
 
 	mu   sync.Mutex
 	addr string
@@ -352,6 +358,7 @@ func (s *cmdServing) readAddr(stdout io.Reader, tail *tailBuffer, out chan<- str
 
 func (s *cmdServing) reap() {
 	_ = s.cmd.Wait()
+	s.reaped()
 	close(s.done)
 }
 

@@ -8,6 +8,8 @@ import (
 	"io"
 	"os/exec"
 	"strings"
+
+	"github.com/ionalpha/flynn/procs"
 )
 
 // StreamSpec is a program to launch under the sandbox with its stdout delivered as a
@@ -146,8 +148,10 @@ func (l *Local) startStreamExec(ctx context.Context, spec StreamSpec, confined b
 		return nil, fmt.Errorf("sandbox: stream: start: %w", err)
 	}
 	// The proxy serving this child alone is released when the child is waited on, which is
-	// the moment the caller learns it has exited.
-	wait := func() error { defer release(); return c.Wait() }
+	// the moment the caller learns it has exited, and the same moment the registry stops
+	// counting it as live.
+	reaped := procs.Started()
+	wait := func() error { defer release(); defer reaped(); return c.Wait() }
 	return &StreamProcess{stdout: stdout, wait: wait}, nil
 }
 

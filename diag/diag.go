@@ -113,6 +113,22 @@ type Config struct {
 	// temporary directories, the event log's size on disk) is registered.
 	Counters []Counter
 
+	// Children reports how many child processes the application has started and not yet
+	// reaped, and fills the timeline's child_procs. It is read on the sampler goroutine
+	// once per interval and must not block.
+	//
+	// This package cannot answer the question itself. It could walk /proc or take a
+	// Windows process snapshot, but that costs an open and a read per process on the
+	// machine on every sample of a bundle meant to be safe to leave on for days, and it
+	// answers a different question: which processes currently name this pid as their
+	// parent, a set that pid reuse can populate with strangers. Only the spawners know
+	// what they spawned, so they are asked. See the procs package.
+	//
+	// Nil records Unknown rather than zero. An application that never said what it
+	// spawned has not thereby proved it spawned nothing, and Unknown restarts the
+	// watchdog's window instead of feeding it a flat line of false zeroes.
+	Children func() int
+
 	// sampled, when non-nil, receives once after every timeline sample. It is
 	// unexported because only this package's tests set it: it lets a test step a
 	// Manual clock one tick at a time without racing the sampler's timer re-arm.
