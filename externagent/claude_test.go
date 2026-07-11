@@ -173,6 +173,21 @@ func TestClaudeCommandLocksDownAndBridges(t *testing.T) {
 			t.Errorf("native effector %q not denied: %s", denied, joined)
 		}
 	}
+	// The orchestration and scheduling primitives the model must not spin up are denied, not
+	// just the shell and file effectors.
+	for _, want := range []string{"Bash", "Task", "Workflow", "Skill", "ScheduleWakeup", "CronCreate", "PowerShell", "Read"} {
+		if !containsArg(claudeDeniedTools, want) {
+			t.Errorf("%q must be in the denied tool set", want)
+		}
+	}
+	// The tool lockdown is stated to the model in the system prompt as well as enforced, and
+	// it tells the model not to manage memory.
+	if !containsArg(inv.Args, "--append-system-prompt") {
+		t.Errorf("a capability notice must be appended to the system prompt: %s", joined)
+	}
+	if !strings.Contains(claudeCapabilityNotice, "mcp__flynn__") || !strings.Contains(strings.ToLower(claudeCapabilityNotice), "memory") {
+		t.Errorf("the capability notice must name the bridged tools and forbid managing memory")
+	}
 	// The MCP client points at the bridge over HTTP with the token referenced from the
 	// environment, never written into the config or the argument list.
 	if !strings.Contains(joined, `"type":"http"`) || !strings.Contains(joined, `"url":"http://127.0.0.1:54321/mcp"`) {

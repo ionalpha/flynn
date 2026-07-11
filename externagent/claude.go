@@ -43,30 +43,51 @@ func (*Claude) Name() string { return "claude" }
 // call is recognized as bridged by this prefix.
 const claudeBridgeName = "flynn"
 
-// claudeDeniedTools are the native tools denied to the model, so every action it takes
-// goes through a bridged tool and is governed and recorded at the dispatch waist. The
-// permission mode already denies by default (see Command), so this list is explicit
-// defense in depth and names the tools in the record: a denial outranks an allow, so even
-// a build or config that would otherwise permit one refuses it. The native read tools
-// (Read, Glob, Grep) are denied too, which closes the unobserved-read gap entirely: with
-// no way to read the workspace or the host outside a bridged tool, the harness has no
-// observation the run cannot see, at the cost of the cheap local reads it would otherwise
-// take without a round trip through the bridge.
+// claudeDeniedTools denies the CLI's entire native tool surface, so the model's only way
+// to act is a bridged tool that is governed and recorded at the dispatch waist. This is
+// deny-by-default made explicit: the allowlist alone does not deny a native tool (the CLI
+// auto-runs some without a prompt even under a strict permission mode), so every native
+// tool is named here instead, and a denial outranks any allow a build or config carries.
+// The list is a superset on purpose; a name a given build does not know is reported on
+// stderr, which the spawner discards, so denying a tool that is not present is harmless
+// while denying one that is present is what matters. The native read tools are denied too,
+// which closes the unobserved-read gap entirely: with no way to read the workspace or the
+// host outside a bridged tool, the harness has no observation the run cannot see. The real
+// boundary remains Flynn's sandbox, which contains anything a future build might add that
+// is not on this list.
 var claudeDeniedTools = []string{
-	"Bash",
-	"BashOutput",
-	"KillShell",
-	"Edit",
-	"MultiEdit",
-	"Write",
-	"NotebookEdit",
-	"Read",
-	"Glob",
-	"Grep",
-	"WebFetch",
-	"WebSearch",
-	"Task",
+	// Shell and command execution.
+	"Bash", "BashOutput", "KillShell", "PowerShell",
+	// Native file writes and reads (reads denied too: no unobserved-read gap).
+	"Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep",
+	// Native web reach; egress is already gated, this removes the native fetchers.
+	"WebFetch", "WebSearch",
+	// Sub-agents, orchestration, and skills: no spinning up its own agents, workflows, or
+	// slash commands, which run unobserved work and burn subscription usage.
+	"Task", "Workflow", "Skill", "SlashCommand", "TodoWrite",
+	// Scheduling, background, messaging, and worktree primitives.
+	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "Monitor",
+	"RemoteTrigger", "SendMessage", "PushNotification", "DesignSync",
+	"EnterWorktree", "ExitWorktree", "ReportFindings", "ToolSearch",
+	// Its own task tracker, which the run governs rather than the CLI.
+	"TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
 }
+
+// claudeCapabilityNotice is appended to the CLI's system prompt on every run, so the model
+// knows up front that it holds only the bridged tools and does not waste a turn reaching
+// for a native one it cannot use. It is the stated half of the tool lockdown; the denied
+// tool list and the sandbox are the enforced half. Managing memory is called out because a
+// confined episode's memory never persists, so any effort spent curating it is wasted.
+const claudeCapabilityNotice = "You are running as a governed backend inside Flynn, a sandbox that contains this session. " +
+	"Your only usable tools are the ones provided by the Flynn MCP server, whose names begin with mcp__flynn__. " +
+	"Use those tools for every action, including reading and writing files. " +
+	"You do not have, and must not attempt, any built-in tool: no Bash, PowerShell, or shell; " +
+	"no native Read, Write, Edit, or notebook tools; no web fetch or web search; " +
+	"no Task or subagents; no Workflow; no Skills or slash commands; " +
+	"no scheduling, cron, wakeup, background monitor, messaging, or worktree tools. " +
+	"These are removed and denied, and attempting one only wastes a turn. " +
+	"Do not read, write, or manage memory of any kind: this session does not persist memory, so managing it is wasted effort. " +
+	"If a task cannot be done with the mcp__flynn__ tools, say so plainly rather than reaching for a native tool."
 
 // Detect probes that claude is installed, logged in on a subscription, and new enough to
 // be constrained to the bridge. It runs claude's own version, help, and auth-status
@@ -193,11 +214,14 @@ func (c *Claude) Command(ep Episode) (Invocation, error) {
 		// child's tool surface is exactly what this run offers it and nothing else.
 		"--strict-mcp-config",
 		"--mcp-config", mcpConfig,
-		// dontAsk never blocks on a prompt (headless) and, unlike bypassPermissions, denies
-		// anything not explicitly allowed instead of auto-approving it. With only the bridge
-		// server allowed, every native effector is denied by default; the explicit
-		// --disallowedTools below names them in the record and outranks any allow.
+		// dontAsk never blocks on a prompt (headless) and, unlike bypassPermissions, does not
+		// auto-approve a tool that would otherwise ask. The native surface is denied by the
+		// explicit --disallowedTools list below (the allowlist alone does not deny it), and
+		// only the bridge server's tools are allowed.
 		"--permission-mode", "dontAsk",
+		// State the tool lockdown to the model as well as enforcing it, so it does not spend a
+		// turn reaching for a native tool it cannot use.
+		"--append-system-prompt", claudeCapabilityNotice,
 	}
 	if ep.Model != "" {
 		args = append(args, "--model", ep.Model)
