@@ -2,6 +2,7 @@ package extension
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -124,6 +125,14 @@ type ProcessHandler struct {
 	maxDescBytes   int
 	maxResultBytes int
 
+	// signerFor returns the host key a signing-enabled tool signs with, or nil when the tool
+	// does not participate in the host-signing handshake (the default: no tool signs). It is
+	// how the operator binds a key to a specific extension tool; default-deny like every other
+	// authority here.
+	signerFor    func(extName, toolName string) HostSigner
+	maxSigns     int
+	maxSignBytes int
+
 	mu      sync.Mutex
 	mounted map[string]*mountedProc
 }
@@ -203,6 +212,27 @@ func WithMaxDescriptionBytes(n int) ProcessOption {
 	}
 }
 
+// WithHostSigner binds host-held signing keys to signing-enabled tools. fn is called for
+// each mounted tool and returns the HostSigner that tool may obtain signatures from, or nil
+// for a tool that does not sign (the default for every tool). This is how the operator grants
+// a specific extension tool the use of a key: the key stays in the host, and the tool only
+// ever receives detached signatures over the bytes it hands out. A nil fn leaves every tool
+// non-signing.
+func WithHostSigner(fn func(extName, toolName string) HostSigner) ProcessOption {
+	return func(h *ProcessHandler) { h.signerFor = fn }
+}
+
+// WithMaxSignatures bounds how many signatures one tool call may request through the
+// host-signing handshake, so a hostile or broken extension cannot drive an unbounded signing
+// loop. The default is 32.
+func WithMaxSignatures(n int) ProcessOption {
+	return func(h *ProcessHandler) {
+		if n > 0 {
+			h.maxSigns = n
+		}
+	}
+}
+
 // NewProcessHandler builds a process-surface handler that resolves binaries through
 // resolver and launches them through launcher. Both are required; a nil launcher or
 // resolver is a programming error the handler refuses to run without.
@@ -215,6 +245,8 @@ func NewProcessHandler(launcher Launcher, resolver Resolver, opts ...ProcessOpti
 		dialTimeout:    30 * time.Second,
 		maxDescBytes:   4 << 10,
 		maxResultBytes: 64 << 10,
+		maxSigns:       32,
+		maxSignBytes:   64 << 10,
 		mounted:        map[string]*mountedProc{},
 	}
 	for _, opt := range opts {
@@ -313,14 +345,21 @@ func (h *ProcessHandler) dialAndBuild(ctx context.Context, m Mount, block Proces
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{"type":"object"}`)
 		}
+		var signer HostSigner
+		if h.signerFor != nil {
+			signer = h.signerFor(m.Name, d.Name)
+		}
 		out = append(out, &procTool{
-			name:       full,
-			remoteName: d.Name,
-			desc:       boundText(d.Description, h.maxDescBytes),
-			schema:     schema,
-			client:     client,
-			timeout:    h.callTimeout,
-			maxResult:  h.maxResultBytes,
+			name:         full,
+			remoteName:   d.Name,
+			desc:         boundText(d.Description, h.maxDescBytes),
+			schema:       schema,
+			client:       client,
+			timeout:      h.callTimeout,
+			maxResult:    h.maxResultBytes,
+			signer:       signer,
+			maxSigns:     h.maxSigns,
+			maxSignBytes: h.maxSignBytes,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Def().Name < out[j].Def().Name })
@@ -372,6 +411,13 @@ type procTool struct {
 	client     *mcp.Client
 	timeout    time.Duration
 	maxResult  int
+
+	// signer, when non-nil, makes this a signing-enabled tool: Invoke drives the host-signing
+	// handshake, signing each payload the tool hands out with this key and re-invoking until
+	// the tool returns a terminal result. maxSigns/maxSignBytes bound the loop and each payload.
+	signer       HostSigner
+	maxSigns     int
+	maxSignBytes int
 }
 
 // Def is the declaration handed to the model. The namespaced name doubles as the capability
@@ -387,6 +433,15 @@ func (t *procTool) Def() llm.Tool {
 // react. The result is untrusted extension output and is size-bounded before it is
 // returned into any model context or the spine.
 func (t *procTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
+	if t.signer != nil {
+		return t.driveSigning(ctx, input)
+	}
+	return t.callOnce(ctx, input)
+}
+
+// callOnce forwards a single call to the subprocess under a per-call deadline and returns the
+// bounded result.
+func (t *procTool) callOnce(ctx context.Context, input json.RawMessage) (string, error) {
 	callCtx, cancel := context.WithTimeout(ctx, t.timeout)
 	defer cancel()
 	res, err := t.client.CallTool(callCtx, t.remoteName, input)
@@ -398,6 +453,71 @@ func (t *procTool) Invoke(ctx context.Context, input json.RawMessage) (string, e
 		return "extension tool error: " + out, nil
 	}
 	return out, nil
+}
+
+// driveSigning runs the host-signing handshake for a signing-enabled tool. It injects the
+// granted key's public bytes on the first call, then repeatedly signs each payload the tool
+// hands out (bounding the count and each payload's size) and re-invokes the tool with the
+// detached signature, until the tool returns a result carrying no signing message. That
+// terminal result is bounded and returned to the caller. The host reads only opaque bytes: it
+// never parses what it signs. The key never leaves the host; the extension only ever receives
+// signatures. A per-call deadline bounds each round-trip; the loop count is capped so a broken
+// or hostile extension cannot spin the host forever.
+func (t *procTool) driveSigning(ctx context.Context, input json.RawMessage) (string, error) {
+	next, err := injectHostKey(input, t.signer.Public())
+	if err != nil {
+		return "", err
+	}
+	for i := 0; i <= t.maxSigns; i++ {
+		res, err := t.call(ctx, next)
+		if err != nil {
+			return "", err
+		}
+		if res.IsError {
+			return "extension tool error: " + boundText(res.Text, t.maxResult), nil
+		}
+		var reply signingReply
+		// A result that is not a signing message (not valid JSON, or valid JSON with no sign
+		// block) is the terminal result: return it to the caller untouched but bounded. A parse
+		// failure is not an error here; it just means this result is not a signing message.
+		_ = json.Unmarshal([]byte(res.Text), &reply)
+		if reply.Sign == nil {
+			return boundText(res.Text, t.maxResult), nil
+		}
+		if i == t.maxSigns {
+			return "", fault.New(fault.Forbidden, "extension_sign_budget",
+				"extension: tool "+t.name+" exceeded the per-call signature limit")
+		}
+		payload, derr := base64.StdEncoding.DecodeString(reply.Sign.Message)
+		if derr != nil {
+			return "", fault.New(fault.Terminal, "extension_sign_payload", "extension: signing payload is not base64")
+		}
+		if len(payload) > t.maxSignBytes {
+			return "", fault.New(fault.Forbidden, "extension_sign_too_large",
+				"extension: tool "+t.name+" asked to sign an over-sized payload")
+		}
+		sig, signErr := t.signer.Sign(payload)
+		// A signing failure is delivered to the tool (not aborted here) so the tool's own
+		// failure path runs; the tool decides how to unwind.
+		if next, err = resumeInput(reply.Session, sig, signErr); err != nil {
+			return "", err
+		}
+	}
+	// Unreachable: the loop returns on the terminal result or the budget check above.
+	return "", fault.New(fault.Terminal, "extension_sign_loop", "extension: signing loop ended without a result")
+}
+
+// call forwards one message to the subprocess under a fresh per-call deadline. Each round-trip
+// of the signing handshake gets its own deadline so a tool that legitimately blocks on one step
+// (waiting for an on-chain confirmation, say) is not starved by earlier steps' time.
+func (t *procTool) call(ctx context.Context, input json.RawMessage) (mcp.CallResult, error) {
+	callCtx, cancel := context.WithTimeout(ctx, t.timeout)
+	defer cancel()
+	res, err := t.client.CallTool(callCtx, t.remoteName, input)
+	if err != nil {
+		return mcp.CallResult{}, fault.Wrap(fault.Transient, "extension_process_call", err)
+	}
+	return res, nil
 }
 
 // intersectHosts returns the hosts allowed by BOTH the spec's request and the operator
