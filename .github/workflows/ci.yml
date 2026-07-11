@@ -390,11 +390,21 @@ jobs:
   # PR. Arm it by raising the thresholds in .gremlins.yaml and adding `mutate`
   # to ci-success. A PR scopes to lines changed since its base (dev/mutate's
   # --diff via MUTATE_BASE); a push to main mutates the full module.
+  #
+  # continue-on-error keeps the job honest about being advisory. Without it a
+  # gremlins crash, or the timeout below firing on a long full-module run, posts
+  # a red check on the pull request, and the merge gate refuses to merge on any
+  # failing check - so an advisory job would block exactly like an armed one.
+  # Drop this line in the same change that arms the thresholds.
   mutate:
     name: Mutation (advisory)
     needs: setup
     if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
+    continue-on-error: true
+    # Every mutant recompiles and reruns the affected tests, so a full-module run
+    # is open-ended. Bound it: an advisory signal is not worth an hour of runner.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
