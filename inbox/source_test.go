@@ -101,7 +101,16 @@ func TestReceiveLoopSuccessRetriesImmediately(t *testing.T) {
 	go func() {
 		defer close(done)
 		inbox.ReceiveLoop(ctx, testBackoff, clk, func(context.Context) error {
-			attempts <- struct{}{}
+			// The send cannot block. A clean attempt is retried at once, so the loop
+			// runs as fast as this callback returns, and it checks for cancellation
+			// only between attempts. A blocking send would therefore park the callback
+			// on a full channel forever the moment the test stopped reading: the loop
+			// would never reach the check that lets it exit, and the test would hang
+			// rather than fail.
+			select {
+			case attempts <- struct{}{}:
+			default:
+			}
 			return nil // clean end: next attempt should run immediately
 		})
 	}()
