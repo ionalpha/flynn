@@ -179,7 +179,7 @@ func logonSessionSID(token windows.Token) (*windows.SID, error) {
 // is not granted fails the restricting gate regardless of the user's own access. The
 // child otherwise gets the same envelope as the container tier: only the launch pipes
 // inherited, created suspended into its job, mitigation policies applied at creation.
-func spawnWriteRestricted(appName, cmdline, root string, env *uint16, stdin []byte, resLimits ResourceLimits) (*acProcess, error) {
+func spawnWriteRestricted(appName, cmdline, root string, env *uint16, io confinedIO, resLimits ResourceLimits) (*acProcess, error) {
 	sid, err := workspaceRestrictSID(root)
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: %w", err)
@@ -190,7 +190,7 @@ func spawnWriteRestricted(appName, cmdline, root string, env *uint16, stdin []by
 		return nil, fmt.Errorf("sandbox: restricted token: %w", err)
 	}
 	defer func() { _ = token.Close() }() // the child holds its own reference once created
-	return spawnConfined(appName, cmdline, root, env, nil, token, stdin, resLimits)
+	return spawnConfined(appName, cmdline, root, env, nil, token, io, resLimits)
 }
 
 // grantRestrictedDir grants the workspace's restricting SID full access to dir, the

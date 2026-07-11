@@ -53,7 +53,7 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 		if err := l.grantRestrictedWritableDirs(); err != nil {
 			return nil, fmt.Errorf("sandbox: %w", err)
 		}
-		p, err = spawnWriteRestricted(appPath, cmdline, l.root, env, spec.Stdin, l.resLimits)
+		p, err = spawnWriteRestricted(appPath, cmdline, l.root, env, confinedIO{stdinOnce: spec.Stdin}, l.resLimits)
 		if err != nil {
 			return nil, err
 		}
@@ -83,7 +83,7 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 			caps = append(caps, netCap)
 		}
 
-		p, err = spawnAppContainer(appPath, cmdline, l.root, env, sid, caps, spec.Stdin, l.resLimits)
+		p, err = spawnAppContainer(appPath, cmdline, l.root, env, sid, caps, confinedIO{stdinOnce: spec.Stdin}, l.resLimits)
 		if err != nil {
 			return nil, err
 		}

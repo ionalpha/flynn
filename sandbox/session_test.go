@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -148,7 +149,12 @@ func TestSessionNoCommand(t *testing.T) {
 // production extension launcher instead requires confinement and refuses to downgrade; that
 // refusal path is covered separately.
 func TestSessionConfinedRoundTrip(t *testing.T) {
-	loc, err := NewLocal(t.TempDir(), WithDefaultConfinement())
+	// Grant read to the directory the helper binary lives in, as the extension launcher
+	// does for a verified binary, so the Windows AppContainer child can execute it (the
+	// container has no access to a test temp dir otherwise). It is harmless where the
+	// binary is already readable.
+	binDir := filepath.Dir(os.Args[0])
+	loc, err := NewLocal(t.TempDir(), WithDefaultConfinement(), WithReadableDir(binDir))
 	if err != nil {
 		t.Fatalf("new local: %v", err)
 	}
@@ -178,22 +184,24 @@ func TestSessionConfinedRoundTrip(t *testing.T) {
 	}
 }
 
-// TestSessionConfinedRefusedOnWindows proves the refuse-rather-than-downgrade guarantee on
-// a platform that cannot express duplex confinement: a session that requires confinement
-// (here via governed egress) is refused rather than run unconfined. On platforms that can
-// express it the same launch would instead run confined, which the duplex round-trip test
-// already covers, so this assertion is Windows-specific.
-func TestSessionConfinedRefusedOnWindows(t *testing.T) {
+// TestSessionGovernedEgressRefusedOnWindows proves per-host governed egress fails closed on
+// Windows: it has no enforcement leg there (an AppContainer grants or denies network
+// wholesale, it cannot filter by host), so a session that asks for governed egress is refused
+// rather than run with its network silently unfiltered. Deny-all egress (WithNetworkDenied)
+// is a separate path that IS enforced on Windows and is what the extension launcher uses for a
+// network-free extension. Off Windows governed egress is enforced by the proxy, so this
+// refusal is Windows-specific.
+func TestSessionGovernedEgressRefusedOnWindows(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		t.Skip("duplex confinement is expressible off Windows; refusal is a Windows-only path")
+		t.Skip("governed egress is enforced off Windows; the refusal is a Windows-only path")
 	}
-	loc, err := NewLocal(t.TempDir(), WithEgress(netguard.DenyAll()))
+	loc, err := NewLocal(t.TempDir(), WithEgress(netguard.Policy{AllowPublic: true, AllowHosts: []string{"example.com"}}))
 	if err != nil {
 		t.Fatalf("new local: %v", err)
 	}
 	defer func() { _ = loc.Close() }()
 	_, err = loc.Session(context.Background(), SessionSpec{Argv: []string{os.Args[0]}})
 	if err == nil {
-		t.Fatal("expected a confined-session refusal on Windows, got nil")
+		t.Fatal("expected governed egress to be refused on Windows, got nil")
 	}
 }

@@ -61,22 +61,31 @@ func (l *SandboxLauncher) Launch(ctx context.Context, req LaunchRequest) (Conn, 
 		return nil, fault.Wrap(fault.Terminal, "extension_launch_scratch", err)
 	}
 
-	policy := netguard.DenyAll()
-	if len(req.EgressAllow) > 0 {
-		// AllowPublic pairs with the name allow-list so a permitted name that resolves to a
-		// private or rebinding address is still denied; the name gate alone never widens the
-		// address rules.
-		policy = netguard.Policy{AllowPublic: true, AllowHosts: append([]string(nil), req.EgressAllow...)}
-	}
-
 	opts := []sandbox.LocalOption{
 		sandbox.WithReadOnlyFS(),
 		sandbox.WithSeccomp(),
-		sandbox.WithEgress(policy),
 		sandbox.WithResourceLimits(l.limits),
 		// The binary lives outside the scratch jail; grant read to its directory so the
 		// confined launch can execute it, and nothing else on the host.
 		sandbox.WithReadableDir(filepath.Dir(req.Path)),
+	}
+	if len(req.EgressAllow) == 0 {
+		// No effective egress: deny the network wholesale. This is enforced on every
+		// platform, including Windows (the AppContainer is launched without the network
+		// capability), which per-host governed egress is not. A network-free extension (the
+		// token, which returns unsigned transactions for core to submit) runs fully
+		// contained everywhere.
+		opts = append(opts, sandbox.WithNetworkDenied())
+	} else {
+		// Specific hosts: restrict egress to exactly them, resolved to public addresses only
+		// (private, loopback, and the cloud-metadata range stay denied, anti-SSRF). This is
+		// enforced by the per-child proxy on platforms that have one (Linux, macOS); where a
+		// platform cannot filter egress by host (Windows), the launch is refused rather than
+		// run with the network unfiltered.
+		opts = append(opts, sandbox.WithEgress(netguard.Policy{
+			AllowPublic: true,
+			AllowHosts:  append([]string(nil), req.EgressAllow...),
+		}))
 	}
 	loc, err := sandbox.NewLocal(dir, opts...)
 	if err != nil {
