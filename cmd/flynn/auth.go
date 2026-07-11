@@ -35,7 +35,7 @@ import (
 // an integration credential when given an <integration>/<name> reference.
 func runAuth(args []string, dataDir string) error {
 	if len(args) == 0 {
-		return errors.New("usage: flynn auth <set|list|add|use|ls|rm>")
+		return errors.New("usage: flynn auth <set|set-app|list|add|use|ls|rm|rm-app>")
 	}
 	store := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))
 	ctx := context.Background()
