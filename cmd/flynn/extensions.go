@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -136,6 +137,7 @@ func extensionsList(ctx context.Context, dataDir string) error {
 func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	fs := newFlagSet("extensions call")
 	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
+	sign := fs.String("sign", "", "path to a dev signing key (a JSON array of the 64 raw key bytes) the called tool signs its work with; the key stays in the host and the tool only receives signatures")
 	// name, tool, and an optional JSON input are leading positionals; flags follow. Pull
 	// the positionals out first so `call <name> <tool> <json> --egress ...` parses.
 	if len(args) < 2 {
@@ -157,7 +159,22 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 		return errUsageCall
 	}
 
-	rt, err := openExtensionRuntime(ctx, dataDir, withEgressGrant(splitList(*egress)))
+	runtimeOpts := []extRuntimeOption{withEgressGrant(splitList(*egress))}
+	if *sign != "" {
+		signer, err := loadDevSigner(*sign)
+		if err != nil {
+			return err
+		}
+		bareTool := strings.TrimPrefix(toolName, name+".")
+		runtimeOpts = append(runtimeOpts, withHostSigner(func(ext, tool string) extension.HostSigner {
+			if ext == name && tool == bareTool {
+				return signer
+			}
+			return nil
+		}))
+	}
+
+	rt, err := openExtensionRuntime(ctx, dataDir, runtimeOpts...)
 	if err != nil {
 		return err
 	}
@@ -398,6 +415,7 @@ type extensionRuntime struct {
 // extRuntimeOptions configures a runtime built by openExtensionRuntime.
 type extRuntimeOptions struct {
 	egressGrant []string
+	hostSigner  func(ext, tool string) extension.HostSigner
 }
 
 // extRuntimeOption customizes the runtime.
@@ -409,6 +427,40 @@ type extRuntimeOption func(*extRuntimeOptions)
 // grant) launches every extension with egress fully denied.
 func withEgressGrant(hosts []string) extRuntimeOption {
 	return func(o *extRuntimeOptions) { o.egressGrant = hosts }
+}
+
+// withHostSigner grants a host-held signing key to specific mounted tools. fn returns the
+// signer a tool may obtain signatures from, or nil for a tool that does not sign. The key
+// stays in the host; a tool that builds something needing a signature hands out the bytes and
+// receives only the signature back. The default (no fn) leaves every tool non-signing.
+func withHostSigner(fn func(ext, tool string) extension.HostSigner) extRuntimeOption {
+	return func(o *extRuntimeOptions) { o.hostSigner = fn }
+}
+
+// loadDevSigner reads an ed25519 signing key from a file holding a JSON array of the 64 raw
+// private-key bytes, and returns a host signer over it. This is the dev path: a key on disk
+// for the authoring and testing loop. A production deployment supplies a vault- or
+// hardware-backed HostSigner instead, so no key ever sits in a file.
+func loadDevSigner(path string) (extension.HostSigner, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // path is the operator-supplied dev signing key
+	if err != nil {
+		return nil, fmt.Errorf("extensions: read signing key: %w", err)
+	}
+	var nums []int
+	if err := json.Unmarshal(raw, &nums); err != nil {
+		return nil, fmt.Errorf("extensions: signing key must be a JSON array of byte values: %w", err)
+	}
+	if len(nums) != ed25519.PrivateKeySize {
+		return nil, fmt.Errorf("extensions: signing key must be %d bytes, got %d", ed25519.PrivateKeySize, len(nums))
+	}
+	key := make(ed25519.PrivateKey, ed25519.PrivateKeySize)
+	for i, n := range nums {
+		if n < 0 || n > 255 {
+			return nil, fmt.Errorf("extensions: signing key byte %d is out of range", i)
+		}
+		key[i] = byte(n)
+	}
+	return extension.NewEd25519HostSigner(key)
 }
 
 // openExtensionRuntime opens the durable store and wires a loader whose only surface
@@ -442,10 +494,16 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 	}
 
 	ereg := extension.NewRegistry()
+	procOpts := []extension.ProcessOption{
+		extension.WithEgressGrant(cfg.egressGrant),
+	}
+	if cfg.hostSigner != nil {
+		procOpts = append(procOpts, extension.WithHostSigner(cfg.hostSigner))
+	}
 	handler := extension.NewProcessHandler(
 		extension.NewSandboxLauncher(workRoot),
 		extension.DevResolver{Enabled: true},
-		extension.WithEgressGrant(cfg.egressGrant),
+		procOpts...,
 	)
 	if err := ereg.Register(handler); err != nil {
 		_ = durable.Close()
