@@ -41,15 +41,16 @@ fi
 set -- unleash "$@"
 if [ -n "${MUTATE_BASE:-}" ]; then
 	if base=$(git merge-base "$MUTATE_BASE" HEAD 2>/dev/null); then
-		# --diff restricts mutation to lines changed since base. A build or
-		# workflow config change is not diff-scopable, so fall back to a full run.
-		changed=$(git diff --name-only "$base" HEAD)
-		if printf '%s\n' "$changed" | grep -qE '^(go\.mod|go\.sum|dev/mutate|\.gremlins\.yaml|\.github/workflows/)'; then
-			echo "dev/mutate: build or workflow config changed since $base; mutating the full module"
-		else
-			echo "dev/mutate: scoping to lines changed since $base"
-			set -- "$@" --diff "$base"
+		# --diff restricts mutation to lines changed since base. A change that
+		# touches no production Go line has nothing to mutate, and mutating the
+		# whole module to say so costs a quarter of an hour, so say so and stop.
+		# The module still gets a full run on every push to main.
+		if [ -z "$(git diff --name-only "$base" HEAD -- '*.go' ':!*_test.go')" ]; then
+			echo "dev/mutate: no production Go line changed since $base; nothing to mutate"
+			exit 0
 		fi
+		echo "dev/mutate: scoping to lines changed since $base"
+		set -- "$@" --diff "$base"
 	else
 		echo "dev/mutate: cannot resolve MUTATE_BASE=$MUTATE_BASE; mutating the full module" >&2
 	fi

@@ -419,10 +419,21 @@ jobs:
       # use the same mutator set and behavior.
       - name: Install gremlins
         run: go install github.com/go-gremlins/gremlins/cmd/gremlins@v0.6.0
+      # Dropping the exit status is what makes "advisory" true rather than merely
+      # stated. continue-on-error keeps a failed job from failing the workflow run,
+      # but the job's own check still reports failure, and the merge gate refuses to
+      # merge on any failing check - so without this, a gremlins crash blocks a pull
+      # request over a signal nobody agreed to be blocked by. The log keeps the
+      # detail. Arm the gate by taking the `|| echo` off in the same change that
+      # raises the thresholds and adds `mutate` to the ci-success needs list.
       - if: github.event_name == 'pull_request'
-        run: MUTATE_BASE="${{ github.event.pull_request.base.sha }}" ./dev/mutate
+        run: |
+          MUTATE_BASE="${{ github.event.pull_request.base.sha }}" ./dev/mutate ||
+            echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
       - if: github.event_name != 'pull_request'
-        run: ./dev/mutate
+        run: |
+          ./dev/mutate ||
+            echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
 
   # Enforce the PR template at the gate, not just in dev/pr: this catches PRs
   # opened any other way (gh directly, the web UI, an API call). The body comes
