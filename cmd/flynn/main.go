@@ -335,6 +335,12 @@ func printUsage(w io.Writer) {
   flynn spine verify <run>   report a run's record tier by tier: integrity, governance, ground truth (or --file <path> for an exported record)
   flynn spine export <run>   write a sealed run's portable record to a file (--out <path>) for third-party verification
   flynn auth set <provider>  store an API key in the encrypted vault
+  flynn integrations         list the integrations, show one, or call an operation (ls, show, call)
+  flynn extensions           link a local extension, list, call one confined, or unlink (dev, ls, call, rm)
+  flynn deps                 list the external tools an integration declares; 'deps install <name>' fetches a pinned one
+  flynn playbook             list the playbooks; 'playbook run <name> [json-input]' runs one
+  flynn deploy <extension>   deploy through a hosting extension and track the result as a managed service
+  flynn services             list the managed services; 'services rm <name>' removes one
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
   flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry and print it for review
   flynn models fetch <id>    download and verify a model's weights (does not run it)
