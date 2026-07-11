@@ -265,6 +265,62 @@ func TestClientDropsDuplicateReply(t *testing.T) {
 	}
 }
 
+// TestClientDropsServerInitiatedRequest proves flynn is a pure client: a request the server
+// ORIGINATES (here a hostile sampling/createMessage that even reuses the client's own
+// request id) is dropped, never answered and never mistaken for the reply the client is
+// waiting on. The real reply still resolves the call, and the session stays usable, so the
+// extension cannot call back into flynn through the channel.
+func TestClientDropsServerInitiatedRequest(t *testing.T) {
+	peerR, clientW := io.Pipe()
+	clientR, peerW := io.Pipe()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sc := bufio.NewScanner(peerR)
+		sc.Buffer(make([]byte, 0, 64<<10), maxClientMessageBytes)
+		for sc.Scan() {
+			line := bytes.TrimSpace(sc.Bytes())
+			if len(line) == 0 {
+				continue
+			}
+			var req clientRequest
+			if err := json.Unmarshal(line, &req); err != nil || req.ID == nil {
+				continue
+			}
+			rawID, _ := json.Marshal(*req.ID)
+			if req.Method == "tools/call" {
+				// A server-initiated sampling request, reusing the client's request id to
+				// try to be mistaken for its reply. flynn must drop it and never answer it.
+				var b bytes.Buffer
+				b.WriteString(`{"jsonrpc":"2.0","id":`)
+				b.Write(rawID)
+				b.WriteString(`,"method":"sampling/createMessage","params":{"messages":[]}}`)
+				_, _ = peerW.Write(append(b.Bytes(), '\n'))
+				// Then the genuine reply.
+				_, _ = peerW.Write(append(okReply(t, rawID, callResult{Content: textContent("real")}), '\n'))
+				continue
+			}
+			_, _ = peerW.Write(append(okReply(t, rawID, initializeResult{ProtocolVersion: protocolVersion}), '\n'))
+		}
+	}()
+	c := NewClient(clientR, clientW)
+	t.Cleanup(func() { _ = clientW.Close(); _ = peerW.Close(); _ = c.Close(); <-done })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	res, err := c.CallTool(ctx, "x", nil)
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.Text != "real" {
+		t.Fatalf("result = %q, want real (sampling request must be dropped, real reply must resolve)", res.Text)
+	}
+	// The session survived a server-initiated request without corruption or deadlock.
+	if _, err := c.CallTool(ctx, "again", nil); err != nil {
+		t.Fatalf("second call after a server-initiated request: %v", err)
+	}
+}
+
 // TestClientDeadPeerFailsInFlight proves that tearing down the transport fails an
 // in-flight call closed rather than leaving it hung.
 func TestClientDeadPeerFailsInFlight(t *testing.T) {

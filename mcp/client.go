@@ -74,6 +74,13 @@ func WithClientInfo(i Info) ClientOption { return func(c *Client) { c.info = i }
 // wedge a call), replies are matched to their request by id (a spurious or duplicate id
 // is ignored, never mismatched to a waiting call), and a dead transport fails every
 // in-flight and future call closed rather than hanging.
+//
+// The channel is strictly one-directional: flynn only ever initiates requests and only
+// ever consumes their replies. A message the server ORIGINATES (a sampling or elicitation
+// request, a notification) is dropped, never dispatched and never answered, so an
+// extension can send tools and results but can never call back into flynn. This is the
+// structural answer to "consuming MCP adds a surface": the surface is a client that speaks
+// three methods and refuses everything the server tries to drive.
 type Client struct {
 	w    io.Writer
 	info Info
@@ -105,11 +112,15 @@ type clientRequest struct {
 	Params  json.RawMessage `json:"params,omitempty"`
 }
 
-// clientResponse is one JSON-RPC reply the client reads. Exactly one of Result or Error
-// is meaningful; a well-formed server sets one. The id pairs the reply to its request.
+// clientResponse is one inbound JSON-RPC message the client reads. A reply sets exactly
+// one of Result or Error and pairs to its request by ID. Method is read only to detect the
+// one thing the client must refuse: a server-INITIATED request or notification. flynn is a
+// pure MCP client, so a message carrying a Method is dropped rather than acted on (see
+// readLoop); the field exists solely to recognise and discard it.
 type clientResponse struct {
 	JSONRPC string          `json:"jsonrpc"`
 	ID      json.RawMessage `json:"id"`
+	Method  string          `json:"method"`
 	Result  json.RawMessage `json:"result"`
 	Error   *rpcError       `json:"error"`
 }
@@ -150,6 +161,15 @@ func (c *Client) readLoop(r io.Reader) {
 		if err := json.Unmarshal(line, &resp); err != nil {
 			// A single malformed line is not fatal to the session; the request it was
 			// meant for will time out on its own deadline. Skip it and keep reading.
+			continue
+		}
+		if resp.Method != "" {
+			// A server-INITIATED request or notification (sampling, roots, elicitation, a
+			// list-changed notice). flynn is a pure client: it consumes only replies to its
+			// own requests and never serves a call the extension originates, so it never
+			// answers this and never dispatches it. Dropping it here (before id-matching)
+			// also means a message that reuses a pending request id cannot be mistaken for
+			// that request's reply. The extension therefore cannot drive flynn in any way.
 			continue
 		}
 		id, ok := decodeResponseID(resp.ID)
