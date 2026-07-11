@@ -66,27 +66,43 @@ func (e *Engine) Mint(ctx context.Context, s MintSpec) (solana.PublicKey, []safe
 		return e.abortMint(ctx, mint, disclosures, err)
 	}
 
-	// The mint now exists with the payer as its mint authority. From here on, any
-	// failure must still leave the mint SAFE, so route every one through abortMint: it
-	// revokes the mint authority so an abandoned mint has a permanently fixed supply
-	// and cannot be inflated later. A revoke is a cheap transaction, so it succeeds
-	// even when a later step failed for lack of rent (the case that leaves a mintable
-	// mint if not handled).
-	if err := e.finalizeMint(ctx, mint, s); err != nil {
-		return e.abortMint(ctx, mint, disclosures, err)
-	}
+	// The mint now exists with the payer as its mint authority. finalize runs metadata
+	// -> supply -> revoke; its final step (the revoke) can be submitted but not confirmed
+	// and still land, so a finalize error does NOT by itself mean the token is unsafe or
+	// incomplete. The authority and supply ON-CHAIN are the source of truth, so verify
+	// the real state and judge by that rather than by the last RPC result: otherwise a
+	// safe, fully minted token whose revoke merely lost its confirmation is reported as a
+	// failed, unsafe mint.
+	ferr := e.finalizeMint(ctx, mint, s)
 
-	st, err := e.Verify(ctx, mint)
-	if err != nil {
-		return mint, disclosures, err
-	}
-	if !st.SupplyFixed() {
-		// finalizeMint reported a successful revoke, but the chain still shows the
-		// authority live: re-revoke rather than trust the earlier result.
-		return e.abortMint(ctx, mint, disclosures, fmt.Errorf("post-mint verify: mint authority is NOT revoked on %s", mint))
+	st, verr := e.Verify(context.WithoutCancel(ctx), mint)
+	if verr != nil {
+		// The state cannot be read, so safety cannot be proven: revoke the authority
+		// best-effort and surface both causes.
+		return e.abortMint(ctx, mint, disclosures, errors.Join(ferr, verr))
 	}
 	if st.Freezable() {
 		return mint, disclosures, fmt.Errorf("post-mint verify failed: a freeze authority is present on %s", mint)
+	}
+	if !st.SupplyFixed() {
+		// The authority is still live, so the mint could be inflated: revoke it. On the
+		// happy path (ferr == nil) this means a revoke that reported success did not take,
+		// so re-revoke rather than trust the earlier result.
+		cause := ferr
+		if cause == nil {
+			cause = fmt.Errorf("post-mint verify: mint authority is NOT revoked on %s", mint)
+		}
+		return e.abortMint(ctx, mint, disclosures, cause)
+	}
+	// Authority revoked and no freeze authority: the mint is safe. If it also holds the
+	// whole requested supply the token is complete, even when finalize reported a late
+	// error on its already-landed revoke.
+	if expected, aerr := scaledAmount(s.Supply, s.Decimals); aerr == nil && st.Supply != expected {
+		incomplete := fmt.Sprintf("mint %s is safe (authority revoked, no freeze) but holds supply %d, not the requested %d", mint, st.Supply, expected)
+		if ferr != nil {
+			return mint, disclosures, fmt.Errorf("%s: %w", incomplete, ferr)
+		}
+		return mint, disclosures, errors.New(incomplete)
 	}
 	return mint, disclosures, nil
 }
@@ -114,6 +130,12 @@ func (e *Engine) abortMint(ctx context.Context, mint solana.PublicKey, disclosur
 		return mint, disclosures, fmt.Errorf("mint %s aborted after creation; its account never became visible so the create should not have landed, but the authority could not be confirmed revoked: %w", mint, errors.Join(cause, werr))
 	}
 	if rerr := e.RevokeMintAuthority(cleanupCtx, mint); rerr != nil {
+		// An earlier unconfirmed revoke may since have landed, clearing the authority and
+		// making this retry fail; trust the on-chain state over the retry error so a mint
+		// that is actually fixed is never reported as possibly mintable.
+		if st, verr := e.Verify(cleanupCtx, mint); verr == nil && st.SupplyFixed() {
+			return mint, disclosures, fmt.Errorf("mint %s aborted after creation; mint authority already revoked so supply is fixed: %w", mint, cause)
+		}
 		return mint, disclosures, fmt.Errorf("mint %s aborted after creation and the safety revoke also failed (it may remain mintable): %w", mint, errors.Join(cause, rerr))
 	}
 	return mint, disclosures, fmt.Errorf("mint %s aborted after creation; mint authority revoked so supply is fixed: %w", mint, cause)

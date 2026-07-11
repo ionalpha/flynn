@@ -5,6 +5,7 @@ package token
 import (
 	"context"
 	"crypto/ed25519"
+	"encoding/binary"
 	"errors"
 	"testing"
 	"time"
@@ -34,6 +35,8 @@ type fakeRPC struct {
 	cancel          context.CancelFunc // called when cancelOnSend fires
 	failSendAt      int                // 1-based send index that returns a generic RPC error; 0 disables
 	invisibleCalls  int                // first N GetAccountInfo calls report the account as not yet visible
+	unconfirmRevoke bool               // once a revoke is submitted, confirmation never arrives (submitted-but-unconfirmed)
+	mintData        []byte             // account bytes GetAccountInfo returns once visible; nil = zeroed placeholder
 	accountInfoHits int
 	sendCount       int
 	revokeSubmitted bool // a SetAuthority (revoke) transaction reached SendTransaction
@@ -69,7 +72,9 @@ func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (
 }
 
 func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
-	if !f.confirm {
+	// A revoke that was submitted but whose confirmation never arrives: the transaction
+	// can still have landed, so the account state (not this status) is the source of truth.
+	if !f.confirm || (f.unconfirmRevoke && f.revokeSubmitted) {
 		return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}, nil
 	}
 	return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{{ConfirmationStatus: rpc.ConfirmationStatusConfirmed}}}, nil
@@ -82,7 +87,25 @@ func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, 
 		// propagated to finalized commitment).
 		return &rpc.GetAccountInfoResult{Value: nil}, nil
 	}
-	return &rpc.GetAccountInfoResult{Value: &rpc.Account{Owner: token.ProgramID, Data: rpc.DataBytesOrJSONFromBytes(make([]byte, mintAccountSize))}}, nil
+	data := f.mintData
+	if data == nil {
+		data = make([]byte, mintAccountSize)
+	}
+	return &rpc.GetAccountInfoResult{Value: &rpc.Account{Owner: token.ProgramID, Data: rpc.DataBytesOrJSONFromBytes(data)}}, nil
+}
+
+// revokedMintBytes builds the 82-byte SPL Mint account layout for an initialized mint
+// with the mint authority revoked (COption::None), no freeze authority, and the given
+// supply and decimals. Layout: mint_authority COption<Pubkey> (4+32), supply u64 (8),
+// decimals u8 (1), is_initialized bool (1), freeze_authority COption<Pubkey> (4+32).
+func revokedMintBytes(supply uint64, decimals uint8) []byte {
+	b := make([]byte, mintAccountSize)
+	// bytes[0:4] = 0 -> mint authority COption::None (bytes[4:36] stay zero)
+	binary.LittleEndian.PutUint64(b[36:44], supply)
+	b[44] = decimals
+	b[45] = 1 // is_initialized
+	// bytes[46:50] = 0 -> freeze authority COption::None
+	return b
 }
 
 func (f *fakeRPC) GetMinimumBalanceForRentExemption(_ context.Context, _ uint64, _ rpc.CommitmentType) (uint64, error) {
@@ -233,5 +256,35 @@ func TestAbortDoesNotRevokeInvisibleAccount(t *testing.T) {
 	}
 	if f.revokeSubmitted {
 		t.Fatal("safety revoke was submitted against an account that never became visible; the revoke races the still-in-flight create")
+	}
+}
+
+// TestMintSucceedsWhenFinalRevokeLandsUnconfirmed proves a token whose lifecycle revoke
+// was submitted but never confirmed (yet landed on-chain) is reported as the safe,
+// complete token it is, not as a failed unsafe mint. finalize returns a confirmation
+// error, but on-chain the authority is revoked and the whole supply is present, so Mint
+// must trust the verified state and succeed. Without the fix Mint retries the revoke
+// against an already-None authority, that retry fails, and token_mint wrongly errors.
+func TestMintSucceedsWhenFinalRevokeLandsUnconfirmed(t *testing.T) {
+	const decimals, whole = uint8(9), uint64(1)
+	scaled := whole
+	for range decimals {
+		scaled *= 10
+	}
+	// confirm=true so create/metadata/supply confirm; unconfirmRevoke makes the final
+	// revoke submitted-but-unconfirmed; the on-chain account already reflects a revoked,
+	// fully minted mint.
+	f := &fakeRPC{confirm: true, unconfirmRevoke: true, mintData: revokedMintBytes(scaled, decimals)}
+	eng := newTestEngine(f)
+
+	mint, _, err := eng.Mint(context.Background(), MintSpec{
+		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
+		Decimals: decimals, Supply: whole,
+	})
+	if err != nil {
+		t.Fatalf("a safe, fully minted token was reported as failed: %v", err)
+	}
+	if mint.IsZero() {
+		t.Fatal("expected the mint address on success")
 	}
 }
