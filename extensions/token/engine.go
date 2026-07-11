@@ -305,7 +305,14 @@ func (e *Engine) confirmOrExpire(ctx context.Context, sig solana.Signature, last
 			return ctx.Err()
 		case <-e.clk.After(pollInterval):
 		}
-		if st, err := e.rpc.GetSignatureStatuses(ctx, true, sig); err == nil && len(st.Value) > 0 && st.Value[0] != nil {
+		st, err := e.rpc.GetSignatureStatuses(ctx, true, sig)
+		if err != nil {
+			// The status could not be read, so nothing can be inferred: a transient error
+			// is not evidence the transaction is absent. Keep polling; do NOT fall through
+			// to the expiry check, or a landed tx would be wrongly declared expired.
+			continue
+		}
+		if len(st.Value) > 0 && st.Value[0] != nil {
 			s := st.Value[0]
 			if s.Err != nil {
 				return fmt.Errorf("tx %s failed on-chain: %v", sig, s.Err)
@@ -315,10 +322,10 @@ func (e *Engine) confirmOrExpire(ctx context.Context, sig solana.Signature, last
 			}
 			continue // seen in the mempool but not yet confirmed: keep waiting
 		}
-		// Not landed yet (or the status was unreadable). If the blockhash has expired the
-		// transaction can never land; a block-height read error leaves the outcome unknown,
-		// so keep polling until it resolves or the context ends.
-		if height, err := e.rpc.GetBlockHeight(ctx, rpc.CommitmentConfirmed); err == nil && height > lastValidBlockHeight {
+		// The status read succeeded and the cluster does not know the signature (searched
+		// through history). Only now is a passed blockhash proof the transaction can never
+		// land. A block-height read error leaves the outcome unknown, so keep polling.
+		if height, herr := e.rpc.GetBlockHeight(ctx, rpc.CommitmentConfirmed); herr == nil && height > lastValidBlockHeight {
 			return errTxExpired
 		}
 	}

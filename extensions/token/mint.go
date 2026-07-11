@@ -75,7 +75,12 @@ func (e *Engine) Mint(ctx context.Context, s MintSpec) (solana.PublicKey, []safe
 	// failed, unsafe mint.
 	ferr := e.finalizeMint(ctx, mint, s)
 
-	st, verr := e.Verify(context.WithoutCancel(ctx), mint)
+	// Detach from the caller's context so a cancellation that caused the finalize failure
+	// does not also skip the verify, but bound it with cleanupBudget so a hung RPC cannot
+	// block the mint forever before cleanup runs.
+	verifyCtx, cancelVerify := context.WithTimeout(context.WithoutCancel(ctx), cleanupBudget)
+	st, verr := e.Verify(verifyCtx, mint)
+	cancelVerify()
 	if verr != nil {
 		// The state cannot be read, so safety cannot be proven: revoke the authority
 		// best-effort and surface both causes.

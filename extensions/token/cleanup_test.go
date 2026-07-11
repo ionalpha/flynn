@@ -41,8 +41,10 @@ type fakeRPC struct {
 	accountInfoErr  bool               // GetAccountInfo returns a transient error
 	mintData        []byte             // account bytes GetAccountInfo returns; nil = zeroed placeholder
 	revokeExpireFor int                // the first N revoke submissions expire (never confirm)
+	sigStatusErr    bool               // GetSignatureStatuses returns a transient error (status unreadable)
 	sendCount       int
 	revokeSends     int
+	statusCalls     int
 	revokeSubmitted bool // a SetAuthority (revoke) transaction reached SendTransaction
 }
 
@@ -81,6 +83,13 @@ func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (
 }
 
 func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	if f.sigStatusErr {
+		f.statusCalls++
+		if f.statusCalls == 1 && f.cancel != nil {
+			f.cancel() // end the wait after this errored poll so the test terminates
+		}
+		return nil, errors.New("rpc: 429 too many requests")
+	}
 	unconfirmed := &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}
 	switch {
 	case !f.confirm:
@@ -322,5 +331,22 @@ func TestAbortReportsUnresolvedWhenRevokeNeverLands(t *testing.T) {
 	}
 	if f.revokeSends != revokeAttempts {
 		t.Fatalf("expected %d revoke attempts before giving up, got %d", revokeAttempts, f.revokeSends)
+	}
+}
+
+// TestConfirmOrExpireDoesNotExpireOnUnreadableStatus proves an unreadable signature status
+// is never treated as proof a transaction expired: a transient status error while the block
+// height passes lastValidBlockHeight leaves the outcome UNKNOWN (the tx may have landed), not
+// expired, so a landed mint is never silently dropped from cleanup.
+func TestConfirmOrExpireDoesNotExpireOnUnreadableStatus(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Every status read errors and the blockhash is already past its last valid height; the
+	// fake cancels the context after the first errored poll so the wait ends as unknown.
+	f := &fakeRPC{sigStatusErr: true, lastValid: 100, blockHeight: 200, cancel: cancel}
+	eng := newTestEngine(f)
+
+	err := eng.confirmOrExpire(ctx, solana.Signature{9}, f.lastValid)
+	if errors.Is(err, errTxExpired) {
+		t.Fatal("an unreadable signature status was treated as proof the transaction expired; a landed tx would be dropped from cleanup")
 	}
 }
