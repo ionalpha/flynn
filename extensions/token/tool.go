@@ -5,6 +5,7 @@ package token
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -88,6 +89,11 @@ func (t verifyTool) Invoke(ctx context.Context, input json.RawMessage) (string, 
 	}
 	st, err := t.e.Verify(ctx, pk)
 	if err != nil {
+		if errors.Is(err, errToken2022Mint) {
+			// A clear verdict, not a bare error: a Token-2022 mint is a known unsafe shape,
+			// not an account this tool "failed" to read.
+			return fmt.Sprintf("mint %s: UNSAFE - Token-2022 mint that may carry transfer hooks, transfer fees, or a permanent delegate; not a plain fixed-supply SPL mint", pk), nil
+		}
 		return "", err
 	}
 	return fmt.Sprintf("mint %s: supply=%d decimals=%d mintAuthorityRevoked=%t freezeAbsent=%t",

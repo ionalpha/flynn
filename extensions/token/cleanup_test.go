@@ -39,10 +39,13 @@ type fakeRPC struct {
 	cancel          context.CancelFunc // called when cancelOnSend fires
 	failSendAt      int                // 1-based send index whose SendTransaction errors
 	accountInfoErr  bool               // GetAccountInfo returns a transient error
+	accountOwner    solana.PublicKey   // owner GetAccountInfo reports; zero = SPL Token program
 	mintData        []byte             // account bytes GetAccountInfo returns; nil = zeroed placeholder
 	revokeExpireFor int                // the first N revoke submissions expire (never confirm)
-	sigStatusErr    bool               // GetSignatureStatuses returns a transient error (status unreadable)
-	sendCount       int
+	sigStatusErr     bool // GetSignatureStatuses returns a transient error (status unreadable)
+	confirmedOnly    bool // landed signatures report "confirmed" but never reach "finalized"
+	cancelAfterStatus int // cancel the context after this many status polls (0 disables)
+	sendCount        int
 	revokeSends     int
 	statusCalls     int
 	revokeSubmitted bool // a SetAuthority (revoke) transaction reached SendTransaction
@@ -83,8 +86,11 @@ func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (
 }
 
 func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
+	f.statusCalls++
+	if f.cancelAfterStatus > 0 && f.statusCalls == f.cancelAfterStatus && f.cancel != nil {
+		f.cancel() // end the wait after this poll so the test terminates deterministically
+	}
 	if f.sigStatusErr {
-		f.statusCalls++
 		if f.statusCalls == 1 && f.cancel != nil {
 			f.cancel() // end the wait after this errored poll so the test terminates
 		}
@@ -101,7 +107,13 @@ func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Si
 		// The current revoke attempt expires; a later retry (higher revokeSends) confirms.
 		return unconfirmed, nil
 	}
-	return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{{ConfirmationStatus: rpc.ConfirmationStatusConfirmed}}}, nil
+	// Landed signatures finalize by default (satisfying both confirmed and finalized
+	// requirements); confirmedOnly holds them at confirmed to model a not-yet-final slot.
+	status := rpc.ConfirmationStatusFinalized
+	if f.confirmedOnly {
+		status = rpc.ConfirmationStatusConfirmed
+	}
+	return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{{ConfirmationStatus: status}}}, nil
 }
 
 func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
@@ -112,7 +124,11 @@ func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, 
 	if data == nil {
 		data = make([]byte, mintAccountSize)
 	}
-	return &rpc.GetAccountInfoResult{Value: &rpc.Account{Owner: token.ProgramID, Data: rpc.DataBytesOrJSONFromBytes(data)}}, nil
+	owner := f.accountOwner
+	if owner.IsZero() {
+		owner = token.ProgramID
+	}
+	return &rpc.GetAccountInfoResult{Value: &rpc.Account{Owner: owner, Data: rpc.DataBytesOrJSONFromBytes(data)}}, nil
 }
 
 func (f *fakeRPC) GetMinimumBalanceForRentExemption(_ context.Context, _ uint64, _ rpc.CommitmentType) (uint64, error) {
@@ -345,8 +361,57 @@ func TestConfirmOrExpireDoesNotExpireOnUnreadableStatus(t *testing.T) {
 	f := &fakeRPC{sigStatusErr: true, lastValid: 100, blockHeight: 200, cancel: cancel}
 	eng := newTestEngine(f)
 
-	err := eng.confirmOrExpire(ctx, solana.Signature{9}, f.lastValid)
+	err := eng.confirmOrExpire(ctx, solana.Signature{9}, f.lastValid, rpc.CommitmentConfirmed)
 	if errors.Is(err, errTxExpired) {
 		t.Fatal("an unreadable signature status was treated as proof the transaction expired; a landed tx would be dropped from cleanup")
+	}
+}
+
+// TestConfirmOrExpireRequiresFinalized proves a merely confirmed signature is NOT accepted
+// as terminal when finalized commitment is required, so the irreversible revoke is never
+// reported done off a slot that could still be forked out.
+func TestConfirmOrExpireRequiresFinalized(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// The signature reaches "confirmed" but never "finalized"; the fake cancels the context
+	// after the first poll so the wait ends without a spurious success.
+	f := &fakeRPC{confirm: true, confirmedOnly: true, lastValid: 100, cancel: cancel}
+	f.cancelAfterStatus = 1
+	eng := newTestEngine(f)
+
+	err := eng.confirmOrExpire(ctx, solana.Signature{9}, f.lastValid, rpc.CommitmentFinalized)
+	if err == nil {
+		t.Fatal("a confirmed-but-unfinalized signature was accepted as finalized; a forked-out revoke would be reported as permanent")
+	}
+}
+
+// TestConfirmOrExpireAcceptsConfirmedWhenAllowed proves the same confirmed signature IS
+// accepted when only confirmed commitment is required, so non-critical steps are not forced
+// to wait for finality.
+func TestConfirmOrExpireAcceptsConfirmedWhenAllowed(t *testing.T) {
+	f := &fakeRPC{confirm: true, confirmedOnly: true, lastValid: 100}
+	eng := newTestEngine(f)
+
+	if err := eng.confirmOrExpire(context.Background(), solana.Signature{9}, f.lastValid, rpc.CommitmentConfirmed); err != nil {
+		t.Fatalf("a confirmed signature was not accepted at confirmed commitment: %v", err)
+	}
+}
+
+// TestVerifyFlagsToken2022AsUnsafe proves a Token-2022 mint (which can carry transfer
+// hooks/fees/permanent delegate) is reported as its own UNSAFE class, not decoded as a plain
+// mint and not returned as a bare "wrong owner" error a caller might read as "couldn't check".
+func TestVerifyFlagsToken2022AsUnsafe(t *testing.T) {
+	f := &fakeRPC{accountOwner: solana.MustPublicKeyFromBase58("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")}
+	eng := newTestEngine(f)
+
+	if _, err := eng.Verify(context.Background(), solana.PublicKey{7}); !errors.Is(err, errToken2022Mint) {
+		t.Fatalf("expected a Token-2022 mint to be flagged unsafe, got: %v", err)
+	}
+
+	out, terr := verifyTool{eng}.Invoke(context.Background(), []byte(`{"mint":"So11111111111111111111111111111111111111112"}`))
+	if terr != nil {
+		t.Fatalf("token_verify should render a verdict, not an error: %v", terr)
+	}
+	if !strings.Contains(out, "UNSAFE") || !strings.Contains(out, "Token-2022") {
+		t.Fatalf("token_verify did not report the Token-2022 mint as UNSAFE: %q", out)
 	}
 }

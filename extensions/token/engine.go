@@ -37,9 +37,14 @@ const mintAccountSize = 82
 // a dead network cannot hang cleanup forever; reaching it reports the mint as unresolved,
 // never as safe. revokeAttempts bounds how many fresh-blockhash revokes cleanup will try.
 const (
-	pollInterval  = 2 * time.Second
-	cleanupBudget = 3 * time.Minute
-	revokeAttempts = 5
+	pollInterval = 2 * time.Second
+	// lifecycleBudget bounds the whole forward mint (create -> metadata -> supply ->
+	// finalized revoke) so a caller that passes a deadline-less context cannot hang if the
+	// cluster confirms but stalls finalization; on timeout the mint routes to cleanup, which
+	// is safe. It is generous so normal finalization under load is never cut short.
+	lifecycleBudget = 5 * time.Minute
+	cleanupBudget   = 3 * time.Minute
+	revokeAttempts  = 5
 )
 
 // errTxExpired means a transaction's blockhash passed its last valid block height before
@@ -47,6 +52,15 @@ const (
 // effect. It is distinct from an unknown outcome (context ended, RPC unreachable), where
 // the transaction may still land and callers must reconcile against on-chain state.
 var errTxExpired = errors.New("transaction blockhash expired without landing")
+
+// errToken2022Mint marks an account that is a Token-2022 (Token Extensions) mint rather
+// than a classic SPL mint. Token-2022 mints can carry transfer hooks, transfer fees, or a
+// permanent delegate, so they must be reported as UNSAFE by the verifier, not decoded as a
+// plain mint.
+var errToken2022Mint = errors.New("account is a Token-2022 mint")
+
+// token2022ProgramID owns Token-2022 (Token Extensions) mints.
+var token2022ProgramID = solana.MustPublicKeyFromBase58("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
 
 // metadataProgram is the Metaplex Token Metadata program.
 var metadataProgram = solana.MustPublicKeyFromBase58("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s")
@@ -127,7 +141,7 @@ func (e *Engine) CreateMint(ctx context.Context, decimals uint8) (solana.PublicK
 	if err != nil {
 		return solana.PublicKey{}, fmt.Errorf("build initialize mint: %w", err)
 	}
-	_, err = e.send(ctx, []solana.Instruction{create, initMint}, KeySigner{Key: mint.PrivateKey})
+	_, err = e.send(ctx, []solana.Instruction{create, initMint}, rpc.CommitmentConfirmed, KeySigner{Key: mint.PrivateKey})
 	if err != nil {
 		if errors.Is(err, errTxExpired) {
 			// The create can never land (its blockhash expired), so no account exists and
@@ -168,7 +182,7 @@ func (e *Engine) MintSupply(ctx context.Context, mint solana.PublicKey, whole ui
 	if err != nil {
 		return fmt.Errorf("build mint-to: %w", err)
 	}
-	_, err = e.send(ctx, []solana.Instruction{createATA, mintTo})
+	_, err = e.send(ctx, []solana.Instruction{createATA, mintTo}, rpc.CommitmentConfirmed)
 	return err
 }
 
@@ -186,8 +200,10 @@ func scaledAmount(whole uint64, decimals uint8) (uint64, error) {
 	return amount, nil
 }
 
-// RevokeMintAuthority sets the mint authority to None: supply is permanently fixed.
-// This is irreversible.
+// RevokeMintAuthority sets the mint authority to None: supply is permanently fixed. This
+// is the irreversible safety action, so it waits for FINALIZED commitment: a merely
+// confirmed revoke could be forked out, which would leave the payer as mint authority after
+// the caller was told the supply is fixed.
 func (e *Engine) RevokeMintAuthority(ctx context.Context, mint solana.PublicKey) error {
 	ix, err := token.NewSetAuthorityInstructionBuilder().
 		SetAuthorityType(token.AuthorityMintTokens).
@@ -197,18 +213,26 @@ func (e *Engine) RevokeMintAuthority(ctx context.Context, mint solana.PublicKey)
 	if err != nil {
 		return fmt.Errorf("build set-authority: %w", err)
 	}
-	_, err = e.send(ctx, []solana.Instruction{ix})
+	_, err = e.send(ctx, []solana.Instruction{ix}, rpc.CommitmentFinalized)
 	return err
 }
 
-// Verify fetches and decodes the mint, returning its observable state.
+// Verify fetches and decodes the mint, returning its observable state. It reads at finalized
+// commitment so a safety judgment (authority revoked, no freeze) rests on state that can no
+// longer be forked out, not on an optimistically confirmed slot.
 func (e *Engine) Verify(ctx context.Context, mint solana.PublicKey) (MintState, error) {
-	info, err := e.rpc.GetAccountInfoWithOpts(ctx, mint, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
+	info, err := e.rpc.GetAccountInfoWithOpts(ctx, mint, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentFinalized})
 	if err != nil {
 		return MintState{}, fmt.Errorf("fetch mint: %w", err)
 	}
 	if info == nil || info.Value == nil {
 		return MintState{}, fmt.Errorf("mint %s not found", mint)
+	}
+	// A Token-2022 mint is owned by a different program and can carry transfer hooks,
+	// fees, or a permanent delegate: report it as its own UNSAFE class rather than a bare
+	// "wrong owner" error, so a caller is not misled into reading it as "could not check".
+	if info.Value.Owner.Equals(token2022ProgramID) {
+		return MintState{}, fmt.Errorf("%w: %s (may carry transfer hooks, transfer fees, or a permanent delegate)", errToken2022Mint, mint)
 	}
 	// Guard against decoding a non-mint account as a valid mint, which would otherwise
 	// report null authorities as a "safe" token. A mint is owned by the SPL Token
@@ -231,14 +255,19 @@ func (e *Engine) Verify(ctx context.Context, mint solana.PublicKey) (MintState, 
 	}, nil
 }
 
-// send builds, signs (with the payer plus any extra signers), submits, and confirms
-// a transaction, returning its signature. It signs the serialized message through the
-// Signer interface, so a hardware- or multisig-backed payer works without exposing a
-// private key.
-func (e *Engine) send(ctx context.Context, ixs []solana.Instruction, extra ...Signer) (solana.Signature, error) {
+// send builds, signs (with the payer plus any extra signers), submits, and confirms a
+// transaction to at least the given commitment, returning its signature. It signs the
+// serialized message through the Signer interface, so a hardware- or multisig-backed payer
+// works without exposing a private key. Pass rpc.CommitmentFinalized for an irreversible
+// step (the mint-authority revoke) whose success is reported to the caller, so a confirmed
+// slot that is later forked out can never be mistaken for a permanent result.
+func (e *Engine) send(ctx context.Context, ixs []solana.Instruction, commitment rpc.CommitmentType, extra ...Signer) (solana.Signature, error) {
 	bh, err := e.rpc.GetLatestBlockhash(ctx, rpc.CommitmentFinalized)
 	if err != nil {
 		return solana.Signature{}, fmt.Errorf("blockhash: %w", err)
+	}
+	if bh == nil || bh.Value == nil {
+		return solana.Signature{}, fmt.Errorf("blockhash: empty response")
 	}
 	tx, err := solana.NewTransaction(ixs, bh.Value.Blockhash, solana.TransactionPayer(e.payer.PublicKey()))
 	if err != nil {
@@ -274,7 +303,7 @@ func (e *Engine) send(ctx context.Context, ixs []solana.Instruction, extra ...Si
 	// signature until it lands or its blockhash expires, never by the submit call.
 	sig := tx.Signatures[0]
 	_, sendErr := e.rpc.SendTransaction(ctx, tx)
-	switch cerr := e.confirmOrExpire(ctx, sig, bh.Value.LastValidBlockHeight); {
+	switch cerr := e.confirmOrExpire(ctx, sig, bh.Value.LastValidBlockHeight, commitment); {
 	case cerr == nil:
 		return sig, nil
 	case errors.Is(cerr, errTxExpired):
@@ -292,13 +321,15 @@ func (e *Engine) send(ctx context.Context, ixs []solana.Instruction, extra ...Si
 }
 
 // confirmOrExpire waits until a transaction reaches a terminal state and reports which:
-// nil once the signature is confirmed or finalized; errTxExpired once the cluster block
-// height passes lastValidBlockHeight without the signature landing (after which it can
-// never land); a failure error if it landed but the transaction failed; or the context
-// error if the context ends before the outcome is known (an UNKNOWN outcome, not a proof
-// of non-landing). Polling cadence uses the clock, but the stop condition is chain state,
-// so no fixed timeout can wrongly declare a still-landable transaction dead.
-func (e *Engine) confirmOrExpire(ctx context.Context, sig solana.Signature, lastValidBlockHeight uint64) error {
+// nil once the signature reaches AT LEAST the required commitment; errTxExpired once the
+// cluster block height passes lastValidBlockHeight without the signature landing (after
+// which it can never land); a failure error if it landed but the transaction failed; or the
+// context error if the context ends before the outcome is known (an UNKNOWN outcome, not a
+// proof of non-landing). When commitment is rpc.CommitmentFinalized a merely confirmed
+// signature is NOT terminal, because a confirmed-but-unfinalized slot can still be forked
+// out. Polling cadence uses the clock, but the stop condition is chain state, so no fixed
+// timeout can wrongly declare a still-landable transaction dead.
+func (e *Engine) confirmOrExpire(ctx context.Context, sig solana.Signature, lastValidBlockHeight uint64, commitment rpc.CommitmentType) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -306,7 +337,7 @@ func (e *Engine) confirmOrExpire(ctx context.Context, sig solana.Signature, last
 		case <-e.clk.After(pollInterval):
 		}
 		st, err := e.rpc.GetSignatureStatuses(ctx, true, sig)
-		if err != nil {
+		if err != nil || st == nil {
 			// The status could not be read, so nothing can be inferred: a transient error
 			// is not evidence the transaction is absent. Keep polling; do NOT fall through
 			// to the expiry check, or a landed tx would be wrongly declared expired.
@@ -317,23 +348,38 @@ func (e *Engine) confirmOrExpire(ctx context.Context, sig solana.Signature, last
 			if s.Err != nil {
 				return fmt.Errorf("tx %s failed on-chain: %v", sig, s.Err)
 			}
-			if s.ConfirmationStatus == rpc.ConfirmationStatusConfirmed || s.ConfirmationStatus == rpc.ConfirmationStatusFinalized {
-				return nil
+			switch s.ConfirmationStatus {
+			case rpc.ConfirmationStatusFinalized:
+				return nil // finalized satisfies every commitment level
+			case rpc.ConfirmationStatusConfirmed:
+				if commitment != rpc.CommitmentFinalized {
+					return nil
+				}
 			}
-			continue // seen in the mempool but not yet confirmed: keep waiting
+			continue // seen, but not yet at the required commitment: keep waiting
 		}
 		// The status read succeeded and the cluster does not know the signature (searched
-		// through history). Only now is a passed blockhash proof the transaction can never
-		// land. A block-height read error leaves the outcome unknown, so keep polling.
-		if height, herr := e.rpc.GetBlockHeight(ctx, rpc.CommitmentConfirmed); herr == nil && height > lastValidBlockHeight {
+		// through history). A passed blockhash means it can never land, but a block-height
+		// read error leaves the outcome unknown, so keep polling.
+		if height, herr := e.rpc.GetBlockHeight(ctx, rpc.CommitmentConfirmed); herr != nil || height <= lastValidBlockHeight {
+			continue
+		}
+		// A single "not found" from one node of a load-balanced RPC is not authoritative
+		// (that node may lag the block the tx landed in). Require a second confirmatory
+		// "not found" past the valid window before declaring the transaction dead; if the
+		// signature reappears or the recheck is unreadable, it is not proven expired.
+		st2, err2 := e.rpc.GetSignatureStatuses(ctx, true, sig)
+		if err2 == nil && st2 != nil && (len(st2.Value) == 0 || st2.Value[0] == nil) {
 			return errTxExpired
 		}
 	}
 }
 
-// waitForAccount blocks until an account exists with non-empty data at finalized
-// commitment, so a freshly created account is visible to every node before the next
-// instruction reads it (reduces a propagation race on public RPC). It is a best-effort
+// waitForAccount blocks until an account exists with non-empty data at confirmed
+// commitment, so a freshly created account is visible before the next instruction reads it
+// (reduces a propagation race on public RPC). Confirmed (not finalized) is enough here: the
+// create is already confirmed, and confirmed visibility is what the next instruction's
+// preflight needs, without adding finalization latency to every mint. It is a best-effort
 // barrier on the happy path, not a safety decision: callers proceed even if it returns an
 // error, because confirmation has already proven the account exists.
 func (e *Engine) waitForAccount(ctx context.Context, pubkey solana.PublicKey) error {
@@ -343,10 +389,10 @@ func (e *Engine) waitForAccount(ctx context.Context, pubkey solana.PublicKey) er
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline:
-			return fmt.Errorf("account %s not visible (finalized) before the wait budget elapsed", pubkey)
+			return fmt.Errorf("account %s not visible before the wait budget elapsed", pubkey)
 		case <-e.clk.After(pollInterval):
 		}
-		info, err := e.rpc.GetAccountInfoWithOpts(ctx, pubkey, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentFinalized})
+		info, err := e.rpc.GetAccountInfoWithOpts(ctx, pubkey, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentConfirmed})
 		if err == nil && info != nil && info.Value != nil && len(info.Value.Data.GetBinary()) > 0 {
 			return nil
 		}

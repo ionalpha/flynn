@@ -36,7 +36,7 @@ func createV3Data(name, symbol, uri string) []byte {
 	buf := &bytes.Buffer{}
 	buf.WriteByte(ixCreateMetadataV3)
 	dataV2(buf, name, symbol, uri)
-	buf.WriteByte(1) // is_mutable = true (editable; update authority stays with the host multisig)
+	buf.WriteByte(0) // is_mutable = false: the identity (name/symbol/logo) is permanently locked
 	buf.WriteByte(0) // collection_details: None
 	return buf.Bytes()
 }

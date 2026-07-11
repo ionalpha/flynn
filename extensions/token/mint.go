@@ -57,7 +57,14 @@ func (e *Engine) Mint(ctx context.Context, s MintSpec) (solana.PublicKey, []safe
 	}
 	disclosures := safety.Evaluate(plan) // warn-level only; Guard already refused any blocking shape
 
-	mint, err := e.CreateMint(ctx, s.Decimals)
+	// Bound the forward lifecycle so a caller that passes a deadline-less context cannot
+	// hang on the finalized-commitment waits if the cluster stalls finalization. Cleanup
+	// below detaches from this and gets its own budget, so a lifecycle timeout still cleans
+	// up rather than stranding a mint.
+	opCtx, cancelOp := context.WithTimeout(ctx, lifecycleBudget)
+	defer cancelOp()
+
+	mint, err := e.CreateMint(opCtx, s.Decimals)
 	if err != nil {
 		// CreateMint returns a non-zero address when it submitted the create
 		// transaction but could not confirm it, so the mint may already exist
@@ -73,7 +80,7 @@ func (e *Engine) Mint(ctx context.Context, s MintSpec) (solana.PublicKey, []safe
 	// the real state and judge by that rather than by the last RPC result: otherwise a
 	// safe, fully minted token whose revoke merely lost its confirmation is reported as a
 	// failed, unsafe mint.
-	ferr := e.finalizeMint(ctx, mint, s)
+	ferr := e.finalizeMint(opCtx, mint, s)
 
 	// Detach from the caller's context so a cancellation that caused the finalize failure
 	// does not also skip the verify, but bound it with cleanupBudget so a hung RPC cannot

@@ -31,9 +31,16 @@ func TestCreateV3DataRoundTrip(t *testing.T) {
 		}
 		gotName, off := readBorshString(b, 1)
 		gotSymbol, off := readBorshString(b, off)
-		gotURI, _ := readBorshString(b, off)
+		gotURI, off := readBorshString(b, off)
 		if gotName != name || gotSymbol != symbol || gotURI != uri {
 			t.Fatalf("round-trip mismatch: name=%q symbol=%q uri=%q", gotName, gotSymbol, gotURI)
+		}
+		// After the DataV2 (uri then u16 seller_fee + 3 None option bytes) comes is_mutable.
+		// A safe mint locks its identity, so it MUST be false (0): a mutable token could be
+		// repainted into another project's name/symbol after being reported safe.
+		off += 2 + 3 // seller_fee_basis_points (u16) + creators/collection/uses (None)
+		if b[off] != 0 {
+			t.Fatalf("is_mutable = %d, want 0 (metadata must be immutable so identity cannot be repainted)", b[off])
 		}
 	})
 }
