@@ -5,6 +5,7 @@ package token
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"testing"
 	"time"
 
@@ -31,6 +32,9 @@ type fakeRPC struct {
 	confirm         bool               // GetSignatureStatuses reports confirmed
 	cancelOnSend    int                // 1-based send index at which to cancel ctx and fail; 0 disables
 	cancel          context.CancelFunc // called when cancelOnSend fires
+	failSendAt      int                // 1-based send index that returns a generic RPC error; 0 disables
+	invisibleCalls  int                // first N GetAccountInfo calls report the account as not yet visible
+	accountInfoHits int
 	sendCount       int
 	revokeSubmitted bool // a SetAuthority (revoke) transaction reached SendTransaction
 }
@@ -53,6 +57,11 @@ func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (
 		}
 		return solana.Signature{}, context.Canceled
 	}
+	if f.failSendAt != 0 && f.sendCount == f.failSendAt {
+		// A transport-level failure the moment the tx may have reached the node: the
+		// signed transaction can still land even though SendTransaction reports an error.
+		return solana.Signature{}, errors.New("rpc: connection reset by peer")
+	}
 	if isRevoke(tx) {
 		f.revokeSubmitted = true
 	}
@@ -67,6 +76,12 @@ func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Si
 }
 
 func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
+	f.accountInfoHits++
+	if f.accountInfoHits <= f.invisibleCalls {
+		// The account is not yet visible (a create that was submitted but has not
+		// propagated to finalized commitment).
+		return &rpc.GetAccountInfoResult{Value: nil}, nil
+	}
 	return &rpc.GetAccountInfoResult{Value: &rpc.Account{Owner: token.ProgramID, Data: rpc.DataBytesOrJSONFromBytes(make([]byte, mintAccountSize))}}, nil
 }
 
@@ -156,5 +171,67 @@ func TestMintRevokesAfterCancellationDuringFinalize(t *testing.T) {
 	}
 	if !f.revokeSubmitted {
 		t.Fatal("safety revoke was never submitted after the finalize failure; the created mint is left inflatable")
+	}
+}
+
+// TestCreateMintReturnsAddressWhenSendErrors proves CreateMint hands back the mint
+// address even when SendTransaction itself returns an error, because the signed
+// transaction may still have reached the node and can land. Without the fix send
+// returns the zero signature on a SendTransaction error, CreateMint treats it as
+// "nothing submitted", and a mint that later lands is stranded with a live authority.
+func TestCreateMintReturnsAddressWhenSendErrors(t *testing.T) {
+	f := &fakeRPC{failSendAt: 1}
+	eng := newTestEngine(f)
+
+	mint, err := eng.CreateMint(context.Background(), 9)
+	if err == nil {
+		t.Fatal("expected a send error")
+	}
+	if mint.IsZero() {
+		t.Fatalf("CreateMint returned a zero address after SendTransaction errored; a transaction that still lands cannot be revoked (err=%v)", err)
+	}
+}
+
+// TestAbortWaitsForAccountThenRevokes proves the cleanup revoke is still submitted when
+// the created mint account is briefly invisible (a submitted-but-unconfirmed create that
+// lands late). abortMint must wait for the account before revoking rather than failing
+// preflight as account-not-found.
+func TestAbortWaitsForAccountThenRevokes(t *testing.T) {
+	// confirm=false so the create is submitted but never confirmed, routing Mint through
+	// abortMint; the account is invisible for the first 3 polls, then appears.
+	f := &fakeRPC{confirm: false, invisibleCalls: 3}
+	eng := newTestEngine(f)
+
+	_, _, err := eng.Mint(context.Background(), MintSpec{
+		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
+		Decimals: 9, Supply: 1,
+	})
+	if err == nil {
+		t.Fatal("expected an error from the unconfirmed create")
+	}
+	if !f.revokeSubmitted {
+		t.Fatal("safety revoke was never submitted after the account became visible; a late-landing mint is left inflatable")
+	}
+}
+
+// TestAbortDoesNotRevokeInvisibleAccount proves abortMint does NOT fire a revoke against
+// an account that never becomes visible: revoking a non-existent account fails preflight
+// and cannot fix anything, and the create's blockhash expires so it can no longer land.
+// Without the wait-for-account guard the revoke is submitted blindly against a missing
+// account, racing the create.
+func TestAbortDoesNotRevokeInvisibleAccount(t *testing.T) {
+	// confirm=false routes through abortMint; the account is never visible.
+	f := &fakeRPC{confirm: false, invisibleCalls: 1000}
+	eng := newTestEngine(f)
+
+	_, _, err := eng.Mint(context.Background(), MintSpec{
+		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
+		Decimals: 9, Supply: 1,
+	})
+	if err == nil {
+		t.Fatal("expected an error from the unconfirmed create")
+	}
+	if f.revokeSubmitted {
+		t.Fatal("safety revoke was submitted against an account that never became visible; the revoke races the still-in-flight create")
 	}
 }

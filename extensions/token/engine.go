@@ -248,14 +248,20 @@ func (e *Engine) send(ctx context.Context, ixs []solana.Instruction, extra ...Si
 			return solana.Signature{}, fmt.Errorf("sign: %w", err)
 		}
 	}
-	sig, err := e.rpc.SendTransaction(ctx, tx)
-	if err != nil {
-		return solana.Signature{}, fmt.Errorf("send: %w", err)
+	// The transaction signature is its fee-payer signature (tx.Signatures[0]), fixed the
+	// moment the tx is signed and identical to what SendTransaction returns. Capture it
+	// before submitting so a SendTransaction error is reported WITH the real signature:
+	// the signed transaction may still have reached the node and can land, so the caller
+	// must be able to name and clean up the resulting account. A zero signature is
+	// reserved for failures before signing, where nothing can ever land.
+	sig := tx.Signatures[0]
+	if _, err := e.rpc.SendTransaction(ctx, tx); err != nil {
+		return sig, fmt.Errorf("send: %w", err)
 	}
 	if err := e.confirm(ctx, sig); err != nil {
 		// Submission succeeded but confirmation did not: the transaction may still
-		// land, so return the real signature (not the zero value) alongside the error
-		// so a caller can distinguish "submitted, unconfirmed" from "never submitted".
+		// land, so return the real signature alongside the error so a caller can
+		// distinguish "submitted, unconfirmed" from "never submitted".
 		return sig, err
 	}
 	return sig, nil

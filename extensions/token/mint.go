@@ -101,7 +101,19 @@ func (e *Engine) abortMint(ctx context.Context, mint solana.PublicKey, disclosur
 	if mint.IsZero() {
 		return solana.PublicKey{}, disclosures, cause
 	}
-	if rerr := e.RevokeMintAuthority(context.WithoutCancel(ctx), mint); rerr != nil {
+	// Detach from the caller's cancellation/deadline so the timeout that caused the
+	// original failure cannot also prevent the safety revoke from being submitted.
+	cleanupCtx := context.WithoutCancel(ctx)
+	// A create that was submitted but not confirmed can still be in flight, so the mint
+	// account may not be visible yet. Revoking now would fail preflight as
+	// account-not-found and then the create could land afterwards, leaving the mint
+	// authority retained. Wait for the account to become visible before revoking; if it
+	// never appears, the create's blockhash has expired so it can no longer land and
+	// there is nothing on-chain to revoke.
+	if werr := e.waitForAccount(cleanupCtx, mint); werr != nil {
+		return mint, disclosures, fmt.Errorf("mint %s aborted after creation; its account never became visible so the create should not have landed, but the authority could not be confirmed revoked: %w", mint, errors.Join(cause, werr))
+	}
+	if rerr := e.RevokeMintAuthority(cleanupCtx, mint); rerr != nil {
 		return mint, disclosures, fmt.Errorf("mint %s aborted after creation and the safety revoke also failed (it may remain mintable): %w", mint, errors.Join(cause, rerr))
 	}
 	return mint, disclosures, fmt.Errorf("mint %s aborted after creation; mint authority revoked so supply is fixed: %w", mint, cause)
