@@ -19,6 +19,16 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
+// bridgeForwarder is a Spawner that confines the child's network into a separate namespace,
+// where the host-loopback bridge is unreachable, and so must forward it in. ForwardBridge
+// reports the URL the child should use to reach a bridge listening at hostURL, and the host
+// address the sandbox must forward that URL to (empty when the child reaches hostURL
+// directly and no forward is needed). A spawner that does not implement it leaves the child
+// pointed straight at the host bridge, correct for a child that shares the host's stack.
+type bridgeForwarder interface {
+	ForwardBridge(hostURL string) (childURL, forwardTo string)
+}
+
 // defaultBridgeName is the MCP server name the loopback bridge is registered under.
 const defaultBridgeName = "flynn"
 
@@ -100,11 +110,22 @@ func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
 	defer func() { _ = srv.Close() }()
 
 	port := ln.Addr().(*net.TCPAddr).Port
+	// The bridge listens on this host-loopback address. A child that shares the host's
+	// network stack reaches it directly; a child confined to its own network namespace
+	// cannot, so the spawner reports an in-namespace address it forwards to this one, and the
+	// child is handed that instead. A spawner that does not confine the network reports the
+	// host address unchanged and no forward.
+	hostURL := fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+	childURL, forwardTo := hostURL, ""
+	if fw, ok := r.spawner.(bridgeForwarder); ok {
+		childURL, forwardTo = fw.ForwardBridge(hostURL)
+	}
 	ep.Bridge = Bridge{
-		Name:     defaultBridgeName,
-		URL:      fmt.Sprintf("http://127.0.0.1:%d/mcp", port),
-		Token:    token,
-		TokenEnv: defaultTokenEnv,
+		Name:      defaultBridgeName,
+		URL:       childURL,
+		ForwardTo: forwardTo,
+		Token:     token,
+		TokenEnv:  defaultTokenEnv,
 	}
 
 	inv, err := r.adapter.Command(ep)

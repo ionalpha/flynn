@@ -35,6 +35,7 @@ type Local struct {
 	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
 	seccomp     bool              // run commands under a syscall filter (see WithSeccomp)
 	egress      *egressConfig     // govern child egress through a netguard proxy (see WithEgress)
+	forward     *forwardConfig    // forward one host-loopback address into the child's namespace (see WithLoopbackForward)
 	// readableDirs are directories outside the workspace that a confined child may read,
 	// granted to it on launch and revoked on Close (see WithReadableDir). They let a
 	// governed external CLI read its own auth or config home, which lives outside the
@@ -365,6 +366,9 @@ func (l *Local) Root() string { return l.root }
 func (l *Local) Close() error {
 	if l.egress != nil {
 		l.egress.close()
+	}
+	if l.forward != nil {
+		l.forward.close()
 	}
 	return l.closePlatform()
 }

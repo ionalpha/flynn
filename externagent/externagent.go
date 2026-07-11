@@ -94,8 +94,15 @@ type Bridge struct {
 	// identities for capability matching.
 	Name string
 	// URL is the streamable-HTTP endpoint the CLI connects to, on the loopback
-	// interface.
+	// interface. It is the address the child uses, which is not always the address the
+	// bridge listens on: where the child runs in its own network namespace, this is an
+	// in-namespace address the sandbox forwards to the listening one (see ForwardTo).
 	URL string
+	// ForwardTo is the host-loopback address the sandbox forwards the child's URL to when
+	// the child cannot reach the host loopback directly (a separate network namespace). It
+	// is empty when the child reaches URL directly (a shared network stack), and is set by
+	// the runner from what the spawner reports, so the spawner knows to stand up the forward.
+	ForwardTo string
 	// Token is the bearer token the CLI must present, so another local process cannot
 	// drive the bridge. The adapter passes it to the CLI through an environment
 	// variable rather than an argument, keeping it out of the process table.

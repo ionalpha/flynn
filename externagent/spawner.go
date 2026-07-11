@@ -25,10 +25,13 @@ type SandboxConfig struct {
 	// providers"): a name not on the list is denied, and a listed name that resolves to a
 	// private or rebinding address is denied too (the address gate still applies). An
 	// entry beginning with a dot (".example.com") matches any subdomain. The loopback MCP
-	// bridge is not listed here: the child reaches it directly, outside the proxy, so the
-	// bridge stays reachable while the internet does not. An empty list permits no egress
-	// at all beyond the bridge (deny-all), enough for an offline detection run but not a
-	// live episode. These are supplied by the adapter, so no provider name is baked into
+	// bridge is not listed here: it is not reached through the egress proxy at all. Where the
+	// child shares the host's network stack it dials the bridge's host loopback directly;
+	// where the child is confined to its own network namespace it dials an in-namespace
+	// address the sandbox forwards to the bridge (see the loopback forward in Start). Either
+	// way the bridge stays reachable while the internet does not. An empty list permits no
+	// egress at all beyond the bridge (deny-all), enough for an offline detection run but not
+	// a live episode. These are supplied by the adapter, so no provider name is baked into
 	// this generic host.
 	AllowedHosts []string
 	// AuthDir is the external CLI's credential and config home (its OAuth token lives
@@ -141,6 +144,17 @@ func NewSandboxSpawner(cfg SandboxConfig) *SandboxSpawner {
 }
 
 var _ Spawner = (*SandboxSpawner)(nil)
+
+// ForwardBridge reports how the confined child reaches a bridge on the host loopback. The
+// child runs behind the sandbox's network confinement, which on Linux is a separate network
+// namespace whose loopback is not the host's, so the bridge is forwarded in: the child is
+// given an in-namespace address and the sandbox forwards it to the host one. Where the child
+// shares the host's stack the sandbox reports the host URL unchanged and no forward. The
+// runner calls this before building the episode command, so the child is configured with an
+// address it can actually reach.
+func (s *SandboxSpawner) ForwardBridge(hostURL string) (childURL, forwardTo string) {
+	return sandbox.ForwardBridge(hostURL)
+}
 
 // authEnv is the environment grant that points the confined child at its own credential
 // home. It is the counterpart of the read grant on AuthDir: the grant makes the directory
@@ -306,29 +320,62 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	if owned {
 		scratch = home
 	}
-	loc, err := sandbox.NewLocal(ep.Workdir, s.episodeOptions(home, owned)...)
+	// A per-episode writable temp directory outside the recorded workspace. A read-only host
+	// leaves the system temp directory unwritable, and a CLI whose runtime needs scratch
+	// space (a compiled JavaScript runtime writes to its temp on startup) exits without a
+	// word when it cannot get any, so the episode never produces a line. Handing it a
+	// writable temp of its own, pointed at by the standard temp variables, keeps that scratch
+	// off the host and out of the workspace the record captures, and it dies with the episode.
+	tmpDir, err := os.MkdirTemp(filepath.Dir(ep.Workdir), "flynn-tmp-")
 	if err != nil {
 		removeScratch(scratch)
+		return nil, fmt.Errorf("externagent: episode temp dir: %w", err)
+	}
+	opts := s.episodeOptions(home, owned)
+	opts = append(opts, sandbox.WithWritableDir(tmpDir))
+	// When the child is confined to its own network namespace, the host-loopback bridge is
+	// unreachable from inside it, so the run's bridge is forwarded in: the child dials an
+	// in-namespace address the sandbox pipes to the one host address named here, and nothing
+	// else on the host loopback is reachable. ForwardTo is empty where the child reaches the
+	// bridge directly, in which case no forward is set up.
+	if ep.Bridge.ForwardTo != "" {
+		opts = append(opts, sandbox.WithLoopbackForward(ep.Bridge.ForwardTo))
+	}
+	loc, err := sandbox.NewLocal(ep.Workdir, opts...)
+	if err != nil {
+		removeScratch(scratch)
+		removeScratch(tmpDir)
 		return nil, fmt.Errorf("externagent: episode sandbox: %w", err)
 	}
 	if got := loc.Containment(); got < s.cfg.MinContainment {
 		_ = loc.Close()
 		removeScratch(scratch)
+		removeScratch(tmpDir)
 		return nil, fmt.Errorf("externagent: host containment is %s, below the required %s; refusing to start an untrusted harness less contained than required", got, s.cfg.MinContainment)
 	}
 	tier := loc.ConfinementTier()
+	env := append(inv.Env, s.authEnv(home)...)
+	env = append(env, tempEnv(tmpDir)...)
 	proc, err := loc.Stream(ctx, sandbox.StreamSpec{
 		Argv:    append([]string{inv.Path}, inv.Args...),
 		Stdin:   []byte(inv.Stdin),
-		Env:     append(inv.Env, s.authEnv(home)...),
+		Env:     env,
 		Confine: true,
 	})
 	if err != nil {
 		_ = loc.Close()
 		removeScratch(scratch)
+		removeScratch(tmpDir)
 		return nil, err
 	}
-	return &confinedProcess{proc: proc, closer: loc, tier: tier, scratch: scratch}, nil
+	return &confinedProcess{proc: proc, closer: loc, tier: tier, scratch: scratch, tmpScratch: tmpDir}, nil
+}
+
+// tempEnv points the child's temp-directory variables at the per-episode writable temp, so a
+// runtime that writes scratch on startup finds a directory it can write. Both the Unix name
+// (TMPDIR) and the Windows names (TMP, TEMP) are set, so the same launch works on either.
+func tempEnv(dir string) []string {
+	return []string{"TMPDIR=" + dir, "TMP=" + dir, "TEMP=" + dir}
 }
 
 // removeScratch deletes a per-episode credential home, and does nothing when the episode
@@ -387,10 +434,11 @@ func episodePolicy(hosts []string) netguard.Policy {
 // the egress proxy is stopped and the auth-home read grant is revoked once the process
 // ends (including after a context-driven kill).
 type confinedProcess struct {
-	proc    *sandbox.StreamProcess
-	closer  io.Closer
-	tier    string
-	scratch string
+	proc       *sandbox.StreamProcess
+	closer     io.Closer
+	tier       string
+	scratch    string // the per-episode credential home to delete, or empty
+	tmpScratch string // the per-episode temp directory to delete
 }
 
 // Stdout is the confined child's live standard output.
@@ -414,5 +462,6 @@ func (p *confinedProcess) Wait() error {
 	// After the sandbox is closed, so the grants on the credential home are dropped before
 	// the copied token is deleted with it.
 	removeScratch(p.scratch)
+	removeScratch(p.tmpScratch)
 	return err
 }

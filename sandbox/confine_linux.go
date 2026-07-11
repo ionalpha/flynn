@@ -166,6 +166,18 @@ func runConfinedChild() int {
 		}
 		env = mergeEnv(env, proxy)
 	}
+	// Inbound forward: create the listening socket for the one host service the child is
+	// allowed to reach (the run's MCP bridge) on this namespace's loopback and hand it out,
+	// so the sandbox can pipe it to that host address. Like egress, it happens here because
+	// nothing outside the namespace can create a socket inside it, and a failure fails the
+	// launch rather than running a command that cannot reach the bridge it was to be governed
+	// through.
+	if os.Getenv(envForward) == "1" {
+		if err := serveForwardFromNetns(); err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
+			return 126
+		}
+	}
 	if err := syscall.Chdir(dir); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: chdir:", err)
 		return 126
@@ -378,6 +390,8 @@ func strippedEnv() []string {
 			strings.HasPrefix(kv, envWritable+"="),
 			strings.HasPrefix(kv, envEgress+"="),
 			strings.HasPrefix(kv, envEgressFD+"="),
+			strings.HasPrefix(kv, envForward+"="),
+			strings.HasPrefix(kv, envForwardFD+"="),
 			strings.HasPrefix(kv, envSeccomp+"="):
 			continue
 		}

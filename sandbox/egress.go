@@ -124,10 +124,35 @@ func proxyEnvVars(addr string) map[string]string {
 // proxy, a Local that launched many children would otherwise hold one proxy per launch
 // until it closed. It is idempotent, and Close calls it for any launch that did not.
 func (l *Local) startEgress(c *exec.Cmd) (release func(), err error) {
-	if l.egress == nil {
+	var releases []func()
+	runReleases := func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}
+	if l.egress != nil {
+		r, err := l.attachEgress(c)
+		if err != nil {
+			return func() {}, err
+		}
+		releases = append(releases, r)
+	}
+	// The inbound forward is the counterpart of egress: it hands the child one host-loopback
+	// address (the run's MCP bridge) reachable from inside its namespace, without opening the
+	// rest of the host loopback. It rides the same launch, so it is attached here, and its
+	// listener is created in the same namespace the egress leg set up.
+	if l.forward != nil {
+		r, err := l.attachLoopbackForward(c)
+		if err != nil {
+			runReleases()
+			return func() {}, err
+		}
+		releases = append(releases, r)
+	}
+	if len(releases) == 0 {
 		return func() {}, nil
 	}
-	return l.attachEgress(c)
+	return runReleases, nil
 }
 
 // guardEgress refuses a governed-egress launch on a platform whose enforcement leg is
