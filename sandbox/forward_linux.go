@@ -175,7 +175,11 @@ func (h *forwardHandoff) serve() {
 // reachable because nothing else is ever dialled.
 func (h *forwardHandoff) pipe(ctx context.Context, child net.Conn) {
 	defer func() { _ = child.Close() }()
-	var d net.Dialer
+	// This is not the agent's governed egress: it dials only the one host-loopback address
+	// the caller named (the run's own MCP bridge), in the host namespace. netguard denies
+	// loopback by design, which is correct for agent egress and wrong here, so the forward's
+	// single fixed-target dial is a raw one on purpose.
+	var d net.Dialer //nolint:forbidigo // dials only the run's own loopback bridge, not governed agent egress
 	host, err := d.DialContext(ctx, "tcp", h.hostAddr)
 	if err != nil {
 		return
