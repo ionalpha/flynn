@@ -36,6 +36,7 @@ type fakeRPC struct {
 	failSendAt      int                // 1-based send index that returns a generic RPC error; 0 disables
 	invisibleCalls  int                // first N GetAccountInfo calls report the account as not yet visible
 	unconfirmRevoke bool               // once a revoke is submitted, confirmation never arrives (submitted-but-unconfirmed)
+	accountInfoErr  bool               // GetAccountInfo returns a transient RPC error (visibility cannot be determined)
 	mintData        []byte             // account bytes GetAccountInfo returns once visible; nil = zeroed placeholder
 	accountInfoHits int
 	sendCount       int
@@ -82,6 +83,9 @@ func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Si
 
 func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
 	f.accountInfoHits++
+	if f.accountInfoErr {
+		return nil, errors.New("rpc: 429 too many requests")
+	}
 	if f.accountInfoHits <= f.invisibleCalls {
 		// The account is not yet visible (a create that was submitted but has not
 		// propagated to finalized commitment).
@@ -286,5 +290,28 @@ func TestMintSucceedsWhenFinalRevokeLandsUnconfirmed(t *testing.T) {
 	}
 	if mint.IsZero() {
 		t.Fatal("expected the mint address on success")
+	}
+}
+
+// TestAbortRevokesWhenVisibilityUnknown proves the safety revoke is still attempted when
+// the created mint's account cannot be read because of transient RPC errors. An RPC error
+// is not proof the mint is absent, so treating it as "not visible" and skipping the revoke
+// would strand a landed mint with a live authority. The revoke must be attempted on
+// uncertainty.
+func TestAbortRevokesWhenVisibilityUnknown(t *testing.T) {
+	// confirm=false routes an unconfirmed create through abortMint; every account fetch
+	// returns a transient error, so visibility is unknown (not a clean absence).
+	f := &fakeRPC{confirm: false, accountInfoErr: true}
+	eng := newTestEngine(f)
+
+	_, _, err := eng.Mint(context.Background(), MintSpec{
+		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
+		Decimals: 9, Supply: 1,
+	})
+	if err == nil {
+		t.Fatal("expected an error from the unconfirmed create")
+	}
+	if !f.revokeSubmitted {
+		t.Fatal("safety revoke was skipped when account visibility was unknown (RPC errors); a landed mint is left with a live authority")
 	}
 }

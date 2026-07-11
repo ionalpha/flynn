@@ -123,12 +123,16 @@ func (e *Engine) abortMint(ctx context.Context, mint solana.PublicKey, disclosur
 	// A create that was submitted but not confirmed can still be in flight, so the mint
 	// account may not be visible yet. Revoking now would fail preflight as
 	// account-not-found and then the create could land afterwards, leaving the mint
-	// authority retained. Wait for the account to become visible before revoking; if it
-	// never appears, the create's blockhash has expired so it can no longer land and
-	// there is nothing on-chain to revoke.
-	if werr := e.waitForAccount(cleanupCtx, mint); werr != nil {
-		return mint, disclosures, fmt.Errorf("mint %s aborted after creation; its account never became visible so the create should not have landed, but the authority could not be confirmed revoked: %w", mint, errors.Join(cause, werr))
+	// authority retained. Wait for the account to become visible before revoking.
+	found, sawError := e.awaitAccount(cleanupCtx, mint)
+	if !found && !sawError {
+		// Every poll cleanly reported the account absent: the create did not land (its
+		// blockhash has expired), so there is nothing on-chain to revoke.
+		return mint, disclosures, fmt.Errorf("mint %s aborted after creation; its account never appeared so the create did not land: %w", mint, cause)
 	}
+	// The account is visible, or its existence could not be determined (transient RPC
+	// errors or a timed-out wait). Attempt the revoke either way: skipping it on
+	// uncertainty would strand a live mint authority on a mint that actually landed.
 	if rerr := e.RevokeMintAuthority(cleanupCtx, mint); rerr != nil {
 		// An earlier unconfirmed revoke may since have landed, clearing the authority and
 		// making this retry fail; trust the on-chain state over the retry error so a mint

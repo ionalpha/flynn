@@ -290,22 +290,38 @@ func (e *Engine) confirm(ctx context.Context, sig solana.Signature) error {
 	return fmt.Errorf("timed out confirming %s", sig)
 }
 
+// awaitAccount polls for an account at finalized commitment. found is true once the
+// account is observed with data. sawError is true if any poll failed with an RPC error
+// (or the context ended): a false found is then UNKNOWN, not a proof of absence, because
+// a transient 429/network error is not evidence the account does not exist. Callers that
+// must not skip a safety action on uncertainty use sawError to tell "cleanly absent" from
+// "could not determine".
+func (e *Engine) awaitAccount(ctx context.Context, pubkey solana.PublicKey) (found, sawError bool) {
+	for range 30 {
+		select {
+		case <-ctx.Done():
+			return false, true // cancellation/timeout is not proof of absence
+		case <-e.clk.After(2 * time.Second):
+		}
+		info, err := e.rpc.GetAccountInfoWithOpts(ctx, pubkey, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentFinalized})
+		switch {
+		case err != nil:
+			sawError = true
+		case info != nil && info.Value != nil && len(info.Value.Data.GetBinary()) > 0:
+			return true, sawError
+		}
+	}
+	return false, sawError
+}
+
 // waitForAccount blocks until an account exists with non-empty data at finalized
 // commitment, so a freshly created account is visible to every node before the next
 // instruction reads it (avoids a propagation race on public RPC).
 func (e *Engine) waitForAccount(ctx context.Context, pubkey solana.PublicKey) error {
-	for range 30 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-e.clk.After(2 * time.Second):
-		}
-		info, err := e.rpc.GetAccountInfoWithOpts(ctx, pubkey, &rpc.GetAccountInfoOpts{Commitment: rpc.CommitmentFinalized})
-		if err == nil && info != nil && info.Value != nil && len(info.Value.Data.GetBinary()) > 0 {
-			return nil
-		}
+	if found, _ := e.awaitAccount(ctx, pubkey); !found {
+		return fmt.Errorf("account %s not visible (finalized) after wait", pubkey)
 	}
-	return fmt.Errorf("account %s not visible (finalized) after wait", pubkey)
+	return nil
 }
 
 func metadataPDA(mint solana.PublicKey) (solana.PublicKey, error) {
