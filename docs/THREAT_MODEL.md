@@ -31,6 +31,12 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 - **Untrusted**: code or data from outside that we cannot vouch for: a downloaded model
   file parsed by a runtime with a history of memory-safety flaws, or an unsigned plugin.
   Requires the hardware-isolation tier (not yet built; see Coverage).
+- **External harness**: an installed agent CLI driven as a backend for a run, instead of a
+  single model call. Its own code is outside our control and its own sandbox is bypassed, so
+  it is treated as untrusted: it runs only inside the kernel-confined tier with its egress
+  gated, and its tools are offered to it only through the run's bridge. What it cannot make
+  observable, its inner model calls and the context it compacts, is recorded as a declared
+  gap rather than trusted.
 
 ## Trust boundaries
 
@@ -58,6 +64,15 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
    operator opt-in; a lint rule forbids opening a listener outside that gate. It is the
    inbound mirror of the egress boundary: where egress controls where the agent may
    connect, this controls who may reach what the agent exposes.
+7. **The external-agent boundary.** A run can be driven by an external agent CLI in place of
+   a native loop. The CLI is untrusted code run as a subprocess, so its own execution surface
+   is locked down and the run's tools are offered to it only through a loopback Model Context
+   Protocol bridge the run hosts. Every tool call it makes returns through that bridge and is
+   admitted, contained, and recorded at the dispatch boundary, the same waist a native loop
+   passes, so swapping in an external harness never widens what a run may do or escapes a
+   halt. Where the child runs in its own network namespace and cannot reach the host, the
+   bridge is reached through an inbound forward that exposes exactly the one loopback service
+   the run hosts and nothing else on the host.
 
 ## STRIDE analysis
 
@@ -191,6 +206,22 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   while egress is denied), so a guest escape still does not become a host compromise. The
   guest runs with egress denied, resources capped, no credentials, and weights mounted
   read-only; the tier refuses to start a guest whose posture is weaker than that.
+- **An external agent CLI taking an action off the governed path.** A run driven by an
+  external agent CLI runs that CLI as an untrusted subprocess with its native execution
+  surface denied. A CLI with its own read-only sandbox flag has it set and native approvals
+  denied; a CLI without one has its effector tools denied under a permission mode that
+  neither prompts nor auto-approves, so in the fresh per-episode configuration the run gives
+  it, a tool the run did not allow is denied by default, including one a future build might
+  add. Either way the only way the CLI can affect the workspace is a bridged tool admitted at
+  the dispatch boundary, and the kernel-confined tier contains what it attempts regardless of
+  the CLI's cooperation. What the harness does that the run cannot observe, its inner model
+  calls and its direct channel to its own provider, is recorded as a declared gap carrying a
+  provenance tier, so an external-agent run never claims the integrity of a native one.
+- **An external harness reaching another local service through the bridge.** The bridge the
+  harness is pointed at is the run's own, on the host loopback. A child confined to its own
+  network namespace cannot reach the host loopback at all; it reaches the bridge through an
+  inbound forward that pipes exactly one host address, so forwarding the bridge in does not
+  hand the child the rest of the host's local services, proven by the sandbox forward tests.
 
 ## Coverage: enforced today vs planned
 
@@ -216,6 +247,13 @@ Enforced and tested today:
   job object today).
 - Default-deny outbound egress for the agent's own requests, with anti-SSRF and
   metadata-endpoint blocking, plus lint rules against raw dials and unguarded HTTP clients.
+- An external-agent backend that drives an installed agent CLI as an untrusted subprocess:
+  its native tool surface denied, its tool calls routed through a loopback MCP bridge and
+  governed at the dispatch boundary, its egress gated to the provider, the bridge reached
+  from a confined child through an inbound forward that opens exactly that one host address,
+  and the parts it cannot make observable recorded as declared provenance gaps rather than
+  trusted. A live episode refuses on a platform whose governed-egress leg is not present
+  rather than running with the child's egress open.
 - Bind-safe inbound listeners: every listener is opened through a loopback-by-default gate
   that refuses a wildcard bind and a non-loopback bind without an explicit opt-in, plus a
   lint rule against opening a listener outside that gate.
