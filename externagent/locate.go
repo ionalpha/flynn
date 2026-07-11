@@ -132,6 +132,84 @@ func LocateCodex(bin string) (Program, error) {
 	return locateVendored(resolved)
 }
 
+// LocateClaude resolves the claude CLI (Claude Code) to the native executable to launch
+// and the directories a confined child needs to read to run it. bin names the CLI (empty
+// means "claude" on PATH) or gives an absolute path to it.
+//
+// Claude Code ships a single self-contained native binary per platform, fronted by an npm
+// launcher (a .cmd shim on Windows, an sh shim or symlinked entry point elsewhere) that
+// execs it. Launching the launcher would drag its shell or interpreter into the
+// confinement, so this resolves straight to the native binary the launcher stands for.
+// When the CLI is installed some other way that already puts a native binary on PATH, the
+// resolved path is used as is.
+//
+// A CLI that is not installed yields ErrProgramNotFound. A launcher whose native binary
+// cannot be found yields a distinct error naming the path that was looked for, because
+// that is a broken or unfamiliar installation rather than a missing one.
+func LocateClaude(bin string) (Program, error) {
+	if bin == "" {
+		bin = "claude"
+	}
+	resolved := bin
+	if !filepath.IsAbs(bin) {
+		var err error
+		if resolved, err = sandbox.LookPath(bin); err != nil {
+			return Program{}, fmt.Errorf("%w: %s", ErrProgramNotFound, bin)
+		}
+	}
+	if _, err := os.Stat(resolved); err != nil {
+		return Program{}, fmt.Errorf("%w: %s", ErrProgramNotFound, bin)
+	}
+	if abs, err := filepath.Abs(resolved); err == nil {
+		resolved = abs
+	}
+	if link, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = link
+	}
+
+	if isNativeExecutable(resolved) {
+		return Program{Path: resolved, ReadableDirs: []string{filepath.Dir(resolved)}}, nil
+	}
+	return locateClaudeNative(resolved)
+}
+
+// claudePackagePath is the npm package directory of Claude Code, relative to the global
+// bin directory the launcher shim is installed into.
+var claudePackagePath = []string{"node_modules", "@anthropic-ai", "claude-code"}
+
+// locateClaudeNative finds the native binary a launcher script stands for, given the
+// resolved path of that script. The binary ships at bin/claude inside the package tree,
+// so two installation shapes are searched: the launcher sitting in a global bin directory
+// next to the package tree (the Windows shim), and the launcher sitting inside or beside
+// the package (the sh shim or symlinked entry point elsewhere). The package root is
+// returned as the readable directory rather than the binary's own bin/, so the
+// per-platform helper package that ships beside it in the same tree stays reachable from
+// inside the confinement.
+func locateClaudeNative(launcher string) (Program, error) {
+	exe := filepath.Join("bin", "claude"+exeSuffix())
+
+	dir := filepath.Dir(launcher)
+	roots := []string{filepath.Join(append([]string{dir}, claudePackagePath...)...)}
+	// Walk up from the launcher looking for the package root, so an entry point that lives
+	// inside the package resolves as well as a shim that lives beside it.
+	for cur := dir; ; {
+		roots = append(roots, filepath.Join(append([]string{cur}, claudePackagePath...)...))
+		roots = append(roots, cur)
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			break
+		}
+		cur = parent
+	}
+	for _, root := range roots {
+		candidate := filepath.Join(root, exe)
+		if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
+			return Program{Path: candidate, ReadableDirs: []string{root}}, nil
+		}
+	}
+	return Program{}, fmt.Errorf("externagent: %s is a launcher script but no native claude binary was found beside it (looked for %s)", launcher, exe)
+}
+
 // codexPackagePath is the npm package directory of the codex CLI, relative to the global
 // bin directory the launcher shim is installed into.
 var codexPackagePath = []string{"node_modules", "@openai", "codex"}

@@ -24,7 +24,7 @@ import (
 // agent CLI driver, and the rest of the spec is the model the CLI itself should
 // drive. Adding a second harness is one entry here plus a case in newExternalAgent,
 // not a new resolution path.
-var externalAgentBackends = map[string]bool{"codex": true}
+var externalAgentBackends = map[string]bool{"codex": true, "claude": true}
 
 // externalAgentSpec splits a --model spec into an external-agent backend name and the
 // model string to hand the CLI, reporting whether the spec names an external agent at
@@ -190,6 +190,46 @@ func codexAuthDir() string {
 // copy instead of the real directory.
 var codexAuthSeedFiles = []string{"auth.json", "config.toml"}
 
+// claudeAllowedHosts are the destination names a claude episode's confined child may
+// reach at the egress waist: the Anthropic API the subscription drives inference over and
+// the endpoints its OAuth session refreshes against. Everything else is denied, so the
+// external harness's own provider channel is contained to these names even though its
+// inner traffic is unobserved. A name that resolves to a private or rebinding address is
+// still refused by the address gate. Telemetry and update hosts are deliberately left off
+// until a real run shows one is needed to authenticate or infer.
+var claudeAllowedHosts = []string{
+	"api.anthropic.com",
+	"console.anthropic.com",
+	"claude.ai",
+	".claude.ai",
+}
+
+// claudeSeedPaths are the files the confined child needs to authenticate on the owner's
+// subscription, gathered into one credential home. Claude Code splits them: its config
+// lives in the home directory (.claude.json) and its OAuth token in a subdirectory
+// (.claude/.credentials.json), and pointing the CLI at a single CLAUDE_CONFIG_DIR makes it
+// look for both, flat, under that directory. So the two are seeded by base name into one
+// per-episode home the run writes and deletes; nothing else from the home (history, caches,
+// project state) is copied. CLAUDE_CONFIG_DIR overrides where both files live, matching the
+// CLI's own resolution. Empty when no home directory is resolvable, which seeds nothing and
+// leaves detection to report the CLI as logged out.
+func claudeSeedPaths() []string {
+	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
+		return []string{
+			filepath.Join(v, ".claude.json"),
+			filepath.Join(v, ".credentials.json"),
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return []string{
+		filepath.Join(home, ".claude.json"),
+		filepath.Join(home, ".claude", ".credentials.json"),
+	}
+}
+
 // externalProbeTimeout caps a single detection probe (a version or auth-status check)
 // so a hung CLI cannot stall onboarding.
 const externalProbeTimeout = 15 * time.Second
@@ -224,6 +264,24 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 			// episode records the tier that ran.
 			HostReadable: true,
 		}), nil
+	case "claude":
+		prog, err := externagent.LocateClaude("")
+		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
+			return nil, err
+		}
+		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
+			AllowedHosts:  claudeAllowedHosts,
+			AuthEnv:       "CLAUDE_CONFIG_DIR",
+			AuthSeedPaths: claudeSeedPaths(),
+			ProgramDirs:   prog.ReadableDirs,
+			ProbeTimeout:  externalProbeTimeout,
+			// Claude Code ships as a single compiled native binary that canonicalizes paths on
+			// startup, the same operation no process can perform inside a Windows AppContainer,
+			// so it runs under the tier that confines its writes to the workspace and leaves the
+			// host readable. Its writes, its egress, and its tools stay gated; only the read
+			// posture is traded, and the episode records the tier that ran.
+			HostReadable: true,
+		}), nil
 	default:
 		return nil, fmt.Errorf("unknown external agent backend %q", name)
 	}
@@ -247,6 +305,18 @@ func externalAdapter(name string, spawner externagent.Spawner) (externagent.Adap
 			return externagent.NewCodex("", spawner), nil
 		}
 		return externagent.NewCodex(prog.Path, spawner), nil
+	case "claude":
+		// Launch the native binary the npm launcher stands for, not the launcher: a shim
+		// would need its shell or interpreter reachable from inside the confinement. An
+		// absent CLI leaves the name for Detect to report as not installed.
+		prog, err := externagent.LocateClaude("")
+		if err != nil {
+			if !errors.Is(err, externagent.ErrProgramNotFound) {
+				return nil, err
+			}
+			return externagent.NewClaude("", spawner), nil
+		}
+		return externagent.NewClaude(prog.Path, spawner), nil
 	default:
 		return nil, fmt.Errorf("unknown external agent backend %q", name)
 	}

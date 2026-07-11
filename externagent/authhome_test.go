@@ -77,6 +77,61 @@ func TestEpisodeAuthHomeCopiesOnlySeedFiles(t *testing.T) {
 	}
 }
 
+// TestEpisodeAuthHomeGathersSeedPaths proves the multi-source seed gathers files that live
+// in different directories into one credential home by base name, so a CLI whose config and
+// token are split (Claude Code) is given one directory it can be pointed at. The home is
+// owned (writable and deleted with the episode), sits outside the recorded workspace, and a
+// source that does not exist is skipped rather than fabricated.
+func TestEpisodeAuthHomeGathersSeedPaths(t *testing.T) {
+	src := t.TempDir()
+	cfg := filepath.Join(src, ".claude.json")
+	sub := filepath.Join(src, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	creds := filepath.Join(sub, ".credentials.json")
+	if err := os.WriteFile(cfg, []byte(`{"config":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(creds, []byte(`{"token":"secret"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	wd := workdir(t)
+	sp := NewSandboxSpawner(SandboxConfig{
+		AuthEnv:       "CLAUDE_CONFIG_DIR",
+		AuthSeedPaths: []string{cfg, creds, filepath.Join(src, "absent.json")},
+	})
+	home, owned, err := sp.episodeAuthHome(wd)
+	if err != nil {
+		t.Fatalf("episodeAuthHome: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	if !owned {
+		t.Fatalf("an assembled credential home must be owned, so it is deleted with the episode")
+	}
+	// Both files, from two different source directories, land flat by base name.
+	if b, err := os.ReadFile(filepath.Join(home, ".credentials.json")); err != nil || !strings.Contains(string(b), "secret") {
+		t.Fatalf("the token was not gathered into the home: %q err=%v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude.json")); err != nil {
+		t.Fatalf("the config was not gathered into the home: %v", err)
+	}
+	// The home is outside the recorded workspace.
+	if rel, err := filepath.Rel(wd, home); err == nil && !strings.HasPrefix(rel, "..") {
+		t.Fatalf("the credential home %s is inside the recorded workspace %s", home, wd)
+	}
+	// A missing source is skipped, not fabricated.
+	if _, err := os.Stat(filepath.Join(home, "absent.json")); err == nil {
+		t.Fatalf("a missing seed source was created")
+	}
+	// The seed paths take precedence and the home is writable only because it is owned.
+	got := writableDirsOf(t, sp.episodeOptions(home, true))
+	if len(got) != 1 || !sameDir(t, got[0], home) {
+		t.Fatalf("the assembled home must be granted write as an owned copy, got %q", got)
+	}
+}
+
 // TestEpisodeAuthHomeWithoutSeedFilesUsesAuthDir proves the read-only behaviour is intact
 // where no seeding is configured (a detection probe), and that the spawner claims no
 // ownership of the host's directory: a stray delete of a real credential home is the worst

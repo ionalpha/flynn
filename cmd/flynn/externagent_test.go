@@ -20,6 +20,10 @@ func TestExternalAgentSpec(t *testing.T) {
 		{"codex", "codex", "", true},
 		{"codex:gpt-5-codex", "codex", "gpt-5-codex", true},
 		{"codex:o3", "codex", "o3", true},
+		{"claude", "claude", "", true},
+		{"claude:claude-opus-4-8", "claude", "claude-opus-4-8", true},
+		// A hosted provider spec whose scheme is not an external-agent backend is left for
+		// native resolution, even when the model itself is a claude model.
 		{"anthropic:claude-opus-4", "", "", false},
 		{"gpt-4o", "", "", false},
 		{"", "", "", false},
@@ -99,12 +103,14 @@ func TestExternalModel(t *testing.T) {
 // TestNewExternalAgent builds a driver for a known backend and refuses an unknown one,
 // so a misnamed backend fails at assembly rather than running the wrong loop.
 func TestNewExternalAgent(t *testing.T) {
-	ea, err := newExternalAgent("codex", t.TempDir())
-	if err != nil {
-		t.Fatalf("newExternalAgent(codex): %v", err)
-	}
-	if ea.driver == nil || ea.driver.Name() != "codex" {
-		t.Errorf("driver not wired for codex: %+v", ea)
+	for _, name := range []string{"codex", "claude"} {
+		ea, err := newExternalAgent(name, t.TempDir())
+		if err != nil {
+			t.Fatalf("newExternalAgent(%s): %v", name, err)
+		}
+		if ea.driver == nil || ea.driver.Name() != name {
+			t.Errorf("driver not wired for %s: %+v", name, ea)
+		}
 	}
 	if _, err := newExternalAgent("nope", t.TempDir()); err == nil {
 		t.Error("an unknown backend must be refused")

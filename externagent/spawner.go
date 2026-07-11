@@ -47,6 +47,21 @@ type SandboxConfig struct {
 	// readable; naming it here is what makes the child look in it. Empty passes no
 	// variable.
 	AuthEnv string
+	// AuthSeedPaths names individual source files, by absolute path, that together make up
+	// the CLI's credential and config home. It is the multi-source counterpart of AuthDir
+	// plus AuthSeedFiles: where those copy named files out of one directory, this gathers
+	// files that live in different directories (or under a home the confined child has no
+	// way to derive) into one directory holding exactly their base names and nothing else.
+	// A CLI whose credential and config are split across two locations (Claude Code keeps
+	// its config in the home directory and its OAuth token in a subdirectory) is given one
+	// directory it can be pointed at, for both detection and an episode. When set it takes
+	// precedence over AuthSeedFiles; AuthEnv still names the variable that points the child
+	// at the assembled directory, and a source file that does not exist is skipped so a
+	// partially configured CLI assembles what it has and detection reports the rest as
+	// not-ready. Like the AuthSeedFiles copy, the assembled directory is a per-episode home
+	// the run writes and deletes, so a token the harness refreshes lives only in the copy
+	// and the host credential is never made writable to it.
+	AuthSeedPaths []string
 	// AuthSeedFiles names the files inside AuthDir that an episode's credential home must
 	// contain (for codex: the OAuth token and the CLI's own config). Naming them switches
 	// an episode from pointing the child straight at AuthDir to giving it a per-episode
@@ -149,6 +164,13 @@ func (s *SandboxSpawner) authEnv(home string) []string {
 // been configured has no config file, and whether it is authenticated at all is the
 // adapter's question to answer through Probe, not a launch precondition here.
 func (s *SandboxSpawner) episodeAuthHome(workdir string) (string, bool, error) {
+	if len(s.cfg.AuthSeedPaths) > 0 {
+		home, err := assembleSeedHome(filepath.Dir(workdir), s.cfg.AuthSeedPaths)
+		if err != nil {
+			return "", false, err
+		}
+		return home, true, nil
+	}
 	if s.cfg.AuthDir == "" || len(s.cfg.AuthSeedFiles) == 0 {
 		return s.cfg.AuthDir, false, nil
 	}
@@ -171,6 +193,27 @@ func (s *SandboxSpawner) episodeAuthHome(workdir string) (string, bool, error) {
 		}
 	}
 	return home, true, nil
+}
+
+// assembleSeedHome builds a credential home from a set of individual source files, each
+// copied by its base name into a fresh directory created under parent. It is the
+// multi-source counterpart of the AuthDir-plus-AuthSeedFiles copy, for a CLI whose
+// credential and config live in different directories. A source that does not exist is
+// skipped rather than failing, so a partially configured CLI still assembles what it has.
+// The base names of the sources must be distinct; a later source with the same base name
+// overwrites an earlier one.
+func assembleSeedHome(parent string, paths []string) (string, error) {
+	home, err := os.MkdirTemp(parent, "flynn-authhome-")
+	if err != nil {
+		return "", fmt.Errorf("externagent: assemble credential home: %w", err)
+	}
+	for _, src := range paths {
+		if err := copyIfPresent(src, filepath.Join(home, filepath.Base(src))); err != nil {
+			_ = os.RemoveAll(home)
+			return "", fmt.Errorf("externagent: seed credential home: %w", err)
+		}
+	}
+	return home, nil
 }
 
 // copyIfPresent copies one seed file, doing nothing when the source does not exist. The
@@ -204,11 +247,23 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 	}
 	defer func() { _ = os.RemoveAll(root) }()
 
+	// The credential home the probe points the CLI at: for a split-layout CLI it is a
+	// combined directory assembled from the seed paths, so an auth-status probe sees the
+	// same home an episode would; otherwise it is the host's own AuthDir, read-only.
+	authHome := s.cfg.AuthDir
 	opts := []sandbox.LocalOption{sandbox.WithDefaultConfinement()}
 	if s.cfg.HostReadable {
 		opts = append(opts, sandbox.WithHostReadable())
 	}
-	if s.cfg.AuthDir != "" {
+	switch {
+	case len(s.cfg.AuthSeedPaths) > 0:
+		home, err := assembleSeedHome(root, s.cfg.AuthSeedPaths)
+		if err != nil {
+			return "", err
+		}
+		authHome = home
+		opts = append(opts, sandbox.WithReadableDir(home))
+	case s.cfg.AuthDir != "":
 		opts = append(opts, sandbox.WithReadableDir(s.cfg.AuthDir))
 	}
 	opts = append(opts, sandbox.WithReadableDir(s.cfg.ProgramDirs...))
@@ -221,7 +276,7 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 	}
 	defer func() { _ = loc.Close() }()
 
-	res, err := loc.Capture(ctx, sandbox.CaptureSpec{Argv: append([]string{path}, args...), Env: s.authEnv(s.cfg.AuthDir)})
+	res, err := loc.Capture(ctx, sandbox.CaptureSpec{Argv: append([]string{path}, args...), Env: s.authEnv(authHome)})
 	if err != nil {
 		return "", err
 	}

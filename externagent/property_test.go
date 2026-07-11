@@ -29,6 +29,29 @@ func TestParseNeverPanicsProperty(t *testing.T) {
 	})
 }
 
+// TestClaudeParseNeverPanicsProperty is the same rigor property for the claude parser:
+// arbitrary bytes never panic or error, every projected event carries an in-range tier,
+// and a non-empty line is never silently dropped. Unlike codex, one assistant message
+// can carry several blocks, so the count is not bounded from above.
+func TestClaudeParseNeverPanicsProperty(t *testing.T) {
+	c := NewClaude("", nil)
+	rapid.Check(t, func(rt *rapid.T) {
+		line := rapid.SliceOfN(rapid.Byte(), 0, 256).Draw(rt, "line")
+		evs, err := c.Parse(line)
+		if err != nil {
+			rt.Fatalf("Parse errored on arbitrary input: %v", err)
+		}
+		if len(trimLine(line)) > 0 && len(evs) == 0 {
+			rt.Fatalf("Parse dropped a non-empty line")
+		}
+		for _, e := range evs {
+			if e.Tier < TierEnforced || e.Tier > TierUnobserved {
+				rt.Fatalf("event has an out-of-range tier: %v", e.Tier)
+			}
+		}
+	})
+}
+
 // TestResultAbsorbTallyProperty is a rigor property: folding any sequence of events
 // into a Result tallies exactly one tier count per event (the record accounts for
 // every projected action), marks the result failed exactly when an error event
