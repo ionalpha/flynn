@@ -301,10 +301,18 @@ Autonomy that forms its own goals from monitored signals is on the
 
 - **MCP server.** Expose the agent's own tools to any Model Context Protocol client
   (`flynn mcp serve`). Consuming external MCP servers as a client is on the roadmap.
-- **Provetrail.** Implements [Provetrail](https://github.com/ionalpha/provetrail), an
-  open standard for verifiable execution provenance, and ships a reference verifier and
-  the standard's public conformance vectors, so a run's record can be checked by any
-  conformant verifier in any language.
+- **Provetrail.** Emits every run as a portable, third-party-verifiable record in the
+  open [Provetrail](https://provetrail.org) format. See
+  [Verifiable provenance](#verifiable-provenance-provetrail).
+
+### Verifiable provenance (Provetrail)
+
+Flynn is the reference implementation of [Provetrail](https://provetrail.org), an open
+standard for verifiable execution provenance: a portable, third-party-verifiable record
+of what an agent did, in what order, and under what authority. Flynn ships the reference
+verifier and the standard's public [conformance vectors](https://github.com/ionalpha/provetrail),
+so any run's record can be checked by any conformant verifier, in any language, without
+trusting the host that produced it.
 
 ## Trust and safety
 
@@ -329,7 +337,7 @@ Flynn is built to be handed real authority over untrusted input and real tools.
   every event is committed to an append-only Merkle log under a signed checkpoint, so
   an independent party can confirm what the agent did, and that the record was not
   altered, without trusting the host. `flynn spine verify <run>` checks a run from the
-  durable store alone, and the record follows the open [Provetrail](https://github.com/ionalpha/provetrail)
+  durable store alone, and the record follows the open [Provetrail](https://provetrail.org)
   format so any conformant verifier can check it. The [`demo/`](demo/) directory is a
   runnable walkthrough: a signed but ungoverned or unproven record is rejected, a real
   one verifies.
