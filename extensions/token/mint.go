@@ -107,42 +107,52 @@ func (e *Engine) Mint(ctx context.Context, s MintSpec) (solana.PublicKey, []safe
 	return mint, disclosures, nil
 }
 
-// abortMint revokes the mint authority after a mid-lifecycle failure so a created but
-// unfinished mint can never be inflated, then returns the wrapped cause. The revoke
-// runs on a context detached from the caller's cancellation and deadline (via
-// context.WithoutCancel), so a timeout or cancellation that caused the original failure
-// cannot also prevent the safety revoke from being submitted. A zero mint address means
-// creation never submitted a transaction, so there is nothing on-chain to revoke.
+// abortMint drives the mint into a supply-fixed state after a mid-lifecycle failure so a
+// created but unfinished mint can never be inflated, then returns the wrapped cause. A zero
+// mint address means creation is proven never to have landed, so there is nothing to
+// revoke. The revoke runs on a context detached from the caller's cancellation (via
+// context.WithoutCancel) so a timeout that caused the original failure cannot also prevent
+// cleanup, bounded by cleanupBudget so a dead network cannot hang forever; reaching that
+// bound reports the mint as unresolved (possibly mintable), never as safe.
 func (e *Engine) abortMint(ctx context.Context, mint solana.PublicKey, disclosures []safety.Violation, cause error) (solana.PublicKey, []safety.Violation, error) {
 	if mint.IsZero() {
 		return solana.PublicKey{}, disclosures, cause
 	}
-	// Detach from the caller's cancellation/deadline so the timeout that caused the
-	// original failure cannot also prevent the safety revoke from being submitted.
-	cleanupCtx := context.WithoutCancel(ctx)
-	// A create that was submitted but not confirmed can still be in flight, so the mint
-	// account may not be visible yet. Revoking now would fail preflight as
-	// account-not-found and then the create could land afterwards, leaving the mint
-	// authority retained. Wait for the account to become visible before revoking.
-	found, sawError := e.awaitAccount(cleanupCtx, mint)
-	if !found && !sawError {
-		// Every poll cleanly reported the account absent: the create did not land (its
-		// blockhash has expired), so there is nothing on-chain to revoke.
-		return mint, disclosures, fmt.Errorf("mint %s aborted after creation; its account never appeared so the create did not land: %w", mint, cause)
-	}
-	// The account is visible, or its existence could not be determined (transient RPC
-	// errors or a timed-out wait). Attempt the revoke either way: skipping it on
-	// uncertainty would strand a live mint authority on a mint that actually landed.
-	if rerr := e.RevokeMintAuthority(cleanupCtx, mint); rerr != nil {
-		// An earlier unconfirmed revoke may since have landed, clearing the authority and
-		// making this retry fail; trust the on-chain state over the retry error so a mint
-		// that is actually fixed is never reported as possibly mintable.
-		if st, verr := e.Verify(cleanupCtx, mint); verr == nil && st.SupplyFixed() {
-			return mint, disclosures, fmt.Errorf("mint %s aborted after creation; mint authority already revoked so supply is fixed: %w", mint, cause)
-		}
-		return mint, disclosures, fmt.Errorf("mint %s aborted after creation and the safety revoke also failed (it may remain mintable): %w", mint, errors.Join(cause, rerr))
+	cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), cleanupBudget)
+	defer cancel()
+	if err := e.ensureRevoked(cleanupCtx, mint); err != nil {
+		return mint, disclosures, fmt.Errorf("mint %s aborted after creation and the safety revoke could not be confirmed (it may remain mintable): %w", mint, errors.Join(cause, err))
 	}
 	return mint, disclosures, fmt.Errorf("mint %s aborted after creation; mint authority revoked so supply is fixed: %w", mint, cause)
+}
+
+// ensureRevoked revokes the mint authority and confirms it on-chain, deciding by the
+// mint's verified state rather than any single RPC result. It returns nil once the
+// authority is revoked. Each RevokeMintAuthority uses a fresh blockhash and waits for that
+// revoke to land or expire, so a revoke that expires without landing is retried rather than
+// mistaken for done, and a revoke that already landed (an earlier unconfirmed one) is
+// detected by verifying before each attempt. It gives up only when the context ends or the
+// attempt budget is exhausted, returning the last error so the caller reports the mint as
+// possibly still mintable rather than falsely safe.
+func (e *Engine) ensureRevoked(ctx context.Context, mint solana.PublicKey) error {
+	var last error
+	for range revokeAttempts {
+		if st, err := e.Verify(ctx, mint); err == nil && st.SupplyFixed() {
+			return nil // already revoked (possibly by an earlier revoke that has since landed)
+		}
+		if err := e.RevokeMintAuthority(ctx, mint); err == nil {
+			return nil // this revoke landed and confirmed
+		} else {
+			last = err
+		}
+		if ctx.Err() != nil {
+			break // the context ended: stop rather than spin
+		}
+	}
+	if last == nil {
+		last = fmt.Errorf("mint %s authority could not be confirmed revoked", mint)
+	}
+	return last
 }
 
 // finalizeMint attaches metadata, mints the whole supply, and revokes the mint

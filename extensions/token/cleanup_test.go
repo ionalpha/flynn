@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"encoding/binary"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,29 +18,31 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// These tests drive the engine against a fake ledger to prove the mint lifecycle
-// leaves a SAFE (non-inflatable) result on its failure paths, not just its happy path.
-// They exercise the two cases builds and lint never reach: a create transaction that
-// is submitted but never confirmed, and a caller cancellation during finalize.
+// These tests drive the engine against a fake ledger to prove the mint lifecycle leaves a
+// SAFE (non-inflatable) result on its failure paths, not just its happy path. A
+// transaction's fate is decided by its signature reaching a terminal on-chain state
+// (confirmed, or blockhash-expired past lastValidBlockHeight), never by a fixed timeout, so
+// the fake models signature confirmation and block height rather than wall-clock waits.
 
-// setAuthorityDiscriminator is the SPL Token instruction index for SetAuthority; the
-// safety revoke is the only instruction the lifecycle emits with it.
+// setAuthorityDiscriminator is the SPL Token instruction index for SetAuthority; the safety
+// revoke is the only instruction the lifecycle emits with it.
 const setAuthorityDiscriminator = 6
 
 // fakeRPC is a controllable RPCClient. It respects context cancellation the way a real
-// client does, so a detached cleanup context is observably different from a canceled
-// one.
+// client does, so a detached cleanup context is observably different from a canceled one.
 type fakeRPC struct {
-	confirm         bool               // GetSignatureStatuses reports confirmed
-	cancelOnSend    int                // 1-based send index at which to cancel ctx and fail; 0 disables
+	confirm         bool               // GetSignatureStatuses reports the signature confirmed
+	unconfirmRevoke bool               // once a revoke is submitted its confirmation never arrives
+	lastValid       uint64             // GetLatestBlockhash reports this last-valid block height
+	blockHeight     uint64             // GetBlockHeight reports this height (> lastValid means expired)
+	cancelOnSend    int                // 1-based send index at which to cancel ctx (outcome unknown)
 	cancel          context.CancelFunc // called when cancelOnSend fires
-	failSendAt      int                // 1-based send index that returns a generic RPC error; 0 disables
-	invisibleCalls  int                // first N GetAccountInfo calls report the account as not yet visible
-	unconfirmRevoke bool               // once a revoke is submitted, confirmation never arrives (submitted-but-unconfirmed)
-	accountInfoErr  bool               // GetAccountInfo returns a transient RPC error (visibility cannot be determined)
-	mintData        []byte             // account bytes GetAccountInfo returns once visible; nil = zeroed placeholder
-	accountInfoHits int
+	failSendAt      int                // 1-based send index whose SendTransaction errors
+	accountInfoErr  bool               // GetAccountInfo returns a transient error
+	mintData        []byte             // account bytes GetAccountInfo returns; nil = zeroed placeholder
+	revokeExpireFor int                // the first N revoke submissions expire (never confirm)
 	sendCount       int
+	revokeSends     int
 	revokeSubmitted bool // a SetAuthority (revoke) transaction reached SendTransaction
 }
 
@@ -47,7 +50,11 @@ func (f *fakeRPC) GetLatestBlockhash(ctx context.Context, _ rpc.CommitmentType) 
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	return &rpc.GetLatestBlockhashResult{Value: &rpc.LatestBlockhashResult{Blockhash: solana.Hash{1}}}, nil
+	return &rpc.GetLatestBlockhashResult{Value: &rpc.LatestBlockhashResult{Blockhash: solana.Hash{1}, LastValidBlockHeight: f.lastValid}}, nil
+}
+
+func (f *fakeRPC) GetBlockHeight(_ context.Context, _ rpc.CommitmentType) (uint64, error) {
+	return f.blockHeight, nil
 }
 
 func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (solana.Signature, error) {
@@ -55,6 +62,10 @@ func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (
 		return solana.Signature{}, err
 	}
 	f.sendCount++
+	if isRevoke(tx) {
+		f.revokeSends++
+		f.revokeSubmitted = true
+	}
 	if f.cancelOnSend != 0 && f.sendCount == f.cancelOnSend {
 		if f.cancel != nil {
 			f.cancel()
@@ -66,30 +77,27 @@ func (f *fakeRPC) SendTransaction(ctx context.Context, tx *solana.Transaction) (
 		// signed transaction can still land even though SendTransaction reports an error.
 		return solana.Signature{}, errors.New("rpc: connection reset by peer")
 	}
-	if isRevoke(tx) {
-		f.revokeSubmitted = true
-	}
 	return solana.Signature{2}, nil
 }
 
 func (f *fakeRPC) GetSignatureStatuses(_ context.Context, _ bool, _ ...solana.Signature) (*rpc.GetSignatureStatusesResult, error) {
-	// A revoke that was submitted but whose confirmation never arrives: the transaction
-	// can still have landed, so the account state (not this status) is the source of truth.
-	if !f.confirm || (f.unconfirmRevoke && f.revokeSubmitted) {
-		return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}, nil
+	unconfirmed := &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{nil}}
+	switch {
+	case !f.confirm:
+		return unconfirmed, nil
+	case f.unconfirmRevoke && f.revokeSubmitted:
+		// The revoke was submitted but its confirmation never arrives (it may still land).
+		return unconfirmed, nil
+	case f.revokeExpireFor > 0 && f.revokeSends > 0 && f.revokeSends <= f.revokeExpireFor:
+		// The current revoke attempt expires; a later retry (higher revokeSends) confirms.
+		return unconfirmed, nil
 	}
 	return &rpc.GetSignatureStatusesResult{Value: []*rpc.SignatureStatusesResult{{ConfirmationStatus: rpc.ConfirmationStatusConfirmed}}}, nil
 }
 
 func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, _ *rpc.GetAccountInfoOpts) (*rpc.GetAccountInfoResult, error) {
-	f.accountInfoHits++
 	if f.accountInfoErr {
 		return nil, errors.New("rpc: 429 too many requests")
-	}
-	if f.accountInfoHits <= f.invisibleCalls {
-		// The account is not yet visible (a create that was submitted but has not
-		// propagated to finalized commitment).
-		return &rpc.GetAccountInfoResult{Value: nil}, nil
 	}
 	data := f.mintData
 	if data == nil {
@@ -98,10 +106,14 @@ func (f *fakeRPC) GetAccountInfoWithOpts(_ context.Context, _ solana.PublicKey, 
 	return &rpc.GetAccountInfoResult{Value: &rpc.Account{Owner: token.ProgramID, Data: rpc.DataBytesOrJSONFromBytes(data)}}, nil
 }
 
-// revokedMintBytes builds the 82-byte SPL Mint account layout for an initialized mint
-// with the mint authority revoked (COption::None), no freeze authority, and the given
-// supply and decimals. Layout: mint_authority COption<Pubkey> (4+32), supply u64 (8),
-// decimals u8 (1), is_initialized bool (1), freeze_authority COption<Pubkey> (4+32).
+func (f *fakeRPC) GetMinimumBalanceForRentExemption(_ context.Context, _ uint64, _ rpc.CommitmentType) (uint64, error) {
+	return 1_000_000, nil
+}
+
+// revokedMintBytes builds the 82-byte SPL Mint account layout for an initialized mint with
+// the mint authority revoked (COption::None), no freeze authority, and the given supply and
+// decimals. Layout: mint_authority COption<Pubkey> (4+32), supply u64 (8), decimals u8 (1),
+// is_initialized bool (1), freeze_authority COption<Pubkey> (4+32).
 func revokedMintBytes(supply uint64, decimals uint8) []byte {
 	b := make([]byte, mintAccountSize)
 	// bytes[0:4] = 0 -> mint authority COption::None (bytes[4:36] stay zero)
@@ -110,10 +122,6 @@ func revokedMintBytes(supply uint64, decimals uint8) []byte {
 	b[45] = 1 // is_initialized
 	// bytes[46:50] = 0 -> freeze authority COption::None
 	return b
-}
-
-func (f *fakeRPC) GetMinimumBalanceForRentExemption(_ context.Context, _ uint64, _ rpc.CommitmentType) (uint64, error) {
-	return 1_000_000, nil
 }
 
 // isRevoke reports whether tx carries an SPL Token SetAuthority instruction.
@@ -130,8 +138,9 @@ func isRevoke(tx *solana.Transaction) bool {
 	return false
 }
 
-// firingClock is a Timing whose timers fire immediately, so the confirm/wait loops do
-// not sleep for real. It only advances deterministically via already-ready channels.
+// firingClock is a Timing whose timers fire immediately, so the confirm/wait loops do not
+// sleep for real. The DECISION to stop still comes from chain state (confirmed signature or
+// passed block height), so firing immediately only removes real delay.
 type firingClock struct{}
 
 func (firingClock) Now() time.Time { return time.Unix(0, 0).UTC() }
@@ -161,38 +170,97 @@ func newTestEngine(f *fakeRPC) *Engine {
 	return e
 }
 
-// TestCreateMintReturnsAddressOnUnconfirmedSubmit proves CreateMint hands back the mint
-// address when the create transaction was submitted but never confirmed, so the caller
-// can still revoke a mint that may exist on-chain. Without the fix CreateMint returns
-// the zero address and the mint is stranded inflatable.
-func TestCreateMintReturnsAddressOnUnconfirmedSubmit(t *testing.T) {
-	f := &fakeRPC{confirm: false}
+// scaled returns whole * 10^decimals, matching what the engine mints.
+func scaled(whole uint64, decimals uint8) uint64 {
+	amount := whole
+	for range decimals {
+		amount *= 10
+	}
+	return amount
+}
+
+func safeSpec() MintSpec {
+	return MintSpec{Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json", Decimals: 9, Supply: 1}
+}
+
+// TestMintHappyPathSucceeds guards the success path: every step confirms, and the on-chain
+// mint verifies as revoked, freeze-free, and holding the whole supply.
+func TestMintHappyPathSucceeds(t *testing.T) {
+	s := safeSpec()
+	f := &fakeRPC{confirm: true, lastValid: 100, mintData: revokedMintBytes(scaled(s.Supply, s.Decimals), s.Decimals)}
+	eng := newTestEngine(f)
+
+	mint, _, err := eng.Mint(context.Background(), s)
+	if err != nil {
+		t.Fatalf("happy-path mint failed: %v", err)
+	}
+	if mint.IsZero() {
+		t.Fatal("expected a mint address on success")
+	}
+}
+
+// TestCreateMintReturnsZeroWhenExpired proves an expired create (its blockhash passed
+// without landing) yields the zero address: nothing landed on-chain, so there is nothing to
+// clean up and no phantom mint is reported.
+func TestCreateMintReturnsZeroWhenExpired(t *testing.T) {
+	f := &fakeRPC{confirm: false, lastValid: 100, blockHeight: 200}
 	eng := newTestEngine(f)
 
 	mint, err := eng.CreateMint(context.Background(), 9)
 	if err == nil {
-		t.Fatal("expected a confirmation-timeout error")
+		t.Fatal("expected an expiry error")
 	}
-	if mint.IsZero() {
-		t.Fatalf("CreateMint returned a zero address after submitting the create transaction; a stranded mint cannot be revoked (err=%v)", err)
+	if !mint.IsZero() {
+		t.Fatalf("expired create returned a non-zero address %s; nothing landed, so nothing exists to clean up", mint)
 	}
 }
 
-// TestMintRevokesAfterCancellationDuringFinalize proves the safety revoke is still
-// submitted when the caller's context is canceled during finalize. Without the fix the
-// cleanup revoke reuses the canceled context, never reaches the network, and the mint
-// is left with a live mint authority.
-func TestMintRevokesAfterCancellationDuringFinalize(t *testing.T) {
+// TestCreateMintReturnsAddressWhenUnresolved proves an unresolved create (submitted, outcome
+// unknown because the context ended before it confirmed or expired) hands back the mint
+// address so the caller can revoke on a best-effort basis rather than strand a possible mint.
+func TestCreateMintReturnsAddressWhenUnresolved(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
-	// confirm=true so CreateMint (send #1) succeeds; send #2 is the metadata step,
-	// where we cancel the caller context and fail, forcing the cleanup path.
-	f := &fakeRPC{confirm: true, cancelOnSend: 2, cancel: cancel}
+	// blockHeight <= lastValid so the tx has NOT expired; cancel at send so confirmOrExpire
+	// ends with an unknown outcome rather than a definitive expiry.
+	f := &fakeRPC{confirm: false, lastValid: 100, blockHeight: 50, cancelOnSend: 1, cancel: cancel}
 	eng := newTestEngine(f)
 
-	_, _, err := eng.Mint(ctx, MintSpec{
-		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
-		Decimals: 9, Supply: 1,
-	})
+	mint, err := eng.CreateMint(ctx, 9)
+	if err == nil {
+		t.Fatal("expected an unresolved-create error")
+	}
+	if mint.IsZero() {
+		t.Fatalf("unresolved create returned a zero address; a mint that may exist cannot be revoked (err=%v)", err)
+	}
+}
+
+// TestSubmitErrorDoesNotAbortLandedTx proves a SendTransaction error does not abort a
+// transaction that still lands: the fate is decided by watching the signature, not by the
+// submit call, so a lost submit response for a tx that confirms is a success.
+func TestSubmitErrorDoesNotAbortLandedTx(t *testing.T) {
+	f := &fakeRPC{confirm: true, lastValid: 100, failSendAt: 1}
+	eng := newTestEngine(f)
+
+	mint, err := eng.CreateMint(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("a create that landed despite a submit error was reported as failed: %v", err)
+	}
+	if mint.IsZero() {
+		t.Fatal("expected the mint address for a landed create")
+	}
+}
+
+// TestMintRevokesAfterCancellationDuringFinalize proves the safety revoke is still submitted
+// when the caller's context is canceled during finalize. The cleanup runs on a detached
+// context, so a caller cancellation cannot also prevent the revoke.
+func TestMintRevokesAfterCancellationDuringFinalize(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	// confirm=true so the create (send #1) lands; send #2 is metadata, where the caller
+	// context is canceled, forcing the cleanup path.
+	f := &fakeRPC{confirm: true, lastValid: 100, cancelOnSend: 2, cancel: cancel}
+	eng := newTestEngine(f)
+
+	_, _, err := eng.Mint(ctx, safeSpec())
 	if err == nil {
 		t.Fatal("expected an error from the canceled finalize")
 	}
@@ -201,90 +269,22 @@ func TestMintRevokesAfterCancellationDuringFinalize(t *testing.T) {
 	}
 }
 
-// TestCreateMintReturnsAddressWhenSendErrors proves CreateMint hands back the mint
-// address even when SendTransaction itself returns an error, because the signed
-// transaction may still have reached the node and can land. Without the fix send
-// returns the zero signature on a SendTransaction error, CreateMint treats it as
-// "nothing submitted", and a mint that later lands is stranded with a live authority.
-func TestCreateMintReturnsAddressWhenSendErrors(t *testing.T) {
-	f := &fakeRPC{failSendAt: 1}
-	eng := newTestEngine(f)
-
-	mint, err := eng.CreateMint(context.Background(), 9)
-	if err == nil {
-		t.Fatal("expected a send error")
-	}
-	if mint.IsZero() {
-		t.Fatalf("CreateMint returned a zero address after SendTransaction errored; a transaction that still lands cannot be revoked (err=%v)", err)
-	}
-}
-
-// TestAbortWaitsForAccountThenRevokes proves the cleanup revoke is still submitted when
-// the created mint account is briefly invisible (a submitted-but-unconfirmed create that
-// lands late). abortMint must wait for the account before revoking rather than failing
-// preflight as account-not-found.
-func TestAbortWaitsForAccountThenRevokes(t *testing.T) {
-	// confirm=false so the create is submitted but never confirmed, routing Mint through
-	// abortMint; the account is invisible for the first 3 polls, then appears.
-	f := &fakeRPC{confirm: false, invisibleCalls: 3}
-	eng := newTestEngine(f)
-
-	_, _, err := eng.Mint(context.Background(), MintSpec{
-		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
-		Decimals: 9, Supply: 1,
-	})
-	if err == nil {
-		t.Fatal("expected an error from the unconfirmed create")
-	}
-	if !f.revokeSubmitted {
-		t.Fatal("safety revoke was never submitted after the account became visible; a late-landing mint is left inflatable")
-	}
-}
-
-// TestAbortDoesNotRevokeInvisibleAccount proves abortMint does NOT fire a revoke against
-// an account that never becomes visible: revoking a non-existent account fails preflight
-// and cannot fix anything, and the create's blockhash expires so it can no longer land.
-// Without the wait-for-account guard the revoke is submitted blindly against a missing
-// account, racing the create.
-func TestAbortDoesNotRevokeInvisibleAccount(t *testing.T) {
-	// confirm=false routes through abortMint; the account is never visible.
-	f := &fakeRPC{confirm: false, invisibleCalls: 1000}
-	eng := newTestEngine(f)
-
-	_, _, err := eng.Mint(context.Background(), MintSpec{
-		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
-		Decimals: 9, Supply: 1,
-	})
-	if err == nil {
-		t.Fatal("expected an error from the unconfirmed create")
-	}
-	if f.revokeSubmitted {
-		t.Fatal("safety revoke was submitted against an account that never became visible; the revoke races the still-in-flight create")
-	}
-}
-
-// TestMintSucceedsWhenFinalRevokeLandsUnconfirmed proves a token whose lifecycle revoke
-// was submitted but never confirmed (yet landed on-chain) is reported as the safe,
-// complete token it is, not as a failed unsafe mint. finalize returns a confirmation
-// error, but on-chain the authority is revoked and the whole supply is present, so Mint
-// must trust the verified state and succeed. Without the fix Mint retries the revoke
-// against an already-None authority, that retry fails, and token_mint wrongly errors.
+// TestMintSucceedsWhenFinalRevokeLandsUnconfirmed proves a token whose lifecycle revoke was
+// submitted but never confirmed (yet landed on-chain) is reported as the safe, complete
+// token it is. finalize returns a confirmation error, but on-chain the authority is revoked
+// and the whole supply is present, so Mint trusts the verified state and succeeds.
 func TestMintSucceedsWhenFinalRevokeLandsUnconfirmed(t *testing.T) {
-	const decimals, whole = uint8(9), uint64(1)
-	scaled := whole
-	for range decimals {
-		scaled *= 10
+	s := safeSpec()
+	// confirm=true so create/metadata/supply confirm; unconfirmRevoke makes the final revoke
+	// submitted-but-unconfirmed, and blockHeight past lastValid makes that revoke read as
+	// expired; the account already reflects a revoked, fully minted mint.
+	f := &fakeRPC{
+		confirm: true, unconfirmRevoke: true, lastValid: 100, blockHeight: 200,
+		mintData: revokedMintBytes(scaled(s.Supply, s.Decimals), s.Decimals),
 	}
-	// confirm=true so create/metadata/supply confirm; unconfirmRevoke makes the final
-	// revoke submitted-but-unconfirmed; the on-chain account already reflects a revoked,
-	// fully minted mint.
-	f := &fakeRPC{confirm: true, unconfirmRevoke: true, mintData: revokedMintBytes(scaled, decimals)}
 	eng := newTestEngine(f)
 
-	mint, _, err := eng.Mint(context.Background(), MintSpec{
-		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
-		Decimals: decimals, Supply: whole,
-	})
+	mint, _, err := eng.Mint(context.Background(), s)
 	if err != nil {
 		t.Fatalf("a safe, fully minted token was reported as failed: %v", err)
 	}
@@ -293,25 +293,34 @@ func TestMintSucceedsWhenFinalRevokeLandsUnconfirmed(t *testing.T) {
 	}
 }
 
-// TestAbortRevokesWhenVisibilityUnknown proves the safety revoke is still attempted when
-// the created mint's account cannot be read because of transient RPC errors. An RPC error
-// is not proof the mint is absent, so treating it as "not visible" and skipping the revoke
-// would strand a landed mint with a live authority. The revoke must be attempted on
-// uncertainty.
-func TestAbortRevokesWhenVisibilityUnknown(t *testing.T) {
-	// confirm=false routes an unconfirmed create through abortMint; every account fetch
-	// returns a transient error, so visibility is unknown (not a clean absence).
-	f := &fakeRPC{confirm: false, accountInfoErr: true}
+// TestAbortRetriesExpiredRevoke proves the cleanup revoke is retried with a fresh blockhash
+// when it expires without landing, rather than mistaking an expired revoke for a completed
+// one. The first revoke expires; the second confirms.
+func TestAbortRetriesExpiredRevoke(t *testing.T) {
+	f := &fakeRPC{confirm: true, lastValid: 100, blockHeight: 200, revokeExpireFor: 1}
 	eng := newTestEngine(f)
 
-	_, _, err := eng.Mint(context.Background(), MintSpec{
-		Name: "Flynn", Symbol: "FLYNN", MetadataURI: "https://example.com/token.json",
-		Decimals: 9, Supply: 1,
-	})
-	if err == nil {
-		t.Fatal("expected an error from the unconfirmed create")
+	_, _, err := eng.abortMint(context.Background(), solana.PublicKey{1}, nil, errors.New("finalize failed"))
+	if err == nil || !strings.Contains(err.Error(), "authority revoked so supply is fixed") {
+		t.Fatalf("expected a successful revoke after retry, got: %v", err)
 	}
-	if !f.revokeSubmitted {
-		t.Fatal("safety revoke was skipped when account visibility was unknown (RPC errors); a landed mint is left with a live authority")
+	if f.revokeSends != 2 {
+		t.Fatalf("expected the expired revoke to be retried once (2 sends), got %d", f.revokeSends)
+	}
+}
+
+// TestAbortReportsUnresolvedWhenRevokeNeverLands proves cleanup reports the mint as possibly
+// mintable (never as safe) when every revoke attempt expires: the honest, conservative
+// outcome when the authority cannot be confirmed revoked.
+func TestAbortReportsUnresolvedWhenRevokeNeverLands(t *testing.T) {
+	f := &fakeRPC{confirm: false, lastValid: 100, blockHeight: 200}
+	eng := newTestEngine(f)
+
+	_, _, err := eng.abortMint(context.Background(), solana.PublicKey{1}, nil, errors.New("finalize failed"))
+	if err == nil || !strings.Contains(err.Error(), "may remain mintable") {
+		t.Fatalf("expected an unresolved/possibly-mintable report, got: %v", err)
+	}
+	if f.revokeSends != revokeAttempts {
+		t.Fatalf("expected %d revoke attempts before giving up, got %d", revokeAttempts, f.revokeSends)
 	}
 }
