@@ -15,6 +15,6 @@ func duplexConfinementExpressible() bool { return false }
 // only ever reaches this on Windows for an unconfined launch or the best-effort baseline
 // fallthrough, both of which run without confinement; confined is forced false so a value
 // that slipped through cannot become a silent unconfined run under a confined tier.
-func (l *Local) startSession(ctx context.Context, spec SessionSpec, confined bool) (*Session, error) {
+func (l *Local) startSession(ctx context.Context, spec SessionSpec, _ bool) (*Session, error) {
 	return l.startSessionExec(ctx, spec, false)
 }

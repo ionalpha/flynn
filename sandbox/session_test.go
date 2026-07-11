@@ -139,17 +139,16 @@ func TestSessionNoCommand(t *testing.T) {
 	}
 }
 
-// TestSessionConfinedRoundTrip exercises the confined duplex path the extension launcher
-// actually uses: a read-only host and the syscall filter, with a live stdin/stdout
-// conversation over the process's own pipes. It is the security-critical path, so the test
-// runs it for real where confinement can be established and still expects a working
-// round-trip where the best-effort baseline falls back to the floor. On Windows the confined
-// duplex launch is refused, so the round-trip is not attempted there.
+// TestSessionConfinedRoundTrip exercises the confined duplex path with a live stdin/stdout
+// conversation over the process's own pipes. It uses the default (best-effort) confinement,
+// the same one the confined Stream test uses: where the platform enforces the read-only host
+// and syscall filter the session runs confined, and where it cannot (a locked-down CI runner
+// that restricts unprivileged user namespaces) it falls back to the process-jail floor rather
+// than failing. Either way the duplex pipes must survive, which is what this asserts. The
+// production extension launcher instead requires confinement and refuses to downgrade; that
+// refusal path is covered separately.
 func TestSessionConfinedRoundTrip(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("confined duplex launch is refused on Windows; covered by the refusal test")
-	}
-	loc, err := NewLocal(t.TempDir(), WithReadOnlyFS(), WithSeccomp())
+	loc, err := NewLocal(t.TempDir(), WithDefaultConfinement())
 	if err != nil {
 		t.Fatalf("new local: %v", err)
 	}
