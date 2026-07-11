@@ -31,7 +31,12 @@ func (e *Engine) CreateMetadata(ctx context.Context, mint solana.PublicKey, name
 		solana.Meta(solana.SystemProgramID),
 	}
 	inst := solana.NewInstruction(metadataProgram, accts, createV3Data(name, symbol, uri))
-	_, err = e.send(ctx, []solana.Instruction{inst}, rpc.CommitmentConfirmed)
+	// Wait for FINALIZED: the mint's success report asserts this name/symbol, but the final
+	// verify only re-reads the mint account, not the metadata. If the metadata landed only
+	// at confirmed and its slot were later forked out while the supply/revoke land on the
+	// canonical chain, the token would be reported safe with a name it does not actually
+	// carry. Finalizing the metadata before continuing makes it durable and un-forkable.
+	_, err = e.send(ctx, []solana.Instruction{inst}, rpc.CommitmentFinalized)
 	return err
 }
 

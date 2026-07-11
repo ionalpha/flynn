@@ -396,6 +396,21 @@ func TestConfirmOrExpireAcceptsConfirmedWhenAllowed(t *testing.T) {
 	}
 }
 
+// TestCreateMetadataRequiresFinalized proves the metadata attach is not accepted at merely
+// confirmed commitment. The mint's success report asserts the name/symbol but the final
+// verify never re-reads the metadata, so a confirmed-but-forkable metadata slot could be
+// dropped while the token is reported safe; the attach must finalize.
+func TestCreateMetadataRequiresFinalized(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	f := &fakeRPC{confirm: true, confirmedOnly: true, lastValid: 100, cancel: cancel}
+	f.cancelAfterStatus = 1
+	eng := newTestEngine(f)
+
+	if err := eng.CreateMetadata(ctx, solana.PublicKey{3}, "Name", "SYM", "https://example.com/y.json"); err == nil {
+		t.Fatal("CreateMetadata accepted a merely-confirmed metadata tx; a forked-out slot would drop the metadata while the mint is reported safe")
+	}
+}
+
 // TestVerifyFlagsToken2022AsUnsafe proves a Token-2022 mint (which can carry transfer
 // hooks/fees/permanent delegate) is reported as its own UNSAFE class, not decoded as a plain
 // mint and not returned as a bare "wrong owner" error a caller might read as "couldn't check".
