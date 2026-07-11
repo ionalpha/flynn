@@ -48,6 +48,13 @@ type egressConfig struct {
 	perChild map[any]func()
 }
 
+// GovernedEgressAvailable reports whether this platform can enforce governed child egress
+// (deny the child's direct egress and force it through the policy proxy). It is true on the
+// platforms with an enforcement leg (Linux, macOS, and Linux under WSL2) and false where one
+// is not present, so a caller can refuse a launch that needs governed egress with an
+// actionable message before it reaches the fail-closed refusal inside a launch.
+func GovernedEgressAvailable() bool { return egressEnforceable() }
+
 // WithEgress governs the outbound network of every child the sandbox launches through
 // policy: the child is pointed at a loopback proxy that enforces policy, and its direct
 // egress is denied at the OS level so the proxy is the only way out. It is the OS-level

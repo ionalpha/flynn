@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/externagent"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -363,6 +364,15 @@ func resolveExternalAgent(ctx context.Context, name, model, workdir string) (*ex
 	}
 	if rerr := readinessError(name, r); rerr != nil {
 		return nil, rerr
+	}
+	// A live episode confines the CLI and forces its egress through the governed proxy. Where
+	// that leg is not present, the episode would refuse mid-run rather than run the CLI with
+	// its network open. Catch it here, once the CLI is otherwise ready, so the user gets one
+	// actionable message pointing at a distribution that can run it instead of a governance
+	// refusal partway through a goal.
+	if !sandbox.GovernedEgressAvailable() {
+		return nil, fmt.Errorf("%s %s is installed and signed in, but this platform has no governed-egress leg, so Flynn will not run a live episode with the CLI's network open. Run Flynn inside a WSL2 distribution to drive %s here",
+			name, r.Version, name)
 	}
 
 	ea, err := newExternalAgent(name, workdir)
