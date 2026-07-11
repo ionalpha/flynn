@@ -451,9 +451,9 @@ func nameSet(names []string) map[string]bool {
 // terminal-control or other non-printing sequences into it through a description or result.
 // The content is still treated as data, never instructions; this is the size-and-shape
 // bound on top of that structural guarantee.
-func boundText(s string, max int) string {
-	if max <= 0 {
-		max = 64 << 10
+func boundText(s string, limit int) string {
+	if limit <= 0 {
+		limit = 64 << 10
 	}
 	var b strings.Builder
 	b.Grow(len(s))
@@ -468,8 +468,8 @@ func boundText(s string, max int) string {
 		b.WriteRune(r)
 	}
 	out := b.String()
-	if len(out) > max {
-		return out[:max] + fmt.Sprintf("\n...[truncated %d bytes]", len(out)-max)
+	if len(out) > limit {
+		return out[:limit] + fmt.Sprintf("\n...[truncated %d bytes]", len(out)-limit)
 	}
 	return out
 }

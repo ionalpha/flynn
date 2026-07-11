@@ -20,10 +20,9 @@ import (
 // a test can make the extension hostile: a huge result, a hang, a nasty description, or a
 // reported error.
 type stubTool struct {
-	name    string
-	desc    string
-	invoke  func(ctx context.Context, input json.RawMessage) (string, error)
-	isError bool
+	name   string
+	desc   string
+	invoke func(ctx context.Context, input json.RawMessage) (string, error)
 }
 
 func (t stubTool) Def() llm.Tool {
@@ -116,7 +115,7 @@ func (l *fakeLauncher) lastRequest() LaunchRequest {
 // exercises the mount and tool-bridge, not the resolver.
 type okResolver struct{ args []string }
 
-func (r okResolver) Resolve(_ context.Context, _ string, block ProcessBlock) (string, []string, error) {
+func (r okResolver) Resolve(_ context.Context, _ string, _ ProcessBlock) (string, []string, error) {
 	return "/verified/bin", r.args, nil
 }
 

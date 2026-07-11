@@ -18,18 +18,18 @@ import (
 // through the session's Env, it reads newline-delimited lines from stdin, echoes each back
 // on stdout prefixed with "echo:", writes a marker to stderr so the stderr tail can be
 // checked, and exits when it reads "quit".
-func TestSessionHelperProcess(t *testing.T) {
+func TestSessionHelperProcess(_ *testing.T) {
 	if os.Getenv("FLYNN_SANDBOX_SESSION_HELPER") != "1" {
 		return
 	}
-	fmt.Fprintln(os.Stderr, "helper-started")
+	_, _ = fmt.Fprintln(os.Stderr, "helper-started")
 	sc := bufio.NewScanner(os.Stdin)
 	for sc.Scan() {
 		line := sc.Text()
 		if line == "quit" {
 			os.Exit(0)
 		}
-		fmt.Fprintln(os.Stdout, "echo:"+line)
+		_, _ = fmt.Fprintln(os.Stdout, "echo:"+line)
 	}
 	os.Exit(0)
 }
@@ -38,7 +38,7 @@ func TestSessionHelperProcess(t *testing.T) {
 // returns the running session. The helper mode is triggered by an env var granted through
 // the session, proving the deny-by-default environment still lets an explicit grant
 // through by name.
-func helperSession(t *testing.T, ctx context.Context) *Session {
+func helperSession(ctx context.Context, t *testing.T) *Session {
 	t.Helper()
 	loc, err := NewLocal(t.TempDir())
 	if err != nil {
@@ -61,11 +61,11 @@ func helperSession(t *testing.T, ctx context.Context) *Session {
 func TestSessionDuplexRoundTrip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	sess := helperSession(t, ctx)
+	sess := helperSession(ctx, t)
 	defer func() { _ = sess.Stop() }()
 
 	out := bufio.NewScanner(sess.Stdout())
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		msg := fmt.Sprintf("line-%d", i)
 		if _, err := fmt.Fprintln(sess.Stdin(), msg); err != nil {
 			t.Fatalf("write %d: %v", i, err)
@@ -84,7 +84,7 @@ func TestSessionDuplexRoundTrip(t *testing.T) {
 func TestSessionStopReapsProcess(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	sess := helperSession(t, ctx)
+	sess := helperSession(ctx, t)
 
 	// Round-trip once so the process is known to be running.
 	if _, err := fmt.Fprintln(sess.Stdin(), "ping"); err != nil {
@@ -113,12 +113,12 @@ func TestSessionStopReapsProcess(t *testing.T) {
 func TestSessionStderrTailCaptured(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	sess := helperSession(t, ctx)
+	sess := helperSession(ctx, t)
 	defer func() { _ = sess.Stop() }()
 
-	// The helper writes "helper-started" to stderr on startup; give it a moment to appear.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	// The helper writes "helper-started" to stderr on startup; poll a bounded number of
+	// times (roughly 5s total) for it to appear rather than reading the wall clock.
+	for range 250 {
 		if strings.Contains(sess.Stderr(), "helper-started") {
 			return
 		}
@@ -136,6 +136,46 @@ func TestSessionNoCommand(t *testing.T) {
 	defer func() { _ = loc.Close() }()
 	if _, err := loc.Session(context.Background(), SessionSpec{}); err == nil {
 		t.Fatal("expected an error for an empty argv")
+	}
+}
+
+// TestSessionConfinedRoundTrip exercises the confined duplex path the extension launcher
+// actually uses: a read-only host and the syscall filter, with a live stdin/stdout
+// conversation over the process's own pipes. It is the security-critical path, so the test
+// runs it for real where confinement can be established and still expects a working
+// round-trip where the best-effort baseline falls back to the floor. On Windows the confined
+// duplex launch is refused, so the round-trip is not attempted there.
+func TestSessionConfinedRoundTrip(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("confined duplex launch is refused on Windows; covered by the refusal test")
+	}
+	loc, err := NewLocal(t.TempDir(), WithReadOnlyFS(), WithSeccomp())
+	if err != nil {
+		t.Fatalf("new local: %v", err)
+	}
+	t.Cleanup(func() { _ = loc.Close() })
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sess, err := loc.Session(ctx, SessionSpec{
+		Argv:    []string{os.Args[0], "-test.run=TestSessionHelperProcess"},
+		Env:     []string{"FLYNN_SANDBOX_SESSION_HELPER=1"},
+		Confine: true,
+	})
+	if err != nil {
+		t.Fatalf("confined session: %v", err)
+	}
+	defer func() { _ = sess.Stop() }()
+
+	out := bufio.NewScanner(sess.Stdout())
+	if _, err := fmt.Fprintln(sess.Stdin(), "hello"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if !out.Scan() {
+		t.Fatalf("no reply under confinement: %v (stderr: %q)", out.Err(), sess.Stderr())
+	}
+	if got := out.Text(); got != "echo:hello" {
+		t.Fatalf("confined reply = %q, want echo:hello", got)
 	}
 }
 

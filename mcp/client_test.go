@@ -147,7 +147,7 @@ func TestClientHandshakeAndCall(t *testing.T) {
 // answers a request must not wedge the caller; the request's context deadline releases
 // it with a timeout error.
 func TestClientCallTimeoutDoesNotHang(t *testing.T) {
-	p := startPeer(t, func(method string, id, params json.RawMessage) ([]byte, bool) {
+	p := startPeer(t, func(method string, id, _ json.RawMessage) ([]byte, bool) {
 		if method == "tools/call" {
 			return nil, false // stay silent on the call
 		}
@@ -177,7 +177,7 @@ func TestClientCallTimeoutDoesNotHang(t *testing.T) {
 // the message limit is a transport error that fails the pending call rather than being
 // buffered without bound.
 func TestClientOversizeReplyFailsClosed(t *testing.T) {
-	p := startPeer(t, func(method string, id, params json.RawMessage) ([]byte, bool) {
+	p := startPeer(t, func(method string, id, _ json.RawMessage) ([]byte, bool) {
 		if method == "tools/call" {
 			// A single line larger than the cap, no newline until the end, forces the
 			// bounded scanner to give up with ErrTooLong.
@@ -199,7 +199,7 @@ func TestClientOversizeReplyFailsClosed(t *testing.T) {
 // the client never sent is dropped, never delivered to a waiting caller. The pending call
 // then correctly times out rather than resolving on a foreign reply.
 func TestClientIgnoresMismatchedID(t *testing.T) {
-	p := startPeer(t, func(method string, id, params json.RawMessage) ([]byte, bool) {
+	p := startPeer(t, func(method string, id, _ json.RawMessage) ([]byte, bool) {
 		if method == "tools/call" {
 			// Reply under a bogus id the client never issued.
 			return okReply(t, json.RawMessage(`999999`), callResult{Content: textContent("foreign")}), true
@@ -268,7 +268,7 @@ func TestClientDropsDuplicateReply(t *testing.T) {
 // TestClientDeadPeerFailsInFlight proves that tearing down the transport fails an
 // in-flight call closed rather than leaving it hung.
 func TestClientDeadPeerFailsInFlight(t *testing.T) {
-	p := startPeer(t, func(method string, id, params json.RawMessage) ([]byte, bool) {
+	p := startPeer(t, func(method string, id, _ json.RawMessage) ([]byte, bool) {
 		if method == "tools/call" {
 			return nil, false // never answer; the test kills the transport instead
 		}
@@ -313,7 +313,7 @@ func TestClientConcurrentCallsMatched(t *testing.T) {
 	const n = 20
 	var wg sync.WaitGroup
 	errs := make(chan error, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()

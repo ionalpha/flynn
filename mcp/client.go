@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -316,7 +317,7 @@ func (c *Client) ListTools(ctx context.Context) ([]ToolDesc, error) {
 	}
 	out := make([]ToolDesc, 0, len(res.Tools))
 	for _, t := range res.Tools {
-		out = append(out, ToolDesc{Name: t.Name, Description: t.Description, InputSchema: t.InputSchema})
+		out = append(out, ToolDesc(t))
 	}
 	return out, nil
 }
@@ -346,13 +347,13 @@ func (c *Client) CallTool(ctx context.Context, name string, args json.RawMessage
 // flynn tool result takes. Non-text blocks are ignored: this consumer surfaces tools as
 // text, and a block type it does not render must not smuggle content in unseen.
 func joinTextBlocks(blocks []contentBlock) string {
-	var out string
-	for _, b := range blocks {
-		if b.Type == "text" {
-			out += b.Text
+	var b strings.Builder
+	for _, block := range blocks {
+		if block.Type == "text" {
+			b.WriteString(block.Text)
 		}
 	}
-	return out
+	return b.String()
 }
 
 // decodeResponseID reads the numeric id the client assigns to its requests back from a
