@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+# Last check before anything leaves the machine: every commit about to be pushed
+# must be authored by the identity this clone is pinned to (hooks.authorEmail).
+#
+# The pre-commit hook covers commits made here. This covers the rest: a commit
+# cherry-picked from elsewhere, one made before the hooks were armed, or one
+# rewritten by a rebase. A commit pushed under the wrong author cannot be fixed
+# by a follow-up commit, so the cheapest place to catch it is here.
+#
+# stdin is one "<local ref> <local oid> <remote ref> <remote oid>" line per ref.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+
+remote="${1:-origin}"
+zero_re='^0*$'
+
+while read -r _local_ref local_oid _remote_ref remote_oid; do
+  # An all-zero local oid means the ref is being deleted: no commits to check.
+  case "$local_oid" in '') continue ;; esac
+  if printf '%s' "$local_oid" | grep -Eq "$zero_re"; then
+    continue
+  fi
+
+  if printf '%s' "$remote_oid" | grep -Eq "$zero_re"; then
+    # New ref on the remote: check every commit it would add that the remote does
+    # not already have on some other branch.
+    ./dev/authorcheck --range "$local_oid" --not --remotes="$remote"
+  else
+    ./dev/authorcheck --range "$remote_oid..$local_oid"
+  fi
+done

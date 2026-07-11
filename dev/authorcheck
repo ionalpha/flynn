@@ -1,0 +1,83 @@
+#!/usr/bin/env sh
+# Refuse commits that are not authored by the identity this clone is pinned to.
+#
+# The pin is the git config value hooks.authorEmail. It is unset by default, and
+# when it is unset this script does nothing: an outside contributor commits under
+# their own name, as they should. It exists for a clone that must only ever
+# produce commits under one identity, where an accidental commit under a personal
+# address is a mistake that is expensive to undo once pushed.
+#
+# Set it per clone:
+#
+#     git config hooks.authorEmail you@example.com
+#
+# or, to cover every clone of a given remote without a setup step to forget, from
+# a conditional include in ~/.gitconfig keyed on the remote URL:
+#
+#     [includeIf "hasconfig:remote.*.url:git@github.com:org/**"]
+#             path = ~/.gitconfig-org
+#
+# --staged  checks the identity the pending commit would use (the pre-commit mode).
+# --range A..B  checks every commit in a range (the pre-push mode).
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+want="$(git config --get hooks.authorEmail || true)"
+[ -n "$want" ] || exit 0
+
+# Extract the address from a "Name <addr> ts tz" ident string.
+addr() { printf '%s\n' "$1" | sed -n 's/^.*<\(.*\)>.*$/\1/p'; }
+
+bad=0
+report() {
+  bad=1
+  echo "authorcheck: $1" >&2
+}
+
+case "${1:-}" in
+  --staged)
+    # git var resolves the identity this commit would actually use, honouring the
+    # GIT_AUTHOR_* environment as git itself would.
+    author="$(addr "$(git var GIT_AUTHOR_IDENT)")"
+    committer="$(addr "$(git var GIT_COMMITTER_IDENT)")"
+    [ "$author" = "$want" ] || report "commit author is <$author>, but this clone is pinned to <$want>."
+    [ "$committer" = "$want" ] || report "commit committer is <$committer>, but this clone is pinned to <$want>."
+    ;;
+  --range)
+    shift
+    [ $# -ge 1 ] || { echo "usage: dev/authorcheck --range <git log args>" >&2; exit 2; }
+    # One line per commit, so a commit created elsewhere (cherry-picked, or made
+    # in a clone with no hooks armed) is caught here rather than on the server.
+    # Fail closed: if git log cannot resolve the range, refuse rather than read an
+    # empty list as "no bad commits".
+    if ! commits="$(git log --no-merges --format='%H	%ae	%ce' "$@")"; then
+      echo "authorcheck: cannot list commits for $*" >&2
+      exit 1
+    fi
+    while IFS='	' read -r sha author committer; do
+      [ -n "$sha" ] || continue
+      [ "$author" = "$want" ] || report "$sha is authored by <$author>, but this clone is pinned to <$want>."
+      [ "$committer" = "$want" ] || report "$sha is committed by <$committer>, but this clone is pinned to <$want>."
+    done <<EOF
+$commits
+EOF
+    ;;
+  *)
+    echo "usage: dev/authorcheck --staged | --range <git log args>" >&2
+    exit 2
+    ;;
+esac
+
+if [ "$bad" -ne 0 ]; then
+  cat >&2 <<EOF
+
+Fix the identity for this clone, then retry:
+
+    git config user.name  "Your Name"
+    git config user.email "$want"
+
+To repair commits that already exist, rewrite their authorship (for the most
+recent one: git commit --amend --reset-author).
+EOF
+  exit 1
+fi

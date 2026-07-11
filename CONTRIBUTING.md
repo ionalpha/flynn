@@ -16,6 +16,26 @@ it is the canonical contribution contract (and what automated triage checks agai
    comments with a link to [`CLA.md`](CLA.md); reply with the sign-off phrase it gives.
    This is a one-time step.
 
+## Pinning the commit identity (optional)
+
+If a clone must only ever produce commits under one address, pin it:
+
+```sh
+git config hooks.authorEmail you@example.com
+```
+
+The pre-commit and pre-push hooks then refuse any commit whose author or committer
+is someone else, which is what you want on a machine where the global git identity
+is a personal one and an accidental commit under it is expensive to undo once
+pushed. Unset (the default), the check does nothing. To cover every clone of a
+remote without a per-clone setup step, set it from a conditional include in
+`~/.gitconfig` keyed on the remote URL:
+
+```
+[includeIf "hasconfig:remote.*.url:**github.com/your-org/**"]
+        path = ~/.gitconfig-your-org
+```
+
 ## What gets merged fast
 
 - Focused, tested, lint-clean changes that reference an issue.
