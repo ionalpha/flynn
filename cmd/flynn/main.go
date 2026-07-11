@@ -39,6 +39,7 @@ import (
 var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"auth":         runAuth,
 	"integrations": runIntegrations,
+	"extensions":   runExtensions,
 	"deps":         runDeps,
 	"playbook":     runPlaybook,
 	"deploy":       runDeploy,

@@ -33,6 +33,11 @@ const (
 	SourceBundled = "bundled"
 	// SourceForked marks a bundled extension the user has taken ownership of.
 	SourceForked = "forked"
+	// SourceDev marks an extension linked from a locally-built binary for authoring.
+	// It is unsigned by nature and runs only under an explicitly dev-enabled path; a
+	// normal run refuses it. Like a forked extension, the catalog sync never touches
+	// it (retireMissing only reclaims bundled entries), so a dev link survives a sync.
+	SourceDev = "dev"
 )
 
 // Entry is one official extension from the embedded catalog: its name (the resource
