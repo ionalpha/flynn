@@ -214,6 +214,22 @@ func locateClaudeNative(launcher string) (Program, error) {
 // bin directory the launcher shim is installed into.
 var codexPackagePath = []string{"node_modules", "@openai", "codex"}
 
+// codexPlatformPkg is the npm package name of the per-platform bundle the codex CLI vendors
+// its native binary in. Newer codex releases ship the binary in a platform-specific
+// dependency (`@openai/codex-linux-x64`) under the main package's node_modules rather than
+// directly beside the launcher, so the vendored binary is looked for there as well.
+func codexPlatformPkg() string {
+	osName := runtime.GOOS
+	if osName == "windows" {
+		osName = "win32"
+	}
+	arch := runtime.GOARCH
+	if arch == "amd64" {
+		arch = "x64"
+	}
+	return "codex-" + osName + "-" + arch
+}
+
 // locateVendored finds the native binary a launcher script stands for, given the resolved
 // path of that script. Two installation shapes are searched: the launcher sitting in a
 // global bin directory next to the package tree (the Windows shim), and the launcher
@@ -228,12 +244,15 @@ func locateVendored(launcher string) (Program, error) {
 	}
 	exe := filepath.Join("vendor", triple, "codex", "codex"+exeSuffix())
 
+	platformPkg := []string{"node_modules", "@openai", codexPlatformPkg()}
 	dir := filepath.Dir(launcher)
 	roots := []string{filepath.Join(append([]string{dir}, codexPackagePath...)...)}
 	// Walk up from the launcher looking for the package root, so an entry point that lives
-	// inside the package (bin/codex.js) resolves as well as a shim that lives beside it.
+	// inside the package (bin/codex.js) resolves as well as a shim that lives beside it. At
+	// each level, look both directly under the directory (the binary shipped beside the
+	// launcher) and in the per-platform dependency package (newer releases vendor it there).
 	for cur := dir; ; {
-		roots = append(roots, cur)
+		roots = append(roots, cur, filepath.Join(append([]string{cur}, platformPkg...)...))
 		parent := filepath.Dir(cur)
 		if parent == cur {
 			break
