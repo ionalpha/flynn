@@ -39,6 +39,25 @@ func (*Codex) Name() string { return "codex" }
 // config. Tool names codex reports are namespaced by it.
 const codexBridgeName = "flynn"
 
+// codexCapabilityNotice is prepended to the episode's lower-authority preamble on every
+// run, so the model knows up front that it holds only the bridged tools and does not
+// waste a turn reaching for a built-in one it cannot use. It is the stated half of the
+// tool lockdown; the read-only sandbox with denied approvals and the disabled built-ins
+// are the enforced half. codex has no --append-system-prompt, so the notice rides the
+// user turn below codex's own harness prompt in authority, which is the honest position:
+// the run steers and the notice states the contract, the sandbox is what enforces it.
+// Managing memory is called out because a confined episode's memory never persists, so
+// any effort spent curating it is wasted.
+const codexCapabilityNotice = "You are running as a governed backend inside Flynn, a sandbox that contains this session. " +
+	"Your only usable tools are the ones provided by the Flynn MCP server (the server named \"flynn\"). " +
+	"Use those tools for every action, including reading and writing files. " +
+	"Do not use, and do not rely on, any built-in tool: no shell or command execution, " +
+	"no native file edits or patches, no web search, and no image viewer. " +
+	"Native writes and commands are blocked by a read-only sandbox with denied approvals, and the other built-ins are turned off, " +
+	"so reaching for one only wastes a turn. " +
+	"Do not read, write, or manage memory of any kind: this session does not persist memory, so managing it is wasted effort. " +
+	"If a task cannot be done with the flynn tools, say so plainly rather than reaching for a built-in tool."
+
 // Detect probes that codex is installed, logged in, and new enough to be constrained
 // to the bridge. It runs codex's own version, auth, and help probes and never starts
 // an episode. A missing binary or a build without the lockdown knobs (the read-only
@@ -114,6 +133,23 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 		// Deny native approvals: with a read-only sandbox and no approval path, codex
 		// cannot escalate to a native write or command; effects must go through the bridge.
 		"-c", "approval_policy=\"never\"",
+		// Turn on codex's rmcp streamable-HTTP MCP client. codex's legacy MCP client only
+		// speaks stdio; a url-configured server with bearer-token auth is not reached, and the
+		// token is not sent, unless the rmcp client is enabled. Without this the child never
+		// authenticates to the bridge and has no governed tools at all, which is codex's own
+		// bridge-reachability blocker, separate from the in-namespace loopback forward. The
+		// key is codex's documented switch for the HTTP client, set as a top-level config
+		// value; recent builds accept it as a compatibility alias.
+		"-c", "experimental_use_rmcp_client=true",
+		// Neutralize the built-in tool surface the CLI exposes so the model's only tools are
+		// the bridged ones. The read-only sandbox with approvals denied already stops native
+		// writes and commands; these deny the two built-ins codex would otherwise run
+		// unobserved: its web search (its own egress, outside the governed gate) and its image
+		// viewer. codex has no flag to deny its shell or patch tools, which the sandbox
+		// contains instead, and its native reads stay possible under a read-only host, matched
+		// by the capability notice telling the model to read through the bridge.
+		"-c", "tools.web_search=false",
+		"-c", "tools.view_image=false",
 		// Point codex's MCP client at the loopback bridge over streamable HTTP, with the
 		// bearer token read from the environment so it is not in the process table.
 		"-c", "mcp_servers." + bridge.Name + ".url=\"" + bridge.URL + "\"",
@@ -130,8 +166,14 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 	args = append(args, "-")
 
 	// The run's instructions reach codex as part of the user turn, below its own harness
-	// prompt in authority. The translator is the one place that mapping is expressed.
-	stdin := promptLayers{system: ep.System, probes: ep.Probes, input: ep.Input}.render()
+	// prompt in authority. The translator is the one place that mapping is expressed. The
+	// capability notice leads the preamble, ahead of the run's standing instruction, so the
+	// model reads the tool contract before the objective.
+	system := codexCapabilityNotice
+	if ep.System != "" {
+		system += "\n\n" + ep.System
+	}
+	stdin := promptLayers{system: system, probes: ep.Probes, input: ep.Input}.render()
 
 	inv := Invocation{
 		Path:            c.bin,

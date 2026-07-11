@@ -54,8 +54,14 @@ func TestCodexCommandLocksDownAndBridges(t *testing.T) {
 	}
 	joined := strings.Join(inv.Args, " ")
 
-	// Native execution is locked down.
-	for _, want := range []string{"exec", "--json", "--sandbox read-only", "--skip-git-repo-check", `approval_policy="never"`} {
+	// Native execution is locked down: read-only sandbox, denied approvals, the rmcp HTTP
+	// client that actually authenticates to the bridge, and the built-in tools codex can be
+	// told to drop (web search, image viewer) turned off.
+	for _, want := range []string{
+		"exec", "--json", "--sandbox read-only", "--skip-git-repo-check",
+		`approval_policy="never"`, "experimental_use_rmcp_client=true",
+		"tools.web_search=false", "tools.view_image=false",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("invocation missing lockdown %q in: %s", want, joined)
 		}
@@ -81,11 +87,37 @@ func TestCodexCommandLocksDownAndBridges(t *testing.T) {
 	if inv.Args[len(inv.Args)-1] != "-" {
 		t.Errorf("turn should be read from stdin (last arg '-'): %s", joined)
 	}
-	if inv.Stdin != "follow the contract\n\ndo the thing" {
-		t.Errorf("system preamble not prepended to the turn: %q", inv.Stdin)
+	// The capability notice leads the preamble, ahead of the run's standing instruction,
+	// which sits ahead of the objective. So the model reads the tool contract, then the
+	// instruction, then the turn.
+	wantStdin := codexCapabilityNotice + "\n\nfollow the contract\n\ndo the thing"
+	if inv.Stdin != wantStdin {
+		t.Errorf("capability notice + system preamble not prepended to the turn:\n got %q\nwant %q", inv.Stdin, wantStdin)
+	}
+	if i := strings.Index(inv.Stdin, "flynn"); i < 0 || strings.Index(inv.Stdin, "do the thing") < i {
+		t.Errorf("capability notice should precede the objective: %q", inv.Stdin)
+	}
+	// The capability notice must name the bridged flynn tools and forbid managing memory,
+	// the same contract the claude notice states, so governance does not depend on which
+	// CLI drove the run.
+	if !strings.Contains(codexCapabilityNotice, "flynn") || !strings.Contains(strings.ToLower(codexCapabilityNotice), "memory") {
+		t.Errorf("the capability notice must name the bridged tools and forbid managing memory")
 	}
 	if inv.LastMessageFile == "" {
 		t.Errorf("no final-message file configured")
+	}
+}
+
+// TestCodexCommandNoticeWithoutSystem checks the capability notice still leads the turn
+// when the run carries no standing instruction, so the tool contract is always stated.
+func TestCodexCommandNoticeWithoutSystem(t *testing.T) {
+	inv, err := NewCodex("codex", nil).Command(Episode{Input: "just this", Bridge: Bridge{Name: "flynn"}})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	want := codexCapabilityNotice + "\n\njust this"
+	if inv.Stdin != want {
+		t.Errorf("notice not prepended with no system instruction:\n got %q\nwant %q", inv.Stdin, want)
 	}
 }
 
