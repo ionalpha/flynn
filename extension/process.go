@@ -76,6 +76,35 @@ type Conn interface {
 	Stop() error
 }
 
+// diagnoser is the optional half of Conn: a connection that retained why its process died.
+// A launcher whose process writes to standard error (a confinement refusal, a bad flag, a
+// panic) implements it so a mount failure can say what the process said.
+type diagnoser interface {
+	// Diagnostics is the retained tail of the process's standard error, or empty.
+	Diagnostics() string
+}
+
+// maxDiagBytes bounds the process output folded into a mount error. The tail is untrusted
+// extension output, so it is bounded like every other value crossing this boundary.
+const maxDiagBytes = 4 << 10
+
+// withConnDiagnostics annotates a mount failure with what the extension process printed
+// before it died. Without this, a process that exits during the MCP handshake surfaces only
+// as an unexplained EOF from the client, and the reason it refused to start (a sandbox that
+// could not confine it, an unreadable binary, a bad fixed argument) is lost. The fault's code
+// and class are preserved, so callers still switch on them; only the message grows.
+func withConnDiagnostics(err error, conn Conn) error {
+	d, ok := conn.(diagnoser)
+	if !ok {
+		return err
+	}
+	tail := strings.TrimSpace(d.Diagnostics())
+	if tail == "" {
+		return err
+	}
+	return fmt.Errorf("%w (extension process said: %s)", err, boundText(tail, maxDiagBytes))
+}
+
 // LaunchRequest is what the handler hands the launcher to start one extension: the
 // verified local binary path, the fixed arguments, and the already-computed effective
 // egress allow-list. The handler has already intersected the spec's requested egress with
@@ -295,6 +324,7 @@ func (h *ProcessHandler) OnLoad(ctx context.Context, m Mount) error {
 
 	tools, err := h.dialAndBuild(dialCtx, m, block, client)
 	if err != nil {
+		err = withConnDiagnostics(err, conn)
 		_ = client.Close()
 		_ = conn.Stop()
 		return err

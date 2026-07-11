@@ -117,6 +117,10 @@ type sessionConn struct {
 func (c *sessionConn) Stdin() io.WriteCloser { return c.sess.Stdin() }
 func (c *sessionConn) Stdout() io.Reader     { return c.sess.Stdout() }
 
+// Diagnostics returns what the extension process wrote to standard error, so a process that
+// dies during the handshake reports why instead of surfacing as a bare EOF.
+func (c *sessionConn) Diagnostics() string { return c.sess.Stderr() }
+
 func (c *sessionConn) Stop() error {
 	_ = c.sess.Stop()
 	_ = c.loc.Close()

@@ -389,3 +389,59 @@ func TestDevResolverRefusesRelativePath(t *testing.T) {
 		t.Fatal("expected a relative dev path to be refused")
 	}
 }
+
+// deadConn stands in for a process that died before it could speak MCP: its stdout is at EOF
+// immediately, and it retained what the process printed to standard error on the way out.
+type deadConn struct{ diag string }
+
+func (c *deadConn) Stdin() io.WriteCloser { return nopWriteCloser{io.Discard} }
+func (c *deadConn) Stdout() io.Reader     { return strings.NewReader("") }
+func (c *deadConn) Stop() error           { return nil }
+func (c *deadConn) Diagnostics() string   { return c.diag }
+
+type nopWriteCloser struct{ io.Writer }
+
+func (nopWriteCloser) Close() error { return nil }
+
+// TestProcessMountReportsProcessStderr proves a mount that fails because the process died
+// reports what the process said, not a bare EOF. Without this, the common failures (the
+// sandbox refusing to confine the binary, an unreadable path, a bad fixed argument) are all
+// indistinguishable from one another at the boundary.
+func TestProcessMountReportsProcessStderr(t *testing.T) {
+	const said = "sandbox: confinement launcher: command not found: /opt/ext/token"
+	h := NewProcessHandler(&deadLauncher{conn: &deadConn{diag: said}}, okResolver{})
+	m := Mount{ID: "ext-1", Name: "token", Surface: SurfaceProcess, Block: json.RawMessage(`{}`)}
+
+	err := h.OnLoad(context.Background(), m)
+	if err == nil {
+		t.Fatal("OnLoad succeeded against a dead process; want a mount failure")
+	}
+	if !strings.Contains(err.Error(), said) {
+		t.Fatalf("mount error lost the process's stderr; got %q, want it to contain %q", err.Error(), said)
+	}
+	// The classified code still identifies the failure, so callers keep switching on it.
+	if !strings.Contains(err.Error(), "extension_process_handshake") {
+		t.Fatalf("mount error lost its fault code; got %q", err.Error())
+	}
+}
+
+// TestProcessMountWithoutDiagnosticsIsUnchanged proves a launcher whose Conn retains nothing
+// (or a process that printed nothing) still surfaces the plain classified failure, so the
+// annotation is additive and never invents a cause.
+func TestProcessMountWithoutDiagnosticsIsUnchanged(t *testing.T) {
+	h := NewProcessHandler(&deadLauncher{conn: &deadConn{diag: "   "}}, okResolver{})
+	m := Mount{ID: "ext-1", Name: "token", Surface: SurfaceProcess, Block: json.RawMessage(`{}`)}
+
+	err := h.OnLoad(context.Background(), m)
+	if err == nil {
+		t.Fatal("OnLoad succeeded against a dead process; want a mount failure")
+	}
+	if strings.Contains(err.Error(), "extension process said") {
+		t.Fatalf("mount error claims the process said something when it said nothing; got %q", err.Error())
+	}
+}
+
+// deadLauncher hands back a Conn whose process is already gone.
+type deadLauncher struct{ conn Conn }
+
+func (l *deadLauncher) Launch(_ context.Context, _ LaunchRequest) (Conn, error) { return l.conn, nil }
