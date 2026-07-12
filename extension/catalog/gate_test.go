@@ -44,12 +44,33 @@ func validateSpec(t *testing.T, name string, raw json.RawMessage) error {
 	if err := ops.RegisterWith(ereg); err != nil {
 		t.Fatalf("register ops handler: %v", err)
 	}
+	if err := ereg.Register(specOnlyProcess{}); err != nil {
+		t.Fatalf("register process handler: %v", err)
+	}
 	loader := extension.NewLoader(ereg)
 	_, err := loader.Load(ctx, resource.Resource{
 		APIVersion: extension.GroupVersion, Kind: extension.Kind, ID: name, Name: name, Spec: raw,
 	})
 	return err
 }
+
+// specOnlyProcess validates a process surface the way the gate needs it validated: it
+// decodes the block and checks nothing else. The production handler resolves the release,
+// which downloads and verifies a signed artifact over the network, and launching an
+// extension is not something a build-time gate should do. What the gate can prove without
+// running anything is that the block a shipped spec carries is well-formed; that it names
+// a release rather than a local binary is proven separately, by the catalog's own source
+// check (TestCatalogRefusesDevSource).
+type specOnlyProcess struct{}
+
+func (specOnlyProcess) Capability() string { return extension.SurfaceProcess }
+
+func (specOnlyProcess) OnLoad(_ context.Context, m extension.Mount) error {
+	var block extension.ProcessBlock
+	return json.Unmarshal(m.Block, &block)
+}
+
+func (specOnlyProcess) OnUnload(context.Context, string) error { return nil }
 
 // TestCatalogGate is the build-time guarantee: every shipped official spec admits
 // and loads. A broken official spec fails here, in CI, not at a user's runtime.

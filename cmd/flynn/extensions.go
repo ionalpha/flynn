@@ -20,11 +20,11 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// runExtensions implements `flynn extensions <subcommand>`: the extension authoring
-// loop. It links a locally-built extension binary, lists what is installed, calls one
-// of its tools to test the round trip, and unlinks it. No release, signing, or
-// download is involved, which is what makes the inner loop fast: build the binary,
-// point flynn at it, call a tool, rebuild, call again.
+// runExtensions implements `flynn extensions <subcommand>`: the surface for both kinds
+// of extension. A bundled one is an official extension this binary ships knowledge of;
+// calling it downloads the signed release, proves its origin, and runs it. A dev one is
+// a locally-built binary linked by path, which is what makes the authoring loop fast:
+// build the binary, point flynn at it, call a tool, rebuild, call again.
 //
 //	flynn extensions dev <name> <binary> [flags]   link a locally-built binary as a dev extension
 //	flynn extensions ls                            list installed extensions and their source
@@ -126,11 +126,12 @@ func extensionsList(ctx context.Context, dataDir string) error {
 	return listExtensions(ctx, rt.store, os.Stdout)
 }
 
-// extensionsCall launches a dev extension confined and invokes one of its tools,
-// printing the result. It is the authoring inner loop's fast feedback: it runs the real
-// path a served agent would (resolve the local binary, launch it inside the sandbox,
-// speak MCP, mount its tools, call one), so a tool that works here works in a run. A
-// released source is refused here on purpose; this command is the dev path only.
+// extensionsCall launches an extension confined and invokes one of its tools, printing
+// the result. It runs the real path a served agent would (resolve the binary, launch it
+// inside the sandbox, speak MCP, mount its tools, call one), so a tool that works here
+// works in a run. A bundled extension resolves through the signed release path: the
+// artifact is downloaded, its origin proven, and only then executed. A dev extension
+// resolves to its local binary, unsigned, under this command's explicit dev opt-in.
 //
 // The tool name may be given bare (mint) or namespaced (token.mint); both resolve to
 // the mounted "<name>.<tool>". Authority to call a tool is enforced separately at the
@@ -551,13 +552,15 @@ func withHostFetcher(fn func(ext, tool string) extension.HostFetcher) extRuntime
 	return func(o *extRuntimeOptions) { o.hostFetcher = fn }
 }
 
-// openExtensionRuntime opens the durable store and wires a loader whose only surface
-// handler is the process handler running in dev mode: it resolves a local dev binary
-// (DevResolver, unsigned but explicitly opted in here) and launches it confined
-// (SandboxLauncher, refuse-rather-than-downgrade). A released source is refused by the
-// dev resolver, so this path can never run remote or unverified code. The scratch jail
-// for each launch lives under the data directory and is removed when the connection
-// stops.
+// openExtensionRuntime opens the durable store, syncs the bundled catalog, and wires a
+// loader whose only surface handler is the process handler: it resolves a released
+// extension by downloading it and proving its origin (ReleaseResolver, pinned signing
+// identity), or a dev extension by its local path (DevResolver, unsigned but explicitly
+// opted in here), and launches whichever it got confined (SandboxLauncher,
+// refuse-rather-than-downgrade). A spec that declares a release is never satisfied by a
+// local binary, so this path cannot be talked into running unverified remote code. The
+// scratch jail for each launch lives under the data directory and is removed when the
+// connection stops.
 func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntimeOption) (*extensionRuntime, error) {
 	var cfg extRuntimeOptions
 	for _, opt := range opts {
@@ -574,6 +577,15 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 		return nil, err
 	}
 	store := durable.Resources(reg)
+	// Sync the bundled catalog, so an official extension shipped with this binary is
+	// listable and callable out of the box, exactly like a bundled API integration. A
+	// bundled process extension names a signed release and resolves through verification;
+	// syncing it installs nothing and downloads nothing, it only records that flynn knows
+	// of it.
+	if _, err := catalog.Sync(ctx, store); err != nil {
+		_ = durable.Close()
+		return nil, err
+	}
 
 	workRoot := filepath.Join(dataDir, "extension-run")
 	if err := os.MkdirAll(workRoot, 0o700); err != nil {

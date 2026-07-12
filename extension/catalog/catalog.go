@@ -92,10 +92,39 @@ func load() {
 			state.err = fmt.Errorf("catalog: duplicate official extension name %q", name)
 			return
 		}
+		if err := checkProcessSource(name, spec); err != nil {
+			state.err = err
+			return
+		}
 		state.reserved[name] = true
 		state.entries = append(state.entries, Entry{Name: name, Spec: spec, Raw: append(json.RawMessage(nil), raw...)})
 	}
 	sort.Slice(state.entries, func(i, j int) bool { return state.entries[i].Name < state.entries[j].Name })
+}
+
+// checkProcessSource enforces the one thing a bundled extension may never be: a path to
+// unsigned local code. A catalog spec ships inside the binary and carries the official
+// name, so a process surface in it must name a published release the resolver can prove
+// the origin of, and must not carry a dev source at all (Release wins over Dev at resolve
+// time, but a bundled spec should not even contain the field). A spec that gets this
+// wrong is a mistake in this repository, and it fails here and in the build-time gate
+// rather than at a user's runtime.
+func checkProcessSource(name string, spec extension.Spec) error {
+	raw, ok := spec.Surfaces[extension.SurfaceProcess]
+	if !ok {
+		return nil
+	}
+	var block extension.ProcessBlock
+	if err := json.Unmarshal(raw, &block); err != nil {
+		return fmt.Errorf("catalog: %s: decode process surface: %w", name, err)
+	}
+	if block.Dev != nil {
+		return fmt.Errorf("catalog: %s: bundled extension declares a dev source; official extensions run only signed releases", name)
+	}
+	if block.Release == nil || block.Release.Asset == "" || block.Release.Version == "" {
+		return fmt.Errorf("catalog: %s: process surface must declare a release with an asset and a version", name)
+	}
+	return nil
 }
 
 // Reserved reports whether a name belongs to an official bundled extension. The
