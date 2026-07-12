@@ -201,3 +201,25 @@ func TestRefusesMalformedPayloads(t *testing.T) {
 		}
 	}
 }
+
+// TestProgramIndexAtTheBoundaryIsRefused pins the exact off-by-one in programOf: a program
+// index EQUAL to the account count is out of range (valid indices are 0..len-1), and must be a
+// clean refusal, never an out-of-bounds panic. Without this case the bounds check `>=` reads
+// the same as `>`, which would step one past the end.
+func TestProgramIndexAtTheBoundaryIsRefused(t *testing.T) {
+	accounts := [][]byte{payer, tokenProgram} // len 2: valid indices are 0 and 1
+	// An instruction whose program index is exactly len(accounts) = 2, one past the end.
+	m := msg(accounts, instruction{programIndex: 2, data: []byte{splMintTo}})
+	if err := policy().Approve(m); err == nil {
+		t.Fatal("a program index one past the last account was accepted; it must be refused, not read out of bounds")
+	}
+
+	// And the parser's accessor must not panic on that index directly.
+	parsed, err := parseMessage(m)
+	if err != nil {
+		t.Fatalf("message did not parse: %v", err)
+	}
+	if _, err := parsed.programOf(instruction{programIndex: uint8(len(accounts))}); err == nil {
+		t.Fatal("programOf accepted an index equal to the account count")
+	}
+}
