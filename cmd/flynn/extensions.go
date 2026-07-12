@@ -188,7 +188,10 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 		// same transaction. The extension proposes and the host disposes, so an extension that
 		// has been compromised outright still cannot obtain a signature over a token it could
 		// later inflate, freeze, or steal.
-		policy := signPolicyFor(*signPolicy, signer)
+		policy, err := signPolicyFor(*signPolicy, signer)
+		if err != nil {
+			return err
+		}
 		runtimeOpts = append(runtimeOpts, withSignPolicy(func(ext, tool string) extension.SignPolicy {
 			if ext == name && tool == bareTool {
 				return policy
@@ -486,7 +489,7 @@ func withSignPolicy(fn func(ext, tool string) extension.SignPolicy) extRuntimeOp
 	return func(o *extRuntimeOptions) { o.signPolicy = fn }
 }
 
-// signPolicyFor turns the --sign-policy choice into the policy the granted key is bound by.
+// signPolicies is every policy this binary is willing to bind a key to, by name.
 //
 // "solana-token" is the real one: it reads the transaction the extension asks to have signed
 // and approves it only if it is a mint that revokes both its authorities, touching only the
@@ -494,11 +497,33 @@ func withSignPolicy(fn func(ext, tool string) extension.SignPolicy) extRuntimeOp
 // is what a developer driving an unreleased extension against a throwaway key needs and what
 // nothing else should ever want. It has to be named to be reached, so nobody arrives at blind
 // signing by forgetting to think about it.
-func signPolicyFor(choice string, signer extension.HostSigner) extension.SignPolicy {
-	if choice == "any" {
-		return extension.AnyPayload{}
+//
+// A second format is a second entry here and a second file in extension/signpolicy. The host
+// package stays free of every one of them: it holds the port, not the knowledge.
+var signPolicies = map[string]func(extension.HostSigner) extension.SignPolicy{
+	"solana-token": func(s extension.HostSigner) extension.SignPolicy {
+		return signpolicy.Solana{Payer: s.Public()}
+	},
+	"any": func(extension.HostSigner) extension.SignPolicy { return extension.AnyPayload{} },
+}
+
+// signPolicyFor turns the --sign-policy choice into the policy the granted key is bound by.
+//
+// A name this binary does not know is an error, not a default. The alternative is a key that
+// gets bound to whichever policy the fallback happened to name, which is the wrong policy by
+// definition: the operator asked for one that does not exist. Silently substituting another
+// would be a key granted for a purpose nobody chose, and a typo would be enough to do it.
+func signPolicyFor(choice string, signer extension.HostSigner) (extension.SignPolicy, error) {
+	build, ok := signPolicies[choice]
+	if !ok {
+		known := make([]string, 0, len(signPolicies))
+		for name := range signPolicies {
+			known = append(known, name)
+		}
+		sort.Strings(known)
+		return nil, fmt.Errorf("unknown --sign-policy %q: known policies are %s", choice, strings.Join(known, ", "))
 	}
-	return signpolicy.Solana{Payer: signer.Public()}
+	return build(signer), nil
 }
 
 // withHostFetcher grants a host-held endpoint to specific mounted tools. fn returns the fetcher a
