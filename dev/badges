@@ -63,3 +63,13 @@ count() { grep -rhE "^func $1[A-Z_]" --include='*_test.go' . | wc -l | tr -d ' '
 emit tests "$(count Test) passing" brightgreen tests.json
 emit fuzz "$(count Fuzz) targets" blue fuzz.json
 emit benchmarks "$(count Benchmark)" blue benchmarks.json
+
+# Packages carrying a property test, by the same rule internal/rigor enforces: a
+# test file that imports the property harness (rapid directly, or testkit, which is
+# built on it). The gate makes this a floor for new packages and burns down the
+# packages that predate it; this badge is the burn-down, visible from the README.
+propertied="$(grep -rlE '"pgregory.net/rapid"|internal/testkit' --include='*_test.go' . |
+  xargs -n1 dirname | sort -u | wc -l | tr -d ' ')"
+packages="$(go list ./... | wc -l | tr -d ' ')"
+
+emit "property tests" "$propertied/$packages pkgs" blueviolet property-tests.json

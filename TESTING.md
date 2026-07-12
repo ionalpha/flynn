@@ -25,13 +25,19 @@ generator or a fault plan once, reuse it in every package.
 
 ## The numbers on the README badges
 
-The coverage, test-count and fuzz-target badges are measured, never typed. After a
-green suite on `main`, CI runs [`dev/badges`](dev/badges), which reads statement
-coverage out of the profile that run just produced and counts the `Test`, `Fuzz` and
-`Benchmark` functions the tree declares. The result is published as shields.io
-endpoint documents on the orphan `badges` branch, which is the only thing the badges
-read. A badge therefore cannot outlive the code it describes: it moves when the
-suite moves, or not at all.
+Every number on a README badge is measured, never typed. After a green suite on
+`main`, CI runs [`dev/badges`](dev/badges), which reads statement coverage out of the
+profile that run just produced, counts the `Test`, `Fuzz` and `Benchmark` functions
+the tree declares, and counts the packages carrying a property test by the same rule
+[`internal/rigor`](internal/rigor) enforces as a gate. The result is published as
+shields.io endpoint documents on the orphan `badges` branch, which is the only thing
+the badges read. A badge therefore cannot outlive the code it describes: it moves
+when the suite moves, or not at all.
+
+The property-test badge is the rigor gate's burn-down, on the front page. The gate
+holds every new package to the floor and lets the list of packages that predate it
+only shrink, so the fraction only goes one way, and it is visible without opening a
+file.
 
 Subtests and table cases are deliberately not counted. That number depends on what a
 particular run expanded, so it would move without the tree moving. The badge counts

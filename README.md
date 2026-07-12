@@ -8,6 +8,7 @@
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/tests.json" alt="Tests"></a>
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/coverage.json" alt="Coverage"></a>
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/fuzz.json" alt="Fuzz targets"></a>
+  <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/property-tests.json" alt="Packages with a property test"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/ionalpha/flynn"><img src="https://api.securityscorecards.dev/projects/github.com/ionalpha/flynn/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
