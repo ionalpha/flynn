@@ -130,10 +130,12 @@ func (p Solana) Approve(payload []byte) error {
 	// permanently fixed and permanently unfreezable. Because a Solana transaction is atomic,
 	// a signature over such a message cannot be used to obtain the mint without the revokes.
 	if mints > 0 {
-		if revokedMint == 0 {
+		// Stated as "at least one", not "not zero": the guard has to hold for every count
+		// the loop above could produce, not just the one it happens to produce today.
+		if revokedMint < 1 {
 			return fmt.Errorf("%w: the message mints tokens but does not revoke the mint authority in the same transaction, so the supply could be inflated afterwards", ErrRefused)
 		}
-		if revokedFreeze == 0 {
+		if revokedFreeze < 1 {
 			return fmt.Errorf("%w: the message mints tokens but does not revoke the freeze authority in the same transaction, so holders could be frozen out of selling", ErrRefused)
 		}
 	}
