@@ -268,8 +268,35 @@ The agent treats its own capabilities as data it can author.
   limits, and safety built in.
 - **It writes its own skills.** When it hits a gap, the agent can author a new skill,
   validate it in a sandbox, and put it to work without a redeploy or a recompile.
+- **Extensions run out of process.** An extension is a separate binary that speaks MCP,
+  launched confined, so a third-party tool never shares the agent's address space. The
+  client is strictly one-directional: an extension answers calls, it cannot drive the
+  agent. `flynn extensions dev <name> <binary>` links a locally built one for authoring,
+  and `flynn extensions call` runs a single tool confined.
 - **Portable.** Every skill is a versioned, attributable resource you can export and
   move between machines.
+
+### Code review
+
+- **A formal verdict, not a comment.** `flynn review <owner>/<repo>#<n>` reviews a pull
+  request under the reviewer archetype: one pass over every changed file, then a sweep
+  for what the per-file passes missed. Each finding lands on the line it concerns, and
+  the verdict links to it.
+- **Findings that persist across pushes.** A standing finding is handed back to the
+  reviewer on the next run so it is rechecked rather than repeated, and a conversation
+  resolves once the finding it raised is gone.
+- **Authority is bounded.** Approval is gated behind an explicit `--approve --as`; by
+  default the reviewer can request changes and comment but never approve. The command
+  exits non-zero when it requests changes, so it drops straight into a pipeline.
+
+### External agent backends
+
+Flynn can drive another coding agent as the model behind a run (`--model claude` or
+`--model codex`) while keeping its own governance around it. The external harness is
+locked to Flynn's bridge: its native tool surface is denied, and only the tools Flynn
+bridges to it are callable, so every action still passes the dispatch waist and lands
+in the run's record as attested events. On platforms without a governed-egress leg the
+command refuses and says so rather than running the child unconfined.
 
 ### Channels and computer use
 
@@ -383,18 +410,62 @@ methods used for systems people depend on.
 
 ## Command reference
 
+Run `flynn` with no arguments for an interactive session, or `flynn --help` for the
+full flag list.
+
+**Running work**
+
 | Command | What it does |
 | --- | --- |
 | `flynn` | Start an interactive session |
-| `flynn goal "<objective>"` | Run a goal to completion |
-| `flynn serve` | Run as a service that answers Telegram and Signal messages |
+| `flynn goal "<objective>"` | Drive a goal to completion in the current directory |
+| `flynn resume <run>` | Continue a parked or interrupted run |
+| `flynn watch` | Watch the working tree for `ai!` / `ai?` markers and run each as a governed turn |
+| `flynn review <pr>` | Review a pull request and submit a formal verdict |
+| `flynn playbook` | List the playbooks, or `playbook run <name>` to run one |
+| `flynn serve` | Run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API |
+| `flynn mcp serve` | Expose the toolset to an MCP client over stdio, every call governed and recorded |
+
+**Inspecting what happened**
+
+| Command | What it does |
+| --- | --- |
+| `flynn runs` | List past runs (id, phase, objective) |
+| `flynn status [<run>]` | Show the live overview, or one run's phase and progress |
+| `flynn ps` | List instances with their live, heartbeat-aware state |
+| `flynn get <kind>` | List resources of a kind (instances, agents, runs, ...) |
+| `flynn describe <kind> <id>` | Show one resource's fields and recent change history |
+| `flynn diff <kind> <a> <b>` | Show the fields that differ between two resources |
+| `flynn inspect <run>` | Replay a past run's recorded events (alias: `replay`) |
+| `flynn spine verify <run>` | Report a run's record tier by tier: integrity, governance, ground truth |
+| `flynn spine export <run>` | Write a sealed run's portable record to a file for third-party verification |
+
+**Capabilities and models**
+
+| Command | What it does |
+| --- | --- |
 | `flynn auth set <provider>` | Store an API key in the encrypted vault |
-| `flynn models` | Browse the model catalog and check which fit your hardware |
-| `flynn runs` | List past runs and sessions |
-| `flynn resume <run>` | Continue a past run |
-| `flynn replay <run>` | Replay a recorded run |
-| `flynn spine verify <run>` | Verify a run's signed, tamper-evident record |
+| `flynn integrations` | List the integrations, show one, or call an operation |
+| `flynn extensions` | Link a local extension, list, call one confined, or unlink |
+| `flynn deps` | List the external tools an integration declares; `deps install <name>` fetches a pinned one |
+| `flynn deploy <extension>` | Deploy through a hosting extension and track the result as a managed service |
+| `flynn services` | List the managed services; `services rm <name>` removes one |
+| `flynn models` | Browse the model catalog (filter with `--local`, `--fit`, `--vram`, ...) |
+| `flynn models install [rt]` | Fetch and verify a pinned local runtime (default: llama.cpp) |
+| `flynn models run <id>` | Provision, serve, and query a local model |
+| `flynn models probe <id>` | Measure a local model's agentic reliability and record its profile |
+| `flynn models check` | Report installed local runtimes and any known parser advisories |
+
+**Maintenance**
+
+| Command | What it does |
+| --- | --- |
+| `flynn regrade` | Re-grade learned skills against the working directory |
+| `flynn db reset` | Move an unusable database aside (backed up) so the next run recreates it |
 | `flynn --version` | Print the version |
+
+Key flags: `--model`, `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`,
+`--max-memory`, `--max-processes`, `--no-learn`, `--data-dir`, `--profile <dir>`.
 
 ## Use it as a library
 
@@ -541,6 +612,11 @@ above is filling in on top of that foundation. Follow
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
 - The learning loop: skills and memory captured from work, reinforced by outcomes, with skills that stop working decayed and archived.
 - An MCP server (`flynn mcp serve`) that exposes the agent's own tools to any MCP client.
+- Out-of-process MCP extensions: a third-party tool runs as a separate confined binary, answering calls over a strictly one-directional client, with `flynn extensions dev` for authoring one locally.
+- Pull-request review (`flynn review`): per-file passes plus a sweep for what they missed, findings anchored to their lines and rechecked across pushes, with approval gated behind an explicit flag.
+- External agent backends (`--model claude`, `--model codex`): another coding agent drives the turn with its native tool surface denied, callable only through Flynn's bridged tools, recorded as attested events.
+- Replay and inspection surfaces: `flynn inspect`/`replay`, `flynn diff` between two resources, `flynn describe` with change history, and `flynn regrade` to re-grade learned skills.
+- Sealed runtime profile bundles (`--profile`): cpu, heap, goroutines, and a sampled timeline under a hashed manifest, with CPU samples attributed to the action that caused them.
 - Credentials sealed in an OS keychain or a passphrase vault, kept out of prompts and logs.
 - A kernel-confined execution sandbox (read-only host, syscall filter) with per-platform adapters on Linux, macOS, and Windows, proven by a red-team containment matrix in CI, refusing rather than silently downgrading where a tier is unavailable.
 - Default-deny outbound egress that blocks SSRF to private, loopback, and cloud-metadata addresses, lint-enforced so nothing dials around it.
@@ -554,12 +630,12 @@ above is filling in on top of that foundation. Follow
 - Multi-agent goal-graph orchestration: fan-out across a dependency graph and missions that outlive a single session.
 - A cost-aware model router in front of the registry.
 - Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
-- User-facing replay and time-travel: `flynn replay`, fork-from-event, and run diff, plus re-grading captured skills by re-folding the spine.
+- Time-travel on top of replay: fork-from-event and run diff.
 - A pluggable embeddings port for stronger local semantic recall.
 
 **On the roadmap**
 
-- Standards: an MCP client for external servers, A2A, Zed ACP, and `agentskills.io` import.
+- Standards: A2A, Zed ACP, and `agentskills.io` import.
 - More reach: Discord, Slack, voice, a built-in browser, desktop GUI, and mobile control.
 - Proactive operation: monitors, drives, and self-formed goals within an autonomy level.
 - The agent authoring and sandbox-testing its own API integrations.
