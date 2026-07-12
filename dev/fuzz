@@ -11,6 +11,11 @@
 # raises it). With no args, covers every package that declares a fuzz
 # target; pass directories to scope, e.g. `dev/fuzz ./state`.
 #
+# FUZZ_SHARD=<k>/<n>, if set, runs only the kth of n slices of the target
+# list, so n jobs can cover every target in parallel. The nightly uses this:
+# its budget is per target, so one job pays the sum of every target's budget
+# while n jobs pay the slowest slice.
+#
 # FUZZ_BASE=<git ref>, if set, scopes the run to targets that the diff since
 # the merge-base with that ref can affect: packages whose own directory
 # changed (including seed corpora) or whose test import graph reaches a
@@ -117,11 +122,35 @@ if [ -n "${FUZZ_BASE:-}" ]; then
 	fi
 fi
 
-fail=0
+# One line per target, "<dir>:<target>". Neither half can contain a space, so
+# the list survives ordinary word splitting.
+targets=''
 for dir in $dirs; do
 	for target in $(grep -h '^func Fuzz' "$dir"/*_test.go | sed -E 's/^func (Fuzz[A-Za-z0-9_]+).*/\1/' | sort -u); do
-		fuzz_one "$dir" "$target" || fail=1
+		targets="$targets$dir:$target
+"
 	done
+done
+
+if [ -n "${FUZZ_SHARD:-}" ]; then
+	k=${FUZZ_SHARD%%/*}
+	n=${FUZZ_SHARD##*/}
+	if ! printf '%s' "$FUZZ_SHARD" | grep -qE '^[1-9][0-9]*/[1-9][0-9]*$' || [ "$k" -gt "$n" ]; then
+		echo "dev/fuzz: FUZZ_SHARD must be <k>/<n> with 1 <= k <= n; got $FUZZ_SHARD" >&2
+		exit 2
+	fi
+	count() { printf '%s' "$1" | awk 'NF { c++ } END { print c + 0 }'; }
+	total=$(count "$targets")
+	# Deal the targets out round-robin rather than in contiguous blocks: a
+	# package's targets sit next to each other in this list and tend to cost
+	# alike, so blocks would pile the slow ones into one shard.
+	targets=$(printf '%s' "$targets" | awk -v k="$k" -v n="$n" 'NR % n == k % n')
+	echo "dev/fuzz: shard $k of $n: $(count "$targets") of $total targets"
+fi
+
+fail=0
+for pair in $targets; do
+	fuzz_one "${pair%%:*}" "${pair##*:}" || fail=1
 done
 
 if [ "$fail" -ne 0 ]; then

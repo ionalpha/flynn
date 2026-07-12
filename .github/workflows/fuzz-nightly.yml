@@ -1,6 +1,11 @@
 # The long-budget sibling of the CI fuzz smoke: same script, same targets,
 # minutes of mutation per target instead of seconds. A crasher fails the run
 # and is uploaded as an artifact so it can be committed as a regression seed.
+#
+# The budget is per target, so one job pays the sum of every target's budget:
+# 80-odd targets at 2m each ran for close to three hours. Fuzz targets are
+# independent, so the run deals them across a matrix instead. Same
+# fuzz-seconds, a fraction of the wall clock.
 name: Fuzz nightly
 
 on:
@@ -13,9 +18,15 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz (long budget)
+    name: Fuzz (long budget) ${{ matrix.shard }}/8
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 60
+    strategy:
+      # A crasher in one slice says nothing about the others, and a nightly
+      # exists to find all of them in one night.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
@@ -23,7 +34,7 @@ jobs:
           go-version: "1.26"
           check-latest: true
           cache: true
-      - run: FUZZTIME=2m ./dev/fuzz
+      - run: FUZZTIME=2m FUZZ_SHARD=${{ matrix.shard }}/8 ./dev/fuzz
       # Collect only new inputs, not the committed seed corpus; see the
       # matching step in ci.yml.
       - name: Collect new crasher inputs
@@ -38,6 +49,8 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: fuzz-crashers
+          # One artifact per shard: the upload rejects a name another job in
+          # the same run already used.
+          name: fuzz-crashers-${{ matrix.shard }}
           path: fuzz-crashers/
           if-no-files-found: ignore
