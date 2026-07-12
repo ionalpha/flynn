@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/chain"
+	"github.com/ionalpha/flynn/externagent"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/ids"
@@ -36,19 +38,34 @@ import (
 func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
-	if err := errExternalAgentUnsupported("an interactive session", modelSpec); err != nil {
-		return err
-	}
-	model, plan, resolvedSpec, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
-	if err != nil {
-		return err
-	}
-	// Report and drive the model that actually resolved, not the default spec that
-	// started resolution: a fallback to an already-configured provider changes it.
-	modelSpec = resolvedSpec
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
+	}
+
+	// The session drives either a model conversation or an external agent CLI. An
+	// external backend brings its own harness, so it resolves to a driver rather than an
+	// llm.Model: the turns still land on one durable run, sealed the same way, but each
+	// turn is an episode of the CLI's own conversation instead of a step of ours.
+	var (
+		model    llm.Model
+		plan     harness.Plan
+		extAgent *externAgent
+	)
+	if name, cliModel, ok := externalAgentSpec(modelSpec); ok {
+		extAgent, err = resolveExternalAgent(ctx, name, cliModel, cwd)
+		if err != nil {
+			return err
+		}
+	} else {
+		var resolvedSpec string
+		model, plan, resolvedSpec, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+		if err != nil {
+			return err
+		}
+		// Report and drive the model that actually resolved, not the default spec that
+		// started resolution: a fallback to an already-configured provider changes it.
+		modelSpec = resolvedSpec
 	}
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
@@ -67,8 +84,12 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		signer = nil
 	}
 
+	// Learning distills a session through a model. An external agent exposes no model of
+	// its own (its inner loop is unobserved), so a session it drives does not distill:
+	// the run is still sealed and verifiable, only the learn-back step is skipped. This
+	// mirrors what a one-shot external run does.
 	var distiller learn.Distiller
-	if learnEnabled {
+	if learnEnabled && extAgent == nil {
 		distiller = governedDistiller(model)
 	}
 
@@ -82,19 +103,21 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	}
 
 	s := &replSession{
-		keys:      keys,
-		theme:     th,
-		out:       &syncWriter{w: os.Stdout},
-		model:     model,
-		plan:      plan,
-		distiller: distiller,
-		verbose:   verbose,
-		cwd:       cwd,
-		store:     store,
-		reg:       reg,
-		signer:    signer,
-		dataDir:   dataDir,
-		modelSpec: modelSpec,
+		keys:         keys,
+		theme:        th,
+		out:          &syncWriter{w: os.Stdout},
+		model:        model,
+		plan:         plan,
+		ext:          extAgent,
+		distiller:    distiller,
+		learnEnabled: learnEnabled,
+		verbose:      verbose,
+		cwd:          cwd,
+		store:        store,
+		reg:          reg,
+		signer:       signer,
+		dataDir:      dataDir,
+		modelSpec:    modelSpec,
 	}
 
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
@@ -147,16 +170,25 @@ func (s *replSession) runLineMode(ctx context.Context, cwd string) error {
 // durable run the turns share, and what the session has accumulated for the learning
 // pass at the end.
 type replSession struct {
-	out       io.Writer
-	model     llm.Model
-	plan      harness.Plan
-	distiller learn.Distiller
-	verbose   bool
-	cwd       string
-	store     *sqlite.Store
-	reg       *resource.Registry
-	keys      editor.Keymap // composer bindings; nil selects the default map
-	theme     *theme.Theme  // session theme; nil selects the default theme
+	out io.Writer
+	// model and plan drive a native session; ext drives an external agent CLI instead.
+	// Exactly one of model and ext is set, chosen by the --model spec, and every place
+	// that assembles a turn branches on ext rather than asking the model what it is.
+	model        llm.Model
+	plan         harness.Plan
+	ext          *externAgent
+	distiller    learn.Distiller
+	learnEnabled bool
+	// provDeclared records that the run's external provenance has been written to its
+	// stream. A record carries one declaration (the first is what a verifier reads), so
+	// it is appended once, at the end of the session, when the tallies are complete.
+	provDeclared bool
+	verbose      bool
+	cwd          string
+	store        *sqlite.Store
+	reg          *resource.Registry
+	keys         editor.Keymap // composer bindings; nil selects the default map
+	theme        *theme.Theme  // session theme; nil selects the default theme
 
 	// signer is the instance identity the session seals its run under; nil when no key
 	// could be loaded, in which case /seal reports the run cannot be sealed rather than
@@ -245,6 +277,13 @@ func (s *replSession) loop(ctx context.Context, in lineReader, sigCh <-chan os.S
 // Ctrl-C on sigCh cancels just this turn (a fresh per-turn runtime is bound to a
 // cancellable context), leaving the session intact for the next line.
 func (s *replSession) runTurn(ctx context.Context, userText string, images []llm.Image, sigCh <-chan os.Signal) (string, error) {
+	if s.ext != nil && len(images) > 0 {
+		// The turn reaches the CLI as text on its stdin, so an attachment has nowhere to go.
+		// Refusing is the honest answer: dropping it silently would leave the user reasoning
+		// about an image the agent never saw.
+		return "", fmt.Errorf("a %s session takes text turns only: it has no way to carry an image attachment to the external agent", s.ext.driver.Name())
+	}
+
 	turnCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -288,7 +327,18 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		return "", err
 	}
 
-	run, err := assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID, sandbox.ResourceLimits{})
+	var (
+		run *missionRun
+		err error
+	)
+	if s.ext != nil {
+		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
+		// grant, and governance recording as a native turn, but the turn is an episode of
+		// the CLI's own conversation rather than a step of ours.
+		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID, sandbox.ResourceLimits{})
+	} else {
+		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID, sandbox.ResourceLimits{})
+	}
 	if err != nil {
 		return "", err
 	}
@@ -327,6 +377,10 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userTe
 			Objective:     objective,
 			Attachments:   images,
 			StopCondition: "the objective is fully accomplished",
+			// The model the loop drives. Empty for a native session (the session's own model
+			// applies); for an external agent it is the CLI's model string, so `flynn --model
+			// claude:<model>` pins the model the CLI itself runs.
+			Model: externalModel(s.ext),
 		}); err != nil {
 			return "", err
 		}
@@ -374,7 +428,13 @@ func (s *replSession) reopen(ctx context.Context, userText string, images []llm.
 	if err != nil {
 		return err
 	}
-	status, err = mission.ContinueConversation(status, userText, images...)
+	if s.ext != nil {
+		// An external turn continues the conversation the CLI holds: the transcript lives
+		// inside the harness, so the goal carries the handle to it, not a copy of it.
+		status, err = externagent.ContinueEpisode(status, userText)
+	} else {
+		status, err = mission.ContinueConversation(status, userText, images...)
+	}
 	if err != nil {
 		return err
 	}
@@ -383,6 +443,23 @@ func (s *replSession) reopen(ctx context.Context, userText string, images []llm.
 		return err
 	}
 	r.Status = enc
+	// A /model switch inside an external session changes the model the CLI drives on the
+	// next episode, which lives on the goal's spec. Write it with the reopened status, so
+	// one write reopens the goal and retargets it.
+	if s.ext != nil {
+		spec, derr := goal.DecodeSpec(r)
+		if derr != nil {
+			return derr
+		}
+		if spec.Model != s.ext.model {
+			spec.Model = s.ext.model
+			raw, merr := json.Marshal(spec)
+			if merr != nil {
+				return merr
+			}
+			r.Spec = raw
+		}
+	}
 	_, err = rs.Put(ctx, r)
 	return err
 }
@@ -397,6 +474,7 @@ func (s *replSession) finish(ctx context.Context) error {
 		_, _ = fmt.Fprintln(s.out, "goodbye.")
 		return nil
 	}
+	s.declareProvenance(ctx)
 	if len(s.recalled) > 0 {
 		_ = learn.Reinforce(ctx, s.store.Skills(), s.recalled, s.converged)
 	}
@@ -519,21 +597,51 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 		return nil
 	}
 	spec := args[0]
-	if err := errExternalAgentUnsupported("an interactive session", spec); err != nil {
-		return fmt.Errorf("/model %s: %w", spec, err)
+	name, cliModel, isExt := externalAgentSpec(spec)
+
+	switch {
+	case isExt && s.ext != nil && s.ext.driver.Name() == name:
+		// Same harness, different model: the CLI keeps driving, and the next episode runs
+		// the model named here. The conversation the CLI holds is not disturbed, which is
+		// the point of switching rather than restarting.
+		s.ext.model = cliModel
+
+	case s.started && (isExt || s.ext != nil):
+		// The run's record declares which harness drove it, and a record states one
+		// provenance for the whole run. Swapping the harness mid-run would seal a record
+		// whose declaration is true of only part of it, so the swap is refused rather than
+		// quietly producing that. A new session is one line away.
+		return fmt.Errorf("/model %s: this run is already being driven by %s, and a run's record declares the one harness that drove it. "+
+			"Leave and start a new session to drive %s", spec, s.harnessName(), spec)
+
+	case isExt:
+		// Nothing has run yet, so the session is free to become an external one.
+		ea, err := resolveExternalAgent(ctx, name, cliModel, s.cwd)
+		if err != nil {
+			return fmt.Errorf("/model %s: %w", spec, err)
+		}
+		s.ext = ea
+		s.model, s.plan = nil, harness.Plan{}
+		// An external harness exposes no model to distill through, so a session it drives
+		// does not learn back. The one-shot path skips it for the same reason.
+		s.distiller = nil
+
+	default:
+		model, plan, err := resolveModel(ctx, spec, s.dataDir)
+		if err != nil {
+			return fmt.Errorf("/model %s: %w", spec, err)
+		}
+		s.model = model
+		s.plan = plan
+		s.ext = nil
+		// A distilling session learns through the model, so keep the distiller on the model
+		// the session now drives.
+		if s.learnEnabled {
+			s.distiller = governedDistiller(model)
+		}
 	}
-	model, plan, err := resolveModel(ctx, spec, s.dataDir)
-	if err != nil {
-		return fmt.Errorf("/model %s: %w", spec, err)
-	}
-	s.model = model
-	s.plan = plan
+
 	s.modelSpec = spec
-	// A distilling session learns through the model, so keep the distiller on the model
-	// the session now drives.
-	if s.distiller != nil {
-		s.distiller = governedDistiller(model)
-	}
 	if err := writeActiveModel(s.dataDir, spec); err != nil {
 		// The switch still holds for this session; only persistence failed.
 		_, _ = fmt.Fprintf(out, "  switched to %s (could not save it as the default: %v)\n", spec, err)
@@ -541,6 +649,42 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 	}
 	_, _ = fmt.Fprintf(out, "  switched to %s; saved as the default for the next run\n", spec)
 	return nil
+}
+
+// declareProvenance writes the run's provenance onto its stream when an external agent
+// harness drove the session: the record then vouches for the enforced effects (every
+// tool call crossed the dispatch waist) while naming the harness's inner reasoning as an
+// unobserved gap, so an external run never claims the integrity of a native one. The
+// absence of this declaration is what marks a record as natively driven, so a session
+// the CLI drove must not be sealed without it.
+//
+// It is written once, and late: a verifier reads the first declaration a record carries,
+// and the tallies it declares (the attested events, the harness's tool-choice rate) are
+// only complete once the session's episodes have all run. A native session declares
+// nothing, which is what says its own loop drove it.
+func (s *replSession) declareProvenance(ctx context.Context) {
+	if s.ext == nil || s.provDeclared || !s.started {
+		return
+	}
+	s.provDeclared = true
+	if err := appendProvenance(ctx, s.store.Log(), s.runID, observedProvenance(s.ext)); err != nil {
+		_, _ = fmt.Fprintf(s.out, "  (provenance not recorded: %v)\n", err)
+		return
+	}
+	// An event the harness reported that the record could not hold is a hole in the
+	// harness's account of itself. The declaration names every event it reported, so a
+	// verifier sees the gap from the record alone; saying it here tells the operator why.
+	if lost, lerr := unrecordedAttested(s.ext); lost > 0 {
+		_, _ = fmt.Fprintf(s.out, "  (%d attested event(s) not recorded: %v)\n", lost, lerr)
+	}
+}
+
+// harnessName names what is driving the session, for a message that has to say so.
+func (s *replSession) harnessName() string {
+	if s.ext != nil {
+		return s.ext.driver.Name()
+	}
+	return s.modelSpec
 }
 
 // seal signs the session's run into a verifiable record stored on its stream. It needs a
@@ -554,6 +698,10 @@ func (s *replSession) seal(ctx context.Context) error {
 	if s.signer == nil {
 		return errors.New("cannot seal: no instance signing key is available")
 	}
+	// An external run's record must carry its provenance declaration before it is sealed,
+	// or the sealed record reads as though Flynn's own loop drove it: the exact overclaim
+	// the declaration exists to prevent.
+	s.declareProvenance(ctx)
 	return sealRunFromStore(ctx, s.store, s.runID, s.signer)
 }
 

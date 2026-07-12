@@ -53,21 +53,25 @@ func externalAgentNames() []string {
 }
 
 // errExternalAgentUnsupported reports that command cannot drive modelSpec because the
-// spec names an external agent, and points at the invocations that can. An external
-// agent brings its own harness and drives its own loop, so a command built around
-// turn-by-turn conversation with a model (an interactive session) or a long-lived
-// server cannot host one. Without this the spec falls through to the native provider
-// resolver, which has never heard of the backend and rejects it as an unknown
-// provider: true, but no help at all. It returns nil when the spec names a model.
+// spec names an external agent, and points at the invocations that can. A long-lived
+// server answers many independent requests, and an external agent's episode is one
+// conversation the CLI holds; nothing decides which request continues which
+// conversation, so the combination is refused rather than guessed at. Without this the
+// spec falls through to the native provider resolver, which has never heard of the
+// backend and rejects it as an unknown provider: true, but no help at all.
+//
+// It returns nil when the spec names a model, so a normal run is never blocked.
 func errExternalAgentUnsupported(command, modelSpec string) error {
 	name, _, ok := externalAgentSpec(modelSpec)
 	if !ok {
 		return nil
 	}
-	return fmt.Errorf("%s cannot drive the %s external agent backend: it brings its own harness and drives its own loop. "+
-		"Run it on a goal instead, `flynn --model %s \"<objective>\"`, or on a review, `flynn review <owner/repo#n> --model %s`. "+
-		"To stay here, name a model provider (see `flynn models`)",
-		command, name, modelSpec, modelSpec)
+	return fmt.Errorf("%s cannot drive the %s external agent backend: it brings its own harness and holds its own conversation, "+
+		"which has no meaning across a server's independent requests. "+
+		"Drive it from a session, `flynn --model %s`, a goal, `flynn --model %s goal \"<objective>\"`, "+
+		"or a review, `flynn review <owner/repo#n> --model %s`. "+
+		"To run %s itself, name a model provider (see `flynn models`)",
+		command, name, modelSpec, modelSpec, modelSpec, command)
 }
 
 // externAgent is a resolved external-agent backend: the driver that builds the

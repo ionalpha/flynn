@@ -226,6 +226,12 @@ func (c *Claude) Command(ep Episode) (Invocation, error) {
 	if ep.Model != "" {
 		args = append(args, "--model", ep.Model)
 	}
+	// Continue the conversation the CLI already holds, rather than opening a new one and
+	// replaying a transcript it never wrote. The id came from the CLI's own stream on an
+	// earlier episode of this run, so only a session that already ran one has it.
+	if ep.Session != "" {
+		args = append(args, "--resume", ep.Session)
+	}
 	// The allow and deny tool lists are variadic and come last, so the parser reads every
 	// tool name into the right list and no positional argument follows them. The turn is
 	// read from stdin, so there is no prompt argument to be captured by a variadic flag.
@@ -287,13 +293,14 @@ func claudeMCPConfig(bridge Bridge) (string, error) {
 // per line. Only the fields the projection needs are decoded; the rest is preserved in
 // Raw.
 type claudeEvent struct {
-	Type    string          `json:"type"`
-	Subtype string          `json:"subtype"`
-	IsError bool            `json:"is_error"`
-	Result  string          `json:"result"`
-	Message *claudeMessage  `json:"message"`
-	Usage   *claudeUsage    `json:"usage"`
-	Raw     json.RawMessage `json:"-"`
+	Type      string          `json:"type"`
+	Subtype   string          `json:"subtype"`
+	IsError   bool            `json:"is_error"`
+	Result    string          `json:"result"`
+	SessionID string          `json:"session_id"`
+	Message   *claudeMessage  `json:"message"`
+	Usage     *claudeUsage    `json:"usage"`
+	Raw       json.RawMessage `json:"-"`
 }
 
 // claudeMessage is the model turn carried by an assistant or user event. Its content is a
@@ -338,19 +345,24 @@ func (c *Claude) Parse(line []byte) ([]Event, error) {
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: cloneRaw(line)}}, nil //nolint:nilerr // noise is recorded, not fatal
 	}
 	raw := cloneRaw(line)
+	var out []Event
 	switch ev.Type {
 	case "assistant":
-		return c.projectMessage(ev.Message, raw), nil
+		out = c.projectMessage(ev.Message, raw)
 	case "result":
-		return c.projectResult(ev, raw), nil
+		out = c.projectResult(ev, raw)
 	case "error":
-		return []Event{{Kind: EventError, Err: ev.Result, Terminal: terminalClaudeError(ev.Subtype + " " + ev.Result), Tier: TierAttested, Raw: raw}}, nil
+		out = []Event{{Kind: EventError, Err: ev.Result, Terminal: terminalClaudeError(ev.Subtype + " " + ev.Result), Tier: TierAttested, Raw: raw}}
 	default:
 		// system/init, rate_limit_event, a user tool_result, and any unfamiliar type are
 		// attested progress: they carry no result of their own, and the enforced side of a
 		// bridged call is recorded at the waist, not from the CLI's echo of it.
-		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}, nil
+		out = []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}
 	}
+	// Every line of the stream carries the conversation id, starting with system/init.
+	// Stamping it on the projections is what lets a later episode continue this
+	// conversation instead of opening a new one.
+	return withSession(out, ev.SessionID), nil
 }
 
 // projectMessage projects an assistant message's blocks to typed events. Each block is

@@ -364,3 +364,45 @@ func mustParseOneClaude(t *testing.T, c *Claude, line string) Event {
 	}
 	return evs[0]
 }
+
+// TestClaudeContinuesItsOwnConversation is the property an interactive session rests on:
+// the CLI announces the conversation it opened, and handing that id back on a later
+// episode continues it rather than opening a cold one. Only the CLI has the
+// conversation, so this is the only way a multi-turn session can give the harness the
+// context of its own earlier turns.
+func TestClaudeContinuesItsOwnConversation(t *testing.T) {
+	c := NewClaude("claude", nil)
+
+	// The CLI announces the conversation on the first line of the stream, and every
+	// projection off that line carries it.
+	init := mustParseOneClaude(t, c, `{"type":"system","subtype":"init","session_id":"sess-42","model":"claude-opus-4-8"}`)
+	if init.Session != "sess-42" {
+		t.Fatalf("init did not report the conversation id: %+v", init)
+	}
+	text := mustParseOneClaude(t, c, `{"type":"assistant","session_id":"sess-42","message":{"role":"assistant","content":[{"type":"text","text":"hi"}]}}`)
+	if text.Session != "sess-42" {
+		t.Errorf("assistant event did not carry the conversation id: %+v", text)
+	}
+
+	// A fresh episode opens a new conversation: nothing to resume.
+	fresh, err := c.Command(Episode{Input: "first turn"})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if strings.Contains(strings.Join(fresh.Args, " "), "--resume") {
+		t.Errorf("a first episode must not resume anything: %v", fresh.Args)
+	}
+
+	// A later turn of the same session resumes the conversation the CLI reported.
+	next, err := c.Command(Episode{Input: "second turn", Session: "sess-42"})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if !strings.Contains(strings.Join(next.Args, " "), "--resume sess-42") {
+		t.Errorf("a later episode must continue the CLI's conversation: %v", next.Args)
+	}
+	// The turn itself is still what the user just typed, not a replayed transcript.
+	if !strings.Contains(next.Stdin, "second turn") {
+		t.Errorf("the turn's input did not reach the CLI: %q", next.Stdin)
+	}
+}

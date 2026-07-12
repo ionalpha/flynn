@@ -298,6 +298,28 @@ bridges to it are callable, so every action still passes the dispatch waist and 
 in the run's record as attested events. On platforms without a governed-egress leg the
 command refuses and says so rather than running the child unconfined.
 
+Either backend drives a one-shot goal, a pull-request review, or an interactive
+session:
+
+```bash
+flynn --model claude                            # chat, turn by turn, through the CLI
+flynn --model codex:gpt-5-codex goal "fix the flaky test"
+flynn review owner/repo#123 --model claude
+```
+
+In a session the conversation belongs to the CLI: each turn continues the conversation
+the harness itself holds, so it answers with the context of the turns before it. The
+run is still one durable, sealed record on Flynn's side. `/model claude:<other-model>`
+retargets the model the CLI drives from the next turn on, without disturbing that
+conversation. Switching to a different harness mid-run is refused: a record declares
+the one harness that drove it, so the swap belongs in a new session.
+
+A session driven by an external agent does not learn back into Flynn's skills and
+memory, and `/compact` does not apply to it: the harness holds the conversation and
+manages its own context. `flynn serve` and `flynn watch` do not take an external
+backend, because a server's independent requests have no single conversation to
+continue.
+
 ### Channels and computer use
 
 - **Real tools on a real machine.** A sandboxed, path-confined toolset for the

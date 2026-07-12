@@ -7,30 +7,35 @@ import (
 	"github.com/ionalpha/flynn/externagent"
 )
 
-// TestExternalAgentUnsupportedNamesTheWayOut: a command that cannot host an external
-// agent must say so and name an invocation that works. Left to the native resolver the
-// spec is rejected as an unknown provider, which is true and useless: the backend does
-// exist, it just cannot drive a turn-by-turn session. A model spec passes through
-// untouched, so the guard never blocks a normal run.
+// TestExternalAgentUnsupportedNamesTheWayOut: a server cannot host an external agent
+// (its episode is one conversation the CLI holds, and nothing decides which of a
+// server's independent requests continues which conversation), so it must refuse the
+// spec and name a command that does drive it. Left to the native resolver the spec is
+// rejected as an unknown provider, which is true and useless: the backend does exist.
+// A model spec passes through untouched, so a normal run is never blocked.
 func TestExternalAgentUnsupportedNamesTheWayOut(t *testing.T) {
-	for _, spec := range []string{"claude", "codex", "codex:gpt-5-codex"} {
-		err := errExternalAgentUnsupported("an interactive session", spec)
-		if err == nil {
-			t.Fatalf("%q: an interactive session cannot drive an external agent, want a refusal", spec)
+	for _, command := range []string{"serve", "watch"} {
+		for _, spec := range []string{"claude", "codex", "codex:gpt-5-codex"} {
+			err := errExternalAgentUnsupported(command, spec)
+			if err == nil {
+				t.Fatalf("%s %q: a server cannot drive an external agent, want a refusal", command, spec)
+			}
+			msg := err.Error()
+			name, _, _ := externalAgentSpec(spec)
+			if !strings.Contains(msg, name) {
+				t.Errorf("%s %q: refusal does not name the backend: %s", command, spec, msg)
+			}
+			// The ways out have to be in the message, or the user is left guessing.
+			for _, want := range []string{"flynn --model " + spec + "`", "goal \"<objective>\"", "flynn review"} {
+				if !strings.Contains(msg, want) {
+					t.Errorf("%s %q: refusal does not name %q as a way to run it: %s", command, spec, want, msg)
+				}
+			}
 		}
-		msg := err.Error()
-		name, _, _ := externalAgentSpec(spec)
-		if !strings.Contains(msg, name) {
-			t.Errorf("%q: refusal does not name the backend: %s", spec, msg)
-		}
-		// The way out has to be in the message, or the user is left guessing.
-		if !strings.Contains(msg, "--model "+spec+" \"<objective>\"") || !strings.Contains(msg, "flynn review") {
-			t.Errorf("%q: refusal does not name a working invocation: %s", spec, msg)
-		}
-	}
-	for _, spec := range []string{"anthropic", "anthropic:claude-opus-4-8", "openai:gpt-5.5", "ollama:llama3.2:3b"} {
-		if err := errExternalAgentUnsupported("an interactive session", spec); err != nil {
-			t.Errorf("%q is a model spec, not an external agent, but was refused: %v", spec, err)
+		for _, spec := range []string{"anthropic", "anthropic:claude-opus-4-8", "openai:gpt-5.5", "ollama:llama3.2:3b"} {
+			if err := errExternalAgentUnsupported(command, spec); err != nil {
+				t.Errorf("%q is a model spec, not an external agent, but %s refused it: %v", spec, command, err)
+			}
 		}
 	}
 }

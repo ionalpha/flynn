@@ -124,8 +124,15 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 	}
 	lastMsg := "codex-last-message.txt"
 
-	args := []string{
-		"exec",
+	// Continue the conversation the CLI already holds instead of opening a new one: codex
+	// takes the thread it announced on an earlier episode as the resume subcommand's
+	// argument, and every exec flag below still applies to it. Only a session that has
+	// already run an episode of this run has an id to give.
+	args := []string{"exec"}
+	if ep.Session != "" {
+		args = append(args, "resume", ep.Session)
+	}
+	args = append(args,
 		"--json",
 		"--sandbox", "read-only",
 		"--skip-git-repo-check",
@@ -152,9 +159,9 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 		"-c", "tools.view_image=false",
 		// Point codex's MCP client at the loopback bridge over streamable HTTP, with the
 		// bearer token read from the environment so it is not in the process table.
-		"-c", "mcp_servers." + bridge.Name + ".url=\"" + bridge.URL + "\"",
-		"-c", "mcp_servers." + bridge.Name + ".bearer_token_env_var=\"" + bridge.TokenEnv + "\"",
-	}
+		"-c", "mcp_servers."+bridge.Name+".url=\""+bridge.URL+"\"",
+		"-c", "mcp_servers."+bridge.Name+".bearer_token_env_var=\""+bridge.TokenEnv+"\"",
+	)
 	if ep.Workdir != "" {
 		args = append(args, "-C", ep.Workdir)
 	}
@@ -190,12 +197,15 @@ func (c *Codex) Command(ep Episode) (Invocation, error) {
 // codexEvent is the envelope codex exec --json emits, one JSON object per line. Only
 // the fields the projection needs are decoded; the rest is preserved in Raw.
 type codexEvent struct {
-	Type    string          `json:"type"`
-	Message string          `json:"message"`
-	Error   *codexErr       `json:"error"`
-	Usage   *codexUsage     `json:"usage"`
-	Item    *codexItem      `json:"item"`
-	Raw     json.RawMessage `json:"-"`
+	Type    string `json:"type"`
+	Message string `json:"message"`
+	// ThreadID is the conversation the CLI opened or resumed, announced on thread.started.
+	// codex calls it a thread; it is the id its `exec resume` takes.
+	ThreadID string          `json:"thread_id"`
+	Error    *codexErr       `json:"error"`
+	Usage    *codexUsage     `json:"usage"`
+	Item     *codexItem      `json:"item"`
+	Raw      json.RawMessage `json:"-"`
 }
 
 type codexErr struct {
@@ -245,37 +255,42 @@ func (c *Codex) Parse(line []byte) ([]Event, error) {
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: cloneRaw(line)}}, nil //nolint:nilerr // noise is recorded, not fatal
 	}
 	raw := cloneRaw(line)
+	var out []Event
 	switch ev.Type {
 	case "turn.completed":
 		e := Event{Kind: EventDone, Tier: TierAttested, Raw: raw}
 		if ev.Usage != nil {
 			e.Usage = Usage{InputTokens: ev.Usage.InputTokens, OutputTokens: ev.Usage.OutputTokens}
 		}
-		return []Event{e}, nil
+		out = []Event{e}
 	case "error":
-		return []Event{{Kind: EventError, Err: ev.Message, Terminal: terminalCodexError(ev.Message), Tier: TierAttested, Raw: raw}}, nil
+		out = []Event{{Kind: EventError, Err: ev.Message, Terminal: terminalCodexError(ev.Message), Tier: TierAttested, Raw: raw}}
 	case "turn.failed":
 		msg := ""
 		if ev.Error != nil {
 			msg = ev.Error.Message
 		}
-		return []Event{{Kind: EventError, Err: msg, Terminal: terminalCodexError(msg), Tier: TierAttested, Raw: raw}}, nil
+		out = []Event{{Kind: EventError, Err: msg, Terminal: terminalCodexError(msg), Tier: TierAttested, Raw: raw}}
 	case "item.completed":
 		// Only a completed item is projected to a typed tool event. codex emits
 		// item.started for the same call and item.updated as it progresses, so projecting
 		// any of those too would count one call two or three times and skew the steering
 		// metrics the tuning depends on.
-		return []Event{c.projectItem(ev.Item, raw)}, nil
+		out = []Event{c.projectItem(ev.Item, raw)}
 	case "item.started", "item.updated":
 		// An assistant message is projected as it appears, so the live trace streams text
 		// rather than waiting for the turn. Everything else waits for item.completed.
 		if ev.Item != nil && isAgentMessage(ev.Item.Type) && ev.Item.Text != "" && ev.Type == "item.started" {
-			return []Event{{Kind: EventText, Text: ev.Item.Text, Tier: TierAttested, Raw: raw}}, nil
+			out = []Event{{Kind: EventText, Text: ev.Item.Text, Tier: TierAttested, Raw: raw}}
+		} else {
+			out = []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}
 		}
-		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}, nil
 	default:
-		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}, nil
+		out = []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}
 	}
+	// thread.started announces the conversation id; stamping it on the projections is
+	// what lets a later episode continue this thread instead of opening a new one.
+	return withSession(out, ev.ThreadID), nil
 }
 
 // projectItem projects a completed thread item to a typed event. A bridge call and a

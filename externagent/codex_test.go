@@ -204,3 +204,40 @@ func mustParseOne(t *testing.T, c *Codex, line string) Event {
 	}
 	return evs[0]
 }
+
+// TestCodexContinuesItsOwnThread is codex's half of the interactive-session contract: it
+// announces the thread it opened on thread.started, and resumes that thread when a later
+// episode hands the id back. The exec flags must survive the resume subcommand, or the
+// continued turn would run unconstrained.
+func TestCodexContinuesItsOwnThread(t *testing.T) {
+	c := NewCodex("codex", nil)
+
+	started := mustParseOne(t, c, `{"type":"thread.started","thread_id":"th-7"}`)
+	if started.Session != "th-7" {
+		t.Fatalf("thread.started did not report the thread id: %+v", started)
+	}
+
+	fresh, err := c.Command(Episode{Input: "first turn"})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	if strings.Contains(strings.Join(fresh.Args, " "), "resume") {
+		t.Errorf("a first episode must not resume anything: %v", fresh.Args)
+	}
+
+	next, err := c.Command(Episode{Input: "second turn", Session: "th-7"})
+	if err != nil {
+		t.Fatalf("Command: %v", err)
+	}
+	joined := strings.Join(next.Args, " ")
+	if !strings.Contains(joined, "exec resume th-7") {
+		t.Errorf("a later episode must continue the CLI's thread: %v", next.Args)
+	}
+	// The lockdown is not optional on a resumed turn: the same sandbox, the same denied
+	// approvals, the same bridge. A resumed episode that lost these would run natively.
+	for _, want := range []string{"--json", "--sandbox read-only", "approval_policy=\"never\""} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("resumed episode lost %q from its lockdown: %v", want, next.Args)
+		}
+	}
+}

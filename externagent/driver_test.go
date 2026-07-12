@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -414,4 +415,89 @@ func (c *ctxRecorder) Record(ctx context.Context, ev Event) error {
 		return err
 	}
 	return c.captureRecorder.Record(ctx, ev)
+}
+
+// TestDriverContinuesTheHarnessConversationAcrossTurns is what an interactive session
+// rests on. The conversation lives inside the CLI: this side never sees it and could not
+// faithfully replay it. So a second turn must hand the CLI back the conversation it
+// announced, and put only the new turn to it. If the id were dropped, every turn would
+// open a cold session and the user would be talking to an agent with no memory of the
+// last thing it said; if the turn text were dropped, the harness would just re-run the
+// original objective.
+func TestDriverContinuesTheHarnessConversationAcrossTurns(t *testing.T) {
+	workdir := t.TempDir()
+	var (
+		mu    sync.Mutex
+		saw   []Episode // one per episode, in order
+		turns int
+	)
+	spawner := scriptSpawner(func(ep Episode, inv Invocation, pw *io.PipeWriter) {
+		satisfyProbe(ep)
+		mu.Lock()
+		saw = append(saw, ep)
+		turns++
+		n := turns
+		mu.Unlock()
+		// The CLI announces the conversation it is in. It opens one on the first episode
+		// and reports that same one when resumed, exactly as both real CLIs do.
+		_, _ = fmt.Fprintln(pw, `{"type":"thread.started","thread_id":"th-99"}`)
+		_, _ = fmt.Fprintln(pw, `{"type":"turn.completed"}`)
+		_ = os.WriteFile(filepath.Join(ep.Workdir, inv.LastMessageFile), fmt.Appendf(nil, "answer %d", n), 0o644)
+	})
+	d, spec := driverWith(t, workdir, spawner)
+
+	exec, stop, err := d.Build(spec)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	gspec := goal.Spec{Objective: "the opening line", StopCondition: "done", Grant: []string{"read"}}
+
+	// Turn one: a fresh conversation, driven by the goal's objective.
+	ckpt, err := exec.Execute(context.Background(), goalResource(t, "g1", gspec, nil))
+	if err != nil {
+		t.Fatalf("Execute turn 1: %v", err)
+	}
+	met, reason, err := stop.Met(context.Background(), gspec, goal.Status{Checkpoint: ckpt})
+	if err != nil || !met || reason != "answer 1" {
+		t.Fatalf("turn 1 did not converge on its answer: met=%v reason=%q err=%v", met, reason, err)
+	}
+
+	// The session puts a second line to the same run.
+	status, err := ContinueEpisode(goal.Status{Checkpoint: ckpt}, "and now the second line")
+	if err != nil {
+		t.Fatalf("ContinueEpisode: %v", err)
+	}
+	if status.Phase == goal.PhaseConverged {
+		t.Fatal("a reopened turn must not still be converged, or nothing would drive it")
+	}
+
+	r := goalResource(t, "g1", gspec, status.Checkpoint)
+	ckpt2, err := exec.Execute(context.Background(), r)
+	if err != nil {
+		t.Fatalf("Execute turn 2: %v", err)
+	}
+	if _, reason, _ := stop.Met(context.Background(), gspec, goal.Status{Checkpoint: ckpt2}); reason != "answer 2" {
+		t.Errorf("turn 2 returned %q, want its own answer", reason)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(saw) != 2 {
+		t.Fatalf("ran %d episodes, want 2", len(saw))
+	}
+	// Turn one opened the conversation; turn two continued the one the CLI named.
+	if saw[0].Session != "" {
+		t.Errorf("the first episode resumed something: %q", saw[0].Session)
+	}
+	if saw[1].Session != "th-99" {
+		t.Errorf("the second episode did not continue the CLI's conversation: %q", saw[1].Session)
+	}
+	// Turn two puts the new line, not the original objective, to a harness that already
+	// holds the context of turn one.
+	if !strings.Contains(saw[0].Input, "the opening line") {
+		t.Errorf("the first episode's input was %q, want the objective", saw[0].Input)
+	}
+	if saw[1].Input != "and now the second line" {
+		t.Errorf("the second episode's input was %q, want the new turn", saw[1].Input)
+	}
 }

@@ -81,6 +81,10 @@ type Result struct {
 	// tools. It is the evidence that the run's instructions took, rather than the
 	// assumption that they did.
 	Conformance ConformanceReport
+	// Session is the conversation id the CLI announced, empty when it announced none.
+	// Handing it back on a later Episode continues that conversation, which is how a
+	// multi-turn session keeps the harness's own context across turns.
+	Session string
 }
 
 // Run hosts the bridge, runs one episode of ep, and returns its Result. ctx must
@@ -220,6 +224,11 @@ func (r *Runner) emit(ev Event) {
 // and the provenance-tier tally.
 func (res *Result) absorb(ev Event) {
 	res.Tiers[ev.Tier]++
+	// Any event may carry the conversation id (both harnesses announce it on the first
+	// line and repeat it), so it is read off the event rather than off a kind.
+	if ev.Session != "" {
+		res.Session = ev.Session
+	}
 	switch ev.Kind {
 	case EventText:
 		if ev.Text != "" {

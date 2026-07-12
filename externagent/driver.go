@@ -272,12 +272,20 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 		ctx = budget.Into(ctx, pool)
 	}
 
+	// The turn to put to the harness: a later turn of an interactive session carries its
+	// own input, and the CLI already holds the conversation the earlier turns built, so
+	// the episode continues that conversation rather than restating the objective.
+	input := cp.Input
+	if input == "" {
+		input = objective(spec)
+	}
 	res, err := runner.Run(ctx, Episode{
-		Input:   objective(spec),
+		Input:   input,
 		Workdir: e.drv.workdir,
 		Model:   spec.Model,
 		System:  e.system(spec),
 		Probes:  Instructions(probes),
+		Session: cp.Session,
 	})
 	// Fold the episode's tier tally in before the error check: an episode that ran and
 	// failed still projected events the record must account for. A start failure yields
@@ -304,6 +312,12 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	cp.Result = res.Text
 	cp.Failed = res.Failed
 	cp.Err = res.Err
+	// Keep the conversation the CLI reported, so a later turn continues it. A CLI that
+	// announced none leaves the previous id in place rather than clearing it: an episode
+	// that could not name its conversation is not evidence the conversation is gone.
+	if res.Session != "" {
+		cp.Session = res.Session
+	}
 	return encodeEpisodeCheckpoint(cp)
 }
 
@@ -477,12 +491,57 @@ func (episodeStop) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool
 }
 
 // episodeCheckpoint is the loop's resumable state: whether the episode has run, its
-// final message, and whether it failed.
+// final message, whether it failed, the CLI conversation the run holds, and the turn
+// to put to it. It is the external loop's answer to the native loop's message list:
+// the conversation itself lives inside the CLI, so what is carried here is the handle
+// to it, not a transcript this side could never faithfully reconstruct.
 type episodeCheckpoint struct {
 	Done   bool   `json:"done"`
 	Result string `json:"result,omitempty"`
 	Failed bool   `json:"failed,omitempty"`
 	Err    string `json:"err,omitempty"`
+	// Session is the conversation the CLI opened for this goal, as the CLI named it. The
+	// next episode hands it back so the harness continues where it left off.
+	Session string `json:"session,omitempty"`
+	// Input is the turn the next episode runs. Empty on the first episode, which runs the
+	// goal's objective; a later turn (ContinueEpisode) sets it, so the objective stays the
+	// record of what the run set out to do rather than being overwritten by the last thing
+	// the user typed.
+	Input string `json:"input,omitempty"`
+}
+
+// ContinueEpisode reopens a settled external goal for another turn: it clears the
+// episode's completion so the next reconcile runs a new one, sets the turn to put to
+// the harness, and keeps the conversation id so the CLI continues the session it
+// already holds rather than starting cold. It mirrors what a native loop does by
+// appending a user message to its transcript; here the transcript is the CLI's, and
+// this is the handle to it.
+//
+// The goal's objective is left alone: it records what the run set out to do, and the
+// turn is not a new objective.
+func ContinueEpisode(status goal.Status, text string) (goal.Status, error) {
+	cp, err := decodeEpisodeCheckpoint(status.Checkpoint)
+	if err != nil {
+		return status, fault.Wrap(fault.Terminal, "externagent_checkpoint_decode", err)
+	}
+	cp.Done = false
+	cp.Result = ""
+	cp.Failed = false
+	cp.Err = ""
+	cp.Input = text
+	raw, err := encodeEpisodeCheckpoint(cp)
+	if err != nil {
+		return status, fault.Wrap(fault.Terminal, "externagent_checkpoint_encode", err)
+	}
+	status.Checkpoint = raw
+	status.Phase = goal.PhasePending
+	status.Message = ""
+	status.Steps = 0
+	// Drop any record of an in-flight step: the prior turn has ended (it converged, or it
+	// was cancelled mid-episode), so a fresh turn dispatches a new step rather than
+	// waiting on a job whose runtime is gone.
+	status.InFlight = nil
+	return status, nil
 }
 
 func decodeEpisodeCheckpoint(raw json.RawMessage) (episodeCheckpoint, error) {

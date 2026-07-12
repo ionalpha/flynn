@@ -32,6 +32,12 @@ func (s *replSession) compact(ctx context.Context) (int, error) {
 	if !s.started || len(s.transcript) == 0 {
 		return 0, errors.New("nothing to compact yet; run a turn first")
 	}
+	if s.ext != nil {
+		// The conversation being compacted is the CLI's, not ours: it holds the context and
+		// manages it, and this side has no model to summarize through anyway. Say so rather
+		// than silently compacting a transcript that is not the one the harness will read.
+		return 0, errors.New("/compact is not available in a " + s.ext.driver.Name() + " session: the external agent holds the conversation and manages its own context")
+	}
 	summary, err := summarizeConversation(ctx, s.model, s.transcript)
 	if err != nil {
 		return 0, err

@@ -125,6 +125,13 @@ type Episode struct {
 	// Probes are conformance instructions folded into the turn the harness reads. Their
 	// compliance is checked against the episode's own event stream once it finishes.
 	Probes []string
+	// Session, when set, is a conversation the CLI already holds (a Session an earlier
+	// episode reported), which this episode continues instead of opening a fresh one. It
+	// is how an interactive session gives the harness the context of its own earlier
+	// turns: the CLI kept that conversation, and only the CLI can. Empty starts a new
+	// conversation. An adapter whose CLI cannot continue a conversation ignores it, so
+	// the turn still runs, with only this turn's input.
+	Session string
 }
 
 // Invocation is the subprocess to run for one episode: the program to exec, its
@@ -254,6 +261,26 @@ type Event struct {
 	// failed, declined, or in_progress. A started call and its completion are two events,
 	// so counting one status avoids double counting.
 	Status string
+	// Session is the conversation id the CLI announced for this episode, when it
+	// announces one. Both bundled harnesses open their stream with it (claude's init
+	// event, codex's thread.started), and both accept it back to continue that same
+	// conversation. Carrying it is what lets a multi-turn session hand the CLI its own
+	// context instead of replaying a transcript the CLI never wrote.
+	Session string
+}
+
+// withSession stamps the conversation id a CLI announced onto the events projected
+// from the line that announced it, so the runner can read it off the stream without
+// every adapter reaching into the Result itself. An empty id (most lines of most
+// streams carry none) leaves the events untouched.
+func withSession(evs []Event, id string) []Event {
+	if id == "" {
+		return evs
+	}
+	for i := range evs {
+		evs[i].Session = id
+	}
+	return evs
 }
 
 // Usage is the token accounting an episode reports. It mirrors the shape a native
