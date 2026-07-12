@@ -136,10 +136,10 @@ func confirm(question string) (bool, error) {
 		return false, errors.New("no terminal to confirm on: re-run with --yes to upgrade unattended")
 	}
 	_, _ = fmt.Fprintf(os.Stdout, "%s [y/N] ", question)
+	// A blank line, a closed stdin, or anything else unreadable leaves answer empty,
+	// which is a "no". The only way through is an explicit yes.
 	var answer string
-	if _, err := fmt.Scanln(&answer); err != nil {
-		return false, nil
-	}
+	_, _ = fmt.Scanln(&answer)
 	return answer == "y" || answer == "Y" || answer == "yes", nil
 }
 
