@@ -506,6 +506,25 @@ func TestFetchSendsNoIdentifiers(t *testing.T) {
 	}
 }
 
+// An origin that has not had the feed deployed to it usually answers with a 200 and a web
+// page, not a 404. The refusal must name that, rather than reporting a bad signature and
+// sending whoever is on call hunting a cryptographic bug.
+func TestAWebPageInsteadOfAFeedIsNamedAsSuch(t *testing.T) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("<!doctype html><html><body>Flynn</body></html>"))
+	}))
+	defer srv.Close()
+
+	src := notices.Source{URL: srv.URL + "/notices.cose", HTTP: srv.Client()}
+	_, err := src.Fetch(context.Background())
+	if err == nil {
+		t.Fatal("a web page was accepted as a feed")
+	}
+	if !strings.Contains(err.Error(), "did not return a signed feed") {
+		t.Fatalf("the failure did not name the real problem: %v", err)
+	}
+}
+
 func TestOversizedBodyIsNotRead(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		// An origin that starts streaming forever must waste its own time, not the

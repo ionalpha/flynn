@@ -38,7 +38,20 @@ const OffEnv = "FLYNN_NO_NOTICES"
 // somehow shipped without a key shows nothing at all rather than trusting anything. That
 // is the correct direction to fail, but it does mean a release must not be tagged with
 // this map empty, because the resulting binaries could never be reached afterwards.
-var publicKeys = map[string]string{}
+//
+// There are two keys, and the second one is the reason the first is replaceable. A binary
+// trusts only the keys it was built with, so if a release shipped one key and that key
+// were later lost, every install from that release would be unreachable forever, which is
+// exactly the failure this whole channel exists to prevent. The backup key is held offline
+// and signs nothing until it is needed, so losing the operational key costs a rotation
+// rather than the install base.
+var publicKeys = map[string]string{
+	// Signs the feed day to day.
+	"flynn-notices-1": "746468756841a18523a1d10c87ac3402b7dec3706654904ec588115bf87ab2b4",
+	// Held offline, unused, and only ever reached for if the operational key is lost or
+	// compromised.
+	"flynn-notices-backup-1": "97c3397962f1fd8a2141862bebba2e7b58a2b56db30907ac15fc4656a19eb945",
+}
 
 // DefaultKeyring builds the compiled-in keyring. A malformed entry is skipped rather than
 // panicking the binary: a bad key can only ever cost us the ability to say something, and
@@ -54,6 +67,11 @@ func DefaultKeyring() *Keyring {
 	}
 	return ring
 }
+
+// SourceKeyCount reports how many keys are declared in the source. DefaultKeyring skips a
+// malformed one rather than panicking, so comparing the two counts is how a typo in a key
+// is caught at test time rather than on the day an advisory has to go out.
+func SourceKeyCount() int { return len(publicKeys) }
 
 // Enabled reports whether the notice channel may run in this build: the user has not set
 // the off switch, and there is at least one key to trust a feed against. A keyless build

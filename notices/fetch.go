@@ -93,7 +93,22 @@ func (s Source) Fetch(ctx context.Context) ([]byte, error) {
 	if len(b) > MaxFeedBytes {
 		return nil, fault.New(fault.Terminal, CodeTooLarge, "notices: feed document is too large")
 	}
+	// A shape check, not a security check: verification is still the only thing that decides
+	// whether these bytes are believed. It exists because an origin that has not had the
+	// feed deployed to it yet tends to answer with a 200 and a web page rather than a 404,
+	// and reporting that as a bad signature would send an operator hunting a cryptographic
+	// bug when the real problem is a missing file.
+	if !isCOSE(b) {
+		return nil, fault.New(fault.Transient, CodeFetch,
+			"notices: the feed endpoint did not return a signed feed (is it deployed?)")
+	}
 	return b, nil
+}
+
+// isCOSE reports whether b begins with a tagged COSE_Sign1 message (CBOR tag 18 followed by
+// a four-element array), which is the only shape a feed document ever has.
+func isCOSE(b []byte) bool {
+	return len(b) >= 2 && b[0] == 0xd2 && b[1] == 0x84
 }
 
 // Refresh fetches the feed, accepts it against the keyring and the stored trust state,
