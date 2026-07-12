@@ -154,6 +154,10 @@ type ProcessHandler struct {
 	maxDescBytes   int
 	maxResultBytes int
 
+	// policyFor returns the SignPolicy bounding what a tool's granted key may sign. A tool
+	// with a signer but no policy signs nothing: see serviceSign.
+	policyFor func(extName, toolName string) SignPolicy
+
 	// signerFor returns the host key a signing-enabled tool signs with, or nil when the tool
 	// does not participate in the host-signing handshake (the default: no tool signs). It is
 	// how the operator binds a key to a specific extension tool; default-deny like every other
@@ -257,6 +261,16 @@ func WithMaxDescriptionBytes(n int) ProcessOption {
 // non-signing.
 func WithHostSigner(fn func(extName, toolName string) HostSigner) ProcessOption {
 	return func(h *ProcessHandler) { h.signerFor = fn }
+}
+
+// WithSignPolicy bounds what each tool's granted key may be asked to sign. fn is called for
+// each mounted tool and returns the policy for it, or nil for a tool that signs nothing.
+//
+// A tool granted a signer without a policy is refused at signing time rather than allowed
+// through, so forgetting this option disables signing instead of silently permitting
+// anything. That is the direction a mistake here has to fail in.
+func WithSignPolicy(fn func(extName, toolName string) SignPolicy) ProcessOption {
+	return func(h *ProcessHandler) { h.policyFor = fn }
 }
 
 // WithHostFetcher binds a host-held endpoint to network-borrowing tools. fn is called for each
@@ -411,6 +425,10 @@ func (h *ProcessHandler) dialAndBuild(ctx context.Context, m Mount, block Proces
 		if h.signerFor != nil {
 			signer = h.signerFor(m.Name, d.Name)
 		}
+		var policy SignPolicy
+		if h.policyFor != nil {
+			policy = h.policyFor(m.Name, d.Name)
+		}
 		var fetcher HostFetcher
 		if h.fetcherFor != nil {
 			fetcher = h.fetcherFor(m.Name, d.Name)
@@ -424,6 +442,7 @@ func (h *ProcessHandler) dialAndBuild(ctx context.Context, m Mount, block Proces
 			timeout:       h.callTimeout,
 			maxResult:     h.maxResultBytes,
 			signer:        signer,
+			policy:        policy,
 			maxSigns:      h.maxSigns,
 			maxSignBytes:  h.maxSignBytes,
 			fetcher:       fetcher,
@@ -488,6 +507,7 @@ type procTool struct {
 	// Both are nil by default, which is a tool with neither authority. The max* fields bound how
 	// many of each one call may drive, and how large a single payload may be.
 	signer        HostSigner
+	policy        SignPolicy
 	maxSigns      int
 	maxSignBytes  int
 	fetcher       HostFetcher
@@ -592,6 +612,20 @@ func (t *procTool) serviceSign(reply hostCallReply, n int) (json.RawMessage, err
 	if len(payload) > t.maxSignBytes {
 		return nil, fault.New(fault.Forbidden, "extension_sign_too_large",
 			"extension: tool "+t.name+" asked to sign an over-sized payload")
+	}
+	// Look at what is being signed. A key is granted for a purpose, and the payload either
+	// serves that purpose or it does not; the extension's word for it is worth nothing here,
+	// because a compromised extension is exactly the case this defends against.
+	//
+	// A grant with no policy signs nothing. Blind signing has to be asked for by name (see
+	// AnyPayload) so that it is a decision somebody made, rather than the default that
+	// happens when nobody thought about it.
+	if t.policy == nil {
+		return nil, fault.New(fault.Forbidden, "extension_sign_unpoliced",
+			"extension: tool "+t.name+" was granted a key but no signing policy, so the host would be signing whatever it is handed")
+	}
+	if err := t.policy.Approve(payload); err != nil {
+		return nil, fault.Wrap(fault.Forbidden, "extension_sign_refused", err)
 	}
 	sig, signErr := t.signer.Sign(payload)
 	return resumeSign(reply.Session, sig, signErr)

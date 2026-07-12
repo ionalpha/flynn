@@ -21,6 +21,41 @@ type HostSigner interface {
 	Sign(payload []byte) ([]byte, error)
 }
 
+// SignPolicy decides whether the host may sign a payload a tool handed it. It is the check
+// that a granted key is being used for the thing it was granted for.
+//
+// It exists because the alternative is blind signing, and blind signing is how the largest
+// theft in this industry happened: a published, correctly-signed component was compromised
+// upstream, and everyone who trusted its output signed what it asked them to. Verifying an
+// extension's signature proves which binary is running. It proves nothing about what that
+// binary asks to be signed. Those are different questions, and only the second one is asked
+// at the moment the key is used.
+//
+// A policy sees the payload bytes, so it must understand whatever format the tool signs. It
+// therefore lives outside this package (see extension/signpolicy), and the host stays free of
+// any chain, protocol or format dependency: it holds the port, not the knowledge.
+type SignPolicy interface {
+	// Approve returns nil if the payload may be signed, and an error naming the refusal
+	// otherwise. It must be conservative: anything it does not positively recognise is a
+	// refusal, because the payloads it cannot classify are the ones worth worrying about.
+	Approve(payload []byte) error
+}
+
+// AnyPayload is a SignPolicy that approves everything, which is to say it does not police
+// anything at all: the holder of the key signs whatever the extension hands over.
+//
+// It is a named type rather than a nil default on purpose. A grant with no policy is refused
+// (see serviceSign), so blind signing cannot be arrived at by omission. Reaching it requires
+// writing this name down, which is a thing a reviewer can see and a thing an operator can be
+// asked to justify. It is meant for a developer driving an unreleased extension against a
+// throwaway key, and for nothing else.
+type AnyPayload struct{}
+
+// Approve accepts any payload.
+func (AnyPayload) Approve([]byte) error { return nil }
+
+var _ SignPolicy = AnyPayload{}
+
 // Ed25519HostSigner is the default HostSigner over an ed25519 private key the host supplies
 // (from its vault or keychain). It only signs; it does not load, generate, or store the key.
 type Ed25519HostSigner struct{ priv ed25519.PrivateKey }

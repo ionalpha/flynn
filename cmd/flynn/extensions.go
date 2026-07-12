@@ -15,6 +15,7 @@ import (
 
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
+	"github.com/ionalpha/flynn/extension/signpolicy"
 	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
@@ -138,6 +139,7 @@ func extensionsList(ctx context.Context, dataDir string) error {
 func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	fs := newFlagSet("extensions call")
 	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
+	signPolicy := fs.String("sign-policy", "solana-token", `what the signing key may be used for: "solana-token" (only a mint that revokes both its authorities and moves no SOL) or "any" (sign whatever the tool asks: development only)`)
 	sign := fs.String("sign", "", "path to a dev signing key (a JSON array of the 64 raw key bytes) the called tool signs its work with; the key stays in the host and the tool only receives signatures")
 	endpoint := fs.String("endpoint", "", "an http(s) endpoint the called tool may reach THROUGH THE HOST; the tool stays network-denied and only hands out request bytes, so it can never reach anywhere else")
 	localEndpoint := fs.Bool("endpoint-local", false, "permit --endpoint to be a loopback or private literal address (a local test node); off by default, because a grant must not silently aim the host at its own network")
@@ -172,6 +174,24 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 		runtimeOpts = append(runtimeOpts, withHostSigner(func(ext, tool string) extension.HostSigner {
 			if ext == name && tool == bareTool {
 				return signer
+			}
+			return nil
+		}))
+		// A key is granted with a policy or not at all: the host refuses to sign for a tool
+		// that has no policy, so the two are decided together, here, rather than one of them
+		// being forgotten somewhere else.
+		//
+		// The policy is chosen by what the key is FOR. A signing key granted to a Solana
+		// token tool may be used to mint a token that is safe by the same rules the extension
+		// claims to follow, and for nothing else: not to move SOL, not to transfer or burn
+		// what it minted, and not to mint anything whose authorities it does not revoke in the
+		// same transaction. The extension proposes and the host disposes, so an extension that
+		// has been compromised outright still cannot obtain a signature over a token it could
+		// later inflate, freeze, or steal.
+		policy := signPolicyFor(*signPolicy, signer)
+		runtimeOpts = append(runtimeOpts, withSignPolicy(func(ext, tool string) extension.SignPolicy {
+			if ext == name && tool == bareTool {
+				return policy
 			}
 			return nil
 		}))
@@ -437,6 +457,7 @@ type extensionRuntime struct {
 type extRuntimeOptions struct {
 	egressGrant []string
 	hostSigner  func(ext, tool string) extension.HostSigner
+	signPolicy  func(ext, tool string) extension.SignPolicy
 	hostFetcher func(ext, tool string) extension.HostFetcher
 }
 
@@ -457,6 +478,27 @@ func withEgressGrant(hosts []string) extRuntimeOption {
 // receives only the signature back. The default (no fn) leaves every tool non-signing.
 func withHostSigner(fn func(ext, tool string) extension.HostSigner) extRuntimeOption {
 	return func(o *extRuntimeOptions) { o.hostSigner = fn }
+}
+
+// withSignPolicy bounds what a granted key may be asked to sign. A tool with a key but no
+// policy signs nothing, so this is not optional hardening: it is the other half of the grant.
+func withSignPolicy(fn func(ext, tool string) extension.SignPolicy) extRuntimeOption {
+	return func(o *extRuntimeOptions) { o.signPolicy = fn }
+}
+
+// signPolicyFor turns the --sign-policy choice into the policy the granted key is bound by.
+//
+// "solana-token" is the real one: it reads the transaction the extension asks to have signed
+// and approves it only if it is a mint that revokes both its authorities, touching only the
+// programs a mint touches, paying no SOL to anyone. "any" signs whatever it is handed, which
+// is what a developer driving an unreleased extension against a throwaway key needs and what
+// nothing else should ever want. It has to be named to be reached, so nobody arrives at blind
+// signing by forgetting to think about it.
+func signPolicyFor(choice string, signer extension.HostSigner) extension.SignPolicy {
+	if choice == "any" {
+		return extension.AnyPayload{}
+	}
+	return signpolicy.Solana{Payer: signer.Public()}
 }
 
 // withHostFetcher grants a host-held endpoint to specific mounted tools. fn returns the fetcher a
@@ -531,6 +573,9 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 	}
 	if cfg.hostSigner != nil {
 		procOpts = append(procOpts, extension.WithHostSigner(cfg.hostSigner))
+	}
+	if cfg.signPolicy != nil {
+		procOpts = append(procOpts, extension.WithSignPolicy(cfg.signPolicy))
 	}
 	if cfg.hostFetcher != nil {
 		procOpts = append(procOpts, extension.WithHostFetcher(cfg.hostFetcher))

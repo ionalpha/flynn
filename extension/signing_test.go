@@ -104,7 +104,11 @@ func TestHostSigningDrivesHandshake(t *testing.T) {
 				return signer
 			}
 			return nil
-		}))
+		}),
+		// These tests drive the handshake with opaque test payloads, not real transactions,
+		// so they name the policy that approves anything. Naming it is the point: a grant
+		// with no policy signs nothing, so blind signing cannot happen by omission.
+		WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }))
 
 	out, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{"foo":"bar"}`))
 	if err != nil {
@@ -151,7 +155,8 @@ func TestHostSigningDeliversSignFailure(t *testing.T) {
 	stub := newSignStub(3)
 	failing := failingSigner{pub: testSigner(t).Public()}
 	h, _, m := mountStub(t, []mission.Tool{stub},
-		WithHostSigner(func(string, string) HostSigner { return failing }))
+		WithHostSigner(func(string, string) HostSigner { return failing }),
+		WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }))
 
 	out, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
@@ -173,6 +178,7 @@ func TestHostSigningBudgetEnforced(t *testing.T) {
 	stub := newSignStub(1000) // never terminates within the budget
 	h, _, m := mountStub(t, []mission.Tool{stub},
 		WithHostSigner(func(string, string) HostSigner { return testSigner(t) }),
+		WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }),
 		WithMaxSignatures(3))
 
 	if _, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{}`)); err == nil {
