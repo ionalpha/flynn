@@ -22,11 +22,56 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 : "${FUZZTIME=5s}"
 if [ "$#" -eq 0 ]; then set -- .; fi
 
-# New (untracked) inputs under a package's testdata/fuzz/ are the one
-# reliable crasher signal: `go test -fuzz` writes the failing input there
-# and nowhere else.
+# New (untracked) inputs under a package's testdata/fuzz/<target>/ are where
+# `go test -fuzz` writes a failing input, and nowhere else. Writing one is a
+# necessary but not a sufficient sign of a crasher: see fuzz_one.
 new_inputs() {
-	git ls-files --others --exclude-standard -- "$1/testdata/fuzz" 2>/dev/null
+	git ls-files --others --exclude-standard -- "$1/testdata/fuzz/$2" 2>/dev/null
+}
+
+# Replay every input in a target's corpus, the committed seeds plus whatever
+# the last run wrote. A real crasher reproduces here; a phantom does not.
+replays_clean() {
+	go test -count=1 -run="^${2}\$" "./${1#./}"
+}
+
+# Run one target under mutation and decide whether a failure is real.
+#
+# A failed run is only a crasher if the input it wrote reproduces on replay.
+# Two things fail a run without finding anything: the toolchain's shutdown
+# race at budget expiry (the golang/go#56238 family), which writes no input,
+# and a worker the OS kills mid-run, which does leave its last input behind.
+# Trusting the file alone turns a killed worker into a build failure over an
+# input that was never a crasher. Replaying it separates the two.
+fuzz_one() {
+	dir=$1
+	target=$2
+	echo "==> go test -fuzz=^${target}\$ -fuzztime=$FUZZTIME $dir"
+	if go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}"; then
+		return 0
+	fi
+	if [ -n "$(new_inputs "$dir" "$target")" ]; then
+		echo "==> replaying the input $target wrote, to confirm it reproduces"
+		if ! replays_clean "$dir" "$target"; then
+			echo "dev/fuzz: $target found a crasher; failing input is under $dir/testdata/fuzz/$target/" >&2
+			return 1
+		fi
+		echo "==> $target: the input passes on replay; discarding it, the run died without a finding"
+		new_inputs "$dir" "$target" | while read -r input; do rm -f "$input"; done
+	fi
+	# No reproducing input. One retry separates a dead run from a
+	# deterministic failure: the first passes on a second try, the second
+	# does not.
+	echo "==> retrying $target: the first run failed without a reproducing input"
+	if go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}"; then
+		return 0
+	fi
+	if [ -n "$(new_inputs "$dir" "$target")" ] && ! replays_clean "$dir" "$target"; then
+		echo "dev/fuzz: $target found a crasher; failing input is under $dir/testdata/fuzz/$target/" >&2
+	else
+		echo "dev/fuzz: $target failed twice without a reproducing input; not a mutation crasher, inspect the output above" >&2
+	fi
+	return 1
 }
 
 dirs=$(grep -rl '^func Fuzz' --include='*_test.go' "$@" | xargs -n1 dirname | sort -u)
@@ -75,30 +120,7 @@ fi
 fail=0
 for dir in $dirs; do
 	for target in $(grep -h '^func Fuzz' "$dir"/*_test.go | sed -E 's/^func (Fuzz[A-Za-z0-9_]+).*/\1/' | sort -u); do
-		echo "==> go test -fuzz=^${target}\$ -fuzztime=$FUZZTIME $dir"
-		if go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}"; then
-			continue
-		fi
-		if [ -n "$(new_inputs "$dir")" ]; then
-			echo "dev/fuzz: $target found a crasher; failing input is under $dir/testdata/fuzz/" >&2
-			fail=1
-			continue
-		fi
-		# A failure that writes no input is usually the toolchain's shutdown
-		# race at -fuzztime expiry ("context deadline exceeded", the
-		# golang/go#56238 family), not a crasher. One retry separates the
-		# two: the race passes on a second run, a deterministic failure
-		# does not.
-		echo "==> retrying $target: failed without writing an input"
-		if go test -run='^$' -fuzz="^${target}\$" -fuzztime="$FUZZTIME" "./${dir#./}"; then
-			continue
-		fi
-		fail=1
-		if [ -n "$(new_inputs "$dir")" ]; then
-			echo "dev/fuzz: $target found a crasher; failing input is under $dir/testdata/fuzz/" >&2
-		else
-			echo "dev/fuzz: $target failed twice without writing an input; not a mutation crasher, inspect the output above" >&2
-		fi
+		fuzz_one "$dir" "$target" || fail=1
 	done
 done
 
