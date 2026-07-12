@@ -1,9 +1,0 @@
-# 2026/07/13 01:01:02.617019 [TestNoSingleFieldRewriteSurvivesVerification] [rapid] draw field: []interface {}{"verificationMaterial", "tlogEntries", 0, "kindVersion", "version"}
-# 2026/07/13 01:01:02.617019 [TestNoSingleFieldRewriteSurvivesVerification] [rapid] draw value: ""
-# 2026/07/13 01:01:02.618136 [TestNoSingleFieldRewriteSurvivesVerification] rewriting [verificationMaterial tlogEntries 0 kindVersion version] to "" produced a bundle that still verified
-# 
-v0.4.8#14597903945936373744
-0x6b74f03291620
-0x5
-0x0
-0x0
