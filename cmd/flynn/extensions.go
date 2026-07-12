@@ -15,6 +15,7 @@ import (
 
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
+	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -534,9 +535,20 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 	if cfg.hostFetcher != nil {
 		procOpts = append(procOpts, extension.WithHostFetcher(cfg.hostFetcher))
 	}
+	// A published extension resolves through signature verification against the pinned
+	// first-party origin; a dev-linked one resolves only under the explicit dev opt-in.
+	// A spec that declares a release is never satisfied by a local binary, so a stray dev
+	// block cannot downgrade a signed extension to an unsigned one.
 	handler := extension.NewProcessHandler(
 		extension.NewSandboxLauncher(workRoot),
-		extension.DevResolver{Enabled: true},
+		extension.SourceResolver{
+			Release: extension.ReleaseResolver{
+				Origin:     extension.DefaultOrigin,
+				Dir:        filepath.Join(dataDir, "extensions"),
+				Downloader: fetch.New(),
+			},
+			Dev: extension.DevResolver{Enabled: true},
+		},
 		procOpts...,
 	)
 	if err := ereg.Register(handler); err != nil {
