@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/input"
 )
@@ -259,6 +261,67 @@ func TestTabsAndControlBytesNormalized(t *testing.T) {
 	e.Insert("a\tb\x07c")
 	if got := e.Content(); got != "a    b"+"c" {
 		t.Fatalf("Content = %q, want tab expanded and the bell dropped", got)
+	}
+}
+
+// Dropping a control byte must not splice the bytes around it into a rune
+// that was not in the input. Here \xe4\x82 and \x83 are separated by a \x19;
+// gluing them together makes a valid two-cell rune, and a row wrapped on the
+// widths of the parts would then render wider than the width it was given.
+func TestInvalidBytesNeverSpliceIntoARune(t *testing.T) {
+	var e editor.Editor
+	e.Insert("ab\xe4\x82\x19\x83cd")
+	if got := e.Content(); got != "abcd" {
+		t.Fatalf("Content = %q, want the invalid bytes dropped, not spliced", got)
+	}
+	rows, _, _ := e.Render(6)
+	if len(rows) != 1 || ansi.StringWidth(rows[0]) != 4 {
+		t.Fatalf("rows = %q, want one 4-cell row", rows)
+	}
+}
+
+// A cluster wider than the whole terminal is clipped away, not kept. Render
+// and clip must measure with the same function: uniseg's width table and
+// ansi's disagree on some recently assigned runes, and a cluster clip thinks
+// fits but the caller counts as wider is a row that escapes its width.
+func TestRuneWiderThanTerminalIsClipped(t *testing.T) {
+	var e editor.Editor
+	e.Insert(string(rune(0x1FAC6))) // two cells wide
+	rows, _, _ := e.Render(1)
+	for _, row := range rows {
+		if w := ansi.StringWidth(row); w > 1 {
+			t.Fatalf("row %q is %d cells wide at width 1", row, w)
+		}
+	}
+}
+
+// A C1 control is an escape introducer to a terminal and has no cell width,
+// so it never reaches the buffer.
+func TestC1ControlsDropped(t *testing.T) {
+	var e editor.Editor
+	csi := string(rune(0x9b)) // CSI: a terminal reads it as an escape introducer
+	e.Insert("a" + csi + "b")
+	if got := e.Content(); got != "ab" {
+		t.Fatalf("Content = %q, want the C1 control dropped", got)
+	}
+}
+
+// An atom's width is not a property of the atom. A variation selector fuses
+// with the digit before it into a two-cell emoji, so a row full of digits
+// with selectors between them is wider than the digits are. The wrap must
+// read the row's growth, not the sum of the parts.
+func TestVariationSelectorWidensItsNeighbour(t *testing.T) {
+	var e editor.Editor
+	vs16 := string(rune(0xFE0F)) // emoji presentation selector
+	for range 12 {
+		e.Insert("0")
+		e.Insert(vs16)
+	}
+	rows, _, _ := e.Render(20)
+	for _, row := range rows {
+		if w := ansi.StringWidth(row); w > 20 {
+			t.Fatalf("row %q is %d cells wide at width 20", row, w)
+		}
 	}
 }
 

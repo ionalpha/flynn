@@ -1,0 +1,3 @@
+go test fuzz v1
+[]byte("️0\x150\x19\x19\x19\x15\x19\x19\x19")
+int(-240)

@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/rivo/uniseg"
 )
@@ -509,7 +510,17 @@ func (e *Editor) splice(as []atom) {
 }
 
 // graphemes segments text into atoms, normalizing line endings and dropping
-// control characters that have no stable cell width.
+// anything with no stable cell width: control characters, and bytes that are
+// not valid UTF-8.
+//
+// Every atom must measure the same alone as it does inside a row, because
+// Render sums per-atom widths to wrap. Raw bytes break that. A pty can send
+// a truncated or interleaved sequence, and dropping the controls out of it
+// splices the survivors into a rune that was never in the input: \xe4 \x19
+// \x82 \x83 loses the \x19 and leaves a valid two-cell rune assembled from
+// three atoms that each measured one. The row then renders wider than the
+// widths that were used to wrap it. Bytes that cannot stand alone as a
+// cluster do not become atoms.
 func graphemes(s string) []atom {
 	s = normalizeNewlines(s)
 	s = strings.ReplaceAll(s, "\t", "    ")
@@ -517,12 +528,22 @@ func graphemes(s string) []atom {
 	for s != "" {
 		var cluster string
 		cluster, s, _, _ = uniseg.FirstGraphemeClusterInString(s, -1)
-		if r := []rune(cluster)[0]; r < 0x20 && r != '\n' || r == 0x7f {
+		if !utf8.ValidString(cluster) {
+			continue
+		}
+		if r := []rune(cluster)[0]; isControl(r) && r != '\n' {
 			continue
 		}
 		as = append(as, atom{text: cluster})
 	}
 	return as
+}
+
+// isControl reports whether r is a C0 or C1 control or DEL. None of them has
+// a stable cell width, and a terminal reads the C1 range as escape
+// introducers, so they never reach the buffer.
+func isControl(r rune) bool {
+	return r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f)
 }
 
 func normalizeNewlines(s string) string {
