@@ -61,6 +61,22 @@ type DevSource struct {
 type ReleaseSource struct {
 	Asset   string `json:"asset"`
 	Version string `json:"version"`
+
+	// Digests pins the exact bytes this flynn will run, keyed by "<goos>_<goarch>" and
+	// holding the archive's SHA-256. It is what makes the pin structural rather than
+	// nominal.
+	//
+	// Without it, the pin is a version STRING, and a git tag is mutable. Someone with write
+	// access to the extensions repo could delete "token/v1.0.0", re-cut it against different
+	// code, publish it through the very same trusted release workflow, and every flynn in
+	// the world would fetch the new binary and verify its signature happily: the signature
+	// only ever proved "the pinned workflow built this", never "this is the artifact we
+	// reviewed". With the digest, that substitution is refused by a binary that was compiled
+	// before the attack existed, because the hash it demands is baked into it.
+	//
+	// A platform absent from the map is unpinned and falls back to signature-only trust, so
+	// a spec may pin the platforms it has hashes for without breaking the others.
+	Digests map[string]string `json:"digests,omitempty"`
 }
 
 // Conn is a live duplex connection to a launched extension subprocess: its MCP stdio

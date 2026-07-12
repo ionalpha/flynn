@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -366,5 +367,68 @@ func assertCode(t *testing.T, err error, want string) {
 	var fe *fault.Error
 	if !errors.As(err, &fe) || fe.Code != want {
 		t.Fatalf("refused with %v, want code %s", err, want)
+	}
+}
+
+// pinnedBlock is releaseBlock with an explicit archive digest for the running platform.
+func pinnedBlock(t *testing.T, digest string) ProcessBlock {
+	t.Helper()
+	b := releaseBlock()
+	// The fixture resolver serves linux/amd64 (see serve), so pin that platform.
+	b.Release.Digests = map[string]string{"linux_amd64": digest}
+	return b
+}
+
+// TestRecutTagIsRefusedEvenWhenCorrectlySigned is the reason the digest pin exists.
+//
+// A git tag is mutable. Whoever can write to the extensions repo can delete a released tag,
+// re-cut it against different code, and publish it through the very same trusted release
+// workflow. The new artifact then carries a perfectly valid signature from the pinned
+// identity, because the signature only ever proved "the pinned workflow built this" - never
+// "this is the artifact that was reviewed". Signature verification alone therefore cannot
+// stop the substitution; every flynn in the world would download the new binary and run it.
+//
+// The pinned digest can, because it is compiled into the flynn binary before the attack
+// exists. Here the served release is entirely legitimate and correctly signed; it simply is
+// not the artifact this flynn pins, and that is enough to refuse it.
+func TestRecutTagIsRefusedEvenWhenCorrectlySigned(t *testing.T) {
+	t.Parallel()
+	rel := buildRelease(t, "#!/bin/sh\necho attacker\n")
+	r, _ := rel.serve(t)
+
+	_, _, err := r.Resolve(context.Background(), "token", pinnedBlock(t, strings.Repeat("ab", 32)))
+	if err == nil {
+		t.Fatal("a re-cut tag was accepted because its signature verified: the pin must be on the BYTES, not on the version string")
+	}
+	if !strings.Contains(err.Error(), "digest_mismatch") && !strings.Contains(err.Error(), "NOT the artifact") {
+		t.Fatalf("refused for the wrong reason: %v", err)
+	}
+}
+
+// TestPinnedDigestThatMatchesResolves proves the pin does not break the legitimate release:
+// the artifact whose digest the spec names is installed and run as normal.
+func TestPinnedDigestThatMatchesResolves(t *testing.T) {
+	t.Parallel()
+	rel := buildRelease(t, "#!/bin/sh\necho token\n")
+	r, _ := rel.serve(t)
+
+	// Learn the real digest the way the resolver does, then pin exactly that.
+	unpinned, _, err := r.Resolve(context.Background(), "token", releaseBlock())
+	if err != nil {
+		t.Fatalf("baseline resolve failed: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(unpinned), verifiedFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var v verified
+	if err := json.Unmarshal(raw, &v); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh resolver (fresh install dir) so the pin is exercised on the download path.
+	r2, _ := rel.serve(t)
+	if _, _, err := r2.Resolve(context.Background(), "token", pinnedBlock(t, v.ArchiveSHA256)); err != nil {
+		t.Fatalf("the correctly pinned release was refused: %v", err)
 	}
 }

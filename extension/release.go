@@ -129,7 +129,7 @@ func (r ReleaseResolver) Resolve(ctx context.Context, extName string, block Proc
 	// A cached install is re-proven from its receipt rather than trusted because it is
 	// there: the directory is on local disk, and local disk is exactly what an attacker
 	// who already got a foothold would rewrite.
-	if bin, ok, err := r.reuse(targetDir, archive, plat.binaryName(rel.Asset)); err != nil {
+	if bin, ok, err := r.reuse(targetDir, archive, plat.binaryName(rel.Asset), rel.Digests[plat.goos+"_"+plat.goarch]); err != nil {
 		return "", nil, err
 	} else if ok {
 		return bin, block.Args, nil
@@ -138,6 +138,19 @@ func (r ReleaseResolver) Resolve(ctx context.Context, extName string, block Proc
 	digest, err := r.provenDigest(ctx, extName, rel, archive)
 	if err != nil {
 		return "", nil, err
+	}
+
+	// The signature proves the pinned workflow built this release. It does NOT prove the
+	// release is the one this flynn was built to run: a mutable tag, re-cut and re-published
+	// through the same workflow, produces a different binary with a perfectly valid
+	// signature. So if the spec pinned a digest, that digest is the last word. This check
+	// runs against a hash compiled into the binary, which is why an attacker who owns the
+	// repo, the tag, and the release pipeline still cannot change what an already-shipped
+	// flynn executes.
+	if want, ok := rel.Digests[plat.goos+"_"+plat.goarch]; ok && !strings.EqualFold(want, digest) {
+		return "", nil, fault.New(fault.Forbidden, "extension_release_digest_mismatch",
+			"extension: "+extName+" release "+rel.Version+" is correctly signed but is NOT the artifact this flynn pins: "+
+				"expected archive sha256 "+want+", got "+digest+". The tag has been re-cut, or the release was rebuilt; refusing to run it")
 	}
 
 	binPath, _, err := acquire.InstallTo(ctx, r.Downloader, acquire.Release{
@@ -210,7 +223,7 @@ func (r ReleaseResolver) provenDigest(ctx context.Context, extName string, rel R
 // reuse re-proves an already-installed extension from its receipt. A missing receipt, a
 // receipt for a different archive or origin, a missing binary, or a binary whose hash has
 // moved all mean "install again and re-verify" rather than "run it".
-func (r ReleaseResolver) reuse(targetDir, archive, binName string) (string, bool, error) {
+func (r ReleaseResolver) reuse(targetDir, archive, binName, wantArchive string) (string, bool, error) {
 	// A missing or unreadable receipt is not an error: it means this version was never
 	// installed, or was installed by a flynn that wrote no receipt. Either way the answer
 	// is to download and verify it again, which is the safe direction. Reporting an error
@@ -226,6 +239,13 @@ func (r ReleaseResolver) reuse(targetDir, archive, binName string) (string, bool
 	if v.Archive != archive || v.Workflow != r.Origin.Identity.Workflow || v.SourceRepo != r.Origin.Identity.SourceRepo {
 		// The pinned origin has changed since this was installed, so what was proven
 		// then is not what we require now.
+		return "", false, nil
+	}
+	// If the spec pins a digest, the cached install must be OF that digest. Otherwise the
+	// cache is the bypass: an install made when the tag pointed at other bytes would be
+	// reused forever, and the pin would only ever apply to machines that had never run the
+	// extension before. Re-download and let the digest check above reject it properly.
+	if wantArchive != "" && !strings.EqualFold(v.ArchiveSHA256, wantArchive) {
 		return "", false, nil
 	}
 	bin, ok := acquire.FindBinary(targetDir, binName)
