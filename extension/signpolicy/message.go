@@ -194,7 +194,15 @@ func base58Decode(s string) ([]byte, error) {
 			out[i] = byte(carry % 256)
 			carry /= 256
 		}
-		for carry > 0 {
+		// Flushing the carry appends at most a handful of bytes: carry shrinks by a factor of
+		// 256 each turn. The bound is not there to catch that arithmetic being wrong, it is
+		// there so the loop cannot run forever no matter what the condition says. This decoder
+		// runs during package init, where a non-terminating loop is not a failure anyone can
+		// see: the program never reaches main, it just hangs.
+		for n := 0; carry > 0; n++ {
+			if n >= addrLen {
+				return nil, errors.New("address does not terminate")
+			}
 			out = append(out, byte(carry%256))
 			carry /= 256
 		}
