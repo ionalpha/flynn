@@ -11,6 +11,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/resource"
@@ -79,6 +80,71 @@ func TestResumeDrivesAnUnenqueuedGoal(t *testing.T) {
 	if _, err := rt.Resume(ctx, "ghost"); !errors.Is(err, resource.ErrNotFound) {
 		t.Fatalf("Resume of a missing goal: got %v, want ErrNotFound", err)
 	}
+}
+
+// TestDroppedKeyIsRecoveredByScopedResync is the liveness guarantee of a one-shot
+// run. The control plane deliberately abandons a key it cannot make progress on
+// (the controller does not retry a non-transient fault, and a reconcile that parks
+// a goal arms nothing), because resync is what brings it back: the bus is
+// at-most-once, so a lost wake is an expected event, not a fault. A run that drove
+// only what it was handed used to switch that safety net off entirely, so a single
+// dropped key parked the run forever with no step in flight, nothing queued, and a
+// caller waiting on a phase that would never arrive.
+//
+// Scoping the sweep to the goals this process submitted keeps the no-adoption
+// property (TestResumeDrivesAnUnenqueuedGoal) and gets the guarantee back: nothing
+// enqueues this goal again, so only resync can converge it.
+func TestDroppedKeyIsRecoveredByScopedResync(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	gate := &gatedStop{}
+	rt, err := New(Config{
+		Executor: noopExec{}, Stop: gate,
+		PollInterval: 15 * time.Millisecond, WorkerPoll: 5 * time.Millisecond,
+		Resync:             40 * time.Millisecond,
+		DriveSubmittedOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() { _ = rt.Start(ctx) }()
+
+	g, err := rt.SubmitGoal(ctx, "gated", goal.Spec{Objective: "o", StopCondition: "c", MaxSteps: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The gate holds: every reconcile that reaches the stop evaluator fails with a
+	// class the controller does not retry, so the key is dropped and the goal is left
+	// non-terminal with nothing armed to revisit it.
+	waitFor(t, rt.Store(), g.Key(), func(_ goal.Status) bool { return gate.calls.Load() >= 2 },
+		3*time.Second, "the gate to be hit and the key dropped")
+	if st := goalStatus(t, rt.Store(), g.Key()); st.Phase == goal.PhaseConverged {
+		t.Fatalf("goal converged while the gate was closed: %+v", st)
+	}
+
+	// Open the gate. Nothing enqueues the goal: no step completes, no bus signal
+	// fires, no caller calls Resume. Only the scoped resync can drive it now.
+	gate.open.Store(true)
+	waitFor(t, rt.Store(), g.Key(),
+		func(st goal.Status) bool { return st.Phase == goal.PhaseConverged },
+		3*time.Second, "converge from resync alone after a dropped key")
+}
+
+// gatedStop is a governance gate: while it is closed it fails the reconcile with a
+// class the controller must not retry (a real one pauses for a human), so the key
+// is dropped rather than requeued. Once open it converges the goal.
+type gatedStop struct {
+	open  atomic.Bool
+	calls atomic.Int64
+}
+
+func (g *gatedStop) Met(_ context.Context, _ goal.Spec, _ goal.Status) (bool, string, error) {
+	g.calls.Add(1)
+	if !g.open.Load() {
+		return false, "", fault.New(fault.NeedsApproval, "stop_gate", "waiting on approval")
+	}
+	return true, "gate opened", nil
 }
 
 // noopExec is a step that does no real work: enough to drive the loop while the

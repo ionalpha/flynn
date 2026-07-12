@@ -30,7 +30,7 @@ type Manager struct {
 	store       resource.Store
 	clk         clock.Timing
 	resync      time.Duration
-	skipResync  bool
+	scope       func() []Ref
 	controllers map[string]*Controller[Ref]
 }
 
@@ -54,15 +54,27 @@ func WithResync(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.resync = d }
 }
 
-// WithoutResync disables the resync sweep entirely, both the initial pass and the
-// periodic one, so the manager drives only the resources explicitly enqueued (by a
-// completion signal or an Enqueue hint) and never adopts pre-existing resources it
-// finds in the store. A one-shot run uses this so it drives its own submitted work
-// to completion without re-adopting goals left non-terminal by an earlier run; that
-// keeps each run's event stream its own and makes resuming a parked run an explicit
-// act rather than a side effect of starting any run.
-func WithoutResync() ManagerOption {
-	return func(m *Manager) { m.skipResync = true }
+// WithResyncScope narrows resync to the keys scope returns, instead of every live
+// resource in the store. The manager then never lists the store and so never adopts
+// a resource it did not already know about, but the safety net still covers what is
+// in scope: a lost change hint for a scoped resource is recovered on the next tick.
+//
+// A one-shot run scopes resync to the goals it submitted or resumed itself. That
+// keeps each run's event stream its own, and makes resuming a goal an earlier run
+// left non-terminal an explicit act rather than a side effect of starting any run,
+// without giving up the convergence guarantee for the run's own work. Convergence
+// is the manager's contract, so there is deliberately no option to switch resync
+// off outright: the choice is what it sweeps, never whether it sweeps.
+//
+// A nil scope is ignored (the manager keeps sweeping the whole store); a scope that
+// returns no keys is a manager with nothing to recover, which is the correct state
+// before the first submission.
+func WithResyncScope(scope func() []Ref) ManagerOption {
+	return func(m *Manager) {
+		if scope != nil {
+			m.scope = scope
+		}
+	}
 }
 
 // NewManager returns a manager over store. Register kinds before Start.
@@ -119,11 +131,6 @@ func (m *Manager) Start(ctx context.Context) {
 // resyncLoop performs an initial resync, then re-syncs every interval until ctx
 // is cancelled.
 func (m *Manager) resyncLoop(ctx context.Context) {
-	if m.skipResync {
-		// Drive only explicitly-enqueued work; never adopt pre-existing resources.
-		<-ctx.Done()
-		return
-	}
 	m.resyncAll(ctx)
 	if m.resync <= 0 {
 		<-ctx.Done()
@@ -141,11 +148,20 @@ func (m *Manager) resyncLoop(ctx context.Context) {
 	}
 }
 
-// resyncAll re-enqueues every live resource of each registered kind. A resync
-// needs addresses, not records, so it reads keys only when the store offers the
-// KeyLister capability and falls back to ListAll otherwise. List errors are
-// skipped: the next resync retries, and Enqueue hints still flow.
+// resyncAll re-enqueues every live resource of each registered kind, or, when the
+// manager is scoped, only the scoped keys. A resync needs addresses, not records,
+// so it reads keys only when the store offers the KeyLister capability and falls
+// back to ListAll otherwise. List errors are skipped: the next resync retries, and
+// Enqueue hints still flow.
 func (m *Manager) resyncAll(ctx context.Context) {
+	if m.scope != nil {
+		for _, k := range m.scope() {
+			if c, ok := m.controllers[k.Kind]; ok {
+				c.Queue().Add(k)
+			}
+		}
+		return
+	}
 	kl, _ := m.store.(resource.KeyLister)
 	for kind, c := range m.controllers {
 		if kl != nil {

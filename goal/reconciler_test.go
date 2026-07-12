@@ -3,6 +3,8 @@ package goal
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +24,15 @@ func (s stopAfter) Met(_ context.Context, _ Spec, st Status) (bool, string, erro
 		return true, "reached step target", nil
 	}
 	return false, "", nil
+}
+
+// failingStop is a stop evaluator that cannot answer: the model call behind it
+// fails in a way retrying will not fix (bad credentials, a rejected request). Its
+// error is deliberately unclassified, the shape a real caller's error arrives in.
+type failingStop struct{ err error }
+
+func (s failingStop) Met(context.Context, Spec, Status) (bool, string, error) {
+	return false, "", s.err
 }
 
 // recordingCleaner counts cleanup calls and can fail a given number of times first.
@@ -212,6 +223,33 @@ func TestGoalNeverDispatchesDuplicate(t *testing.T) {
 	jobsClaimed, _ := h.jobs.Claim(h.ctx, jobs.ClaimParams{Queue: StepQueue, Limit: 10, LeaseFor: int64(time.Minute)})
 	if len(jobsClaimed) != 1 {
 		t.Fatalf("expected exactly 1 step job in flight, got %d (duplicate dispatch)", len(jobsClaimed))
+	}
+}
+
+// TestGoalTerminalFaultStalls: a reconcile that can never succeed must settle the
+// goal, not park it. The controller does not retry a terminal fault (and an
+// unclassified error counts as one), so a goal left non-terminal here would have no
+// step in flight and nothing to wake it: the caller would wait on a phase that never
+// arrives. The failure is recorded as a stall, with the cause, and the reconcile
+// itself reports success so the controller does not spin on it.
+func TestGoalTerminalFaultStalls(t *testing.T) {
+	h := newHarness(t, failingStop{err: errors.New("model rejected the request")})
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", MaxSteps: 2})
+	h.reconcile(t, ref) // finalizer
+	res := h.reconcile(t, ref)
+
+	st := h.status(t, ref)
+	if st.Phase != PhaseStalled || !hasCond(st, CondStalled, "True") {
+		t.Fatalf("a terminally-failing reconcile did not stall the goal: %+v", st)
+	}
+	if !strings.Contains(st.Message, "model rejected the request") {
+		t.Fatalf("stall message lost the cause: %q", st.Message)
+	}
+	if res.RequeueAfter != 0 {
+		t.Fatalf("a stalled goal was requeued after %v, want no requeue", res.RequeueAfter)
+	}
+	if st.InFlight != nil {
+		t.Fatalf("a stalled goal still holds an in-flight step: %+v", st.InFlight)
 	}
 }
 

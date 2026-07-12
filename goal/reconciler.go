@@ -115,7 +115,61 @@ func NewReconciler(store resource.Store, q jobs.Queue, clk clock.Clock, stop Sto
 var _ reconcile.Reconciler[reconcile.Ref] = (*Reconciler)(nil)
 
 // Reconcile drives one goal one level-triggered step toward its desired state.
+//
+// A reconcile that fails terminally is not merely dropped. fault.Classify calls an
+// unclassified error Terminal, and the controller does not retry a terminal error,
+// so a goal whose reconcile can never succeed (a spec it cannot decode, a stop
+// evaluator that hard-fails) would otherwise sit non-terminal forever: no step in
+// flight, nothing to wake it, and a caller waiting on a phase that will never
+// arrive. A goal that cannot be reconciled has not paused, it has failed, so it is
+// recorded as stalled with the cause. Retryable classes are returned untouched:
+// transient errors back off and retry, and a cancellation is shutdown, not failure.
 func (g *Reconciler) Reconcile(ctx context.Context, ref reconcile.Ref) (reconcile.Result, error) {
+	res, err := g.reconcile(ctx, ref)
+	if err == nil || fault.Classify(err) != fault.Terminal {
+		return res, err
+	}
+	if serr := g.stall(ctx, ref, err); serr != nil {
+		// The stall write itself failed (a conflict is transient): retry, do not lose
+		// the cause.
+		return reconcile.Result{}, serr
+	}
+	return reconcile.Result{}, nil
+}
+
+// stall records a terminally-failed reconcile on the goal, so the failure surfaces
+// as a settled phase a caller can observe instead of an unbounded wait. A goal that
+// has since gone or already settled is left as it is.
+func (g *Reconciler) stall(ctx context.Context, ref reconcile.Ref, cause error) error {
+	r, err := g.store.Get(ctx, ref.Kind, ref.Scope, ref.Name)
+	if errors.Is(err, resource.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	status, err := DecodeStatus(r)
+	if err != nil {
+		// The status is what could not be decoded. Stalling still has to work, so
+		// start from an empty one rather than failing in the failure path.
+		status = Status{}
+	}
+	if status.Phase == PhaseConverged || status.Phase == PhaseStalled {
+		return nil
+	}
+	msg := cause.Error()
+	status.InFlight = nil
+	status.WaitingSince = nil
+	status.Phase = PhaseStalled
+	status.Message = "reconcile failed terminally: " + msg
+	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "ReconcileFailed", Message: msg}, g.clk.Now())
+	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "ReconcileFailed"}, g.clk.Now())
+	_, err = g.terminal(ctx, r, status, r.SpecHash)
+	return err
+}
+
+// reconcile is the reconcile proper; Reconcile wraps it to settle terminal faults.
+func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcile.Result, error) {
 	r, err := g.store.Get(ctx, ref.Kind, ref.Scope, ref.Name)
 	if errors.Is(err, resource.ErrNotFound) {
 		return reconcile.Result{}, nil // already gone
@@ -285,7 +339,11 @@ func (g *Reconciler) finalize(ctx context.Context, r resource.Resource) (reconci
 	}
 	if g.cleaner != nil {
 		if err := g.cleaner.Cleanup(ctx, r); err != nil {
-			return reconcile.Result{}, err // retry; do not drop the finalizer
+			// Retry; do not drop the finalizer. Cleanup is retried by design (that is
+			// what stops the owned state from leaking), so the failure is transient
+			// whatever the cleaner says: an unclassified error would otherwise be read
+			// as terminal and abandoned.
+			return reconcile.Result{}, fault.Wrap(fault.Transient, "goal_cleanup", err)
 		}
 	}
 	r.Finalizers = removeFinalizer(r.Finalizers, Finalizer)

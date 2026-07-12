@@ -56,15 +56,19 @@ type Config struct {
 	// resync and retry backoff deterministic in tests.
 	Clock clock.Timing
 
-	// Resync overrides the manager's safety-net interval (0 uses its default).
+	// Resync overrides the manager's safety-net interval. Non-positive values use
+	// the default: the safety net cannot be turned off, because it is what makes
+	// convergence a guarantee rather than a hope that no change hint is ever lost.
 	Resync time.Duration
-	// DriveSubmittedOnly makes the runtime drive only the goals it is explicitly
-	// given (via SubmitGoal or a completion signal) and never adopt goals it finds
-	// already in the store. A one-shot command sets this so starting a run does not
-	// silently resume a goal an earlier run left non-terminal: each run keeps its
-	// own event stream, and resuming a parked run is an explicit act. A long-lived
-	// server leaves it false so the resync safety net drives every goal to
-	// convergence after a crash.
+	// DriveSubmittedOnly narrows what the runtime drives to the goals it was given
+	// itself (via SubmitGoal or Resume, which is also how a fan-out's children
+	// arrive), so it never adopts a goal it merely finds in the store. A one-shot
+	// command sets this: starting a run must not silently resume a goal an earlier
+	// run left non-terminal, so each run keeps its own event stream and resuming a
+	// parked run stays an explicit act. It narrows the resync sweep, it does not
+	// disable it, so a lost change hint for the run's own goal is still recovered. A
+	// long-lived server leaves it false and drives every goal in the store, which is
+	// what resumes orphaned work after a crash.
 	DriveSubmittedOnly bool
 	// WorkerPoll overrides how often the step worker polls when idle.
 	WorkerPoll time.Duration
@@ -93,6 +97,36 @@ type Runtime struct {
 	worker     *goal.Worker
 	clk        clock.Timing
 	workerPoll time.Duration
+	driven     *drivenSet
+}
+
+// drivenSet is the set of goals this process is responsible for: everything it
+// submitted or resumed itself, including the children a fan-out spawned. Under
+// DriveSubmittedOnly it is what the manager resyncs, so the safety net covers the
+// run's own work and nothing else. It is written from the goroutine that submits
+// and read from the resync loop, so it is guarded.
+type drivenSet struct {
+	mu   sync.Mutex
+	keys map[resource.Key]struct{}
+}
+
+func (d *drivenSet) add(k resource.Key) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.keys == nil {
+		d.keys = map[resource.Key]struct{}{}
+	}
+	d.keys[k] = struct{}{}
+}
+
+func (d *drivenSet) list() []resource.Key {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]resource.Key, 0, len(d.keys))
+	for k := range d.keys {
+		out = append(out, k)
+	}
+	return out
 }
 
 // New assembles a Runtime from cfg, building in-process foundation defaults for any
@@ -148,12 +182,16 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	worker := goal.NewWorker(store, q, clk, cfg.Executor, wopts...)
 
+	driven := &drivenSet{}
 	mopts := []reconcile.ManagerOption{reconcile.WithClock(clk)}
-	if cfg.Resync != 0 {
+	if cfg.Resync > 0 {
 		mopts = append(mopts, reconcile.WithResync(cfg.Resync))
 	}
 	if cfg.DriveSubmittedOnly {
-		mopts = append(mopts, reconcile.WithoutResync())
+		// Scope the safety net to this process's own goals rather than switching it
+		// off: no pre-existing goal is adopted, but a lost change hint for a goal this
+		// run submitted is still recovered on the next resync tick.
+		mopts = append(mopts, reconcile.WithResyncScope(driven.list))
 	}
 	mgr := reconcile.NewManager(store, mopts...)
 	mgr.Register(goal.Kind, rec)
@@ -171,6 +209,7 @@ func New(cfg Config) (*Runtime, error) {
 		worker:     worker,
 		clk:        clk,
 		workerPoll: workerPoll,
+		driven:     driven,
 	}, nil
 }
 
@@ -196,6 +235,7 @@ func (rt *Runtime) SubmitGoal(ctx context.Context, name string, spec goal.Spec) 
 	if err != nil {
 		return resource.Resource{}, err
 	}
+	rt.driven.add(saved.Key())
 	rt.manager.Enqueue(saved.Key())
 	return saved, nil
 }
@@ -211,6 +251,7 @@ func (rt *Runtime) Resume(ctx context.Context, name string) (resource.Resource, 
 	if err != nil {
 		return resource.Resource{}, err
 	}
+	rt.driven.add(r.Key())
 	rt.manager.Enqueue(r.Key())
 	return r, nil
 }
