@@ -1,5 +1,7 @@
 package gbnf
 
+import "slices"
+
 // Accepts reports whether the grammar matches the whole of input. It is the
 // in-process meaning of the grammar: the same answer a runtime's token mask would
 // converge to if it only ever sampled grammar-permitted tokens and the result were
@@ -11,9 +13,12 @@ package gbnf
 // alternation and repetition branch), and the input is accepted when the root rule
 // can advance from the start to the very end. Positions reached are memoized per
 // (node, position) so shared subgrammars are not re-explored, which keeps the JSON
-// grammars this package emits well within a fixed step budget. The budget is a
-// guard against a pathological grammar rather than a real limit for these inputs;
-// exhausting it reports no match rather than looping.
+// grammars this package emits well within a fixed work budget. The budget counts
+// matches attempted, including one per start position when advancing a set, so it
+// bounds total work rather than node visits: an input that widens the position set
+// pays for the width. It is a guard against a pathological grammar or input rather
+// than a real limit for the inputs these grammars describe; exhausting it reports
+// no match rather than looping or running long.
 func (g *Grammar) Accepts(input string) bool {
 	m := &matcher{g: g, runes: []rune(input), memo: map[memoKey][]int{}, budget: 1 << 20}
 	root, ok := g.rules[g.root]
@@ -117,8 +122,12 @@ func (m *matcher) match(n node, pos int) []int {
 }
 
 // advanceAll matches node from each of the given start positions and merges the
-// resulting positions, the set-valued step of matching a sequence.
+// resulting positions, the set-valued step of matching a sequence. Advancing from
+// a set of k positions costs k matches, so it charges the budget for all of them:
+// the budget bounds the recognizer's total work, and a step whose cost grows with
+// the input would otherwise escape it.
 func (m *matcher) advanceAll(n node, starts []int) []int {
+	m.budget -= len(starts)
 	var ends []int
 	for _, p := range starts {
 		ends = mergePositions(ends, m.match(n, p))
@@ -128,7 +137,8 @@ func (m *matcher) advanceAll(n node, starts []int) []int {
 
 // repeat returns every position reachable by matching child zero or more times
 // from pos, the closure that defines star. A child that matches empty cannot add a
-// new position, so the frontier strictly grows and the loop terminates.
+// new position, so the frontier strictly grows and the loop terminates. The result
+// is sorted ascending, the order mergePositions relies on.
 func (m *matcher) repeat(child node, pos int) []int {
 	reached := []int{pos}
 	seen := map[int]struct{}{pos: {}}
@@ -147,6 +157,7 @@ func (m *matcher) repeat(child node, pos int) []int {
 		}
 		frontier = next
 	}
+	slices.Sort(reached)
 	return reached
 }
 
@@ -161,23 +172,34 @@ func classMatch(c class, r rune) bool {
 	return in != c.negated
 }
 
-// mergePositions unions two position sets, keeping them duplicate-free so memoized
-// results stay small.
+// mergePositions unions two ascending position sets into a third, keeping the
+// result ascending and duplicate-free so memoized results stay small. Both inputs
+// are already sorted, so a two-pointer merge costs O(len(a)+len(b)); a pairwise
+// scan would be quadratic in the number of positions, which is what lets a long
+// input dominate the cost of a single step.
 func mergePositions(a, b []int) []int {
 	if len(a) == 0 {
 		return b
 	}
-	for _, p := range b {
-		found := false
-		for _, q := range a {
-			if p == q {
-				found = true
-				break
-			}
-		}
-		if !found {
-			a = append(a, p)
+	if len(b) == 0 {
+		return a
+	}
+	out := make([]int, 0, len(a)+len(b))
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch {
+		case a[i] < b[j]:
+			out = append(out, a[i])
+			i++
+		case a[i] > b[j]:
+			out = append(out, b[j])
+			j++
+		default:
+			out = append(out, a[i])
+			i++
+			j++
 		}
 	}
-	return a
+	out = append(out, a[i:]...)
+	return append(out, b[j:]...)
 }
