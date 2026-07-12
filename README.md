@@ -64,6 +64,21 @@ irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.1.0`) or change the
 install directory with `FLYNN_INSTALL_DIR`.
 
+That is the last time you need the script. From then on the binary maintains itself:
+
+```sh
+flynn version list   # what releases exist
+flynn upgrade        # install the newest one
+```
+
+`flynn upgrade` verifies a release before installing it, with no cosign, no gh, and no
+trust placed in the network: it checks the signature against a Sigstore trust root
+compiled into the binary, requires the signing identity to be this repository's release
+workflow on a version tag, requires the signature to be present in the public Rekor
+transparency log, and only then downloads the archive, pinned to the digest the signed
+provenance names. It refuses downgrades, will not trample a package-manager install, and
+keeps the old binary if the new one does not run. See [docs/UPGRADE.md](docs/UPGRADE.md).
+
 Prefer another method? Each option below installs the same release.
 
 <details>

@@ -24,6 +24,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/selfupdate"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/learn"
@@ -54,6 +55,8 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"status":       dispatchStatus,
 	"spine":        dispatchSpine,
 	"db":           runDB,
+	"version":      runVersion,
+	"upgrade":      runUpgrade,
 }
 
 // staleSandboxProfileAge is how old a sandbox's operating-system profile must be before
@@ -73,6 +76,19 @@ const staleSandboxProfileAge = 24 * time.Hour
 func sweepStaleSandboxProfiles() {
 	cutoff := clock.System{}.Now().Add(-staleSandboxProfileAge)
 	go func() { _, _ = sandbox.CleanStaleProfiles(cutoff) }()
+}
+
+// sweepSupersededBinaries collects the binary an earlier `flynn upgrade` displaced.
+// Windows cannot delete a running executable, so an upgrade moves the outgoing one
+// aside and leaves it for the next start to remove; that next start is this one. It is
+// housekeeping, it cannot fail in a way that matters, and nothing depends on it having
+// run: the displaced file is inert.
+func sweepSupersededBinaries() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	go func() { _ = selfupdate.SweepSuperseded(exe) }()
 }
 
 // profileConfig assembles the diagnostics config from the flags and the environment,
@@ -172,6 +188,7 @@ func run() int {
 	}()
 
 	sweepStaleSandboxProfiles()
+	sweepSupersededBinaries()
 
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
@@ -237,7 +254,12 @@ func run() int {
 	if args := flag.Args(); len(args) >= 1 {
 		if fn, ok := dataDirCommands[args[0]]; ok {
 			if err := fn(args[1:], *dataDir); err != nil {
-				fmt.Fprintln(os.Stderr, "error:", err)
+				// An error with no message is a command reporting an outcome through its exit
+				// code rather than a failure: `flynn version check` exits non-zero when an
+				// upgrade is waiting, and nothing has gone wrong that warrants a message.
+				if err.Error() != "" {
+					fmt.Fprintln(os.Stderr, "error:", err)
+				}
 				return 1
 			}
 			return 0
@@ -364,6 +386,8 @@ func printUsage(w io.Writer) {
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version
+  flynn version [list]      print the running build, or list the releases that exist
+  flynn upgrade             replace this binary with a newer, signature-verified release
 Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
 }
 

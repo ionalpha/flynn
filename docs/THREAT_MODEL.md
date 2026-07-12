@@ -108,6 +108,37 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   host. The verifier rehashes the exact bytes the record carries rather than
   re-serializing, so verification holds across languages.
 
+- **Substituting the binary through the upgrade path.** A self-updating program is a
+  remote code execution path with a friendly name, so `flynn upgrade` trusts nothing it
+  downloads. The release listing is used only to enumerate candidates. What is installed
+  is decided by a SLSA provenance statement signed at build time by GitHub's OIDC
+  identity for flynn's release workflow, verified in-process against a Sigstore
+  certificate authority compiled into the binary, with the certificate checked as of the
+  moment Rekor recorded the signature (a Fulcio certificate lives ten minutes) and the
+  identity pinned to this repository's release workflow on a version tag, by numeric
+  repository and owner id as well as by URL. The signature must also be present in the
+  public transparency log: the inclusion proof has to reconstruct a root the log
+  operator signed, and the logged entry has to commit to this exact envelope, so a
+  forged release cannot be issued quietly to one victim. Only then is the archive
+  downloaded, pinned to the digest the signed provenance names and verified as it
+  streams. TLS is not the trust anchor at any point, so a hostile network, a
+  mis-issuing certificate authority, or a compromised mirror does not move the
+  attacker closer. There is no long-lived release signing key to steal. See
+  [UPGRADE.md](UPGRADE.md).
+- **Rollback and freeze through the upgrade path.** Both attacks use genuinely signed
+  releases, so no signature check can catch them. flynn remembers the highest version it
+  has ever verified and the newest it has ever been offered: it refuses to install
+  anything below the former without an explicit `--allow-downgrade`, and it reports a
+  listing that withdraws a release it has already shown, which is what a machine being
+  held on a vulnerable version looks like from the inside.
+- **Subverting the install itself.** The new binary is staged in the target's own
+  directory and renamed into place, so the swap is atomic and no partially written
+  binary is ever executable. The running executable's path is resolved through its
+  symlinks before anything is written, so a link planted between the check and the write
+  cannot redirect it. Nothing that has not verified is ever executed, and the new binary
+  must run and report its own version before it is kept. An install owned by a package
+  manager is refused rather than trampled.
+
 ### Repudiation (denying an action took place)
 
 - **An unattributable action.** Every action is recorded on the event spine through the
