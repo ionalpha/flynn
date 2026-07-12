@@ -7,6 +7,34 @@ import (
 	"github.com/ionalpha/flynn/externagent"
 )
 
+// TestExternalAgentUnsupportedNamesTheWayOut: a command that cannot host an external
+// agent must say so and name an invocation that works. Left to the native resolver the
+// spec is rejected as an unknown provider, which is true and useless: the backend does
+// exist, it just cannot drive a turn-by-turn session. A model spec passes through
+// untouched, so the guard never blocks a normal run.
+func TestExternalAgentUnsupportedNamesTheWayOut(t *testing.T) {
+	for _, spec := range []string{"claude", "codex", "codex:gpt-5-codex"} {
+		err := errExternalAgentUnsupported("an interactive session", spec)
+		if err == nil {
+			t.Fatalf("%q: an interactive session cannot drive an external agent, want a refusal", spec)
+		}
+		msg := err.Error()
+		name, _, _ := externalAgentSpec(spec)
+		if !strings.Contains(msg, name) {
+			t.Errorf("%q: refusal does not name the backend: %s", spec, msg)
+		}
+		// The way out has to be in the message, or the user is left guessing.
+		if !strings.Contains(msg, "--model "+spec+" \"<objective>\"") || !strings.Contains(msg, "flynn review") {
+			t.Errorf("%q: refusal does not name a working invocation: %s", spec, msg)
+		}
+	}
+	for _, spec := range []string{"anthropic", "anthropic:claude-opus-4-8", "openai:gpt-5.5", "ollama:llama3.2:3b"} {
+		if err := errExternalAgentUnsupported("an interactive session", spec); err != nil {
+			t.Errorf("%q is a model spec, not an external agent, but was refused: %v", spec, err)
+		}
+	}
+}
+
 // TestExternalAgentSpec covers the --model spec routing: a known external-agent scheme
 // selects that backend and carries its model string, a bare name selects the CLI's own
 // default model, and a hosted-provider spec is left for native resolution.

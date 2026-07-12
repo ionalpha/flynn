@@ -50,6 +50,9 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := errExternalAgentUnsupported("serve", modelSpec); err != nil {
+		return err
+	}
 
 	token := *tgToken
 	if token == "" {

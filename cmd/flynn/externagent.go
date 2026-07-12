@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -38,6 +39,35 @@ func externalAgentSpec(modelSpec string) (name, model string, ok bool) {
 		return "", "", false
 	}
 	return name, model, true
+}
+
+// externalAgentNames lists the backends in a stable order, for messages that name
+// what is available.
+func externalAgentNames() []string {
+	names := make([]string, 0, len(externalAgentBackends))
+	for n := range externalAgentBackends {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// errExternalAgentUnsupported reports that command cannot drive modelSpec because the
+// spec names an external agent, and points at the invocations that can. An external
+// agent brings its own harness and drives its own loop, so a command built around
+// turn-by-turn conversation with a model (an interactive session) or a long-lived
+// server cannot host one. Without this the spec falls through to the native provider
+// resolver, which has never heard of the backend and rejects it as an unknown
+// provider: true, but no help at all. It returns nil when the spec names a model.
+func errExternalAgentUnsupported(command, modelSpec string) error {
+	name, _, ok := externalAgentSpec(modelSpec)
+	if !ok {
+		return nil
+	}
+	return fmt.Errorf("%s cannot drive the %s external agent backend: it brings its own harness and drives its own loop. "+
+		"Run it on a goal instead, `flynn --model %s \"<objective>\"`, or on a review, `flynn review <owner/repo#n> --model %s`. "+
+		"To stay here, name a model provider (see `flynn models`)",
+		command, name, modelSpec, modelSpec)
 }
 
 // externAgent is a resolved external-agent backend: the driver that builds the

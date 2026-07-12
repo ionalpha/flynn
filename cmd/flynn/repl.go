@@ -36,6 +36,9 @@ import (
 func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
+	if err := errExternalAgentUnsupported("an interactive session", modelSpec); err != nil {
+		return err
+	}
 	model, plan, resolvedSpec, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
 		return err
@@ -516,6 +519,9 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 		return nil
 	}
 	spec := args[0]
+	if err := errExternalAgentUnsupported("an interactive session", spec); err != nil {
+		return fmt.Errorf("/model %s: %w", spec, err)
+	}
 	model, plan, err := resolveModel(ctx, spec, s.dataDir)
 	if err != nil {
 		return fmt.Errorf("/model %s: %w", spec, err)

@@ -75,6 +75,13 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 	renderModels(out, cat, models)
+	// The external-agent backends are not catalog models (they are agent CLIs that
+	// bring their own harness and credentials), but they are selected through the same
+	// --model spec, so a listing that never named them left them undiscoverable.
+	_, _ = fmt.Fprintf(out, "\nexternal agent backends: %s\n"+
+		"  these drive their own loop and use their own credentials, so they run a goal or a review,\n"+
+		"  not an interactive session: `flynn --model %s \"<objective>\"`, `flynn review <owner/repo#n> --model %s`\n",
+		strings.Join(externalAgentNames(), ", "), externalAgentNames()[0], externalAgentNames()[0])
 	if active, ok := readActiveModel(dataDir); ok {
 		_, _ = fmt.Fprintf(out, "\ndefault model: %s (change with `flynn models use <id>`, or /model in a session)\n", active)
 	}
