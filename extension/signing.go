@@ -142,9 +142,17 @@ func parseHostCall(text string) hostCallReply {
 // or null input starts from an empty object.
 func injectHostKey(input json.RawMessage, pub ed25519.PublicKey) (json.RawMessage, error) {
 	obj := map[string]json.RawMessage{}
-	if len(input) > 0 && string(input) != "null" {
+	if len(input) > 0 {
 		if err := json.Unmarshal(input, &obj); err != nil {
 			return nil, fault.Wrap(fault.Terminal, "extension_sign_input", err)
+		}
+		// Unmarshalling a JSON null into a map leaves the map nil, and JSON null is any
+		// of "null", " null", "null\n", and so on. Comparing the raw bytes to "null"
+		// catches one spelling of it, so a caller could hand the host a whitespace-padded
+		// null and panic it on the assignment below. Ask the decoder what it produced
+		// rather than trying to guess it from the input text.
+		if obj == nil {
+			obj = map[string]json.RawMessage{}
 		}
 	}
 	enc, err := json.Marshal(base64.StdEncoding.EncodeToString(pub))
