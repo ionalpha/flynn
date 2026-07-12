@@ -91,6 +91,17 @@ type hostCallReply struct {
 	} `json:"fetch"`
 }
 
+// parseHostCall reads a tool result as a host-call message. The result is UNTRUSTED: it is
+// whatever an extension subprocess wrote to its stdout. A result that is not valid JSON, or is
+// JSON carrying neither a sign nor a fetch block, is not a host-call message at all, which is
+// how a terminal result is recognised. So a parse failure is not an error here, and the zero
+// value it returns is exactly the "this is terminal" answer.
+func parseHostCall(text string) hostCallReply {
+	var reply hostCallReply
+	_ = json.Unmarshal([]byte(text), &reply)
+	return reply
+}
+
 // injectHostKey returns input with the granted key's public bytes added under hostKeyField,
 // so a signing-enabled tool learns the key it will build against on its first call. An empty
 // or null input starts from an empty object.

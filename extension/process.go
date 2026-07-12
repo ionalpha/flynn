@@ -547,11 +547,10 @@ func (t *procTool) driveHostCalls(ctx context.Context, input json.RawMessage) (s
 		if res.IsError {
 			return "extension tool error: " + boundText(res.Text, t.maxResult), nil
 		}
-		var reply hostCallReply
 		// A result that is not a host-call message (not valid JSON, or valid JSON with neither a
 		// sign nor a fetch block) is the terminal result: return it to the caller untouched but
 		// bounded. A parse failure is not an error here; it just means this result is terminal.
-		_ = json.Unmarshal([]byte(res.Text), &reply)
+		reply := parseHostCall(res.Text)
 		switch {
 		case reply.Sign != nil && reply.Fetch != nil:
 			return "", fault.New(fault.Terminal, "extension_hostcall_ambiguous",
