@@ -388,8 +388,8 @@ jobs:
   # test job and coverage yet kills no mutant. Advisory for now: it is NOT in
   # the ci-success needs list, so a surviving mutant reports without blocking a
   # PR. Arm it by raising the thresholds in .gremlins.yaml and adding `mutate`
-  # to ci-success. A PR scopes to lines changed since its base (dev/mutate's
-  # --diff via MUTATE_BASE); a push to main mutates the full module.
+  # to ci-success. Every run is scoped to changed lines through dev/mutate's --diff
+  # via MUTATE_BASE: a PR against its base, a push against the commit it moved from.
   #
   # continue-on-error keeps the job honest about being advisory. Without it a
   # gremlins crash, or the timeout below firing on a long full-module run, posts
@@ -430,9 +430,15 @@ jobs:
         run: |
           MUTATE_BASE="${{ github.event.pull_request.base.sha }}" ./dev/mutate ||
             echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
+      # A push mutates the commits it landed, not the whole module. Mutating
+      # everything on every push is open-ended: each mutant recompiles and reruns
+      # the affected tests, and the run outgrew the runner, which killed the job
+      # mid-flight. A cancelled job reports failure no matter what the step's exit
+      # status is, so an unbounded run turned the advisory check red on main for a
+      # signal it never produced. The pushed range is the same scope a PR pays for.
       - if: github.event_name != 'pull_request'
         run: |
-          ./dev/mutate ||
+          MUTATE_BASE="${{ github.event.before }}" ./dev/mutate ||
             echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
 
   # Enforce the PR template at the gate, not just in dev/pr: this catches PRs

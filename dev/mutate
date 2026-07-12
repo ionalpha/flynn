@@ -44,7 +44,6 @@ if [ -n "${MUTATE_BASE:-}" ]; then
 		# --diff restricts mutation to lines changed since base. A change that
 		# touches no production Go line has nothing to mutate, and mutating the
 		# whole module to say so costs a quarter of an hour, so say so and stop.
-		# The module still gets a full run on every push to main.
 		if [ -z "$(git diff --name-only "$base" HEAD -- '*.go' ':!*_test.go')" ]; then
 			echo "dev/mutate: no production Go line changed since $base; nothing to mutate"
 			exit 0
@@ -52,7 +51,12 @@ if [ -n "${MUTATE_BASE:-}" ]; then
 		echo "dev/mutate: scoping to lines changed since $base"
 		set -- "$@" --diff "$base"
 	else
-		echo "dev/mutate: cannot resolve MUTATE_BASE=$MUTATE_BASE; mutating the full module" >&2
+		# A caller that set MUTATE_BASE asked for a scoped run. Answering an
+		# unresolvable base with the most expensive run there is (the full module,
+		# tens of minutes) is the opposite of what was asked for, and in CI it is
+		# what outgrows the runner. Say the base is unusable and stop.
+		echo "dev/mutate: cannot resolve MUTATE_BASE=$MUTATE_BASE; nothing mutated" >&2
+		exit 0
 	fi
 fi
 
