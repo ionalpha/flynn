@@ -176,7 +176,8 @@ func run() int {
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
 	// default the flag carries. So a user need not repeat --model once one is chosen.
-	modelSpec := effectiveModelSpec(*model, flagSet("model"), *dataDir)
+	modelSpecExplicit = flagSet("model")
+	modelSpec := effectiveModelSpec(*model, modelSpecExplicit, *dataDir)
 
 	if args := flag.Args(); len(args) >= 1 && args[0] == "goal" {
 		objective := strings.TrimSpace(strings.Join(args[1:], " "))
@@ -305,6 +306,12 @@ func effectiveModelSpec(flagValue string, explicit bool, dataDir string) string 
 	return flagValue
 }
 
+// modelSpecExplicit records whether --model was named on the command line. Every command
+// resolves the same spec, but only a spec the user named carries an instruction about
+// which provider may see the work, so the resolver refuses a missing credential instead
+// of falling back when this is set.
+var modelSpecExplicit bool
+
 // flagSet reports whether the named flag was set on the command line, so a default can be
 // told apart from a value the user passed explicitly.
 func flagSet(name string) bool {
@@ -414,7 +421,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 			return err
 		}
 	} else {
-		model, plan, _, err = resolveModelOrOnboard(ctx, modelSpec, dataDir)
+		model, plan, _, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 		if err != nil {
 			return err
 		}
@@ -514,7 +521,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
 		return err
 	}

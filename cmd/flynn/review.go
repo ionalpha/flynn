@@ -125,7 +125,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
 		return err
 	}

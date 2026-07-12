@@ -36,7 +36,7 @@ import (
 func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
 	ctx := context.Background()
 
-	model, plan, resolvedSpec, err := resolveModelOrOnboard(ctx, modelSpec, dataDir)
+	model, plan, resolvedSpec, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
 		return err
 	}
