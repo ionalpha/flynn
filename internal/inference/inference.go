@@ -84,15 +84,13 @@ var (
 	}
 )
 
-// MinSupportedFor returns the minimum safe version for a runtime by name, and whether
-// one is known.
+// MinSupportedFor returns the minimum safe version for a runtime by name, and whether one
+// is known. It is the floor in force, which is the higher of the version compiled into
+// this binary and any floor raised since from a signed source (see floor.go). Callers get
+// the current gate, never the stale one they were built with.
 func MinSupportedFor(name string) (Version, bool) {
-	for _, r := range Runtimes() {
-		if r.Name == name {
-			return r.MinSupported, len(r.MinSupported) > 0
-		}
-	}
-	return nil, false
+	v, ok, _ := FloorFor(name)
+	return v, ok
 }
 
 // ParseVersion extracts this runtime's version from its raw --version output, using

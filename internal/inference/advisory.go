@@ -86,16 +86,22 @@ func Exposure(runtime string, v Version, advs []Advisory) []Advisory {
 // exploit whether or not the bug is known. The gate lowers the chance of one firing;
 // the sandbox contains it when it does.
 func SafeToRun(runtime string, v Version) error {
-	floor, hasFloor := MinSupportedFor(runtime)
+	floor, hasFloor, raisedBy := FloorFor(runtime)
 	belowFloor := hasFloor && v.Less(floor)
 	exposed := Exposure(runtime, v, advisories)
 	if !belowFloor && len(exposed) == 0 {
 		return nil
 	}
 
-	ids := make([]string, len(exposed))
-	for i, a := range exposed {
-		ids[i] = a.ID
+	ids := make([]string, 0, len(exposed)+1)
+	for _, a := range exposed {
+		ids = append(ids, a.ID)
+	}
+	// A floor raised after this binary was built names an advisory this build has never
+	// heard of. Saying its identifier is the difference between "your runtime is too old"
+	// and a refusal the user can go and read about.
+	if belowFloor && raisedBy != "" {
+		ids = append(ids, raisedBy)
 	}
 	var why string
 	switch {
