@@ -145,6 +145,16 @@ jobs:
           files: coverage.out
         continue-on-error: true
 
+      # The same profile, kept inside the repository's own trust boundary so the
+      # badge job can read it without depending on a third-party service being up.
+      - name: Keep the coverage profile for the badge job
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: coverage-profile
+          path: coverage.out
+          retention-days: 1
+
   e2e:
     name: E2E (${{ matrix.os }})
     needs: setup
@@ -466,6 +476,50 @@ jobs:
             exit 1
           fi
           echo "PR body contains all required template sections."
+
+  # Publish the numbers the README's badges display: coverage, and the size of the
+  # test, fuzz and benchmark surface.
+  #
+  # The badges read their values from an orphan `badges` branch, which holds nothing
+  # but shields.io endpoint documents. Nothing else reads that branch and no history
+  # is kept on it, so a force-push of a single commit is the whole publish step. The
+  # alternative, a hand-written number in the README, is a claim that is accurate on
+  # the day it is typed and quietly false from the next commit onward.
+  #
+  # It runs only after a green suite on main, so a badge can never advertise a number
+  # from a run that failed, and never from an unmerged branch.
+  badges:
+    name: Publish badge data
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the `badges` branch
+      actions: read # read this run's coverage artifact
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26'
+      - name: Fetch the coverage profile from this run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ github.run_id }}" --name coverage-profile
+      - name: Render the badge data
+        run: ./dev/badges
+      - name: Publish to the `badges` branch
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          cd badges
+          git init -q -b badges
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git add -A
+          git commit -q -m "badge data for ${GITHUB_SHA}"
+          git push -q --force origin badges
 
   # A single, stable gate to require in branch protection. Because it depends on
   # the real jobs rather than naming them, the test matrix (OS / Go version) can

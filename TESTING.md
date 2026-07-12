@@ -23,6 +23,22 @@ generator or a fault plan once, reuse it in every package.
 | **Golden / snapshot** | `testkit.Golden` + go-cmp | A whole output (a replay, a rendered spec) compared against a `testdata/*.golden` JSON fixture; `-update` regenerates it, so large outputs need no hand-written expected value. |
 | **Fuzzing** | stdlib `go test -fuzz` | Arbitrary-input targets on the error model and the dispatch→spine payload mapping; seed corpora run in CI, deep fuzzing on demand. Expands to parsers/manifests/protocol messages as they land. |
 
+## The numbers on the README badges
+
+The coverage, test-count and fuzz-target badges are measured, never typed. After a
+green suite on `main`, CI runs [`dev/badges`](dev/badges), which reads statement
+coverage out of the profile that run just produced and counts the `Test`, `Fuzz` and
+`Benchmark` functions the tree declares. The result is published as shields.io
+endpoint documents on the orphan `badges` branch, which is the only thing the badges
+read. A badge therefore cannot outlive the code it describes: it moves when the
+suite moves, or not at all.
+
+Subtests and table cases are deliberately not counted. That number depends on what a
+particular run expanded, so it would move without the tree moving. The badge counts
+what is declared, which is what a reader can go and open.
+
+Reproduce it locally with `./dev/test && ./dev/badges`.
+
 ## Deferred (planned, not yet wired)
 
 - **Deterministic concurrency:** `testing/synctest` (a fake-clock "bubble" with

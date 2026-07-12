@@ -1,0 +1,65 @@
+#!/usr/bin/env sh
+# Generate the README's measured badges from the repository itself.
+#
+# A badge that states a number a human typed is a claim, not a measurement: it is
+# correct on the day it is written and silently wrong forever after. Every number
+# here is read out of the tree or out of a coverage profile CI just produced, so
+# the badge cannot drift from the code it describes.
+#
+# Output is one shields.io endpoint document per badge, written to badges/ (or to
+# $1). CI publishes that directory to the `badges` branch, which the README's
+# shields.io endpoint URLs read. Run it locally to see the same numbers:
+#
+#   ./dev/test && ./dev/badges && cat badges/coverage.json
+#
+# Coverage comes from coverage.out (override with COVERAGE_PROFILE). Without a
+# profile the coverage badge is skipped rather than guessed, so a partial local
+# run can never publish a number the suite did not produce.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+out="${1:-badges}"
+profile="${COVERAGE_PROFILE:-coverage.out}"
+mkdir -p "$out"
+
+# shields.io endpoint document. Colors follow shields' named palette.
+emit() {
+  printf '{"schemaVersion":1,"label":"%s","message":"%s","color":"%s"}\n' "$1" "$2" "$3" >"$out/$4"
+  echo "==> $4: $1 $2"
+}
+
+# Statement coverage across every package, as go itself reports it.
+if [ -f "$profile" ]; then
+  pct="$(go tool cover -func="$profile" | awk '$1 == "total:" { print $3 }')"
+  whole="${pct%%.*}"
+  # A profile that parses but reports no total is a broken run, not 0% coverage.
+  # Fail loudly: publishing a wrong number is worse than publishing none.
+  case "$whole" in
+    '' | *[!0-9]*)
+      echo "==> $profile has no total: line (got '$pct'): refusing to guess a number" >&2
+      exit 1
+      ;;
+  esac
+  if [ "$whole" -ge 80 ]; then
+    color=brightgreen
+  elif [ "$whole" -ge 70 ]; then
+    color=green
+  elif [ "$whole" -ge 60 ]; then
+    color=yellow
+  else
+    color=orange
+  fi
+  emit coverage "$pct" "$color" coverage.json
+else
+  echo "==> no $profile: skipping the coverage badge" >&2
+fi
+
+# Test, fuzz and benchmark functions, counted from their declarations. Subtests
+# and table cases are deliberately not counted: the number would depend on what a
+# given run happened to expand, and a badge that moves without the tree moving is
+# noise. This counts what the tree declares, which is what a reader can go and read.
+count() { grep -rhE "^func $1[A-Z_]" --include='*_test.go' . | wc -l | tr -d ' '; }
+
+emit tests "$(count Test) passing" brightgreen tests.json
+emit fuzz "$(count Fuzz) targets" blue fuzz.json
+emit benchmarks "$(count Benchmark)" blue benchmarks.json

@@ -3,11 +3,20 @@
 <p align="center"><strong>A secure, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real authority, because every action is sandboxed, governed, and sealed into a verifiable, tamper-evident record.</strong></p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License: Apache 2.0"></a>
-  <img src="https://img.shields.io/badge/Go-1.26+-00ADD8.svg" alt="Go 1.26+">
   <a href="https://github.com/ionalpha/flynn/actions/workflows/ci.yml"><img src="https://github.com/ionalpha/flynn/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <a href="https://pkg.go.dev/github.com/ionalpha/flynn"><img src="https://pkg.go.dev/badge/github.com/ionalpha/flynn.svg" alt="Go Reference"></a>
+  <a href="https://github.com/ionalpha/flynn/actions/workflows/codeql.yml"><img src="https://github.com/ionalpha/flynn/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
+  <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/tests.json" alt="Tests"></a>
+  <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/coverage.json" alt="Coverage"></a>
+  <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/fuzz.json" alt="Fuzz targets"></a>
   <a href="https://scorecard.dev/viewer/?uri=github.com/ionalpha/flynn"><img src="https://api.securityscorecards.dev/projects/github.com/ionalpha/flynn/badge" alt="OpenSSF Scorecard"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/ionalpha/flynn/releases/latest"><img src="https://img.shields.io/github/v/release/ionalpha/flynn?sort=semver&color=blue" alt="Latest release"></a>
+  <a href="#install"><img src="https://img.shields.io/badge/releases-cosign%20signed-0a7bbb.svg" alt="Releases are cosign signed"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-green.svg" alt="License: Apache 2.0"></a>
+  <a href="go.mod"><img src="https://img.shields.io/github/go-mod/go-version/ionalpha/flynn?color=00ADD8&logo=go" alt="Go version"></a>
+  <a href="https://pkg.go.dev/github.com/ionalpha/flynn"><img src="https://pkg.go.dev/badge/github.com/ionalpha/flynn.svg" alt="Go Reference"></a>
   <a href="https://x.com/ionalpha_"><img src="https://img.shields.io/badge/Follow-@ionalpha__-1DA1F2.svg" alt="Follow on X"></a>
 </p>
 

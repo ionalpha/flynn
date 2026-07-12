@@ -9,6 +9,9 @@
 
 # CI artifacts
 coverage.out
+
+# dev/badges output. It is published to the `badges` branch by CI, never to main.
+badges/
 results.sarif
 
 # rapid property-test failure reproductions (regenerated on failure, not committed).
