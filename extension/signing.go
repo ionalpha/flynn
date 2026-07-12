@@ -47,33 +47,48 @@ func (s *Ed25519HostSigner) Sign(payload []byte) ([]byte, error) {
 
 var _ HostSigner = (*Ed25519HostSigner)(nil)
 
-// The host-signing handshake lets a mounted tool obtain host signatures without holding the
-// key, as a generic capability with no chain- or format-specific knowledge in the host.
+// The host-call handshake lets a mounted tool borrow two host authorities it must not hold
+// itself: a signing key, and the network. Both are generic capabilities; the host carries no
+// chain-, protocol-, or format-specific knowledge, and reads only opaque bytes.
 //
-// A signing-enabled tool, instead of returning a final result, may return a signing message:
-// a session token plus a base64 payload to sign. The host signs the payload with the tool's
-// granted HostSigner and re-invokes the tool with the same session token and the detached
-// signature, base64-encoded. This repeats until the tool returns a result with no signing
-// message, which is the terminal result handed back to the caller unchanged. On the first
-// call the host injects the granted key's public bytes under hostKeyField so the tool can
-// build against the key it does not hold. Payload and signature are base64 of raw bytes, so
-// the host reads and produces only opaque bytes.
+// A handshake-enabled tool, instead of returning a final result, may return a host-call
+// message: a session token plus exactly one request.
+//
+//	sign  a base64 payload to sign. The host signs it with the tool's granted HostSigner and
+//	      resumes the tool with the detached signature.
+//	fetch a base64 request body to send. The host sends it with the tool's granted HostFetcher,
+//	      which holds the destination, and resumes the tool with the response body.
+//
+// The host resumes the tool with the same session token and the result, and this repeats
+// until the tool returns a result carrying no host-call message. That result is terminal and
+// is handed back to the caller unchanged. On the first call the host injects the granted key's
+// public bytes under hostKeyField so the tool can build against the key it does not hold.
+//
+// The tool names no destination. The endpoint lives in the host's HostFetcher grant, so a
+// hostile extension cannot choose where its bytes go: the network authority it borrows is
+// "reach the one place the operator granted", never "reach an address of my choosing". This is
+// what lets an extension run with its own egress fully denied on every platform.
 const (
 	// hostKeyField is injected into the first call: base64 of the granted key's public bytes.
 	hostKeyField = "_hostKey"
 	sessionField = "session"
 	signatureKey = "signature"
 	signErrorKey = "signError"
+	responseKey  = "response"
+	fetchErrKey  = "fetchError"
 )
 
-// signingReply is the subset of a tool result the host reads to drive the handshake. A reply
-// whose Sign is nil (or that does not parse) is terminal; everything else in the result stays
-// opaque to the host and passes through untouched.
-type signingReply struct {
+// hostCallReply is the subset of a tool result the host reads to drive the handshake. A reply
+// with neither Sign nor Fetch (or that does not parse) is terminal; everything else in the
+// result stays opaque to the host and passes through untouched.
+type hostCallReply struct {
 	Session string `json:"session"`
 	Sign    *struct {
 		Message string `json:"message"` // base64 of the bytes to sign
 	} `json:"sign"`
+	Fetch *struct {
+		Body string `json:"body"` // base64 of the request body to send
+	} `json:"fetch"`
 }
 
 // injectHostKey returns input with the granted key's public bytes added under hostKeyField,
@@ -94,19 +109,32 @@ func injectHostKey(input json.RawMessage, pub ed25519.PublicKey) (json.RawMessag
 	return json.Marshal(obj)
 }
 
-// resumeInput builds the follow-up call carrying the session token and either the detached
+// resumeSign builds the follow-up call carrying the session token and either the detached
 // signature (base64) or a signing-failure message, so the tool can continue or run its
 // failure path.
-func resumeInput(session string, sig []byte, signErr error) (json.RawMessage, error) {
-	obj := map[string]any{sessionField: session}
+func resumeSign(session string, sig []byte, signErr error) (json.RawMessage, error) {
 	if signErr != nil {
-		obj[signErrorKey] = signErr.Error()
-	} else {
-		obj[signatureKey] = base64.StdEncoding.EncodeToString(sig)
+		return resume(session, signErrorKey, signErr.Error())
 	}
-	b, err := json.Marshal(obj)
+	return resume(session, signatureKey, base64.StdEncoding.EncodeToString(sig))
+}
+
+// resumeFetch builds the follow-up call carrying the session token and either the response
+// body (base64) or the error the host hit sending the request. A failure is delivered to the
+// tool rather than aborting the call here, so the tool's own failure path runs: a mint that
+// cannot reach the network must still unwind (revoking anything it created) rather than hang.
+func resumeFetch(session string, body []byte, fetchErr error) (json.RawMessage, error) {
+	if fetchErr != nil {
+		return resume(session, fetchErrKey, fetchErr.Error())
+	}
+	return resume(session, responseKey, base64.StdEncoding.EncodeToString(body))
+}
+
+// resume builds a follow-up input: the session token plus exactly one result field.
+func resume(session, key, value string) (json.RawMessage, error) {
+	b, err := json.Marshal(map[string]any{sessionField: session, key: value})
 	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, "extension_sign_input", err)
+		return nil, fault.Wrap(fault.Terminal, "extension_hostcall_input", err)
 	}
 	return b, nil
 }

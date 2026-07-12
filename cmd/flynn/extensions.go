@@ -138,6 +138,8 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	fs := newFlagSet("extensions call")
 	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
 	sign := fs.String("sign", "", "path to a dev signing key (a JSON array of the 64 raw key bytes) the called tool signs its work with; the key stays in the host and the tool only receives signatures")
+	endpoint := fs.String("endpoint", "", "an http(s) endpoint the called tool may reach THROUGH THE HOST; the tool stays network-denied and only hands out request bytes, so it can never reach anywhere else")
+	localEndpoint := fs.Bool("endpoint-local", false, "permit --endpoint to be a loopback or private literal address (a local test node); off by default, because a grant must not silently aim the host at its own network")
 	// name, tool, and an optional JSON input are leading positionals; flags follow. Pull
 	// the positionals out first so `call <name> <tool> <json> --egress ...` parses.
 	if len(args) < 2 {
@@ -160,15 +162,33 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	}
 
 	runtimeOpts := []extRuntimeOption{withEgressGrant(splitList(*egress))}
+	bareTool := strings.TrimPrefix(toolName, name+".")
 	if *sign != "" {
 		signer, err := loadDevSigner(*sign)
 		if err != nil {
 			return err
 		}
-		bareTool := strings.TrimPrefix(toolName, name+".")
 		runtimeOpts = append(runtimeOpts, withHostSigner(func(ext, tool string) extension.HostSigner {
 			if ext == name && tool == bareTool {
 				return signer
+			}
+			return nil
+		}))
+	}
+	if *endpoint != "" {
+		var fopts []extension.FetcherOption
+		if *localEndpoint {
+			fopts = append(fopts, extension.WithPrivateEndpoint())
+		}
+		fetcher, err := extension.NewHTTPHostFetcher(*endpoint, fopts...)
+		if err != nil {
+			return err
+		}
+		// The grant is for THIS tool only. Every other mounted tool gets nil, so it borrows no
+		// network at all: default-deny, one authority, one destination.
+		runtimeOpts = append(runtimeOpts, withHostFetcher(func(ext, tool string) extension.HostFetcher {
+			if ext == name && tool == bareTool {
+				return fetcher
 			}
 			return nil
 		}))
@@ -416,6 +436,7 @@ type extensionRuntime struct {
 type extRuntimeOptions struct {
 	egressGrant []string
 	hostSigner  func(ext, tool string) extension.HostSigner
+	hostFetcher func(ext, tool string) extension.HostFetcher
 }
 
 // extRuntimeOption customizes the runtime.
@@ -435,6 +456,16 @@ func withEgressGrant(hosts []string) extRuntimeOption {
 // receives only the signature back. The default (no fn) leaves every tool non-signing.
 func withHostSigner(fn func(ext, tool string) extension.HostSigner) extRuntimeOption {
 	return func(o *extRuntimeOptions) { o.hostSigner = fn }
+}
+
+// withHostFetcher grants a host-held endpoint to specific mounted tools. fn returns the fetcher a
+// tool may send requests through, or nil for a tool that borrows no network. The endpoint stays in
+// the host: a tool that needs to reach a service hands out the request bytes and receives the
+// response, and it never names, and cannot influence, the destination. This is how an extension
+// speaks to a service while running with its own egress fully denied. The default (no fn) leaves
+// every tool network-free.
+func withHostFetcher(fn func(ext, tool string) extension.HostFetcher) extRuntimeOption {
+	return func(o *extRuntimeOptions) { o.hostFetcher = fn }
 }
 
 // loadDevSigner reads an ed25519 signing key from a file holding a JSON array of the 64 raw
@@ -499,6 +530,9 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 	}
 	if cfg.hostSigner != nil {
 		procOpts = append(procOpts, extension.WithHostSigner(cfg.hostSigner))
+	}
+	if cfg.hostFetcher != nil {
+		procOpts = append(procOpts, extension.WithHostFetcher(cfg.hostFetcher))
 	}
 	handler := extension.NewProcessHandler(
 		extension.NewSandboxLauncher(workRoot),
