@@ -352,3 +352,43 @@ func TestAdvisoryProbeFailureDoesNotRefuse(t *testing.T) {
 		t.Errorf("failed probes = %d, want 1", len(rep.Failed()))
 	}
 }
+
+// TestContinuedEpisodeDoesNotRefuseAToolFreeTurn: the bridge probe gates the episode that
+// opens a conversation, because a harness that cannot reach the bridge would produce a
+// record that looks governed while nothing crossed the waist. From the second turn on it
+// is evidence, not a gate. A conversation is mostly turns that need no tool at all, and a
+// model that already made the probe call once in this same conversation will reasonably
+// decline to repeat it; refusing the turn for that would break every chat turn that asks a
+// question rather than doing work.
+func TestContinuedEpisodeDoesNotRefuseAToolFreeTurn(t *testing.T) {
+	opening := SessionProbes(NewProbeTool("nonce-1"), false)
+	if !opening[0].Required {
+		t.Fatal("the episode that opens a conversation must require the bridge probe")
+	}
+
+	continued := SessionProbes(NewProbeTool("nonce-2"), true)
+	if continued[0].Required {
+		t.Error("a continued turn must not be refused for skipping a probe it already passed")
+	}
+	if continued[0].Name != opening[0].Name {
+		t.Errorf("the continued probe is a different probe: %q", continued[0].Name)
+	}
+	// It is still asked for, so a compliant harness still produces the evidence.
+	if !strings.Contains(continued[0].Instruction, "nonce-2") {
+		t.Errorf("the continued probe dropped its nonce: %q", continued[0].Instruction)
+	}
+
+	// A harness that answers a continued turn without touching a tool is not refused.
+	w := newConformanceWatch(continued, "flynn")
+	w.observe(Event{Kind: EventText, Text: "banana", Tier: TierAttested})
+	rep := w.report()
+	if rep.Refused() {
+		t.Fatalf("a tool-free continued turn was refused: %s", rep.Summary())
+	}
+	// The same turn, opening a conversation, is refused: reachability is unproven there.
+	wOpen := newConformanceWatch(opening, "flynn")
+	wOpen.observe(Event{Kind: EventText, Text: "banana", Tier: TierAttested})
+	if !wOpen.report().Refused() {
+		t.Error("an opening episode that never reached the bridge must be refused")
+	}
+}

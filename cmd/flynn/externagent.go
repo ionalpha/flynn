@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -80,6 +81,18 @@ func errExternalAgentUnsupported(command, modelSpec string) error {
 type externAgent struct {
 	model  string
 	driver driver.Driver
+}
+
+// close releases what the run's episodes shared, the harness's credential-and-state home,
+// once the run that resolved this agent is over. A driver that holds nothing closes to
+// nothing, so every caller can defer it unconditionally.
+func (ea *externAgent) close() {
+	if ea == nil {
+		return
+	}
+	if c, ok := ea.driver.(io.Closer); ok {
+		_ = c.Close()
+	}
 }
 
 // tierTallier is an external-agent driver that tallies the provenance tiers of the

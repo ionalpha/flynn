@@ -45,13 +45,13 @@ func TestEpisodeAuthHomeCopiesOnlySeedFiles(t *testing.T) {
 		AuthEnv:       "CODEX_HOME",
 		AuthSeedFiles: []string{"auth.json", "config.toml", "absent.json"},
 	})
-	home, owned, err := sp.episodeAuthHome(wd)
+	home, seeded, err := sp.episodeAuthHome(wd)
 	if err != nil {
 		t.Fatalf("episodeAuthHome: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	if !owned {
-		t.Fatalf("a seeded credential home must be owned by the spawner, so it is deleted with the episode")
+	t.Cleanup(func() { _ = sp.Close() })
+	if len(seeded) == 0 {
+		t.Fatalf("a seeded credential home must report the copies it made, so they are deleted with the episode")
 	}
 	if home == auth {
 		t.Fatalf("the episode must not be pointed at the host credential home")
@@ -102,13 +102,13 @@ func TestEpisodeAuthHomeGathersSeedPaths(t *testing.T) {
 		AuthEnv:       "CLAUDE_CONFIG_DIR",
 		AuthSeedPaths: []string{cfg, creds, filepath.Join(src, "absent.json")},
 	})
-	home, owned, err := sp.episodeAuthHome(wd)
+	home, seeded, err := sp.episodeAuthHome(wd)
 	if err != nil {
 		t.Fatalf("episodeAuthHome: %v", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
-	if !owned {
-		t.Fatalf("an assembled credential home must be owned, so it is deleted with the episode")
+	t.Cleanup(func() { _ = sp.Close() })
+	if len(seeded) == 0 {
+		t.Fatalf("an assembled credential home must report the copies it made, so they are deleted with the episode")
 	}
 	// Both files, from two different source directories, land flat by base name.
 	if b, err := os.ReadFile(filepath.Join(home, ".credentials.json")); err != nil || !strings.Contains(string(b), "secret") {
@@ -139,12 +139,12 @@ func TestEpisodeAuthHomeGathersSeedPaths(t *testing.T) {
 func TestEpisodeAuthHomeWithoutSeedFilesUsesAuthDir(t *testing.T) {
 	auth := authDirWithToken(t)
 	sp := NewSandboxSpawner(SandboxConfig{AuthDir: auth, AuthEnv: "CODEX_HOME"})
-	home, owned, err := sp.episodeAuthHome(workdir(t))
+	home, seeded, err := sp.episodeAuthHome(workdir(t))
 	if err != nil {
 		t.Fatalf("episodeAuthHome: %v", err)
 	}
-	if home != auth || owned {
-		t.Fatalf("expected the unowned host auth dir, got home=%q owned=%v", home, owned)
+	if home != auth || len(seeded) != 0 {
+		t.Fatalf("expected the unowned host auth dir with nothing copied, got home=%q seeded=%v", home, seeded)
 	}
 }
 
@@ -153,9 +153,9 @@ func TestEpisodeAuthHomeWithoutSeedFilesUsesAuthDir(t *testing.T) {
 // while the spawner reports it seeded one.
 func TestEpisodeAuthHomeNoAuthDir(t *testing.T) {
 	sp := NewSandboxSpawner(SandboxConfig{AuthEnv: "CODEX_HOME", AuthSeedFiles: []string{"auth.json"}})
-	home, owned, err := sp.episodeAuthHome(workdir(t))
-	if err != nil || home != "" || owned {
-		t.Fatalf("expected no credential home, got home=%q owned=%v err=%v", home, owned, err)
+	home, seeded, err := sp.episodeAuthHome(workdir(t))
+	if err != nil || home != "" || len(seeded) != 0 {
+		t.Fatalf("expected no credential home, got home=%q seeded=%v err=%v", home, seeded, err)
 	}
 }
 
@@ -226,13 +226,78 @@ func TestEpisodeAuthHomeRejectsPathSeed(t *testing.T) {
 			AuthEnv:       "CODEX_HOME",
 			AuthSeedFiles: []string{bad},
 		})
-		home, owned, err := sp.episodeAuthHome(workdir(t))
+		home, seeded, err := sp.episodeAuthHome(workdir(t))
 		if err == nil {
-			_ = os.RemoveAll(home)
+			_ = sp.Close()
 			t.Fatalf("seed %q was accepted", bad)
 		}
-		if owned || home != "" {
-			t.Fatalf("a refused seed must leave no credential home, got %q owned=%v", home, owned)
+		if len(seeded) != 0 || home != "" {
+			t.Fatalf("a refused seed must leave no credential home, got %q seeded=%v", home, seeded)
 		}
+	}
+}
+
+// TestRunHomeOutlivesAnEpisodeButCredentialsDoNot is the property a multi-turn session
+// rests on, and the one it must not buy at the cost of the credential's lifetime.
+//
+// The home is the run's: it is where the CLI keeps its own conversation, and a later turn
+// asks the CLI to continue the conversation it opened. A home thrown away with each
+// episode would take that conversation with it, and the CLI would be told to resume
+// something that no longer exists. So every episode of a run gets the same directory.
+//
+// The credentials in it are the episode's: they are copied in for the launch and deleted
+// when it ends, so a copied token still never outlives the episode it was copied for. What
+// persists between turns is the CLI's own state, not the key.
+func TestRunHomeOutlivesAnEpisodeButCredentialsDoNot(t *testing.T) {
+	auth := authDirWithToken(t)
+	wd := workdir(t)
+	sp := NewSandboxSpawner(SandboxConfig{
+		AuthDir:       auth,
+		AuthEnv:       "CODEX_HOME",
+		AuthSeedFiles: []string{"auth.json"},
+	})
+	t.Cleanup(func() { _ = sp.Close() })
+
+	first, seeded, err := sp.episodeAuthHome(wd)
+	if err != nil {
+		t.Fatalf("episodeAuthHome: %v", err)
+	}
+	// The CLI writes its conversation into the home while the episode runs.
+	convo := filepath.Join(first, "conversation.jsonl")
+	if err := os.WriteFile(convo, []byte(`{"turn":1}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// The episode ends: its credentials go, the home stays.
+	removeSeeds(seeded)
+	if _, err := os.Stat(filepath.Join(first, "auth.json")); err == nil {
+		t.Fatal("the copied token outlived the episode it was copied for")
+	}
+	if _, err := os.Stat(convo); err != nil {
+		t.Fatalf("the CLI's conversation did not survive the episode: %v", err)
+	}
+
+	// The next turn of the same run lands in the same home, so the CLI finds the
+	// conversation it is being asked to continue, and gets a fresh copy of the credential.
+	second, seeded2, err := sp.episodeAuthHome(wd)
+	if err != nil {
+		t.Fatalf("episodeAuthHome (second turn): %v", err)
+	}
+	if second != first {
+		t.Fatalf("a later turn got a different home (%s, was %s): the CLI would have no conversation to resume", second, first)
+	}
+	if _, err := os.Stat(convo); err != nil {
+		t.Fatalf("the conversation is missing from the second turn's home: %v", err)
+	}
+	if b, err := os.ReadFile(filepath.Join(second, "auth.json")); err != nil || !strings.Contains(string(b), "secret") {
+		t.Fatalf("the second turn was not given the credential it needs: %q err=%v", b, err)
+	}
+	removeSeeds(seeded2)
+
+	// The run ends: the home goes, and with it everything the CLI wrote.
+	if err := sp.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(first); err == nil {
+		t.Fatal("the harness home outlived the run")
 	}
 }

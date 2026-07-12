@@ -3,6 +3,7 @@ package externagent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"sync"
 
 	"github.com/ionalpha/flynn/brakes"
@@ -60,6 +61,16 @@ func NewDriver(adapter Adapter, spawner Spawner, workdir string) *Driver {
 // Name is the adapter's identifier, the name this loop is selected by and recorded
 // under on the run.
 func (d *Driver) Name() string { return d.adapter.Name() }
+
+// Close releases what the run's episodes shared: the harness's credential-and-state home,
+// where the CLI kept the conversation this run's turns continued. It is called when the run
+// ends. A spawner that holds nothing (a test fake) closes to nothing.
+func (d *Driver) Close() error {
+	if c, ok := d.spawner.(io.Closer); ok {
+		return c.Close()
+	}
+	return nil
+}
 
 // Tiers returns a copy of the provenance-tier tally of every event the run's episodes
 // projected: how many actions the record vouches for at each tier. The host reads it
@@ -246,7 +257,10 @@ func (e *episodeExec) Execute(ctx context.Context, r resource.Resource) (json.Ra
 	// tools is a request. The probes turn the request's outcome into evidence. The nonce
 	// is per episode, so compliance cannot be replayed from an earlier one.
 	probeTool := NewProbeTool(ids.New())
-	probes := SessionProbes(probeTool)
+	// A later turn of a session continues a conversation this run already opened, and the
+	// episode that opened it proved the harness reaches the bridge. See SessionProbes for
+	// why that makes the probe evidence rather than a gate from the second turn on.
+	probes := SessionProbes(probeTool, cp.Session != "")
 	toolset := append(append([]mission.Tool{}, e.spec.Tools...), probeTool)
 
 	server := mcp.NewServer(d, toolset, mcp.WithScope(scope), mcp.WithGoal(r.Name))

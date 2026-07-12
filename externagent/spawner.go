@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/ionalpha/flynn/netguard"
@@ -131,6 +132,10 @@ type SandboxConfig struct {
 // through Start, whose process is bound to the context so a halt kills the CLI.
 type SandboxSpawner struct {
 	cfg SandboxConfig
+
+	// mu guards runHome, the credential-and-state home this run's episodes share.
+	mu      sync.Mutex
+	runHome string
 }
 
 // NewSandboxSpawner builds the production Spawner for the given confinement envelope. A
@@ -168,45 +173,103 @@ func (s *SandboxSpawner) authEnv(home string) []string {
 	return []string{s.cfg.AuthEnv + "=" + home}
 }
 
-// episodeAuthHome returns the directory an episode's child should use as its credential
-// home, and true when that directory is a per-episode copy this Spawner created and must
-// delete. With no AuthSeedFiles configured it is the host's AuthDir, read-only and owned
-// by nobody here. Otherwise it is a fresh directory beside the workspace (never inside it,
-// which the record captures) holding a copy of the seed files and nothing else.
+// episodeAuthHome returns the directory this episode's child uses as the CLI's home, and
+// the seed files copied into it that must be deleted when the episode ends. With no seeds
+// configured it is the host's AuthDir, read-only and owned by nobody here, and there is
+// nothing to delete.
 //
-// A seed file that does not exist is skipped rather than failing: a CLI that has never
-// been configured has no config file, and whether it is authenticated at all is the
-// adapter's question to answer through Probe, not a launch precondition here.
-func (s *SandboxSpawner) episodeAuthHome(workdir string) (string, bool, error) {
-	if len(s.cfg.AuthSeedPaths) > 0 {
-		home, err := assembleSeedHome(filepath.Dir(workdir), s.cfg.AuthSeedPaths)
-		if err != nil {
-			return "", false, err
+// The home itself is scoped to the RUN, not the episode: it is created on the first
+// episode and reused by every later one. It has to be, because it is where the CLI keeps
+// its own conversation, and a later turn of a session asks the CLI to continue the
+// conversation it opened. A home thrown away with each episode would take that
+// conversation with it, and the CLI would be told to resume something that no longer
+// exists. It is still a private directory beside the workspace (never inside it, which the
+// record captures), holding what this run put there and nothing from the user's home
+// beyond the seeds.
+//
+// The credentials are not run-scoped: they are copied in for each episode and deleted when
+// it ends, so a copied token still never outlives the episode it was copied for. What
+// persists between episodes is the CLI's own state, not the key.
+//
+// A seed file that does not exist is skipped rather than failing: a CLI that has never been
+// configured has no config file, and whether it is authenticated at all is the adapter's
+// question to answer through Probe, not a launch precondition here.
+func (s *SandboxSpawner) episodeAuthHome(workdir string) (string, []string, error) {
+	srcs, err := s.seedSources()
+	if err != nil {
+		return "", nil, err
+	}
+	if len(srcs) == 0 {
+		return s.cfg.AuthDir, nil, nil
+	}
+	home, err := s.ensureRunHome(workdir)
+	if err != nil {
+		return "", nil, err
+	}
+	seeded := make([]string, 0, len(srcs))
+	for _, src := range srcs {
+		dst := filepath.Join(home, filepath.Base(src))
+		if err := copyIfPresent(src, dst); err != nil {
+			removeSeeds(seeded)
+			return "", nil, fmt.Errorf("externagent: seed credential home: %w", err)
 		}
-		return home, true, nil
+		seeded = append(seeded, dst)
+	}
+	return home, seeded, nil
+}
+
+// seedSources is the set of files copied into the credential home for an episode, from
+// either configuration shape: a list of full paths (a CLI whose config and token live in
+// different directories) or an AuthDir plus the file names inside it.
+func (s *SandboxSpawner) seedSources() ([]string, error) {
+	if len(s.cfg.AuthSeedPaths) > 0 {
+		return s.cfg.AuthSeedPaths, nil
 	}
 	if s.cfg.AuthDir == "" || len(s.cfg.AuthSeedFiles) == 0 {
-		return s.cfg.AuthDir, false, nil
+		return nil, nil
 	}
-	home, err := os.MkdirTemp(filepath.Dir(workdir), "flynn-authhome-")
-	if err != nil {
-		return "", false, fmt.Errorf("externagent: episode credential home: %w", err)
-	}
+	out := make([]string, 0, len(s.cfg.AuthSeedFiles))
 	for _, name := range s.cfg.AuthSeedFiles {
 		// A seed names one file directly inside AuthDir. Rejecting anything else keeps the
 		// copy from reaching outside the credential home in either direction: a name like
-		// "../../.ssh/id_ed25519" would otherwise pull a file the harness was never meant
-		// to see into a directory it can write.
+		// "../../.ssh/id_ed25519" would otherwise pull a file the harness was never meant to
+		// see into a directory it can write.
 		if name != filepath.Base(name) || name == "." || name == ".." {
-			_ = os.RemoveAll(home)
-			return "", false, fmt.Errorf("externagent: credential seed %q must be a file name, not a path", name)
+			return nil, fmt.Errorf("externagent: credential seed %q must be a file name, not a path", name)
 		}
-		if err := copyIfPresent(filepath.Join(s.cfg.AuthDir, name), filepath.Join(home, name)); err != nil {
-			_ = os.RemoveAll(home)
-			return "", false, fmt.Errorf("externagent: seed credential home: %w", err)
-		}
+		out = append(out, filepath.Join(s.cfg.AuthDir, name))
 	}
-	return home, true, nil
+	return out, nil
+}
+
+// ensureRunHome creates the run's credential-and-state home on first use and returns the
+// same directory for every later episode.
+func (s *SandboxSpawner) ensureRunHome(workdir string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runHome != "" {
+		return s.runHome, nil
+	}
+	home, err := os.MkdirTemp(filepath.Dir(workdir), "flynn-authhome-")
+	if err != nil {
+		return "", fmt.Errorf("externagent: credential home: %w", err)
+	}
+	s.runHome = home
+	return home, nil
+}
+
+// Close removes the run's credential-and-state home, with whatever the CLI wrote into it
+// (its own conversations). It is called when the run that owns the spawner ends; the
+// credentials it held were already deleted with each episode.
+func (s *SandboxSpawner) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.runHome == "" {
+		return nil
+	}
+	err := os.RemoveAll(s.runHome)
+	s.runHome = ""
+	return err
 }
 
 // assembleSeedHome builds a credential home from a set of individual source files, each
@@ -312,14 +375,15 @@ func (s *SandboxSpawner) Probe(ctx context.Context, path string, args ...string)
 // the CLI, and the per-episode sandbox (its egress proxy and read grant) is released when
 // Wait returns.
 func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) (Process, error) {
-	home, owned, err := s.episodeAuthHome(ep.Workdir)
+	home, seeded, err := s.episodeAuthHome(ep.Workdir)
 	if err != nil {
 		return nil, err
 	}
-	scratch := ""
-	if owned {
-		scratch = home
-	}
+	// The home is the run's and outlives this episode (the CLI keeps its conversation
+	// there); the credentials copied into it are this episode's and are deleted when it
+	// ends. owned says whether this run created the home, which is what the sandbox grants
+	// write access to.
+	owned := len(seeded) > 0
 	// A per-episode writable temp directory outside the recorded workspace. A read-only host
 	// leaves the system temp directory unwritable, and a CLI whose runtime needs scratch
 	// space (a compiled JavaScript runtime writes to its temp on startup) exits without a
@@ -328,7 +392,7 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	// off the host and out of the workspace the record captures, and it dies with the episode.
 	tmpDir, err := os.MkdirTemp(filepath.Dir(ep.Workdir), "flynn-tmp-")
 	if err != nil {
-		removeScratch(scratch)
+		removeSeeds(seeded)
 		return nil, fmt.Errorf("externagent: episode temp dir: %w", err)
 	}
 	opts := s.episodeOptions(home, owned)
@@ -343,13 +407,13 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	}
 	loc, err := sandbox.NewLocal(ep.Workdir, opts...)
 	if err != nil {
-		removeScratch(scratch)
+		removeSeeds(seeded)
 		removeScratch(tmpDir)
 		return nil, fmt.Errorf("externagent: episode sandbox: %w", err)
 	}
 	if got := loc.Containment(); got < s.cfg.MinContainment {
 		_ = loc.Close()
-		removeScratch(scratch)
+		removeSeeds(seeded)
 		removeScratch(tmpDir)
 		return nil, fmt.Errorf("externagent: host containment is %s, below the required %s; refusing to start an untrusted harness less contained than required", got, s.cfg.MinContainment)
 	}
@@ -364,11 +428,11 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	})
 	if err != nil {
 		_ = loc.Close()
-		removeScratch(scratch)
+		removeSeeds(seeded)
 		removeScratch(tmpDir)
 		return nil, err
 	}
-	return &confinedProcess{proc: proc, closer: loc, tier: tier, scratch: scratch, tmpScratch: tmpDir}, nil
+	return &confinedProcess{proc: proc, closer: loc, tier: tier, seeds: seeded, tmpScratch: tmpDir}, nil
 }
 
 // tempEnv points the child's temp-directory variables at the per-episode writable temp, so a
@@ -378,9 +442,16 @@ func tempEnv(dir string) []string {
 	return []string{"TMPDIR=" + dir, "TMP=" + dir, "TEMP=" + dir}
 }
 
-// removeScratch deletes a per-episode credential home, and does nothing when the episode
-// pointed the child at the host's AuthDir instead. It runs on every path out of a launch,
-// so a copied token never outlives the episode it was copied for.
+// removeSeeds deletes the credentials copied into the run's home for one episode. It runs
+// on every path out of a launch and again when the child exits, so a copied token never
+// outlives the episode it was copied for.
+func removeSeeds(paths []string) {
+	for _, p := range paths {
+		_ = os.Remove(p)
+	}
+}
+
+// removeScratch deletes a per-episode directory, and does nothing when there is none.
 func removeScratch(dir string) {
 	if dir != "" {
 		_ = os.RemoveAll(dir)
@@ -437,8 +508,8 @@ type confinedProcess struct {
 	proc       *sandbox.StreamProcess
 	closer     io.Closer
 	tier       string
-	scratch    string // the per-episode credential home to delete, or empty
-	tmpScratch string // the per-episode temp directory to delete
+	seeds      []string // the credentials copied in for this episode, deleted when it ends
+	tmpScratch string   // the per-episode temp directory to delete
 }
 
 // Stdout is the confined child's live standard output.
@@ -460,8 +531,9 @@ func (p *confinedProcess) Wait() error {
 		err = cerr
 	}
 	// After the sandbox is closed, so the grants on the credential home are dropped before
-	// the copied token is deleted with it.
-	removeScratch(p.scratch)
+	// the copied token is deleted. The home itself stays: it is the run's, and it holds the
+	// conversation the CLI will be asked to continue on the next turn.
+	removeSeeds(p.seeds)
 	removeScratch(p.tmpScratch)
 	return err
 }

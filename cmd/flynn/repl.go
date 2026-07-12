@@ -57,6 +57,9 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		if err != nil {
 			return err
 		}
+		// The harness's home outlives its episodes: it is where the CLI keeps the conversation
+		// each turn continues. It dies with the session.
+		defer extAgent.close()
 	} else {
 		var resolvedSpec string
 		model, plan, resolvedSpec, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
@@ -620,6 +623,7 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 		if err != nil {
 			return fmt.Errorf("/model %s: %w", spec, err)
 		}
+		s.ext.close() // the harness this session is no longer going to drive
 		s.ext = ea
 		s.model, s.plan = nil, harness.Plan{}
 		// An external harness exposes no model to distill through, so a session it drives
@@ -633,6 +637,7 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 		}
 		s.model = model
 		s.plan = plan
+		s.ext.close() // switching to a native model before any turn ran
 		s.ext = nil
 		// A distilling session learns through the model, so keep the distiller on the model
 		// the session now drives.

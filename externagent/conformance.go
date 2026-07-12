@@ -284,11 +284,27 @@ func nativeToolProbe() Probe {
 	}
 }
 
-// SessionProbes are the probes a session opens with: the harness must reach the bridge
-// (required, settled on the tool's own record of being called), and it must not reach for
-// its own tools (advisory, read off the event stream).
-func SessionProbes(tool *ProbeTool) []Probe {
-	return []Probe{bridgeToolProbe(tool), nativeToolProbe()}
+// SessionProbes are the probes an episode runs under: the harness must reach the bridge
+// (settled on the tool's own record of being called), and it must not reach for its own
+// tools (advisory, read off the event stream).
+//
+// continuing marks an episode that continues a conversation the harness already holds (a
+// later turn of an interactive session). Reachability is a property of this run's harness
+// and bridge, and the episode that opened the conversation already proved it, so on a
+// later turn the probe is evidence rather than a gate: a harness that skips it is recorded
+// as drift instead of having the turn refused. Requiring it every turn would refuse any
+// turn that needs no tools at all, which in a conversation is most of them, and a model
+// that has already performed the ritual once in this same conversation will reasonably
+// decline to repeat it. Nothing about containment rests on the repeat: a bridged call is
+// still admitted and recorded at the dispatch waist, and a native one is still contained
+// and counted against the harness's steering.
+func SessionProbes(tool *ProbeTool, continuing bool) []Probe {
+	bridge := bridgeToolProbe(tool)
+	if continuing {
+		bridge.Required = false
+		bridge.Instruction += " Make this call again for this turn, with the nonce given here, even if you made one earlier in this conversation."
+	}
+	return []Probe{bridge, nativeToolProbe()}
 }
 
 // Instructions renders the probes' instructions for the episode's preamble.

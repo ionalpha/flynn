@@ -420,6 +420,9 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		if err != nil {
 			return err
 		}
+		// The harness's home outlives its episodes (it holds the CLI's own conversation) and
+		// dies with the run.
+		defer extAgent.close()
 	} else {
 		model, plan, _, err = resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 		if err != nil {

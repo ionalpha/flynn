@@ -126,11 +126,11 @@ func seedLiveCodexHome(t *testing.T, auth string) string {
 		AuthEnv:       "CODEX_HOME",
 		AuthSeedFiles: []string{"auth.json", "config.toml"},
 	})
-	home, owned, err := sp.episodeAuthHome(filepath.Join(t.TempDir(), "episode"))
-	if err != nil || !owned {
-		t.Fatalf("seed credential home: owned=%v err=%v", owned, err)
+	home, seeded, err := sp.episodeAuthHome(filepath.Join(t.TempDir(), "episode"))
+	if err != nil || len(seeded) == 0 {
+		t.Fatalf("seed credential home: seeded=%v err=%v", seeded, err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(home) })
+	t.Cleanup(func() { _ = sp.Close() })
 	return home
 }
 
