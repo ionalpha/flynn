@@ -47,6 +47,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"deploy":       runDeploy,
 	"services":     runServices,
 	"models":       dispatchModels,
+	"notices":      runNotices,
 	"get":          dispatchGet,
 	"mcp":          runMCP,
 	"describe":     dispatchDescribe,
@@ -189,6 +190,11 @@ func run() int {
 
 	sweepStaleSandboxProfiles()
 	sweepSupersededBinaries()
+
+	// Say anything we owe the user (a security advisory about the version they are
+	// running, above all) before the command runs, and look for a newer feed in the
+	// background. Both are best-effort and neither can fail the command.
+	startupNotices(context.Background(), *dataDir)
 
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
@@ -382,6 +388,7 @@ func printUsage(w io.Writer) {
   flynn models status        list the local model servers that are running
   flynn models stop <id>     stop a running local model server
   flynn db reset             move an unusable database aside (backed up) so the next run recreates it; also 'db path' and 'db backup'
+  flynn notices [--refresh] [--all]  show the signed security advisories and release notices that apply to this build
   flynn regrade              re-grade learned skills against the working directory
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
