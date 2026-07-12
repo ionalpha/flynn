@@ -362,11 +362,26 @@ jobs:
   # affect (dev/fuzz walks the import graph from FUZZ_BASE); a push to main
   # keeps the full sweep, and the nightly workflow runs the same script with
   # a longer per-target budget.
+  # `go test -fuzz` takes one target per invocation, so the budget is paid per
+  # target: one runner walking every target pays the sum of them. A push to main
+  # takes the full sweep by design, which is ~90 targets at 5s plus each one's
+  # compile and baseline-coverage cost, and that lands at over ten minutes of
+  # wall clock on every merge. The targets are independent, so deal them across
+  # a matrix the way the nightly already does: same fuzz-seconds, a quarter of
+  # the wall clock. A pull request usually fuzzes far fewer targets (dev/fuzz
+  # scopes to what the diff can break), and a shard with nothing in its slice
+  # exits immediately, so the matrix costs a PR almost nothing.
   fuzz:
-    name: Fuzz smoke
+    name: Fuzz smoke ${{ matrix.shard }}/4
     needs: setup
     if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      # A crasher in one slice says nothing about the others, and finding two
+      # bugs in one run beats finding the first one twice.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
@@ -378,9 +393,9 @@ jobs:
           check-latest: true
           cache: true
       - if: github.event_name == 'pull_request'
-        run: FUZZTIME=5s FUZZ_BASE="${{ github.event.pull_request.base.sha }}" ./dev/fuzz
+        run: FUZZTIME=5s FUZZ_SHARD=${{ matrix.shard }}/4 FUZZ_BASE="${{ github.event.pull_request.base.sha }}" ./dev/fuzz
       - if: github.event_name != 'pull_request'
-        run: FUZZTIME=5s ./dev/fuzz
+        run: FUZZTIME=5s FUZZ_SHARD=${{ matrix.shard }}/4 ./dev/fuzz
       # A crasher is written as a new file under the package's testdata/fuzz/
       # on the runner. Collect only those new files (uploading the whole tree
       # would bury them in the committed seed corpus) so the input can be
@@ -397,7 +412,10 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: fuzz-crashers
+          # One artifact per shard: the upload rejects a name another job in the
+          # same run already used, so a fixed name would mean the second shard to
+          # find a crasher silently loses its reproducing input.
+          name: fuzz-crashers-${{ matrix.shard }}
           path: fuzz-crashers/
           if-no-files-found: ignore
 
