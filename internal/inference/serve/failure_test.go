@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -137,11 +138,7 @@ func TestEveryManagerPathReportsABrokenRegistry(t *testing.T) {
 // be recorded is stopped rather than left running unrecorded: an unrecorded server is one
 // nothing can ever stop.
 func TestEnsureReportsAFailedRecord(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	unwritable := NewRegistry(filepath.Join(file, "sub"))
+	unwritable := NewRegistry(unwritableDir(t))
 
 	proc := newFakeProc(4242)
 	m := managerWith(t, unwritable, &fakeLauncher{proc: proc}, alwaysHealthy, func(int) error { return nil })
@@ -159,11 +156,7 @@ func TestEnsureReportsAFailedRecord(t *testing.T) {
 // TestEnsureContainerReportsAFailedRecord is the container counterpart: a container that
 // cannot be recorded is torn down, never leaked.
 func TestEnsureContainerReportsAFailedRecord(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "not-a-dir")
-	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	unwritable := NewRegistry(filepath.Join(file, "sub"))
+	unwritable := NewRegistry(unwritableDir(t))
 
 	serving := newFakeServing("c1", "docker")
 	m := managerWith(t, unwritable, &fakeLauncher{}, alwaysHealthy, func(int) error { return nil },
@@ -476,4 +469,28 @@ func TestOSKillerReportsAProcessItCannotSignal(t *testing.T) {
 	if err := OSKiller(-1); err == nil {
 		t.Fatal("killing a pid that cannot exist must report a failure")
 	}
+}
+
+// unwritableDir returns a directory a registry can be read from and not written to. The
+// distinction matters: the manager reads the registry before it starts anything, so a
+// directory that also fails the read never reaches the record it is meant to fail. There
+// is no servers.json in it, so the read is an absent file and the registry is empty, and
+// the directory carries no write permission, so putting the first record fails.
+//
+// Permissions on a directory do not stop a file being created inside it on windows, so
+// the record cannot be made to fail there this way. The invariant is the same on every
+// platform; this proves it where the mode is enforced, which includes the runner coverage
+// is measured on.
+func unwritableDir(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("a directory mode does not deny creating a file on windows")
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// TempDir removes the directory when the test ends, which needs the write bit back.
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+	return dir
 }
