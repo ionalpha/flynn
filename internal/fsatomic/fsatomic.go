@@ -10,9 +10,10 @@ import (
 	"path/filepath"
 )
 
-// tempFile is the part of *os.File the write path drives. It is an interface so a test can
-// fail an individual step (a disk that fills on write, a handle lost before the sync) and
-// check the previous contents survive it. Production always gets a real *os.File.
+// tempFile is the part of *os.File the write path drives. Keeping it an interface is what
+// allows an individual step to fail at all (a disk that fills on write, a handle lost before
+// the sync); a real filesystem will not fail those on demand, and the previous contents have
+// to survive every one of them. Production always gets a real *os.File.
 type tempFile interface {
 	Name() string
 	Write(p []byte) (int, error)
@@ -21,10 +22,9 @@ type tempFile interface {
 	Close() error
 }
 
-// createTemp opens the sibling temp file the write goes through. It is a package-level
-// variable so a test can supply a file whose write, chmod, sync or close fails; those
-// failures cannot be provoked through a real filesystem but each one has to leave the
-// destination untouched.
+// createTemp opens the sibling temp file the write goes through. It stays a package-level
+// variable because a failing write, chmod, sync or close cannot be provoked through a real
+// filesystem, and each of those failures has to leave the destination untouched.
 var createTemp = func(dir, pattern string) (tempFile, error) { return os.CreateTemp(dir, pattern) }
 
 // WriteFile atomically replaces path with data at the given permissions. The temp

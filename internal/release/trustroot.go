@@ -54,9 +54,9 @@ func newTrustRoot() (*trustRoot, error) {
 	return loadTrustRoot(trustFiles)
 }
 
-// loadTrustRoot builds a trust root from a filesystem holding the two anchors. The
-// filesystem is a parameter so a test can prove that a broken anchor set is refused
-// rather than half-loaded, which is the one failure this package cannot recover from.
+// loadTrustRoot builds a trust root from a filesystem holding the two anchors. The filesystem
+// stays a parameter because a broken anchor set has to be refused outright rather than
+// half-loaded, and that is the one failure this package cannot recover from.
 func loadTrustRoot(fsys fs.FS) (*trustRoot, error) {
 	chain, err := fs.ReadFile(fsys, "trust/fulcio.pem")
 	if err != nil {
