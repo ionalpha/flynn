@@ -392,3 +392,54 @@ func TestWithEnvIgnoresAnEmptyGrant(t *testing.T) {
 		t.Fatal("the baseline environment must still be built")
 	}
 }
+
+// TestWalkDoesNotEscapeThroughASymlink pins the bound the confined walk actually holds,
+// which is what lets the taint analyser's path-traversal warning on it be waived. Two
+// escapes are tried: a root that climbs out of the sandbox, which resolve refuses before
+// the walk starts, and a symlink inside the tree that points out of it, which the walk
+// must list as a name without following it to what it points at. A walk that descended
+// through the link would report a file the sandbox was built to keep out of reach.
+func TestWalkDoesNotEscapeThroughASymlink(t *testing.T) {
+	l := newTestLocal(t)
+	ctx := context.Background()
+
+	// A file outside the root, and a directory holding it, are what an escape would reach.
+	outsideDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outsideDir, "secret.txt"), []byte("out of reach"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// A root that climbs out is refused before anything is read.
+	if _, err := l.Walk(ctx, filepath.Join("..", filepath.Base(outsideDir))); !errors.Is(err, ErrDenied) {
+		t.Fatalf("Walk of an escaping root = %v, want ErrDenied", err)
+	}
+
+	if err := l.WriteFile(ctx, "inside.txt", []byte("mine")); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(l.root, "escape")
+	if err := os.Symlink(outsideDir, link); err != nil {
+		// Creating a symlink needs a privilege this host has not granted. The bound is the
+		// same, but it cannot be demonstrated here.
+		t.Skipf("symlinks are not available on this host: %v", err)
+	}
+
+	files, err := l.Walk(ctx, ".")
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	for _, f := range files {
+		if strings.Contains(f, "secret.txt") {
+			t.Fatalf("the walk followed a symlink out of the root and listed %q (all: %v)", f, files)
+		}
+		if strings.HasPrefix(f, "..") || filepath.IsAbs(f) {
+			t.Fatalf("the walk reported %q, which is not under the root (all: %v)", f, files)
+		}
+	}
+
+	// The link itself is still refused as a walk root: resolve follows it and finds it lands
+	// outside, so the sandbox never walks what it points at even when named directly.
+	if _, err := l.Walk(ctx, "escape"); !errors.Is(err, ErrDenied) {
+		t.Fatalf("Walk of a symlink pointing out of the root = %v, want ErrDenied", err)
+	}
+}
