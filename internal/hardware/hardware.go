@@ -101,6 +101,20 @@ func Detect(ctx context.Context) Box {
 	return b
 }
 
+// runCommand runs a probe tool and returns its standard output. It is a package-level
+// variable so the probe can be pointed at recorded tool output instead of the host, which
+// is how the decision logic above it is tested on a machine that has none of these tools.
+// Production always uses the real process.
+var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	//nolint:gosec // name is one of the fixed probe binaries named in this file, never user input
+	return exec.CommandContext(ctx, name, args...).Output()
+}
+
+// lookPath reports whether an executable is on PATH. It is a package-level variable for the
+// same reason as runCommand: it lets the presence probe be given a chosen set of installed
+// tools rather than whatever the test machine happens to have.
+var lookPath = exec.LookPath
+
 // runNvidiaSMI queries the NVIDIA management tool for the per-GPU fields, returning false
 // when the tool is missing or errors (no GPU, no driver, not installed). Memory and name
 // have always been queried; compute capability and driver version are added so the box's
@@ -108,8 +122,8 @@ func Detect(ctx context.Context) Box {
 func runNvidiaSMI(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "nvidia-smi",
-		"--query-gpu=memory.total,name,compute_cap,driver_version", "--format=csv,noheader,nounits").Output()
+	out, err := runCommand(ctx, "nvidia-smi",
+		"--query-gpu=memory.total,name,compute_cap,driver_version", "--format=csv,noheader,nounits")
 	if err != nil {
 		return "", false
 	}
@@ -123,7 +137,7 @@ func runNvidiaSMI(ctx context.Context) (string, bool) {
 func runNvidiaSMIHeader(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "nvidia-smi").Output()
+	out, err := runCommand(ctx, "nvidia-smi")
 	if err != nil {
 		return "", false
 	}
@@ -260,7 +274,7 @@ var nvidiaToolkitBins = []string{"nvidia-ctk", "nvidia-container-runtime", "nvid
 func detectContainers(ctx context.Context) ContainerSupport {
 	var c ContainerSupport
 	for _, p := range ociClients {
-		if _, err := exec.LookPath(p.bin); err == nil {
+		if _, err := lookPath(p.bin); err == nil {
 			p.set(&c)
 		}
 	}
@@ -270,7 +284,7 @@ func detectContainers(ctx context.Context) ContainerSupport {
 	// "nvidia" runtime, which is the authoritative signal that a container can be given the
 	// GPU and the only one present in the Docker Desktop case.
 	for _, bin := range nvidiaToolkitBins {
-		if _, err := exec.LookPath(bin); err == nil {
+		if _, err := lookPath(bin); err == nil {
 			c.NVIDIAToolkit = true
 			break
 		}
@@ -295,8 +309,7 @@ func engineHasNVIDIARuntime(ctx context.Context, c ContainerSupport) bool {
 		bins = append(bins, "podman")
 	}
 	for _, bin := range bins {
-		//nolint:gosec // bin is a fixed engine name ("docker"/"podman") from this function, never user input
-		out, err := exec.CommandContext(ctx, bin, "info", "--format", "{{json .Runtimes}}").Output()
+		out, err := runCommand(ctx, bin, "info", "--format", "{{json .Runtimes}}")
 		if err == nil && strings.Contains(strings.ToLower(string(out)), "nvidia") {
 			return true
 		}

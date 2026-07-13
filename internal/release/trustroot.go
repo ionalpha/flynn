@@ -9,6 +9,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io/fs"
 	"time"
 
 	"github.com/ionalpha/flynn/fault"
@@ -50,11 +51,18 @@ func mustTrustRoot() *trustRoot {
 }
 
 func newTrustRoot() (*trustRoot, error) {
-	chain, err := trustFiles.ReadFile("trust/fulcio.pem")
+	return loadTrustRoot(trustFiles)
+}
+
+// loadTrustRoot builds a trust root from a filesystem holding the two anchors. The
+// filesystem is a parameter so a test can prove that a broken anchor set is refused
+// rather than half-loaded, which is the one failure this package cannot recover from.
+func loadTrustRoot(fsys fs.FS) (*trustRoot, error) {
+	chain, err := fs.ReadFile(fsys, "trust/fulcio.pem")
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := trustFiles.ReadFile("trust/rekor.pub")
+	keyPEM, err := fs.ReadFile(fsys, "trust/rekor.pub")
 	if err != nil {
 		return nil, err
 	}

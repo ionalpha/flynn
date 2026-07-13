@@ -50,7 +50,14 @@ func Revision() string {
 	if !ok {
 		return ""
 	}
-	for _, s := range bi.Settings {
+	return revisionFrom(bi.Settings)
+}
+
+// revisionFrom picks the VCS revision out of a build's settings and shortens it to the
+// 12-character form used everywhere it is displayed. It returns "" when the toolchain
+// stamped no revision, which is the case for a released archive or a `go install` build.
+func revisionFrom(settings []debug.BuildSetting) string {
+	for _, s := range settings {
 		if s.Key == "vcs.revision" && s.Value != "" {
 			if len(s.Value) > 12 {
 				return s.Value[:12]
@@ -61,6 +68,12 @@ func Revision() string {
 	return ""
 }
 
+// buildRevision is where String reads the revision from. It is a package-level variable so
+// both shapes of a development build's version string, with a VCS stamp and without one,
+// can be exercised from a test binary, which itself carries no stamp. Production always
+// reads the real build info through Revision.
+var buildRevision = Revision
+
 // String returns a human-readable version: the release version when one is present,
 // otherwise the source default with the VCS revision appended when the binary was built
 // from a git checkout.
@@ -68,7 +81,7 @@ func String() string {
 	if v := released(); v != "" {
 		return v
 	}
-	if rev := Revision(); rev != "" {
+	if rev := buildRevision(); rev != "" {
 		return Version + "+" + rev
 	}
 	return Version

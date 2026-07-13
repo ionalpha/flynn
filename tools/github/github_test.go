@@ -78,6 +78,11 @@ type fakeHub struct {
 	graphqlError string
 	failReviews  atomic.Bool // when set, a review submission answers 500
 	failFiles    atomic.Bool // when set, the changed-files endpoint answers 500
+	// failPR answers 500 on the pull request's own endpoint, failCommentList on the
+	// inline-comment listing, and failCommentWrite on creating or updating one.
+	failPR           atomic.Bool
+	failCommentList  atomic.Bool
+	failCommentWrite atomic.Bool
 
 	// endlessThreads makes the GraphQL endpoint always report another page, so a test
 	// can drive the reviewer into its pagination cap.
@@ -93,6 +98,13 @@ type fakeHub struct {
 	// decoding to zero, once the comment's anchor has left the diff.
 	commentLine int
 
+	// commentPaths and commentLines are the anchors of the comments the reviewer posted
+	// here, so the listing reports each one where it was actually made rather than at a
+	// single fixed coordinate. A comment seeded directly with add carries neither and is
+	// reported at the default anchor.
+	commentPaths map[int64]string
+	commentLines map[int64]int
+
 	// endlessComments makes the inline-comment listing always advertise another page.
 	endlessComments bool
 }
@@ -103,6 +115,8 @@ func newFakeHub(t *testing.T) *fakeHub {
 		clk:            clock.System{},
 		reviewComments: map[int64]string{},
 		issueComments:  map[int64]string{},
+		commentPaths:   map[int64]string{},
+		commentLines:   map[int64]int{},
 		nextID:         1000,
 		prAuthor:       "someone-else",
 		headSHA:        "deadbeef",
@@ -125,6 +139,34 @@ func (h *fakeHub) add(kind, body string) int64 {
 		h.issueComments[h.nextID] = body
 	}
 	return h.nextID
+}
+
+// anchor records where a created comment was posted, taken from the request the
+// reviewer sent, so the listing can report it back at that path and line.
+func (h *fakeHub) anchor(id int64, in map[string]any) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if path, ok := in["path"].(string); ok {
+		h.commentPaths[id] = path
+	}
+	if line, ok := in["line"].(float64); ok {
+		h.commentLines[id] = int(line)
+	}
+}
+
+// anchorOf reports where the listing places a comment. A comment the reviewer posted
+// is reported where it posted it; one seeded directly sits at the default anchor. A
+// hub with commentLine zero reports every line as null, which is how GitHub reports a
+// comment whose anchor has left the diff. Callers hold h.mu.
+func (h *fakeHub) anchorOf(id int64) (string, int) {
+	path, line := "a.go", h.commentLine
+	if p, ok := h.commentPaths[id]; ok {
+		path = p
+	}
+	if l, ok := h.commentLines[id]; ok && h.commentLine > 0 {
+		line = l
+	}
+	return path, line
 }
 
 func (h *fakeHub) bodies(kind string) []string {
@@ -184,15 +226,23 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"id": 1})
 
 	case strings.HasSuffix(p, "/pulls/7/comments") && r.Method == http.MethodPost:
+		if h.failCommentWrite.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		var in map[string]any
 		decode(h.t, r, &in)
 		h.created.Add(1)
 		id := h.add("review", fmt.Sprint(in["body"]))
+		h.anchor(id, in)
 		w.WriteHeader(http.StatusCreated)
 		writeJSON(w, map[string]any{
 			"id":       id,
 			"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
 		})
+
+	case strings.HasSuffix(p, "/pulls/7/comments") && r.Method == http.MethodGet && h.failCommentList.Load():
+		w.WriteHeader(http.StatusInternalServerError)
 
 	case strings.HasSuffix(p, "/pulls/7/comments") && r.Method == http.MethodGet && h.endlessComments:
 		// Always another page, so a test can drive the client into its pagination cap.
@@ -203,8 +253,9 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.mu.Lock()
 		out := []map[string]any{}
 		for id, b := range h.reviewComments {
+			path, line := h.anchorOf(id)
 			out = append(out, map[string]any{
-				"id": id, "body": b, "path": "a.go", "line": h.commentLine,
+				"id": id, "body": b, "path": path, "line": line,
 				"html_url": fmt.Sprintf("https://github.com/o/r/pull/7#discussion_r%d", id),
 				// REST reports the App with its suffix, and the viewer query answers the same.
 				"user": map[string]any{"login": h.commentAuthor},
@@ -214,6 +265,10 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, out)
 
 	case strings.Contains(p, "/pulls/comments/") && r.Method == http.MethodPatch:
+		if h.failCommentWrite.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
 		h.updated.Add(1)
 		w.WriteHeader(http.StatusOK)
 		writeJSON(w, map[string]any{"id": 1, "html_url": "https://github.com/o/r/pull/7#discussion_r1"})
@@ -240,6 +295,9 @@ func (h *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.updated.Add(1)
 		w.WriteHeader(http.StatusOK)
 		writeJSON(w, map[string]any{"id": 1})
+
+	case prPath.MatchString(p) && h.failPR.Load():
+		w.WriteHeader(http.StatusInternalServerError)
 
 	case prPath.MatchString(p):
 		n, _ := strconv.Atoi(prPath.FindStringSubmatch(p)[1])
