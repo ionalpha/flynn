@@ -136,8 +136,17 @@ jobs:
         # instrumentation cost. The other platforms run the identical suite under
         # -race with COVER unset, which is a correctness gate, not a coverage one.
         env:
-          COVER: ${{ matrix.os == 'ubuntu-latest' && '-covermode=atomic -coverprofile=coverage.out' || '' }}
+          COVER: ${{ matrix.os == 'ubuntu-latest' && '-covermode=atomic -coverpkg=./... -coverprofile=coverage.out' || '' }}
         run: ./dev/test
+
+      # Coverage is only a number until something fails when it drops. The floor
+      # lives in dev/coverage-floor, so lowering it is a reviewed diff. Checked on
+      # ubuntu alone: build tags change which files compile, so the percentage is
+      # only comparable against itself on one platform.
+      - name: Coverage floor
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        run: ./dev/coverfloor
+
       - name: Upload coverage
         if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
         uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7

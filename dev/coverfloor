@@ -1,0 +1,70 @@
+#!/usr/bin/env sh
+# Enforce a floor on statement coverage, and ratchet it upward.
+#
+# A published coverage number decays: it is true the day it is measured and
+# nothing stops the next change from quietly lowering it. This gate turns the
+# number into a property CI checks. The floor lives in dev/coverage-floor, in
+# the repository, so moving it is a reviewed diff rather than a dashboard
+# setting somebody can click.
+#
+# Two failure modes, both reported:
+#
+#   below the floor  the change removed coverage. Fail. Write tests or, if the
+#                    drop is deliberate and justified, lower the floor in the
+#                    same pull request so a reviewer sees it.
+#   above the floor  by more than the slack, the floor is stale: raise it, so the
+#                    coverage a change earned cannot be spent by a later one.
+#
+# Slack exists because the number moves a little on its own: build tags mean the
+# statement set differs per platform, so the floor is only ever checked against
+# the one platform CI measures (Linux), and a local run on another OS lands a point
+# or so away from it.
+#
+#   ./dev/test && ./dev/coverfloor
+#
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+profile="${COVERAGE_PROFILE:-coverage.out}"
+floor_file="dev/coverage-floor"
+# How far above the floor coverage may sit before the floor is considered stale.
+slack="${COVERAGE_SLACK:-2.0}"
+
+if [ ! -f "$profile" ]; then
+  echo "==> no $profile: run ./dev/test first" >&2
+  exit 1
+fi
+if [ ! -f "$floor_file" ]; then
+  echo "==> no $floor_file: nothing to enforce" >&2
+  exit 1
+fi
+
+floor="$(tr -d ' \t\n' <"$floor_file")"
+pct="$(go tool cover -func="$profile" | awk '$1 == "total:" { print $3 }')"
+pct="${pct%\%}"
+
+# A profile that parses but reports no total is a broken run, not 0% coverage.
+# Fail loudly rather than "enforcing" a floor against a number that is not there.
+case "$pct" in
+  '' | *[!0-9.]*)
+    echo "==> $profile has no total: line (got '$pct'): refusing to check a number that is not there" >&2
+    exit 1
+    ;;
+esac
+
+awk -v pct="$pct" -v floor="$floor" -v slack="$slack" '
+BEGIN {
+  if (pct + 0 < floor + 0) {
+    printf "==> coverage %.1f%% is below the floor of %.1f%%\n", pct, floor
+    printf "    This change removed coverage. Add tests, or lower dev/coverage-floor\n"
+    printf "    in this same pull request so the drop is reviewed rather than absorbed.\n"
+    exit 1
+  }
+  if (pct + 0 > floor + slack + 0) {
+    printf "==> coverage %.1f%% has outgrown the floor of %.1f%% (slack %.1f)\n", pct, floor, slack
+    printf "    Raise dev/coverage-floor to %.1f so this coverage cannot be spent later.\n", pct - 0.5
+    exit 1
+  }
+  printf "==> coverage %.1f%% holds the floor of %.1f%%\n", pct, floor
+}
+'

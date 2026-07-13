@@ -8,10 +8,18 @@
 # written to coverage.out (the local and primary-CI invocation). Set COVER= to
 # run without it: CI uploads coverage from one platform only, so the other
 # platforms skip the instrumentation cost while still running every test under
-# -race.
+# -race. Unsetting it is also the fast path for a scoped local run, since the
+# coverage default instruments the whole tree no matter how few packages you name.
+#
+# -coverpkg=./... is what makes the number honest. By default `go test` credits a
+# package only for the statements its own tests execute, so code that exists to be
+# driven from another package -- every *test fixture package, and any helper that
+# only a sibling's tests reach -- is reported at 0% however hard it is exercised.
+# Instrumenting the whole tree credits a statement to whichever test actually runs
+# it, which is the question a coverage number is meant to answer.
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-: "${COVER=-covermode=atomic -coverprofile=coverage.out}"
+: "${COVER=-covermode=atomic -coverpkg=./... -coverprofile=coverage.out}"
 # Randomize test order within each package. A suite that only passes in a fixed
 # order (shared package-level state, an init-order dependency) fails here rather
 # than mysteriously later or on another machine. Go prints the chosen seed as
@@ -26,4 +34,31 @@ count=${COUNT:+-count=$COUNT}
 if [ "$#" -eq 0 ]; then set -- ./...; fi
 # shellcheck disable=SC2086  # COVER and count are intentionally split into flags.
 echo "==> go test -race -shuffle=$SHUFFLE $count $COVER $*"
+# shellcheck disable=SC2086
 go test -race -shuffle="$SHUFFLE" $count $COVER "$@"
+
+# Under -coverpkg every test binary emits a block for every statement in the tree,
+# so the raw profile holds one copy of each block per binary: here that is ~2M lines
+# describing a 19k-line tree. `go tool cover` merges the copies as it reads, so the
+# reported percentage is already right, but the file itself is what CI uploads and
+# what Codecov parses. Collapse the copies into one block each -- a statement's count
+# is the number of times any test ran it -- so consumers get a profile the size of
+# the tree.
+# shellcheck disable=SC2086  # COVER is a flag list; splitting it is the point.
+profile="$(printf '%s\n' $COVER | sed -n 's/^-coverprofile=//p')"
+if [ -n "$profile" ] && [ -f "$profile" ]; then
+	awk '
+		NR == 1 { mode = $0; next }
+		{
+			if (!($1 in stmts)) { order[++n] = $1 }
+			stmts[$1] = $2
+			count[$1] += $3
+		}
+		END {
+			print mode
+			for (i = 1; i <= n; i++) {
+				printf "%s %s %d\n", order[i], stmts[order[i]], count[order[i]]
+			}
+		}
+	' "$profile" >"$profile.merged" && mv "$profile.merged" "$profile"
+fi
