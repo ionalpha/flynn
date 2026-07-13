@@ -226,8 +226,8 @@ func authRemoveApp(ctx context.Context, store appStore) error {
 	return nil
 }
 
-// secretPrompt reads a secret value from the operator. The commands take it as an
-// argument so their core is reachable without a terminal; the real one is promptHidden.
+// secretPrompt reads a secret from the operator. promptHidden implements it against
+// the terminal, with echo off, and refuses when there is no terminal to read from.
 type secretPrompt func(label string) (secret.Text, error)
 
 func authSet(ctx context.Context, store *vault.Store, args []string, prompt secretPrompt) error {

@@ -28,8 +28,8 @@ type updater interface {
 	Apply(ctx context.Context, plan selfupdate.Plan) error
 }
 
-// newUpdater builds the updater a command runs against. It is a variable so a test can
-// stand in one whose answers it controls; the binary always gets the real one.
+// newUpdater builds the updater a command runs against. Keeping it a variable is what lets
+// the upgrade path be driven without reaching the network; the binary always gets the real one.
 var newUpdater = func(dataDir string) updater { return selfupdate.New(dataDir) }
 
 // runVersion prints what this binary is, and can list what else exists.
