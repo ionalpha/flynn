@@ -100,22 +100,40 @@ var managedPaths = map[string]string{
 func managedBy(p string) (string, bool) {
 	clean := filepath.Clean(p)
 	for prefix, owner := range managedPaths {
-		if runtime.GOOS == "windows" {
-			if strings.HasPrefix(strings.ToLower(clean), strings.ToLower(prefix)+string(filepath.Separator)) {
-				return owner, true
-			}
-			continue
-		}
-		if strings.HasPrefix(clean, prefix+"/") {
+		if under(clean, prefix) {
 			return owner, true
 		}
 	}
 	// A binary under a Go toolchain's bin directory came from `go install`, which is
-	// the tool that should take it away again.
-	if gobin := filepath.Join(goPath(), "bin"); gobin != "bin" && strings.HasPrefix(clean, gobin+string(filepath.Separator)) {
+	// the tool that should take it away again. The caller resolved the binary's symlinks,
+	// so resolve this side too: on a host where the Go directory is reached through a link
+	// (a symlinked home, or macos reaching /var through /private/var) the two spellings name
+	// the same directory and a textual prefix would still miss, and a missed owner is an
+	// upgrade that overwrites a file another tool is holding.
+	if gobin := resolveDir(filepath.Join(goPath(), "bin")); gobin != "bin" && under(clean, gobin) {
 		return "go install", true
 	}
 	return "", false
+}
+
+// under reports whether path sits inside dir. Windows paths are compared without regard to
+// case, since the same directory can be spelled either way there.
+func under(path, dir string) bool {
+	prefix := dir + string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		return strings.HasPrefix(strings.ToLower(path), strings.ToLower(prefix))
+	}
+	return strings.HasPrefix(path, prefix)
+}
+
+// resolveDir returns dir with its symlinks resolved, or dir unchanged when it cannot be
+// resolved (it may not exist, which is not an error here: an absent directory owns nothing).
+func resolveDir(dir string) string {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return filepath.Clean(dir)
+	}
+	return resolved
 }
 
 func goPath() string {
