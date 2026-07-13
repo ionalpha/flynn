@@ -101,8 +101,17 @@ func (c *Codex) Detect(ctx context.Context) (Readiness, error) {
 
 	// Login state: codex login status exits zero and reports a logged-in line when
 	// credentials are usable. A logged-out CLI is an onboarding prompt, not a refusal.
+	//
+	// The affirmative phrase is a substring of its own negation ("not logged in"
+	// contains "logged in"), so a bare Contains check reads a logged-out CLI as
+	// logged in. Today only the non-zero exit keeps that from happening. Rule the
+	// negation out explicitly, so the answer does not depend on the exit code.
 	status, err := c.spawner.Probe(ctx, c.bin, "login", "status")
-	if err != nil || !strings.Contains(strings.ToLower(status), "logged in") {
+	lower := strings.ToLower(status)
+	loggedIn := err == nil &&
+		strings.Contains(lower, "logged in") &&
+		!strings.Contains(lower, "not logged in")
+	if !loggedIn {
 		r.Reason = "codex is not logged in; run `codex login` to use your subscription"
 		return r, nil //nolint:nilerr // not-logged-in is reported on Readiness, not a Go error
 	}

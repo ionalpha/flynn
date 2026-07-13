@@ -392,3 +392,35 @@ func TestContinuedEpisodeDoesNotRefuseAToolFreeTurn(t *testing.T) {
 		t.Error("an opening episode that never reached the bridge must be refused")
 	}
 }
+
+// TestConformanceWatchWithoutProbesReportsNothing proves an episode run with no probes
+// configured still observes and reports cleanly: the steering counts are folded in, and the
+// report carries no probe results and refuses nothing. A run that never asked the harness for
+// anything checkable has no drift to report and no grounds to refuse.
+func TestConformanceWatchWithoutProbesReportsNothing(t *testing.T) {
+	w := newConformanceWatch(nil, "flynn")
+	w.observe(Event{Kind: EventNativeCommand, Status: "declined"})
+	w.observe(Event{Kind: EventText, Text: "talking"})
+
+	rep := w.report()
+	if len(rep.Results) != 0 || rep.Refused() || len(rep.Failed()) != 0 {
+		t.Errorf("a run with no probes has nothing to fail: %+v", rep)
+	}
+	// The steering counts do not depend on the probes: the harness's tool choices are
+	// measured whether or not anything was asked of it.
+	if rep.Steering.NativeCommands != 1 || rep.Steering.NativeDeclined != 1 {
+		t.Errorf("steering = %+v, want the native attempt counted", rep.Steering)
+	}
+}
+
+// TestNilConformanceWatchIsInert proves an unbuilt watch neither panics nor invents a
+// verdict. An episode that ran without one must not be reported as having failed a probe it
+// was never asked to run.
+func TestNilConformanceWatchIsInert(t *testing.T) {
+	var w *conformanceWatch
+	w.observe(Event{Kind: EventNativeCommand})
+	rep := w.report()
+	if len(rep.Results) != 0 || rep.Refused() {
+		t.Errorf("an unbuilt watch invented a verdict: %+v", rep)
+	}
+}
