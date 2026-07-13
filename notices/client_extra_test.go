@@ -628,11 +628,46 @@ func TestBackgroundOutlivesTheCommandContext(t *testing.T) {
 	for {
 		var buf bytes.Buffer
 		if c.Show(&buf) && strings.Contains(buf.String(), "SECURITY:") {
-			return
+			break
 		}
 		select {
 		case <-timeout:
 			t.Fatal("the background refresh never cached a feed the next run could show")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	waitForQuietStore(t, dir)
+}
+
+// waitForQuietStore blocks until the detached refresh has finished writing. A showable
+// feed is not the end of its work: the refresh saves the feed and only then the trust
+// state, each through a temporary file it renames into place. Returning at the first
+// showable feed leaves the goroutine still writing into the directory the test framework
+// is about to remove, which on Windows fails the removal outright ("directory is not
+// empty") and elsewhere merely leaves the race unobserved. The last write is the trust
+// rename, so the store is quiet once trust.json exists with no temporaries beside it.
+func waitForQuietStore(t *testing.T, dir string) {
+	t.Helper()
+	store := filepath.Join(dir, "notices")
+	deadline := time.After(10 * time.Second)
+	for {
+		if entries, err := os.ReadDir(store); err == nil {
+			settled, temps := false, false
+			for _, e := range entries {
+				switch {
+				case strings.Contains(e.Name(), ".tmp-"):
+					temps = true
+				case e.Name() == "trust.json":
+					settled = true
+				}
+			}
+			if settled && !temps {
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatal("the background refresh never finished writing its trust state")
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
