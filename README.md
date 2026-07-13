@@ -3,13 +3,16 @@
 <p align="center"><strong>A secure, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real authority, because every action is sandboxed, governed, and sealed into a verifiable, tamper-evident record.</strong></p>
 
 <p align="center">
+  <a href="https://scorecard.dev/viewer/?uri=github.com/ionalpha/flynn"><img src="https://api.securityscorecards.dev/projects/github.com/ionalpha/flynn/badge" alt="OpenSSF Scorecard"></a>
+</p>
+
+<p align="center">
   <a href="https://github.com/ionalpha/flynn/actions/workflows/ci.yml"><img src="https://github.com/ionalpha/flynn/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/ionalpha/flynn/actions/workflows/codeql.yml"><img src="https://github.com/ionalpha/flynn/actions/workflows/codeql.yml/badge.svg" alt="CodeQL"></a>
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/tests.json" alt="Tests"></a>
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/coverage.json" alt="Coverage"></a>
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/fuzz.json" alt="Fuzz targets"></a>
   <a href="TESTING.md"><img src="https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/ionalpha/flynn/badges/property-tests.json" alt="Packages with a property test"></a>
-  <a href="https://scorecard.dev/viewer/?uri=github.com/ionalpha/flynn"><img src="https://api.securityscorecards.dev/projects/github.com/ionalpha/flynn/badge" alt="OpenSSF Scorecard"></a>
 </p>
 
 <p align="center">
