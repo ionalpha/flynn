@@ -642,7 +642,7 @@ func (l *Local) Walk(_ context.Context, root string) ([]string, error) {
 		return nil, err
 	}
 	var out []string
-	walkErr := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error {
+	walkErr := filepath.WalkDir(base, func(p string, d fs.DirEntry, err error) error { //nolint:gosec // base is confined to the sandbox root by resolve, symlinks included
 		if err != nil || d.IsDir() {
 			return nil //nolint:nilerr // unreadable entries are skipped, not fatal
 		}
