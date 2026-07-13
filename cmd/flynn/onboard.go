@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -53,7 +54,7 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec string, explicit bool,
 	case len(configured) > 1 && term.IsTerminal(int(os.Stdin.Fd())):
 		in := bufio.NewReader(os.Stdin)
 		fmt.Fprintf(os.Stderr, "Configured providers: %s\n", strings.Join(configured, ", "))
-		name, perr := promptVisible(in, fmt.Sprintf("Provider [%s]: ", configured[0]))
+		name, perr := promptVisible(in, os.Stderr, fmt.Sprintf("Provider [%s]: ", configured[0]))
 		if perr != nil {
 			return nil, harness.Plan{}, "", perr
 		}
@@ -70,7 +71,7 @@ func resolveModelOrOnboard(ctx context.Context, modelSpec string, explicit bool,
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return nil, harness.Plan{}, "", err
 	}
-	spec, oerr := onboardModel(ctx, modelSpec, dataDir)
+	spec, oerr := onboardModel(ctx, os.Stdin, os.Stderr, modelSpec, dataDir)
 	if oerr != nil {
 		return nil, harness.Plan{}, "", oerr
 	}
@@ -119,19 +120,20 @@ func keyedProviders() []string {
 // lets the user pick one (by number, or by typing any provider:model or local model id),
 // stores the API key for the chosen provider when one is needed and not already set, and
 // records the choice as the default so a later launch reuses it without --model. It
-// returns the model spec to resolve with.
-func onboardModel(ctx context.Context, modelSpec, dataDir string) (string, error) {
+// returns the model spec to resolve with. The pick list is printed to out and the
+// answer read from in, so the exchange can be driven over any pair of streams.
+func onboardModel(ctx context.Context, in io.Reader, out io.Writer, modelSpec, dataDir string) (string, error) {
 	hosted := hostedCatalogModels()
 	def := defaultOnboardSpec(modelSpec, hosted)
 
-	fmt.Fprintln(os.Stderr, "Welcome to Flynn. No model is set up yet, so let's pick one.")
+	_, _ = fmt.Fprintln(out, "Welcome to Flynn. No model is set up yet, so let's pick one.")
 	for i, id := range hosted {
-		fmt.Fprintf(os.Stderr, "  %d) %s\n", i+1, id)
+		_, _ = fmt.Fprintf(out, "  %d) %s\n", i+1, id)
 	}
-	fmt.Fprintln(os.Stderr, "  (or type a provider:model, or a local model id from `flynn models`)")
+	_, _ = fmt.Fprintln(out, "  (or type a provider:model, or a local model id from `flynn models`)")
 
-	in := bufio.NewReader(os.Stdin)
-	choice, err := promptVisible(in, fmt.Sprintf("Model [%s]: ", def))
+	r := bufio.NewReader(in)
+	choice, err := promptVisible(r, out, fmt.Sprintf("Model [%s]: ", def))
 	if err != nil {
 		return "", err
 	}
@@ -149,7 +151,7 @@ func onboardModel(ctx context.Context, modelSpec, dataDir string) (string, error
 	if err := writeActiveModel(dataDir, spec); err != nil {
 		return "", fmt.Errorf("record model selection: %w", err)
 	}
-	fmt.Fprintf(os.Stderr, "Using %s. Change it any time with `flynn models use <id>`, or /model in a session.\n\n", spec)
+	_, _ = fmt.Fprintf(out, "Using %s. Change it any time with `flynn models use <id>`, or /model in a session.\n\n", spec)
 	return spec, nil
 }
 
@@ -229,11 +231,11 @@ func ensureProviderKey(ctx context.Context, spec, dataDir string) error {
 	return nil
 }
 
-// promptVisible reads one echoed line from in and returns it trimmed. Unlike
-// promptHidden it is for non-secret answers (a provider name), so the choice is
-// visible as the user types it.
-func promptVisible(in *bufio.Reader, label string) (string, error) {
-	fmt.Fprint(os.Stderr, label)
+// promptVisible writes label to out, reads one echoed line from in, and returns it
+// trimmed. Unlike promptHidden it is for non-secret answers (a provider name), so the
+// choice is visible as the user types it.
+func promptVisible(in *bufio.Reader, out io.Writer, label string) (string, error) {
+	_, _ = fmt.Fprint(out, label)
 	line, err := in.ReadString('\n')
 	if err != nil && line == "" {
 		return "", fmt.Errorf("read input: %w", err)

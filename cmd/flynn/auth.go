@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -42,24 +43,24 @@ func runAuth(args []string, dataDir string) error {
 
 	switch args[0] {
 	case "set":
-		return authSet(ctx, store, args[1:])
+		return authSet(ctx, store, args[1:], promptHidden)
 	case "set-app":
 		return authSetApp(ctx, store, args[1:], os.ReadFile, os.Remove)
 	case "rm-app":
 		return authRemoveApp(ctx, store)
 	case "add":
-		return authCredAdd(ctx, store, dataDir, args[1:])
+		return authCredAdd(ctx, store, dataDir, args[1:], promptHidden)
 	case "use":
 		return authCredUse(ctx, dataDir, args[1:])
 	case "ls":
 		// `auth ls <integration>` lists that integration's credentials; bare `auth ls`
 		// falls back to the model-provider listing.
 		if len(args) >= 2 {
-			return authCredList(ctx, dataDir, args[1])
+			return authCredList(ctx, dataDir, args[1], os.Stdout)
 		}
-		return authList(ctx, store)
+		return authList(ctx, store, os.Stdout)
 	case "list":
-		return authList(ctx, store)
+		return authList(ctx, store, os.Stdout)
 	case "rm", "remove", "delete":
 		// An <integration>/<name> reference removes a credential; a bare provider name
 		// removes a model-provider key.
@@ -225,7 +226,11 @@ func authRemoveApp(ctx context.Context, store appStore) error {
 	return nil
 }
 
-func authSet(ctx context.Context, store *vault.Store, args []string) error {
+// secretPrompt reads a secret value from the operator. The commands take it as an
+// argument so their core is reachable without a terminal; the real one is promptHidden.
+type secretPrompt func(label string) (secret.Text, error)
+
+func authSet(ctx context.Context, store *vault.Store, args []string, prompt secretPrompt) error {
 	if len(args) != 1 {
 		return fmt.Errorf("usage: flynn auth set <provider> (one of %s)", strings.Join(provider.Providers(), ", "))
 	}
@@ -236,7 +241,7 @@ func authSet(ctx context.Context, store *vault.Store, args []string) error {
 		}
 		return fmt.Errorf("auth: unknown provider %q (want one of %s)", args[0], strings.Join(provider.Providers(), ", "))
 	}
-	key, err := promptHidden(fmt.Sprintf("Enter API key for %s: ", args[0]))
+	key, err := prompt(fmt.Sprintf("Enter API key for %s: ", args[0]))
 	if err != nil {
 		return err
 	}
@@ -299,24 +304,24 @@ func appIdentityStatus(ctx context.Context, store appStore) string {
 	}
 }
 
-func authList(ctx context.Context, store *vault.Store) error {
+func authList(ctx context.Context, store *vault.Store, w io.Writer) error {
 	for _, name := range provider.Providers() {
 		ref, ok := provider.KeyRef(name)
 		if !ok {
 			// A keyless provider (a local server) has nothing to store.
-			_, _ = fmt.Fprintf(os.Stdout, "  %-10s no key required\n", name)
+			_, _ = fmt.Fprintf(w, "  %-10s no key required\n", name)
 			continue
 		}
 		status := "not set"
 		if _, err := store.Lookup(ctx, ref); err == nil {
 			status = "stored"
 		}
-		_, _ = fmt.Fprintf(os.Stdout, "  %-10s %s (%s)\n", name, status, ref)
+		_, _ = fmt.Fprintf(w, "  %-10s %s (%s)\n", name, status, ref)
 	}
 	// A stored App identity authenticates every review, so it belongs in the same
 	// listing rather than being discoverable only by running one.
 	status := appIdentityStatus(ctx, store)
-	_, _ = fmt.Fprintf(os.Stdout, "  %-10s %s (%s)\n", "github app", status, refAppKey)
+	_, _ = fmt.Fprintf(w, "  %-10s %s (%s)\n", "github app", status, refAppKey)
 	return nil
 }
 

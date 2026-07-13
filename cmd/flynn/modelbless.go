@@ -32,6 +32,13 @@ import (
 // LFS object id; a small file with no such id is downloaded once over the hardened,
 // size-capped transport and pinned to the sha256 computed from the bytes.
 func runModelBless(args []string, _ string, out io.Writer) error {
+	return modelBless(context.Background(), huggingface.New(), fetch.New(), args, out)
+}
+
+// modelBless is the body of `flynn models bless` with the Hub client and the verified
+// downloader supplied, so the reference parsing, the file selection, the refusals, and the
+// printed entry are exercised against a stub Hub rather than the live one.
+func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Downloader, args []string, out io.Writer) error {
 	var idOverride, chatTemplate, licenseOverride, quantName string
 	chatTemplate = "chatml"
 	args, idOverride = takeValue(args, "--id")
@@ -48,9 +55,6 @@ func runModelBless(args []string, _ string, out io.Writer) error {
 		return fmt.Errorf("models bless: %w", err)
 	}
 	repoPath := owner + "/" + repo
-
-	ctx := context.Background()
-	hub := huggingface.New()
 
 	info, err := hub.Info(ctx, repoPath)
 	if err != nil {
@@ -77,7 +81,6 @@ func runModelBless(args []string, _ string, out io.Writer) error {
 		return fmt.Errorf("models bless: scratch dir: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
-	dl := fetch.New()
 
 	quantFiles := make([]catalog.QuantFile, 0, len(selected))
 	var totalBytes int64

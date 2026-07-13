@@ -24,6 +24,13 @@ import (
 // ones bless can actually verify; pass --all to see every match including pickle-only
 // repos.
 func runModelSearch(args []string, _ string, out io.Writer) error {
+	return modelSearch(context.Background(), huggingface.New(), args, out)
+}
+
+// modelSearch is the body of `flynn models search` with the Hub client supplied, so the
+// argument parsing, the safe-format filter, and the rendering are exercised against a
+// stub Hub rather than the live one.
+func modelSearch(ctx context.Context, hub *huggingface.Client, args []string, out io.Writer) error {
 	includeAll, args := takeFlag(args, "--all")
 	args, author := takeValue(args, "--author")
 	args, sort := takeValueOr(args, "--sort", "downloads")
@@ -50,8 +57,6 @@ func runModelSearch(args []string, _ string, out io.Writer) error {
 		return fmt.Errorf("models search: --limit must be a positive number, got %q", limitStr)
 	}
 
-	ctx := context.Background()
-	hub := huggingface.New()
 	results, err := hub.Search(ctx, huggingface.SearchQuery{
 		Text:    query,
 		Filters: filters,

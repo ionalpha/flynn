@@ -70,11 +70,23 @@ func fillDerivedNames(ctx context.Context, dataDir string, pb playbook.Playbook,
 // terminal: it prints the step's message and waits for a line on stdin. An empty line (just
 // Enter) approves; "n"/"no" declines; no input available (a non-interactive run) fails
 // closed with an instruction, so a confirmation never proceeds silently or hangs.
-type terminalConfirmer struct{}
+// The zero value prompts on stderr and reads the answer from stdin; the streams are
+// fields so the decision is exercised without a terminal.
+type terminalConfirmer struct {
+	in  io.Reader
+	out io.Writer
+}
 
-func (terminalConfirmer) Confirm(_ context.Context, message string) error {
-	_, _ = fmt.Fprintln(os.Stderr, message)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+func (c terminalConfirmer) Confirm(_ context.Context, message string) error {
+	in, out := io.Reader(os.Stdin), io.Writer(os.Stderr)
+	if c.in != nil {
+		in = c.in
+	}
+	if c.out != nil {
+		out = c.out
+	}
+	_, _ = fmt.Fprintln(out, message)
+	line, err := bufio.NewReader(in).ReadString('\n')
 	if err != nil && strings.TrimSpace(line) == "" {
 		return fault.New(fault.Cancelled, "playbook_confirm_noinput",
 			"playbook: this step needs your confirmation but no input is available; run it in an interactive terminal, or set the relevant token to skip the step")
@@ -153,9 +165,9 @@ func runPlaybook(args []string, dataDir string) error {
 	ctx := context.Background()
 	switch args[0] {
 	case "ls", "list":
-		return playbookList(ctx, dataDir)
+		return playbookList(ctx, dataDir, os.Stdout)
 	case "run":
-		return playbookRun(ctx, dataDir, args[1:])
+		return playbookRun(ctx, dataDir, args[1:], os.Stdout)
 	default:
 		return fmt.Errorf("playbook: unknown subcommand %q (want ls or run)", args[0])
 	}
@@ -221,7 +233,7 @@ func openPlaybookRuntime(ctx context.Context, dataDir string) (*playbookRuntime,
 	return &playbookRuntime{store: pbStore, runner: runner, closer: durable.Close}, nil
 }
 
-func playbookList(ctx context.Context, dataDir string) error {
+func playbookList(ctx context.Context, dataDir string, out io.Writer) error {
 	rt, err := openPlaybookRuntime(ctx, dataDir)
 	if err != nil {
 		return err
@@ -233,10 +245,10 @@ func playbookList(ctx context.Context, dataDir string) error {
 		return err
 	}
 	if len(pbs) == 0 {
-		_, _ = fmt.Fprintln(os.Stdout, "no playbooks in the catalog")
+		_, _ = fmt.Fprintln(out, "no playbooks in the catalog")
 		return nil
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tREGISTERS\tDESCRIPTION")
 	for _, p := range pbs {
 		registers := "-"
@@ -248,7 +260,7 @@ func playbookList(ctx context.Context, dataDir string) error {
 	return tw.Flush()
 }
 
-func playbookRun(ctx context.Context, dataDir string, args []string) error {
+func playbookRun(ctx context.Context, dataDir string, args []string, out io.Writer) error {
 	if len(args) == 0 {
 		return errors.New("usage: flynn playbook run <name> [json-input]")
 	}
@@ -282,17 +294,23 @@ func playbookRun(ctx context.Context, dataDir string, args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.Service != nil {
-		_, _ = fmt.Fprintf(os.Stdout, "Playbook %q done. Registered service %q", name, res.Service.Name)
-		if res.Service.Spec.URL != "" {
-			_, _ = fmt.Fprintf(os.Stdout, " -> %s", res.Service.Spec.URL)
-		}
-		_, _ = fmt.Fprintln(os.Stdout)
-	} else {
-		_, _ = fmt.Fprintf(os.Stdout, "Playbook %q done.\n", name)
-	}
-	if out, err := json.MarshalIndent(res.Output, "", "  "); err == nil {
-		_, _ = fmt.Fprintf(os.Stdout, "Result:\n%s\n", out)
-	}
+	printPlaybookResult(out, name, res)
 	return nil
+}
+
+// printPlaybookResult reports what a finished playbook produced: the service it registered
+// (with the URL the workload is reachable at, when it has one) and the flow's output.
+func printPlaybookResult(out io.Writer, name string, res playbook.Result) {
+	if res.Service != nil {
+		_, _ = fmt.Fprintf(out, "Playbook %q done. Registered service %q", name, res.Service.Name)
+		if res.Service.Spec.URL != "" {
+			_, _ = fmt.Fprintf(out, " -> %s", res.Service.Spec.URL)
+		}
+		_, _ = fmt.Fprintln(out)
+	} else {
+		_, _ = fmt.Fprintf(out, "Playbook %q done.\n", name)
+	}
+	if rendered, err := json.MarshalIndent(res.Output, "", "  "); err == nil {
+		_, _ = fmt.Fprintf(out, "Result:\n%s\n", rendered)
+	}
 }

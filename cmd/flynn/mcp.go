@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"time"
@@ -54,6 +55,14 @@ func runMCP(args []string, dataDir string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
+	return serveMCP(ctx, dataDir, dir, *readOnly, os.Stdin, os.Stdout, os.Stderr)
+}
+
+// serveMCP is the served half of `flynn mcp serve` with its streams supplied: it opens the
+// durable store, assembles the governed run ingredients, and serves JSON-RPC on in/out
+// until the client disconnects or ctx is done. Diagnostics go to logw, never to out, which
+// carries protocol traffic only.
+func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Reader, out, logw io.Writer) error {
 	// Record onto the durable spine under the instance signer when one is present, so a
 	// served session's governed actions are sealed and verifiable; without an identity
 	// the session still runs, recording unsigned.
@@ -83,7 +92,7 @@ func runMCP(args []string, dataDir string) error {
 	// read tools so an untrusted client cannot write or run a command even though the
 	// containment gate would still bound a shell.
 	grant := parts.grant
-	if *readOnly {
+	if readOnly {
 		grant = capability.NewGrant("read", "glob", "grep")
 	}
 
@@ -111,11 +120,11 @@ func runMCP(args []string, dataDir string) error {
 		mcp.WithInfo(mcp.Info{Name: "flynn", Version: version.String()}))
 
 	mode := "read-write"
-	if *readOnly {
+	if readOnly {
 		mode = "read-only"
 	}
-	fmt.Fprintf(os.Stderr, "flynn mcp: serving %d tools (%s) in %s on stdio; session %s\n",
+	_, _ = fmt.Fprintf(logw, "flynn mcp: serving %d tools (%s) in %s on stdio; session %s\n",
 		len(parts.toolset), mode, dir, runID)
 
-	return srv.Serve(ctx, os.Stdin, os.Stdout)
+	return srv.Serve(ctx, in, out)
 }

@@ -133,6 +133,12 @@ func resolveKind(reg *resource.Registry, alias string) (cpKind, bool) {
 // in a table. Listing instances first refreshes this process's own Instance record
 // so the live process always appears.
 func dispatchGet(args []string, dataDir string) error {
+	return getResources(os.Stdout, args, dataDir)
+}
+
+// getResources is dispatchGet with the destination named, so what the command prints is
+// what a test reads.
+func getResources(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 1 {
 		return errors.New("usage: flynn get <kind> (instances, agents, runs, ...)")
 	}
@@ -159,13 +165,18 @@ func dispatchGet(args []string, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	renderTable(os.Stdout, table)
+	renderTable(out, table)
 	return nil
 }
 
 // dispatchDescribe implements `flynn describe <kind> <name-or-id>`: it prints the
 // resource's fields and its recent change history from the event log.
 func dispatchDescribe(args []string, dataDir string) error {
+	return describeResource(os.Stdout, args, dataDir)
+}
+
+// describeResource is dispatchDescribe with the destination named.
+func describeResource(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 2 {
 		return errors.New("usage: flynn describe <kind> <name-or-id>")
 	}
@@ -193,7 +204,7 @@ func dispatchDescribe(args []string, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	renderDetail(os.Stdout, ck.kind, detail)
+	renderDetail(out, ck.kind, detail)
 	return nil
 }
 
@@ -202,6 +213,11 @@ func dispatchDescribe(args []string, dataDir string) error {
 // comparison that versioning makes meaningful (for example two agents, or an agent
 // before and after an edit). It reads the same store as get/describe.
 func dispatchDiff(args []string, dataDir string) error {
+	return diffResources(os.Stdout, args, dataDir)
+}
+
+// diffResources is dispatchDiff with the destination named.
+func diffResources(out io.Writer, args []string, dataDir string) error {
 	if len(args) < 3 {
 		return errors.New("usage: flynn diff <kind> <name-or-id> <name-or-id>")
 	}
@@ -237,7 +253,7 @@ func dispatchDiff(args []string, dataDir string) error {
 	if err != nil {
 		return err
 	}
-	renderDiff(os.Stdout, ck.kind, ra, rb, controlplane.Diff(ra, rb))
+	renderDiff(out, ck.kind, ra, rb, controlplane.Diff(ra, rb))
 	return nil
 }
 

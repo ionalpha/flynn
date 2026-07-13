@@ -28,7 +28,14 @@ func runRuntimeCheck(out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	defer func() { _ = sb.Close() }()
+	return reportRuntimes(ctx, sb, out)
+}
 
+// reportRuntimes writes the installed-and-safe report for every known runtime, probing
+// each one through the given sandbox. It is runRuntimeCheck with the boundary supplied,
+// so the report is exercised against scripted runtime versions.
+func reportRuntimes(ctx context.Context, sb sandbox.Sandbox, out io.Writer) error {
 	_, _ = fmt.Fprintln(out, "local inference runtimes:")
 	for _, rt := range inference.Runtimes() {
 		ver, ok := detectRuntimeVersion(ctx, sb, rt)

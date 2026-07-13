@@ -125,7 +125,7 @@ func explainStoreOpenError(err error, dataDir string) error {
 // listRuns prints the runs recorded in the durable store: their id, phase, step
 // count, and objective, newest first, so a run can be found and then inspected or
 // resumed by its id.
-func listRuns(dataDir string) error {
+func listRuns(out io.Writer, dataDir string) error {
 	ctx := context.Background()
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
@@ -141,7 +141,7 @@ func listRuns(dataDir string) error {
 		return err
 	}
 	if len(goals) == 0 {
-		_, _ = fmt.Fprintln(os.Stdout, "no runs yet")
+		_, _ = fmt.Fprintln(out, "no runs yet")
 		return nil
 	}
 	sort.Slice(goals, func(i, j int) bool { return goals[i].UpdatedHLC.Wall > goals[j].UpdatedHLC.Wall })
@@ -152,7 +152,7 @@ func listRuns(dataDir string) error {
 		if phase == "" {
 			phase = goal.PhasePending
 		}
-		_, _ = fmt.Fprintf(os.Stdout, "  %s  %-9s  step %d  %s\n", g.Name, phase, st.Steps, oneLine(spec.Objective, 60))
+		_, _ = fmt.Fprintf(out, "  %s  %-9s  step %d  %s\n", g.Name, phase, st.Steps, oneLine(spec.Objective, 60))
 	}
 	return nil
 }
@@ -161,7 +161,7 @@ func listRuns(dataDir string) error {
 // the same renderer a live run uses, so any run is auditable after the fact by its
 // id (printed when the run starts). verbose shows the tool arguments, outputs, and
 // per-turn detail; the default view shows the shape of the run.
-func inspectRun(dataDir, runID string, verbose bool) error {
+func inspectRun(out io.Writer, dataDir, runID string, verbose bool) error {
 	ctx := context.Background()
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {
@@ -178,12 +178,12 @@ func inspectRun(dataDir, runID string, verbose bool) error {
 	}
 	var meter usageMeter
 	for _, ev := range events {
-		renderEvent(os.Stdout, ev, verbose)
+		renderEvent(out, ev, verbose)
 		if ev.Usage != nil {
 			meter.add(*ev.Usage)
 		}
 	}
-	renderUsageSummary(os.Stdout, meter)
+	renderUsageSummary(out, meter)
 	return nil
 }
 
@@ -199,7 +199,7 @@ func renderUsageSummary(out io.Writer, meter usageMeter) {
 // regradeSkills re-runs every stored skill's check in a sandbox at the working
 // directory, re-confirming the ones that still pass and retiring the ones that no
 // longer do, then reports the tally.
-func regradeSkills(dataDir string) error {
+func regradeSkills(out io.Writer, dataDir string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return err
@@ -218,7 +218,7 @@ func regradeSkills(dataDir string) error {
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "regrade: %d checked, %d reconfirmed, %d retired\n",
+	_, _ = fmt.Fprintf(out, "regrade: %d checked, %d reconfirmed, %d retired\n",
 		res.Checked, len(res.Reconfirmed), len(res.Retired))
 	return nil
 }

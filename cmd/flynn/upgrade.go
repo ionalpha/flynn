@@ -17,6 +17,21 @@ import (
 	"github.com/ionalpha/flynn/internal/version"
 )
 
+// updater is the self-update surface the version and upgrade commands drive: enumerate
+// the releases that exist, decide what installing one would mean, and install it. It is
+// an interface so the commands around it (what they print, what they refuse, what they
+// ask before doing) are exercised without reaching the network.
+type updater interface {
+	List(ctx context.Context) ([]selfupdate.Release, error)
+	RecordSeen(releases []selfupdate.Release)
+	Check(ctx context.Context, req selfupdate.Request) (selfupdate.Plan, error)
+	Apply(ctx context.Context, plan selfupdate.Plan) error
+}
+
+// newUpdater builds the updater a command runs against. It is a variable so a test can
+// stand in one whose answers it controls; the binary always gets the real one.
+var newUpdater = func(dataDir string) updater { return selfupdate.New(dataDir) }
+
 // runVersion prints what this binary is, and can list what else exists.
 //
 //	flynn version           what am I running
@@ -38,9 +53,9 @@ func runVersion(args []string, dataDir string) error {
 	case "":
 		return printBuild(os.Stdout)
 	case "list":
-		return listVersions(os.Stdout, dataDir, *pre)
+		return listVersions(os.Stdout, newUpdater(dataDir), *pre)
 	case "check":
-		return checkVersion(os.Stdout, dataDir, *pre)
+		return checkVersion(os.Stdout, os.Stderr, newUpdater(dataDir), *pre)
 	default:
 		return errors.New("usage: flynn version [list|check] [--pre]")
 	}
@@ -61,11 +76,10 @@ func printBuild(out io.Writer) error {
 	return tw.Flush()
 }
 
-func listVersions(out io.Writer, dataDir string, pre bool) error {
+func listVersions(out io.Writer, u updater, pre bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	u := selfupdate.New(dataDir)
 	releases, err := u.List(ctx)
 	if err != nil {
 		return err
@@ -99,16 +113,16 @@ func listVersions(out io.Writer, dataDir string, pre bool) error {
 
 // checkVersion reports whether an upgrade is available, and exits non-zero when one
 // is, so a script or a monitor can act on it without parsing text.
-func checkVersion(out io.Writer, dataDir string, pre bool) error {
+func checkVersion(out, errOut io.Writer, u updater, pre bool) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	plan, err := selfupdate.New(dataDir).Check(ctx, selfupdate.Request{AllowPrerelease: pre})
+	plan, err := u.Check(ctx, selfupdate.Request{AllowPrerelease: pre})
 	if err != nil {
 		return err
 	}
 	if plan.Warning != "" {
-		_, _ = fmt.Fprintln(os.Stderr, "warning:", plan.Warning)
+		_, _ = fmt.Fprintln(errOut, "warning:", plan.Warning)
 	}
 	if plan.UpToDate() {
 		_, _ = fmt.Fprintf(out, "flynn %s is the latest release.\n", plan.Current)
@@ -127,6 +141,10 @@ var errUpgradeAvailable error = silent{}
 type silent struct{}
 
 func (silent) Error() string { return "" }
+
+// confirmFunc asks the operator to approve an irreversible action. confirm is the real
+// one, which needs a terminal; a test supplies its own to drive both answers.
+type confirmFunc func(question string) (bool, error)
 
 // confirm asks the operator to approve an irreversible action. With no terminal to ask
 // on, it does not guess: an upgrade that runs unattended has to say --yes, so a script
@@ -159,21 +177,28 @@ func runUpgrade(args []string, dataDir string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
-	u := selfupdate.New(dataDir)
-	plan, err := u.Check(ctx, selfupdate.Request{
+	return upgradeTo(ctx, os.Stdout, os.Stderr, newUpdater(dataDir), selfupdate.Request{
 		To:              *to,
 		AllowPrerelease: *pre,
 		AllowDowngrade:  *allowDowngrade,
-	})
+	}, *check, *yes, confirm)
+}
+
+// upgradeTo runs the upgrade the parsed flags asked for: verify what installing the
+// requested release would mean, show the operator the facts that verified, and install
+// it only once it is either confirmed or waived with --yes. checkOnly stops after the
+// report, which is what `flynn upgrade --check` is.
+func upgradeTo(ctx context.Context, out, errOut io.Writer, u updater, req selfupdate.Request, checkOnly, yes bool, ask confirmFunc) error {
+	plan, err := u.Check(ctx, req)
 	if err != nil {
 		return err
 	}
 
 	if plan.Warning != "" {
-		_, _ = fmt.Fprintln(os.Stderr, "warning:", plan.Warning)
+		_, _ = fmt.Fprintln(errOut, "warning:", plan.Warning)
 	}
-	if plan.UpToDate() && !*allowDowngrade {
-		_, _ = fmt.Fprintf(os.Stdout, "flynn %s is already the latest release.\n", plan.Current)
+	if plan.UpToDate() && !req.AllowDowngrade {
+		_, _ = fmt.Fprintf(out, "flynn %s is already the latest release.\n", plan.Current)
 		return nil
 	}
 
@@ -181,36 +206,36 @@ func runUpgrade(args []string, dataDir string) error {
 	// signer, the commit, and the transparency-log entry all came out of a signature
 	// that checked out against the trust root in this binary. The operator can go and
 	// look the log entry up.
-	_, _ = fmt.Fprintf(os.Stdout, "%s -> %s\n", plan.Current, plan.Target)
+	_, _ = fmt.Fprintf(out, "%s -> %s\n", plan.Current, plan.Target)
 	if plan.Downgrade {
-		_, _ = fmt.Fprintf(os.Stdout, "  DOWNGRADE: this is older than what is installed\n")
+		_, _ = fmt.Fprintf(out, "  DOWNGRADE: this is older than what is installed\n")
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "  signed by  %s\n", plan.Provenance.SignerIdentity)
-	_, _ = fmt.Fprintf(os.Stdout, "  built from %s\n", plan.Provenance.Commit)
-	_, _ = fmt.Fprintf(os.Stdout, "  logged at  rekor.sigstore.dev index %d (%s)\n",
+	_, _ = fmt.Fprintf(out, "  signed by  %s\n", plan.Provenance.SignerIdentity)
+	_, _ = fmt.Fprintf(out, "  built from %s\n", plan.Provenance.Commit)
+	_, _ = fmt.Fprintf(out, "  logged at  rekor.sigstore.dev index %d (%s)\n",
 		plan.Provenance.LogIndex, plan.Provenance.LoggedAt.Format(time.RFC3339))
-	_, _ = fmt.Fprintf(os.Stdout, "  artifact   %s\n", plan.Asset)
-	_, _ = fmt.Fprintf(os.Stdout, "  sha256     %s\n", plan.Digest)
-	_, _ = fmt.Fprintf(os.Stdout, "  installs   %s\n", plan.Path)
+	_, _ = fmt.Fprintf(out, "  artifact   %s\n", plan.Asset)
+	_, _ = fmt.Fprintf(out, "  sha256     %s\n", plan.Digest)
+	_, _ = fmt.Fprintf(out, "  installs   %s\n", plan.Path)
 
-	if *check {
+	if checkOnly {
 		return nil
 	}
-	if !*yes {
-		ok, err := confirm(fmt.Sprintf("Install %s?", plan.Target))
+	if !yes {
+		ok, err := ask(fmt.Sprintf("Install %s?", plan.Target))
 		if err != nil {
 			return err
 		}
 		if !ok {
-			_, _ = fmt.Fprintln(os.Stdout, "cancelled")
+			_, _ = fmt.Fprintln(out, "cancelled")
 			return nil
 		}
 	}
 
-	_, _ = fmt.Fprintln(os.Stdout, "\ndownloading and verifying...")
+	_, _ = fmt.Fprintln(out, "\ndownloading and verifying...")
 	if err := u.Apply(ctx, plan); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "flynn %s installed.\n", plan.Target)
+	_, _ = fmt.Fprintf(out, "flynn %s installed.\n", plan.Target)
 	return nil
 }

@@ -77,10 +77,16 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 
 	runner := newLocalRunner(dataDir, out)
 	defer func() { _ = runner.Close() }()
+	return modelRun(ctx, runner, consentFor(autoApprove), id, prompt, out)
+}
 
+// modelRun serves a model through the admission gate and, when a prompt is given, sends it
+// and prints the answer. It takes the runner rather than building one, so the serve, reuse,
+// and answer paths are exercised against a stubbed runtime with no network and no weights.
+func modelRun(ctx context.Context, runner *localRunner, consent consentPolicy, id, prompt string, out io.Writer) error {
 	// The one admission gate: classify, surface the risk, gate on isolation, obtain
 	// consent, then provision and serve. Shared with `models probe` and the goal path.
-	m, ep, err := runner.gateAndServe(ctx, id, consentFor(autoApprove), 0, false)
+	m, ep, err := runner.gateAndServe(ctx, id, consent, 0, false)
 	if err != nil {
 		return fmt.Errorf("models run: %w", err)
 	}
@@ -95,7 +101,7 @@ func runModelRun(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 
-	client := localModelClient(ep, m.ID, localModelPlan(ctx, m, dataDir))
+	client := localModelClient(ep, m.ID, localModelPlan(ctx, m, runner.dataDir))
 	resp, err := client.Generate(ctx, llm.Request{
 		Messages:  []llm.Message{llm.Text(llm.RoleUser, prompt)},
 		MaxTokens: 1024,
@@ -124,13 +130,20 @@ func runModelProbe(args []string, dataDir string, out io.Writer) error {
 
 	runner := newLocalRunner(dataDir, out)
 	defer func() { _ = runner.Close() }()
-	m, ep, err := runner.gateAndServe(ctx, id, consentFor(autoApprove), 0, false)
+	return modelProbe(ctx, runner, consentFor(autoApprove), id, out)
+}
+
+// modelProbe serves a model through the admission gate, runs the reliability battery against
+// it, and records the measured profile. It takes the runner rather than building one, so the
+// probe is exercised against a stubbed runtime and a temporary store.
+func modelProbe(ctx context.Context, runner *localRunner, consent consentPolicy, id string, out io.Writer) error {
+	m, ep, err := runner.gateAndServe(ctx, id, consent, 0, false)
 	if err != nil {
 		return fmt.Errorf("models probe: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "probing %s at %s; this runs a fixed battery of tool-call, schema, and instruction probes\n", id, ep.BaseURL)
 
-	store, err := openDataStore(ctx, dataDir)
+	store, err := openDataStore(ctx, runner.dataDir)
 	if err != nil {
 		return err
 	}
@@ -299,6 +312,13 @@ func runModelUse(args []string, dataDir string, out io.Writer) error {
 
 	runner := newLocalRunner(dataDir, out)
 	defer func() { _ = runner.Close() }()
+	return provisionAndSelect(ctx, runner, m, id, out)
+}
+
+// provisionAndSelect provisions a local catalog model's runtime and weights and records it as
+// the default, without starting it. It takes the runner rather than building one, so the
+// provisioning steps are exercised with stubs instead of a live download.
+func provisionAndSelect(ctx context.Context, runner *localRunner, m catalog.ModelSpec, id string, out io.Writer) error {
 	q, _ := m.SmallestQuant()
 	if q.URL == "" {
 		return fmt.Errorf("models use: %q has no pinned direct download, so it cannot be provisioned for local serving yet", id)
@@ -309,7 +329,7 @@ func runModelUse(args []string, dataDir string, out io.Writer) error {
 	if _, err := runner.ensureWeights(ctx, m, q); err != nil {
 		return fmt.Errorf("models use: %w", err)
 	}
-	if err := writeActiveModel(dataDir, id); err != nil {
+	if err := writeActiveModel(runner.dataDir, id); err != nil {
 		return fmt.Errorf("models use: record selection: %w", err)
 	}
 	_, _ = fmt.Fprintf(out, "%s is provisioned and set as the default model. `flynn goal` will use it.\n", id)

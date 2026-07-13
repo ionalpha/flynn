@@ -41,6 +41,15 @@ import (
 //
 // It blocks until interrupted (Ctrl-C), then stops the control loops.
 func runServe(args []string, modelSpec, dataDir string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return runServeContext(ctx, args, modelSpec, dataDir)
+}
+
+// runServeContext is runServe with the shutdown signal supplied rather than installed, so the
+// server's whole lifecycle (bring-up, bind, shutdown) is drivable without sending the
+// process a signal. Cancelling ctx stops it exactly as Ctrl-C does.
+func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
 	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
@@ -62,9 +71,6 @@ func runServe(args []string, modelSpec, dataDir string) error {
 	if apiTok == "" {
 		apiTok = os.Getenv("FLYNN_API_TOKEN")
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 
 	// Load the instance signer so the served spine is durably chained and its resource
 	// snapshots are verified under the same key. Best effort: without an identity the
@@ -197,7 +203,10 @@ func runServe(args []string, modelSpec, dataDir string) error {
 			return fmt.Errorf("serve: api: %w", err)
 		}
 		httpSrv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
-		go func() {
+		// The drain deliberately does not inherit ctx: it starts once ctx is done, and a
+		// shutdown on an already-cancelled context would close every live connection
+		// instantly instead of letting the requests in flight finish.
+		go func() { //nolint:gosec // G118: the shutdown deadline cannot descend from the context that triggered it
 			<-ctx.Done()
 			sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()

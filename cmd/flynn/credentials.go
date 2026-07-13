@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -37,7 +38,10 @@ func openCredentialStore(ctx context.Context, dataDir string) (*credential.Store
 //
 //	flynn auth add <integration> [--name <name>] [--role read|operator|admin]
 //	                             [--type bearer|api_key|basic|oauth2] [--default]
-func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, args []string) error {
+//
+// The prompt is supplied by the caller (the command passes the no-echo terminal one), so
+// the command is exercisable without a TTY.
+func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, args []string, prompt secretPrompt) error {
 	if len(args) == 0 || strings.HasPrefix(args[0], "-") {
 		return errors.New("usage: flynn auth add <integration> [--name <name>] [--role r] [--type t] [--default]")
 	}
@@ -62,7 +66,7 @@ func authCredAdd(ctx context.Context, vaultStore *vault.Store, dataDir string, a
 		return fmt.Errorf("auth add: unknown role %q (want read, operator, or admin)", *role)
 	}
 
-	value, err := promptHidden(fmt.Sprintf("Enter secret for %s/%s: ", integration, *name))
+	value, err := prompt(fmt.Sprintf("Enter secret for %s/%s: ", integration, *name))
 	if err != nil {
 		return err
 	}
@@ -149,7 +153,7 @@ func authCredUse(ctx context.Context, dataDir string, args []string) error {
 
 // authCredList implements `flynn auth ls <integration>`: it lists the integration's
 // credentials with their role and which is the default.
-func authCredList(ctx context.Context, dataDir, integration string) error {
+func authCredList(ctx context.Context, dataDir, integration string, w io.Writer) error {
 	credStore, closeStore, err := openCredentialStore(ctx, dataDir)
 	if err != nil {
 		return err
@@ -160,10 +164,10 @@ func authCredList(ctx context.Context, dataDir, integration string) error {
 		return err
 	}
 	if len(creds) == 0 {
-		_, _ = fmt.Fprintf(os.Stdout, "no credentials for %s\n", integration)
+		_, _ = fmt.Fprintf(w, "no credentials for %s\n", integration)
 		return nil
 	}
-	writeCredTable(os.Stdout, creds)
+	writeCredTable(w, creds)
 	return nil
 }
 
@@ -207,7 +211,7 @@ func removeCredential(ctx context.Context, credStore *credential.Store, vaultSto
 }
 
 // writeCredTable renders credentials as an aligned table.
-func writeCredTable(w *os.File, creds []credential.Credential) {
+func writeCredTable(w io.Writer, creds []credential.Credential) {
 	_, _ = fmt.Fprintf(w, "  %-16s %-9s %-8s %s\n", "NAME", "ROLE", "DEFAULT", "TYPE")
 	for _, c := range creds {
 		def := ""

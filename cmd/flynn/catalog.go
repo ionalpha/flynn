@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -30,17 +31,24 @@ func runIntegrations(args []string, dataDir string) error {
 	if len(args) == 0 {
 		return errors.New("usage: flynn integrations <ls|show|call>")
 	}
-	ctx := context.Background()
+	var run func(context.Context, *integrationRuntime, io.Writer, []string) error
 	switch args[0] {
 	case "ls", "list":
-		return integrationsList(ctx, dataDir)
+		run = integrationsList
 	case "show":
-		return integrationsShow(ctx, dataDir, args[1:])
+		run = integrationsShow
 	case "call":
-		return integrationsCall(ctx, dataDir, args[1:])
+		run = integrationsCall
 	default:
 		return fmt.Errorf("integrations: unknown subcommand %q (want ls, show, or call)", args[0])
 	}
+	ctx := context.Background()
+	rt, err := openIntegrationRuntime(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rt.closer() }()
+	return run(ctx, rt, os.Stdout, args[1:])
 }
 
 // integrationRuntime bundles the resource store and the wired integration handler so
@@ -110,24 +118,18 @@ func wireExtensions(store resource.Store, dataDir string) (*credential.Store, *e
 
 // integrationsList prints the catalog: every extension, where it came from, whether
 // it is ready to use, and the capabilities it provides.
-func integrationsList(ctx context.Context, dataDir string) error {
-	rt, err := openIntegrationRuntime(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.closer() }()
-
+func integrationsList(ctx context.Context, rt *integrationRuntime, out io.Writer, _ []string) error {
 	exts, err := rt.store.List(ctx, extension.Kind, resource.Scope{}, nil)
 	if err != nil {
 		return err
 	}
 	if len(exts) == 0 {
-		_, _ = fmt.Fprintln(os.Stdout, "no integrations available")
+		_, _ = fmt.Fprintln(out, "no integrations available")
 		return nil
 	}
 	sort.Slice(exts, func(i, j int) bool { return exts[i].Name < exts[j].Name })
 
-	_, _ = fmt.Fprintf(os.Stdout, "  %-16s %-18s %-9s %s\n", "INTEGRATION", "STATUS", "SOURCE", "CAPABILITIES")
+	_, _ = fmt.Fprintf(out, "  %-16s %-18s %-9s %s\n", "INTEGRATION", "STATUS", "SOURCE", "CAPABILITIES")
 	for _, r := range exts {
 		spec, _ := extension.DecodeSpec(r)
 		source := r.Labels[catalog.SourceLabel]
@@ -142,7 +144,7 @@ func integrationsList(ctx context.Context, dataDir string) error {
 		if len(spec.Capabilities) > 0 {
 			caps = strings.Join(spec.Capabilities, ",")
 		}
-		_, _ = fmt.Fprintf(os.Stdout, "  %-16s %-18s %-9s %s\n", r.Name, status, source, caps)
+		_, _ = fmt.Fprintf(out, "  %-16s %-18s %-9s %s\n", r.Name, status, source, caps)
 	}
 	return nil
 }
@@ -165,16 +167,10 @@ func integrationStatus(ctx context.Context, creds *credential.Store, name string
 }
 
 // integrationsShow prints an extension's operations and how to configure it.
-func integrationsShow(ctx context.Context, dataDir string, args []string) error {
+func integrationsShow(ctx context.Context, rt *integrationRuntime, out io.Writer, args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flynn integrations show <extension>")
 	}
-	rt, err := openIntegrationRuntime(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.closer() }()
-
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, args[0])
 	if errors.Is(err, resource.ErrNotFound) {
 		return fmt.Errorf("integrations: unknown integration %q (see flynn integrations ls)", args[0])
@@ -186,19 +182,19 @@ func integrationsShow(ctx context.Context, dataDir string, args []string) error 
 		return err
 	}
 	spec, _ := extension.DecodeSpec(r)
-	_, _ = fmt.Fprintf(os.Stdout, "%s  (auth: %s)\n", args[0], orNone(spec.Auth.Type))
+	_, _ = fmt.Fprintf(out, "%s  (auth: %s)\n", args[0], orNone(spec.Auth.Type))
 	tools := rt.loader.Tools()
 	sort.Slice(tools, func(i, j int) bool { return tools[i].Def().Name < tools[j].Def().Name })
 	for _, tool := range tools {
 		def := tool.Def()
-		_, _ = fmt.Fprintf(os.Stdout, "  %-22s %s\n", def.Name, def.Description)
+		_, _ = fmt.Fprintf(out, "  %-22s %s\n", def.Name, def.Description)
 	}
 	return nil
 }
 
 // integrationsCall runs one operation and prints its result, so an integration can be
 // verified end to end from the command line.
-func integrationsCall(ctx context.Context, dataDir string, args []string) error {
+func integrationsCall(ctx context.Context, rt *integrationRuntime, out io.Writer, args []string) error {
 	if len(args) < 2 {
 		return errors.New(`usage: flynn integrations call <extension> <operation> [json-input]`)
 	}
@@ -207,12 +203,6 @@ func integrationsCall(ctx context.Context, dataDir string, args []string) error 
 	if len(args) >= 3 && args[2] != "" {
 		input = json.RawMessage(args[2])
 	}
-
-	rt, err := openIntegrationRuntime(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.closer() }()
 
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, extName)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -235,11 +225,11 @@ func integrationsCall(ctx context.Context, dataDir string, args []string) error 
 	if tool == nil {
 		return fmt.Errorf("integrations: %q has no operation %q (see flynn integrations show %s)", extName, opName, extName)
 	}
-	out, err := tool.Invoke(ctx, input)
+	result, err := tool.Invoke(ctx, input)
 	if err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(os.Stdout, out)
+	_, _ = fmt.Fprintln(out, result)
 	return nil
 }
 

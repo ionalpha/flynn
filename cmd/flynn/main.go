@@ -133,36 +133,45 @@ func profileConfig(dir string, contention, leakWatch, leakRepeat bool) (diag.Con
 // main exists only to turn run's exit code into a process exit. Every path out of the
 // command returns through run, so a --profile bundle's deferred Stop always executes:
 // os.Exit runs no defers, and a bundle that is never stopped is never written.
-func main() { os.Exit(run()) }
+func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) }
 
 // run dispatches the command line and returns the process exit code: 0 on success, 1 on
 // a command error, 2 on a usage error, and exitChangesRequested for a review that asked
 // for changes.
-func run() int {
+//
+// The flag set, the arguments, and the two output streams are passed in rather than
+// reached for, so the whole dispatch is exercisable in-process. main hands it the real
+// ones: flag.CommandLine (which exits on a bad flag, as it always has), the arguments
+// after the program name, and the process's own streams.
+func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
-		model       = flag.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
-		dataDir     = flag.String("data-dir", defaultDataDir(), "directory for the durable state database")
-		noLearn     = flag.Bool("no-learn", false, "do not capture skills/memory from this run")
-		verbose     = flag.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
-		verboseLong = flag.Bool("verbose", false, "alias for -v")
-		plain       = flag.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
-		verify      = flag.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
-		fanout      = flag.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
-		maxCost     = flag.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
-		maxTokens   = flag.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
-		maxMemory   = flag.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today).")
-		maxProcs    = flag.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop.")
-		showVersion = flag.Bool("version", false, "print version and exit")
-		profileDir  = flag.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
-		profileCont = flag.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
-		leakWatch   = flag.Bool("leak-watch", false, "watch the --profile bundle's timeline for sustained growth in goroutines, live heap, open descriptors, or child processes, and dump a labelled goroutine profile, a heap profile, and the offending window into the bundle when one of them grows; requires --profile")
-		leakRepeat  = flag.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
+		model       = fs.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
+		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
+		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
+		verbose     = fs.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
+		verboseLong = fs.Bool("verbose", false, "alias for -v")
+		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
+		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
+		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
+		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
+		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
+		maxMemory   = fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today).")
+		maxProcs    = fs.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop.")
+		showVersion = fs.Bool("version", false, "print version and exit")
+		profileDir  = fs.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
+		profileCont = fs.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
+		leakWatch   = fs.Bool("leak-watch", false, "watch the --profile bundle's timeline for sustained growth in goroutines, live heap, open descriptors, or child processes, and dump a labelled goroutine profile, a heap profile, and the offending window into the bundle when one of them grows; requires --profile")
+		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
 	)
-	flag.Parse()
+	if err := fs.Parse(args); err != nil {
+		// flag.CommandLine exits the process on a bad flag, so this is reached only by a
+		// flag set that was asked to hand parse errors back: a bad flag is a usage error.
+		return 2
+	}
 	vrb := *verbose || *verboseLong
 
 	if *showVersion {
-		_, _ = fmt.Fprintln(os.Stdout, version.String())
+		_, _ = fmt.Fprintln(stdout, version.String())
 		return 0
 	}
 
@@ -171,20 +180,20 @@ func run() int {
 	// nothing: Start returns a nil bundle and Stop on it is a no-op.
 	profileCfg, usage := profileConfig(*profileDir, *profileCont, *leakWatch, *leakRepeat)
 	if usage != "" {
-		fmt.Fprintln(os.Stderr, usage)
+		_, _ = fmt.Fprintln(stderr, usage)
 		return 2
 	}
 
 	bundle, err := diag.Start(profileCfg)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		_, _ = fmt.Fprintln(stderr, "error:", err)
 		return 1
 	}
 	defer func() {
 		// A bundle that failed to seal is a warning, not a failed command: the work the
 		// user asked for already happened, and its exit code is theirs, not the profiler's.
 		if err := bundle.Stop(); err != nil {
-			fmt.Fprintln(os.Stderr, "warning: profile bundle:", err)
+			_, _ = fmt.Fprintln(stderr, "warning: profile bundle:", err)
 		}
 	}()
 
@@ -199,57 +208,65 @@ func run() int {
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
 	// default the flag carries. So a user need not repeat --model once one is chosen.
-	modelSpecExplicit = flagSet("model")
+	modelSpecExplicit = flagPassed(fs, "model")
 	modelSpec := effectiveModelSpec(*model, modelSpecExplicit, *dataDir)
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "goal" {
-		objective := strings.TrimSpace(strings.Join(args[1:], " "))
+	// The subcommand, or "" when none was given. No subcommand is named "", so every
+	// branch below can compare against it directly.
+	rest := fs.Args()
+	cmd := ""
+	if len(rest) >= 1 {
+		cmd = rest[0]
+	}
+
+	if cmd == "goal" {
+		objective := strings.TrimSpace(strings.Join(rest[1:], " "))
 		if objective == "" {
-			fmt.Fprintln(os.Stderr, `usage: flynn goal "<objective>"`)
+			_, _ = fmt.Fprintln(stderr, `usage: flynn goal "<objective>"`)
 			return 2
 		}
 		if err := runGoal(modelSpec, objective, *verify, *dataDir, !*noLearn, vrb, *fanout, *maxCost, *maxTokens, *maxMemory, *maxProcs); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && (args[0] == "inspect" || args[0] == "replay") {
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: flynn inspect <run-id>")
+	if cmd == "inspect" || cmd == "replay" {
+		if len(rest) < 2 {
+			_, _ = fmt.Fprintln(stderr, "usage: flynn inspect <run-id>")
 			return 2
 		}
-		if err := inspectRun(*dataDir, args[1], vrb); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+		if err := inspectRun(stdout, *dataDir, rest[1], vrb); err != nil {
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && (args[0] == "runs" || args[0] == "sessions") {
-		if err := listRuns(*dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+	if cmd == "runs" || cmd == "sessions" {
+		if err := listRuns(stdout, *dataDir); err != nil {
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "resume" {
-		if len(args) < 2 {
-			fmt.Fprintln(os.Stderr, "usage: flynn resume <run-id>")
+	if cmd == "resume" {
+		if len(rest) < 2 {
+			_, _ = fmt.Fprintln(stderr, "usage: flynn resume <run-id>")
 			return 2
 		}
-		if err := resumeRun(modelSpec, args[1], *dataDir, vrb); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+		if err := resumeRun(modelSpec, rest[1], *dataDir, vrb); err != nil {
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "regrade" {
-		if err := regradeSkills(*dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+	if cmd == "regrade" {
+		if err := regradeSkills(stdout, *dataDir); err != nil {
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
@@ -257,66 +274,64 @@ func run() int {
 
 	// Subcommands that take only the data directory share one dispatch path, so
 	// adding one is a table entry rather than another branch in run.
-	if args := flag.Args(); len(args) >= 1 {
-		if fn, ok := dataDirCommands[args[0]]; ok {
-			if err := fn(args[1:], *dataDir); err != nil {
-				// An error with no message is a command reporting an outcome through its exit
-				// code rather than a failure: `flynn version check` exits non-zero when an
-				// upgrade is waiting, and nothing has gone wrong that warrants a message.
-				if err.Error() != "" {
-					fmt.Fprintln(os.Stderr, "error:", err)
-				}
-				return 1
+	if fn, ok := dataDirCommands[cmd]; ok {
+		if err := fn(rest[1:], *dataDir); err != nil {
+			// An error with no message is a command reporting an outcome through its exit
+			// code rather than a failure: `flynn version check` exits non-zero when an
+			// upgrade is waiting, and nothing has gone wrong that warrants a message.
+			if err.Error() != "" {
+				_, _ = fmt.Fprintln(stderr, "error:", err)
 			}
-			return 0
-		}
-	}
-
-	if args := flag.Args(); len(args) >= 1 && args[0] == "serve" {
-		if err := runServe(args[1:], modelSpec, *dataDir); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "watch" {
+	if cmd == "serve" {
+		if err := runServe(rest[1:], modelSpec, *dataDir); err != nil {
+			_, _ = fmt.Fprintln(stderr, "error:", err)
+			return 1
+		}
+		return 0
+	}
+
+	if cmd == "watch" {
 		if err := runWatch(modelSpec, *dataDir, !*noLearn, vrb); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "review" {
-		err := runReview(args[1:], modelSpec, *dataDir, vrb)
+	if cmd == "review" {
+		err := runReview(rest[1:], modelSpec, *dataDir, vrb)
 		switch {
 		case errors.Is(err, errChangesRequested):
 			return exitChangesRequested
 		case err != nil:
-			fmt.Fprintln(os.Stderr, "error:", err)
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	if args := flag.Args(); len(args) >= 1 && args[0] == "help" {
-		printUsage(os.Stdout)
+	if cmd == "help" {
+		printUsage(stdout)
 		return 0
 	}
 
 	// No subcommand: start an interactive session when attached to a terminal, where
 	// each line is a turn of one continuing conversation. With stdin redirected (a
 	// pipe, a file, a CI step) there is no one to prompt, so print usage instead.
-	if len(flag.Args()) == 0 && stdinIsTerminal() {
+	if len(rest) == 0 && stdinIsTerminal() {
 		if err := runInteractive(modelSpec, *dataDir, !*noLearn, vrb, *plain); err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+			_, _ = fmt.Fprintln(stderr, "error:", err)
 			return 1
 		}
 		return 0
 	}
 
-	printUsage(os.Stderr)
+	printUsage(stderr)
 	return 2
 }
 
@@ -340,11 +355,11 @@ func effectiveModelSpec(flagValue string, explicit bool, dataDir string) string 
 // of falling back when this is set.
 var modelSpecExplicit bool
 
-// flagSet reports whether the named flag was set on the command line, so a default can be
-// told apart from a value the user passed explicitly.
-func flagSet(name string) bool {
+// flagPassed reports whether the named flag was set on the command line, so a default can
+// be told apart from a value the user passed explicitly.
+func flagPassed(fs *flag.FlagSet, name string) bool {
 	found := false
-	flag.Visit(func(f *flag.Flag) {
+	fs.Visit(func(f *flag.Flag) {
 		if f.Name == name {
 			found = true
 		}

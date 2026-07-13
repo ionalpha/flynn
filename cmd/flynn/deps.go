@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"text/tabwriter"
 
@@ -25,17 +26,24 @@ func runDeps(args []string, dataDir string) error {
 	if len(args) == 0 {
 		args = []string{"ls"}
 	}
-	ctx := context.Background()
+	var run func(context.Context, *depsRuntime, io.Writer, []string) error
 	switch args[0] {
 	case "ls", "list":
-		return depsList(ctx, dataDir)
+		run = depsList
 	case "check":
-		return depsCheck(ctx, dataDir, args[1:])
+		run = depsCheck
 	case "install", "ensure":
-		return depsInstall(ctx, dataDir, args[1:])
+		run = depsInstall
 	default:
 		return fmt.Errorf("deps: unknown subcommand %q (want ls, check, or install)", args[0])
 	}
+	ctx := context.Background()
+	rt, err := openDepsRuntime(ctx, dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = rt.closer() }()
+	return run(ctx, rt, os.Stdout, args[1:])
 }
 
 // depsRuntime bundles the dependency store and manager over the durable store, with the
@@ -46,7 +54,10 @@ type depsRuntime struct {
 	closer func() error
 }
 
-func openDepsRuntime(ctx context.Context, dataDir string) (*depsRuntime, error) {
+// openDepsRuntime wires the dependency store and manager over the durable store. The
+// options are appended after the defaults, so a caller can replace the version probe
+// (the only part that reaches outside the process) without rebuilding the stack.
+func openDepsRuntime(ctx context.Context, dataDir string, opts ...dependency.Option) (*depsRuntime, error) {
 	durable, err := openDataStore(ctx, dataDir)
 	if err != nil {
 		return nil, err
@@ -73,26 +84,21 @@ func openDepsRuntime(ctx context.Context, dataDir string) (*depsRuntime, error) 
 		_ = durable.Close()
 		return nil, err
 	}
-	mgr := dependency.NewManager(store, fetch.New(), dataDir, dependency.WithProber(dependency.NewSandboxProber(sb)))
+	mgr := dependency.NewManager(store, fetch.New(), dataDir,
+		append([]dependency.Option{dependency.WithProber(dependency.NewSandboxProber(sb))}, opts...)...)
 	return &depsRuntime{store: store, mgr: mgr, closer: durable.Close}, nil
 }
 
-func depsList(ctx context.Context, dataDir string) error {
-	rt, err := openDepsRuntime(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.closer() }()
-
+func depsList(ctx context.Context, rt *depsRuntime, out io.Writer, _ []string) error {
 	deps, err := rt.store.List(ctx)
 	if err != nil {
 		return err
 	}
 	if len(deps) == 0 {
-		_, _ = fmt.Fprintln(os.Stdout, "no dependencies in the catalog")
+		_, _ = fmt.Fprintln(out, "no dependencies in the catalog")
 		return nil
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tPIN\tMIN\tPLATFORMS\tDESCRIPTION")
 	for _, d := range deps {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%d\t%s\n",
@@ -101,13 +107,7 @@ func depsList(ctx context.Context, dataDir string) error {
 	return tw.Flush()
 }
 
-func depsCheck(ctx context.Context, dataDir string, args []string) error {
-	rt, err := openDepsRuntime(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.closer() }()
-
+func depsCheck(ctx context.Context, rt *depsRuntime, out io.Writer, args []string) error {
 	names := args
 	if len(names) == 0 {
 		deps, err := rt.store.List(ctx)
@@ -118,7 +118,7 @@ func depsCheck(ctx context.Context, dataDir string, args []string) error {
 			names = append(names, d.Name)
 		}
 	}
-	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "NAME\tSTATUS\tVERSION\tPATH")
 	for _, name := range names {
 		rep, err := rt.mgr.Check(ctx, name)
@@ -146,16 +146,10 @@ func depStatus(rep dependency.Report) string {
 	}
 }
 
-func depsInstall(ctx context.Context, dataDir string, args []string) error {
+func depsInstall(ctx context.Context, rt *depsRuntime, out io.Writer, args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flynn deps install <name>")
 	}
-	rt, err := openDepsRuntime(ctx, dataDir)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = rt.closer() }()
-
 	name := args[0]
 	if _, err := rt.store.Get(ctx, name); err != nil {
 		if errors.Is(err, dependency.ErrNotFound) {
@@ -169,13 +163,13 @@ func depsInstall(ctx context.Context, dataDir string, args []string) error {
 	}
 	switch res.Source {
 	case dependency.SourceSystem:
-		_, _ = fmt.Fprintf(os.Stdout, "%s is present at %s", name, res.Path)
+		_, _ = fmt.Fprintf(out, "%s is present at %s", name, res.Path)
 		if res.Version != "" {
-			_, _ = fmt.Fprintf(os.Stdout, " (version %s)", res.Version)
+			_, _ = fmt.Fprintf(out, " (version %s)", res.Version)
 		}
-		_, _ = fmt.Fprintln(os.Stdout)
+		_, _ = fmt.Fprintln(out)
 	default:
-		_, _ = fmt.Fprintf(os.Stdout, "Installed %s %s -> %s\n", name, res.Version, res.Path)
+		_, _ = fmt.Fprintf(out, "Installed %s %s -> %s\n", name, res.Version, res.Path)
 	}
 	return nil
 }

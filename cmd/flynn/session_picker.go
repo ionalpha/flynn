@@ -55,7 +55,7 @@ func pickSession(ctx context.Context, store *sqlite.Store, reg *resource.Registr
 	fmt.Fprintln(os.Stderr)
 
 	in := bufio.NewReader(os.Stdin)
-	choice, err := promptVisible(in, fmt.Sprintf("Select [0-%d, default 0]: ", len(goals)))
+	choice, err := promptVisible(in, os.Stderr, fmt.Sprintf("Select [0-%d, default 0]: ", len(goals)))
 	if err != nil {
 		return "", "", 0, err
 	}
