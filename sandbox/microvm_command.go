@@ -204,16 +204,31 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 	// The server outlives the call, so it is not tied to ctx; ctx only bounds the wait
 	// for the forwarded address to appear.
 	cmd := exec.Command(c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path
-	stdout, err := cmd.StdoutPipe()
+	// The stdout pipe is created here rather than with cmd.StdoutPipe, because that pipe is
+	// closed by cmd.Wait as soon as the runtime exits, which can cut the reader off before it
+	// has drained the handshake. A runtime that prints its address and exits at once would then
+	// have its address lost and be reported as a server that never came up. With an explicit
+	// pipe the reader owns the read end: it drains everything the runtime wrote and sees EOF
+	// when the last write end closes, whatever the wait does.
+	stdout, pw, err := os.Pipe()
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "microvm_serve_pipe", err)
 	}
 	tail := newTailBuffer(tailBufferCap)
+	cmd.Stdout = pw
 	cmd.Stderr = tail
 	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
+		_ = stdout.Close()
 		return nil, fault.Wrap(fault.Terminal, "microvm_serve_start", err)
 	}
-	s := &cmdServing{cmd: cmd, tail: tail, done: make(chan struct{}), clk: clock.System{}, reaped: procs.Started()}
+	// The child holds its own copy of the write end; this one must go, or the reader never
+	// reaches EOF once the runtime exits.
+	_ = pw.Close()
+	s := &cmdServing{
+		cmd: cmd, tail: tail, done: make(chan struct{}),
+		scanned: make(chan struct{}), clk: clock.System{}, reaped: procs.Started(),
+	}
 	addrCh := make(chan string, 1)
 	go s.readAddr(stdout, tail, addrCh)
 	go s.reap()
@@ -223,9 +238,11 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 		_ = s.Stop()
 		return nil, ctx.Err()
 	case <-s.done:
-		// The process may have printed its address and exited in the same instant, leaving
-		// both this case and addrCh ready; a random select must not report a spurious failure,
-		// so prefer a reported address over declaring the server never came up.
+		// The runtime may have printed its address and exited in the same instant. Waiting for
+		// the reader to finish draining stdout (it ends at EOF, once the exited runtime's write
+		// end is gone) is what makes the outcome deterministic: an address that was printed is
+		// in addrCh by then, so a server that did come up is never reported as one that did not.
+		<-s.scanned
 		select {
 		case addr := <-addrCh:
 			return c.adopt(s, addr)
@@ -333,7 +350,10 @@ type cmdServing struct {
 	cmd  *exec.Cmd
 	tail *tailBuffer
 	done chan struct{}
-	clk  clock.Timing
+	// scanned is closed when the reader has drained the server's stdout, so a Serve that
+	// observes the exit can still tell whether an address was printed before it.
+	scanned chan struct{}
+	clk     clock.Timing
 	// reaped tells the process registry this child is no longer live. It runs from reap,
 	// the one goroutine that waits on the command.
 	reaped func()
@@ -344,7 +364,12 @@ type cmdServing struct {
 
 var _ Serving = (*cmdServing)(nil)
 
-func (s *cmdServing) readAddr(stdout io.Reader, tail *tailBuffer, out chan<- string) {
+// readAddr drains the runtime's stdout, retaining every line in the tail and reporting the
+// first forwarded address it announces. It owns the read end of the pipe: it runs to EOF (the
+// exited runtime's write end closing) and closes it, so nothing else can cut it off mid-read.
+func (s *cmdServing) readAddr(stdout io.ReadCloser, tail *tailBuffer, out chan<- string) {
+	defer close(s.scanned)
+	defer func() { _ = stdout.Close() }()
 	sc := bufio.NewScanner(stdout)
 	for sc.Scan() {
 		line := sc.Text()

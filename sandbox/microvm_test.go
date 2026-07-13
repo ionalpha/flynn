@@ -24,6 +24,7 @@ type fakeMachine struct {
 	mu       sync.Mutex
 	written  map[string][]byte
 	listResp []string
+	listErr  error
 	closes   int
 	execErr  error
 	execOut  ExecResult
@@ -69,6 +70,9 @@ func (f *fakeMachine) WriteFile(_ context.Context, p string, data []byte) error 
 func (f *fakeMachine) List(_ context.Context, _ string) ([]string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
 	return f.listResp, nil
 }
 
@@ -392,15 +396,23 @@ func runHelperRuntime() {
 		_, _ = os.Stderr.WriteString("runtime: guest failed to boot\n")
 		os.Exit(5)
 	}
+	// "silent" models a runtime that exits cleanly but reports no guest result, which must
+	// not be read as a successful empty run.
+	if os.Getenv(helperRuntimeEnv) == "silent" {
+		os.Exit(0)
+	}
 	if len(os.Args) < 2 {
+		_, _ = os.Stderr.WriteString("runtime: no manifest argument\n")
 		os.Exit(2)
 	}
 	data, err := os.ReadFile(os.Args[1]) //nolint:gosec // the manifest path is supplied by Flynn
 	if err != nil {
+		_, _ = os.Stderr.WriteString("runtime: cannot read manifest: " + err.Error() + "\n")
 		os.Exit(2)
 	}
 	var man manifest
 	if err := json.Unmarshal(data, &man); err != nil {
+		_, _ = os.Stderr.WriteString("runtime: malformed manifest: " + err.Error() + "\n")
 		os.Exit(2)
 	}
 	// A runtime that received a weakened posture refuses, the last line of defense.

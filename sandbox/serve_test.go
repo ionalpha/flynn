@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 	// run or serve, report a result) so the whole Flynn side is proven against a real child
 	// process without a hypervisor. This is checked first so the child exits before running
 	// the suite.
-	if v := os.Getenv(helperRuntimeEnv); v == "1" || v == "exit" {
+	if v := os.Getenv(helperRuntimeEnv); v == "1" || v == "exit" || v == "silent" {
 		runHelperRuntime()
 		os.Exit(0)
 	}
