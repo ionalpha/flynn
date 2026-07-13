@@ -285,3 +285,37 @@ func TestReplacePutsTheOriginalBackWhenTheSwapFails(t *testing.T) {
 		t.Fatalf("the binary at the install path holds %q", got)
 	}
 }
+
+// TestSupersedesBoundary pins the name boundary the sweep matches on, for both shapes the
+// binary takes: bare on unix, carrying an extension on windows. It runs the same cases on
+// every platform, because the failure it guards only appears on one of them. A bare prefix
+// test lets "flynn" claim "flynn-other.superseded" and delete a neighbouring binary's
+// leftovers; with an extension, "flynn.exe" cannot prefix "flynn-other", so the same code
+// looks correct on windows and is not.
+func TestSupersedesBoundary(t *testing.T) {
+	for _, base := range []string{"flynn", "flynn.exe"} {
+		t.Run(base, func(t *testing.T) {
+			swept := []string{
+				base + supersededSuffix,
+				base + ".4242" + supersededSuffix,
+			}
+			kept := []string{
+				base,
+				"unrelated.txt",
+				base + supersededSuffix + ".keep",
+				"flynn-other" + supersededSuffix,
+				"flynn-other.4242" + supersededSuffix,
+			}
+			for _, name := range swept {
+				if !supersedes(base, name) {
+					t.Errorf("supersedes(%q, %q) = false, want the outgoing copy to be swept", base, name)
+				}
+			}
+			for _, name := range kept {
+				if supersedes(base, name) {
+					t.Errorf("supersedes(%q, %q) = true, want a file this binary does not own to be left alone", base, name)
+				}
+			}
+		})
+	}
+}

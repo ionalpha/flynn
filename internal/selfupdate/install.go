@@ -187,9 +187,10 @@ func SweepSuperseded(exe string) int {
 		return 0
 	}
 	var swept int
+	base := filepath.Base(resolved)
 	for _, e := range entries {
 		name := e.Name()
-		if !strings.HasPrefix(name, filepath.Base(resolved)) || !strings.HasSuffix(name, supersededSuffix) {
+		if !supersedes(base, name) {
 			continue
 		}
 		if os.Remove(filepath.Join(filepath.Dir(resolved), name)) == nil {
@@ -197,4 +198,17 @@ func SweepSuperseded(exe string) int {
 		}
 	}
 	return swept
+}
+
+// supersedes reports whether name is an outgoing copy of the binary called base. The
+// name is base with the suffix appended, optionally with the pid of the process that
+// could not delete it in between. The boundary matters: a bare prefix test would let
+// "flynn" claim "flynn-other.superseded", a neighbouring binary's leftovers, and sweep
+// away a file this program does not own. That only shows on the platforms where the
+// binary has no extension, since "flynn.exe" cannot prefix "flynn-other".
+func supersedes(base, name string) bool {
+	if !strings.HasSuffix(name, supersededSuffix) {
+		return false
+	}
+	return name == base+supersededSuffix || strings.HasPrefix(name, base+".")
 }
