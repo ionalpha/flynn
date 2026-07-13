@@ -215,33 +215,44 @@ func TestHandoffDescriptorsAreRefusedWhenMalformed(t *testing.T) {
 // recovered as the file the sandbox passed, which is how the launcher hands its listening
 // socket back out of the child's network namespace.
 func TestHandoffDescriptorsRecoverAnInheritedSocket(t *testing.T) {
-	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("socketpair: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = unix.Close(fds[0])
-		_ = unix.Close(fds[1])
-	})
-	num := strconv.Itoa(fds[0])
-
-	t.Setenv(envEgressFD, num)
+	// Each handoff wraps the number it is given in an os.File, which takes ownership of that
+	// descriptor and closes it. Two handoffs therefore need two descriptors: pointing both at
+	// one number would have it closed twice, and a descriptor closed twice is a descriptor
+	// number handed back to the next opener and then closed under them.
+	egressFD := inheritedSocket(t)
+	t.Setenv(envEgressFD, strconv.Itoa(egressFD))
 	f, err := egressHandoffFile()
 	if err != nil {
 		t.Fatalf("egress handoff: %v", err)
 	}
-	if f.Fd() != uintptr(fds[0]) {
-		t.Fatalf("the recovered file must be the inherited descriptor, got %d want %d", f.Fd(), fds[0])
+	t.Cleanup(func() { _ = f.Close() })
+	if f.Fd() != uintptr(egressFD) {
+		t.Fatalf("the recovered file must be the inherited descriptor, got %d want %d", f.Fd(), egressFD)
 	}
 
-	t.Setenv(envForwardFD, num)
+	forwardFD := inheritedSocket(t)
+	t.Setenv(envForwardFD, strconv.Itoa(forwardFD))
 	ff, err := forwardHandoffFile()
 	if err != nil {
 		t.Fatalf("forward handoff: %v", err)
 	}
-	if ff.Fd() != uintptr(fds[0]) {
-		t.Fatalf("the recovered file must be the inherited descriptor, got %d want %d", ff.Fd(), fds[0])
+	t.Cleanup(func() { _ = ff.Close() })
+	if ff.Fd() != uintptr(forwardFD) {
+		t.Fatalf("the recovered file must be the inherited descriptor, got %d want %d", ff.Fd(), forwardFD)
 	}
+}
+
+// inheritedSocket returns one end of a socket pair, standing in for the descriptor the
+// launcher inherits. The caller owns the returned end and hands it to the code under test,
+// which closes it; only the other end is closed here.
+func inheritedSocket(t *testing.T) int {
+	t.Helper()
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fds[1]) })
+	return fds[0]
 }
 
 // TestLauncherIsInertWithoutItsControlVariable proves the launcher hook is a no-op in a normal
