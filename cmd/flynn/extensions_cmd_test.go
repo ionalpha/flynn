@@ -93,7 +93,37 @@ func TestExtensionsDevLinkListRemove(t *testing.T) {
 		t.Fatalf("reopen runtime: %v", err)
 	}
 	defer func() { _ = rt2.close() }()
-	if _, err := rt2.store.Get(ctx, extension.Kind, resource.Scope{}, "token"); !errors.Is(err, resource.ErrNotFound) {
+	// "token" is also an official extension, so unlinking the local build does not leave a
+	// hole: the bundled spec reclaims the name on the next sync. What must be gone is the
+	// dev link, or `rm` would have left the author's binary wired up.
+	back, err := rt2.store.Get(ctx, extension.Kind, resource.Scope{}, "token")
+	if err != nil {
+		t.Fatalf("the bundled extension did not reclaim the name after the dev link was removed: %v", err)
+	}
+	if back.Labels[catalog.SourceLabel] != catalog.SourceBundled {
+		t.Fatalf("source label = %q, want the bundled spec back", back.Labels[catalog.SourceLabel])
+	}
+}
+
+// TestExtensionsDevRemoveRestoresBundled: unlinking a dev build of an extension that is
+// NOT in the catalog leaves nothing behind.
+func TestExtensionsDevRemoveLeavesNoHole(t *testing.T) {
+	ctx := context.Background()
+	dataDir := t.TempDir()
+	bin := devBinary(t)
+
+	if err := runExtensions([]string{"dev", "not-official", bin, "--cap", "x.y"}, dataDir); err != nil {
+		t.Fatalf("dev link: %v", err)
+	}
+	if err := runExtensions([]string{"rm", "not-official"}, dataDir); err != nil {
+		t.Fatalf("rm: %v", err)
+	}
+	rt, err := openExtensionRuntime(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	defer func() { _ = rt.close() }()
+	if _, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, "not-official"); !errors.Is(err, resource.ErrNotFound) {
 		t.Fatalf("the unlinked extension is still installed (err = %v)", err)
 	}
 }
@@ -138,8 +168,13 @@ func TestExtensionsDevRefusesBadInput(t *testing.T) {
 			if err != nil {
 				t.Fatalf("list: %v", err)
 			}
-			if len(exts) != 0 {
-				t.Fatalf("a refused link installed %d extension(s)", len(exts))
+			// Opening the runtime syncs the bundled catalog, so the store is never empty.
+			// What must be empty is the set of dev links: a refused link may leave nothing
+			// behind that a later call would launch.
+			for _, r := range exts {
+				if r.Labels[catalog.SourceLabel] == catalog.SourceDev {
+					t.Fatalf("a refused link installed the dev extension %q", r.Name)
+				}
 			}
 		})
 	}

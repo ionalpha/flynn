@@ -137,6 +137,41 @@ func TestSyncLeavesForksAlone(t *testing.T) {
 	}
 }
 
+// TestSyncLeavesDevLinksAlone proves an author who dev-links a local build under an
+// official name keeps running that build. The token extension both ships in the catalog
+// and is the one people iterate on, so a sync that reclaimed the name would swap the
+// author's binary for the published release on the next command, and they would debug
+// code they are not running.
+func TestSyncLeavesDevLinksAlone(t *testing.T) {
+	store := newStore(t)
+	ctx := context.Background()
+	name := firstEntryName(t)
+	devSpec := json.RawMessage(`{"surfaces":{"process":{"dev":{"binary":"/tmp/locally-built"}}}}`)
+	if _, err := store.Put(ctx, resource.Resource{
+		APIVersion: extension.GroupVersion,
+		Kind:       extension.Kind,
+		Name:       name,
+		Labels:     map[string]string{SourceLabel: SourceDev},
+		Spec:       devSpec,
+	}); err != nil {
+		t.Fatalf("seed dev link: %v", err)
+	}
+	res, err := Sync(ctx, store)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if res.Dev < 1 {
+		t.Fatalf("expected the dev link to be reported, got %+v", res)
+	}
+	got, _ := store.Get(ctx, extension.Kind, resource.Scope{}, name)
+	if got.Labels[SourceLabel] != SourceDev {
+		t.Fatalf("the dev link was relabelled %q: the sync took the name back", got.Labels[SourceLabel])
+	}
+	if !sameSpec(got.Spec, devSpec) {
+		t.Fatal("the dev link's spec was overwritten by the bundled one: the author's local binary is no longer what runs")
+	}
+}
+
 // TestSyncRetiresRemoved proves a bundled extension no longer in the catalog is
 // deleted, while a fork with the same fate is kept.
 func TestSyncRetiresRemoved(t *testing.T) {

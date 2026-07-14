@@ -17,6 +17,7 @@ type Result struct {
 	Unchanged int // bundled extensions already current
 	Retired   int // bundled extensions removed from the catalog and deleted
 	Forked    int // user-forked extensions left untouched
+	Dev       int // dev-linked extensions left untouched
 }
 
 // Sync reconciles the embedded official catalog into the resource store. It is
@@ -27,6 +28,8 @@ type Result struct {
 //     its observed status (so a disabled extension stays disabled) forward.
 //   - An official extension already current is left alone (no version churn).
 //   - An extension the user forked is never overwritten.
+//   - An extension dev-linked to a local build is never overwritten, even where it
+//     takes an official name: the author is iterating on that extension.
 //   - A bundled extension no longer in the catalog (removed in a new binary) is
 //     retired.
 //
@@ -68,11 +71,20 @@ func Sync(ctx context.Context, store resource.Store) (Result, error) {
 }
 
 // reconcile updates a bundled extension that already exists. A user fork is left
-// untouched; an unchanged bundled spec is skipped; a changed one is re-applied with
-// its status preserved.
+// untouched; a dev link is left untouched; an unchanged bundled spec is skipped; a
+// changed one is re-applied with its status preserved.
 func reconcile(ctx context.Context, store resource.Store, e Entry, existing resource.Resource) (Result, error) {
-	if existing.Labels[SourceLabel] == SourceForked {
+	switch existing.Labels[SourceLabel] {
+	case SourceForked:
 		return Result{Forked: 1}, nil
+	case SourceDev:
+		// An author who linked a local build under an official name is iterating on that
+		// very extension, which is the whole point of the dev loop. Overwriting the link
+		// with the bundled spec would silently swap their binary for the published release
+		// on the next command that opens the store, and they would be debugging code they
+		// are not running. The link is unsigned, so it still only runs where an unsigned
+		// source is allowed; taking the name costs no authority.
+		return Result{Dev: 1}, nil
 	}
 	if sameSpec(existing.Spec, e.Raw) {
 		return Result{Unchanged: 1}, nil
@@ -154,4 +166,5 @@ func (r *Result) add(o Result) {
 	r.Unchanged += o.Unchanged
 	r.Retired += o.Retired
 	r.Forked += o.Forked
+	r.Dev += o.Dev
 }
