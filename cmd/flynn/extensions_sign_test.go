@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/json"
 	"os"
@@ -38,7 +39,7 @@ func TestLoadDevSignerRoundTrips(t *testing.T) {
 	if !bytes.Equal(signer.Public(), priv.Public().(ed25519.PublicKey)) {
 		t.Fatal("loaded signer's public key does not match the key file")
 	}
-	sig, err := signer.Sign([]byte("hello"))
+	sig, err := signer.Sign(context.Background(), []byte("hello"))
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}

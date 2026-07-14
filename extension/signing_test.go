@@ -206,7 +206,9 @@ func TestNonSigningToolUnaffected(t *testing.T) {
 	}
 }
 
-type failingSigner struct{ pub ed25519.PublicKey }
+type failingSigner struct{ pub []byte }
 
-func (f failingSigner) Public() ed25519.PublicKey   { return f.pub }
-func (f failingSigner) Sign([]byte) ([]byte, error) { return nil, errors.New("vault unavailable") }
+func (f failingSigner) Public() []byte { return f.pub }
+func (f failingSigner) Sign(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("vault unavailable")
+}

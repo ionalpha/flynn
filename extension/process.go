@@ -577,7 +577,7 @@ func (t *procTool) driveHostCalls(ctx context.Context, input json.RawMessage) (s
 				"extension: tool "+t.name+" asked to sign and fetch in one message")
 		case reply.Sign != nil:
 			signs++
-			if next, err = t.serviceSign(reply, signs); err != nil {
+			if next, err = t.serviceSign(ctx, reply, signs); err != nil {
 				return "", err
 			}
 		case reply.Fetch != nil:
@@ -593,10 +593,10 @@ func (t *procTool) driveHostCalls(ctx context.Context, input json.RawMessage) (s
 		"extension: host-call loop ended without a result")
 }
 
-// serviceSign signs one payload the tool handed out and returns the resume input. A signing
-// failure is delivered to the tool (not aborted here) so the tool's own failure path runs; the
-// tool decides how to unwind.
-func (t *procTool) serviceSign(reply hostCallReply, n int) (json.RawMessage, error) {
+// serviceSign gets one payload the tool handed out signed and returns the resume input. A
+// signing failure is delivered to the tool (not aborted here) so the tool's own failure path
+// runs; the tool decides how to unwind.
+func (t *procTool) serviceSign(ctx context.Context, reply hostCallReply, n int) (json.RawMessage, error) {
 	if t.signer == nil {
 		return nil, fault.New(fault.Forbidden, "extension_sign_ungranted",
 			"extension: tool "+t.name+" asked to sign but was granted no key")
@@ -613,13 +613,23 @@ func (t *procTool) serviceSign(reply hostCallReply, n int) (json.RawMessage, err
 		return nil, fault.New(fault.Forbidden, "extension_sign_too_large",
 			"extension: tool "+t.name+" asked to sign an over-sized payload")
 	}
-	// Look at what is being signed. A key is granted for a purpose, and the payload either
-	// serves that purpose or it does not; the extension's word for it is worth nothing here,
-	// because a compromised extension is exactly the case this defends against.
+	// SOMEBODY must look at what is being signed, and it cannot be the tool that produced it:
+	// a compromised extension vouching for its own payload is exactly the case this defends
+	// against, and its word is worth nothing here.
 	//
-	// A grant with no policy signs nothing. Blind signing has to be asked for by name (see
-	// AnyPayload) so that it is a decision somebody made, rather than the default that
-	// happens when nobody thought about it.
+	// A signer that holds the key and understands the format looks for itself (a signer
+	// extension: it parses the transaction and refuses an unsafe one at the point the key is
+	// used). The host then needs no policy of its own, and stays free of any chain or format
+	// knowledge, which is the whole reason the key lives over there.
+	//
+	// Otherwise the key is HERE, and the host is the only thing that can look, so it must
+	// have been given something to look with. A grant with no policy signs nothing: blind
+	// signing has to be asked for by name (see AnyPayload) so that it is a decision somebody
+	// made, rather than the default that happens when nobody thought about it.
+	if selfPoliced(t.signer) {
+		sig, signErr := t.signer.Sign(ctx, payload)
+		return resumeSign(reply.Session, sig, signErr)
+	}
 	if t.policy == nil {
 		return nil, fault.New(fault.Forbidden, "extension_sign_unpoliced",
 			"extension: tool "+t.name+" was granted a key but no signing policy, so the host would be signing whatever it is handed")
@@ -627,8 +637,16 @@ func (t *procTool) serviceSign(reply hostCallReply, n int) (json.RawMessage, err
 	if err := t.policy.Approve(payload); err != nil {
 		return nil, fault.Wrap(fault.Forbidden, "extension_sign_refused", err)
 	}
-	sig, signErr := t.signer.Sign(payload)
+	sig, signErr := t.signer.Sign(ctx, payload)
 	return resumeSign(reply.Session, sig, signErr)
+}
+
+// selfPoliced reports whether the signer judges payloads itself. A signer that says so takes
+// on the duty the host would otherwise carry; one that stays silent does not, and the host
+// keeps demanding a policy.
+func selfPoliced(s HostSigner) bool {
+	sp, ok := s.(SelfPolicing)
+	return ok && sp.PolicesPayloads()
 }
 
 // serviceFetch sends one request body the tool handed out to the granted fetcher's own

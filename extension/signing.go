@@ -1,6 +1,7 @@
 package extension
 
 import (
+	"context"
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
@@ -8,17 +9,38 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// HostSigner produces detached signatures with a host-held key on behalf of a mounted
-// extension tool. The tool builds something that needs a signature from a key it must not
-// hold; it hands out the bytes and the host signs them. Public identifies the key so the
-// tool can build against it; Sign returns a detached signature over the exact payload. The
-// method behind this port (a local ed25519 key, a vault, a hardware token) is not the
-// extension's concern, and the private key never crosses to the extension process.
+// HostSigner produces detached signatures on behalf of a mounted extension tool, with a key
+// the tool must not hold. The tool builds something that needs a signature; it hands out the
+// bytes and gets a signature back. Public identifies the key so the tool can build against
+// it; Sign returns a detached signature over the exact payload. What sits behind this port
+// (a key held by another extension, a hardware token) is not the tool's concern, and the
+// private key never crosses to the tool's process.
+//
+// Public returns raw bytes rather than an ed25519 key: a signer may sit on any curve, and
+// ed25519 (Solana) and secp256k1 (EVM, Bitcoin) have to travel the same port. The host never
+// interprets these bytes, so it does not need to know which curve produced them.
+//
+// Sign takes a context because the key need not be in this process: satisfying it may mean
+// calling out to a signer extension, which can block and must be cancellable.
 type HostSigner interface {
 	// Public is the public half of the signing key, as raw bytes.
-	Public() ed25519.PublicKey
+	Public() []byte
 	// Sign returns a detached signature over payload.
-	Sign(payload []byte) ([]byte, error)
+	Sign(ctx context.Context, payload []byte) ([]byte, error)
+}
+
+// SelfPolicing is implemented by a HostSigner that decides for itself whether a payload may
+// be signed, because it holds the key AND understands the payload's format. A signer
+// extension is the case that matters: it parses the transaction and refuses an unsafe one at
+// the point the key is used, which is the only point where the question can honestly be
+// asked.
+//
+// The host requires no SignPolicy for such a signer, and that is not a hole: the check still
+// happens, it just happens where the key is. What the host must never do is sign with a key
+// IT holds while nobody has looked at the payload, and that remains refused (see serviceSign).
+type SelfPolicing interface {
+	// PolicesPayloads reports that this signer applies its own policy before signing.
+	PolicesPayloads() bool
 }
 
 // SignPolicy decides whether the host may sign a payload a tool handed it. It is the check
@@ -70,13 +92,14 @@ func NewEd25519HostSigner(priv ed25519.PrivateKey) (*Ed25519HostSigner, error) {
 }
 
 // Public returns the signing key's public half.
-func (s *Ed25519HostSigner) Public() ed25519.PublicKey {
+func (s *Ed25519HostSigner) Public() []byte {
 	return s.priv.Public().(ed25519.PublicKey)
 }
 
 // Sign returns the detached ed25519 signature over payload. ed25519 signing is deterministic,
-// so no randomness is drawn.
-func (s *Ed25519HostSigner) Sign(payload []byte) ([]byte, error) {
+// so no randomness is drawn. The key is in this process, so there is nothing to cancel and
+// the context is unused.
+func (s *Ed25519HostSigner) Sign(_ context.Context, payload []byte) ([]byte, error) {
 	return ed25519.Sign(s.priv, payload), nil
 }
 
@@ -139,8 +162,9 @@ func parseHostCall(text string) hostCallReply {
 
 // injectHostKey returns input with the granted key's public bytes added under hostKeyField,
 // so a signing-enabled tool learns the key it will build against on its first call. An empty
-// or null input starts from an empty object.
-func injectHostKey(input json.RawMessage, pub ed25519.PublicKey) (json.RawMessage, error) {
+// or null input starts from an empty object. The bytes are opaque here: whichever curve the
+// signer sits on, the host copies them through without interpreting them.
+func injectHostKey(input json.RawMessage, pub []byte) (json.RawMessage, error) {
 	obj := map[string]json.RawMessage{}
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &obj); err != nil {
