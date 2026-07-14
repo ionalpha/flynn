@@ -308,16 +308,20 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 	if err != nil {
 		return nil, err
 	}
-	if _, err := rt.loader.Load(ctx, r); err != nil {
-		return nil, err
-	}
 
+	// The passphrase is fetched BEFORE the signer is launched. Without it the signer is inert
+	// and the run is going to fail anyway, so failing here means no subprocess was started for
+	// nothing, and the operator is told what is missing rather than watching a signer come up
+	// and refuse everything.
 	ref := "signer/" + name
 	pass, err := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)).Lookup(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("extensions: no passphrase for signer %q in the vault (set it with: flynn auth set %s): %w", name, ref, err)
 	}
 
+	if _, err := rt.loader.Load(ctx, r); err != nil {
+		return nil, err
+	}
 	ch, err := rt.procs.SignerChannelFor(r.ID)
 	if err != nil {
 		return nil, err

@@ -12,7 +12,9 @@ import (
 
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // devBinary writes a file to stand in for a locally-built extension binary. It is enough
@@ -186,6 +188,24 @@ func TestExtensionsCallRefusesBadInput(t *testing.T) {
 		"unknown policy":     {[]string{"token", "mint", "--sign", keyPath, "--sign-policy", "sign-anything-please"}, "unknown --sign-policy"},
 		"private endpoint":   {[]string{"token", "mint", "--endpoint", "http://127.0.0.1:8899"}, ""},
 		"malformed endpoint": {[]string{"token", "mint", "--endpoint", "not-a-url"}, ""},
+
+		// A key held here and a key held by a signer extension are two different custody
+		// models, and quietly honouring one while the operator asked for both is how a key
+		// ends up somewhere nobody meant it to be.
+		"two custody models": {
+			[]string{"token", "mint", "--sign", keyPath, "--signer", "solana-signer"},
+			"pick one",
+		},
+		// The extension that BUILDS a transaction must not be the one that signs it, or it is
+		// vouching for its own work and the separation buys nothing.
+		"its own signer": {
+			[]string{"token", "mint", "--signer", "token"},
+			"cannot be its own signer",
+		},
+		"unknown signer": {
+			[]string{"token", "mint", "--signer", "nosuchsigner"},
+			"unknown signer extension",
+		},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -227,6 +247,63 @@ func TestExtensionsCallLaunchesTheLinkedBinary(t *testing.T) {
 	// It must fail at launch, not by resolving the extension to nothing: the link is real.
 	if strings.Contains(err.Error(), "unknown extension") {
 		t.Fatalf("the linked extension was not found: %v", err)
+	}
+}
+
+// TestCallWithASignerNeedsThePassphraseInTheVault: the passphrase comes from the vault and
+// nowhere else, and it is fetched BEFORE the signer is launched. A missing one names the
+// command that fixes it rather than starting a signer that would refuse everything it was
+// asked.
+func TestCallWithASignerNeedsThePassphraseInTheVault(t *testing.T) {
+	dataDir := fileVaultEnv(t)
+	bin := devBinary(t)
+	for _, name := range []string{"token", "solana-signer"} {
+		if err := runExtensions([]string{"dev", name, bin}, dataDir); err != nil {
+			t.Fatalf("dev link %s: %v", name, err)
+		}
+	}
+
+	err := extensionsCall(context.Background(), dataDir,
+		[]string{"token", "mint", "--signer", "solana-signer"})
+	if err == nil {
+		t.Fatal("a signer with no passphrase in the vault was used anyway")
+	}
+	if !strings.Contains(err.Error(), "no passphrase for signer") {
+		t.Fatalf("error = %v, want it to say the vault holds no passphrase", err)
+	}
+	// It must name the command that fixes it: an operator who cannot act on an error is stuck.
+	if !strings.Contains(err.Error(), "flynn auth set signer/solana-signer") {
+		t.Fatalf("the error does not say how to set the passphrase: %v", err)
+	}
+}
+
+// TestCallWithASignerLaunchesIt: with the passphrase in the vault, the signer is resolved and
+// launched. The stand-in binary is not a real MCP server, so it fails at launch, which is
+// exactly how far this test can go without one: what it proves is that the signer is reached at
+// all, and reached before the worker.
+func TestCallWithASignerLaunchesIt(t *testing.T) {
+	ctx := context.Background()
+	dataDir := fileVaultEnv(t)
+	bin := devBinary(t)
+	for _, name := range []string{"token", "solana-signer"} {
+		if err := runExtensions([]string{"dev", name, bin}, dataDir); err != nil {
+			t.Fatalf("dev link %s: %v", name, err)
+		}
+	}
+	// The passphrase lives in the vault, which is where mountSigner will look for it.
+	if err := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)).
+		Set(ctx, "signer/solana-signer", secret.New("hunter2")); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+
+	err := extensionsCall(ctx, dataDir, []string{"token", "mint", "--signer", "solana-signer"})
+	if err == nil {
+		t.Fatal("a file that is not an extension binary must fail to launch")
+	}
+	// The failure must come from launching the signer, not from failing to find it or its
+	// passphrase: both of those are already ruled out above.
+	if strings.Contains(err.Error(), "no passphrase") || strings.Contains(err.Error(), "unknown signer") {
+		t.Fatalf("the signer was not reached: %v", err)
 	}
 }
 

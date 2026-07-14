@@ -168,6 +168,60 @@ func TestRoutedSignerRefusalYieldsNoSignature(t *testing.T) {
 	}
 }
 
+// TestRoutedSignerDrivesAMountedTool is the whole route, end to end: a worker tool asks the host
+// to sign, the host routes to the signer, and the worker is resumed with a signature it can use.
+// No policy is configured in the host, and none is needed: the signer polices itself, which is
+// the entire reason the host no longer has to understand the payload.
+func TestRoutedSignerDrivesAMountedTool(t *testing.T) {
+	ctx := context.Background()
+	ch, key := testChannel(t)
+	routed, err := NewRoutedSigner(ctx, ch, secret.New("p"))
+	if err != nil {
+		t.Fatalf("NewRoutedSigner: %v", err)
+	}
+
+	payload := []byte("an unsigned transaction")
+	var got string
+	asked := false
+	worker := stubTool{
+		name: "mint",
+		invoke: func(_ context.Context, input json.RawMessage) (string, error) {
+			if !asked {
+				asked = true
+				return `{"session":"s1","sign":{"message":"` +
+					base64.StdEncoding.EncodeToString(payload) + `"}}`, nil
+			}
+			var resumed struct {
+				Signature string `json:"signature"`
+			}
+			if uerr := json.Unmarshal(input, &resumed); uerr != nil {
+				return "", uerr
+			}
+			got = resumed.Signature
+			return "minted", nil
+		},
+	}
+
+	h, _, m := mountStub(t, []mission.Tool{worker},
+		WithHostSigner(func(string, string) HostSigner { return routed }))
+	// Deliberately NO WithSignPolicy: the signer is the one that looks.
+
+	out, err := h.Tools(m.ID)[0].Invoke(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("the routed signing call failed: %v", err)
+	}
+	if out != "minted" {
+		t.Fatalf("terminal result = %q, want the tool's own result", out)
+	}
+	sig, err := base64.StdEncoding.DecodeString(got)
+	if err != nil {
+		t.Fatalf("the tool was resumed with a signature that is not base64: %v", err)
+	}
+	if !ed25519.Verify(pubOf(key), payload, sig) {
+		t.Fatal("the tool was resumed with a signature that does not verify over what it asked to sign")
+	}
+}
+
 // TestSignerToolsAreNeverMountedForTheModel is the hole the private channel exists to close. A
 // mounted tool is a tool the MODEL can call. If a signer's tools were mounted, the model could
 // unlock the signing key itself, or ask for a signature directly and skip the worker that was
