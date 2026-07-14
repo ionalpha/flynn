@@ -20,6 +20,7 @@ go vet ./...
 
 "$here/test"
 "$here/coverfloor"
+"$here/patchcov"
 "$here/lint"
 "$here/vuln"
 "$here/secrets"
