@@ -11,6 +11,7 @@ import (
 
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // stubSignerTool stands in for one tool of a mounted signer extension: it records what it was
@@ -38,7 +39,7 @@ func signerPair(t *testing.T, key ed25519.PrivateKey) (*stubSignerTool, *stubSig
 	t.Helper()
 	pub := key.Public().(ed25519.PublicKey)
 	public := &stubSignerTool{
-		name:  SignerPublicTool,
+		name:  SignerUnlockTool,
 		reply: `{"publicKey":"` + base64.StdEncoding.EncodeToString(pub) + `","curve":"ed25519"}`,
 	}
 	sign := &stubSignerTool{name: SignerSignTool}
@@ -55,7 +56,7 @@ func TestExtensionSignerRoutesToTheSigner(t *testing.T) {
 	payload := []byte("a transaction the host cannot read")
 	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, payload)) + `"}`
 
-	signer, err := NewRoutedSigner(ctx, public, sign)
+	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestRoutedSignerPublishesTheSignersKey(t *testing.T) {
 	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
 	public, sign := signerPair(t, key)
 
-	signer, err := NewRoutedSigner(ctx, public, sign)
+	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -97,9 +98,47 @@ func TestRoutedSignerPublishesTheSignersKey(t *testing.T) {
 // TestRoutedSignerRejectsAMalformedPublicReply: the signer's answer is untrusted output from
 // another process. A reply that is not JSON must fail the mount, not be read as an empty key.
 func TestRoutedSignerRejectsAMalformedPublicReply(t *testing.T) {
-	public := &stubSignerTool{name: SignerPublicTool, reply: `i am not json`}
-	if _, err := NewRoutedSigner(context.Background(), public, &stubSignerTool{name: SignerSignTool}); err == nil {
+	public := &stubSignerTool{name: SignerUnlockTool, reply: `i am not json`}
+	if _, err := NewRoutedSigner(context.Background(), public, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
 		t.Fatal("a signer whose public-key reply is not JSON was mounted anyway")
+	}
+}
+
+// TestRoutedSignerUnlocksWithTheOperatorsPassphrase: the passphrase reaches the signer, and it
+// is the one the operator holds. The signer's key is sealed, so a host that failed to send it
+// would mount a signer that can do nothing.
+func TestRoutedSignerUnlocksWithTheOperatorsPassphrase(t *testing.T) {
+	ctx := context.Background()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	unlock, sign := signerPair(t, key)
+
+	if _, err := NewRoutedSigner(ctx, unlock, sign, secret.New("open sesame")); err != nil {
+		t.Fatalf("NewRoutedSigner: %v", err)
+	}
+	var asked struct {
+		Passphrase string `json:"passphrase"`
+	}
+	if err := json.Unmarshal(unlock.calls[0], &asked); err != nil {
+		t.Fatalf("the host sent the signer something that is not an unlock request: %v", err)
+	}
+	if asked.Passphrase != "open sesame" {
+		t.Fatalf("the signer was unlocked with %q, not the operator's passphrase", asked.Passphrase)
+	}
+}
+
+// TestRoutedSignerRefusesAnEmptyPassphrase: mounting a signer with no passphrase must fail here,
+// not reach the signer and fail there. An empty passphrase means the vault had nothing, and that
+// is an operator mistake worth naming rather than a sealed key that mysteriously will not open.
+func TestRoutedSignerRefusesAnEmptyPassphrase(t *testing.T) {
+	ctx := context.Background()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	unlock, sign := signerPair(t, key)
+
+	if _, err := NewRoutedSigner(ctx, unlock, sign, secret.Text{}); err == nil {
+		t.Fatal("a signer was mounted with no passphrase at all")
+	}
+	if len(unlock.calls) != 0 {
+		t.Fatal("the host tried to unlock the signer with an empty passphrase instead of refusing outright")
 	}
 }
 
@@ -114,7 +153,7 @@ func TestRoutedSignerDrivesAMountedTool(t *testing.T) {
 	payload := []byte("an unsigned transaction")
 	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, payload)) + `"}`
 
-	routed, err := NewRoutedSigner(ctx, public, sign)
+	routed, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -171,7 +210,7 @@ func TestExtensionSignerIsSelfPolicing(t *testing.T) {
 	public, sign := signerPair(t, key)
 	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte("x"))) + `"}`
 
-	signer, err := NewRoutedSigner(ctx, public, sign)
+	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -189,7 +228,7 @@ func TestExtensionSignerRefusalYieldsNoSignature(t *testing.T) {
 	public, sign := signerPair(t, key)
 	sign.err = errors.New("mint authority is not revoked in this transaction")
 
-	signer, err := NewRoutedSigner(ctx, public, sign)
+	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -221,7 +260,7 @@ func TestExtensionSignerRejectsAnEmptySignature(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			public, sign := signerPair(t, key)
 			sign.reply = reply
-			signer, err := NewRoutedSigner(ctx, public, sign)
+			signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
 			if err != nil {
 				t.Fatalf("NewRoutedSigner: %v", err)
 			}
@@ -239,19 +278,19 @@ func TestExtensionSignerFailsAtMount(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("signer unreachable", func(t *testing.T) {
-		public := &stubSignerTool{name: SignerPublicTool, err: errors.New("no such process")}
-		if _, err := NewRoutedSigner(ctx, public, &stubSignerTool{name: SignerSignTool}); err == nil {
+		public := &stubSignerTool{name: SignerUnlockTool, err: errors.New("no such process")}
+		if _, err := NewRoutedSigner(ctx, public, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
 			t.Fatal("mounted against a signer that cannot be reached")
 		}
 	})
 	t.Run("no key", func(t *testing.T) {
-		public := &stubSignerTool{name: SignerPublicTool, reply: `{"publicKey":"","curve":"ed25519"}`}
-		if _, err := NewRoutedSigner(ctx, public, &stubSignerTool{name: SignerSignTool}); err == nil {
+		public := &stubSignerTool{name: SignerUnlockTool, reply: `{"publicKey":"","curve":"ed25519"}`}
+		if _, err := NewRoutedSigner(ctx, public, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
 			t.Fatal("mounted against a signer that has no key")
 		}
 	})
 	t.Run("missing tool", func(t *testing.T) {
-		if _, err := NewRoutedSigner(ctx, nil, &stubSignerTool{name: SignerSignTool}); err == nil {
+		if _, err := NewRoutedSigner(ctx, nil, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
 			t.Fatal("mounted against a signer missing its public-key tool")
 		}
 	})

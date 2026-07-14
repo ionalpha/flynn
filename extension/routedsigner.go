@@ -7,6 +7,7 @@ import (
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/mission"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // RoutedSigner is a HostSigner whose key lives in ANOTHER extension: a signer extension,
@@ -33,8 +34,10 @@ type RoutedSigner struct {
 
 // signer tool names. A signer extension exposes exactly these two and nothing else.
 const (
-	// SignerPublicTool returns the signer's public key. The host asks once, at mount.
-	SignerPublicTool = "signer_public"
+	// SignerUnlockTool opens the signer's key and answers with its public half. The host
+	// calls it once, at mount, with a passphrase the OPERATOR holds (in the vault). Until it
+	// succeeds the signer holds nothing and can sign nothing.
+	SignerUnlockTool = "signer_unlock"
 	// SignerSignTool signs a payload, or refuses it. The signer applies its own policy here.
 	SignerSignTool = "signer_sign"
 )
@@ -54,26 +57,42 @@ type signerSignReply struct {
 	Signature string `json:"signature"`
 }
 
-// NewRoutedSigner asks a mounted signer extension for its public key and returns a signer
-// that routes signing requests to it. It fails if the signer cannot be reached or does not
+// NewRoutedSigner unlocks a mounted signer extension and returns a signer that routes signing
+// requests to it. It fails if the signer cannot be reached, refuses the passphrase, or does not
 // answer with a key, so a worker is never mounted against a signer that cannot sign: the
 // failure lands at mount, where an operator sees it, rather than halfway through a mint.
-func NewRoutedSigner(ctx context.Context, public, sign mission.Tool) (*RoutedSigner, error) {
-	if public == nil || sign == nil {
+//
+// The passphrase is the operator's, held in the host's vault. The host never learns the key it
+// unlocks: what comes back is the public half. An extension is launched with a scrubbed
+// environment, so this channel is the ONLY way a secret reaches it, and it reaches it because
+// an operator deliberately granted it, not because it was lying around in the environment.
+func NewRoutedSigner(ctx context.Context, unlock, sign mission.Tool, passphrase secret.Text) (*RoutedSigner, error) {
+	if unlock == nil || sign == nil {
 		return nil, fault.New(fault.Terminal, "extension_signer_missing",
-			"extension: a signer extension must expose both "+SignerPublicTool+" and "+SignerSignTool)
+			"extension: a signer extension must expose both "+SignerUnlockTool+" and "+SignerSignTool)
 	}
-	out, err := public.Invoke(ctx, json.RawMessage(`{}`))
+	if passphrase.Empty() {
+		return nil, fault.New(fault.Terminal, "extension_signer_unlock",
+			"extension: no passphrase for the signer, so its key cannot be unlocked")
+	}
+	// Expose is the audited point where a secret crosses a boundary the host does not control.
+	// This is one: the passphrase is going to the signer subprocess, which is the only party
+	// that can do anything with it, and it is going there because an operator said so.
+	req, err := json.Marshal(map[string]string{"passphrase": passphrase.Expose()})
 	if err != nil {
-		return nil, fault.Wrap(fault.Transient, "extension_signer_public", err)
+		return nil, fault.Wrap(fault.Terminal, "extension_signer_unlock", err)
+	}
+	out, err := unlock.Invoke(ctx, req)
+	if err != nil {
+		return nil, fault.Wrap(fault.Transient, "extension_signer_unlock", err)
 	}
 	var reply signerPublicReply
 	if err := json.Unmarshal([]byte(out), &reply); err != nil {
-		return nil, fault.Wrap(fault.Terminal, "extension_signer_public", err)
+		return nil, fault.Wrap(fault.Terminal, "extension_signer_unlock", err)
 	}
 	pub, err := base64.StdEncoding.DecodeString(reply.PublicKey)
 	if err != nil || len(pub) == 0 {
-		return nil, fault.New(fault.Terminal, "extension_signer_public",
+		return nil, fault.New(fault.Terminal, "extension_signer_unlock",
 			"extension: signer returned no usable public key")
 	}
 	return &RoutedSigner{sign: sign, pub: pub}, nil

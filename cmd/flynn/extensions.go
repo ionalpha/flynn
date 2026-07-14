@@ -17,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/extension/catalog"
 	"github.com/ionalpha/flynn/extension/signpolicy"
 	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -141,6 +142,7 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
 	signPolicy := fs.String("sign-policy", "solana-token", `what the signing key may be used for: "solana-token" (only a mint that revokes both its authorities and moves no SOL) or "any" (sign whatever the tool asks: development only)`)
 	sign := fs.String("sign", "", "path to a dev signing key (a JSON array of the 64 raw key bytes) the called tool signs its work with; the key stays in the host and the tool only receives signatures")
+	signer := fs.String("signer", "", "name of a SIGNER EXTENSION to route this tool's signing to; the signer holds the key and the transaction parser, and the host holds neither (the passphrase that unlocks it comes from the vault: flynn auth set signer/<name>)")
 	endpoint := fs.String("endpoint", "", "an http(s) endpoint the called tool may reach THROUGH THE HOST; the tool stays network-denied and only hands out request bytes, so it can never reach anywhere else")
 	localEndpoint := fs.Bool("endpoint-local", false, "permit --endpoint to be a loopback or private literal address (a local test node); off by default, because a grant must not silently aim the host at its own network")
 	// name, tool, and an optional JSON input are leading positionals; flags follow. Pull
@@ -166,6 +168,32 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 
 	runtimeOpts := []extRuntimeOption{withEgressGrant(splitList(*egress))}
 	bareTool := strings.TrimPrefix(toolName, name+".")
+
+	if *sign != "" && *signer != "" {
+		return errors.New("extensions: --sign and --signer are two different custody models; pick one. " +
+			"--signer keeps the key out of this process entirely, and is the one you want")
+	}
+
+	// routed is filled in once the signer extension is mounted, below. The grant closure is
+	// built here because the runtime needs it at open time, but it is only ever CALLED when the
+	// worker mounts, which happens after the signer is up.
+	var routed extension.HostSigner
+	if *signer != "" {
+		if *signer == name {
+			return errors.New("extensions: an extension cannot be its own signer: the component that builds " +
+				"a transaction must not be the one that decides to sign it, or it is vouching for its own work")
+		}
+		runtimeOpts = append(runtimeOpts, withHostSigner(func(ext, tool string) extension.HostSigner {
+			if ext == name && tool == bareTool {
+				return routed
+			}
+			return nil
+		}))
+		// NO withSignPolicy. The signer extension holds the key AND the parser, so it judges the
+		// payload itself (extension.SelfPolicing). A policy here would mean this process
+		// understood the transaction format, which is exactly what routing the key away removes.
+	}
+
 	if *sign != "" {
 		signer, err := loadDevSigner(*sign)
 		if err != nil {
@@ -224,6 +252,17 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	}
 	defer func() { _ = rt.close() }()
 
+	// The signer comes up FIRST, and is unlocked before the worker is mounted at all. The
+	// worker's mount is what asks for its signer, so by then there has to be one; and a signer
+	// that will not unlock should stop the run before the worker has done anything, not halfway
+	// through a transaction it can no longer finish.
+	if *signer != "" {
+		routed, err = mountSigner(ctx, rt, dataDir, *signer)
+		if err != nil {
+			return err
+		}
+	}
+
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
 		return fmt.Errorf("extensions: unknown extension %q (see flynn extensions ls)", name)
@@ -246,6 +285,43 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	}
 	_, _ = fmt.Fprintln(os.Stdout, out)
 	return nil
+}
+
+// mountSigner launches a signer extension, unlocks it with the operator's passphrase from the
+// vault, and returns a HostSigner that routes to it.
+//
+// The passphrase comes from the vault and NOWHERE else. Not an environment variable, not a
+// flag: a signing key's passphrase must not be settable by anything ambient, and a flag would
+// put it in the shell history and the process list. The vault is the one place a secret lives.
+//
+// What the host ends up holding is the passphrase and the signer's PUBLIC key. It never sees
+// the private key, and it never parses what it asks the signer to sign.
+func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string) (extension.HostSigner, error) {
+	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, name)
+	if errors.Is(err, resource.ErrNotFound) {
+		return nil, fmt.Errorf("extensions: unknown signer extension %q (see flynn extensions ls)", name)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if _, err := rt.loader.Load(ctx, r); err != nil {
+		return nil, err
+	}
+
+	ref := "signer/" + name
+	pass, err := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)).Lookup(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("extensions: no passphrase for signer %q in the vault (set it with: flynn auth set %s): %w", name, ref, err)
+	}
+
+	tools := rt.loader.Tools()
+	unlock := findExtensionTool(tools, name, extension.SignerUnlockTool)
+	sign := findExtensionTool(tools, name, extension.SignerSignTool)
+	if unlock == nil || sign == nil {
+		return nil, fmt.Errorf("extensions: %q is not a signer extension: it advertises no %s and %s",
+			name, extension.SignerUnlockTool, extension.SignerSignTool)
+	}
+	return extension.NewRoutedSigner(ctx, unlock, sign, pass)
 }
 
 // extensionsRemove unlinks a dev extension. It refuses to delete a bundled or forked
