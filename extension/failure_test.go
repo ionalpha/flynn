@@ -2,7 +2,6 @@ package extension
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -237,26 +236,21 @@ func TestHostCallsAreRefusedWhenUngrantedOrMalformed(t *testing.T) {
 			want:    "granted no key",
 		},
 		{
-			name:    "signing without a policy",
-			message: signMsg,
-			opts:    []ProcessOption{WithHostSigner(func(string, string) HostSigner { return signer })},
-			want:    "no signing policy",
-		},
-		{
-			name:    "the policy refuses the payload",
+			// The host holds no parser, so a signer that does not judge its own payloads
+			// leaves NOBODY judging them. That is blind signing, and it is refused rather
+			// than warned about.
+			name:    "a signer that does not judge what it signs",
 			message: signMsg,
 			opts: []ProcessOption{
-				WithHostSigner(func(string, string) HostSigner { return signer }),
-				WithSignPolicy(func(string, string) SignPolicy { return refusingPolicy{} }),
+				WithHostSigner(func(string, string) HostSigner { return blindSigner{pub: signer.Public()} }),
 			},
-			want: "not what this key is for",
+			want: "does not judge what it signs",
 		},
 		{
 			name:    "the signing payload is not base64",
 			message: `{"session":"s1","sign":{"message":"!!!not base64!!!"}}`,
 			opts: []ProcessOption{
 				WithHostSigner(func(string, string) HostSigner { return signer }),
-				WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }),
 			},
 			want: "not base64",
 		},
@@ -265,7 +259,6 @@ func TestHostCallsAreRefusedWhenUngrantedOrMalformed(t *testing.T) {
 			message: `{"session":"s1","sign":{"message":"` + base64.StdEncoding.EncodeToString([]byte(strings.Repeat("x", (64<<10)+1))) + `"}}`,
 			opts: []ProcessOption{
 				WithHostSigner(func(string, string) HostSigner { return signer }),
-				WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }),
 			},
 			want: "over-sized payload",
 		},
@@ -288,7 +281,6 @@ func TestHostCallsAreRefusedWhenUngrantedOrMalformed(t *testing.T) {
 			message: `{"session":"s1","sign":{"message":"aGk"},"fetch":{"body":"aGk"}}`,
 			opts: []ProcessOption{
 				WithHostSigner(func(string, string) HostSigner { return signer }),
-				WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }),
 				WithHostFetcher(func(string, string) HostFetcher { return nullFetcher{} }),
 			},
 			want: "sign and fetch in one message",
@@ -307,14 +299,6 @@ func TestHostCallsAreRefusedWhenUngrantedOrMalformed(t *testing.T) {
 			}
 		})
 	}
-}
-
-// refusingPolicy refuses every payload, standing in for a policy that does not recognise
-// what it was handed.
-type refusingPolicy struct{}
-
-func (refusingPolicy) Approve([]byte) error {
-	return errors.New("that is not what this key is for")
 }
 
 // nullFetcher answers every fetch with a fixed body, so a fetch that is refused before it is
@@ -377,14 +361,6 @@ func TestBoundTextFallsBackToADefaultLimit(t *testing.T) {
 	}
 	if strings.Contains(boundText("a\x00b\x07c", 100), "\x00") {
 		t.Error("control characters must be stripped from untrusted text")
-	}
-}
-
-// TestSignerRefusesAMalformedKey checks a signer is never built over a key it cannot sign
-// with, so a grant does not silently become a signer that always fails.
-func TestSignerRefusesAMalformedKey(t *testing.T) {
-	if _, err := NewEd25519HostSigner(ed25519.PrivateKey("too short")); err == nil {
-		t.Fatal("a malformed key must not yield a signer")
 	}
 }
 

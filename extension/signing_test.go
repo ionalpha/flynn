@@ -80,15 +80,35 @@ func (s *signStub) emit(id string) (string, error) {
 	return `{"session":"` + id + `","sign":{"message":"` + base64.StdEncoding.EncodeToString(payload) + `"}}`, nil
 }
 
-// testSigner is a deterministic ed25519 host signer (fixed seed, no randomness) for tests.
-func testSigner(t *testing.T) *Ed25519HostSigner {
+// stubSigner stands in for a signer extension: it holds a key and, crucially, it says it judges
+// its own payloads. The host will not sign through a signer that does not, because the host
+// holds no parser and nobody else would be reading the bytes.
+//
+// It is deterministic (fixed seed, no randomness drawn).
+type stubSigner struct{ priv ed25519.PrivateKey }
+
+func (s stubSigner) Public() []byte { return s.priv[ed25519.SeedSize:] }
+
+func (s stubSigner) Sign(_ context.Context, payload []byte) ([]byte, error) {
+	return ed25519.Sign(s.priv, payload), nil
+}
+
+func (s stubSigner) PolicesPayloads() bool { return true }
+
+// testSigner is a signer the host will accept: it polices its own payloads.
+func testSigner(t *testing.T) stubSigner {
 	t.Helper()
-	priv := ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))
-	s, err := NewEd25519HostSigner(priv)
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	return s
+	return stubSigner{priv: ed25519.NewKeyFromSeed(bytes.Repeat([]byte{7}, ed25519.SeedSize))}
+}
+
+// blindSigner holds a key but does NOT judge what it signs. The host must refuse to sign
+// through it: with no parser here and no policy there, nobody would read the payload at all.
+type blindSigner struct{ pub []byte }
+
+func (b blindSigner) Public() []byte { return b.pub }
+
+func (b blindSigner) Sign(context.Context, []byte) ([]byte, error) {
+	return nil, errors.New("a blind signer must never be reached")
 }
 
 // TestHostSigningDrivesHandshake proves the host runs the full signing loop for a signing-
@@ -104,11 +124,7 @@ func TestHostSigningDrivesHandshake(t *testing.T) {
 				return signer
 			}
 			return nil
-		}),
-		// These tests drive the handshake with opaque test payloads, not real transactions,
-		// so they name the policy that approves anything. Naming it is the point: a grant
-		// with no policy signs nothing, so blind signing cannot happen by omission.
-		WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }))
+		}))
 
 	out, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{"foo":"bar"}`))
 	if err != nil {
@@ -155,8 +171,7 @@ func TestHostSigningDeliversSignFailure(t *testing.T) {
 	stub := newSignStub(3)
 	failing := failingSigner{pub: testSigner(t).Public()}
 	h, _, m := mountStub(t, []mission.Tool{stub},
-		WithHostSigner(func(string, string) HostSigner { return failing }),
-		WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }))
+		WithHostSigner(func(string, string) HostSigner { return failing }))
 
 	out, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{}`))
 	if err != nil {
@@ -164,7 +179,7 @@ func TestHostSigningDeliversSignFailure(t *testing.T) {
 	}
 	stub.mu.Lock()
 	defer stub.mu.Unlock()
-	if len(stub.signErrs) != 1 || !strings.Contains(stub.signErrs[0], "vault unavailable") {
+	if len(stub.signErrs) != 1 || !strings.Contains(stub.signErrs[0], "the signer is unreachable") {
 		t.Fatalf("signing failure was not delivered to the tool: %v", stub.signErrs)
 	}
 	if !strings.Contains(out, `"done":true`) {
@@ -178,7 +193,6 @@ func TestHostSigningBudgetEnforced(t *testing.T) {
 	stub := newSignStub(1000) // never terminates within the budget
 	h, _, m := mountStub(t, []mission.Tool{stub},
 		WithHostSigner(func(string, string) HostSigner { return testSigner(t) }),
-		WithSignPolicy(func(string, string) SignPolicy { return AnyPayload{} }),
 		WithMaxSignatures(3))
 
 	if _, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{}`)); err == nil {
@@ -206,9 +220,13 @@ func TestNonSigningToolUnaffected(t *testing.T) {
 	}
 }
 
+// failingSigner polices its payloads (so the host will use it) but cannot produce a signature.
+// It stands in for a signer whose key is unreachable: the failure must reach the TOOL, so the
+// tool runs its own unwind path, rather than aborting the call from under it.
 type failingSigner struct{ pub []byte }
 
 func (f failingSigner) Public() []byte { return f.pub }
 func (f failingSigner) Sign(context.Context, []byte) ([]byte, error) {
-	return nil, errors.New("vault unavailable")
+	return nil, errors.New("the signer is unreachable")
 }
+func (f failingSigner) PolicesPayloads() bool { return true }

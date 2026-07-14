@@ -2,7 +2,6 @@ package extension
 
 import (
 	"context"
-	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
 
@@ -16,9 +15,9 @@ import (
 // (a key held by another extension, a hardware token) is not the tool's concern, and the
 // private key never crosses to the tool's process.
 //
-// Public returns raw bytes rather than an ed25519 key: a signer may sit on any curve, and
-// ed25519 (Solana) and secp256k1 (EVM, Bitcoin) have to travel the same port. The host never
-// interprets these bytes, so it does not need to know which curve produced them.
+// Public returns raw bytes rather than a key of any particular type: signers sit on different
+// curves, and they all have to travel the same port. The host never interprets these bytes, so
+// it does not need to know which curve produced them, and gains nothing by knowing.
 //
 // Sign takes a context because the key need not be in this process: satisfying it may mean
 // calling out to a signer extension, which can block and must be cancellable.
@@ -29,81 +28,24 @@ type HostSigner interface {
 	Sign(ctx context.Context, payload []byte) ([]byte, error)
 }
 
-// SelfPolicing is implemented by a HostSigner that decides for itself whether a payload may
-// be signed, because it holds the key AND understands the payload's format. A signer
-// extension is the case that matters: it parses the transaction and refuses an unsafe one at
-// the point the key is used, which is the only point where the question can honestly be
-// asked.
+// SelfPolicing is implemented by a HostSigner that decides for itself whether a payload may be
+// signed, because it holds the key AND understands the payload's format. A signer extension is
+// the case that matters: it parses the transaction and refuses an unsafe one at the point the
+// key is used, which is the only point where the question can honestly be asked.
 //
-// The host requires no SignPolicy for such a signer, and that is not a hole: the check still
-// happens, it just happens where the key is. What the host must never do is sign with a key
-// IT holds while nobody has looked at the payload, and that remains refused (see serviceSign).
+// The host REQUIRES this of any signer it uses (see serviceSign). It is not a convenience. The
+// host holds no parser for any format, so a signer that does not judge its own payloads leaves
+// nobody judging them, and signing bytes nobody has read is how the largest theft in this
+// industry happened: a published, correctly-signed component was compromised upstream, and
+// everyone who trusted its output signed what it asked them to.
+//
+// Verifying an extension's signature proves which binary is running. It proves nothing about
+// what that binary asks to be signed. Those are different questions, and only the second one is
+// asked at the moment the key is used, by whoever holds the key.
 type SelfPolicing interface {
 	// PolicesPayloads reports that this signer applies its own policy before signing.
 	PolicesPayloads() bool
 }
-
-// SignPolicy decides whether the host may sign a payload a tool handed it. It is the check
-// that a granted key is being used for the thing it was granted for.
-//
-// It exists because the alternative is blind signing, and blind signing is how the largest
-// theft in this industry happened: a published, correctly-signed component was compromised
-// upstream, and everyone who trusted its output signed what it asked them to. Verifying an
-// extension's signature proves which binary is running. It proves nothing about what that
-// binary asks to be signed. Those are different questions, and only the second one is asked
-// at the moment the key is used.
-//
-// A policy sees the payload bytes, so it must understand whatever format the tool signs. It
-// therefore lives outside this package (see extension/signpolicy), and the host stays free of
-// any chain, protocol or format dependency: it holds the port, not the knowledge.
-type SignPolicy interface {
-	// Approve returns nil if the payload may be signed, and an error naming the refusal
-	// otherwise. It must be conservative: anything it does not positively recognise is a
-	// refusal, because the payloads it cannot classify are the ones worth worrying about.
-	Approve(payload []byte) error
-}
-
-// AnyPayload is a SignPolicy that approves everything, which is to say it does not police
-// anything at all: the holder of the key signs whatever the extension hands over.
-//
-// It is a named type rather than a nil default on purpose. A grant with no policy is refused
-// (see serviceSign), so blind signing cannot be arrived at by omission. Reaching it requires
-// writing this name down, which is a thing a reviewer can see and a thing an operator can be
-// asked to justify. It is meant for a developer driving an unreleased extension against a
-// throwaway key, and for nothing else.
-type AnyPayload struct{}
-
-// Approve accepts any payload.
-func (AnyPayload) Approve([]byte) error { return nil }
-
-var _ SignPolicy = AnyPayload{}
-
-// Ed25519HostSigner is the default HostSigner over an ed25519 private key the host supplies
-// (from its vault or keychain). It only signs; it does not load, generate, or store the key.
-type Ed25519HostSigner struct{ priv ed25519.PrivateKey }
-
-// NewEd25519HostSigner builds a signer over an existing private key. It refuses a malformed
-// key so a signer is never silently unable to sign.
-func NewEd25519HostSigner(priv ed25519.PrivateKey) (*Ed25519HostSigner, error) {
-	if len(priv) != ed25519.PrivateKeySize {
-		return nil, fault.New(fault.Terminal, "extension_bad_signing_key", "extension: malformed ed25519 signing key")
-	}
-	return &Ed25519HostSigner{priv: priv}, nil
-}
-
-// Public returns the signing key's public half.
-func (s *Ed25519HostSigner) Public() []byte {
-	return s.priv.Public().(ed25519.PublicKey)
-}
-
-// Sign returns the detached ed25519 signature over payload. ed25519 signing is deterministic,
-// so no randomness is drawn. The key is in this process, so there is nothing to cancel and
-// the context is unused.
-func (s *Ed25519HostSigner) Sign(_ context.Context, payload []byte) ([]byte, error) {
-	return ed25519.Sign(s.priv, payload), nil
-}
-
-var _ HostSigner = (*Ed25519HostSigner)(nil)
 
 // The host-call handshake lets a mounted tool borrow two host authorities it must not hold
 // itself: a signing key, and the network. Both are generic capabilities; the host carries no

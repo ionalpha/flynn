@@ -154,10 +154,6 @@ type ProcessHandler struct {
 	maxDescBytes   int
 	maxResultBytes int
 
-	// policyFor returns the SignPolicy bounding what a tool's granted key may sign. A tool
-	// with a signer but no policy signs nothing: see serviceSign.
-	policyFor func(extName, toolName string) SignPolicy
-
 	// signerFor returns the host key a signing-enabled tool signs with, or nil when the tool
 	// does not participate in the host-signing handshake (the default: no tool signs). It is
 	// how the operator binds a key to a specific extension tool; default-deny like every other
@@ -261,16 +257,6 @@ func WithMaxDescriptionBytes(n int) ProcessOption {
 // non-signing.
 func WithHostSigner(fn func(extName, toolName string) HostSigner) ProcessOption {
 	return func(h *ProcessHandler) { h.signerFor = fn }
-}
-
-// WithSignPolicy bounds what each tool's granted key may be asked to sign. fn is called for
-// each mounted tool and returns the policy for it, or nil for a tool that signs nothing.
-//
-// A tool granted a signer without a policy is refused at signing time rather than allowed
-// through, so forgetting this option disables signing instead of silently permitting
-// anything. That is the direction a mistake here has to fail in.
-func WithSignPolicy(fn func(extName, toolName string) SignPolicy) ProcessOption {
-	return func(h *ProcessHandler) { h.policyFor = fn }
 }
 
 // WithHostFetcher binds a host-held endpoint to network-borrowing tools. fn is called for each
@@ -434,10 +420,6 @@ func (h *ProcessHandler) dialAndBuild(ctx context.Context, m Mount, block Proces
 		if h.signerFor != nil {
 			signer = h.signerFor(m.Name, d.Name)
 		}
-		var policy SignPolicy
-		if h.policyFor != nil {
-			policy = h.policyFor(m.Name, d.Name)
-		}
 		var fetcher HostFetcher
 		if h.fetcherFor != nil {
 			fetcher = h.fetcherFor(m.Name, d.Name)
@@ -451,7 +433,6 @@ func (h *ProcessHandler) dialAndBuild(ctx context.Context, m Mount, block Proces
 			timeout:       h.callTimeout,
 			maxResult:     h.maxResultBytes,
 			signer:        signer,
-			policy:        policy,
 			maxSigns:      h.maxSigns,
 			maxSignBytes:  h.maxSignBytes,
 			fetcher:       fetcher,
@@ -516,7 +497,6 @@ type procTool struct {
 	// Both are nil by default, which is a tool with neither authority. The max* fields bound how
 	// many of each one call may drive, and how large a single payload may be.
 	signer        HostSigner
-	policy        SignPolicy
 	maxSigns      int
 	maxSignBytes  int
 	fetcher       HostFetcher
@@ -626,33 +606,25 @@ func (t *procTool) serviceSign(ctx context.Context, reply hostCallReply, n int) 
 	// a compromised extension vouching for its own payload is exactly the case this defends
 	// against, and its word is worth nothing here.
 	//
-	// A signer that holds the key and understands the format looks for itself (a signer
-	// extension: it parses the transaction and refuses an unsafe one at the point the key is
-	// used). The host then needs no policy of its own, and stays free of any chain or format
-	// knowledge, which is the whole reason the key lives over there.
+	// The host cannot be the one to look either. It holds no parser for any format, by design:
+	// a host that understood one payload format would have to understand the next one too, and
+	// it would stop being a general engine the moment it did. So the only component left that
+	// can honestly answer the question is the one that holds the key AND understands the bytes,
+	// which is the signer.
 	//
-	// Otherwise the key is HERE, and the host is the only thing that can look, so it must
-	// have been given something to look with. A grant with no policy signs nothing: blind
-	// signing has to be asked for by name (see AnyPayload) so that it is a decision somebody
-	// made, rather than the default that happens when nobody thought about it.
-	if selfPoliced(t.signer) {
-		sig, signErr := t.signer.Sign(ctx, payload)
-		return resumeSign(reply.Session, sig, signErr)
-	}
-	if t.policy == nil {
+	// A signer that does not judge its own payloads therefore leaves NOBODY judging them, and
+	// the host will not sign through it. That is not a configuration to be warned about; it is
+	// blind signing, and it is refused.
+	if !selfPoliced(t.signer) {
 		return nil, fault.New(fault.Forbidden, "extension_sign_unpoliced",
-			"extension: tool "+t.name+" was granted a key but no signing policy, so the host would be signing whatever it is handed")
-	}
-	if err := t.policy.Approve(payload); err != nil {
-		return nil, fault.Wrap(fault.Forbidden, "extension_sign_refused", err)
+			"extension: tool "+t.name+" is wired to a signer that does not judge what it signs, and the host holds no parser to judge it for them, so nobody would be reading the payload at all")
 	}
 	sig, signErr := t.signer.Sign(ctx, payload)
 	return resumeSign(reply.Session, sig, signErr)
 }
 
-// selfPoliced reports whether the signer judges payloads itself. A signer that says so takes
-// on the duty the host would otherwise carry; one that stays silent does not, and the host
-// keeps demanding a policy.
+// selfPoliced reports whether the signer judges payloads itself. The host requires it: it holds
+// no parser of its own, so a signer that does not look is a payload nobody looks at.
 func selfPoliced(s HostSigner) bool {
 	sp, ok := s.(SelfPolicing)
 	return ok && sp.PolicesPayloads()

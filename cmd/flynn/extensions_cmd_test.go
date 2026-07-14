@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"io"
 	"os"
@@ -173,8 +172,6 @@ func TestExtensionsCallRefusesBadInput(t *testing.T) {
 	if err := runExtensions([]string{"dev", "token", bin}, dataDir); err != nil {
 		t.Fatalf("dev link: %v", err)
 	}
-	keyPath := writeKeyFile(t, ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
-
 	cases := map[string]struct {
 		args []string
 		want string
@@ -184,18 +181,9 @@ func TestExtensionsCallRefusesBadInput(t *testing.T) {
 		"stray positional":   {[]string{"token", "mint", `{}`, "extra"}, "usage"},
 		"unknown flag":       {[]string{"token", "mint", "--no-such-flag"}, "flag provided"},
 		"unknown extension":  {[]string{"nosuchext", "mint"}, "unknown extension"},
-		"unreadable key":     {[]string{"token", "mint", "--sign", filepath.Join(t.TempDir(), "absent.json")}, "read signing key"},
-		"unknown policy":     {[]string{"token", "mint", "--sign", keyPath, "--sign-policy", "sign-anything-please"}, "unknown --sign-policy"},
 		"private endpoint":   {[]string{"token", "mint", "--endpoint", "http://127.0.0.1:8899"}, ""},
 		"malformed endpoint": {[]string{"token", "mint", "--endpoint", "not-a-url"}, ""},
 
-		// A key held here and a key held by a signer extension are two different custody
-		// models, and quietly honouring one while the operator asked for both is how a key
-		// ends up somewhere nobody meant it to be.
-		"two custody models": {
-			[]string{"token", "mint", "--sign", keyPath, "--signer", "solana-signer"},
-			"pick one",
-		},
 		// The extension that BUILDS a transaction must not be the one that signs it, or it is
 		// vouching for its own work and the separation buys nothing.
 		"its own signer": {
@@ -230,13 +218,9 @@ func TestExtensionsCallLaunchesTheLinkedBinary(t *testing.T) {
 	if err := runExtensions([]string{"dev", "token", bin}, dataDir); err != nil {
 		t.Fatalf("dev link: %v", err)
 	}
-	keyPath := writeKeyFile(t, ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize)))
-
 	args := []string{
 		"token", "mint", `{"name":"t"}`,
 		"--egress", "rpc.example",
-		"--sign", keyPath,
-		"--sign-policy", "solana-token",
 		"--endpoint", "http://127.0.0.1:8899",
 		"--endpoint-local",
 	}
@@ -331,25 +315,18 @@ func TestResolveDevBinary(t *testing.T) {
 // launched extension default-deny (no egress, no key, no network of its own).
 func TestExtensionRuntimeOptions(t *testing.T) {
 	var cfg extRuntimeOptions
-	if cfg.egressGrant != nil || cfg.hostSigner != nil || cfg.signPolicy != nil || cfg.hostFetcher != nil {
+	if cfg.egressGrant != nil || cfg.hostSigner != nil || cfg.hostFetcher != nil {
 		t.Fatal("the zero runtime must grant nothing")
-	}
-	signer, err := loadDevSigner(writeKeyFile(t, ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))))
-	if err != nil {
-		t.Fatalf("load signer: %v", err)
-	}
-	policy, err := signPolicyFor("any", signer)
-	if err != nil {
-		t.Fatalf("policy: %v", err)
 	}
 	fetcher, err := extension.NewHTTPHostFetcher("https://rpc.example")
 	if err != nil {
 		t.Fatalf("fetcher: %v", err)
 	}
+	// There is no policy option to set, and that is the point: the host holds no parser, so it
+	// has nothing to police a payload with. The signer does that, where the key is.
 	for _, opt := range []extRuntimeOption{
 		withEgressGrant([]string{"rpc.example"}),
-		withHostSigner(func(string, string) extension.HostSigner { return signer }),
-		withSignPolicy(func(string, string) extension.SignPolicy { return policy }),
+		withHostSigner(func(string, string) extension.HostSigner { return nil }),
 		withHostFetcher(func(string, string) extension.HostFetcher { return fetcher }),
 	} {
 		opt(&cfg)
@@ -357,11 +334,8 @@ func TestExtensionRuntimeOptions(t *testing.T) {
 	if len(cfg.egressGrant) != 1 || cfg.egressGrant[0] != "rpc.example" {
 		t.Errorf("egress grant = %v, want the one granted", cfg.egressGrant)
 	}
-	if cfg.hostSigner == nil || cfg.hostSigner("token", "mint") == nil {
-		t.Error("the signing key was not granted to the tool")
-	}
-	if cfg.signPolicy == nil || cfg.signPolicy("token", "mint") == nil {
-		t.Error("a granted key must carry the policy it is bound by")
+	if cfg.hostSigner == nil {
+		t.Error("the signer grant was not installed")
 	}
 	if cfg.hostFetcher == nil || cfg.hostFetcher("token", "mint") == nil {
 		t.Error("the host endpoint was not granted to the tool")

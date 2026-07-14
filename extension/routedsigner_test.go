@@ -254,11 +254,15 @@ func neverCalled(t *testing.T) func(context.Context, json.RawMessage) (string, e
 	}
 }
 
-// TestUnpolicedHostHeldKeyStillRefuses guards the property the route must not weaken. A key
-// held HERE, with nobody looking at the payload, still signs nothing: SelfPolicing is a claim
-// only a signer that actually holds the key and the parser gets to make, and it must not become
-// a way to switch the host's own check off.
-func TestUnpolicedHostHeldKeyStillRefuses(t *testing.T) {
+// TestASignerThatDoesNotJudgeIsRefused is the invariant that survives the host giving up its
+// parser. The host now holds NO way to read a payload, so a signer that does not judge its own
+// payloads leaves nobody judging them at all. That is blind signing, and it is refused rather
+// than warned about.
+//
+// SelfPolicing is therefore a claim only a signer that really holds the key AND the parser gets
+// to make, and it is not a switch anybody can flip to skip the check: refusing to implement it
+// does not get you signed, it gets you refused.
+func TestASignerThatDoesNotJudgeIsRefused(t *testing.T) {
 	askToSign := `{"session":"s","sign":{"message":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}}`
 	stub := stubTool{
 		name: "mint",
@@ -267,10 +271,12 @@ func TestUnpolicedHostHeldKeyStillRefuses(t *testing.T) {
 		},
 	}
 	h, _, m := mountStub(t, []mission.Tool{stub},
-		WithHostSigner(func(string, string) HostSigner { return testSigner(t) }))
+		WithHostSigner(func(string, string) HostSigner {
+			return blindSigner{pub: testSigner(t).Public()}
+		}))
 
 	_, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{}`))
 	if err == nil || !strings.Contains(err.Error(), "extension_sign_unpoliced") {
-		t.Fatalf("a host-held key with no policy signed something: %v", err)
+		t.Fatalf("the host signed through a signer that reads nothing: %v", err)
 	}
 }
