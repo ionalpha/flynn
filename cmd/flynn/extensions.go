@@ -296,6 +296,10 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 //
 // What the host ends up holding is the passphrase and the signer's PUBLIC key. It never sees
 // the private key, and it never parses what it asks the signer to sign.
+//
+// The signer is reached over the host's private channel, not through its mounted tools: a
+// signer's tools are never mounted at all, so nothing model-facing can unlock the key or ask
+// for a signature without going through the worker.
 func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string) (extension.HostSigner, error) {
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -314,14 +318,11 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 		return nil, fmt.Errorf("extensions: no passphrase for signer %q in the vault (set it with: flynn auth set %s): %w", name, ref, err)
 	}
 
-	tools := rt.loader.Tools()
-	unlock := findExtensionTool(tools, name, extension.SignerUnlockTool)
-	sign := findExtensionTool(tools, name, extension.SignerSignTool)
-	if unlock == nil || sign == nil {
-		return nil, fmt.Errorf("extensions: %q is not a signer extension: it advertises no %s and %s",
-			name, extension.SignerUnlockTool, extension.SignerSignTool)
+	ch, err := rt.procs.SignerChannelFor(r.ID)
+	if err != nil {
+		return nil, err
 	}
-	return extension.NewRoutedSigner(ctx, unlock, sign, pass)
+	return extension.NewRoutedSigner(ctx, ch, pass)
 }
 
 // extensionsRemove unlinks a dev extension. It refuses to delete a bundled or forked
@@ -529,7 +530,10 @@ func newFlagSet(name string) *flag.FlagSet {
 type extensionRuntime struct {
 	store  resource.Store
 	loader *extension.Loader
-	close  func() error
+	// procs is the process handler itself, kept so the host can reach a signer extension over
+	// its private channel. A signer's tools are never mounted, so there is no other way to it.
+	procs *extension.ProcessHandler
+	close func() error
 }
 
 // extRuntimeOptions configures a runtime built by openExtensionRuntime.
@@ -704,6 +708,7 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 	return &extensionRuntime{
 		store:  store,
 		loader: extension.NewLoader(ereg),
+		procs:  handler,
 		close:  durable.Close,
 	}, nil
 }

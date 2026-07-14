@@ -9,208 +9,133 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/secret"
 )
 
-// stubSignerTool stands in for one tool of a mounted signer extension: it records what it was
-// asked and returns whatever the test wants, including a refusal.
-type stubSignerTool struct {
-	name  string
-	reply string
-	err   error
-	calls []json.RawMessage
+// stubChannel stands in for the host's private line to a signer extension: it records what it
+// was asked and answers however the test wants, including a refusal.
+type stubChannel struct {
+	key       ed25519.PrivateKey
+	unlockErr error
+	signErr   error
+	passSeen  secret.Text
+	signed    [][]byte
 }
 
-func (s *stubSignerTool) Def() llm.Tool { return llm.Tool{Name: s.name} }
-
-func (s *stubSignerTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
-	s.calls = append(s.calls, input)
-	if s.err != nil {
-		return "", s.err
+func (c *stubChannel) Unlock(_ context.Context, passphrase secret.Text) ([]byte, string, error) {
+	c.passSeen = passphrase
+	if c.unlockErr != nil {
+		return nil, "", c.unlockErr
 	}
-	return s.reply, nil
+	if passphrase.Empty() {
+		return nil, "", errors.New("no passphrase")
+	}
+	return pubOf(c.key), "ed25519", nil
 }
 
-// signerPair builds the two tools a signer extension exposes, backed by a real key so
-// signatures actually verify.
-func signerPair(t *testing.T, key ed25519.PrivateKey) (*stubSignerTool, *stubSignerTool) {
+func (c *stubChannel) SignPayload(_ context.Context, payload []byte) ([]byte, error) {
+	c.signed = append(c.signed, payload)
+	if c.signErr != nil {
+		return nil, c.signErr
+	}
+	return ed25519.Sign(c.key, payload), nil
+}
+
+func testChannel(t *testing.T) (*stubChannel, ed25519.PrivateKey) {
 	t.Helper()
-	pub := key.Public().(ed25519.PublicKey)
-	public := &stubSignerTool{
-		name:  SignerUnlockTool,
-		reply: `{"publicKey":"` + base64.StdEncoding.EncodeToString(pub) + `","curve":"ed25519"}`,
-	}
-	sign := &stubSignerTool{name: SignerSignTool}
-	return public, sign
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	return &stubChannel{key: key}, key
 }
 
-// TestExtensionSignerRoutesToTheSigner proves the whole point of the route: the host gets a
+func pubOf(key ed25519.PrivateKey) ed25519.PublicKey {
+	pub, _ := key.Public().(ed25519.PublicKey)
+	return pub
+}
+
+// TestRoutedSignerRoutesToTheSigner proves the whole point of the route: the host gets a
 // verifying signature over the exact bytes, from a key it never held.
-func TestExtensionSignerRoutesToTheSigner(t *testing.T) {
+func TestRoutedSignerRoutesToTheSigner(t *testing.T) {
 	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	public, sign := signerPair(t, key)
+	ch, key := testChannel(t)
 
-	payload := []byte("a transaction the host cannot read")
-	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, payload)) + `"}`
-
-	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
+	signer, err := NewRoutedSigner(ctx, ch, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
-	if !ed25519.Verify(key.Public().(ed25519.PublicKey), payload, mustSign(ctx, t, signer, payload)) {
-		t.Fatal("the signature the signer extension returned does not verify")
+	payload := []byte("a transaction the host cannot read")
+	sig, err := signer.Sign(ctx, payload)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
 	}
-
+	if !ed25519.Verify(pubOf(key), payload, sig) {
+		t.Fatal("the signature the signer returned does not verify")
+	}
 	// The host handed over exactly the bytes it was given, and nothing else.
-	var asked struct {
-		Payload string `json:"payload"`
-	}
-	if err := json.Unmarshal(sign.calls[0], &asked); err != nil {
-		t.Fatalf("the host sent the signer something that is not a signing request: %v", err)
-	}
-	got, err := base64.StdEncoding.DecodeString(asked.Payload)
-	if err != nil || string(got) != string(payload) {
-		t.Fatalf("the host sent the signer %q, not the payload it was asked to sign", got)
+	if len(ch.signed) != 1 || string(ch.signed[0]) != string(payload) {
+		t.Fatalf("the host sent the signer %q, not the payload it was asked to sign", ch.signed)
 	}
 }
 
 // TestRoutedSignerPublishesTheSignersKey: the host reports the signer's public key as its own
 // signing identity, so a worker builds its transaction against the key that will actually sign
-// it. A host that advertised a different key would have every transaction rejected by the
-// chain, or worse, signed by something nobody expected.
+// it.
 func TestRoutedSignerPublishesTheSignersKey(t *testing.T) {
-	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	public, sign := signerPair(t, key)
-
-	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
+	ch, key := testChannel(t)
+	signer, err := NewRoutedSigner(context.Background(), ch, secret.New("pass"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
-	if !ed25519.PublicKey(signer.Public()).Equal(key.Public().(ed25519.PublicKey)) {
+	if !ed25519.PublicKey(signer.Public()).Equal(pubOf(key)) {
 		t.Fatal("the host advertised a key that is not the signer's")
 	}
 }
 
-// TestRoutedSignerRejectsAMalformedPublicReply: the signer's answer is untrusted output from
-// another process. A reply that is not JSON must fail the mount, not be read as an empty key.
-func TestRoutedSignerRejectsAMalformedPublicReply(t *testing.T) {
-	public := &stubSignerTool{name: SignerUnlockTool, reply: `i am not json`}
-	if _, err := NewRoutedSigner(context.Background(), public, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
-		t.Fatal("a signer whose public-key reply is not JSON was mounted anyway")
-	}
-}
-
 // TestRoutedSignerUnlocksWithTheOperatorsPassphrase: the passphrase reaches the signer, and it
-// is the one the operator holds. The signer's key is sealed, so a host that failed to send it
-// would mount a signer that can do nothing.
+// is the one the operator holds in the vault.
 func TestRoutedSignerUnlocksWithTheOperatorsPassphrase(t *testing.T) {
-	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	unlock, sign := signerPair(t, key)
-
-	if _, err := NewRoutedSigner(ctx, unlock, sign, secret.New("open sesame")); err != nil {
+	ch, _ := testChannel(t)
+	if _, err := NewRoutedSigner(context.Background(), ch, secret.New("open sesame")); err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
-	var asked struct {
-		Passphrase string `json:"passphrase"`
-	}
-	if err := json.Unmarshal(unlock.calls[0], &asked); err != nil {
-		t.Fatalf("the host sent the signer something that is not an unlock request: %v", err)
-	}
-	if asked.Passphrase != "open sesame" {
-		t.Fatalf("the signer was unlocked with %q, not the operator's passphrase", asked.Passphrase)
+	if ch.passSeen.Expose() != "open sesame" {
+		t.Fatal("the signer was unlocked with something other than the operator's passphrase")
 	}
 }
 
-// TestRoutedSignerRefusesAnEmptyPassphrase: mounting a signer with no passphrase must fail here,
-// not reach the signer and fail there. An empty passphrase means the vault had nothing, and that
-// is an operator mistake worth naming rather than a sealed key that mysteriously will not open.
-func TestRoutedSignerRefusesAnEmptyPassphrase(t *testing.T) {
+// TestRoutedSignerFailsAtMount: a signer that cannot be reached, or that gets no passphrase,
+// fails when it is mounted rather than halfway through a mint. A worker must never be wired to
+// a signer that cannot sign.
+func TestRoutedSignerFailsAtMount(t *testing.T) {
 	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	unlock, sign := signerPair(t, key)
 
-	if _, err := NewRoutedSigner(ctx, unlock, sign, secret.Text{}); err == nil {
-		t.Fatal("a signer was mounted with no passphrase at all")
-	}
-	if len(unlock.calls) != 0 {
-		t.Fatal("the host tried to unlock the signer with an empty passphrase instead of refusing outright")
-	}
+	t.Run("no channel", func(t *testing.T) {
+		if _, err := NewRoutedSigner(ctx, nil, secret.New("p")); err == nil {
+			t.Fatal("mounted against a signer with no channel to it")
+		}
+	})
+	t.Run("signer unreachable", func(t *testing.T) {
+		ch, _ := testChannel(t)
+		ch.unlockErr = errors.New("no such process")
+		if _, err := NewRoutedSigner(ctx, ch, secret.New("p")); err == nil {
+			t.Fatal("mounted against a signer that cannot be reached")
+		}
+	})
+	t.Run("empty passphrase", func(t *testing.T) {
+		ch, _ := testChannel(t)
+		if _, err := NewRoutedSigner(ctx, ch, secret.Text{}); err == nil {
+			t.Fatal("mounted a signer with no passphrase at all")
+		}
+	})
 }
 
-// TestRoutedSignerDrivesAMountedTool is the whole route, end to end: a worker tool asks the
-// host to sign, the host routes to the signer, and the worker is resumed with a signature it
-// can use. No policy is configured in the host, and none is needed: the signer polices itself,
-// which is the entire reason the host no longer has to understand the payload.
-func TestRoutedSignerDrivesAMountedTool(t *testing.T) {
-	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	public, sign := signerPair(t, key)
-	payload := []byte("an unsigned transaction")
-	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, payload)) + `"}`
-
-	routed, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
-	if err != nil {
-		t.Fatalf("NewRoutedSigner: %v", err)
-	}
-
-	// The worker asks to sign once, then reports what it got back.
-	var got string
-	asked := false
-	worker := stubTool{
-		name: "mint",
-		invoke: func(_ context.Context, input json.RawMessage) (string, error) {
-			if !asked {
-				asked = true
-				return `{"session":"s1","sign":{"message":"` +
-					base64.StdEncoding.EncodeToString(payload) + `"}}`, nil
-			}
-			var resumed struct {
-				Signature string `json:"signature"`
-			}
-			if uerr := json.Unmarshal(input, &resumed); uerr != nil {
-				return "", uerr
-			}
-			got = resumed.Signature
-			return "minted", nil
-		},
-	}
-
-	h, _, m := mountStub(t, []mission.Tool{worker},
-		WithHostSigner(func(string, string) HostSigner { return routed }))
-	// Deliberately NO WithSignPolicy: the signer is the one that looks.
-
-	out, err := h.Tools(m.ID)[0].Invoke(ctx, json.RawMessage(`{}`))
-	if err != nil {
-		t.Fatalf("the routed signing call failed: %v", err)
-	}
-	if out != "minted" {
-		t.Fatalf("terminal result = %q, want the tool's own result", out)
-	}
-	sig, err := base64.StdEncoding.DecodeString(got)
-	if err != nil {
-		t.Fatalf("the tool was resumed with a signature that is not base64: %v", err)
-	}
-	if !ed25519.Verify(key.Public().(ed25519.PublicKey), payload, sig) {
-		t.Fatal("the tool was resumed with a signature that does not verify over what it asked to sign")
-	}
-}
-
-// TestExtensionSignerIsSelfPolicing proves the host asks no policy of a signer extension. The
+// TestRoutedSignerIsSelfPolicing proves the host asks no policy of a signer extension. The
 // signer holds the key AND the parser, so it is the only component positioned to judge the
 // payload, and requiring a second (necessarily chain-aware) opinion in the host is exactly the
 // coupling this design removes.
-func TestExtensionSignerIsSelfPolicing(t *testing.T) {
-	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	public, sign := signerPair(t, key)
-	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, []byte("x"))) + `"}`
-
-	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
+func TestRoutedSignerIsSelfPolicing(t *testing.T) {
+	ch, _ := testChannel(t)
+	signer, err := NewRoutedSigner(context.Background(), ch, secret.New("p"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -219,19 +144,18 @@ func TestExtensionSignerIsSelfPolicing(t *testing.T) {
 	}
 }
 
-// TestExtensionSignerRefusalYieldsNoSignature is the security property. A signer that refuses
-// (an unsafe transaction, by its own rules) must produce NO signature, and the refusal must
-// reach the caller rather than being swallowed into an empty one.
-func TestExtensionSignerRefusalYieldsNoSignature(t *testing.T) {
+// TestRoutedSignerRefusalYieldsNoSignature is the security property. A signer that refuses must
+// produce NO signature, and the refusal must reach the caller rather than being swallowed into
+// an empty one.
+func TestRoutedSignerRefusalYieldsNoSignature(t *testing.T) {
 	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
-	public, sign := signerPair(t, key)
-	sign.err = errors.New("mint authority is not revoked in this transaction")
-
-	signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
+	ch, _ := testChannel(t)
+	signer, err := NewRoutedSigner(ctx, ch, secret.New("p"))
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
+	ch.signErr = errors.New("mint authority is not revoked in this transaction")
+
 	sig, err := signer.Sign(ctx, []byte("a draining transaction"))
 	if err == nil {
 		t.Fatal("the signer refused the payload but the host produced a signature anyway")
@@ -244,62 +168,42 @@ func TestExtensionSignerRefusalYieldsNoSignature(t *testing.T) {
 	}
 }
 
-// TestExtensionSignerRejectsAnEmptySignature: a signer that approves but hands back nothing
-// must not be read as a successful signature over nothing. The tool result is untrusted, so an
-// empty or malformed signature is a failure, never an empty success.
-func TestExtensionSignerRejectsAnEmptySignature(t *testing.T) {
-	ctx := context.Background()
-	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+// TestSignerToolsAreNeverMountedForTheModel is the hole the private channel exists to close. A
+// mounted tool is a tool the MODEL can call. If a signer's tools were mounted, the model could
+// unlock the signing key itself, or ask for a signature directly and skip the worker that was
+// supposed to build the transaction and be judged on it. A capability grant on the worker would
+// not stop that, because the model would not be going through the worker at all.
+func TestSignerToolsAreNeverMountedForTheModel(t *testing.T) {
+	tools := []mission.Tool{
+		stubTool{name: SignerUnlockTool, invoke: neverCalled(t)},
+		stubTool{name: SignerSignTool, invoke: neverCalled(t)},
+		stubTool{name: "token_verify", invoke: neverCalled(t)},
+	}
+	h, _, m := mountStub(t, tools)
 
-	for name, reply := range map[string]string{
-		"empty signature":  `{"signature":""}`,
-		"absent signature": `{}`,
-		"not base64":       `{"signature":"@@@@"}`,
-		"not json":         `i approve`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			public, sign := signerPair(t, key)
-			sign.reply = reply
-			signer, err := NewRoutedSigner(ctx, public, sign, secret.New("pass"))
-			if err != nil {
-				t.Fatalf("NewRoutedSigner: %v", err)
-			}
-			if _, err := signer.Sign(ctx, []byte("x")); err == nil {
-				t.Fatal("a signer that returned no usable signature was treated as a success")
-			}
-		})
+	mounted := h.Tools(m.ID)
+	for _, tool := range mounted {
+		if strings.Contains(tool.Def().Name, SignerUnlockTool) || strings.Contains(tool.Def().Name, SignerSignTool) {
+			t.Fatalf("the signer tool %q was mounted where the model can call it", tool.Def().Name)
+		}
+	}
+	if len(mounted) != 1 {
+		t.Fatalf("expected only the non-signer tool to mount, got %d", len(mounted))
 	}
 }
 
-// TestExtensionSignerFailsAtMount: a signer that cannot be reached, or that answers with no
-// key, fails when it is mounted rather than halfway through a mint. A worker must never be
-// wired to a signer that cannot sign.
-func TestExtensionSignerFailsAtMount(t *testing.T) {
-	ctx := context.Background()
-
-	t.Run("signer unreachable", func(t *testing.T) {
-		public := &stubSignerTool{name: SignerUnlockTool, err: errors.New("no such process")}
-		if _, err := NewRoutedSigner(ctx, public, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
-			t.Fatal("mounted against a signer that cannot be reached")
-		}
-	})
-	t.Run("no key", func(t *testing.T) {
-		public := &stubSignerTool{name: SignerUnlockTool, reply: `{"publicKey":"","curve":"ed25519"}`}
-		if _, err := NewRoutedSigner(ctx, public, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
-			t.Fatal("mounted against a signer that has no key")
-		}
-	})
-	t.Run("missing tool", func(t *testing.T) {
-		if _, err := NewRoutedSigner(ctx, nil, &stubSignerTool{name: SignerSignTool}, secret.New("pass")); err == nil {
-			t.Fatal("mounted against a signer missing its public-key tool")
-		}
-	})
+func neverCalled(t *testing.T) func(context.Context, json.RawMessage) (string, error) {
+	return func(context.Context, json.RawMessage) (string, error) {
+		t.Helper()
+		t.Error("a tool that should not be mounted was invoked")
+		return "", nil
+	}
 }
 
 // TestUnpolicedHostHeldKeyStillRefuses guards the property the route must not weaken. A key
 // held HERE, with nobody looking at the payload, still signs nothing: SelfPolicing is a claim
-// only a signer that actually holds the key and the parser gets to make, and it must not
-// become a way to switch the host's own check off.
+// only a signer that actually holds the key and the parser gets to make, and it must not become
+// a way to switch the host's own check off.
 func TestUnpolicedHostHeldKeyStillRefuses(t *testing.T) {
 	askToSign := `{"session":"s","sign":{"message":"` + base64.StdEncoding.EncodeToString([]byte("x")) + `"}}`
 	stub := stubTool{
@@ -310,19 +214,9 @@ func TestUnpolicedHostHeldKeyStillRefuses(t *testing.T) {
 	}
 	h, _, m := mountStub(t, []mission.Tool{stub},
 		WithHostSigner(func(string, string) HostSigner { return testSigner(t) }))
-	// No WithSignPolicy: the host holds a key and has been given nothing to judge with.
 
 	_, err := h.Tools(m.ID)[0].Invoke(context.Background(), json.RawMessage(`{}`))
 	if err == nil || !strings.Contains(err.Error(), "extension_sign_unpoliced") {
 		t.Fatalf("a host-held key with no policy signed something: %v", err)
 	}
-}
-
-func mustSign(ctx context.Context, t *testing.T, s HostSigner, payload []byte) []byte {
-	t.Helper()
-	sig, err := s.Sign(ctx, payload)
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	return sig
 }

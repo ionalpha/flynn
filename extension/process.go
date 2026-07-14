@@ -412,6 +412,15 @@ func (h *ProcessHandler) dialAndBuild(ctx context.Context, m Mount, block Proces
 		if len(allow) > 0 && !allow[d.Name] {
 			continue // not in the spec's allow-list: least-surface
 		}
+		// A signer's tools are the HOST's to call, over SignerChannel, and nobody else's. A
+		// mounted tool is a tool the model can call, and a model that could reach these would
+		// be able to unlock the signing key itself, or ask for a signature directly and skip
+		// the worker that was supposed to build (and be judged on) the transaction. Neither is
+		// stopped by a capability grant on the worker, because the model would not be going
+		// through the worker at all. So they are never mounted.
+		if reservedSignerTool(d.Name) {
+			continue
+		}
 		full := m.Name + "." + d.Name
 		if h.reserved != nil && (h.reserved(full) || h.reserved(d.Name)) {
 			return nil, fault.New(fault.Forbidden, "extension_process_reserved",
