@@ -98,3 +98,32 @@ func TestBundledProcessExtensionsAreReleased(t *testing.T) {
 		}
 	}
 }
+
+// TestCatalogRefusesAnUnreadableProcessSurface: a process surface that does not decode is a
+// surface nobody can check, and the gate must say so rather than wave it through. A spec whose
+// process block cannot be read is not "a spec with no process block": it is a spec that claims
+// to run code and will not say what code, which is the one thing a bundled extension may not do.
+func TestCatalogRefusesAnUnreadableProcessSurface(t *testing.T) {
+	spec := extension.Spec{
+		Surfaces: map[string]json.RawMessage{
+			extension.SurfaceProcess: json.RawMessage(`{"release": "not an object"}`),
+		},
+	}
+	err := checkProcessSource("broken", spec)
+	if err == nil {
+		t.Fatal("a process surface that cannot be decoded was accepted")
+	}
+	if !strings.Contains(err.Error(), "decode process surface") {
+		t.Fatalf("error = %v, want it to name the surface it could not read", err)
+	}
+}
+
+// TestCatalogIgnoresASpecWithNoProcessSurface: an integration-only extension (an API the host
+// calls directly, with no binary at all) has no process source to check, and must not be failed
+// for lacking one.
+func TestCatalogIgnoresASpecWithNoProcessSurface(t *testing.T) {
+	spec := extension.Spec{Surfaces: map[string]json.RawMessage{}}
+	if err := checkProcessSource("api-only", spec); err != nil {
+		t.Fatalf("an extension with no process surface was rejected: %v", err)
+	}
+}

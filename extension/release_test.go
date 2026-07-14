@@ -379,6 +379,35 @@ func pinnedBlock(t *testing.T, digest string) ProcessBlock {
 	return b
 }
 
+// TestTheCacheIsNotAWayAroundTheDigestPin closes the hole the pin would otherwise have.
+//
+// A machine that installed the extension BEFORE a tag was re-cut has the old, correct bytes on
+// disk, with a receipt saying so. If a cached install were reused just for being there, a flynn
+// whose spec pins DIFFERENT bytes would happily run the ones it already had, and the pin would
+// only ever apply to machines that had never run the extension. The pin has to hold on every
+// machine, not only the fresh ones.
+//
+// So a receipt whose archive is not the pinned archive is not a cache hit. It re-downloads, and
+// the digest check then refuses the substitution properly.
+func TestTheCacheIsNotAWayAroundTheDigestPin(t *testing.T) {
+	t.Parallel()
+	rel := buildRelease(t, "#!/bin/sh\necho token\n")
+	r, _ := rel.serve(t)
+
+	// Install once, unpinned: the receipt now records the archive that was served.
+	if _, _, err := r.Resolve(context.Background(), "token", releaseBlock()); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now resolve with a spec that pins a DIFFERENT archive. The install on disk is real and
+	// its receipt is honest, but it is not what this flynn was built to run.
+	_, _, err := r.Resolve(context.Background(), "token", pinnedBlock(t, strings.Repeat("cd", 32)))
+	if err == nil {
+		t.Fatal("the cached install was reused even though its bytes are not the ones the spec pins")
+	}
+	assertCode(t, err, "extension_release_digest_mismatch")
+}
+
 // TestRecutTagIsRefusedEvenWhenCorrectlySigned is the reason the digest pin exists.
 //
 // A git tag is mutable. Whoever can write to the extensions repo can delete a released tag,
