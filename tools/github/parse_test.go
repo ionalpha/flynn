@@ -44,15 +44,15 @@ func TestProp_FindingIdentityIgnoresProse(t *testing.T) {
 
 		a := Finding{Path: path, Line: line, Rule: rule, Summary: rapid.String().Draw(rt, "s1"), Failure: rapid.String().Draw(rt, "f1")}
 		b := Finding{Path: path, Line: line, Rule: rule, Summary: rapid.String().Draw(rt, "s2"), Failure: rapid.String().Draw(rt, "f2")}
-		if a.key() != b.key() {
-			rt.Fatalf("rewording moved the key: %q vs %q", a.key(), b.key())
+		if a.fingerprint() != b.fingerprint() {
+			rt.Fatalf("rewording moved the fingerprint: %q vs %q", a.fingerprint(), b.fingerprint())
 		}
 
 		// A different line is a different finding.
 		c := a
 		c.Line = line + 1
-		if a.key() == c.key() {
-			rt.Fatalf("a different line kept the key %q", a.key())
+		if a.fingerprint() == c.fingerprint() {
+			rt.Fatalf("a different line kept the fingerprint %q", a.fingerprint())
 		}
 	})
 }
@@ -215,14 +215,14 @@ func FuzzFindingKey(f *testing.F) {
 		// Two findings built from the same coordinates are the same finding, which is
 		// what lets a re-review recognise the comment it posted last time.
 		again := Finding{Path: path, Line: line, Rule: rule}
-		if a.key() != again.key() {
-			t.Fatalf("key is not stable across identical coordinates: %q vs %q", a.key(), again.key())
+		if a.fingerprint() != again.fingerprint() {
+			t.Fatalf("the fingerprint is not stable across identical coordinates: %q vs %q", a.fingerprint(), again.fingerprint())
 		}
 		// The separator must not be forgeable: a path ending where a rule begins
 		// cannot produce the same key as the fields swapped around the boundary.
 		b := Finding{Path: path + strconv.Itoa(line), Line: 0, Rule: rule}
-		if line != 0 && a.key() == b.key() {
-			t.Fatalf("fields ran together across the separator: %q", a.key())
+		if line != 0 && a.fingerprint() == b.fingerprint() {
+			t.Fatalf("fields ran together across the separator: %q", a.fingerprint())
 		}
 		if !strings.HasPrefix(a.marker(), markerPrefix) || !strings.HasSuffix(a.marker(), "-->") {
 			t.Fatalf("malformed marker: %q", a.marker())
