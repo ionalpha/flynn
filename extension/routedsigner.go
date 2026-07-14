@@ -87,10 +87,10 @@ func (s *RoutedSigner) Public() []byte { return s.pub }
 // rule the payload broke, and that reason belongs to the operator reading the error, not to
 // this host, which cannot check the claim and does not try.
 func (s *RoutedSigner) Sign(ctx context.Context, payload []byte) ([]byte, error) {
-	in, err := json.Marshal(map[string]string{"payload": base64.StdEncoding.EncodeToString(payload)})
-	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, "extension_signer_request", err)
-	}
+	// base64 needs no JSON escaping, so the request is built directly. Marshalling a
+	// map[string]string here could not fail, and an error branch that cannot be taken is a
+	// branch nobody can test and nobody should read.
+	in := json.RawMessage(`{"payload":"` + base64.StdEncoding.EncodeToString(payload) + `"}`)
 	out, err := s.sign.Invoke(ctx, in)
 	if err != nil {
 		// The signer refused, or could not be reached. Either way no signature exists, and

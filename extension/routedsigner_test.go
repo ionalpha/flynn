@@ -76,6 +76,91 @@ func TestExtensionSignerRoutesToTheSigner(t *testing.T) {
 	}
 }
 
+// TestRoutedSignerPublishesTheSignersKey: the host reports the signer's public key as its own
+// signing identity, so a worker builds its transaction against the key that will actually sign
+// it. A host that advertised a different key would have every transaction rejected by the
+// chain, or worse, signed by something nobody expected.
+func TestRoutedSignerPublishesTheSignersKey(t *testing.T) {
+	ctx := context.Background()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	public, sign := signerPair(t, key)
+
+	signer, err := NewRoutedSigner(ctx, public, sign)
+	if err != nil {
+		t.Fatalf("NewRoutedSigner: %v", err)
+	}
+	if !ed25519.PublicKey(signer.Public()).Equal(key.Public().(ed25519.PublicKey)) {
+		t.Fatal("the host advertised a key that is not the signer's")
+	}
+}
+
+// TestRoutedSignerRejectsAMalformedPublicReply: the signer's answer is untrusted output from
+// another process. A reply that is not JSON must fail the mount, not be read as an empty key.
+func TestRoutedSignerRejectsAMalformedPublicReply(t *testing.T) {
+	public := &stubSignerTool{name: SignerPublicTool, reply: `i am not json`}
+	if _, err := NewRoutedSigner(context.Background(), public, &stubSignerTool{name: SignerSignTool}); err == nil {
+		t.Fatal("a signer whose public-key reply is not JSON was mounted anyway")
+	}
+}
+
+// TestRoutedSignerDrivesAMountedTool is the whole route, end to end: a worker tool asks the
+// host to sign, the host routes to the signer, and the worker is resumed with a signature it
+// can use. No policy is configured in the host, and none is needed: the signer polices itself,
+// which is the entire reason the host no longer has to understand the payload.
+func TestRoutedSignerDrivesAMountedTool(t *testing.T) {
+	ctx := context.Background()
+	key := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	public, sign := signerPair(t, key)
+	payload := []byte("an unsigned transaction")
+	sign.reply = `{"signature":"` + base64.StdEncoding.EncodeToString(ed25519.Sign(key, payload)) + `"}`
+
+	routed, err := NewRoutedSigner(ctx, public, sign)
+	if err != nil {
+		t.Fatalf("NewRoutedSigner: %v", err)
+	}
+
+	// The worker asks to sign once, then reports what it got back.
+	var got string
+	asked := false
+	worker := stubTool{
+		name: "mint",
+		invoke: func(_ context.Context, input json.RawMessage) (string, error) {
+			if !asked {
+				asked = true
+				return `{"session":"s1","sign":{"message":"` +
+					base64.StdEncoding.EncodeToString(payload) + `"}}`, nil
+			}
+			var resumed struct {
+				Signature string `json:"signature"`
+			}
+			if uerr := json.Unmarshal(input, &resumed); uerr != nil {
+				return "", uerr
+			}
+			got = resumed.Signature
+			return "minted", nil
+		},
+	}
+
+	h, _, m := mountStub(t, []mission.Tool{worker},
+		WithHostSigner(func(string, string) HostSigner { return routed }))
+	// Deliberately NO WithSignPolicy: the signer is the one that looks.
+
+	out, err := h.Tools(m.ID)[0].Invoke(ctx, json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("the routed signing call failed: %v", err)
+	}
+	if out != "minted" {
+		t.Fatalf("terminal result = %q, want the tool's own result", out)
+	}
+	sig, err := base64.StdEncoding.DecodeString(got)
+	if err != nil {
+		t.Fatalf("the tool was resumed with a signature that is not base64: %v", err)
+	}
+	if !ed25519.Verify(key.Public().(ed25519.PublicKey), payload, sig) {
+		t.Fatal("the tool was resumed with a signature that does not verify over what it asked to sign")
+	}
+}
+
 // TestExtensionSignerIsSelfPolicing proves the host asks no policy of a signer extension. The
 // signer holds the key AND the parser, so it is the only component positioned to judge the
 // payload, and requiring a second (necessarily chain-aware) opinion in the host is exactly the
