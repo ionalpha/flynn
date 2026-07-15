@@ -482,6 +482,13 @@ jobs:
   # opened any other way (gh directly, the web UI, an API call). The body comes
   # from the event payload via env - never interpolated into the script - so a
   # crafted body can't inject shell. Skipped on push (no PR body to check).
+  #
+  # The job still runs for a bot-authored PR so the check reports a real status
+  # rather than a skipped one, but the template requirement is waived: a bot like
+  # dependabot writes its own changelog-shaped body we neither control nor want to
+  # rewrite, and failing it would only block dependency bumps on a rule meant for
+  # humans. The author type comes from the event payload (User or Bot), so this
+  # covers every bot without naming one.
   pr-body:
     name: PR body follows template
     if: github.event_name == 'pull_request'
@@ -490,7 +497,12 @@ jobs:
       - name: Require template sections
         env:
           BODY: ${{ github.event.pull_request.body }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
         run: |
+          if [ "$AUTHOR_TYPE" = "Bot" ]; then
+            echo "Author is a bot; the template requirement applies to human-authored PRs only."
+            exit 0
+          fi
           missing=0
           for section in "## What" "## Why" "## How to verify"; do
             case "$BODY" in
