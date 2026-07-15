@@ -56,6 +56,15 @@ case "${1:-}" in
     fi
     while IFS='	' read -r sha author committer; do
       [ -n "$sha" ] || continue
+      # A commit authored by a forge bot (dependabot, github-actions) is the bot's
+      # own commit being merged, not one this clone produced by accident under a
+      # personal address. The pin exists to catch a human slip; it must not block
+      # landing a bot's dependency PR, whose commit keeps the bot as author when a
+      # rebase replays it. Exempt it the same way an already-published commit is,
+      # matching the "...[bot]@users.noreply.github.com" address the forge assigns.
+      case "$author" in
+        *'[bot]@users.noreply.github.com') continue ;;
+      esac
       [ "$author" = "$want" ] || report "$sha is authored by <$author>, but this clone is pinned to <$want>."
       [ "$committer" = "$want" ] || report "$sha is committed by <$committer>, but this clone is pinned to <$want>."
     done <<EOF
