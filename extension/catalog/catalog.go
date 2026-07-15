@@ -67,39 +67,44 @@ func Entries() ([]Entry, error) {
 }
 
 func load() {
-	files, err := fs.ReadDir(specsFS, "specs")
+	state.entries, state.reserved, state.err = parseCatalog(specsFS)
+}
+
+// parseCatalog reads every spec JSON under specs/ in fsys, validates it, and returns the
+// ordered entries and the reserved-name set. It is the testable core of load: load feeds
+// it the embedded catalog, whose specs the build-time gate keeps valid, so a test drives
+// the error paths a valid embedded catalog can never reach by feeding a crafted fs.
+func parseCatalog(fsys fs.FS) ([]Entry, map[string]bool, error) {
+	files, err := fs.ReadDir(fsys, "specs")
 	if err != nil {
-		state.err = fmt.Errorf("catalog: read embedded specs: %w", err)
-		return
+		return nil, nil, fmt.Errorf("catalog: read embedded specs: %w", err)
 	}
-	state.reserved = map[string]bool{}
+	reserved := map[string]bool{}
+	var entries []Entry
 	for _, f := range files {
 		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
 			continue
 		}
-		raw, err := specsFS.ReadFile(path.Join("specs", f.Name()))
+		raw, err := fs.ReadFile(fsys, path.Join("specs", f.Name()))
 		if err != nil {
-			state.err = fmt.Errorf("catalog: read %s: %w", f.Name(), err)
-			return
+			return nil, nil, fmt.Errorf("catalog: read %s: %w", f.Name(), err)
 		}
 		var spec extension.Spec
 		if err := json.Unmarshal(raw, &spec); err != nil {
-			state.err = fmt.Errorf("catalog: decode %s: %w", f.Name(), err)
-			return
+			return nil, nil, fmt.Errorf("catalog: decode %s: %w", f.Name(), err)
 		}
 		name := strings.TrimSuffix(f.Name(), ".json")
-		if state.reserved[name] {
-			state.err = fmt.Errorf("catalog: duplicate official extension name %q", name)
-			return
+		if reserved[name] {
+			return nil, nil, fmt.Errorf("catalog: duplicate official extension name %q", name)
 		}
 		if err := checkProcessSource(name, spec); err != nil {
-			state.err = err
-			return
+			return nil, nil, err
 		}
-		state.reserved[name] = true
-		state.entries = append(state.entries, Entry{Name: name, Spec: spec, Raw: append(json.RawMessage(nil), raw...)})
+		reserved[name] = true
+		entries = append(entries, Entry{Name: name, Spec: spec, Raw: append(json.RawMessage(nil), raw...)})
 	}
-	sort.Slice(state.entries, func(i, j int) bool { return state.entries[i].Name < state.entries[j].Name })
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries, reserved, nil
 }
 
 // checkProcessSource enforces the one thing a bundled extension may never be: a path to
