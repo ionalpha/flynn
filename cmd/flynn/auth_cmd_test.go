@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/secret"
 )
@@ -43,6 +44,36 @@ func TestAuthSetStoresTheKey(t *testing.T) {
 	}
 }
 
+// TestAuthSetStoresSignerPassphrase: `flynn auth set signer/<name>` stores the passphrase that
+// unlocks a signer extension, at the exact ref mountSigner looks up. This is the command the
+// mount step tells an operator to run; before this it was rejected as an unknown model provider.
+func TestAuthSetStoresSignerPassphrase(t *testing.T) {
+	ctx := context.Background()
+	store := appTestVault(t)
+
+	if err := authSet(ctx, store, []string{"signer/solana-signer"}, fixedPrompt("open sesame")); err != nil {
+		t.Fatalf("auth set signer: %v", err)
+	}
+	got, err := store.Lookup(ctx, "signer/solana-signer")
+	if err != nil {
+		t.Fatalf("the signer passphrase was not stored at signer/solana-signer: %v", err)
+	}
+	if got.Expose() != "open sesame" {
+		t.Fatalf("stored passphrase = %q, want the one that was entered", got.Expose())
+	}
+}
+
+// TestAuthSetRefusesAnEmptySignerName: signer/ with no name is a mistake, not a stored secret
+// under a blank reference.
+func TestAuthSetRefusesAnEmptySignerName(t *testing.T) {
+	ctx := context.Background()
+	store := appTestVault(t)
+	err := authSet(ctx, store, []string{"signer/"}, fixedPrompt("x"))
+	if err == nil || !strings.Contains(err.Error(), "needs a name") {
+		t.Fatalf("error = %v, want it to reject an empty signer name", err)
+	}
+}
+
 // TestAuthSetRefusesBadInput: a keyless provider is told apart from a typo, and nothing
 // is stored when the prompt yields nothing.
 func TestAuthSetRefusesBadInput(t *testing.T) {
@@ -76,6 +107,49 @@ func TestAuthSetRefusesBadInput(t *testing.T) {
 			}
 		})
 	}
+}
+
+// brokenVault returns a store whose sealed file was written under a different passphrase, so
+// its next write fails when it cannot decrypt what is already there. It is how the store-write
+// error path is reached without depending on a filesystem fault.
+func brokenVault(t *testing.T) *vault.Store {
+	t.Helper()
+	t.Setenv("FLYNN_VAULT_FILE", "1")
+	dir := t.TempDir()
+	seed := vault.New(dir, vault.WithPassphrase(func(bool) (secret.Text, error) {
+		return secret.New("the-right-one"), nil
+	}))
+	if err := seed.Set(context.Background(), "seed", secret.New("v")); err != nil {
+		t.Fatalf("seed the sealed file: %v", err)
+	}
+	return vault.New(dir, vault.WithPassphrase(func(bool) (secret.Text, error) {
+		return secret.New("a-different-one"), nil
+	}))
+}
+
+// TestAuthSetSignerRefusesBadInput: the signer branch of `auth set` fails safely on every bad
+// input - an unreadable prompt, an empty passphrase, and a vault that cannot store the value -
+// naming what went wrong rather than storing a blank or half-written secret.
+func TestAuthSetSignerRefusesBadInput(t *testing.T) {
+	ctx := context.Background()
+	t.Run("prompt unreadable", func(t *testing.T) {
+		err := authSet(ctx, appTestVault(t), []string{"signer/solana-signer"}, failingPrompt(errors.New("no terminal")))
+		if err == nil || !strings.Contains(err.Error(), "no terminal") {
+			t.Fatalf("error = %v, want the prompt's failure surfaced", err)
+		}
+	})
+	t.Run("empty passphrase", func(t *testing.T) {
+		err := authSet(ctx, appTestVault(t), []string{"signer/solana-signer"}, fixedPrompt(""))
+		if err == nil || !strings.Contains(err.Error(), "no passphrase entered") {
+			t.Fatalf("error = %v, want an empty passphrase refused", err)
+		}
+	})
+	t.Run("vault cannot store", func(t *testing.T) {
+		err := authSet(ctx, brokenVault(t), []string{"signer/solana-signer"}, fixedPrompt("open sesame"))
+		if err == nil {
+			t.Fatal("a vault that cannot seal the passphrase must not report success")
+		}
+	})
 }
 
 // TestAuthRemoveClearsTheKey: rm is how a leaked key is retired, so afterwards the vault

@@ -232,7 +232,27 @@ type secretPrompt func(label string) (secret.Text, error)
 
 func authSet(ctx context.Context, store *vault.Store, args []string, prompt secretPrompt) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: flynn auth set <provider> (one of %s)", strings.Join(provider.Providers(), ", "))
+		return fmt.Errorf("usage: flynn auth set <provider> (one of %s), or signer/<name>", strings.Join(provider.Providers(), ", "))
+	}
+	// A signer/<name> reference stores the passphrase that unlocks a signer extension's sealed
+	// key, not a model-provider API key, so it does not go through provider.KeyRef. The ref is
+	// stored verbatim: it is exactly what mountSigner looks up when a run asks for --signer <name>.
+	if name, ok := strings.CutPrefix(args[0], "signer/"); ok {
+		if name == "" {
+			return errors.New("auth: a signer reference needs a name, e.g. signer/solana-signer")
+		}
+		pass, err := prompt(fmt.Sprintf("Enter passphrase for signer %s: ", name))
+		if err != nil {
+			return err
+		}
+		if pass.Empty() {
+			return errors.New("auth: no passphrase entered")
+		}
+		if err := store.Set(ctx, "signer/"+name, pass); err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(os.Stdout, "Stored the passphrase for signer %s in the vault. It is encrypted at rest and revealed only to unlock the signer.\n", name)
+		return nil
 	}
 	ref, ok := provider.KeyRef(args[0])
 	if !ok {

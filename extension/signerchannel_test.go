@@ -23,6 +23,7 @@ type signerStub struct {
 	signErr   error
 
 	gotPassphrase string
+	gotKeyPath    string
 	gotPayload    []byte
 }
 
@@ -34,9 +35,11 @@ func (s *signerStub) tools(t *testing.T) []mission.Tool {
 			invoke: func(_ context.Context, input json.RawMessage) (string, error) {
 				var args struct {
 					Passphrase string `json:"passphrase"`
+					KeyPath    string `json:"keyPath"`
 				}
 				_ = json.Unmarshal(input, &args)
 				s.gotPassphrase = args.Passphrase
+				s.gotKeyPath = args.KeyPath
 				if s.unlockErr != nil {
 					return "", s.unlockErr
 				}
@@ -92,12 +95,17 @@ func TestChannelUnlockAndSign(t *testing.T) {
 	stub := &signerStub{key: key}
 	ch := channelTo(t, stub)
 
-	pub, curve, err := ch.Unlock(ctx, secret.New("open sesame"))
+	pub, curve, err := ch.Unlock(ctx, secret.New("open sesame"), "/data/signers/solana-signer.key")
 	if err != nil {
 		t.Fatalf("unlock: %v", err)
 	}
 	if stub.gotPassphrase != "open sesame" {
 		t.Fatalf("the signer was unlocked with %q, not the operator's passphrase", stub.gotPassphrase)
+	}
+	// The host names the sealed key at unlock; a released signer, whose args were fixed before
+	// this machine existed, learns where its key is from this field and nowhere else.
+	if stub.gotKeyPath != "/data/signers/solana-signer.key" {
+		t.Fatalf("the signer was told the key path %q, not the one the host named", stub.gotKeyPath)
 	}
 	if !ed25519.PublicKey(pub).Equal(key.Public().(ed25519.PublicKey)) {
 		t.Fatal("the channel returned a key that is not the signer's")
@@ -126,7 +134,7 @@ func TestChannelUnlockRefusesAnEmptyPassphrase(t *testing.T) {
 	stub := &signerStub{key: signerKey(t)}
 	ch := channelTo(t, stub)
 
-	if _, _, err := ch.Unlock(context.Background(), secret.Text{}); err == nil {
+	if _, _, err := ch.Unlock(context.Background(), secret.Text{}, ""); err == nil {
 		t.Fatal("the host tried to unlock a signer with no passphrase")
 	}
 	if stub.gotPassphrase != "" {
@@ -147,7 +155,7 @@ func TestChannelUnlockRejectsABadReply(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ch := channelTo(t, &signerStub{key: signerKey(t), unlockOut: reply})
-			if _, _, err := ch.Unlock(ctx, secret.New("p")); err == nil {
+			if _, _, err := ch.Unlock(ctx, secret.New("p"), ""); err == nil {
 				t.Fatal("a signer that answered with no usable key was unlocked anyway")
 			}
 		})
@@ -160,7 +168,7 @@ func TestChannelUnlockCarriesTheSignersRefusal(t *testing.T) {
 	stub := &signerStub{key: signerKey(t), unlockErr: errors.New("the sealed key did not open")}
 	ch := channelTo(t, stub)
 
-	_, _, err := ch.Unlock(context.Background(), secret.New("wrong"))
+	_, _, err := ch.Unlock(context.Background(), secret.New("wrong"), "")
 	if err == nil {
 		t.Fatal("the signer refused to unlock but the host carried on")
 	}
@@ -229,7 +237,7 @@ func TestChannelReportsADeadSigner(t *testing.T) {
 	if _, err := ch.SignPayload(context.Background(), []byte("x")); err == nil {
 		t.Fatal("signing against a dead signer reported success")
 	}
-	if _, _, err := ch.Unlock(context.Background(), secret.New("p")); err == nil {
+	if _, _, err := ch.Unlock(context.Background(), secret.New("p"), ""); err == nil {
 		t.Fatal("unlocking a dead signer reported success")
 	}
 }

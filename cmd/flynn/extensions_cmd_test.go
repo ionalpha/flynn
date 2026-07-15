@@ -279,6 +279,16 @@ func TestCallWithASignerLaunchesIt(t *testing.T) {
 		Set(ctx, "signer/solana-signer", secret.New("hunter2")); err != nil {
 		t.Fatalf("seed the vault: %v", err)
 	}
+	// The sealed key lives at the path the host names. It need not be a real sealed key here:
+	// what matters is that it exists, so the mount gets past the missing-key check and reaches
+	// the signer, which is as far as a stand-in binary can go.
+	keyPath := signerKeyPath(dataDir, "solana-signer")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatalf("make the signers dir: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("sealed-key-stand-in"), 0o600); err != nil {
+		t.Fatalf("seal a stand-in key: %v", err)
+	}
 
 	err := extensionsCall(ctx, dataDir, []string{"token", "mint", "--signer", "solana-signer"})
 	if err == nil {
@@ -288,6 +298,36 @@ func TestCallWithASignerLaunchesIt(t *testing.T) {
 	// passphrase: both of those are already ruled out above.
 	if strings.Contains(err.Error(), "no passphrase") || strings.Contains(err.Error(), "unknown signer") {
 		t.Fatalf("the signer was not reached: %v", err)
+	}
+}
+
+// TestCallWithASignerNeedsItsSealedKey: with the passphrase in the vault but no sealed key at
+// the path the host names, the mount fails up front naming that path and the remedy, rather
+// than starting a signer that would fail to open a key that is not there.
+func TestCallWithASignerNeedsItsSealedKey(t *testing.T) {
+	ctx := context.Background()
+	dataDir := fileVaultEnv(t)
+	bin := devBinary(t)
+	for _, name := range []string{"token", "solana-signer"} {
+		if err := runExtensions([]string{"dev", name, bin}, dataDir); err != nil {
+			t.Fatalf("dev link %s: %v", name, err)
+		}
+	}
+	if err := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)).
+		Set(ctx, "signer/solana-signer", secret.New("hunter2")); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+
+	err := extensionsCall(ctx, dataDir, []string{"token", "mint", "--signer", "solana-signer"})
+	if err == nil {
+		t.Fatal("a signer with no sealed key was used anyway")
+	}
+	if !strings.Contains(err.Error(), "no sealed key") {
+		t.Fatalf("error = %v, want it to say the sealed key is missing", err)
+	}
+	// It must name the path, so the operator knows where to seal the key.
+	if !strings.Contains(err.Error(), signerKeyPath(dataDir, "solana-signer")) {
+		t.Fatalf("the error does not name the key path: %v", err)
 	}
 }
 

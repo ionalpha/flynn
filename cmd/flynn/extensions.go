@@ -277,6 +277,16 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 		return nil, fmt.Errorf("extensions: no passphrase for signer %q in the vault (set it with: flynn auth set %s): %w", name, ref, err)
 	}
 
+	// The sealed key lives at a path this host names, because a released signer is launched from
+	// a catalog spec that could not have known where the operator would put it. The convention is
+	// one file per signer under the data directory; the operator seals a key to it, and the host
+	// hands the path to the signer at unlock. A missing file is caught here, with the path and the
+	// remedy, rather than surfacing as the signer's lower-level "cannot open" from inside a mount.
+	keyPath := signerKeyPath(dataDir, name)
+	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("extensions: signer %q has a passphrase but no sealed key at %s; seal one there first", name, keyPath)
+	}
+
 	if _, err := rt.loader.Load(ctx, r); err != nil {
 		return nil, err
 	}
@@ -284,7 +294,14 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 	if err != nil {
 		return nil, err
 	}
-	return extension.NewRoutedSigner(ctx, ch, pass)
+	return extension.NewRoutedSigner(ctx, ch, pass, keyPath)
+}
+
+// signerKeyPath is where a signer's sealed key lives: one file per signer under the data
+// directory. The host names this path so a released signer, whose catalog spec could not have
+// named a file on a machine that did not yet exist, is told where its key is at unlock.
+func signerKeyPath(dataDir, name string) string {
+	return filepath.Join(dataDir, "signers", name+".key")
 }
 
 // extensionsRemove unlinks a dev extension. It refuses to delete a bundled or forked

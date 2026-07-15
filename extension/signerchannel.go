@@ -25,8 +25,10 @@ import (
 // this channel, which nothing model-facing can get at, and the only thing that ever crosses it
 // is a passphrase the operator granted and a payload the worker built.
 type SignerChannel interface {
-	// Unlock opens the signer's key and returns its public half and the curve it sits on.
-	Unlock(ctx context.Context, passphrase secret.Text) (pub []byte, curve string, err error)
+	// Unlock opens the signer's key and returns its public half and the curve it sits on. keyPath
+	// names the sealed key for a signer that was not launched with its own --key (a released one);
+	// it is empty for a signer that carries its own key, and the signer prefers its flag over it.
+	Unlock(ctx context.Context, passphrase secret.Text, keyPath string) (pub []byte, curve string, err error)
 	// SignPayload asks the signer to sign payload. The signer parses it and may refuse.
 	SignPayload(ctx context.Context, payload []byte) ([]byte, error)
 }
@@ -71,16 +73,24 @@ type signReply struct {
 	Signature string `json:"signature"`
 }
 
-// Unlock hands the operator's passphrase to the signer and takes back its public key.
-func (c *mcpSignerChannel) Unlock(ctx context.Context, passphrase secret.Text) ([]byte, string, error) {
+// Unlock hands the operator's passphrase to the signer and takes back its public key. keyPath,
+// when set, tells a released signer where its sealed key lives; a signer launched with its own
+// --key ignores it, and it is left out of the request when empty.
+func (c *mcpSignerChannel) Unlock(ctx context.Context, passphrase secret.Text, keyPath string) ([]byte, string, error) {
 	if passphrase.Empty() {
 		return nil, "", fault.New(fault.Terminal, "extension_signer_unlock",
 			"extension: no passphrase for the signer, so its key cannot be unlocked")
 	}
 	// Expose is the audited point where a secret crosses a boundary the host does not control.
 	// This is one, and it is a narrow one: the passphrase goes to the signer subprocess, which
-	// is the only party that can do anything with it, over a channel no tool call can reach.
-	req, err := json.Marshal(map[string]string{"passphrase": passphrase.Expose()})
+	// is the only party that can do anything with it, over a channel no tool call can reach. The
+	// key path travels the same channel but is not a secret: the signer opens the file, the host
+	// never reads it.
+	fields := map[string]string{"passphrase": passphrase.Expose()}
+	if keyPath != "" {
+		fields["keyPath"] = keyPath
+	}
+	req, err := json.Marshal(fields)
 	if err != nil {
 		return nil, "", fault.Wrap(fault.Terminal, "extension_signer_unlock", err)
 	}

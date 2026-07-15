@@ -16,15 +16,17 @@ import (
 // stubChannel stands in for the host's private line to a signer extension: it records what it
 // was asked and answers however the test wants, including a refusal.
 type stubChannel struct {
-	key       ed25519.PrivateKey
-	unlockErr error
-	signErr   error
-	passSeen  secret.Text
-	signed    [][]byte
+	key         ed25519.PrivateKey
+	unlockErr   error
+	signErr     error
+	passSeen    secret.Text
+	keyPathSeen string
+	signed      [][]byte
 }
 
-func (c *stubChannel) Unlock(_ context.Context, passphrase secret.Text) ([]byte, string, error) {
+func (c *stubChannel) Unlock(_ context.Context, passphrase secret.Text, keyPath string) ([]byte, string, error) {
 	c.passSeen = passphrase
+	c.keyPathSeen = keyPath
 	if c.unlockErr != nil {
 		return nil, "", c.unlockErr
 	}
@@ -59,7 +61,7 @@ func TestRoutedSignerRoutesToTheSigner(t *testing.T) {
 	ctx := context.Background()
 	ch, key := testChannel(t)
 
-	signer, err := NewRoutedSigner(ctx, ch, secret.New("pass"))
+	signer, err := NewRoutedSigner(ctx, ch, secret.New("pass"), "")
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -82,7 +84,7 @@ func TestRoutedSignerRoutesToTheSigner(t *testing.T) {
 // it.
 func TestRoutedSignerPublishesTheSignersKey(t *testing.T) {
 	ch, key := testChannel(t)
-	signer, err := NewRoutedSigner(context.Background(), ch, secret.New("pass"))
+	signer, err := NewRoutedSigner(context.Background(), ch, secret.New("pass"), "")
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -95,11 +97,16 @@ func TestRoutedSignerPublishesTheSignersKey(t *testing.T) {
 // is the one the operator holds in the vault.
 func TestRoutedSignerUnlocksWithTheOperatorsPassphrase(t *testing.T) {
 	ch, _ := testChannel(t)
-	if _, err := NewRoutedSigner(context.Background(), ch, secret.New("open sesame")); err != nil {
+	if _, err := NewRoutedSigner(context.Background(), ch, secret.New("open sesame"), "/data/signers/solana-signer.key"); err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
 	if ch.passSeen.Expose() != "open sesame" {
 		t.Fatal("the signer was unlocked with something other than the operator's passphrase")
+	}
+	// The host also names the sealed key at unlock, so a released signer, launched from a spec
+	// that could not have known the path, is told where its key lives.
+	if ch.keyPathSeen != "/data/signers/solana-signer.key" {
+		t.Fatalf("the host did not name the sealed key at unlock: got %q", ch.keyPathSeen)
 	}
 }
 
@@ -110,20 +117,20 @@ func TestRoutedSignerFailsAtMount(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("no channel", func(t *testing.T) {
-		if _, err := NewRoutedSigner(ctx, nil, secret.New("p")); err == nil {
+		if _, err := NewRoutedSigner(ctx, nil, secret.New("p"), ""); err == nil {
 			t.Fatal("mounted against a signer with no channel to it")
 		}
 	})
 	t.Run("signer unreachable", func(t *testing.T) {
 		ch, _ := testChannel(t)
 		ch.unlockErr = errors.New("no such process")
-		if _, err := NewRoutedSigner(ctx, ch, secret.New("p")); err == nil {
+		if _, err := NewRoutedSigner(ctx, ch, secret.New("p"), ""); err == nil {
 			t.Fatal("mounted against a signer that cannot be reached")
 		}
 	})
 	t.Run("empty passphrase", func(t *testing.T) {
 		ch, _ := testChannel(t)
-		if _, err := NewRoutedSigner(ctx, ch, secret.Text{}); err == nil {
+		if _, err := NewRoutedSigner(ctx, ch, secret.Text{}, ""); err == nil {
 			t.Fatal("mounted a signer with no passphrase at all")
 		}
 	})
@@ -135,7 +142,7 @@ func TestRoutedSignerFailsAtMount(t *testing.T) {
 // coupling this design removes.
 func TestRoutedSignerIsSelfPolicing(t *testing.T) {
 	ch, _ := testChannel(t)
-	signer, err := NewRoutedSigner(context.Background(), ch, secret.New("p"))
+	signer, err := NewRoutedSigner(context.Background(), ch, secret.New("p"), "")
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -150,7 +157,7 @@ func TestRoutedSignerIsSelfPolicing(t *testing.T) {
 func TestRoutedSignerRefusalYieldsNoSignature(t *testing.T) {
 	ctx := context.Background()
 	ch, _ := testChannel(t)
-	signer, err := NewRoutedSigner(ctx, ch, secret.New("p"))
+	signer, err := NewRoutedSigner(ctx, ch, secret.New("p"), "")
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}
@@ -175,7 +182,7 @@ func TestRoutedSignerRefusalYieldsNoSignature(t *testing.T) {
 func TestRoutedSignerDrivesAMountedTool(t *testing.T) {
 	ctx := context.Background()
 	ch, key := testChannel(t)
-	routed, err := NewRoutedSigner(ctx, ch, secret.New("p"))
+	routed, err := NewRoutedSigner(ctx, ch, secret.New("p"), "")
 	if err != nil {
 		t.Fatalf("NewRoutedSigner: %v", err)
 	}

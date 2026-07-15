@@ -40,12 +40,18 @@ type RoutedSigner struct {
 //
 // The passphrase is the operator's, held in the host's vault. The host never learns the key it
 // unlocks: what comes back is the public half.
-func NewRoutedSigner(ctx context.Context, ch SignerChannel, passphrase secret.Text) (*RoutedSigner, error) {
+//
+// keyPath names the sealed key on this machine. A released signer is launched from a catalog
+// spec whose arguments were fixed before the machine existed, so it cannot have been told the
+// path as a flag; the host names it here instead. The path is not a secret (the signer, not the
+// host, opens the file), and a signer already launched with its own --key ignores it. Empty when
+// the operator dev-linked a signer that carries its own key.
+func NewRoutedSigner(ctx context.Context, ch SignerChannel, passphrase secret.Text, keyPath string) (*RoutedSigner, error) {
 	if ch == nil {
 		return nil, fault.New(fault.Terminal, "extension_signer_missing",
 			"extension: no channel to a signer extension, so there is nothing to sign with")
 	}
-	pub, _, err := ch.Unlock(ctx, passphrase)
+	pub, _, err := ch.Unlock(ctx, passphrase, keyPath)
 	if err != nil {
 		return nil, err
 	}
