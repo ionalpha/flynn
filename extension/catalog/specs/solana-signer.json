@@ -1,19 +1,19 @@
 {
   "displayName": "Solana Signer",
-  "version": "v0.1.0",
+  "version": "v0.1.1",
   "provider": "ionalpha",
   "surfaces": {
     "process": {
       "release": {
         "asset": "solana-signer",
-        "version": "v0.1.0",
+        "version": "v0.1.1",
         "digests": {
-          "darwin_amd64": "579ebe408893b3f5034fd9982940e98ea9d03be71ba753b12cd0adc54c6c0cea",
-          "darwin_arm64": "cc853e7537ed13dea9eba4c221ed8c93f9f30ac2cbc3a4cba0456eab1673d39b",
-          "linux_amd64": "7a14b448fbcc0d83c0cd2cc699e7b83931053a9a81b361317351eec932b7ca1e",
-          "linux_arm64": "d76064a3d6d557fa59260a647656b4ef470c93dd5c09f8941d4a2bb63355e1b8",
-          "windows_amd64": "a30ae977643e0765040c6fd8c5e0276d7c7273c93b75adbd180b1c9f3e05aaf6",
-          "windows_arm64": "9940896ffacf7e0fc4bd5ae279058949857a35df76b46de134d68462d0687cea"
+          "darwin_amd64": "e2ba36eec682a42b7f3087ad5abac3d0a864c22a62e7084a22046eadc6dfd20e",
+          "darwin_arm64": "fbad04010d4a2dc55067e7111093834a26a2a05de059fc56ceeb01eda1f5219a",
+          "linux_amd64": "727ab1db0f14c7f3a985ce64ac428988aa6a2e489edf995547a5d2a8be7ebd16",
+          "linux_arm64": "468fd80adc2a9017c58031d374609eb5b62b6a162d13d366a66eb0ec772ccdc2",
+          "windows_amd64": "c491e1260bf96b68b70bb3fa77250c3e559e6ddefc398d7cb7e28ac919a754f5",
+          "windows_arm64": "f62e66a88c7c9b13375028bf93e666b31ad1a3cf573fa94f72e803f35677f2fc"
         }
       }
     }
