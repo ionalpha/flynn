@@ -18,6 +18,7 @@ import (
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runExtensions implements `flynn extensions <subcommand>`: the surface for both kinds
@@ -286,6 +287,16 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 	keyPath := signerKeyPath(dataDir, name)
 	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("extensions: signer %q has a passphrase but no sealed key at %s; seal one there first", name, keyPath)
+	}
+
+	// The signer runs confined, and on Windows that is an AppContainer whose default-deny
+	// filesystem cannot open the sealed key the host names for it unless the key is granted
+	// to the container. The key is encrypted at rest and its passphrase never touches disk,
+	// so this grants read to ALL APPLICATION PACKAGES (a no-op off Windows) rather than to a
+	// per-launch container SID that would be a dead entry by the next launch. Done before the
+	// launch so the file is reachable the moment the signer is unlocked.
+	if err := sandbox.GrantSealedKeyReadable(keyPath); err != nil {
+		return nil, fmt.Errorf("extensions: grant the confined signer read on its sealed key: %w", err)
 	}
 
 	if _, err := rt.loader.Load(ctx, r); err != nil {
