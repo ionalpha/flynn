@@ -318,28 +318,36 @@ func TestModelProbeRefusesWhatItCannotServe(t *testing.T) {
 // answers its health probe is listed with its runtime, endpoint, and pid, so a user can see
 // what is up and what to stop.
 func TestRunModelStatusListsALiveServer(t *testing.T) {
-	stub := newStubModelServer(t, "ok", false)
 	dataDir := t.TempDir()
 	runDir := filepath.Join(dataDir, "run")
 	if err := os.MkdirAll(runDir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	// The record claims a server; the manager confirms it with a health probe against the
-	// stub, so the row is only printed because the endpoint actually answers.
+	// The status rendering is what is under test, so its input (a server the manager confirms
+	// live) is supplied directly: a recorded server plus a probe scripted to report it healthy.
+	// Standing up a real endpoint and probing it over loopback within a wall-clock timeout is a
+	// race on a loaded host, and it exercises the prober, not the code this test is about.
 	rec := serve.Record{
 		ModelID: localCatalogModelID,
 		PID:     4321,
-		Port:    stub.port,
-		BaseURL: fmt.Sprintf("http://127.0.0.1:%d/v1", stub.port),
+		Port:    57963,
+		BaseURL: "http://127.0.0.1:57963/v1",
 		Runtime: selfProvisionedRuntime,
 	}
-	if err := serve.NewRegistry(runDir).Put(rec); err != nil {
+	reg := serve.NewRegistry(runDir)
+	if err := reg.Put(rec); err != nil {
 		t.Fatalf("record a server: %v", err)
 	}
+	manager := serve.NewManager(
+		&fakeServeLauncher{},
+		func(context.Context, string) error { return nil }, // the recorded server answers its health probe
+		func(int) error { return nil },
+		reg,
+	)
 
 	var out bytes.Buffer
-	if err := runModelStatus(nil, dataDir, &out); err != nil {
-		t.Fatalf("runModelStatus: %v", err)
+	if err := writeModelStatus(context.Background(), manager, dataDir, &out); err != nil {
+		t.Fatalf("writeModelStatus: %v", err)
 	}
 	got := out.String()
 	for _, want := range []string{"MODEL", "RUNTIME", "ENDPOINT", "PID", localCatalogModelID, rec.BaseURL, "4321"} {

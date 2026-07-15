@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
+	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/reliability"
 	"github.com/ionalpha/flynn/llm"
@@ -355,12 +356,20 @@ func knownProviderSpec(spec string) bool {
 // runModelStatus implements `flynn models status`: list the local model servers that are
 // currently running and answering, pruning any stale record on the way.
 func runModelStatus(_ []string, dataDir string, out io.Writer) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
 	runner := newLocalRunner(dataDir, out)
 	defer func() { _ = runner.Close() }()
-	live, err := runner.manager.Status(ctx)
+	return writeModelStatus(context.Background(), runner.manager, dataDir, out)
+}
+
+// writeModelStatus renders the running view from the servers a manager confirms live. It takes
+// the manager as a parameter so a test can drive it with a scripted health probe, rather than a
+// real endpoint that has to answer within a wall-clock timeout, which is a race on a loaded CI
+// host. Production passes the manager from newLocalRunner, whose probe is the real loopback one.
+func writeModelStatus(ctx context.Context, manager *serve.Manager, dataDir string, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	live, err := manager.Status(ctx)
 	if err != nil {
 		return fmt.Errorf("models status: %w", err)
 	}
