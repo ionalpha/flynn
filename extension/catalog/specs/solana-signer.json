@@ -1,0 +1,21 @@
+{
+  "displayName": "Solana Signer",
+  "version": "v0.1.0",
+  "provider": "ionalpha",
+  "surfaces": {
+    "process": {
+      "release": {
+        "asset": "solana-signer",
+        "version": "v0.1.0",
+        "digests": {
+          "darwin_amd64": "579ebe408893b3f5034fd9982940e98ea9d03be71ba753b12cd0adc54c6c0cea",
+          "darwin_arm64": "cc853e7537ed13dea9eba4c221ed8c93f9f30ac2cbc3a4cba0456eab1673d39b",
+          "linux_amd64": "7a14b448fbcc0d83c0cd2cc699e7b83931053a9a81b361317351eec932b7ca1e",
+          "linux_arm64": "d76064a3d6d557fa59260a647656b4ef470c93dd5c09f8941d4a2bb63355e1b8",
+          "windows_amd64": "a30ae977643e0765040c6fd8c5e0276d7c7273c93b75adbd180b1c9f3e05aaf6",
+          "windows_arm64": "9940896ffacf7e0fc4bd5ae279058949857a35df76b46de134d68462d0687cea"
+        }
+      }
+    }
+  }
+}
