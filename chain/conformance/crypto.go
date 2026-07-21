@@ -22,6 +22,7 @@ package conformance
 
 import (
 	"crypto/ed25519"
+	"io"
 
 	"github.com/fxamacker/cbor/v2"
 	"github.com/veraison/go-cose"
@@ -75,7 +76,24 @@ type CryptoVector struct {
 const (
 	rootKeyID = "provetrail-conformance-root"
 	checkOrig = "run/conformance"
+	// checkpointAlg and checkpointContentType mirror the chain package's protected
+	// header constants (Ed25519 as COSE -19 per RFC 9864, and the vendor-tree
+	// checkpoint media type) so a defect vector differs from a valid artifact only
+	// in the axis under test.
+	checkpointAlg         = cose.Algorithm(-19)
+	checkpointContentType = "application/vnd.provetrail.checkpoint+cbor"
 )
+
+// rawEd25519Signer is a cose.Signer carrying algorithm -19: go-cose v1.3.0 only
+// dispatches the deprecated -8 label, and the crafted defect vectors need the same
+// header algorithm the chain package signs with.
+type rawEd25519Signer struct{ key ed25519.PrivateKey }
+
+func (s rawEd25519Signer) Algorithm() cose.Algorithm { return checkpointAlg }
+
+func (s rawEd25519Signer) Sign(_ io.Reader, content []byte) ([]byte, error) {
+	return ed25519.Sign(s.key, content), nil
+}
 
 var (
 	rootSeed = [ed25519.SeedSize]byte{
@@ -163,16 +181,12 @@ func validCheckpoint(signer chain.RootSigner, events [][]byte) chain.SignedCheck
 // content type, a payload that is not a checkpoint), so each VerifyCheckpoint failure
 // path has an exact vector.
 func signWith(contentType, keyID string, payload []byte) []byte {
-	signer, err := cose.NewSigner(cose.AlgorithmEdDSA, ed25519.NewKeyFromSeed(rootSeed[:]))
-	if err != nil {
-		panic("conformance: cose signer: " + err.Error())
-	}
 	headers := cose.Headers{Protected: cose.ProtectedHeader{
-		cose.HeaderLabelAlgorithm:   cose.AlgorithmEdDSA,
+		cose.HeaderLabelAlgorithm:   checkpointAlg,
 		cose.HeaderLabelContentType: contentType,
 		cose.HeaderLabelKeyID:       []byte(keyID),
 	}}
-	msg, err := cose.Sign1(nil, signer, headers, payload, nil)
+	msg, err := cose.Sign1(nil, rawEd25519Signer{key: ed25519.NewKeyFromSeed(rootSeed[:])}, headers, payload, nil)
 	if err != nil {
 		panic("conformance: cose sign1: " + err.Error())
 	}
@@ -279,7 +293,7 @@ func GenerateCrypto() []CryptoVector {
 			ID: "crypto.checkpoint.undecodable_payload.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
 			FailureCode: chain.CodeCheckpointDecode,
 			Description: "A correctly signed checkpoint-typed message whose payload is not a checkpoint encoding.",
-			Artifact:    signWith("application/provetrail-checkpoint+cbor", rootKeyID, []byte{0xf5}),
+			Artifact:    signWith(checkpointContentType, rootKeyID, []byte{0xf5}),
 		},
 	}
 

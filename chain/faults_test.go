@@ -131,10 +131,6 @@ var _ spine.Log = (*scriptedLog)(nil)
 // or a signature carrying no key id.
 func signRaw(t *testing.T, priv ed25519.PrivateKey, keyID, contentType string, payload []byte) []byte {
 	t.Helper()
-	signer, err := cose.NewSigner(checkpointAlg, priv)
-	if err != nil {
-		t.Fatal(err)
-	}
 	protected := cose.ProtectedHeader{
 		cose.HeaderLabelAlgorithm:   checkpointAlg,
 		cose.HeaderLabelContentType: contentType,
@@ -142,7 +138,7 @@ func signRaw(t *testing.T, priv ed25519.PrivateKey, keyID, contentType string, p
 	if keyID != "" {
 		protected[cose.HeaderLabelKeyID] = []byte(keyID)
 	}
-	msg, err := cose.Sign1(nil, signer, cose.Headers{Protected: protected}, payload, nil)
+	msg, err := cose.Sign1(nil, ed25519CoseSigner{key: priv}, cose.Headers{Protected: protected}, payload, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
