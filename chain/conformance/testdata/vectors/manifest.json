@@ -186,6 +186,18 @@
       ]
     },
     {
+      "id": "valid.empty_strings.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Encoding"
+      ],
+      "description": "An event whose required string fields are empty: required fields are encoded even when empty (SPEC 2.1/8.2), as zero-length text strings.",
+      "events": [
+        "valid/valid_empty_strings_01.cbor"
+      ]
+    },
+    {
       "id": "invalid.schema.missing_field.01",
       "expect": "reject",
       "failure_code": "enc.non_canonical_cbor",

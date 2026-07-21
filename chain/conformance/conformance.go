@@ -299,6 +299,11 @@ func Generate() []Vector {
 			Events:      [][]byte{bytesPayloadEvent()},
 		},
 		{
+			ID: "valid.empty_strings.01", Expect: Accept, Flags: []string{"Structural", "Encoding"},
+			Description: "An event whose required string fields are empty: required fields are encoded even when empty (SPEC 2.1/8.2), as zero-length text strings.",
+			Events:      [][]byte{emptyStringsEvent()},
+		},
+		{
 			ID: "invalid.schema.missing_field.01", Expect: Reject, FailureCode: chain.CodeNonCanonicalCBOR,
 			Flags: []string{"Schema"}, Description: "A canonically encoded envelope missing the required time field: the canonical re-encoding of what it decodes to differs, so it is not the canonical form of any event.",
 			Events: [][]byte{mustEncodeMap(deleteKey(envelopeMap(), "time"))},
@@ -360,6 +365,16 @@ func unicodePayloadEvent() []byte {
 func bytesPayloadEvent() []byte {
 	e := baseEvent()
 	e.Payload = map[string]any{"data": []byte{0x00, 0x10, 0xFF}}
+	return mustCanonical(e)
+}
+
+// emptyStringsEvent returns an event whose required string fields are all empty:
+// well-formed per the encode-even-when-empty rule, since the actor category and
+// the non-string fields still carry values.
+func emptyStringsEvent() []byte {
+	e := baseEvent()
+	e.Stream = ""
+	e.Type = ""
 	return mustCanonical(e)
 }
 
