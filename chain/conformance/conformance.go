@@ -12,6 +12,8 @@
 package conformance
 
 import (
+	"bytes"
+	"math"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
@@ -129,6 +131,69 @@ func trailingBytes() []byte {
 	return append(append([]byte{}, b...), 0x00)
 }
 
+// envelopeMap is the base event as a raw map, the starting point for the schema
+// defect vectors: deleting, retyping, or adding a key produces exactly one deviation
+// from the canonical envelope, encoded canonically so the deviation is the only fault.
+func envelopeMap() map[string]any {
+	e := baseEvent()
+	return map[string]any{
+		"stream":         e.Stream,
+		"seq":            e.Seq,
+		"time":           e.Time.UTC().UnixNano(),
+		"type":           e.Type,
+		"actor":          string(e.Actor),
+		"schema_version": e.SchemaVersion,
+		"payload":        map[string]any{},
+	}
+}
+
+func mustEncodeMap(m map[string]any) []byte {
+	b, err := cryptoEnc.Marshal(m)
+	if err != nil {
+		panic("conformance: encode envelope map: " + err.Error())
+	}
+	return b
+}
+
+// patchBytes replaces the first occurrence of old in a copy of b, panicking if old
+// is absent: a surgical byte mutation that is auditable in the vector description.
+func patchBytes(b, old, replacement []byte) []byte {
+	i := bytes.Index(b, old)
+	if i < 0 {
+		panic("conformance: byte pattern to patch not found")
+	}
+	out := make([]byte, 0, len(b)-len(old)+len(replacement))
+	out = append(out, b[:i]...)
+	out = append(out, replacement...)
+	out = append(out, b[i+len(old):]...)
+	return out
+}
+
+// seqNonMinimal is the canonical minimal event with its seq value 1 re-encoded as a
+// two-byte integer head (0x19 0x00 0x01): valid CBOR, same logical value, not the
+// shortest encoding, so it is not in canonical form.
+func seqNonMinimal() []byte {
+	return patchBytes(mustCanonical(baseEvent()),
+		[]byte{0x63, 's', 'e', 'q', 0x01},
+		[]byte{0x63, 's', 'e', 'q', 0x19, 0x00, 0x01})
+}
+
+// dupKeyFull is the canonical minimal event grown by one duplicated "seq" entry, so
+// the duplicate-key rejection is pinned on a full envelope, not only on a fragment.
+func dupKeyFull() []byte {
+	b := mustCanonical(baseEvent())
+	out := append([]byte{}, b...)
+	out[0] = 0xA8 // seven entries become eight
+	return append(out, 0x63, 's', 'e', 'q', 0x02)
+}
+
+// indefFull is the canonical minimal event re-framed as an indefinite-length map.
+func indefFull() []byte {
+	b := mustCanonical(baseEvent())
+	out := append([]byte{0xBF}, b[1:]...)
+	return append(out, 0xFF)
+}
+
 // Generate returns the full structural conformance vector set, deterministically.
 func Generate() []Vector {
 	minimal := mustCanonical(baseEvent())
@@ -213,5 +278,97 @@ func Generate() []Vector {
 			Flags: []string{"Structural"}, Description: "An empty event stream.",
 			Events: [][]byte{},
 		},
+		{
+			ID: "valid.seq_gap.01", Expect: Accept, Flags: []string{"Structural", "Ordering"},
+			Description: "Three events with seq 1, 5, 900: a record may carry a window of a longer stream, so gaps are permitted; only repeats and decreases are rejected.",
+			Events:      [][]byte{seqEvent(1, ""), seqEvent(5, ""), seqEvent(900, "")},
+		},
+		{
+			ID: "valid.large_ints.01", Expect: Accept, Flags: []string{"Structural", "Encoding"},
+			Description: "Events whose seq and time exceed 2^53 (2^53+1 and the int64 maximum): a verifier that coerces int64 to a 53-bit float changes these values and fails.",
+			Events:      [][]byte{largeIntEvent(1<<53+1, 1<<53+1), largeIntEvent(1<<53+3, math.MaxInt64)},
+		},
+		{
+			ID: "valid.unicode_payload.01", Expect: Accept, Flags: []string{"Structural", "Encoding"},
+			Description: "A payload whose keys span one to four UTF-8 bytes, pinning bytewise-encoded key sort order and non-ASCII content.",
+			Events:      [][]byte{unicodePayloadEvent()},
+		},
+		{
+			ID: "valid.payload_bytes.01", Expect: Accept, Flags: []string{"Structural", "Encoding"},
+			Description: "A payload carrying a CBOR byte string value: binary data is a bstr, exempt from the UTF-8 rule that governs text strings.",
+			Events:      [][]byte{bytesPayloadEvent()},
+		},
+		{
+			ID: "invalid.schema.missing_field.01", Expect: Reject, FailureCode: chain.CodeNonCanonicalCBOR,
+			Flags: []string{"Schema"}, Description: "A canonically encoded envelope missing the required time field: the canonical re-encoding of what it decodes to differs, so it is not the canonical form of any event.",
+			Events: [][]byte{mustEncodeMap(deleteKey(envelopeMap(), "time"))},
+		},
+		{
+			ID: "invalid.schema.unknown_field.01", Expect: Reject, FailureCode: chain.CodeNonCanonicalCBOR,
+			Flags: []string{"Schema"}, Description: "A canonically encoded envelope carrying an unknown extra field, which no canonical event encoding contains.",
+			Events: [][]byte{mustEncodeMap(withKey(envelopeMap(), "extra", int64(1)))},
+		},
+		{
+			ID: "invalid.schema.wrong_type.01", Expect: Reject, FailureCode: chain.CodeDecode,
+			Flags: []string{"Schema"}, Description: "An envelope whose seq is a text string rather than an integer.",
+			Events: [][]byte{mustEncodeMap(withKey(envelopeMap(), "seq", "1"))},
+		},
+		{
+			ID: "invalid.schema.bad_actor.01", Expect: Reject, FailureCode: chain.CodeInvalidActor,
+			Flags: []string{"Schema"}, Description: "An envelope whose actor is not one of the closed category agent, human, or system.",
+			Events: [][]byte{mustEncodeMap(withKey(envelopeMap(), "actor", "robot"))},
+		},
+		{
+			ID: "invalid.enc.non_minimal_int.01", Expect: Reject, FailureCode: chain.CodeNonCanonicalCBOR,
+			Flags: []string{"Encoding"}, Description: "A full envelope whose seq value 1 is encoded in a two-byte integer head: same value, not the shortest encoding.",
+			Events: [][]byte{seqNonMinimal()},
+		},
+		{
+			ID: "invalid.enc.duplicate_map_key_full.01", Expect: Reject, FailureCode: chain.CodeDuplicateMapKey,
+			Flags: []string{"Encoding"}, Description: "A full envelope grown by a duplicated seq entry, so duplicate-key rejection is pinned on a complete event, not only a fragment.",
+			Events: [][]byte{dupKeyFull()},
+		},
+		{
+			ID: "invalid.enc.indefinite_length_full.01", Expect: Reject, FailureCode: chain.CodeIndefiniteLength,
+			Flags: []string{"Encoding"}, Description: "A full envelope framed as an indefinite-length map.",
+			Events: [][]byte{indefFull()},
+		},
 	}
+}
+
+// largeIntEvent returns an event whose seq and time exceed float64's 53-bit integer
+// range, so any verifier that routes int64 through a Number representation corrupts
+// them and fails the re-derivation check.
+func largeIntEvent(seq, timeNanos int64) []byte {
+	e := baseEvent()
+	e.Seq = seq
+	e.Time = time.Unix(0, timeNanos).UTC()
+	return mustCanonical(e)
+}
+
+func unicodePayloadEvent() []byte {
+	e := baseEvent()
+	e.Payload = map[string]any{
+		"Z":  "latin",
+		"é":  "e-acute",
+		"☃":  "snowman",
+		"🎯": "target",
+	}
+	return mustCanonical(e)
+}
+
+func bytesPayloadEvent() []byte {
+	e := baseEvent()
+	e.Payload = map[string]any{"data": []byte{0x00, 0x10, 0xFF}}
+	return mustCanonical(e)
+}
+
+func deleteKey(m map[string]any, k string) map[string]any {
+	delete(m, k)
+	return m
+}
+
+func withKey(m map[string]any, k string, v any) map[string]any {
+	m[k] = v
+	return m
 }

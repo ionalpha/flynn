@@ -96,6 +96,37 @@ func (s rawEd25519Signer) Sign(_ io.Reader, content []byte) ([]byte, error) {
 	return ed25519.Sign(s.key, content), nil
 }
 
+// spoofAlgSigner signs with Ed25519 math while claiming an arbitrary algorithm
+// label, which is how the algorithm-substitution vectors are crafted: the signature
+// bytes are internally consistent, and only the claimed algorithm is the defect.
+type spoofAlgSigner struct {
+	alg cose.Algorithm
+	key ed25519.PrivateKey
+}
+
+func (s spoofAlgSigner) Algorithm() cose.Algorithm { return s.alg }
+
+func (s spoofAlgSigner) Sign(_ io.Reader, content []byte) ([]byte, error) {
+	return ed25519.Sign(s.key, content), nil
+}
+
+// signHeaders builds a COSE_Sign1 over payload with exactly the given protected
+// header, signed by the root key with Ed25519 math. Unlike signWith it controls the
+// whole header, so a vector can carry a substituted algorithm or omit the content
+// type entirely.
+func signHeaders(protected cose.ProtectedHeader, payload []byte) []byte {
+	alg, err := protected.Algorithm()
+	if err != nil {
+		panic("conformance: protected header must carry an algorithm: " + err.Error())
+	}
+	msg, err := cose.Sign1(nil, spoofAlgSigner{alg: alg, key: ed25519.NewKeyFromSeed(rootSeed[:])},
+		cose.Headers{Protected: protected}, payload, nil)
+	if err != nil {
+		panic("conformance: cose sign1: " + err.Error())
+	}
+	return msg
+}
+
 var (
 	rootSeed = [ed25519.SeedSize]byte{
 		1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16,
@@ -503,14 +534,248 @@ func GenerateCrypto() []CryptoVector {
 		},
 	}
 
-	out := make([]CryptoVector, 0, len(l2)+len(l3run)+len(l3proof)+len(l3consistency)+len(l4)+len(l4gt))
+	// L2: the checkpoint header and payload axes the mutant matrix exposed. The
+	// payload of the valid three-event run's checkpoint is rebuilt here so a header
+	// defect is the only fault in each vector.
+	runPayload := func() []byte {
+		w := decodeRun(validRun)
+		tree := chain.NewTree()
+		for _, cb := range w.Events {
+			if err := tree.Append(cb); err != nil {
+				panic("conformance: append leaf: " + err.Error())
+			}
+		}
+		treeRoot, err := tree.Root()
+		if err != nil {
+			panic("conformance: tree root: " + err.Error())
+		}
+		return mustMarshal(cryptoEnc.Marshal(map[string]any{
+			"origin": checkOrig, "size": uint64(len(w.Events)), "root": treeRoot,
+		}))
+	}()
+	container := func(checkpoint []byte, events [][]byte) []byte {
+		return encodeRun(runWire{Checkpoint: checkpoint, Events: events})
+	}
+	validEvents := decodeRun(validRun).Events
+	kidHeader := func(alg cose.Algorithm, contentType string) cose.ProtectedHeader {
+		h := cose.ProtectedHeader{
+			cose.HeaderLabelAlgorithm: alg,
+			cose.HeaderLabelKeyID:     []byte(rootKeyID),
+		}
+		if contentType != "" {
+			h[cose.HeaderLabelContentType] = contentType
+		}
+		return h
+	}
+
+	l2header := []CryptoVector{
+		{
+			ID: "crypto.checkpoint.empty_tree.01", Tier: "L2", Kind: KindCheckpoint, Expect: Accept,
+			Description: "A signed checkpoint over an empty tree: size 0 and the RFC 6962 empty-tree root SHA-256 of the empty string.",
+			Artifact:    validCheckpoint(root, nil).COSE,
+		},
+		{
+			ID: "crypto.checkpoint.alg_substitution.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
+			FailureCode: chain.CodeSignatureInvalid,
+			Description: "A checkpoint whose protected algorithm claims ES256 (-7) over an Ed25519 signature: algorithm substitution must not verify.",
+			Artifact:    signHeaders(kidHeader(cose.AlgorithmES256, checkpointContentType), runPayload),
+		},
+		{
+			ID: "crypto.checkpoint.missing_content_type.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
+			FailureCode: chain.CodeContentType,
+			Description: "A correctly signed checkpoint whose protected header omits the content type entirely.",
+			Artifact:    signHeaders(kidHeader(checkpointAlg, ""), runPayload),
+		},
+		{
+			ID: "crypto.checkpoint.payload_missing_origin.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
+			FailureCode: chain.CodeCheckpointDecode,
+			Description: "A correctly signed checkpoint whose payload omits the origin field.",
+			Artifact: signWith(checkpointContentType, rootKeyID, mustMarshal(cryptoEnc.Marshal(map[string]any{
+				"size": uint64(3), "root": make([]byte, 32),
+			}))),
+		},
+		{
+			ID: "crypto.checkpoint.payload_extra_field.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
+			FailureCode: chain.CodeCheckpointDecode,
+			Description: "A correctly signed checkpoint whose payload carries an extra field no checkpoint encoding contains.",
+			Artifact: signWith(checkpointContentType, rootKeyID, mustMarshal(cryptoEnc.Marshal(map[string]any{
+				"origin": checkOrig, "size": uint64(3), "root": make([]byte, 32), "extra": int64(1),
+			}))),
+		},
+		{
+			ID: "crypto.checkpoint.payload_non_canonical.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
+			FailureCode: chain.CodeCheckpointDecode,
+			Description: "A correctly signed checkpoint whose payload map keys are not in canonical sorted order.",
+			Artifact:    signWith(checkpointContentType, rootKeyID, nonCanonicalCheckpointPayload()),
+		},
+		{
+			ID: "crypto.checkpoint.payload_short_root.01", Tier: "L2", Kind: KindCheckpoint, Expect: Reject,
+			FailureCode: chain.CodeCheckpointDecode,
+			Description: "A correctly signed checkpoint whose root is sixteen bytes, not a SHA-256 digest.",
+			Artifact: signWith(checkpointContentType, rootKeyID, mustMarshal(cryptoEnc.Marshal(map[string]any{
+				"origin": checkOrig, "size": uint64(3), "root": make([]byte, 16),
+			}))),
+		},
+	}
+
+	// L2: the run-container axes from the mutant differential test (m02-m19). Each
+	// container carries the valid events, so the container framing or the embedded
+	// checkpoint header is the only defect.
+	l2run := []CryptoVector{
+		{
+			ID: "crypto.run.alg_substitution.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeSignatureInvalid,
+			Description: "A run whose embedded checkpoint claims ES256 (-7) over an Ed25519 signature.",
+			Artifact:    container(signHeaders(kidHeader(cose.AlgorithmES256, checkpointContentType), runPayload), validEvents),
+		},
+		{
+			ID: "crypto.run.bad_content_type.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeContentType,
+			Description: "A run whose embedded checkpoint carries a content type that is not the checkpoint type.",
+			Artifact:    container(signHeaders(kidHeader(checkpointAlg, "application/provetrail-wrong"), runPayload), validEvents),
+		},
+		{
+			ID: "crypto.run.missing_content_type.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeContentType,
+			Description: "A run whose embedded checkpoint omits the protected content type entirely.",
+			Artifact:    container(signHeaders(kidHeader(checkpointAlg, ""), runPayload), validEvents),
+		},
+		{
+			ID: "crypto.run.unknown_key.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeUnknownKey,
+			Description: "A sealed run signed by a key whose public half is not in the keyring.",
+			Artifact:    mustMarshal(mustSealed(alt).Marshal()),
+		},
+		{
+			ID: "crypto.run.duplicate_container_key.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeRecordDecode,
+			Description: "A run container grown by a duplicated events entry.",
+			Artifact:    dupContainerKey(validRun),
+		},
+		{
+			ID: "crypto.run.indefinite_container.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeRecordDecode,
+			Description: "A run container framed as an indefinite-length map.",
+			Artifact:    indefContainer(validRun),
+		},
+		{
+			ID: "crypto.run.trailing_bytes.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeRecordDecode,
+			Description: "A valid run container followed by one extra trailing byte.",
+			Artifact:    append(append([]byte{}, validRun...), 0x00),
+		},
+		{
+			ID: "crypto.run.non_minimal_head.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeNonCanonical,
+			Description: "A run container whose map head is a one-byte length argument: same structure, not the shortest encoding.",
+			Artifact:    nonMinimalHeadContainer(validRun),
+		},
+		{
+			ID: "crypto.run.events_not_bstr.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeRecordDecode,
+			Description: "A run container whose events are integers rather than byte strings.",
+			Artifact: mustMarshal(cryptoEnc.Marshal(map[string]any{
+				"checkpoint": decodeRun(validRun).Checkpoint, "events": []any{int64(1), int64(2), int64(3)},
+			})),
+		},
+		{
+			ID: "crypto.run.empty_events.01", Tier: "L2", Kind: KindRun, Expect: Reject,
+			FailureCode: chain.CodeEmptyRecord,
+			Description: "A run container carrying a validly signed size-0 checkpoint and no events: a record must attest at least one event.",
+			Artifact:    container(validCheckpoint(root, nil).COSE, [][]byte{}),
+		},
+	}
+
+	// L3: the operational proof codes, made pinnable.
+	proofIndexOOR := func() []byte {
+		pf, err := sealed.EventProof(1)
+		if err != nil {
+			panic("conformance: event proof: " + err.Error())
+		}
+		pf.Index = 99
+		return mustMarshal(pf.Marshal())
+	}()
+	proofTruncated := func() []byte {
+		pf, err := sealed.EventProof(1)
+		if err != nil {
+			panic("conformance: event proof: " + err.Error())
+		}
+		if len(pf.Inclusion) == 0 {
+			panic("conformance: inclusion path unexpectedly empty")
+		}
+		pf.Inclusion = pf.Inclusion[:len(pf.Inclusion)-1]
+		return mustMarshal(pf.Marshal())
+	}()
+	l3ops := []CryptoVector{
+		{
+			ID: "crypto.event_proof.index_out_of_range.01", Tier: "L3", Kind: KindEventProof, Expect: Reject,
+			FailureCode: chain.CodeIndexRange,
+			Description: "A proof whose claimed index lies outside the signed tree size.",
+			Artifact:    proofIndexOOR,
+		},
+		{
+			ID: "crypto.event_proof.missing_node.01", Tier: "L3", Kind: KindEventProof, Expect: Reject,
+			FailureCode: chain.CodeMissingNode,
+			Description: "A proof whose inclusion path is one node short of what the tree shape requires.",
+			Artifact:    proofTruncated,
+		},
+	}
+
+	out := make([]CryptoVector, 0, len(l2)+len(l2header)+len(l3run)+len(l2run)+len(l3proof)+len(l3ops)+len(l3consistency)+len(l4)+len(l4gt))
 	out = append(out, l2...)
+	out = append(out, l2header...)
 	out = append(out, l3run...)
+	out = append(out, l2run...)
 	out = append(out, l3proof...)
+	out = append(out, l3ops...)
 	out = append(out, l3consistency...)
 	out = append(out, l4...)
 	out = append(out, l4gt...)
 	return out
+}
+
+// nonCanonicalCheckpointPayload encodes the checkpoint fields in declaration order
+// (origin, size, root) without key sorting; canonical order is root, size, origin,
+// so these bytes decode to a checkpoint but are not its canonical encoding.
+func nonCanonicalCheckpointPayload() []byte {
+	w := struct {
+		Origin string `cbor:"origin"`
+		Size   uint64 `cbor:"size"`
+		Root   []byte `cbor:"root"`
+	}{Origin: checkOrig, Size: 3, Root: make([]byte, 32)}
+	b, err := nonSortEnc.Marshal(w)
+	if err != nil {
+		panic("conformance: encode non-canonical checkpoint payload: " + err.Error())
+	}
+	return b
+}
+
+// dupContainerKey grows a valid run container by a duplicated events entry.
+func dupContainerKey(record []byte) []byte {
+	if record[0] != 0xA2 {
+		panic("conformance: run container does not start as a two-entry map")
+	}
+	out := append([]byte{}, record...)
+	out[0] = 0xA3
+	return append(out, 0x66, 'e', 'v', 'e', 'n', 't', 's', 0x80)
+}
+
+// indefContainer re-frames a valid run container as an indefinite-length map.
+func indefContainer(record []byte) []byte {
+	if record[0] != 0xA2 {
+		panic("conformance: run container does not start as a two-entry map")
+	}
+	out := append([]byte{0xBF}, record[1:]...)
+	return append(out, 0xFF)
+}
+
+// nonMinimalHeadContainer re-frames a valid run container's map head as a one-byte
+// length argument (0xB8 0x02): same structure, not the shortest encoding.
+func nonMinimalHeadContainer(record []byte) []byte {
+	if record[0] != 0xA2 {
+		panic("conformance: run container does not start as a two-entry map")
+	}
+	return append([]byte{0xB8, 0x02}, record[1:]...)
 }
 
 // gtCheck builds a check-verdict event at the given stream sequence: a verification

@@ -1,7 +1,9 @@
 package chain
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"io"
 
 	"github.com/veraison/go-cose"
@@ -60,6 +62,9 @@ type SignedCheckpoint struct {
 // that are signed. It uses the same canonical encoder as events, so the signed
 // payload is reproducible in any language.
 func checkpointPayload(c Checkpoint) ([]byte, error) {
+	if len(c.RootHash) != sha256.Size {
+		return nil, fault.New(fault.Terminal, CodeEncode, "chain: checkpoint root is not a SHA-256 digest")
+	}
 	m := map[string]any{
 		"origin": c.Origin,
 		"size":   c.Size,
@@ -80,6 +85,18 @@ func decodeCheckpoint(b []byte) (Checkpoint, error) {
 	}
 	if err := canonicalDec.Unmarshal(b, &raw); err != nil {
 		return Checkpoint{}, fault.Wrap(fault.Terminal, CodeCheckpointDecode, err)
+	}
+	// The signed payload must be the exact canonical encoding of the checkpoint:
+	// re-encode and compare, so a payload with a missing, extra, or reordered field
+	// is rejected rather than absorbed into a default value. The root must be a full
+	// SHA-256 digest; a short root would otherwise surface later as a confusing
+	// mismatch or, worse, verify against a truncated tree head.
+	re, err := canonicalEnc.Marshal(map[string]any{"origin": raw.Origin, "size": raw.Size, "root": raw.Root})
+	if err != nil || !bytes.Equal(re, b) {
+		return Checkpoint{}, fault.New(fault.Terminal, CodeCheckpointDecode, "chain: checkpoint payload is not in canonical form")
+	}
+	if len(raw.Root) != sha256.Size {
+		return Checkpoint{}, fault.New(fault.Terminal, CodeCheckpointDecode, "chain: checkpoint root is not a SHA-256 digest")
 	}
 	return Checkpoint{Origin: raw.Origin, Size: raw.Size, RootHash: raw.Root}, nil
 }

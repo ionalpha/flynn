@@ -58,6 +58,68 @@
       "artifact": "invalid/crypto_checkpoint_undecodable_payload_01.cbor"
     },
     {
+      "id": "crypto.checkpoint.empty_tree.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "accept",
+      "description": "A signed checkpoint over an empty tree: size 0 and the RFC 6962 empty-tree root SHA-256 of the empty string.",
+      "artifact": "valid/crypto_checkpoint_empty_tree_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.alg_substitution.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.signature_invalid",
+      "description": "A checkpoint whose protected algorithm claims ES256 (-7) over an Ed25519 signature: algorithm substitution must not verify.",
+      "artifact": "invalid/crypto_checkpoint_alg_substitution_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.missing_content_type.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.bad_content_type",
+      "description": "A correctly signed checkpoint whose protected header omits the content type entirely.",
+      "artifact": "invalid/crypto_checkpoint_missing_content_type_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.payload_missing_origin.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.checkpoint_decode",
+      "description": "A correctly signed checkpoint whose payload omits the origin field.",
+      "artifact": "invalid/crypto_checkpoint_payload_missing_origin_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.payload_extra_field.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.checkpoint_decode",
+      "description": "A correctly signed checkpoint whose payload carries an extra field no checkpoint encoding contains.",
+      "artifact": "invalid/crypto_checkpoint_payload_extra_field_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.payload_non_canonical.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.checkpoint_decode",
+      "description": "A correctly signed checkpoint whose payload map keys are not in canonical sorted order.",
+      "artifact": "invalid/crypto_checkpoint_payload_non_canonical_01.cbor"
+    },
+    {
+      "id": "crypto.checkpoint.payload_short_root.01",
+      "tier": "L2",
+      "kind": "checkpoint",
+      "expect": "reject",
+      "failure_code": "sign.checkpoint_decode",
+      "description": "A correctly signed checkpoint whose root is sixteen bytes, not a SHA-256 digest.",
+      "artifact": "invalid/crypto_checkpoint_payload_short_root_01.cbor"
+    },
+    {
       "id": "crypto.run.valid.01",
       "tier": "L2",
       "kind": "run",
@@ -102,6 +164,96 @@
       "artifact": "invalid/crypto_run_non_canonical_01.cbor"
     },
     {
+      "id": "crypto.run.alg_substitution.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "sign.signature_invalid",
+      "description": "A run whose embedded checkpoint claims ES256 (-7) over an Ed25519 signature.",
+      "artifact": "invalid/crypto_run_alg_substitution_01.cbor"
+    },
+    {
+      "id": "crypto.run.bad_content_type.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "sign.bad_content_type",
+      "description": "A run whose embedded checkpoint carries a content type that is not the checkpoint type.",
+      "artifact": "invalid/crypto_run_bad_content_type_01.cbor"
+    },
+    {
+      "id": "crypto.run.missing_content_type.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "sign.bad_content_type",
+      "description": "A run whose embedded checkpoint omits the protected content type entirely.",
+      "artifact": "invalid/crypto_run_missing_content_type_01.cbor"
+    },
+    {
+      "id": "crypto.run.unknown_key.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "sign.unknown_key",
+      "description": "A sealed run signed by a key whose public half is not in the keyring.",
+      "artifact": "invalid/crypto_run_unknown_key_01.cbor"
+    },
+    {
+      "id": "crypto.run.duplicate_container_key.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.decode",
+      "description": "A run container grown by a duplicated events entry.",
+      "artifact": "invalid/crypto_run_duplicate_container_key_01.cbor"
+    },
+    {
+      "id": "crypto.run.indefinite_container.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.decode",
+      "description": "A run container framed as an indefinite-length map.",
+      "artifact": "invalid/crypto_run_indefinite_container_01.cbor"
+    },
+    {
+      "id": "crypto.run.trailing_bytes.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.decode",
+      "description": "A valid run container followed by one extra trailing byte.",
+      "artifact": "invalid/crypto_run_trailing_bytes_01.cbor"
+    },
+    {
+      "id": "crypto.run.non_minimal_head.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.non_canonical",
+      "description": "A run container whose map head is a one-byte length argument: same structure, not the shortest encoding.",
+      "artifact": "invalid/crypto_run_non_minimal_head_01.cbor"
+    },
+    {
+      "id": "crypto.run.events_not_bstr.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.decode",
+      "description": "A run container whose events are integers rather than byte strings.",
+      "artifact": "invalid/crypto_run_events_not_bstr_01.cbor"
+    },
+    {
+      "id": "crypto.run.empty_events.01",
+      "tier": "L2",
+      "kind": "run",
+      "expect": "reject",
+      "failure_code": "record.empty",
+      "description": "A run container carrying a validly signed size-0 checkpoint and no events: a record must attest at least one event.",
+      "artifact": "invalid/crypto_run_empty_events_01.cbor"
+    },
+    {
       "id": "crypto.event_proof.valid.01",
       "tier": "L3",
       "kind": "event_proof",
@@ -135,6 +287,24 @@
       "failure_code": "sign.signature_invalid",
       "description": "A proof whose embedded checkpoint signature has been altered.",
       "artifact": "invalid/crypto_event_proof_bad_signature_01.cbor"
+    },
+    {
+      "id": "crypto.event_proof.index_out_of_range.01",
+      "tier": "L3",
+      "kind": "event_proof",
+      "expect": "reject",
+      "failure_code": "record.index_out_of_range",
+      "description": "A proof whose claimed index lies outside the signed tree size.",
+      "artifact": "invalid/crypto_event_proof_index_out_of_range_01.cbor"
+    },
+    {
+      "id": "crypto.event_proof.missing_node.01",
+      "tier": "L3",
+      "kind": "event_proof",
+      "expect": "reject",
+      "failure_code": "merkle.missing_node",
+      "description": "A proof whose inclusion path is one node short of what the tree shape requires.",
+      "artifact": "invalid/crypto_event_proof_missing_node_01.cbor"
     },
     {
       "id": "crypto.consistency.valid.01",

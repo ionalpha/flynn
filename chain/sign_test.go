@@ -112,7 +112,7 @@ func TestPropSignVerify(t *testing.T) {
 		cp := Checkpoint{
 			Origin:   rapid.StringMatching(`[a-z:/._-]{0,24}`).Draw(rt, "origin"),
 			Size:     rapid.Uint64Range(0, 1<<40).Draw(rt, "size"),
-			RootHash: []byte(rapid.StringN(0, 64, -1).Draw(rt, "root")),
+			RootHash: rapid.SliceOfN(rapid.Byte(), 32, 32).Draw(rt, "root"),
 		}
 		sc, err := signer.SignCheckpoint(cp)
 		if err != nil {
@@ -131,7 +131,7 @@ func TestPropSignVerify(t *testing.T) {
 func FuzzVerifyCheckpointNoPanic(f *testing.F) {
 	priv, pub := testKey(0x77)
 	signer, _ := NewEd25519RootSigner("k", priv)
-	sc, _ := signer.SignCheckpoint(Checkpoint{Origin: "o", Size: 1, RootHash: []byte("root")})
+	sc, _ := signer.SignCheckpoint(Checkpoint{Origin: "o", Size: 1, RootHash: make([]byte, 32)})
 	f.Add(sc.COSE)
 	f.Add([]byte{})
 	f.Add([]byte{0xff})
