@@ -59,7 +59,7 @@
     },
     {
       "id": "crypto.run.valid.01",
-      "tier": "L3",
+      "tier": "L2",
       "kind": "run",
       "expect": "accept",
       "description": "A sealed three-event run: signed checkpoint plus every event's canonical bytes.",
@@ -67,7 +67,7 @@
     },
     {
       "id": "crypto.run.root_mismatch.01",
-      "tier": "L3",
+      "tier": "L2",
       "kind": "run",
       "expect": "reject",
       "failure_code": "record.root_mismatch",
@@ -76,7 +76,7 @@
     },
     {
       "id": "crypto.run.size_mismatch.01",
-      "tier": "L3",
+      "tier": "L2",
       "kind": "run",
       "expect": "reject",
       "failure_code": "record.size_mismatch",
@@ -85,7 +85,7 @@
     },
     {
       "id": "crypto.run.bad_signature.01",
-      "tier": "L3",
+      "tier": "L2",
       "kind": "run",
       "expect": "reject",
       "failure_code": "sign.signature_invalid",
@@ -94,7 +94,7 @@
     },
     {
       "id": "crypto.run.non_canonical.01",
-      "tier": "L3",
+      "tier": "L2",
       "kind": "run",
       "expect": "reject",
       "failure_code": "record.non_canonical",

@@ -5,12 +5,13 @@ package conformance
 // canonical event encoding, these tiers fix the artifacts a verifier must check
 // against a public key:
 //
-//   - L2 (checkpoint): a COSE_Sign1 signed checkpoint over a Merkle head, checked
-//     with chain.VerifyCheckpoint.
-//   - L3 (run, event_proof, consistency): a full signed run record checked with
-//     chain.VerifyRun, a standalone single-event proof checked with
+//   - L2 (checkpoint, run): a COSE_Sign1 signed checkpoint over a Merkle head,
+//     checked with chain.VerifyCheckpoint, and a full signed run record checked
+//     with chain.VerifyRun. Run-record root integrity is L2 because the tier is
+//     defined as Merkle-leaf integrity over carried bytes.
+//   - L3 (event_proof, consistency): a standalone single-event proof checked with
 //     chain.VerifyEventProof, and a consistency proof checked with
-//     chain.VerifyConsistencyProof.
+//     chain.VerifyConsistencyProof, the transparency-proof artifacts.
 //   - L4 (governance, ground_truth): a cryptographically valid run whose events carry
 //     the admission lifecycle (chain.VerifyGovernance) or outcome and check records
 //     (chain.VerifyGroundTruth, is a claimed success grounded in a passing check).
@@ -324,30 +325,30 @@ func GenerateCrypto() []CryptoVector {
 
 	l3run := []CryptoVector{
 		{
-			ID: "crypto.run.valid.01", Tier: "L3", Kind: KindRun, Expect: Accept,
+			ID: "crypto.run.valid.01", Tier: "L2", Kind: KindRun, Expect: Accept,
 			Description: "A sealed three-event run: signed checkpoint plus every event's canonical bytes.",
 			Artifact:    validRun,
 		},
 		{
-			ID: "crypto.run.root_mismatch.01", Tier: "L3", Kind: KindRun, Expect: Reject,
+			ID: "crypto.run.root_mismatch.01", Tier: "L2", Kind: KindRun, Expect: Reject,
 			FailureCode: chain.CodeRootMismatch,
 			Description: "A run whose events are canonical and ordered but no longer reproduce the signed root.",
 			Artifact:    runTamperRoot,
 		},
 		{
-			ID: "crypto.run.size_mismatch.01", Tier: "L3", Kind: KindRun, Expect: Reject,
+			ID: "crypto.run.size_mismatch.01", Tier: "L2", Kind: KindRun, Expect: Reject,
 			FailureCode: chain.CodeSizeMismatch,
 			Description: "A run with one event removed so the count no longer matches the signed size.",
 			Artifact:    runDropEvent,
 		},
 		{
-			ID: "crypto.run.bad_signature.01", Tier: "L3", Kind: KindRun, Expect: Reject,
+			ID: "crypto.run.bad_signature.01", Tier: "L2", Kind: KindRun, Expect: Reject,
 			FailureCode: chain.CodeSignatureInvalid,
 			Description: "A run whose embedded checkpoint signature has been altered.",
 			Artifact:    runBadSig,
 		},
 		{
-			ID: "crypto.run.non_canonical.01", Tier: "L3", Kind: KindRun, Expect: Reject,
+			ID: "crypto.run.non_canonical.01", Tier: "L2", Kind: KindRun, Expect: Reject,
 			FailureCode: chain.CodeNonCanonical,
 			Description: "A run record carrying an extra map field, so it is not in canonical form.",
 			Artifact:    runNonCanonical,
