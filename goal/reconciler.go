@@ -57,6 +57,7 @@ type Reconciler struct {
 	stop        StopEvaluator
 	cleaner     Cleaner
 	bus         bus.Bus // optional; nil disables owner wake signals
+	planning    bool
 	poll        time.Duration
 	waitRecheck time.Duration // 0 derives DefaultWaitRecheckFactor * poll
 	stepTries   int
@@ -86,6 +87,17 @@ func WithWaitRecheck(d time.Duration) Option {
 		}
 	}
 }
+
+// WithPlanning makes the goal plan before it builds: the first thing a goal does is
+// a planning step that expands its objective into a ledger, and no build step is
+// dispatched until that ledger exists. It pairs with a Worker configured with a
+// Planner, which is what actually runs the planning step.
+//
+// It is an option rather than the unconditional behaviour because a goal composed
+// without a planner has no way to produce a ledger, and gating those goals would
+// park every one of them forever. Wiring the planner and turning this on are the
+// same decision, made in the same place.
+func WithPlanning() Option { return func(g *Reconciler) { g.planning = true } }
 
 // WithWakeBus sets the bus the reconciler signals a parked owner on when one of
 // its children settles, so a fan-out parent re-checks on child state-change
@@ -238,9 +250,17 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_status_decode", err)
 	}
 
+	// A ledger that lost or rewrote an item between reconciles is the definition of
+	// done being edited mid-run, so the goal fails rather than adopting the edit.
+	if err := status.ValidateLedger(spec.Ledger); err != nil {
+		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
+	}
+	status.SyncLedger(spec.Ledger)
+
 	// Observe an in-flight step.
 	observed := false
 	if status.InFlight != nil {
+		inFlightKind := status.InFlight.Kind
 		job, err := g.jobs.Get(ctx, status.InFlight.JobID)
 		switch {
 		case err != nil:
@@ -261,7 +281,10 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 			// A step that parked the goal (ErrWaiting) made no progress, so it
 			// does not count against the step budget: a fan-out whose children
 			// outlast the budget's worth of re-checks must wait, not false-stall.
-			if status.WaitingSince == nil {
+			// A planning step is not building either: it is the phase that decides
+			// what the build budget will be spent on, so charging the budget for it
+			// would make a goal that plans strictly poorer than one that does not.
+			if status.WaitingSince == nil && inFlightKind != PlanJobKind {
 				status.Steps++
 			}
 		}
@@ -284,6 +307,23 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 			return reconcile.Result{RequeueAfter: wait}, nil
 		}
 		status.WaitingSince = nil // fallback elapsed with no wake: re-check now
+	}
+
+	// Planning gate. A goal that plans expands its objective into a ledger before it
+	// builds anything, so the first dispatch is a planning step and the stop
+	// condition is not evaluated until there is a record to evaluate it against.
+	if g.planning && !status.Planned {
+		return g.dispatch(ctx, r, status, specHash, PlanJobKind, PhasePlanning, "PlanDispatched")
+	}
+	// A planner that ran and produced nothing leaves a goal with no definition of
+	// done, which is a stall. Letting it build anyway is how a run ends up claiming
+	// success against a record that never said what success was.
+	if g.planning && len(spec.Ledger) == 0 {
+		status.Phase = PhaseStalled
+		status.Message = "planning produced an empty ledger"
+		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "EmptyLedger", Message: status.Message}, g.clk.Now())
+		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+		return g.terminal(ctx, r, status, specHash)
 	}
 
 	// Converged?
@@ -309,9 +349,18 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	}
 
 	// Dispatch the next step and record it in flight.
+	return g.dispatch(ctx, r, status, specHash, StepJobKind, PhaseRunning, "StepDispatched")
+}
+
+// dispatch enqueues one job of the given kind against the goal and records it in
+// flight under the phase that job puts the goal in. Planning and building share it
+// so a planning step gets the same reservation, lease, crash-resume and retry
+// behaviour a build step has, and the only thing that differs between them is what
+// the executor is asked to do.
+func (g *Reconciler) dispatch(ctx context.Context, r resource.Resource, status Status, specHash, kind string, phase Phase, reason string) (reconcile.Result, error) {
 	job, err := g.jobs.Enqueue(ctx, jobs.EnqueueParams{
 		Queue:       StepQueue,
-		Kind:        StepJobKind,
+		Kind:        kind,
 		Payload:     []byte(r.ID),
 		Scope:       state.Scope(r.Scope),
 		MaxAttempts: g.stepTries,
@@ -319,9 +368,9 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	if err != nil {
 		return reconcile.Result{}, putErr(err)
 	}
-	status.Phase = PhaseRunning
-	status.InFlight = &InFlight{JobID: job.ID, StartedAt: g.clk.Now()}
-	status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "StepDispatched"}, g.clk.Now())
+	status.Phase = phase
+	status.InFlight = &InFlight{JobID: job.ID, StartedAt: g.clk.Now(), Kind: kind}
+	status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: reason}, g.clk.Now())
 	if err := g.recordDispatch(ctx, r, status, specHash); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -375,6 +424,13 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 		}
 		status.Checkpoint = cur.Checkpoint
 		status.WaitingSince = cur.WaitingSince
+		// The planning mark and the per-item state are the worker's too, and the
+		// planning step is the one most likely to land inside this window: the plan
+		// job is enqueued before this reservation is written, so a worker that
+		// claims and finishes it first would otherwise have its ledger erased here
+		// and be asked to plan the same goal all over again.
+		status.Planned = cur.Planned
+		status.Ledger = cur.Ledger
 		enc, err := status.Encode()
 		if err != nil {
 			return err

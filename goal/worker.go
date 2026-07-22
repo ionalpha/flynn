@@ -47,6 +47,21 @@ type StepExecutor interface {
 	Execute(ctx context.Context, goal resource.Resource) (checkpoint json.RawMessage, err error)
 }
 
+// Planner expands a goal's objective into the ledger of work that objective
+// implies, each item carrying its own declared way to verify it. It runs once,
+// before any building, and it is a genuinely different prompt from a build step
+// rather than the build prompt with a plan instruction attached: the whole first
+// context window goes on working out what the objective actually requires, which is
+// not something a step also trying to make progress will do well.
+//
+// A planner that returns no items is not an error here. It is recorded as planned
+// with an empty ledger, and the reconciler stalls the goal, so "the objective could
+// not be expanded" surfaces as a settled goal with a reason rather than a retry
+// loop.
+type Planner interface {
+	Plan(ctx context.Context, goal resource.Resource) ([]LedgerItem, error)
+}
+
 // ErrWaiting is returned by a StepExecutor whose step made no progress because it
 // is waiting on external state, such as a fan-out whose children are still
 // running. The worker completes the job without persisting a checkpoint and stamps
@@ -65,6 +80,7 @@ type Worker struct {
 	store     resource.Store
 	jobs      jobs.Queue
 	exec      StepExecutor
+	planner   Planner // optional; nil means a plan job is refused rather than guessed at
 	clk       clock.Timing
 	bus       bus.Bus // optional; nil disables completion signals
 	lease     time.Duration
@@ -77,6 +93,10 @@ type WorkerOption func(*Worker)
 
 // WithBus sets the bus a worker publishes step-completion signals on.
 func WithBus(b bus.Bus) WorkerOption { return func(w *Worker) { w.bus = b } }
+
+// WithPlanner sets the planner that runs a goal's planning step. It pairs with the
+// reconciler's WithPlanning, which is what makes a goal plan before it builds.
+func WithPlanner(p Planner) WorkerOption { return func(w *Worker) { w.planner = p } }
 
 // WithLease overrides the step lease duration.
 func WithLease(d time.Duration) WorkerOption {
@@ -189,6 +209,9 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	if r.DeletionTimestamp != nil {
 		return w.jobs.Complete(ctx, job.ID) // terminating; stop working on it
 	}
+	if job.Kind == PlanJobKind {
+		return w.runPlan(ctx, job, r)
+	}
 
 	checkpoint, err := w.exec.Execute(ctx, r)
 	if errors.Is(err, ErrWaiting) {
@@ -210,6 +233,76 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	}
 	w.signal(ctx, r)
 	return nil
+}
+
+// runPlan executes a goal's planning step: expand the objective into a ledger and
+// record it on the goal before any building is dispatched.
+//
+// The ledger write is not best-effort the way a checkpoint is. A checkpoint that
+// fails to land costs one repeated turn; a ledger that fails to land leaves the goal
+// unplanned, and the reconciler would dispatch planning again on the next pass,
+// forever. So a failed write fails the job instead, which puts it on the retry
+// ladder and, if it keeps failing, stalls the goal with the cause attached.
+func (w *Worker) runPlan(ctx context.Context, job jobs.Job, r resource.Resource) error {
+	if w.planner == nil {
+		// A goal was gated on planning by a reconciler wired to a worker that cannot
+		// plan. No number of retries fixes a missing port, and the goal would
+		// otherwise sit unplanned and undispatched with nothing saying why.
+		return w.fail(ctx, job, fault.Wrap(fault.Terminal, "goal_no_planner", errors.New("goal: plan step dispatched to a worker with no planner")))
+	}
+	items, err := w.planner.Plan(ctx, r)
+	if err != nil {
+		return w.fail(ctx, job, err)
+	}
+	if err := w.recordPlan(ctx, r, items); err != nil {
+		return w.fail(ctx, job, err)
+	}
+	if err := w.jobs.Complete(ctx, job.ID); err != nil {
+		return err // crashed before completing: the lease lapses and planning re-runs
+	}
+	w.signal(ctx, r)
+	return nil
+}
+
+// recordPlan writes the planned items onto the goal's spec and marks the goal
+// planned, against a fresh read under the shared conflict-retry policy. The append
+// rule is enforced here at the point of the write: the planner's items are appended
+// to whatever ledger the goal already carries, so re-running a planning step after a
+// crash adds to the record rather than replacing it, and a planner that tries to
+// restate an existing item differently is refused instead of quietly redefining it.
+func (w *Worker) recordPlan(ctx context.Context, r resource.Resource, items []LedgerItem) error {
+	_, err := resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
+		spec, err := DecodeSpec(*fresh)
+		if err != nil {
+			return err
+		}
+		status, err := DecodeStatus(*fresh)
+		if err != nil {
+			return err
+		}
+		ledger, err := AppendItems(spec.Ledger, items...)
+		if err != nil {
+			return fault.Wrap(fault.Terminal, "goal_plan_invalid", err)
+		}
+		if err := ValidateExtension(spec.Ledger, ledger); err != nil {
+			return fault.Wrap(fault.Terminal, "goal_plan_invalid", err)
+		}
+		spec.Ledger = ledger
+		encSpec, err := json.Marshal(spec)
+		if err != nil {
+			return err
+		}
+		status.Planned = true
+		status.SyncLedger(ledger)
+		encStatus, err := status.Encode()
+		if err != nil {
+			return err
+		}
+		fresh.Spec = encSpec
+		fresh.Status = encStatus
+		return nil
+	})
+	return err
 }
 
 // persistCheckpoint records the step's progress on the goal's status so the next

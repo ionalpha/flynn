@@ -289,7 +289,7 @@ func instanceReporter(store resource.Store, instanceID string) instance.Reporter
 				continue
 			}
 			switch st.Phase {
-			case goal.PhasePending, goal.PhaseRunning:
+			case goal.PhasePending, goal.PhasePlanning, goal.PhaseRunning:
 				active = append(active, r.Name)
 			case goal.PhaseConverged, goal.PhaseStalled:
 				// Terminal: the goal is finished, so it is not active work.
