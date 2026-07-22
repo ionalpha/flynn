@@ -354,9 +354,9 @@ func largeIntEvent(seq, timeNanos int64) []byte {
 func unicodePayloadEvent() []byte {
 	e := baseEvent()
 	e.Payload = map[string]any{
-		"Z":  "latin",
-		"é":  "e-acute",
-		"☃":  "snowman",
+		"Z": "latin",
+		"é": "e-acute",
+		"☃": "snowman",
 		"🎯": "target",
 	}
 	return mustCanonical(e)
