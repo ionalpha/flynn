@@ -1,0 +1,67 @@
+name: PR body
+
+# This check validates pull request metadata, not code, which is why it is its own
+# workflow rather than a job in ci.yml. The difference that matters is `edited`:
+# editing a body has to re-evaluate the check, or a PR failing it can only be fixed
+# by pushing a commit that has nothing to do with the problem.
+#
+# ci.yml cannot take the `edited` trigger. Its concurrency group is keyed on the ref
+# with cancel-in-progress, so editing a title would cancel an in-flight matrix run,
+# and `ci-success` fails on a cancelled job, so the edit would turn a green pull
+# request red. Splitting the check out means a body edit costs one short job.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+# Keyed on the pull request number, not the ref: an edit produces no new commit, so
+# a ref-keyed group would not collapse a burst of edits. Superseding an in-flight run
+# is correct here, since the job only reads the body as it currently stands.
+concurrency:
+  group: pr-body-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # Enforce the PR template at the gate, not just in dev/pr: this catches PRs opened
+  # any other way (gh directly, the web UI, an API call). GitHub does not apply the
+  # template to a pull request opened through the API at all, so for those this is the
+  # only thing that enforces it. The body comes from the event payload via env, never
+  # interpolated into the script, so a crafted body can't inject shell.
+  #
+  # The job still runs for a bot-authored PR so the check reports a real status rather
+  # than a skipped one, but the template requirement is waived: a bot like dependabot
+  # writes its own changelog-shaped body we neither control nor want to rewrite, and
+  # failing it would only block dependency bumps on a rule meant for humans. The author
+  # type comes from the event payload (User or Bot), so this covers every bot without
+  # naming one.
+  pr-body:
+    name: PR body follows template
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require template sections
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
+        run: |
+          if [ "$AUTHOR_TYPE" = "Bot" ]; then
+            echo "Author is a bot; the template requirement applies to human-authored PRs only."
+            exit 0
+          fi
+          missing=0
+          for section in "## What" "## Why" "## How to verify"; do
+            case "$BODY" in
+              *"$section"*) ;;
+              *) echo "::error::PR body is missing the '$section' section."; missing=1 ;;
+            esac
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "Base the description on .github/PULL_REQUEST_TEMPLATE.md (What / Why / How to verify / Notes)."
+            exit 1
+          fi
+          echo "PR body contains all required template sections."
