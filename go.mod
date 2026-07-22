@@ -10,7 +10,7 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-cmp v0.7.0
-	github.com/klauspost/compress v1.19.0
+	github.com/klauspost/compress v1.19.1
 	github.com/rivo/uniseg v0.4.7
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/veraison/go-cose v1.3.0
@@ -20,7 +20,7 @@ require (
 	golang.org/x/crypto v0.54.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
-	modernc.org/sqlite v1.53.0
+	modernc.org/sqlite v1.54.0
 	pgregory.net/rapid v1.3.0
 )
 
@@ -43,8 +43,7 @@ require (
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
-	golang.org/x/sync v0.21.0 // indirect
-	modernc.org/libc v1.73.4 // indirect
+	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 )
