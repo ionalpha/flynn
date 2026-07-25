@@ -73,6 +73,47 @@ func TestPlanStepFailsWhenTheItemsCannotBeRecorded(t *testing.T) {
 	}
 }
 
+// TestReplanIsIdempotent is the re-plan path: a planning step that crashed after
+// writing the ledger but before completing its job re-runs (a lapsed lease re-leases
+// it), and the planner re-proposes the very items it already recorded. The re-run must
+// leave the ledger unchanged and the goal un-stalled, not fail as a duplicate against a
+// ledger that is in fact already correct.
+func TestReplanIsIdempotent(t *testing.T) {
+	p := &fakePlanner{items: []LedgerItem{
+		{Item: "a", Verify: "check a"},
+		{Item: "b", Verify: "check b"},
+	}}
+	h := newPlanHarness(t, neverStop{}, p)
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
+
+	h.reconcile(t, ref) // dispatch the plan
+	if _, err := h.w.ProcessOnce(h.ctx); err != nil {
+		t.Fatalf("first plan: %v", err)
+	}
+	if got := h.spec(t, ref).Ledger; len(got) != 2 {
+		t.Fatalf("ledger has %d items after planning, want 2", len(got))
+	}
+
+	// Re-run the plan step directly, the way a lapsed lease would, over the goal that
+	// already carries the ledger the first run wrote.
+	r, err := h.store.Get(h.ctx, ref.Kind, ref.Scope, ref.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enqueuePlan(t, h.jobs, r.ID)
+	if _, err := h.w.ProcessOnce(h.ctx); err != nil {
+		t.Fatalf("re-plan: %v", err)
+	}
+
+	if got := h.spec(t, ref).Ledger; len(got) != 2 {
+		t.Fatalf("re-plan changed the ledger to %d items, want 2 (idempotent)", len(got))
+	}
+	h.reconcile(t, ref)
+	if st := h.status(t, ref); st.Phase == PhaseStalled {
+		t.Fatalf("re-plan stalled a correctly-planned goal: %q", st.Message)
+	}
+}
+
 // TestPlanStepFailsOnAnUndecodableStatus: recording a plan reads the goal back under
 // the conflict-retry policy and decodes its status. A status that cannot be decoded
 // fails the plan job instead of writing a ledger against a record the worker cannot
