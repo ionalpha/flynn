@@ -9,6 +9,7 @@ import (
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -96,6 +97,45 @@ func TestExecutorBudgetPoolIsSharedAcrossFanout(t *testing.T) {
 	// No budget was ever keyed to the child's own name: enforcement used the shared pool.
 	if _, gerr := store.Get(ctx, budget.Kind, resource.Scope{}, "child"); gerr == nil {
 		t.Fatal("a budget exists under the child's own name; the child must charge the shared pool, not its own")
+	}
+}
+
+// TestExecutorAttributesSpendToModelTier proves the run's spend is booked to the tier
+// it runs on: a goal carrying a model charges its pool under that model as the tier
+// key, so the shared pool's per-tier ledger shows where the tokens went, not only a
+// total. This is the per-tier ledger F15's savings are measured against.
+func TestExecutorAttributesSpendToModelTier(t *testing.T) {
+	ctx := context.Background()
+	store := budgetStore(t)
+	led := budget.NewLedger(store)
+	if _, err := led.Open(ctx, "g", resource.Scope{}, budget.Limits{}); err != nil {
+		t.Fatal(err)
+	}
+
+	// A model turn that reports real usage, so the waist charges a non-zero metering.
+	turn := llmtest.SayText("done")
+	turn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5}
+	model := llmtest.NewScripted(turn)
+	exec := NewExecutor(model, WithBudget(budget.NewHook(store)))
+
+	spec, err := json.Marshal(goal.Spec{Objective: "o", StopCondition: "c", Model: "premium-model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := resource.Resource{APIVersion: goal.GroupVersion, Kind: goal.Kind, Name: "g", Spec: spec}
+	if _, err := exec.Execute(ctx, res); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	st, err := led.Spend(ctx, "g", resource.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Spent.Tokens != 15 {
+		t.Fatalf("aggregate spend = %d tokens, want 15", st.Spent.Tokens)
+	}
+	if got := st.ByTier["premium-model"]; got.Tokens != 15 {
+		t.Fatalf("per-tier spend = %+v, want 15 tokens under premium-model (byTier=%+v)", got, st.ByTier)
 	}
 }
 

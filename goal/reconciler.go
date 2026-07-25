@@ -58,6 +58,7 @@ type Reconciler struct {
 	cleaner     Cleaner
 	bus         bus.Bus       // optional; nil disables owner wake signals
 	progress    ProgressProbe // optional; nil disables no-progress detection
+	window      WindowSource  // optional; nil leaves the plan-window share axis unbounded
 	planning    bool
 	poll        time.Duration
 	waitRecheck time.Duration // 0 derives DefaultWaitRecheckFactor * poll
@@ -113,6 +114,12 @@ func WithWakeBus(b bus.Bus) Option { return func(g *Reconciler) { g.bus = b } }
 // reconciler assembled without one does not have; a nil probe leaves detection off and
 // a goal is bounded only by its step budget, exactly as before.
 func WithProgressProbe(p ProgressProbe) Option { return func(g *Reconciler) { g.progress = p } }
+
+// WithWindowSource wires the source the spend guard reads to enforce a goal's
+// WindowFraction ceiling (share of the plan window). Flynn ships no source of its own
+// because the plan window belongs to the account the host app runs under; without one
+// the token and cost ceilings still apply and only the window axis is left unbounded.
+func WithWindowSource(w WindowSource) Option { return func(g *Reconciler) { g.window = w } }
 
 // WithStepMaxAttempts bounds how many times a single dispatched step is retried by
 // the job queue before it goes dead and stalls the goal (0 uses the queue default).
@@ -366,6 +373,25 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "BudgetExhausted", Message: status.Message}, g.clk.Now())
 		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
 		return g.terminal(ctx, r, status, specHash)
+	}
+
+	// Spend guard: our own ceiling on tokens, cost and share of the plan window, checked
+	// at the same point as the step budget because a step is the wrong unit for cost. It
+	// is our limit, so crossing it stops the goal with a reason naming what it spent
+	// against what it was allowed, distinct from the step-budget reason and from a
+	// provider pause or a transient retry, which this guard never touches.
+	if !spec.Budget.IsZero() {
+		reason, message, err := g.spendGuard(ctx, r, spec)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		if reason != "" {
+			status.Phase = PhaseStalled
+			status.Message = message
+			status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: reason, Message: message}, g.clk.Now())
+			status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+			return g.terminal(ctx, r, status, specHash)
+		}
 	}
 
 	// No-progress guard: the loop noticed it is not getting anywhere. This sits after the

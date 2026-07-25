@@ -64,6 +64,15 @@ var specSchema = json.RawMessage(`{
     "grant": {"type": "array", "items": {"type": "string"}},
     "depth": {"type": "integer", "minimum": 0},
     "budgetPool": {"type": "string"},
+    "budget": {
+      "type": "object",
+      "properties": {
+        "tokens": {"type": "integer", "minimum": 0},
+        "cost": {"type": "number", "minimum": 0},
+        "windowFraction": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
     "ledger": {
       "type": "array",
       "items": {
@@ -121,6 +130,14 @@ type Spec struct {
 	// whole graph is bounded by a single ceiling rather than a budget per goal. Empty
 	// means the goal is its own pool (a standalone root).
 	BudgetPool string `json:"budgetPool,omitempty"`
+	// Budget bounds the goal by what it spends, alongside MaxSteps' bound on how many
+	// steps it takes: a ceiling on total tokens, cost, and share of the plan window,
+	// checked at the same reconcile point as MaxSteps and enforced against the spend
+	// recorded on BudgetPool. A step is the wrong unit for cost (a step that reads a
+	// file and a step that runs a full-codebase gather differ by an order of
+	// magnitude), so this bounds the thing that actually varies. The zero value bounds
+	// nothing, so a goal that sets no budget is governed by MaxSteps exactly as before.
+	Budget SpendBudget `json:"budget,omitempty"`
 	// System is the standing system prompt this goal runs under, carried on the goal
 	// so a delegated child can run as a different agent than its parent (its prompt
 	// baked in by the spawner from the bound Agent). Empty defers to the executor's
@@ -149,6 +166,33 @@ type Spec struct {
 	// append-and-mark-only from then on (see ledger.go). Empty on a goal that runs
 	// without a planner, which is every goal composed before planning is wired.
 	Ledger []LedgerItem `json:"ledger,omitempty"`
+}
+
+// SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total
+// the goal may spend on its budget pool; WindowFraction caps the share of the plan
+// window the run may consume, in [0,1] (0.5 is half the window). A zero field is no
+// bound on that axis, so the zero SpendBudget bounds nothing.
+//
+// Window share matters where the scarce resource is not money but a subscription's
+// plan window: there the argument is to stop at a percentage of the weekly window
+// rather than at a dollar figure. Flynn enforces the fraction but does not source the
+// window data; an app supplies that through the reconciler's WindowSource, and the
+// bound has no effect until one is wired.
+//
+// These ceilings are the agent's own, so crossing one stops the goal with a named
+// reason. That is a different outcome from hitting a provider's own limit (a pause
+// that resumes when the provider resets) or a transient error (retried with backoff),
+// and it deliberately does not share their code path: see the reconciler's spendGuard.
+type SpendBudget struct {
+	Tokens         int64   `json:"tokens,omitempty"`
+	Cost           float64 `json:"cost,omitempty"`
+	WindowFraction float64 `json:"windowFraction,omitempty"`
+}
+
+// IsZero reports whether the budget bounds nothing on any axis, so the reconciler can
+// skip the spend guard entirely for a goal that sets no ceiling.
+func (b SpendBudget) IsZero() bool {
+	return b.Tokens == 0 && b.Cost == 0 && b.WindowFraction == 0
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile

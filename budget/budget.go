@@ -90,12 +90,37 @@ type Spec struct {
 type Status struct {
 	Spent    Spent `json:"spent"`
 	Reserved Spent `json:"reserved,omitempty"`
+	// ByTier attributes the recorded spend to the model tier it was incurred on, so a
+	// shared pool can show where its tokens and cost went (a cheap tier versus a
+	// premium one) instead of only a single total. It is attribution, not a second
+	// ceiling: the pool's limit is enforced against the aggregate Spent, and a charge
+	// with no tier bound in the context lands in Spent without a ByTier entry, so the
+	// per-tier totals are a lower bound on Spent and never a divergent second count.
+	// The key is whatever TierInto bound for the run (the model id, by default); an
+	// untiered run leaves this nil, so the zero Status is unchanged.
+	ByTier map[string]Spent `json:"byTier,omitempty"`
 }
 
 // committed is the total a budget has promised: spent plus still-reserved. The
 // ceiling is enforced against this, so an admitted-but-unfinished action counts
 // against the pool until it settles.
 func (s Status) committed() Spent { return s.Spent.plus(s.Reserved) }
+
+// attribute adds a metering to the named tier's running total, allocating the map on
+// first use. An empty tier or a zero metering is not recorded, so untiered spend and
+// no-op charges leave the map untouched and the zero Status marshals identically.
+func (s *Status) attribute(tier string, tokens int64, cost float64) {
+	if tier == "" || (tokens == 0 && cost == 0) {
+		return
+	}
+	if s.ByTier == nil {
+		s.ByTier = make(map[string]Spent)
+	}
+	cur := s.ByTier[tier]
+	cur.Tokens += tokens
+	cur.Cost += cost
+	s.ByTier[tier] = cur
+}
 
 var specSchema = json.RawMessage(`{
   "type": "object",
