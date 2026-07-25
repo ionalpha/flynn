@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -102,6 +103,19 @@ func TestNoProgressReasonNamesTheLastActivity(t *testing.T) {
 	reason := s.NoProgressReason()
 	if !strings.Contains(reason, "re-reading config.yaml") {
 		t.Fatalf("reason does not name the last activity: %q", reason)
+	}
+}
+
+// TestNoProgressReasonWithoutALastActivity: when no activity was recorded, the reason
+// still states the streak rather than dangling an empty "last doing" clause.
+func TestNoProgressReasonWithoutALastActivity(t *testing.T) {
+	s := Status{IdleStreak: NoProgressLimit} // no LastActivity set
+	reason := s.NoProgressReason()
+	if !strings.Contains(reason, "no progress") {
+		t.Fatalf("reason is not a no-progress message: %q", reason)
+	}
+	if strings.Contains(reason, "last doing") {
+		t.Fatalf("reason dangled an empty last-doing clause: %q", reason)
 	}
 }
 
@@ -231,6 +245,25 @@ func TestNoProgressDisabledWithoutAProbe(t *testing.T) {
 	}
 	if !strings.Contains(st.Message, "budget") {
 		t.Fatalf("without a probe a looping goal should stall on budget, got: %q", st.Message)
+	}
+}
+
+// TestReconcilerPropagatesATransientProbeError: a probe that fails to read the record for
+// a moment is a transient error the reconcile returns (to be retried), not a stall — a
+// blip in reading the record must not be mistaken for the run making no progress.
+func TestReconcilerPropagatesATransientProbeError(t *testing.T) {
+	probe := &fakeProbe{err: fault.New(fault.Transient, "probe_read", "spine blip")}
+	h := newHarness(t, neverStop{}, WithProgressProbe(probe))
+	ref := h.createGoal(t, "probe-blip", Spec{Objective: "x", StopCondition: "never", MaxSteps: 50})
+
+	h.reconcile(t, ref) // dispatch a build step
+	h.completeStep(t)
+	_, err := h.gr.Reconcile(h.ctx, ref) // observe -> probe errors transiently
+	if err == nil {
+		t.Fatal("a transient probe error was not propagated (it would be retried)")
+	}
+	if st := h.status(t, ref); st.Phase == PhaseStalled {
+		t.Fatalf("a transient probe error stalled the goal: %q", st.Message)
 	}
 }
 
