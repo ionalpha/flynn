@@ -219,119 +219,131 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		cmd = rest[0]
 	}
 
-	if cmd == "goal" {
+	return routeCommand(cmd, rest, invocation{
+		stdout:       stdout,
+		stderr:       stderr,
+		modelSpec:    modelSpec,
+		dataDir:      *dataDir,
+		verbose:      vrb,
+		learn:        !*noLearn,
+		plain:        *plain,
+		verify:       *verify,
+		fanout:       *fanout,
+		maxCost:      *maxCost,
+		maxTokens:    *maxTokens,
+		maxMemoryMiB: *maxMemory,
+		maxProcesses: *maxProcs,
+	})
+}
+
+// invocation carries the resolved command-line state routeCommand needs to run a subcommand: the
+// output streams, the chosen model spec and data dir, verbosity, and the run-shaping flags a
+// `goal` consumes. run parses these once and hands them over so routeCommand stays a pure router.
+type invocation struct {
+	stdout, stderr io.Writer
+	modelSpec      string
+	dataDir        string
+	verbose        bool
+	learn          bool
+	plain          bool
+	verify         string
+	fanout         bool
+	maxCost        float64
+	maxTokens      int64
+	maxMemoryMiB   int
+	maxProcesses   int
+}
+
+// exit maps a subcommand's error to a process exit code: 1 with the message on stderr, or 0 on
+// success. It is the uniform tail shared by every command whose only outcome is ok-or-error.
+func (inv invocation) exit(err error) int {
+	if err != nil {
+		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+// routeCommand routes a parsed command line to its subcommand and returns the process exit code.
+// It is the command table split out of run so parsing/profiling setup and command routing each
+// stay small; the exit-code contract lives here: 0 on success, 1 on a command error, 2 on a usage
+// error, and exitChangesRequested for a review that asked for changes.
+func routeCommand(cmd string, rest []string, inv invocation) int {
+	switch cmd {
+	case "goal":
 		objective := strings.TrimSpace(strings.Join(rest[1:], " "))
 		if objective == "" {
-			_, _ = fmt.Fprintln(stderr, `usage: flynn goal "<objective>"`)
+			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn goal "<objective>"`)
 			return 2
 		}
-		if err := runGoal(modelSpec, objective, *verify, *dataDir, !*noLearn, vrb, *fanout, *maxCost, *maxTokens, *maxMemory, *maxProcs); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
+		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
 
-	if cmd == "inspect" || cmd == "replay" {
+	case "inspect", "replay":
 		if len(rest) < 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: flynn inspect <run-id>")
+			_, _ = fmt.Fprintln(inv.stderr, "usage: flynn inspect <run-id>")
 			return 2
 		}
-		if err := inspectRun(stdout, *dataDir, rest[1], vrb); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
+		return inv.exit(inspectRun(inv.stdout, inv.dataDir, rest[1], inv.verbose))
 
-	if cmd == "runs" || cmd == "sessions" {
-		if err := listRuns(stdout, *dataDir); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
+	case "runs", "sessions":
+		return inv.exit(listRuns(inv.stdout, inv.dataDir))
 
-	if cmd == "resume" {
+	case "resume":
 		if len(rest) < 2 {
-			_, _ = fmt.Fprintln(stderr, "usage: flynn resume <run-id>")
+			_, _ = fmt.Fprintln(inv.stderr, "usage: flynn resume <run-id>")
 			return 2
 		}
-		if err := resumeRun(modelSpec, rest[1], *dataDir, vrb); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
+		return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose))
+
+	case "regrade":
+		return inv.exit(regradeSkills(inv.stdout, inv.dataDir))
+
+	case "serve":
+		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir))
+
+	case "watch":
+		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
+
+	case "review":
+		// review is the one command whose non-error outcome is not simply success: a run that
+		// requested changes exits with its own code rather than 0 or 1.
+		switch err := runReview(rest[1:], inv.modelSpec, inv.dataDir, inv.verbose); {
+		case errors.Is(err, errChangesRequested):
+			return exitChangesRequested
+		case err != nil:
+			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
 			return 1
 		}
 		return 0
-	}
 
-	if cmd == "regrade" {
-		if err := regradeSkills(stdout, *dataDir); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
+	case "help":
+		printUsage(inv.stdout)
 		return 0
 	}
 
-	// Subcommands that take only the data directory share one dispatch path, so
-	// adding one is a table entry rather than another branch in run.
+	// Subcommands that take only the data directory share one dispatch path, so adding one is a
+	// table entry rather than another case here.
 	if fn, ok := dataDirCommands[cmd]; ok {
-		if err := fn(rest[1:], *dataDir); err != nil {
-			// An error with no message is a command reporting an outcome through its exit
-			// code rather than a failure: `flynn version check` exits non-zero when an
-			// upgrade is waiting, and nothing has gone wrong that warrants a message.
+		if err := fn(rest[1:], inv.dataDir); err != nil {
+			// An error with no message is a command reporting an outcome through its exit code
+			// rather than a failure: `flynn version check` exits non-zero when an upgrade is
+			// waiting, and nothing has gone wrong that warrants a message.
 			if err.Error() != "" {
-				_, _ = fmt.Fprintln(stderr, "error:", err)
+				_, _ = fmt.Fprintln(inv.stderr, "error:", err)
 			}
 			return 1
 		}
 		return 0
 	}
 
-	if cmd == "serve" {
-		if err := runServe(rest[1:], modelSpec, *dataDir); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
-
-	if cmd == "watch" {
-		if err := runWatch(modelSpec, *dataDir, !*noLearn, vrb); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
-
-	if cmd == "review" {
-		err := runReview(rest[1:], modelSpec, *dataDir, vrb)
-		switch {
-		case errors.Is(err, errChangesRequested):
-			return exitChangesRequested
-		case err != nil:
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
-	}
-
-	if cmd == "help" {
-		printUsage(stdout)
-		return 0
-	}
-
-	// No subcommand: start an interactive session when attached to a terminal, where
-	// each line is a turn of one continuing conversation. With stdin redirected (a
-	// pipe, a file, a CI step) there is no one to prompt, so print usage instead.
+	// No subcommand: start an interactive session when attached to a terminal, where each line
+	// is a turn of one continuing conversation. With stdin redirected (a pipe, a file, a CI
+	// step) there is no one to prompt, so print usage instead.
 	if len(rest) == 0 && stdinIsTerminal() {
-		if err := runInteractive(modelSpec, *dataDir, !*noLearn, vrb, *plain); err != nil {
-			_, _ = fmt.Fprintln(stderr, "error:", err)
-			return 1
-		}
-		return 0
+		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain))
 	}
 
-	printUsage(stderr)
+	printUsage(inv.stderr)
 	return 2
 }
 
