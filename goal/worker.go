@@ -266,10 +266,12 @@ func (w *Worker) runPlan(ctx context.Context, job jobs.Job, r resource.Resource)
 
 // recordPlan writes the planned items onto the goal's spec and marks the goal
 // planned, against a fresh read under the shared conflict-retry policy. The append
-// rule is enforced here at the point of the write: the planner's items are appended
-// to whatever ledger the goal already carries, so re-running a planning step after a
-// crash adds to the record rather than replacing it, and a planner that tries to
-// restate an existing item differently is refused instead of quietly redefining it.
+// rule is enforced here at the point of the write (PlanExtension): the planner's items
+// are appended to whatever ledger the goal already carries, so re-running a planning
+// step after a crash adds to the record rather than replacing it. A re-run planner that
+// re-proposes an item verbatim is a no-op rather than a failure, so a crash between the
+// ledger write and the job completing resumes cleanly instead of stalling the goal; an
+// item the planner rewords into new content is still appended as the new item it is.
 func (w *Worker) recordPlan(ctx context.Context, r resource.Resource, items []LedgerItem) error {
 	_, err := resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
 		spec, err := DecodeSpec(*fresh)
@@ -280,7 +282,7 @@ func (w *Worker) recordPlan(ctx context.Context, r resource.Resource, items []Le
 		if err != nil {
 			return err
 		}
-		ledger, err := AppendItems(spec.Ledger, items...)
+		ledger, err := PlanExtension(spec.Ledger, items...)
 		if err != nil {
 			return fault.Wrap(fault.Terminal, "goal_plan_invalid", err)
 		}

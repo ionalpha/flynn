@@ -527,6 +527,11 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))
+	} else {
+		// A native goal plans before it builds: it expands its objective into a visible
+		// ledger first. An external agent CLI drives its own loop and its own planning, so
+		// the phase is only added to the native path.
+		opts = append(opts, withPlanning())
 	}
 
 	// The objective and the final answer are rendered from the run's own events

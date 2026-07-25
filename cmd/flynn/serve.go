@@ -305,7 +305,7 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	if err != nil {
 		return err
 	}
-	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, "", sandbox.ResourceLimits{})
+	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, "", sandbox.ResourceLimits{}, false)
 	if err != nil {
 		return err
 	}
