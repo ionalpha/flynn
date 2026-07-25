@@ -193,6 +193,66 @@ func TestValidateExtensionAcceptsOnlyAppends(t *testing.T) {
 	})
 }
 
+// TestValidateExtensionChecksAppendedItems covers the checks that only a newly
+// appended item can trip, past the shared prefix: an appended item still has to
+// carry its text and verify clause, still has to address to its own id, and may not
+// repeat an id already in the same batch. The prefix cases (removal, reorder,
+// rewrite) live in TestValidateExtensionAcceptsOnlyAppends; these are the tail.
+func TestValidateExtensionChecksAppendedItems(t *testing.T) {
+	a := item("a", "check a")
+	prev := []LedgerItem{a}
+
+	t.Run("an appended item with no verify is incomplete", func(t *testing.T) {
+		next := []LedgerItem{a, {ID: ItemID("b", ""), Item: "b", Verify: ""}}
+		if err := ValidateExtension(prev, next); !errors.Is(err, ErrLedgerIncomplete) {
+			t.Fatalf("err = %v, want ErrLedgerIncomplete", err)
+		}
+	})
+	t.Run("an appended item whose id does not address its content is a rewrite", func(t *testing.T) {
+		// A forged id on a brand-new item: it clears no prefix check, so the
+		// self-addressing check is the only thing between it and the ledger.
+		next := []LedgerItem{a, {ID: "0000000000000000", Item: "b", Verify: "check b"}}
+		if err := ValidateExtension(prev, next); !errors.Is(err, ErrLedgerRegressed) {
+			t.Fatalf("err = %v, want ErrLedgerRegressed", err)
+		}
+	})
+	t.Run("the same item appended twice in one batch is a duplicate", func(t *testing.T) {
+		b := item("b", "check b")
+		if err := ValidateExtension(prev, []LedgerItem{a, b, b}); !errors.Is(err, ErrLedgerDuplicate) {
+			t.Fatalf("err = %v, want ErrLedgerDuplicate", err)
+		}
+	})
+}
+
+// TestValidateLedgerRejectsATamperedLedger drives the reconcile-time half of the
+// extension rule directly on the Status method: the state the status already records
+// must stay a prefix of the spec ledger by id, and every ledger item must still
+// address to its own content. Each case is a way a ledger edited around the write
+// path could otherwise be adopted as the new definition of done.
+func TestValidateLedgerRejectsATamperedLedger(t *testing.T) {
+	t.Run("a recorded item that is no longer the ledger's is a regression", func(t *testing.T) {
+		var st Status
+		st.SyncLedger([]LedgerItem{item("a", "check a")}) // status now records item a
+		if err := st.ValidateLedger([]LedgerItem{item("z", "check z")}); !errors.Is(err, ErrLedgerRegressed) {
+			t.Fatalf("err = %v, want ErrLedgerRegressed", err)
+		}
+	})
+	t.Run("a ledger item with no verify is incomplete", func(t *testing.T) {
+		var st Status // no recorded state, so only the ledger itself is checked
+		bad := LedgerItem{ID: ItemID("b", ""), Item: "b", Verify: ""}
+		if err := st.ValidateLedger([]LedgerItem{bad}); !errors.Is(err, ErrLedgerIncomplete) {
+			t.Fatalf("err = %v, want ErrLedgerIncomplete", err)
+		}
+	})
+	t.Run("a ledger item whose id does not address its content is a rewrite", func(t *testing.T) {
+		var st Status
+		forged := LedgerItem{ID: "0000000000000000", Item: "b", Verify: "check b"}
+		if err := st.ValidateLedger([]LedgerItem{forged}); !errors.Is(err, ErrLedgerRegressed) {
+			t.Fatalf("err = %v, want ErrLedgerRegressed", err)
+		}
+	})
+}
+
 // TestSyncLedgerStartsEveryItemUnproven is the property that a run begins from a
 // record saying nothing is done, and that a ledger which grows mid-run does not
 // bring proven items with it.
