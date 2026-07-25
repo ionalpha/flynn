@@ -18,6 +18,7 @@ import (
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // runExtensions implements `flynn extensions <subcommand>`: the surface for both kinds
@@ -288,6 +289,16 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 		return nil, fmt.Errorf("extensions: signer %q has a passphrase but no sealed key at %s; seal one there first", name, keyPath)
 	}
 
+	// The signer runs confined, and on Windows that is an AppContainer whose default-deny
+	// filesystem cannot open the sealed key the host names for it unless the key is granted
+	// to the container. The key is encrypted at rest and its passphrase never touches disk,
+	// so this grants read to ALL APPLICATION PACKAGES (a no-op off Windows) rather than to a
+	// per-launch container SID that would be a dead entry by the next launch. Done before the
+	// launch so the file is reachable the moment the signer is unlocked.
+	if err := rt.grantSignerKey(keyPath); err != nil {
+		return nil, fmt.Errorf("extensions: grant the confined signer read on its sealed key: %w", err)
+	}
+
 	if _, err := rt.loader.Load(ctx, r); err != nil {
 		return nil, err
 	}
@@ -513,7 +524,11 @@ type extensionRuntime struct {
 	// procs is the process handler itself, kept so the host can reach a signer extension over
 	// its private channel. A signer's tools are never mounted, so there is no other way to it.
 	procs *extension.ProcessHandler
-	close func() error
+	// grantSignerKey makes a signer's sealed key reachable by its confined process before the
+	// launch (on Windows, an AppContainer read grant; a no-op elsewhere). It is a field so a
+	// test can drive the failure path without a platform that can make the grant fail.
+	grantSignerKey func(keyPath string) error
+	close          func() error
 }
 
 // extRuntimeOptions configures a runtime built by openExtensionRuntime.
@@ -624,9 +639,10 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 		return nil, err
 	}
 	return &extensionRuntime{
-		store:  store,
-		loader: extension.NewLoader(ereg),
-		procs:  handler,
-		close:  durable.Close,
+		store:          store,
+		loader:         extension.NewLoader(ereg),
+		procs:          handler,
+		grantSignerKey: sandbox.GrantSealedKeyReadable,
+		close:          durable.Close,
 	}, nil
 }

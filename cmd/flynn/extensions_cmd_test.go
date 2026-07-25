@@ -336,6 +336,45 @@ func TestCallWithASignerLaunchesIt(t *testing.T) {
 	}
 }
 
+// TestCallWithASignerSurfacesAKeyGrantFailure: when making the sealed key reachable by the
+// confined signer fails (on Windows, the AppContainer read grant), the mount aborts naming
+// that reason rather than launching a signer that would then fail to open the key. The grant
+// is injected so the failure path is exercised on any platform, not only where a grant can
+// actually fail.
+func TestCallWithASignerSurfacesAKeyGrantFailure(t *testing.T) {
+	ctx := context.Background()
+	dataDir := fileVaultEnv(t)
+	if err := runExtensions([]string{"dev", "solana-signer", devBinary(t)}, dataDir); err != nil {
+		t.Fatalf("dev link solana-signer: %v", err)
+	}
+	// The passphrase and a stand-in sealed key both have to be in place, so the mount gets
+	// past those checks and reaches the grant, which is the step under test.
+	if err := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)).
+		Set(ctx, "signer/solana-signer", secret.New("hunter2")); err != nil {
+		t.Fatalf("seed the vault: %v", err)
+	}
+	keyPath := signerKeyPath(dataDir, "solana-signer")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatalf("make the signers dir: %v", err)
+	}
+	if err := os.WriteFile(keyPath, []byte("sealed-key-stand-in"), 0o600); err != nil {
+		t.Fatalf("seal a stand-in key: %v", err)
+	}
+
+	rt, err := openExtensionRuntime(ctx, dataDir)
+	if err != nil {
+		t.Fatalf("open runtime: %v", err)
+	}
+	defer func() { _ = rt.close() }()
+	rt.grantSignerKey = func(string) error { return errors.New("no access") }
+
+	if _, err := mountSigner(ctx, rt, dataDir, "solana-signer"); err == nil {
+		t.Fatal("a failed key grant must fail the mount")
+	} else if !strings.Contains(err.Error(), "grant the confined signer read on its sealed key") {
+		t.Fatalf("the error should name the grant failure, got: %v", err)
+	}
+}
+
 // TestCallWithASignerNeedsItsSealedKey: with the passphrase in the vault but no sealed key at
 // the path the host names, the mount fails up front naming that path and the remedy, rather
 // than starting a signer that would fail to open a key that is not there.
