@@ -168,23 +168,28 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 }
 
 // serveConfig is the parsed `flynn serve` configuration: the channel credentials and the
-// control-plane API's address, token, and exposure. A flag wins over its environment fallback.
+// control-plane API's address, its auth (a static token or a delegation issuer key), and its
+// exposure. A flag wins over its environment fallback.
 type serveConfig struct {
 	telegramToken string
 	signalTCP     string
 	apiAddr       string
 	apiToken      string
+	apiIssuer     string
 	apiExpose     bool
 }
 
 // parseServeConfig parses the serve subcommand's flags and folds in the environment fallbacks
-// (TELEGRAM_BOT_TOKEN, FLYNN_API_TOKEN), so the rest of bring-up reads one resolved config.
+// (TELEGRAM_BOT_TOKEN, FLYNN_API_TOKEN, FLYNN_API_ISSUER), so the rest of bring-up reads one
+// resolved config. A static token and an issuer key are two different trust models, so supplying
+// both is refused here rather than letting one silently win.
 func parseServeConfig(args []string) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
 	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
 	apiAddr := fs.String("api-addr", "", "expose the read-only control-plane API here, loopback recommended, e.g. 127.0.0.1:7575")
 	apiToken := fs.String("api-token", "", "bearer token for the control-plane API (or set FLYNN_API_TOKEN)")
+	apiIssuer := fs.String("api-issuer", "", "accept delegated capability tokens issued under this operator public key (ed25519:...); enables scope-attenuated remote drive instead of a static read-only token")
 	apiExpose := fs.Bool("api-expose", false, "allow --api-addr to bind a non-loopback interface (off by default; prefer a tunnel to a loopback bind, never a wildcard)")
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
@@ -200,11 +205,19 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if apiTok == "" {
 		apiTok = os.Getenv("FLYNN_API_TOKEN")
 	}
+	apiIss := *apiIssuer
+	if apiIss == "" {
+		apiIss = os.Getenv("FLYNN_API_ISSUER")
+	}
+	if apiIss != "" && apiTok != "" {
+		return serveConfig{}, errors.New("serve: --api-token and --api-issuer are mutually exclusive: a static bearer is capped at read scope, an issuer key accepts scope-attenuated delegated tokens; choose one trust model")
+	}
 	return serveConfig{
 		telegramToken: token,
 		signalTCP:     *signalTCP,
 		apiAddr:       *apiAddr,
 		apiToken:      apiTok,
+		apiIssuer:     apiIss,
 		apiExpose:     *apiExpose,
 	}, nil
 }
@@ -215,7 +228,19 @@ func parseServeConfig(args []string) (serveConfig, error) {
 // secured-by-default with zero config and there is never a reason to run it unauthenticated.
 func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog spine.Log, cfg serveConfig) error {
 	var auth controlplane.Authenticator
-	if cfg.apiToken != "" {
+	if cfg.apiIssuer != "" {
+		// Delegation trust: the box holds no secret, only the operator's public key. The operator
+		// (which enrolled this instance) mints scope-attenuated capability tokens under its issuer
+		// key and presents them per request; each is verified offline against this key, fail-closed
+		// on any forged, widened, or expired chain. This is the path that permits operator-scoped
+		// remote drive (pause/resume/halt/run): a static --api-token is deliberately capped at read
+		// scope, a delegated token carries exactly the scope and actions the operator attenuated to.
+		issuer, err := controlplane.ParsePrincipalID(cfg.apiIssuer)
+		if err != nil {
+			return fmt.Errorf("serve: api: --api-issuer: %w", err)
+		}
+		auth = controlplane.NewDelegationAuthenticator(issuer, clock.System{})
+	} else if cfg.apiToken != "" {
 		// A local operator token is not grant-attenuated: it carries full action authority
 		// (AllowAll), bounded only by its scope, so the action gate reduces to the instance's own
 		// local grant. The zero Grant would instead deny-all.
