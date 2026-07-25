@@ -25,6 +25,11 @@ const (
 	Finalizer = "goal.ionagent.io/cleanup"
 	// StepJobKind is the job kind a dispatched goal step is enqueued under.
 	StepJobKind = "goal.step"
+	// PlanJobKind is the job kind a goal's planning step is enqueued under. It rides
+	// the same queue and worker as a build step and is distinguished by kind, so
+	// planning inherits the lease, crash-resume and retry ladder a step already has
+	// rather than growing a second execution path.
+	PlanJobKind = "goal.plan"
 )
 
 // Phase is a coarse, human-facing lifecycle summary of a goal, derived from its
@@ -35,6 +40,7 @@ type Phase string
 // stalled state.
 const (
 	PhasePending   Phase = "Pending"   // accepted, no step run yet
+	PhasePlanning  Phase = "Planning"  // expanding the objective into a ledger, before any building
 	PhaseRunning   Phase = "Running"   // a step is in flight or more are queued
 	PhaseConverged Phase = "Converged" // the stop condition is satisfied
 	PhaseStalled   Phase = "Stalled"   // out of budget or a step failed terminally
@@ -58,6 +64,19 @@ var specSchema = json.RawMessage(`{
     "grant": {"type": "array", "items": {"type": "string"}},
     "depth": {"type": "integer", "minimum": 0},
     "budgetPool": {"type": "string"},
+    "ledger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "item", "verify"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "item": {"type": "string", "minLength": 1},
+          "verify": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
     "system": {"type": "string"},
     "driver": {"type": "string"},
     "model": {"type": "string"},
@@ -122,6 +141,14 @@ type Spec struct {
 	// turn. Empty on every text-only goal, so the text path serializes
 	// identically and is unchanged.
 	Attachments []llm.Image `json:"attachments,omitempty"`
+	// Ledger is the goal's objective expanded into the units of work it implies,
+	// each carrying its own declared way to verify it. It is desired state, which is
+	// why it lives here and not in status: it is what the goal is committed to
+	// doing, and the per-item proven/unproven observation of it is Status.Ledger.
+	// The planner phase writes it before any building starts, and it is
+	// append-and-mark-only from then on (see ledger.go). Empty on a goal that runs
+	// without a planner, which is every goal composed before planning is wired.
+	Ledger []LedgerItem `json:"ledger,omitempty"`
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile
@@ -129,6 +156,12 @@ type Spec struct {
 type InFlight struct {
 	JobID     string    `json:"jobID"`
 	StartedAt time.Time `json:"startedAt"`
+	// Kind is the job kind dispatched (StepJobKind or PlanJobKind), so the observing
+	// pass knows what it is observing. A planning step is not building, so it does
+	// not spend the build budget; without this the reconciler cannot tell the two
+	// apart once the job is done and the reservation is being cleared. Empty on a
+	// reservation written before planning existed, which reads as a build step.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Status is a goal's observed state.
@@ -152,6 +185,15 @@ type Status struct {
 	// step budget. A settling child clears it (the prompt wake); the reconciler's
 	// recheck fallback clears it after a bounded delay if that wake is lost.
 	WaitingSince *time.Time `json:"waitingSince,omitempty"`
+	// Planned records that the planning phase has run to completion. It is separate
+	// from a non-empty Ledger because the two answer different questions: a planner
+	// that ran and produced nothing is a planned goal with an empty ledger, which is
+	// a stall, not an invitation to plan again on the next pass.
+	Planned bool `json:"planned,omitempty"`
+	// Ledger is the observed state of Spec.Ledger, one entry per planned item and in
+	// the same order. Every entry starts unproven, so a goal begins from a record
+	// that says nothing is done. Completion is a transition here.
+	Ledger []LedgerState `json:"ledger,omitempty"`
 }
 
 // Condition is one standard status condition (the shared resource.Condition).
