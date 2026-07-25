@@ -79,9 +79,13 @@ type LedgerItem struct {
 type LedgerState struct {
 	ID     string `json:"id"`
 	Proven bool   `json:"proven,omitempty"`
-	// ProvenAt is when the item was marked, and Evidence is the reference to what
-	// was actually observed. Evidence is free-form here and stays that way until the
-	// evidence gate lands, which is what turns it from a note into a requirement.
+	// ProvenAt is when the item was marked, and Evidence is the reference to the
+	// verification that proved it. Under the evidence gate (evidence.go) Evidence holds
+	// the spine ref of the passing check the gate consumed to admit the proof, which is
+	// what makes consumption durable: the set of spent refs is read back from the proven
+	// items' Evidence, so a resumed run consumes exactly what the record already spent. A
+	// proof recorded directly through MarkProven (a test, a replay) may carry a free-form
+	// note here instead.
 	ProvenAt *time.Time `json:"provenAt,omitempty"`
 	Evidence string     `json:"evidence,omitempty"`
 }
