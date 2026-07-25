@@ -28,7 +28,16 @@ type fakeOpenAI struct {
 
 	mu        sync.Mutex
 	requests  []oaiRequest
+	plans     []oaiRequest // planning-phase requests, answered automatically (see autoPlanOff)
 	responder func(req oaiRequest, n int) oaiReply
+
+	// autoPlanOff disables the transparent planning-phase responder. The goal command
+	// plans before it builds, so by default the server answers a planning request (the
+	// one carrying the planner's standing prompt) with a canned one-item plan and does
+	// NOT record it, count it, or offer it to block: a test scripts only the build turns,
+	// and count()/request()/blockAt address those exactly as they did before planning
+	// existed. A test that wants to script or block the plan turn itself sets this true.
+	autoPlanOff bool
 
 	// block, when set, makes the handler for a request whose zero-based index it
 	// selects hang until the server is torn down, so a test can catch the binary
@@ -132,6 +141,16 @@ func (f *fakeOpenAI) handle(w http.ResponseWriter, r *http.Request) {
 	req := decodeRequest(body)
 
 	f.mu.Lock()
+	autoPlan := !f.autoPlanOff && isPlanRequest(req)
+	if autoPlan {
+		// A planning turn: answer it ourselves and leave the build-turn bookkeeping
+		// (requests, count, block indices) untouched, so the test's scripting still
+		// lines up one-to-one with the build turns.
+		f.plans = append(f.plans, req)
+		f.mu.Unlock()
+		writeCompletion(w, cannedPlan)
+		return
+	}
 	n := len(f.requests)
 	f.requests = append(f.requests, req)
 	responder := f.responder
@@ -150,6 +169,19 @@ func (f *fakeOpenAI) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	writeCompletion(w, reply)
 }
+
+// isPlanRequest reports whether a request is the planning phase's call, identified by
+// the planner's standing prompt (mission.planSystem). The goal command plans before it
+// builds; the fake answers that turn itself so a test scripts only the build turns.
+func isPlanRequest(req oaiRequest) bool {
+	return strings.Contains(req.System, "You are the planning phase")
+}
+
+// cannedPlan is the fake's automatic answer to a planning request: a single ledger item
+// carrying a verify clause (the ledger refuses an item without one). Its content does not
+// steer the build — convergence is still the model's to declare on a build turn — so one
+// generic item is enough to satisfy the planning gate and let the scripted build turns run.
+var cannedPlan = oaiReply{Text: `[{"item":"accomplish the objective","verify":"the run converges and the sealed record verifies"}]`}
 
 // count returns how many requests the binary has made so far.
 func (f *fakeOpenAI) count() int {
