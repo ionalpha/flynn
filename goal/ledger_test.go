@@ -135,6 +135,59 @@ func TestAppendItemsRejectsADuplicate(t *testing.T) {
 	}
 }
 
+// TestPlanExtension is the planner write path's idempotency rule: an exact
+// re-statement of an item already on the ledger is dropped (so a re-run plan is a
+// no-op), a reworded near-duplicate addresses to a new id and is genuinely appended,
+// and the same new item twice in one batch is still refused as a duplicate.
+func TestPlanExtension(t *testing.T) {
+	base, err := AppendItems(nil, LedgerItem{Item: "a", Verify: "check a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("an exact re-statement is dropped", func(t *testing.T) {
+		got, err := PlanExtension(base, LedgerItem{Item: "a", Verify: "check a"})
+		if err != nil {
+			t.Fatalf("PlanExtension: %v", err)
+		}
+		if len(got) != 1 {
+			t.Fatalf("len = %d, want 1 (the re-statement was dropped)", len(got))
+		}
+	})
+
+	t.Run("a reworded near-duplicate is a new item", func(t *testing.T) {
+		got, err := PlanExtension(base, LedgerItem{Item: "a", Verify: "check a a different way"})
+		if err != nil {
+			t.Fatalf("PlanExtension: %v", err)
+		}
+		if len(got) != 2 {
+			t.Fatalf("len = %d, want 2 (a new content address is a new item)", len(got))
+		}
+	})
+
+	t.Run("a re-statement mixed with a fresh item appends only the fresh one", func(t *testing.T) {
+		got, err := PlanExtension(base,
+			LedgerItem{Item: "a", Verify: "check a"}, // already present: dropped
+			LedgerItem{Item: "b", Verify: "check b"}, // new: appended
+		)
+		if err != nil {
+			t.Fatalf("PlanExtension: %v", err)
+		}
+		if len(got) != 2 || got[1].Item != "b" {
+			t.Fatalf("got %+v, want base plus b", got)
+		}
+	})
+
+	t.Run("the same new item twice in one batch is still a duplicate", func(t *testing.T) {
+		if _, err := PlanExtension(base,
+			LedgerItem{Item: "c", Verify: "check c"},
+			LedgerItem{Item: "c", Verify: "check c"},
+		); !errors.Is(err, ErrLedgerDuplicate) {
+			t.Fatalf("err = %v, want ErrLedgerDuplicate", err)
+		}
+	})
+}
+
 // TestAppendItemsLeavesTheInputLedgerAlone matters because a rejected append must
 // not half-apply: the caller still holds the ledger it had.
 func TestAppendItemsLeavesTheInputLedgerAlone(t *testing.T) {

@@ -126,6 +126,35 @@ func AppendItems(ledger []LedgerItem, items ...LedgerItem) ([]LedgerItem, error)
 	return out, nil
 }
 
+// PlanExtension returns ledger with items appended, first dropping any incoming item
+// whose content already addresses to an id the ledger carries. It is the planner write
+// path's idempotency rule, and it exists for one case: a planning step that crashed
+// after writing the ledger but before completing its job re-runs, and the planner
+// re-proposes the items it already recorded. Dropping those exact re-statements makes
+// the re-run a no-op rather than an ErrLedgerDuplicate that would stall a goal whose
+// ledger is in fact already correct.
+//
+// It drops only an exact re-statement (same item text and verify clause, so the same
+// content address). An item reworded until it addresses to a new id is a genuinely new
+// item and is still appended; that near-duplicate is the tradeoff the planner-is-shown-
+// the-existing-ledger prompt exists to keep rare, not something this can detect. Items
+// that are new to the ledger still pass through AppendItems, so a planner that returns
+// the same new item twice in one batch is still refused as a duplicate.
+func PlanExtension(ledger []LedgerItem, items ...LedgerItem) ([]LedgerItem, error) {
+	have := make(map[string]struct{}, len(ledger))
+	for _, it := range ledger {
+		have[it.ID] = struct{}{}
+	}
+	fresh := make([]LedgerItem, 0, len(items))
+	for _, it := range items {
+		if _, ok := have[ItemID(strings.TrimSpace(it.Item), strings.TrimSpace(it.Verify))]; ok {
+			continue
+		}
+		fresh = append(fresh, it)
+	}
+	return AppendItems(ledger, fresh...)
+}
+
 // ValidateExtension reports whether next is a legal successor to prev: prev must be
 // a prefix of next, item for item and in order, and every item in next must carry
 // the ID its own content addresses to. Anything else is a removal, a reordering, or

@@ -715,6 +715,7 @@ type driveConfig struct {
 	extAgent  *externAgent
 	toolset   *boundToolset
 	observe   func(session.Event)
+	planning  bool
 }
 
 // driveOption configures a run driven by drive.
@@ -734,6 +735,16 @@ func withBudget(l budgetpkg.Limits) driveOption {
 // sandbox.ResourceLimits for the per-platform enforcement.
 func withResourceLimits(r sandbox.ResourceLimits) driveOption {
 	return func(c *driveConfig) { c.resLimits = r }
+}
+
+// withPlanning turns the planning phase on for the run: before the first build step the
+// goal expands its objective into a visible ledger, each item carrying how it would be
+// checked. It is opt-in per entry point rather than always-on because it changes what a
+// run does first — a plan model call, then the ledger gate — so a command adopts it
+// deliberately once its flow expects it. The `goal` command sets it; the other native
+// paths run unplanned until they adopt it in turn.
+func withPlanning() driveOption {
+	return func(c *driveConfig) { c.planning = true }
 }
 
 // withExternalAgent drives the run through an external agent CLI backend (its own
@@ -795,7 +806,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	case cfg.toolset != nil:
 		// A caller-supplied toolset and grant: no sandbox, no working-tree tools, the
 		// same session recording and governance as every other path.
-		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID)
+		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID, cfg.planning)
 	case cfg.extAgent != nil:
 		// An external agent CLI drives the loop: the same sandbox, session, toolset,
 		// grant, and governance recording as a native run, but the run loop is the CLI's
@@ -804,7 +815,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	case fanout != nil:
 		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel, cfg.resLimits)
 	default:
-		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits)
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits, cfg.planning)
 	}
 	if err != nil {
 		return "", "", nil, err
@@ -1012,7 +1023,7 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits, planning bool) (*missionRun, error) {
 	parts, err := newMissionParts(workdir, log, runID, false, resLimits)
 	if err != nil {
 		return nil, err
@@ -1051,7 +1062,14 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// absent one (the zero plan of a strong model) leaves them in place.
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
-	rt, err := runtime.New(parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq))
+	cfg := parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq)
+	// Plan before building when the entry point asked for it: expand the objective into a
+	// visible ledger on the goal before the first build step. The planner runs its own
+	// prompt over the same model; the runtime pairs it with the reconciler's planning gate.
+	if planning {
+		cfg.Planner = mission.NewPlanner(model)
+	}
+	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -1064,7 +1082,7 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 // grant it arrived with is the complete authority the waist consults. Budget,
 // brakes, governance recording, and compaction are identical to the sandboxed
 // path, so a specialised run is not a less-governed run.
-func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string) (*missionRun, error) {
+func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, planning bool) (*missionRun, error) {
 	var sopts []session.Option
 	if runID != "" {
 		sopts = append(sopts, session.WithID(runID))
@@ -1089,7 +1107,11 @@ func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset
 	}
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
-	rt, err := runtime.New(parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq))
+	cfg := parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq)
+	if planning {
+		cfg.Planner = mission.NewPlanner(model)
+	}
+	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err
 	}
