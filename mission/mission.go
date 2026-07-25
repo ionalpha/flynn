@@ -384,6 +384,13 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 			pool = r.Name
 		}
 		ctx = budget.Into(ctx, pool)
+		// Attribute this run's spend to the tier it runs on (its model), so the shared
+		// pool's per-tier ledger shows where the tokens and cost went rather than only a
+		// total. A goal that carries no model defers to the host default and reads as
+		// untiered, so a standalone run is unchanged.
+		if spec.Model != "" {
+			ctx = budget.TierInto(ctx, spec.Model)
+		}
 	}
 	status, err := goal.DecodeStatus(r)
 	if err != nil {

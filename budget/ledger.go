@@ -125,11 +125,30 @@ func (l *Ledger) Release(ctx context.Context, id string, scope resource.Scope, e
 // never briefly double-counts (reserved and spent) nor under-counts (released
 // before charged). A zero est with a real metering behaves like Charge.
 func (l *Ledger) Settle(ctx context.Context, id string, scope resource.Scope, est Spent, m dispatch.Metering) error {
+	tier, _ := TierFromContext(ctx)
 	return l.update(ctx, id, scope, func(s *Status) {
 		s.Reserved = s.Reserved.minusFloored(est)
 		s.Spent.Tokens += int64(m.Tokens)
 		s.Spent.Cost += m.Cost
+		s.attribute(tier, int64(m.Tokens), m.Cost)
 	})
+}
+
+// Spend returns the run's recorded budget status: what it has spent (in total and
+// attributed per tier) and what it still holds reserved. A run with no budget bound
+// returns the zero Status, so an unbudgeted goal reads as having spent nothing rather
+// than erroring. It is the read the goal reconciler's spend ceiling is evaluated
+// against, the counterpart to Available's boolean for a caller that needs the numbers
+// to compare and to name in a stop reason.
+func (l *Ledger) Spend(ctx context.Context, id string, scope resource.Scope) (Status, error) {
+	r, err := l.store.Get(ctx, Kind, scope, id)
+	if errors.Is(err, resource.ErrNotFound) {
+		return Status{}, nil // no budget bound: nothing spent
+	}
+	if err != nil {
+		return Status{}, err
+	}
+	return DecodeStatus(r)
 }
 
 // update applies fn to the run's budget status under the store's shared
@@ -169,8 +188,10 @@ func (l *Ledger) Charge(ctx context.Context, id string, scope resource.Scope, m 
 	if m.Tokens == 0 && m.Cost == 0 {
 		return nil
 	}
+	tier, _ := TierFromContext(ctx)
 	return l.update(ctx, id, scope, func(s *Status) {
 		s.Spent.Tokens += int64(m.Tokens)
 		s.Spent.Cost += m.Cost
+		s.attribute(tier, int64(m.Tokens), m.Cost)
 	})
 }
