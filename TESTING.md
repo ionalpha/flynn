@@ -23,6 +23,32 @@ generator or a fault plan once, reuse it in every package.
 | **Golden / snapshot** | `testkit.Golden` + go-cmp | A whole output (a replay, a rendered spec) compared against a `testdata/*.golden` JSON fixture; `-update` regenerates it, so large outputs need no hand-written expected value. |
 | **Fuzzing** | stdlib `go test -fuzz` | Arbitrary-input targets on the error model and the dispatch→spine payload mapping; seed corpora run in CI, deep fuzzing on demand. Expands to parsers/manifests/protocol messages as they land. |
 
+## Conformance vectors
+
+`chain/conformance` is the single source of truth for the [Provetrail](https://provetrail.org)
+conformance vectors. The generator builds them deterministically and the goldens are
+committed under `chain/conformance/testdata/vectors` (L1 structural) and
+`chain/conformance/testdata/crypto` (L2-L4). `TestVectorsConform` and
+`TestCryptoVectorsConform` run the reference verifier over every generated vector, so
+the generator and the verifier are proven to agree by construction; `TestGoldenVectorsMatch`
+and `TestCryptoGoldenMatch` byte-compare the committed fixtures and their `manifest.json`
+against what the generator produces, so any drift is caught in review.
+
+An intentional vector change flows in one direction only:
+
+1. Change the spec text (the [provetrail](https://github.com/ionalpha/provetrail) repo:
+   `SPEC.md`, `CONFORMANCE.md`, the predicate docs).
+2. Change the generator here, then regenerate the goldens and manifests:
+   `go test ./chain/conformance -update`.
+3. Copy the regenerated `testdata/vectors` and `testdata/crypto` into the provetrail
+   repo's `vectors/structural` and `vectors/crypto`.
+4. Update the clients.
+
+Provetrail's `vectors/` are downstream copies of flynn's `testdata`, and provetrail CI
+(`scripts/check_vector_drift.py`) byte-compares the two on a schedule. A vector edited in
+the provetrail repo first, or here without `-update`, is therefore a drift bug, not a new
+truth: the fixture on disk must always be exactly what this generator emits.
+
 ## The numbers on the README badges
 
 Every number on a README badge is measured, never typed. After a green suite on
