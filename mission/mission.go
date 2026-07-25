@@ -667,6 +667,16 @@ func ContinueConversation(status goal.Status, text string, images ...llm.Image) 
 	status.Phase = goal.PhasePending
 	status.Message = ""
 	status.Steps = 0
+	// A new user turn is progress by definition: the human advanced the conversation, so
+	// the prior turn's idle streak is irrelevant and the next turn starts from a fresh
+	// progress baseline. Without this an interactive session of text-only replies — each a
+	// real answer but touching no file, tool, or ledger item — accumulates an idle streak
+	// across turns and false-stalls a healthy chat. No-progress detection is for a goal
+	// that is looping on its own, not for a conversation waiting on its user.
+	status.IdleStreak = 0
+	status.ProgressMark = ""
+	status.LastActivity = ""
+	status.ProgressNudge = ""
 	// Drop any record of an in-flight step: the prior turn has ended (converged, or
 	// cancelled mid-step), so a fresh turn must dispatch a new step rather than wait
 	// on a job that belongs to a runtime that is gone.
