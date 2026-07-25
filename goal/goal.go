@@ -194,6 +194,21 @@ type Status struct {
 	// the same order. Every entry starts unproven, so a goal begins from a record
 	// that says nothing is done. Completion is a transition here.
 	Ledger []LedgerState `json:"ledger,omitempty"`
+	// IdleStreak, ProgressMark and LastActivity drive no-progress detection
+	// (progress.go). ProgressMark is the fingerprint of substantive work observed after
+	// the last step that made any, LastActivity is a short description of what the most
+	// recent step did (so a no-progress stall can name it), and IdleStreak counts the
+	// consecutive steps since ProgressMark last changed. They are the observed state of
+	// "is this run still getting anywhere", computed over the durable record rather than
+	// the working tree.
+	IdleStreak   int    `json:"idleStreak,omitempty"`
+	ProgressMark string `json:"progressMark,omitempty"`
+	LastActivity string `json:"lastActivity,omitempty"`
+	// ProgressNudge is the warning the reconciler wants the next step handed when the
+	// goal is stalling but not yet stopped (see ProgressWarning). The executor surfaces
+	// it to the agent — a goal told it is stalling sometimes un-stalls — and clears it
+	// once delivered. Empty when the goal is making progress.
+	ProgressNudge string `json:"progressNudge,omitempty"`
 }
 
 // Condition is one standard status condition (the shared resource.Condition).
