@@ -409,6 +409,14 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
 	}
 
+	// A stalling nudge the reconciler stamped onto the status: tell the agent, a step
+	// before the run would be stopped, that it is not making progress — a goal told it is
+	// stalling sometimes changes course. It rides into this turn as user-visible text so
+	// the model sees it inline with the work.
+	if status.ProgressNudge != "" {
+		cp.Messages = appendNudge(cp.Messages, status.ProgressNudge)
+	}
+
 	// The turn index is the count of model turns taken so far plus this one. The
 	// count is carried on the checkpoint, so it stays correct across a crash-resumed
 	// step without rescanning the history.
@@ -508,6 +516,18 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 
 	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Goal: r.Name, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
 	return encodeCheckpoint(cp)
+}
+
+// appendNudge folds a stalling warning into the transcript as user-visible text without
+// breaking role alternation: it rides on the last message when that is already a user
+// turn (the tool results being fed back this step), and otherwise opens its own user
+// turn. Either way the model reads it as part of the conversation.
+func appendNudge(msgs []llm.Message, nudge string) []llm.Message {
+	if n := len(msgs); n > 0 && msgs[n-1].Role == llm.RoleUser {
+		msgs[n-1].Blocks = append(msgs[n-1].Blocks, llm.Block{Kind: llm.KindText, Text: nudge})
+		return msgs
+	}
+	return append(msgs, llm.Text(llm.RoleUser, nudge))
 }
 
 // summarizerFor returns the one-line result summarizer of a registered tool, or nil
@@ -647,6 +667,16 @@ func ContinueConversation(status goal.Status, text string, images ...llm.Image) 
 	status.Phase = goal.PhasePending
 	status.Message = ""
 	status.Steps = 0
+	// A new user turn is progress by definition: the human advanced the conversation, so
+	// the prior turn's idle streak is irrelevant and the next turn starts from a fresh
+	// progress baseline. Without this an interactive session of text-only replies — each a
+	// real answer but touching no file, tool, or ledger item — accumulates an idle streak
+	// across turns and false-stalls a healthy chat. No-progress detection is for a goal
+	// that is looping on its own, not for a conversation waiting on its user.
+	status.IdleStreak = 0
+	status.ProgressMark = ""
+	status.LastActivity = ""
+	status.ProgressNudge = ""
 	// Drop any record of an in-flight step: the prior turn has ended (converged, or
 	// cancelled mid-step), so a fresh turn must dispatch a new step rather than wait
 	// on a job that belongs to a runtime that is gone.

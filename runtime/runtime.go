@@ -51,6 +51,13 @@ type Config struct {
 	// Nil leaves planning off, so a goal runs exactly as before: no ledger, straight to
 	// building.
 	Planner goal.Planner
+	// Progress detects a goal that has stopped getting anywhere: after each build step the
+	// reconciler asks it for a fingerprint of the substantive work recorded so far, and
+	// stops the goal once that fingerprint has not changed for a few consecutive steps,
+	// with a no-progress reason rather than the budget reason a spinning loop would
+	// eventually reach. Nil leaves detection off, so a goal is bounded only by its step
+	// budget, exactly as before.
+	Progress goal.ProgressProbe
 
 	// Store, Jobs, and Bus are the foundation ports. When Store is nil, an in-memory
 	// store, queue, and bus are built over Clock with a registry holding the core
@@ -195,6 +202,13 @@ func New(cfg Config) (*Runtime, error) {
 	if cfg.Planner != nil {
 		ropts = append(ropts, goal.WithPlanning())
 		wopts = append(wopts, goal.WithPlanner(cfg.Planner))
+	}
+
+	// No-progress detection lives entirely on the reconciler (it folds each step's
+	// fingerprint into the goal's status and stops a stuck run), so unlike planning it is
+	// a single-sided wire: the probe reads the record the worker already writes.
+	if cfg.Progress != nil {
+		ropts = append(ropts, goal.WithProgressProbe(cfg.Progress))
 	}
 
 	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)

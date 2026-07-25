@@ -40,6 +40,7 @@ import (
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/netguard"
 	"github.com/ionalpha/flynn/orchestration"
+	"github.com/ionalpha/flynn/progress"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
@@ -1069,6 +1070,12 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	if planning {
 		cfg.Planner = mission.NewPlanner(model)
 	}
+	// Stop a run that has stopped getting anywhere. The probe reads the run's own recorded
+	// activity (its stream on the spine) and the git HEAD at the working directory, so a
+	// loop re-running the same tool calls is caught as no-progress rather than left to
+	// burn its whole step budget. It reads the record the run already writes, so it adds
+	// no obligation on the executor.
+	cfg.Progress = progress.NewSpineProbe(log, workdir)
 	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err

@@ -56,7 +56,8 @@ type Reconciler struct {
 	clk         clock.Clock
 	stop        StopEvaluator
 	cleaner     Cleaner
-	bus         bus.Bus // optional; nil disables owner wake signals
+	bus         bus.Bus       // optional; nil disables owner wake signals
+	progress    ProgressProbe // optional; nil disables no-progress detection
 	planning    bool
 	poll        time.Duration
 	waitRecheck time.Duration // 0 derives DefaultWaitRecheckFactor * poll
@@ -103,6 +104,15 @@ func WithPlanning() Option { return func(g *Reconciler) { g.planning = true } }
 // its children settles, so a fan-out parent re-checks on child state-change
 // instead of waiting out the recheck fallback.
 func WithWakeBus(b bus.Bus) Option { return func(g *Reconciler) { g.bus = b } }
+
+// WithProgressProbe turns on no-progress detection: after each build step the
+// reconciler asks the probe for a fingerprint of the substantive work recorded so far,
+// and stops the goal once that fingerprint has not changed for NoProgressLimit
+// consecutive steps (see progress.go). It is an option rather than always-on because
+// the probe reads whatever durable record the runtime keeps (the spine), which a bare
+// reconciler assembled without one does not have; a nil probe leaves detection off and
+// a goal is bounded only by its step budget, exactly as before.
+func WithProgressProbe(p ProgressProbe) Option { return func(g *Reconciler) { g.progress = p } }
 
 // WithStepMaxAttempts bounds how many times a single dispatched step is retried by
 // the job queue before it goes dead and stalls the goal (0 uses the queue default).
@@ -286,6 +296,16 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 			// would make a goal that plans strictly poorer than one that does not.
 			if status.WaitingSince == nil && inFlightKind != PlanJobKind {
 				status.Steps++
+				// Fold the just-completed build step into the idle streak, when a probe is
+				// wired. Only a build step counts: a planning step and a parked wait are not
+				// the agent failing to get anywhere. The stall itself is deferred to the
+				// no-progress guard below, so a step that both finished the work and changed
+				// nothing converges for that reason first.
+				if g.progress != nil {
+					if err := g.observeProgress(ctx, r, &status); err != nil {
+						return reconcile.Result{}, err
+					}
+				}
 			}
 		}
 	}
@@ -348,8 +368,37 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return g.terminal(ctx, r, status, specHash)
 	}
 
+	// No-progress guard: the loop noticed it is not getting anywhere. This sits after the
+	// stop and budget checks so a converged or budget-exhausted step settles for its own
+	// reason first; only a goal that would otherwise dispatch yet another step is stopped
+	// here, and it stops with a reason that names what it was stuck doing rather than the
+	// budget reason a no-progress loop would eventually have reached.
+	if status.StalledForNoProgress() {
+		status.Phase = PhaseStalled
+		status.Message = status.NoProgressReason()
+		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "NoProgress", Message: status.Message}, g.clk.Now())
+		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+		return g.terminal(ctx, r, status, specHash)
+	}
+
 	// Dispatch the next step and record it in flight.
 	return g.dispatch(ctx, r, status, specHash, StepJobKind, PhaseRunning, "StepDispatched")
+}
+
+// observeProgress folds the just-completed build step into the idle streak from the
+// probe's fingerprint of the durable record, and stamps the stalling warning for the
+// next step onto the status. It does not stall the goal itself: that is the no-progress
+// guard's job, run after the stop condition so a step that changed nothing but finished
+// the work still converges. A probe error is returned for the reconciler to classify —
+// a transient read failure retries rather than being read as a stall.
+func (g *Reconciler) observeProgress(ctx context.Context, r resource.Resource, status *Status) error {
+	fingerprint, summary, err := g.progress.Progress(ctx, r)
+	if err != nil {
+		return err
+	}
+	streak := status.ObserveProgress(fingerprint, summary)
+	status.ProgressNudge = ProgressWarning(streak)
+	return nil
 }
 
 // dispatch enqueues one job of the given kind against the goal and records it in
