@@ -120,8 +120,11 @@ func (t *Tree) Append(canonical []byte) error {
 func (t *Tree) Size() uint64 { return t.leaves }
 
 // Root returns the current Merkle tree head. An empty tree returns the hasher's
-// empty root.
+// empty root, SHA-256 of the empty string, per RFC 6962.
 func (t *Tree) Root() ([]byte, error) {
+	if t.leaves == 0 {
+		return merkleHasher.EmptyRoot(), nil
+	}
 	root, err := t.rang.GetRootHash(nil)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, CodeEncode, err)

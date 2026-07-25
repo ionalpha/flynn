@@ -133,6 +133,153 @@
       ],
       "description": "An empty event stream.",
       "events": []
+    },
+    {
+      "id": "valid.seq_gap.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Ordering"
+      ],
+      "description": "Three events with seq 1, 5, 900: a record may carry a window of a longer stream, so gaps are permitted; only repeats and decreases are rejected.",
+      "events": [
+        "valid/valid_seq_gap_01_0.cbor",
+        "valid/valid_seq_gap_01_1.cbor",
+        "valid/valid_seq_gap_01_2.cbor"
+      ]
+    },
+    {
+      "id": "valid.large_ints.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Encoding"
+      ],
+      "description": "Events whose seq and time exceed 2^53 (2^53+1 and the int64 maximum): a verifier that coerces int64 to a 53-bit float changes these values and fails.",
+      "events": [
+        "valid/valid_large_ints_01_0.cbor",
+        "valid/valid_large_ints_01_1.cbor"
+      ]
+    },
+    {
+      "id": "valid.unicode_payload.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Encoding"
+      ],
+      "description": "A payload whose keys span one to four UTF-8 bytes, pinning bytewise-encoded key sort order and non-ASCII content.",
+      "events": [
+        "valid/valid_unicode_payload_01.cbor"
+      ]
+    },
+    {
+      "id": "valid.payload_bytes.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Encoding"
+      ],
+      "description": "A payload carrying a CBOR byte string value: binary data is a bstr, exempt from the UTF-8 rule that governs text strings.",
+      "events": [
+        "valid/valid_payload_bytes_01.cbor"
+      ]
+    },
+    {
+      "id": "valid.empty_strings.01",
+      "expect": "accept",
+      "flags": [
+        "Structural",
+        "Encoding"
+      ],
+      "description": "An event whose required string fields are empty: required fields are encoded even when empty (SPEC 2.1/8.2), as zero-length text strings.",
+      "events": [
+        "valid/valid_empty_strings_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.schema.missing_field.01",
+      "expect": "reject",
+      "failure_code": "enc.non_canonical_cbor",
+      "flags": [
+        "Schema"
+      ],
+      "description": "A canonically encoded envelope missing the required time field: the canonical re-encoding of what it decodes to differs, so it is not the canonical form of any event.",
+      "events": [
+        "invalid/invalid_schema_missing_field_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.schema.unknown_field.01",
+      "expect": "reject",
+      "failure_code": "enc.non_canonical_cbor",
+      "flags": [
+        "Schema"
+      ],
+      "description": "A canonically encoded envelope carrying an unknown extra field, which no canonical event encoding contains.",
+      "events": [
+        "invalid/invalid_schema_unknown_field_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.schema.wrong_type.01",
+      "expect": "reject",
+      "failure_code": "enc.decode",
+      "flags": [
+        "Schema"
+      ],
+      "description": "An envelope whose seq is a text string rather than an integer.",
+      "events": [
+        "invalid/invalid_schema_wrong_type_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.schema.bad_actor.01",
+      "expect": "reject",
+      "failure_code": "enc.invalid_actor",
+      "flags": [
+        "Schema"
+      ],
+      "description": "An envelope whose actor is not one of the closed category agent, human, or system.",
+      "events": [
+        "invalid/invalid_schema_bad_actor_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.non_minimal_int.01",
+      "expect": "reject",
+      "failure_code": "enc.non_canonical_cbor",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A full envelope whose seq value 1 is encoded in a two-byte integer head: same value, not the shortest encoding.",
+      "events": [
+        "invalid/invalid_enc_non_minimal_int_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.duplicate_map_key_full.01",
+      "expect": "reject",
+      "failure_code": "enc.duplicate_map_key",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A full envelope grown by a duplicated seq entry, so duplicate-key rejection is pinned on a complete event, not only a fragment.",
+      "events": [
+        "invalid/invalid_enc_duplicate_map_key_full_01.cbor"
+      ]
+    },
+    {
+      "id": "invalid.enc.indefinite_length_full.01",
+      "expect": "reject",
+      "failure_code": "enc.indefinite_length",
+      "flags": [
+        "Encoding"
+      ],
+      "description": "A full envelope framed as an indefinite-length map.",
+      "events": [
+        "invalid/invalid_enc_indefinite_length_full_01.cbor"
+      ]
     }
   ]
 }

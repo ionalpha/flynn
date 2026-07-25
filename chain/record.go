@@ -202,6 +202,12 @@ func VerifyRun(record []byte, ring *RootKeyring) ([]spine.Event, error) {
 	if err != nil {
 		return nil, err
 	}
+	// An empty record is refused before the size comparison, so a signed size-0
+	// checkpoint over no events reports the emptiness, not a vacuous size match: a
+	// record must attest at least one event to attest anything.
+	if len(w.Events) == 0 {
+		return nil, fault.New(fault.Terminal, CodeEmptyRecord, "chain: record carries no events")
+	}
 	if uint64(len(w.Events)) != cp.Size {
 		return nil, fault.New(fault.Terminal, CodeSizeMismatch, "chain: event count does not match the signed size")
 	}
@@ -230,12 +236,12 @@ func VerifyRun(record []byte, ring *RootKeyring) ([]spine.Event, error) {
 // signature is valid and authorized, the proof's size matches the signed size, the
 // event is in canonical form, and the event's leaf is included under the signed root
 // at the claimed index. It needs only the proof and the keyring, not the run.
-func VerifyEventProof(proof []byte, ring *RootKeyring) (spine.Event, error) {
+func VerifyEventProof(proofBytes []byte, ring *RootKeyring) (spine.Event, error) {
 	var p EventProof
-	if err := canonicalDec.Unmarshal(proof, &p); err != nil {
+	if err := canonicalDec.Unmarshal(proofBytes, &p); err != nil {
 		return spine.Event{}, fault.Wrap(fault.Terminal, CodeRecordDecode, err)
 	}
-	if err := requireCanonical(p, proof); err != nil {
+	if err := requireCanonical(p, proofBytes); err != nil {
 		return spine.Event{}, err
 	}
 	cp, err := VerifyCheckpoint(p.Checkpoint, ring)
@@ -244,6 +250,22 @@ func VerifyEventProof(proof []byte, ring *RootKeyring) (spine.Event, error) {
 	}
 	if p.Size != cp.Size {
 		return spine.Event{}, fault.New(fault.Terminal, CodeSizeMismatch, "chain: proof size does not match the signed size")
+	}
+	if p.Index >= p.Size {
+		return spine.Event{}, fault.New(fault.Terminal, CodeIndexRange, "chain: proof index is outside the signed tree")
+	}
+	// A path shorter than the tree shape requires cannot reconstruct the root; name
+	// the missing node rather than reporting a generic inclusion failure. The
+	// delivered length is what Rehash produces over the shape's node IDs, which can
+	// be shorter than the ID count when an ephemeral range collapses to one hash.
+	if nodes, err := proof.Inclusion(p.Index, p.Size); err == nil {
+		dummies := make([][]byte, len(nodes.IDs))
+		for i := range dummies {
+			dummies[i] = make([]byte, 32)
+		}
+		if shaped, err := nodes.Rehash(dummies, merkleHasher.HashChildren); err == nil && len(p.Inclusion) < len(shaped) {
+			return spine.Event{}, fault.New(fault.Terminal, CodeMissingNode, "chain: inclusion path is missing a node")
+		}
 	}
 	if err := VerifyCanonical(p.Canonical); err != nil {
 		return spine.Event{}, err

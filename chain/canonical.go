@@ -32,6 +32,7 @@ const (
 	CodeEncode           = "enc.encode"
 	CodeTimeRange        = "enc.time_out_of_range"
 	CodeInvalidUTF8      = "enc.invalid_utf8"
+	CodeInvalidActor     = "enc.invalid_actor"
 )
 
 // canonicalEnc and canonicalDec are the single, shared CBOR modes the format is
@@ -94,6 +95,15 @@ type canonicalEvent struct {
 func toCanonical(e spine.Event) (canonicalEvent, error) {
 	if e.Time.IsZero() {
 		return canonicalEvent{}, fault.New(fault.Terminal, CodeTimeRange, "chain: event time is zero")
+	}
+	// The actor field is a closed category (SPEC 2.1): agent, human, or system.
+	// Enforcing it here covers both directions: a producer cannot emit an event
+	// outside the category, and the re-derivation check of verifyCanonical rejects
+	// carried bytes that claim one.
+	switch e.Actor {
+	case spine.ActorAgent, spine.ActorHuman, spine.ActorSystem:
+	default:
+		return canonicalEvent{}, fault.New(fault.Terminal, CodeInvalidActor, "chain: actor is not agent, human, or system")
 	}
 	payload := e.Payload
 	if payload == nil {

@@ -1,7 +1,10 @@
 package chain
 
 import (
+	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"io"
 
 	"github.com/veraison/go-cose"
 
@@ -9,12 +12,18 @@ import (
 )
 
 // checkpointAlg is the signature algorithm for a signed checkpoint: Ed25519 as
-// EdDSA, the instance's identity key type. checkpointContentType is set in the
-// protected header so the signature also binds the payload's meaning, not just its
-// bytes.
+// COSE algorithm -19 (RFC 9864), the fully-specified registration that replaced
+// the deprecated EdDSA (-8). checkpointContentType is set in the protected header
+// so the signature also binds the payload's meaning, not just its bytes; the name
+// lives in the vendor tree because an unfaceted application/provetrail-* name is
+// not obtainable outside the standards tree (RFC 6838 section 3.1).
+//
+// go-cose v1.3.0 predates RFC 9864 and its NewSigner/NewVerifier reject -19, so
+// ed25519CoseSigner and ed25519CoseVerifier below carry the label themselves; the
+// signature bytes are unchanged Ed25519.
 const (
-	checkpointAlg         = cose.AlgorithmEdDSA
-	checkpointContentType = "application/provetrail-checkpoint+cbor"
+	checkpointAlg         = cose.Algorithm(-19)
+	checkpointContentType = "application/vnd.provetrail.checkpoint+cbor"
 )
 
 // Signing failure codes, matching the published Provetrail conformance registry.
@@ -53,6 +62,9 @@ type SignedCheckpoint struct {
 // that are signed. It uses the same canonical encoder as events, so the signed
 // payload is reproducible in any language.
 func checkpointPayload(c Checkpoint) ([]byte, error) {
+	if len(c.RootHash) != sha256.Size {
+		return nil, fault.New(fault.Terminal, CodeEncode, "chain: checkpoint root is not a SHA-256 digest")
+	}
 	m := map[string]any{
 		"origin": c.Origin,
 		"size":   c.Size,
@@ -74,6 +86,18 @@ func decodeCheckpoint(b []byte) (Checkpoint, error) {
 	if err := canonicalDec.Unmarshal(b, &raw); err != nil {
 		return Checkpoint{}, fault.Wrap(fault.Terminal, CodeCheckpointDecode, err)
 	}
+	// The signed payload must be the exact canonical encoding of the checkpoint:
+	// re-encode and compare, so a payload with a missing, extra, or reordered field
+	// is rejected rather than absorbed into a default value. The root must be a full
+	// SHA-256 digest; a short root would otherwise surface later as a confusing
+	// mismatch or, worse, verify against a truncated tree head.
+	re, err := canonicalEnc.Marshal(map[string]any{"origin": raw.Origin, "size": raw.Size, "root": raw.Root})
+	if err != nil || !bytes.Equal(re, b) {
+		return Checkpoint{}, fault.New(fault.Terminal, CodeCheckpointDecode, "chain: checkpoint payload is not in canonical form")
+	}
+	if len(raw.Root) != sha256.Size {
+		return Checkpoint{}, fault.New(fault.Terminal, CodeCheckpointDecode, "chain: checkpoint root is not a SHA-256 digest")
+	}
 	return Checkpoint{Origin: raw.Origin, Size: raw.Size, RootHash: raw.Root}, nil
 }
 
@@ -94,11 +118,31 @@ func NewEd25519RootSigner(keyID string, priv ed25519.PrivateKey) (*Ed25519RootSi
 	if len(priv) != ed25519.PrivateKeySize {
 		return nil, fault.New(fault.Terminal, CodeSignerKey, "chain: malformed Ed25519 private key")
 	}
-	signer, err := cose.NewSigner(checkpointAlg, priv)
-	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, CodeSignerKey, err)
+	return &Ed25519RootSigner{keyID: keyID, signer: ed25519CoseSigner{key: priv}}, nil
+}
+
+// ed25519CoseSigner signs with an Ed25519 private key under COSE algorithm -19
+// (Ed25519, RFC 9864). go-cose v1.3.0 only dispatches the deprecated -8 label, so
+// this type exists to carry -19; the signing math is standard Ed25519.
+type ed25519CoseSigner struct{ key ed25519.PrivateKey }
+
+func (s ed25519CoseSigner) Algorithm() cose.Algorithm { return checkpointAlg }
+
+func (s ed25519CoseSigner) Sign(_ io.Reader, content []byte) ([]byte, error) {
+	return ed25519.Sign(s.key, content), nil
+}
+
+// ed25519CoseVerifier is the verifying half of ed25519CoseSigner: algorithm -19
+// over a standard Ed25519 public key.
+type ed25519CoseVerifier struct{ key ed25519.PublicKey }
+
+func (v ed25519CoseVerifier) Algorithm() cose.Algorithm { return checkpointAlg }
+
+func (v ed25519CoseVerifier) Verify(content, signature []byte) error {
+	if !ed25519.Verify(v.key, content, signature) {
+		return cose.ErrVerification
 	}
-	return &Ed25519RootSigner{keyID: keyID, signer: signer}, nil
+	return nil
 }
 
 // KeyID identifies the signing key.
@@ -170,11 +214,7 @@ func VerifyCheckpoint(coseBytes []byte, ring *RootKeyring) (Checkpoint, error) {
 	if !ok {
 		return Checkpoint{}, fault.New(fault.Terminal, CodeUnknownKey, "chain: checkpoint signed by an unknown key")
 	}
-	verifier, err := cose.NewVerifier(checkpointAlg, pub)
-	if err != nil {
-		return Checkpoint{}, fault.Wrap(fault.Terminal, CodeSignerKey, err)
-	}
-	if err := msg.Verify(nil, verifier); err != nil {
+	if err := msg.Verify(nil, ed25519CoseVerifier{key: pub}); err != nil {
 		return Checkpoint{}, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
 	}
 	return decodeCheckpoint(msg.Payload)

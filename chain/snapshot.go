@@ -127,11 +127,7 @@ func VerifySnapshotClaim(coseBytes []byte, ring *RootKeyring) (SnapshotClaim, er
 	if !ok {
 		return SnapshotClaim{}, fault.New(fault.Terminal, CodeUnknownKey, "chain: snapshot signed by an unknown key")
 	}
-	verifier, err := cose.NewVerifier(checkpointAlg, pub)
-	if err != nil {
-		return SnapshotClaim{}, fault.Wrap(fault.Terminal, CodeSignerKey, err)
-	}
-	if err := msg.Verify(nil, verifier); err != nil {
+	if err := msg.Verify(nil, ed25519CoseVerifier{key: pub}); err != nil {
 		return SnapshotClaim{}, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
 	}
 	return decodeSnapshotClaim(msg.Payload)
