@@ -168,7 +168,10 @@ func (s Status) ValidateLedger(ledger []LedgerItem) error {
 		return fmt.Errorf("%w: status records %d items, the ledger carries %d", ErrLedgerRegressed, len(s.Ledger), len(ledger))
 	}
 	for i, st := range s.Ledger {
-		if ledger[i].ID != st.ID {
+		// s.Ledger is a prefix of the spec ledger, guaranteed by the length check above, so
+		// this index is always in range; the explicit bound keeps that provable at the index
+		// (matching ValidateExtension) rather than only across the early return.
+		if i < len(ledger) && ledger[i].ID != st.ID {
 			return fmt.Errorf("%w: item %d was %s, the ledger now carries %s", ErrLedgerRegressed, i, st.ID, ledger[i].ID)
 		}
 	}
