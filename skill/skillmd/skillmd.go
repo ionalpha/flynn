@@ -513,12 +513,7 @@ func isSkippable(raw string) bool {
 // indentOf counts the leading spaces on a line. Tabs are not indentation in YAML and
 // are not treated as such here.
 func indentOf(raw string) int {
-	for i := range len(raw) {
-		if raw[i] != ' ' {
-			return i
-		}
-	}
-	return len(raw)
+	return len(raw) - len(strings.TrimLeft(raw, " "))
 }
 
 // Validate reports whether a document satisfies the specification. It is the gate for
