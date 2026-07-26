@@ -43,6 +43,21 @@ type Config struct {
 	Executor goal.StepExecutor
 	// Stop decides whether a goal has converged. Required.
 	Stop goal.StopEvaluator
+	// Planner expands a goal's objective into its ledger before any building starts.
+	// Setting it is what turns planning on: the runtime pairs it with the reconciler's
+	// planning gate in one place (WithPlanner on the worker, WithPlanning on the
+	// reconciler), so a goal can never be gated on a planning phase without a planner to
+	// run it — the misconfiguration that would leave every goal unplanned and stalled.
+	// Nil leaves planning off, so a goal runs exactly as before: no ledger, straight to
+	// building.
+	Planner goal.Planner
+	// Progress detects a goal that has stopped getting anywhere: after each build step the
+	// reconciler asks it for a fingerprint of the substantive work recorded so far, and
+	// stops the goal once that fingerprint has not changed for a few consecutive steps,
+	// with a no-progress reason rather than the budget reason a spinning loop would
+	// eventually reach. Nil leaves detection off, so a goal is bounded only by its step
+	// budget, exactly as before.
+	Progress goal.ProgressProbe
 
 	// Store, Jobs, and Bus are the foundation ports. When Store is nil, an in-memory
 	// store, queue, and bus are built over Clock with a registry holding the core
@@ -171,7 +186,6 @@ func New(cfg Config) (*Runtime, error) {
 	if cfg.StepMaxAttempts > 0 {
 		ropts = append(ropts, goal.WithStepMaxAttempts(cfg.StepMaxAttempts))
 	}
-	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)
 
 	wopts := []goal.WorkerOption{goal.WithBus(b)}
 	if cfg.WorkerLease > 0 {
@@ -180,6 +194,24 @@ func New(cfg Config) (*Runtime, error) {
 	if cfg.WorkerRetryBase > 0 || cfg.WorkerRetryCeiling > 0 {
 		wopts = append(wopts, goal.WithBackoff(cfg.WorkerRetryBase, cfg.WorkerRetryCeiling))
 	}
+
+	// Turning planning on is a single decision applied to both halves at once: the
+	// reconciler gates a goal on planning before it builds, and the worker is given the
+	// planner that runs that phase. Pairing them here means the two can never drift into
+	// the state where a goal is gated on a planner that was never wired.
+	if cfg.Planner != nil {
+		ropts = append(ropts, goal.WithPlanning())
+		wopts = append(wopts, goal.WithPlanner(cfg.Planner))
+	}
+
+	// No-progress detection lives entirely on the reconciler (it folds each step's
+	// fingerprint into the goal's status and stops a stuck run), so unlike planning it is
+	// a single-sided wire: the probe reads the record the worker already writes.
+	if cfg.Progress != nil {
+		ropts = append(ropts, goal.WithProgressProbe(cfg.Progress))
+	}
+
+	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)
 	worker := goal.NewWorker(store, q, clk, cfg.Executor, wopts...)
 
 	driven := &drivenSet{}

@@ -82,133 +82,179 @@ type Plan struct {
 // together or not at all. The result is deterministic and idempotent: the chosen set is a fixed
 // point, so applying the plan and scheduling again yields no further launches or evictions.
 func Schedule(desired []Desired, resident []Resident, budget int64) Plan {
-	residentByID := make(map[string]Resident, len(resident))
+	s := newScheduler(desired, resident)
+	s.keepForced(desired, resident)
+	unschedulable := s.admit(s.candidates(desired), budget)
+	launch, evict := s.actions(resident)
+
+	sort.Strings(launch)
+	sort.Strings(evict)
+	sort.Strings(unschedulable)
+	return Plan{Launch: launch, Evict: evict, Unschedulable: unschedulable}
+}
+
+// scheduler holds the indexed inputs and the running keep/budget decision for one Schedule
+// call. Its methods are the phases of that decision; bundling them on a value (rather than
+// threading the maps and the mutable used/kept accumulators through free functions) is what
+// keeps each phase small and Schedule itself a readable sequence.
+type scheduler struct {
+	residentByID  map[string]Resident
+	desiredByID   map[string]Desired
+	draftFootByID map[string]int64
+
+	// kept is the set of model ids the plan keeps resident; used is the budget they consume.
+	// Both accumulate across keepForced and admit.
+	kept map[string]bool
+	used int64
+}
+
+func newScheduler(desired []Desired, resident []Resident) *scheduler {
+	s := &scheduler{
+		residentByID:  make(map[string]Resident, len(resident)),
+		desiredByID:   make(map[string]Desired, len(desired)),
+		draftFootByID: make(map[string]int64),
+		kept:          make(map[string]bool, len(resident)+len(desired)),
+	}
 	for _, r := range resident {
-		residentByID[r.ModelID] = r
+		s.residentByID[r.ModelID] = r
 	}
-	desiredByID := make(map[string]Desired, len(desired))
-	draftFootByID := make(map[string]int64)
 	for _, d := range desired {
-		desiredByID[d.ModelID] = d
+		s.desiredByID[d.ModelID] = d
 		if d.Draft != nil {
-			draftFootByID[d.Draft.ModelID] = footprint(d.Draft.Footprint)
+			s.draftFootByID[d.Draft.ModelID] = footprint(d.Draft.Footprint)
 		}
 	}
+	return s
+}
 
-	// A model costs the same to keep whether it is already resident or about to be launched,
-	// so it is budgeted by a single footprint: a desired model at its declared estimate, a
-	// paired draft at its declared estimate, and a resident-only model at its observed size.
-	// Budgeting a desired or draft model at its own declared estimate (not the runtime's
-	// measurement) is what makes the plan a stable fixed point: a model cannot be evicted as
-	// too big and then re-launched as small enough.
-	footOf := func(id string) int64 {
-		if d, ok := desiredByID[id]; ok {
-			return footprint(d.Footprint)
-		}
-		if f, ok := draftFootByID[id]; ok {
-			return f
-		}
-		return footprint(residentByID[id].Footprint)
+// footOf reports a model's budgeted footprint. A model costs the same to keep whether it is
+// already resident or about to be launched, so it is budgeted by a single footprint: a desired
+// model at its declared estimate, a paired draft at its declared estimate, and a resident-only
+// model at its observed size. Budgeting a desired or draft model at its own declared estimate
+// (not the runtime's measurement) is what makes the plan a stable fixed point: a model cannot be
+// evicted as too big and then re-launched as small enough.
+func (s *scheduler) footOf(id string) int64 {
+	if d, ok := s.desiredByID[id]; ok {
+		return footprint(d.Footprint)
 	}
+	if f, ok := s.draftFootByID[id]; ok {
+		return f
+	}
+	return footprint(s.residentByID[id].Footprint)
+}
 
-	// Forced models are kept no matter what and consume budget first: a desired model that
-	// is pinned (it must always be resident, so it overrides the budget), a resident model
-	// that is pinned, or a resident model that is actively decoding, since evicting it would
-	// drop in-flight work.
-	kept := make(map[string]bool, len(resident)+len(desired))
-	var used int64
-	force := func(id string) {
-		if !kept[id] {
-			kept[id] = true
-			used += footOf(id)
-		}
+// force keeps a single model and charges its footprint to the budget, once.
+func (s *scheduler) force(id string) {
+	if !s.kept[id] {
+		s.kept[id] = true
+		s.used += s.footOf(id)
 	}
-	// keepPair keeps a desired model and, if it has one, its paired draft, so the two are always
-	// resident together and budgeted together.
-	keepPair := func(d Desired) {
-		force(d.ModelID)
-		if d.Draft != nil {
-			force(d.Draft.ModelID)
-		}
+}
+
+// keepPair keeps a desired model and, if it has one, its paired draft, so the two are always
+// resident together and budgeted together.
+func (s *scheduler) keepPair(d Desired) {
+	s.force(d.ModelID)
+	if d.Draft != nil {
+		s.force(d.Draft.ModelID)
 	}
+}
+
+// keepForced keeps every model that must stay resident and consumes budget first: a desired
+// model that is pinned (it must always be resident, so it overrides the budget), a resident model
+// that is pinned, or a resident model that is actively decoding, since evicting it would drop
+// in-flight work.
+func (s *scheduler) keepForced(desired []Desired, resident []Resident) {
 	for _, d := range desired {
 		if d.Pinned {
-			keepPair(d)
+			s.keepPair(d)
 		}
 	}
 	for _, r := range resident {
 		if r.Pinned || r.Active {
-			force(r.ModelID)
+			s.force(r.ModelID)
 			// A forced resident that is a desired model with a draft keeps its draft too, so an
 			// actively-decoding or pinned primary is never left without the draft it pairs with.
-			if d, ok := desiredByID[r.ModelID]; ok && d.Draft != nil {
-				force(d.Draft.ModelID)
+			if d, ok := s.desiredByID[r.ModelID]; ok && d.Draft != nil {
+				s.force(d.Draft.ModelID)
 			}
 		}
 	}
+}
 
-	// Admit the remaining desired models in priority order, budget permitting. A duplicate
-	// desired entry is collapsed to its first occurrence, so a malformed input cannot
-	// double-count a model or list it as unschedulable twice.
+// candidates returns the not-yet-kept desired models in admission order (priority high to low,
+// then already-resident and more-recently-used first to avoid churn, then id for determinism). A
+// duplicate desired entry is collapsed to its first occurrence, so a malformed input cannot
+// double-count a model or list it as unschedulable twice.
+func (s *scheduler) candidates(desired []Desired) []Desired {
 	seen := make(map[string]bool, len(desired))
 	candidates := make([]Desired, 0, len(desired))
 	for _, d := range desired {
-		if kept[d.ModelID] || seen[d.ModelID] {
+		if s.kept[d.ModelID] || seen[d.ModelID] {
 			continue
 		}
 		seen[d.ModelID] = true
 		candidates = append(candidates, d)
 	}
 	sort.SliceStable(candidates, func(i, j int) bool {
-		a, b := candidates[i], candidates[j]
-		if a.Priority != b.Priority {
-			return a.Priority > b.Priority
-		}
-		ra, aok := residentByID[a.ModelID]
-		rb, bok := residentByID[b.ModelID]
-		if aok != bok {
-			return aok // prefer keeping a model that is already resident
-		}
-		if aok && bok && ra.LastUsed != rb.LastUsed {
-			return ra.LastUsed > rb.LastUsed // among resident ties, keep the more recently used
-		}
-		return a.ModelID < b.ModelID
+		return s.higherPriority(candidates[i], candidates[j])
 	})
+	return candidates
+}
 
+// higherPriority orders admission candidates: higher priority first, then a model already
+// resident over one not (and the more-recently-used among resident ties) to avoid churn, then
+// model id so the order is total and deterministic.
+func (s *scheduler) higherPriority(a, b Desired) bool {
+	if a.Priority != b.Priority {
+		return a.Priority > b.Priority
+	}
+	ra, aok := s.residentByID[a.ModelID]
+	rb, bok := s.residentByID[b.ModelID]
+	if aok != bok {
+		return aok // prefer keeping a model that is already resident
+	}
+	if aok && bok && ra.LastUsed != rb.LastUsed {
+		return ra.LastUsed > rb.LastUsed // among resident ties, keep the more recently used
+	}
+	return a.ModelID < b.ModelID
+}
+
+// admit keeps candidates in order for as long as they fit the budget, returning those that did
+// not fit. A model and its draft are admitted together: the cost is the primary plus the draft,
+// counting the draft only if it is not already kept, so a primary that cannot fit both is
+// reported unschedulable rather than launched without the draft it needs.
+func (s *scheduler) admit(candidates []Desired, budget int64) []string {
 	var unschedulable []string
 	for _, d := range candidates {
-		// A model and its draft are admitted together: the cost is the primary plus the draft,
-		// counting the draft only if it is not already kept, so a primary that cannot fit both is
-		// reported unschedulable rather than launched without the draft it needs.
-		cost := footOf(d.ModelID)
-		if d.Draft != nil && !kept[d.Draft.ModelID] {
-			cost += footOf(d.Draft.ModelID)
+		cost := s.footOf(d.ModelID)
+		if d.Draft != nil && !s.kept[d.Draft.ModelID] {
+			cost += s.footOf(d.Draft.ModelID)
 		}
-		if used+cost <= budget {
-			keepPair(d)
+		if s.used+cost <= budget {
+			s.keepPair(d)
 		} else {
 			unschedulable = append(unschedulable, d.ModelID)
 		}
 	}
+	return unschedulable
+}
 
-	// Launch every kept model that is not yet resident; evict every resident model that is
-	// not kept (which, since pinned and active models are always kept, is evictable).
-	var launch, evict []string
-	for id := range kept {
-		if _, isResident := residentByID[id]; !isResident {
+// actions turns the kept set into concrete moves: launch every kept model that is not yet
+// resident; evict every resident model that is not kept (which, since pinned and active models
+// are always kept, is evictable).
+func (s *scheduler) actions(resident []Resident) (launch, evict []string) {
+	for id := range s.kept {
+		if _, isResident := s.residentByID[id]; !isResident {
 			launch = append(launch, id)
 		}
 	}
 	for _, r := range resident {
-		if !kept[r.ModelID] {
+		if !s.kept[r.ModelID] {
 			evict = append(evict, r.ModelID)
 		}
 	}
-
-	sort.Strings(launch)
-	sort.Strings(evict)
-	sort.Strings(unschedulable)
-	return Plan{Launch: launch, Evict: evict, Unschedulable: unschedulable}
+	return launch, evict
 }
 
 // footprint reads a byte count as non-negative, so a malformed negative input cannot make

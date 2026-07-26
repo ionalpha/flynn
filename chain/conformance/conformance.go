@@ -9,6 +9,11 @@
 // ordering. The cryptographic tiers (signed checkpoints, single-event inclusion
 // proofs, full signed run records) are defined alongside it in crypto.go as L2 and
 // L3.
+//
+// This package is the single source of truth for the vectors. The provetrail repo's
+// vectors/ directory is a downstream copy of testdata/{vectors,crypto}; regenerate
+// with `go test ./chain/conformance -update` and copy outward, never the reverse. See
+// TESTING.md ("Conformance vectors") for the change ordering.
 package conformance
 
 import (
@@ -354,9 +359,9 @@ func largeIntEvent(seq, timeNanos int64) []byte {
 func unicodePayloadEvent() []byte {
 	e := baseEvent()
 	e.Payload = map[string]any{
-		"Z":  "latin",
-		"é":  "e-acute",
-		"☃":  "snowman",
+		"Z": "latin",
+		"é": "e-acute",
+		"☃": "snowman",
 		"🎯": "target",
 	}
 	return mustCanonical(e)

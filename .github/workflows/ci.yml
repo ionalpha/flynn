@@ -76,8 +76,8 @@ jobs:
         go: ["1.26"]
     steps:
       # Actions are pinned to a full commit SHA; Dependabot (.github/dependabot.yml) bumps them.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
           # A `1.26` spec alone resolves to whatever 1.26.x the runner already has
@@ -175,8 +175,8 @@ jobs:
         # Exercise the shipped binary on every release target.
         os: ${{ fromJSON(needs.setup.outputs.platforms) }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -211,8 +211,8 @@ jobs:
     name: Lint & format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -276,8 +276,8 @@ jobs:
     if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -291,10 +291,10 @@ jobs:
     name: Secret scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -312,8 +312,8 @@ jobs:
     if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -330,7 +330,7 @@ jobs:
     if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # pipx is preinstalled on the runner and puts semgrep on PATH; dev/semgrep
       # then uses that local binary (its Docker fallback is for machines without it).
       - name: Install semgrep
@@ -348,8 +348,8 @@ jobs:
     if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -383,11 +383,11 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4]
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # dev/fuzz diffs against the PR base to scope the run.
           fetch-depth: 0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -443,11 +443,11 @@ jobs:
     # is open-ended. Bound it: an advisory signal is not worth an hour of runner.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           # dev/mutate diffs against the PR base to scope the run.
           fetch-depth: 0
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.26"
           check-latest: true
@@ -478,43 +478,10 @@ jobs:
           MUTATE_BASE="${{ github.event.before }}" ./dev/mutate ||
             echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
 
-  # Enforce the PR template at the gate, not just in dev/pr: this catches PRs
-  # opened any other way (gh directly, the web UI, an API call). The body comes
-  # from the event payload via env - never interpolated into the script - so a
-  # crafted body can't inject shell. Skipped on push (no PR body to check).
-  #
-  # The job still runs for a bot-authored PR so the check reports a real status
-  # rather than a skipped one, but the template requirement is waived: a bot like
-  # dependabot writes its own changelog-shaped body we neither control nor want to
-  # rewrite, and failing it would only block dependency bumps on a rule meant for
-  # humans. The author type comes from the event payload (User or Bot), so this
-  # covers every bot without naming one.
-  pr-body:
-    name: PR body follows template
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - name: Require template sections
-        env:
-          BODY: ${{ github.event.pull_request.body }}
-          AUTHOR_TYPE: ${{ github.event.pull_request.user.type }}
-        run: |
-          if [ "$AUTHOR_TYPE" = "Bot" ]; then
-            echo "Author is a bot; the template requirement applies to human-authored PRs only."
-            exit 0
-          fi
-          missing=0
-          for section in "## What" "## Why" "## How to verify"; do
-            case "$BODY" in
-              *"$section"*) ;;
-              *) echo "::error::PR body is missing the '$section' section."; missing=1 ;;
-            esac
-          done
-          if [ "$missing" -ne 0 ]; then
-            echo "Base the description on .github/PULL_REQUEST_TEMPLATE.md (What / Why / How to verify / Notes)."
-            exit 1
-          fi
-          echo "PR body contains all required template sections."
+  # The PR template check lives in .github/workflows/pr-body.yml, not here. It needs
+  # the `edited` trigger so that fixing a body re-evaluates it, and this workflow
+  # cannot take that trigger: the concurrency group below would cancel an in-flight
+  # matrix run on every title edit, and ci-success fails on a cancelled job.
 
   # Publish the numbers the README's badges display: coverage, and the size of the
   # test, fuzz and benchmark surface.
@@ -536,8 +503,8 @@ jobs:
       contents: write # push the `badges` branch
       actions: read # read this run's coverage artifact
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: '1.26'
       - name: Fetch the coverage profile from this run
@@ -576,7 +543,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, bench, fuzz, pr-body]
+    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, bench, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Fast tier only (draft)
@@ -591,9 +558,7 @@ jobs:
           exit 1
       # A skipped job is not a passing job. The step above only catches failure and
       # cancellation, so a job that never ran would sail through it. Every job below
-      # must have actually succeeded on a run that claims the full suite; pr-body is
-      # absent because it is legitimately skipped on a push to main, where there is no
-      # pull request body to check.
+      # must have actually succeeded on a run that claims the full suite.
       - name: Verify no required job was skipped
         if: ${{ needs.setup.outputs.full == 'true' }}
         env:

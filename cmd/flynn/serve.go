@@ -25,10 +25,12 @@ import (
 	"github.com/ionalpha/flynn/internal/source/signalcli"
 	"github.com/ionalpha/flynn/internal/source/telegram"
 	"github.com/ionalpha/flynn/internal/version"
+	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/spine"
 )
 
 // runServe runs the agent as a long-lived service. It answers messages from chat
@@ -50,26 +52,12 @@ func runServe(args []string, modelSpec, dataDir string) error {
 // server's whole lifecycle (bring-up, bind, shutdown) is drivable without sending the
 // process a signal. Cancelling ctx stops it exactly as Ctrl-C does.
 func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string) error {
-	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
-	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
-	apiAddr := fs.String("api-addr", "", "expose the read-only control-plane API here, loopback recommended, e.g. 127.0.0.1:7575")
-	apiToken := fs.String("api-token", "", "bearer token for the control-plane API (or set FLYNN_API_TOKEN)")
-	apiExpose := fs.Bool("api-expose", false, "allow --api-addr to bind a non-loopback interface (off by default; prefer a tunnel to a loopback bind, never a wildcard)")
-	if err := fs.Parse(args); err != nil {
+	cfg, err := parseServeConfig(args)
+	if err != nil {
 		return err
 	}
 	if err := errExternalAgentUnsupported("serve", modelSpec); err != nil {
 		return err
-	}
-
-	token := *tgToken
-	if token == "" {
-		token = os.Getenv("TELEGRAM_BOT_TOKEN")
-	}
-	apiTok := *apiToken
-	if apiTok == "" {
-		apiTok = os.Getenv("FLYNN_API_TOKEN")
 	}
 
 	// Load the instance signer so the served spine is durably chained and its resource
@@ -142,16 +130,16 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source
 	var sinks []inbox.Sink
-	if token != "" {
-		bot, err := telegram.New(token)
+	if cfg.telegramToken != "" {
+		bot, err := telegram.New(cfg.telegramToken)
 		if err != nil {
 			return err
 		}
 		sources = append(sources, bot)
 		sinks = append(sinks, bot)
 	}
-	if *signalTCP != "" {
-		sig, err := signalcli.New(*signalTCP)
+	if cfg.signalTCP != "" {
+		sig, err := signalcli.New(cfg.signalTCP)
 		if err != nil {
 			return err
 		}
@@ -159,65 +147,14 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		sinks = append(sinks, sig)
 	}
 
-	if len(sources) == 0 && *apiAddr == "" {
+	if len(sources) == 0 && cfg.apiAddr == "" {
 		return errors.New("serve: nothing to do; configure a channel (--telegram-token / --signal-tcp) and/or the API (--api-addr)")
 	}
 
-	// Read-only control-plane API (optional). Auth is on by default: a supplied token
-	// authenticates the operator, and when none is supplied one is generated and printed
-	// once rather than serving openly, so the API is secured-by-default with zero config
-	// and there is never a reason to run it unauthenticated.
-	if *apiAddr != "" {
-		var auth controlplane.Authenticator
-		if apiTok != "" {
-			// A local operator token is not grant-attenuated: it carries full action
-			// authority (AllowAll), bounded only by its scope, so the action gate reduces
-			// to the instance's own local grant. The zero Grant would instead deny-all.
-			auth = controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
-				apiTok: {ID: "operator", Scope: controlplane.ScopeRead, Grant: capability.AllowAll()},
-			})
-		} else {
-			gen, tok, err := controlplane.GeneratedOperator("operator", controlplane.ScopeRead, ids.Token)
-			if err != nil {
-				return fmt.Errorf("serve: api: generate token: %w", err)
-			}
-			auth = gen
-			fmt.Fprintln(os.Stderr, "flynn serve: no --api-token given; generated one for this run:")
-			fmt.Fprintln(os.Stderr, "  FLYNN_API_TOKEN="+tok)
-			fmt.Fprintln(os.Stderr, "  present it as: Authorization: Bearer "+tok)
+	if cfg.apiAddr != "" {
+		if err := startControlPlaneAPI(ctx, rstore, servedLog, cfg); err != nil {
+			return err
 		}
-		api := controlplane.NewServer(rstore, servedLog, auth)
-		// Bind-safe by default: the listener is opened through the inbound gate, which
-		// refuses a wildcard bind outright and a non-loopback bind unless --api-expose
-		// was passed. The bind is checked before the socket opens, so an unsafe address
-		// fails closed. It is opened through the exposure registry so the listener is
-		// recorded and visible (nothing stays exposed silently); the API is long-lived,
-		// so it carries no TTL.
-		reach := bindguard.Loopback()
-		if *apiExpose {
-			reach = bindguard.Exposed()
-		}
-		exposures := exposure.New(clock.System{}, nil)
-		ln, err := exposures.Listen("tcp", *apiAddr, reach, exposure.Meta{Purpose: "control-plane API", Exposed: *apiExpose})
-		if err != nil {
-			return fmt.Errorf("serve: api: %w", err)
-		}
-		httpSrv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
-		// The drain deliberately does not inherit ctx: it starts once ctx is done, and a
-		// shutdown on an already-cancelled context would close every live connection
-		// instantly instead of letting the requests in flight finish.
-		go func() { //nolint:gosec // G118: the shutdown deadline cannot descend from the context that triggered it
-			<-ctx.Done()
-			sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = httpSrv.Shutdown(sc)
-		}()
-		go func() {
-			if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				fmt.Fprintln(os.Stderr, "serve: api:", err)
-			}
-		}()
-		fmt.Fprintln(os.Stderr, "flynn serve: control-plane API (read-only) on", ln.Addr())
 	}
 
 	// With no channels this is a monitor-only daemon: just hold the API open.
@@ -227,6 +164,138 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		return nil
 	}
 
+	return serveChannels(ctx, modelSpec, dataDir, rstore, store.Jobs(), servedLog, sources, sinks)
+}
+
+// serveConfig is the parsed `flynn serve` configuration: the channel credentials and the
+// control-plane API's address, its auth (a static token or a delegation issuer key), and its
+// exposure. A flag wins over its environment fallback.
+type serveConfig struct {
+	telegramToken string
+	signalTCP     string
+	apiAddr       string
+	apiToken      string
+	apiIssuer     string
+	apiExpose     bool
+}
+
+// parseServeConfig parses the serve subcommand's flags and folds in the environment fallbacks
+// (TELEGRAM_BOT_TOKEN, FLYNN_API_TOKEN, FLYNN_API_ISSUER), so the rest of bring-up reads one
+// resolved config. A static token and an issuer key are two different trust models, so supplying
+// both is refused here rather than letting one silently win.
+func parseServeConfig(args []string) (serveConfig, error) {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
+	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
+	apiAddr := fs.String("api-addr", "", "expose the read-only control-plane API here, loopback recommended, e.g. 127.0.0.1:7575")
+	apiToken := fs.String("api-token", "", "bearer token for the control-plane API (or set FLYNN_API_TOKEN)")
+	apiIssuer := fs.String("api-issuer", "", "accept delegated capability tokens issued under this operator public key (ed25519:...); enables scope-attenuated remote drive instead of a static read-only token")
+	apiExpose := fs.Bool("api-expose", false, "allow --api-addr to bind a non-loopback interface (off by default; prefer a tunnel to a loopback bind, never a wildcard)")
+	if err := fs.Parse(args); err != nil {
+		return serveConfig{}, err
+	}
+
+	// A flag wins over its environment fallback; neither channel nor API auth is required here,
+	// the caller decides what "nothing to do" means once every source is assembled.
+	token := *tgToken
+	if token == "" {
+		token = os.Getenv("TELEGRAM_BOT_TOKEN")
+	}
+	apiTok := *apiToken
+	if apiTok == "" {
+		apiTok = os.Getenv("FLYNN_API_TOKEN")
+	}
+	apiIss := *apiIssuer
+	if apiIss == "" {
+		apiIss = os.Getenv("FLYNN_API_ISSUER")
+	}
+	if apiIss != "" && apiTok != "" {
+		return serveConfig{}, errors.New("serve: --api-token and --api-issuer are mutually exclusive: a static bearer is capped at read scope, an issuer key accepts scope-attenuated delegated tokens; choose one trust model")
+	}
+	return serveConfig{
+		telegramToken: token,
+		signalTCP:     *signalTCP,
+		apiAddr:       *apiAddr,
+		apiToken:      apiTok,
+		apiIssuer:     apiIss,
+		apiExpose:     *apiExpose,
+	}, nil
+}
+
+// startControlPlaneAPI opens the read-only control-plane API on cfg.apiAddr and serves it until
+// ctx is cancelled. Auth is on by default: a supplied token authenticates the operator, and when
+// none is supplied one is generated and printed once rather than serving openly, so the API is
+// secured-by-default with zero config and there is never a reason to run it unauthenticated.
+func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog spine.Log, cfg serveConfig) error {
+	var auth controlplane.Authenticator
+	if cfg.apiIssuer != "" {
+		// Delegation trust: the box holds no secret, only the operator's public key. The operator
+		// (which enrolled this instance) mints scope-attenuated capability tokens under its issuer
+		// key and presents them per request; each is verified offline against this key, fail-closed
+		// on any forged, widened, or expired chain. This is the path that permits operator-scoped
+		// remote drive (pause/resume/halt/run): a static --api-token is deliberately capped at read
+		// scope, a delegated token carries exactly the scope and actions the operator attenuated to.
+		issuer, err := controlplane.ParsePrincipalID(cfg.apiIssuer)
+		if err != nil {
+			return fmt.Errorf("serve: api: --api-issuer: %w", err)
+		}
+		auth = controlplane.NewDelegationAuthenticator(issuer, clock.System{})
+	} else if cfg.apiToken != "" {
+		// A local operator token is not grant-attenuated: it carries full action authority
+		// (AllowAll), bounded only by its scope, so the action gate reduces to the instance's own
+		// local grant. The zero Grant would instead deny-all.
+		auth = controlplane.NewTokenAuthenticator(map[string]controlplane.Principal{
+			cfg.apiToken: {ID: "operator", Scope: controlplane.ScopeRead, Grant: capability.AllowAll()},
+		})
+	} else {
+		gen, tok, err := controlplane.GeneratedOperator("operator", controlplane.ScopeRead, ids.Token)
+		if err != nil {
+			return fmt.Errorf("serve: api: generate token: %w", err)
+		}
+		auth = gen
+		fmt.Fprintln(os.Stderr, "flynn serve: no --api-token given; generated one for this run:")
+		fmt.Fprintln(os.Stderr, "  FLYNN_API_TOKEN="+tok)
+		fmt.Fprintln(os.Stderr, "  present it as: Authorization: Bearer "+tok)
+	}
+	api := controlplane.NewServer(rstore, servedLog, auth)
+	// Bind-safe by default: the listener is opened through the inbound gate, which refuses a
+	// wildcard bind outright and a non-loopback bind unless --api-expose was passed. The bind is
+	// checked before the socket opens, so an unsafe address fails closed. It is opened through the
+	// exposure registry so the listener is recorded and visible (nothing stays exposed silently);
+	// the API is long-lived, so it carries no TTL.
+	reach := bindguard.Loopback()
+	if cfg.apiExpose {
+		reach = bindguard.Exposed()
+	}
+	exposures := exposure.New(clock.System{}, nil)
+	ln, err := exposures.Listen("tcp", cfg.apiAddr, reach, exposure.Meta{Purpose: "control-plane API", Exposed: cfg.apiExpose})
+	if err != nil {
+		return fmt.Errorf("serve: api: %w", err)
+	}
+	httpSrv := &http.Server{Handler: api.Handler(), ReadHeaderTimeout: 10 * time.Second}
+	// The drain deliberately does not inherit ctx: it starts once ctx is done, and a shutdown on
+	// an already-cancelled context would close every live connection instantly instead of letting
+	// the requests in flight finish.
+	go func() { //nolint:gosec // G118: the shutdown deadline cannot descend from the context that triggered it
+		<-ctx.Done()
+		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = httpSrv.Shutdown(sc)
+	}()
+	go func() {
+		if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			fmt.Fprintln(os.Stderr, "serve: api:", err)
+		}
+	}()
+	fmt.Fprintln(os.Stderr, "flynn serve: control-plane API (read-only) on", ln.Addr())
+	return nil
+}
+
+// serveChannels drives the message-answering path: it resolves the model and goal runtime, then
+// records every inbound message from sources, triages each into a goal run in the working
+// directory, and replies with the answer on the channel it arrived from. It blocks until ctx is
+// cancelled.
+func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink) error {
 	// Channels need a model and the goal runtime that executes a triaged entry.
 	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
@@ -236,7 +305,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	if err != nil {
 		return err
 	}
-	mr, err := assembleMission(model, plan, workdir, "", rstore, store.Jobs(), servedLog, "", sandbox.ResourceLimits{})
+	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, "", sandbox.ResourceLimits{}, false)
 	if err != nil {
 		return err
 	}
@@ -289,7 +358,7 @@ func instanceReporter(store resource.Store, instanceID string) instance.Reporter
 				continue
 			}
 			switch st.Phase {
-			case goal.PhasePending, goal.PhaseRunning:
+			case goal.PhasePending, goal.PhasePlanning, goal.PhaseRunning:
 				active = append(active, r.Name)
 			case goal.PhaseConverged, goal.PhaseStalled:
 				// Terminal: the goal is finished, so it is not active work.

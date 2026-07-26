@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -67,6 +68,62 @@ func TestRunWritesFileThroughSandbox(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "write") {
 		t.Fatalf("progress did not show the tool action:\n%s", out.String())
+	}
+}
+
+// TestGoalCommandPlansBeforeItBuilds is the F1a composition proof: the goal path, with
+// planning turned on (as the `goal` command turns it on), expands its objective into a
+// visible ledger on the goal before it dispatches the first build step. A scripted model
+// plans one item, then builds; afterwards the goal carries that item with its verify
+// clause, and the very first model call was the planning call, not the build.
+func TestGoalCommandPlansBeforeItBuilds(t *testing.T) {
+	dir := t.TempDir()
+	store := memStore(t)
+	model := llmtest.NewScripted(
+		llmtest.SayText(`[{"item":"write hello.txt","verify":"the file exists with the greeting"}]`),
+		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi"}`)),
+		llmtest.SayText("done"),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+
+	result, err := runLearningMission(ctx, &out, model, harness.Plan{}, nil, dir, "create hello.txt", "", store, nil, false, nil, withPlanning())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(result, "done") {
+		t.Fatalf("run did not converge on the build: %q", result)
+	}
+	// The build ran after planning: the file the build step wrote is there.
+	if _, err := os.Stat(filepath.Join(dir, "hello.txt")); err != nil {
+		t.Fatalf("build step did not run: %v", err)
+	}
+	// The first model call was the planner, not the build loop.
+	if sys := model.Requests()[0].System; !strings.Contains(sys, "planning phase") {
+		t.Fatalf("first model call was not the planner: %q", sys)
+	}
+	// A visible ledger was recorded on the goal, item and verify clause both.
+	reg, err := missionRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	goals, err := store.Resources(reg).List(ctx, goal.Kind, resource.Scope{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(goals) != 1 {
+		t.Fatalf("got %d goals, want 1", len(goals))
+	}
+	spec, err := goal.DecodeSpec(goals[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Ledger) != 1 {
+		t.Fatalf("goal ledger has %d items, want 1 (the plan)", len(spec.Ledger))
+	}
+	if spec.Ledger[0].Item != "write hello.txt" || spec.Ledger[0].Verify == "" {
+		t.Fatalf("ledger item = %+v, want the planned item with its verify clause", spec.Ledger[0])
 	}
 }
 

@@ -25,6 +25,11 @@ const (
 	Finalizer = "goal.ionagent.io/cleanup"
 	// StepJobKind is the job kind a dispatched goal step is enqueued under.
 	StepJobKind = "goal.step"
+	// PlanJobKind is the job kind a goal's planning step is enqueued under. It rides
+	// the same queue and worker as a build step and is distinguished by kind, so
+	// planning inherits the lease, crash-resume and retry ladder a step already has
+	// rather than growing a second execution path.
+	PlanJobKind = "goal.plan"
 )
 
 // Phase is a coarse, human-facing lifecycle summary of a goal, derived from its
@@ -35,6 +40,7 @@ type Phase string
 // stalled state.
 const (
 	PhasePending   Phase = "Pending"   // accepted, no step run yet
+	PhasePlanning  Phase = "Planning"  // expanding the objective into a ledger, before any building
 	PhaseRunning   Phase = "Running"   // a step is in flight or more are queued
 	PhaseConverged Phase = "Converged" // the stop condition is satisfied
 	PhaseStalled   Phase = "Stalled"   // out of budget or a step failed terminally
@@ -58,6 +64,28 @@ var specSchema = json.RawMessage(`{
     "grant": {"type": "array", "items": {"type": "string"}},
     "depth": {"type": "integer", "minimum": 0},
     "budgetPool": {"type": "string"},
+    "budget": {
+      "type": "object",
+      "properties": {
+        "tokens": {"type": "integer", "minimum": 0},
+        "cost": {"type": "number", "minimum": 0},
+        "windowFraction": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "additionalProperties": false
+    },
+    "ledger": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "item", "verify"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "item": {"type": "string", "minLength": 1},
+          "verify": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
     "system": {"type": "string"},
     "driver": {"type": "string"},
     "model": {"type": "string"},
@@ -102,6 +130,14 @@ type Spec struct {
 	// whole graph is bounded by a single ceiling rather than a budget per goal. Empty
 	// means the goal is its own pool (a standalone root).
 	BudgetPool string `json:"budgetPool,omitempty"`
+	// Budget bounds the goal by what it spends, alongside MaxSteps' bound on how many
+	// steps it takes: a ceiling on total tokens, cost, and share of the plan window,
+	// checked at the same reconcile point as MaxSteps and enforced against the spend
+	// recorded on BudgetPool. A step is the wrong unit for cost (a step that reads a
+	// file and a step that runs a full-codebase gather differ by an order of
+	// magnitude), so this bounds the thing that actually varies. The zero value bounds
+	// nothing, so a goal that sets no budget is governed by MaxSteps exactly as before.
+	Budget SpendBudget `json:"budget,omitempty"`
 	// System is the standing system prompt this goal runs under, carried on the goal
 	// so a delegated child can run as a different agent than its parent (its prompt
 	// baked in by the spawner from the bound Agent). Empty defers to the executor's
@@ -122,6 +158,41 @@ type Spec struct {
 	// turn. Empty on every text-only goal, so the text path serializes
 	// identically and is unchanged.
 	Attachments []llm.Image `json:"attachments,omitempty"`
+	// Ledger is the goal's objective expanded into the units of work it implies,
+	// each carrying its own declared way to verify it. It is desired state, which is
+	// why it lives here and not in status: it is what the goal is committed to
+	// doing, and the per-item proven/unproven observation of it is Status.Ledger.
+	// The planner phase writes it before any building starts, and it is
+	// append-and-mark-only from then on (see ledger.go). Empty on a goal that runs
+	// without a planner, which is every goal composed before planning is wired.
+	Ledger []LedgerItem `json:"ledger,omitempty"`
+}
+
+// SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total
+// the goal may spend on its budget pool; WindowFraction caps the share of the plan
+// window the run may consume, in [0,1] (0.5 is half the window). A zero field is no
+// bound on that axis, so the zero SpendBudget bounds nothing.
+//
+// Window share matters where the scarce resource is not money but a subscription's
+// plan window: there the argument is to stop at a percentage of the weekly window
+// rather than at a dollar figure. Flynn enforces the fraction but does not source the
+// window data; an app supplies that through the reconciler's WindowSource, and the
+// bound has no effect until one is wired.
+//
+// These ceilings are the agent's own, so crossing one stops the goal with a named
+// reason. That is a different outcome from hitting a provider's own limit (a pause
+// that resumes when the provider resets) or a transient error (retried with backoff),
+// and it deliberately does not share their code path: see the reconciler's spendGuard.
+type SpendBudget struct {
+	Tokens         int64   `json:"tokens,omitempty"`
+	Cost           float64 `json:"cost,omitempty"`
+	WindowFraction float64 `json:"windowFraction,omitempty"`
+}
+
+// IsZero reports whether the budget bounds nothing on any axis, so the reconciler can
+// skip the spend guard entirely for a goal that sets no ceiling.
+func (b SpendBudget) IsZero() bool {
+	return b.Tokens == 0 && b.Cost == 0 && b.WindowFraction == 0
 }
 
 // InFlight records a dispatched step not yet observed complete, so a re-reconcile
@@ -129,6 +200,12 @@ type Spec struct {
 type InFlight struct {
 	JobID     string    `json:"jobID"`
 	StartedAt time.Time `json:"startedAt"`
+	// Kind is the job kind dispatched (StepJobKind or PlanJobKind), so the observing
+	// pass knows what it is observing. A planning step is not building, so it does
+	// not spend the build budget; without this the reconciler cannot tell the two
+	// apart once the job is done and the reservation is being cleared. Empty on a
+	// reservation written before planning existed, which reads as a build step.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Status is a goal's observed state.
@@ -152,6 +229,30 @@ type Status struct {
 	// step budget. A settling child clears it (the prompt wake); the reconciler's
 	// recheck fallback clears it after a bounded delay if that wake is lost.
 	WaitingSince *time.Time `json:"waitingSince,omitempty"`
+	// Planned records that the planning phase has run to completion. It is separate
+	// from a non-empty Ledger because the two answer different questions: a planner
+	// that ran and produced nothing is a planned goal with an empty ledger, which is
+	// a stall, not an invitation to plan again on the next pass.
+	Planned bool `json:"planned,omitempty"`
+	// Ledger is the observed state of Spec.Ledger, one entry per planned item and in
+	// the same order. Every entry starts unproven, so a goal begins from a record
+	// that says nothing is done. Completion is a transition here.
+	Ledger []LedgerState `json:"ledger,omitempty"`
+	// IdleStreak, ProgressMark and LastActivity drive no-progress detection
+	// (progress.go). ProgressMark is the fingerprint of substantive work observed after
+	// the last step that made any, LastActivity is a short description of what the most
+	// recent step did (so a no-progress stall can name it), and IdleStreak counts the
+	// consecutive steps since ProgressMark last changed. They are the observed state of
+	// "is this run still getting anywhere", computed over the durable record rather than
+	// the working tree.
+	IdleStreak   int    `json:"idleStreak,omitempty"`
+	ProgressMark string `json:"progressMark,omitempty"`
+	LastActivity string `json:"lastActivity,omitempty"`
+	// ProgressNudge is the warning the reconciler wants the next step handed when the
+	// goal is stalling but not yet stopped (see ProgressWarning). The executor surfaces
+	// it to the agent — a goal told it is stalling sometimes un-stalls — and clears it
+	// once delivered. Empty when the goal is making progress.
+	ProgressNudge string `json:"progressNudge,omitempty"`
 }
 
 // Condition is one standard status condition (the shared resource.Condition).
