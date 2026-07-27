@@ -463,7 +463,14 @@ jobs:
       # request over a signal nobody agreed to be blocked by. The log keeps the
       # detail. Arm the gate by taking the `|| echo` off in the same change that
       # raises the thresholds and adds `mutate` to the ci-success needs list.
+      # MUTATE_TIMEOUT bounds the run's own wall clock (dev/mutate wraps gremlins
+      # in `timeout`). Kept well under timeout-minutes so WE end an over-long run
+      # with a catchable non-zero status the `|| echo` below swallows, rather than
+      # letting the runner be reclaimed mid-run - a runner cancellation reports the
+      # advisory check red no matter what the step's exit status would have been.
       - if: github.event_name == 'pull_request'
+        env:
+          MUTATE_TIMEOUT: "180"
         run: |
           MUTATE_BASE="${{ github.event.pull_request.base.sha }}" ./dev/mutate ||
             echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
@@ -474,6 +481,8 @@ jobs:
       # status is, so an unbounded run turned the advisory check red on main for a
       # signal it never produced. The pushed range is the same scope a PR pays for.
       - if: github.event_name != 'pull_request'
+        env:
+          MUTATE_TIMEOUT: "180"
         run: |
           MUTATE_BASE="${{ github.event.before }}" ./dev/mutate ||
             echo "::warning title=Mutation (advisory)::gremlins did not complete; see the job log"
