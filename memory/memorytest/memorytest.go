@@ -7,6 +7,7 @@ package memorytest
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/ionalpha/flynn/state"
@@ -17,6 +18,7 @@ import (
 func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Helper()
 	t.Run("WriteRecall", func(t *testing.T) { testWriteRecall(t, newStore()) })
+	t.Run("ScopeResolution", func(t *testing.T) { testScopeResolution(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
 }
 
@@ -69,6 +71,102 @@ func testWriteRecall(t *testing.T, mem state.MemoryStore) {
 	if capped, _ := mem.Recall(ctx, state.RecallQuery{Limit: 1}); len(capped) != 1 {
 		t.Fatalf("Recall limit 1 returned %d", len(capped))
 	}
+}
+
+// testScopeResolution pins the hierarchical read: an item written at an outer
+// scope must be recallable from an inner one when the query asks to widen, and
+// must stay invisible when it does not. This is the read an agent running
+// workspace-under-project issues on every turn, so a backend that resolves scopes
+// exactly and only exactly returns nothing useful to it.
+func testScopeResolution(t *testing.T, mem state.MemoryStore) {
+	ctx := context.Background()
+
+	var (
+		instance  = state.Scope{Instance: "i"}
+		project   = state.Scope{Instance: "i", Project: "p"}
+		workspace = state.Scope{Instance: "i", Project: "p", Workspace: "w"}
+		sibling   = state.Scope{Instance: "i", Project: "p", Workspace: "other"}
+	)
+	for _, w := range []struct {
+		scope   state.Scope
+		content string
+	}{
+		{state.Scope{}, "global: ship on Fridays"},
+		{instance, "instance: ship on Fridays"},
+		{project, "project: ship on Fridays"},
+		{workspace, "workspace: ship on Fridays"},
+		{sibling, "sibling: ship on Fridays"},
+	} {
+		if _, err := mem.Write(ctx, state.MemoryItem{Kind: "fact", Content: w.content, Scope: w.scope}); err != nil {
+			t.Fatalf("write at %+v: %v", w.scope, err)
+		}
+	}
+
+	// Without widening, a scoped recall sees its own scope and nothing else.
+	narrow, err := mem.Recall(ctx, state.RecallQuery{Query: "ship", Scope: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(narrow) != 1 || narrow[0].Content != "workspace: ship on Fridays" {
+		t.Fatalf("unwidened Recall = %s, want only the workspace's own item", contents(narrow))
+	}
+
+	// Widening walks the ancestors: own scope, project, instance, global - and
+	// still never the sibling workspace, which encloses nothing.
+	wide, err := mem.Recall(ctx, state.RecallQuery{Query: "ship", Scope: workspace, IncludeAncestors: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"workspace: ship on Fridays",
+		"project: ship on Fridays",
+		"instance: ship on Fridays",
+		"global: ship on Fridays",
+	}
+	if got := contents(wide); !slices.Equal(got, want) {
+		t.Fatalf("widened Recall = %v, want %v (most-specific first, no sibling scope)", got, want)
+	}
+
+	// The chain skips a level that is empty rather than inventing one: a scope with
+	// no instance resolves straight through to the global scope.
+	noInstance, err := mem.Recall(ctx, state.RecallQuery{
+		Query: "ship", Scope: state.Scope{Project: "p"}, IncludeAncestors: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := contents(noInstance); !slices.Equal(got, []string{"global: ship on Fridays"}) {
+		t.Fatalf("widened Recall from an instance-less scope = %v, want just the global item", got)
+	}
+
+	// Limit applies after resolution, so the most-specific results are the ones
+	// that survive the cap rather than whichever the backend happened to scan first.
+	capped, err := mem.Recall(ctx, state.RecallQuery{
+		Query: "ship", Scope: workspace, IncludeAncestors: true, Limit: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := contents(capped); !slices.Equal(got, want[:2]) {
+		t.Fatalf("widened Recall with limit 2 = %v, want %v", got, want[:2])
+	}
+
+	// Widening a zero scope is still the unfiltered read, not the global scope.
+	all, err := mem.Recall(ctx, state.RecallQuery{Query: "ship", IncludeAncestors: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all) != 5 {
+		t.Fatalf("widened Recall with a zero scope = %d, want all 5 (a zero scope spans everything)", len(all))
+	}
+}
+
+func contents(items []state.MemoryItem) []string {
+	out := make([]string, 0, len(items))
+	for _, it := range items {
+		out = append(out, it.Content)
+	}
+	return out
 }
 
 func testTombstone(t *testing.T, mem state.MemoryStore) {

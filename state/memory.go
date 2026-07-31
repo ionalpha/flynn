@@ -388,24 +388,28 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	query := strings.ToLower(strings.TrimSpace(q.Query))
+	// A nil chain is the unfiltered read; otherwise only the scopes it names match,
+	// which is the one scope asked for or that scope's ancestors when widened.
+	var chain map[Scope]bool
+	if scopes := q.ScopeChain(); scopes != nil {
+		chain = make(map[Scope]bool, len(scopes))
+		for _, s := range scopes {
+			chain[s] = true
+		}
+	}
 	out := make([]MemoryItem, 0)
 	for _, it := range c.memItems {
 		if it.Deleted {
 			continue
 		}
-		if q.Scope != (Scope{}) && it.Scope != q.Scope {
+		if chain != nil && !chain[it.Scope] {
 			continue
 		}
 		if query == "" || strings.Contains(strings.ToLower(it.Content), query) {
 			out = append(out, it)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.After(out[j].CreatedAt)
-		}
-		return out[i].ID < out[j].ID // total order: deterministic reads regardless of map iteration
-	})
+	SortRecall(q, out)
 	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
 	}

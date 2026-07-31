@@ -908,12 +908,15 @@ func (m *memory) Write(ctx context.Context, it state.MemoryItem) (state.MemoryIt
 
 func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	query := strings.TrimSpace(q.Query)
-	scoped := q.Scope != (state.Scope{})
+	chain := q.ScopeChain()
 
-	// The scoped, no-FTS shape is the agent-startup read; it runs on the
+	// The single-scope, no-FTS shape is the agent-startup read; it runs on the
 	// prepared statement (a non-positive Limit becomes SQLite's LIMIT -1, no
-	// limit, so both limit shapes share it).
-	if query == "" && scoped {
+	// limit, so both limit shapes share it). A widened read cannot: the prepared
+	// statement binds exactly one scope triple, so it falls through to the built
+	// query below, which is the only shape that can express a variable-length
+	// resolution chain.
+	if query == "" && len(chain) == 1 {
 		limit := q.Limit
 		if limit <= 0 {
 			limit = -1
@@ -938,11 +941,36 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 			WHERE f.memory_fts MATCH ? AND m.deleted = 0`)
 		args = append(args, ftsPhrase(query))
 	}
-	if scoped {
-		sb.WriteString(` AND m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?`)
-		args = append(args, q.Scope.Instance, q.Scope.Project, q.Scope.Workspace)
+	// The chain is one scope, or that scope's ancestors when the read widened, so
+	// the predicate is an OR over its triples. Nil means unfiltered, no predicate.
+	for i, sc := range chain {
+		if i == 0 {
+			sb.WriteString(` AND (`)
+		} else {
+			sb.WriteString(` OR `)
+		}
+		sb.WriteString(`(m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?)`)
+		args = append(args, sc.Instance, sc.Project, sc.Workspace)
 	}
-	sb.WriteString(` ORDER BY m.created_at DESC, m.id DESC`)
+	if len(chain) > 0 {
+		sb.WriteString(`)`)
+	}
+	// A widened recall ranks most-specific scope first, matching state.Scope.Depth
+	// and state.SortRecall, so a workspace's own memory outranks the project
+	// memory it inherits. The CASE takes no arguments because it reads the
+	// innermost set column rather than comparing against the chain: within one
+	// ancestor chain every level has a distinct innermost column, which is exactly
+	// what Depth reports. It has to be ordered in SQL rather than after collection,
+	// because LIMIT would otherwise truncate the wrong rows.
+	sb.WriteString(` ORDER BY`)
+	if q.RanksByScope() {
+		sb.WriteString(` CASE
+			WHEN m.scope_workspace <> '' THEN 0
+			WHEN m.scope_project <> '' THEN 1
+			WHEN m.scope_instance <> '' THEN 2
+			ELSE 3 END,`)
+	}
+	sb.WriteString(` m.created_at DESC, m.id DESC`)
 	if q.Limit > 0 {
 		sb.WriteString(` LIMIT ?`)
 		args = append(args, q.Limit)

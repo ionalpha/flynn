@@ -7,9 +7,9 @@
 // schema/admission path, and one provenance/sync model shared with every other kind.
 //
 // Recall is a read model over that store: the facade ranks live items by a
-// case-insensitive content scan, most-recent first, and a backend can maintain a
-// full-text or vector projection of the same resource events without changing this
-// contract.
+// case-insensitive content scan, most-specific scope first then most-recent first,
+// and a backend can maintain a full-text or vector projection of the same resource
+// events without changing this contract.
 package memory
 
 import (
@@ -17,7 +17,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/ionalpha/flynn/envelope"
@@ -101,19 +100,12 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 }
 
 // Recall returns live memory items whose content contains the query (case
-// insensitive), most-recent first, capped at q.Limit (<= 0 means no cap). A zero
-// Scope spans every scope; a set Scope narrows to it. An empty query matches every
-// live item.
+// insensitive), most-specific scope first then most-recent first, capped at
+// q.Limit (<= 0 means no cap). A zero Scope spans every scope; a set Scope
+// narrows to it, and widens back out over that scope's ancestors when
+// q.IncludeAncestors is set. An empty query matches every live item.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
-	var (
-		rs  []resource.Resource
-		err error
-	)
-	if q.Scope == (state.Scope{}) {
-		rs, err = s.rs.ListAll(ctx, Kind, nil)
-	} else {
-		rs, err = s.rs.List(ctx, Kind, resource.Scope(q.Scope), nil)
-	}
+	rs, err := s.list(ctx, q)
 	if err != nil {
 		return nil, err
 	}
@@ -128,14 +120,32 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 			out = append(out, it)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if !out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].CreatedAt.After(out[j].CreatedAt) // most-recent first
-		}
-		return out[i].ID < out[j].ID // total order: deterministic regardless of store iteration
-	})
+	state.SortRecall(q, out)
 	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
+	}
+	return out, nil
+}
+
+// list reads the resources a recall query covers: every scope for an unfiltered
+// query, else one List per scope in the resolution chain. The chain is at most
+// four scopes deep, so the widened read costs a bounded handful of scoped Lists
+// rather than a ListAll that pulls every scope's memory back to filter it here.
+func (s *Store) list(ctx context.Context, q state.RecallQuery) ([]resource.Resource, error) {
+	chain := q.ScopeChain()
+	if chain == nil {
+		return s.rs.ListAll(ctx, Kind, nil)
+	}
+	if len(chain) == 1 {
+		return s.rs.List(ctx, Kind, resource.Scope(chain[0]), nil)
+	}
+	var out []resource.Resource
+	for _, sc := range chain {
+		rs, err := s.rs.List(ctx, Kind, resource.Scope(sc), nil)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, rs...)
 	}
 	return out, nil
 }
