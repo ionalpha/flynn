@@ -61,4 +61,16 @@ if [ -n "${MUTATE_BASE:-}" ]; then
 fi
 
 echo "==> gremlins $*"
+
+# An advisory run must not outlive the CI job. When gremlins runs long the
+# runner is reclaimed mid-run, and a runner-level cancellation is reported as a
+# failed check that the caller's `|| echo` cannot swallow: the shell is killed
+# before the `||` can run. MUTATE_TIMEOUT, when set by CI, bounds our own wall
+# clock so WE end the run instead. `timeout` sends TERM (then KILL after a
+# grace period) and exits non-zero, a status the caller CAN catch, which keeps
+# the advisory check green. Unset (local runs) leaves the run unbounded.
+if [ -n "${MUTATE_TIMEOUT:-}" ] && [ "$MUTATE_TIMEOUT" != "0" ] && command -v timeout >/dev/null 2>&1; then
+	echo "dev/mutate: bounding the run to ${MUTATE_TIMEOUT}"
+	exec timeout --kill-after=30s "$MUTATE_TIMEOUT" "$gremlins" "$@"
+fi
 exec "$gremlins" "$@"
