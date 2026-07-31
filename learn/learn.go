@@ -28,6 +28,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/skill/skillmd"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -130,11 +131,15 @@ func NewCurator(d Distiller, skills state.SkillStore, memories state.MemoryStore
 // Captured is what a Curate call persisted, returned for audit and for the caller
 // to surface ("learned 2 skills, 1 memory from this run"). Dropped holds skill
 // lessons rejected because their check ran and failed, so a caller can report what
-// was discarded as broken rather than silently losing it.
+// was discarded as broken rather than silently losing it. Skipped holds skill
+// lessons that collided with an existing authored skill and were not stored, so the
+// caller can tell "learned nothing new" apart from "would have overwritten curated
+// content".
 type Captured struct {
 	Skills   []state.Skill
 	Memories []state.MemoryItem
 	Dropped  []Lesson
+	Skipped  []Lesson
 }
 
 // Curate distills o and persists the resulting lessons, returning what it stored.
@@ -156,6 +161,22 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 		}
 		switch l.Kind {
 		case LessonSkill:
+			slug := slugify(l.Title)
+			// Look the slug up once: it tells us both whether an authored skill owns
+			// this name and, if a learned skill owns it, what evidence to carry over.
+			prev, prevErr := c.skills.Get(ctx, slug)
+			existsInScope := prevErr == nil && prev.Scope == o.Scope
+
+			// The learning loop never overwrites a human-authored skill. A skill that
+			// exists in the scope without the learned-provenance tag is curated
+			// content (authored, or shipped in a pack), and a distilled lesson must
+			// not silently replace its body, check or tags. Skip it before the check
+			// runs, so a capture we will not store costs no sandbox time.
+			if existsInScope && !isLearned(prev.Tags) {
+				captured.Skipped = append(captured.Skipped, l)
+				continue
+			}
+
 			tags := withProvenance(l.Tags)
 			if c.verifier != nil {
 				v, err := c.verifier.Verify(ctx, l, o.Scope)
@@ -175,16 +196,17 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 				}
 			}
 			skill := state.Skill{
-				Slug:  slugify(l.Title),
+				Slug:  slug,
 				Name:  strings.TrimSpace(l.Title),
 				Body:  l.Body,
 				Tags:  tags,
 				Check: l.Check,
 				Scope: o.Scope,
 			}
-			// Re-capturing a skill keeps the outcome evidence it has already earned,
-			// so reinforcement is not reset every time the same lesson is learned again.
-			if prev, err := c.skills.Get(ctx, skill.Slug); err == nil && prev.Scope == o.Scope {
+			// Re-capturing a learned skill keeps the outcome evidence it has already
+			// earned, so reinforcement is not reset every time the same lesson is
+			// learned again.
+			if existsInScope {
 				skill.Uses, skill.Wins = prev.Uses, prev.Wins
 			}
 			sk, err := c.skills.Upsert(ctx, skill)
@@ -219,6 +241,18 @@ func withProvenance(tags []string) []string {
 	return append(append([]string(nil), tags...), provenanceTag)
 }
 
+// isLearned reports whether a skill carries the learned-provenance tag. A skill
+// without it was authored by a human or shipped in a pack, which the capture path
+// must not overwrite.
+func isLearned(tags []string) bool {
+	for _, t := range tags {
+		if t == provenanceTag {
+			return true
+		}
+	}
+	return false
+}
+
 // slugify renders a title as a stable skill slug: lowercased, with each run of
 // non-alphanumeric characters collapsed to a single hyphen and the ends trimmed.
 // An empty result falls back to "skill" so a slug is always non-empty.
@@ -240,6 +274,14 @@ func slugify(s string) string {
 	out := strings.Trim(b.String(), "-")
 	if out == "" {
 		return "skill"
+	}
+	// A learned skill has to be exportable as a conformant SKILL.md, whose name
+	// field caps at skillmd.MaxNameLen. Bound the slug here, where the name is
+	// minted, rather than discovering the violation at export. The slug is ASCII
+	// (lowercase letters, digits and hyphens), so a byte cut is a rune cut; trim
+	// again in case it landed on a hyphen.
+	if len(out) > skillmd.MaxNameLen {
+		out = strings.Trim(out[:skillmd.MaxNameLen], "-")
 	}
 	return out
 }

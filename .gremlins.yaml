@@ -10,6 +10,17 @@ unleash:
   threshold-efficacy: 0
   threshold-mcover: 0
 
+  # gremlins gives each mutant a test-run timeout of (baseline suite duration x
+  # timeout-coefficient). A mutant that flips a loop counter's ++ to -- turns
+  # the suite into an infinite loop, so a large coefficient lets one runaway
+  # stall the run for over a minute; several running at once starve the CI
+  # runner until it is reclaimed mid-run, and that cancellation posts the
+  # advisory check red past the job's `|| echo` guard. Kill a runaway at a
+  # small multiple of the suite time, and cap concurrent workers so timed-out
+  # mutants cannot pile up and exhaust the runner.
+  timeout-coefficient: 3
+  workers: 2
+
   # Generated and non-behavioral code has no meaningful mutants to kill;
   # excluding it keeps the surviving-mutant list signal, not noise.
   exclude-files:
