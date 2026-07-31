@@ -22,20 +22,23 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("ScopeResolution", func(t *testing.T) { testScopeResolution(t, newStore()) })
 	t.Run("Selectors", func(t *testing.T) { testSelectors(t, newStore()) })
 	t.Run("Relevance", func(t *testing.T) { testRelevance(t, newStore()) })
+	t.Run("Provenance", func(t *testing.T) { testProvenance(t, newStore()) })
+	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
 }
 
 func testWriteRecall(t *testing.T, mem state.MemoryStore) {
-	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "the user prefers Go", Source: "chat"})
+	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "the user prefers Go", Sources: []string{"chat"}})
 	if a.ID == "" || a.SyncVersion != 1 {
 		t.Fatalf("write = (id %q, sync %d), want id + sync 1", a.ID, a.SyncVersion)
 	}
 	if a.OriginInstanceID == "" || a.LastWriterID != a.OriginInstanceID {
 		t.Fatalf("write origin/writer wrong: %+v", a.Envelope)
 	}
-	if a.Content != "the user prefers Go" || a.Kind != "fact" || a.Source != "chat" {
+	if a.Content != "the user prefers Go" || a.Kind != "fact" {
 		t.Fatalf("write did not round-trip content: %+v", a)
 	}
+	wantSources(t, "the written item", a, "chat")
 
 	// A second write in another scope is a distinct record with its own id.
 	b := write(t, mem, state.MemoryItem{Kind: "fact", Content: "deploys go to Cloudflare", Scope: state.Scope{Project: "x"}})
@@ -129,6 +132,51 @@ func recall(t *testing.T, mem state.MemoryStore, q state.RecallQuery) []state.Me
 		t.Fatalf("recall %+v: %v", q, err)
 	}
 	return got
+}
+
+// only runs a query that must match exactly one item and returns it, so an
+// assertion about that item does not have to re-check the count first.
+func only(t *testing.T, mem state.MemoryStore, q state.RecallQuery) state.MemoryItem {
+	t.Helper()
+	got := recall(t, mem, q)
+	if len(got) != 1 {
+		t.Fatalf("recall %+v returned %d item(s) (%v), want exactly 1", q, len(got), contents(got))
+	}
+	return got[0]
+}
+
+// wantSources fails unless the item carries exactly this provenance, in order. No
+// expected sources means the item must carry none, which is distinct from carrying
+// one empty string.
+func wantSources(t *testing.T, what string, it state.MemoryItem, want ...string) {
+	t.Helper()
+	if len(want) == 0 && len(it.Sources) == 0 {
+		return
+	}
+	if !slices.Equal(it.Sources, want) {
+		t.Fatalf("%s has Sources %v, want %v (order preserved)", what, it.Sources, want)
+	}
+}
+
+// wantExpiry fails unless the item carries exactly this expiry, and unless it was
+// persisted at all: a store that quietly discarded an already-expired write would
+// otherwise satisfy every recall assertion in the suite by having nothing to hide.
+func wantExpiry(t *testing.T, what string, it state.MemoryItem, want time.Time) {
+	t.Helper()
+	if it.ID == "" {
+		t.Fatalf("%s returned no record; the item must still be persisted", what)
+	}
+	if !it.ExpiresAt.Equal(want) {
+		t.Fatalf("%s has ExpiresAt %v, want %v", what, it.ExpiresAt, want)
+	}
+}
+
+// mustDelete tombstones an item, failing with why the delete was expected to work.
+func mustDelete(t *testing.T, mem state.MemoryStore, id, why string) {
+	t.Helper()
+	if err := mem.Delete(context.Background(), id); err != nil {
+		t.Fatalf("delete %q = %v, want it to succeed: %s", id, err, why)
+	}
 }
 
 // wantOrder fails unless the recall returned exactly these contents, in order.
@@ -276,6 +324,88 @@ func testRelevance(t *testing.T, mem state.MemoryStore) {
 	}
 }
 
+// testProvenance pins provenance as a list. An item distilled from several inputs
+// has to be able to say so: a purge of everything one compromised source
+// contributed to has to find the items where it was one contributor among several,
+// and a store that kept only the first or last of them would silently miss exactly
+// those.
+func testProvenance(t *testing.T, mem state.MemoryStore) {
+	many := []string{"user:operator", "tool:web-fetch", "agent:run-7"}
+	// The order is the writer's and survives the round trip through storage, so a
+	// reader can tell the primary source from the incidental ones if the writer
+	// meant anything by the order.
+	wantSources(t, "Write of a multi-source item",
+		write(t, mem, state.MemoryItem{Kind: "fact", Content: "distilled from three inputs", Sources: many}), many...)
+	wantSources(t, "recall of the multi-source item",
+		only(t, mem, state.RecallQuery{Query: "distilled"}), many...)
+
+	// No provenance is empty, not a one-element list holding an empty string: an
+	// item with no recorded origin must be distinguishable from one sourced to "".
+	wantSources(t, "Write of an item with no sources",
+		write(t, mem, state.MemoryItem{Kind: "fact", Content: "no recorded origin"}))
+	wantSources(t, "recall of the item with no provenance",
+		only(t, mem, state.RecallQuery{Query: "recorded"}))
+
+	// One source is the ordinary case and stays a one-element list rather than
+	// collapsing back to a bare string somewhere in the backend.
+	wantSources(t, "Write of a single-source item",
+		write(t, mem, state.MemoryItem{Kind: "fact", Content: "single origin", Sources: []string{"chat"}}), "chat")
+}
+
+// testExpiry pins MemoryItem.ExpiresAt across every recall shape a backend
+// implements. The shapes matter more than the rule here: a backend that pushes the
+// expiry predicate into its query language for the general case, but keeps a
+// fast-path statement for the scoped no-query read an agent issues at startup, will
+// serve expired memory from exactly that path and pass a test that only exercised
+// the general one.
+func testExpiry(t *testing.T, mem state.MemoryStore) {
+	scope := state.Scope{Project: "p"}
+	// Wide margins in both directions: the suite runs against whatever clock the
+	// backend holds, so the assertions must not depend on how long the test takes.
+	past := time.Now().Add(-time.Hour)
+	future := time.Now().Add(time.Hour)
+
+	dead := write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "rotated credential", Scope: scope, ExpiresAt: past,
+	})
+	write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "live credential", Scope: scope, ExpiresAt: future,
+	})
+	write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "permanent credential", Scope: scope,
+	})
+
+	// Write accepts an already-expired item and hands it back intact, rather than
+	// rejecting it or silently clearing the field.
+	wantExpiry(t, "Write of an already-expired item", dead, past)
+
+	live := []string{"live credential", "permanent credential"}
+	// The scoped, query-less read: the startup shape, and the one most likely to
+	// have its own code path.
+	wantSet(t, "scoped recall with no query", recall(t, mem, state.RecallQuery{Scope: scope}), live...)
+	// The lexical read, which on a full-text backend is a different query entirely.
+	wantSet(t, "recall by content", recall(t, mem, state.RecallQuery{Query: "credential"}), live...)
+	// The unfiltered read.
+	wantSet(t, "unfiltered recall", recall(t, mem, state.RecallQuery{}), live...)
+	// With a kind filter, which some backends push into the query and some do not.
+	wantSet(t, "recall of kind fact", recall(t, mem, state.RecallQuery{Kinds: []string{"fact"}}), live...)
+	// Widened over a scope chain, the shape that cannot use a prepared statement.
+	wantSet(t, "widened recall",
+		recall(t, mem, state.RecallQuery{Scope: scope, IncludeAncestors: true}), live...)
+	// Ordered by relevance, so the expired row cannot come back through the ranking
+	// path either.
+	wantSet(t, "relevance-ordered recall",
+		recall(t, mem, state.RecallQuery{Query: "credential", Order: state.OrderRelevance}), live...)
+	// A limit must cap what survived expiry, not cap first and then drop the expired
+	// row out of the capped set, which would hand back one item instead of two.
+	wantCount(t, "recall capped at 2", recall(t, mem, state.RecallQuery{Scope: scope, Limit: 2}), 2)
+
+	// Expiry hides a fact from retrieval; it is not a deletion. The expired item is
+	// still a live record, so Delete finds it and tombstones it rather than
+	// reporting it already gone.
+	mustDelete(t, mem, dead.ID, "expiry is not deletion, so an expired item is still there to tombstone")
+}
+
 func contents(items []state.MemoryItem) []string {
 	out := make([]string, 0, len(items))
 	for _, it := range items {
@@ -297,9 +427,7 @@ func testTombstone(t *testing.T, mem state.MemoryStore) {
 	ctx := context.Background()
 
 	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "ship it"})
-	if err := mem.Delete(ctx, a.ID); err != nil {
-		t.Fatalf("delete %q: %v", a.ID, err)
-	}
+	mustDelete(t, mem, a.ID, "the item was just written and is live")
 	wantCount(t, "recall after delete",
 		recall(t, mem, state.RecallQuery{Query: "ship"}), 0)
 	if err := mem.Delete(ctx, a.ID); !errors.Is(err, state.ErrNotFound) {

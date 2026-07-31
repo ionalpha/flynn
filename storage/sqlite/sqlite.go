@@ -258,7 +258,7 @@ func (s *Store) prepare(ctx context.Context) error {
 		`SELECT `+skillCols+` FROM skills WHERE slug = ? AND deleted = 0 ORDER BY created_at, id LIMIT 1`)
 	prep(&s.stmts.memoryRecall, s.reads(),
 		`SELECT `+memoryCols+` FROM memory_items m
-		 WHERE m.deleted = 0 AND m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?
+		 WHERE `+memoryLiveSQL+` AND m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?
 		 ORDER BY m.created_at DESC, m.id DESC LIMIT ?`)
 	if err != nil {
 		return fmt.Errorf("sqlite: prepare: %w", err)
@@ -834,66 +834,125 @@ func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 
 type memory struct{ p *Store }
 
-const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, source, created_at,
+const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, sources, created_at, expires_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
 // memoryColsQualified is memoryCols against the `m` alias, for the recall query,
 // which joins the FTS table and so cannot use bare column names. Recall appends
-// a fifteenth expression, the relevance score, after these fourteen.
-const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.source, m.created_at,
+// a sixteenth expression, the relevance score, after these fifteen.
+const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.created_at, m.expires_at,
 	m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted`
 
-func scanMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
+// memoryLiveSQL is the predicate for a row a recall may return: not tombstoned,
+// and not past its expiry as of the bound instant. Both recall shapes use it, so
+// the prepared single-scope statement and the built query cannot disagree on what
+// "live" means. It binds one parameter, the read time in unix nanoseconds.
+const memoryLiveSQL = `m.deleted = 0 AND (m.expires_at = 0 OR m.expires_at > ?)`
+
+// encodeSources renders provenance for storage as a JSON array. Empty provenance
+// is the empty string rather than "[]" so an item that never had a source keeps a
+// cheap, obviously-empty column value.
+//
+// It returns no error because it cannot fail: encoding a []string is total, so
+// dropping the error is honest, where a defensive error return would add a branch
+// no test could ever reach and no caller could ever handle.
+func encodeSources(sources []string) string {
+	if len(sources) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(sources)
+	return string(b)
+}
+
+// decodeSources reads back what encodeSources wrote.
+func decodeSources(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("sqlite: decode memory sources: %w", err)
+	}
+	return out, nil
+}
+
+// expiryNanos renders an expiry for storage: unix nanoseconds, with 0 reserved for
+// "never", which is what the zero time means on the item.
+func expiryNanos(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
+}
+
+// expiryTime is expiryNanos in reverse.
+func expiryTime(n int64) time.Time {
+	if n == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, n).UTC()
+}
+
+// scanMemoryRow scans the fifteen memory columns, and the trailing relevance score
+// too when score is non-nil (the recall shapes select it as a sixteenth
+// expression). One scanner so the column list and its readers cannot drift apart.
+func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.MemoryItem, error) {
 	var (
 		m             state.MemoryItem
+		sources       string
 		created       string
+		expires       int64
 		wall, counter int64
 		deleted       int
 	)
-	if err := sc.Scan(&m.ID, &m.Kind, &m.Content,
-		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &m.Source, &created,
-		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted); err != nil {
+	dst := []any{&m.ID, &m.Kind, &m.Content,
+		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &created, &expires,
+		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted}
+	if score != nil {
+		dst = append(dst, score)
+	}
+	if err := sc.Scan(dst...); err != nil {
 		return state.MemoryItem{}, err
 	}
+	decoded, err := decodeSources(sources)
+	if err != nil {
+		return state.MemoryItem{}, err
+	}
+	m.Sources = decoded
 	m.CreatedAt = parseTime(created)
+	m.ExpiresAt = expiryTime(expires)
 	m.UpdatedHLC = hlcTime(wall, counter)
 	m.Deleted = deleted != 0
+	if score != nil {
+		m.Score = *score
+	}
 	return m, nil
+}
+
+func scanMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
+	return scanMemoryRow(sc, nil)
 }
 
 // scanScoredMemory scans a recall row: the item's columns plus the trailing
 // relevance score.
 func scanScoredMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
-	var (
-		m             state.MemoryItem
-		created       string
-		wall, counter int64
-		deleted       int
-	)
-	if err := sc.Scan(&m.ID, &m.Kind, &m.Content,
-		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &m.Source, &created,
-		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted,
-		&m.Score); err != nil {
-		return state.MemoryItem{}, err
-	}
-	m.CreatedAt = parseTime(created)
-	m.UpdatedHLC = hlcTime(wall, counter)
-	m.Deleted = deleted != 0
-	return m, nil
+	var score float64
+	return scanMemoryRow(sc, &score)
 }
 
 func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			kind=excluded.kind, content=excluded.content,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
-			source=excluded.source, created_at=excluded.created_at,
+			sources=excluded.sources, created_at=excluded.created_at, expires_at=excluded.expires_at,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
-		it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, it.Source,
-		formatTime(it.CreatedAt), it.SyncVersion, it.OriginInstanceID, it.UpdatedHLC.Wall, int64(it.UpdatedHLC.Counter), it.LastWriterID, boolToInt(it.Deleted))
+		it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, encodeSources(it.Sources),
+		formatTime(it.CreatedAt), expiryNanos(it.ExpiresAt),
+		it.SyncVersion, it.OriginInstanceID, it.UpdatedHLC.Wall, int64(it.UpdatedHLC.Counter), it.LastWriterID, boolToInt(it.Deleted))
 	return err
 }
 
@@ -936,6 +995,12 @@ func (m *memory) Write(ctx context.Context, it state.MemoryItem) (state.MemoryIt
 func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	query := strings.TrimSpace(q.Query)
 	chain := q.ScopeChain()
+	// One clock reading bound into both recall shapes and into the Go post-filter,
+	// so a single call cannot judge two rows against two different instants. This is
+	// the read time itself, not an expiry, so it goes through UnixNano directly:
+	// expiryNanos reserves 0 for "never", which is a meaningless answer for a clock.
+	now := m.p.clk.Now()
+	liveAt := now.UnixNano()
 
 	// The single-scope, no-FTS shape is the agent-startup read; it runs on the
 	// prepared statement (a non-positive Limit becomes SQLite's LIMIT -1, no
@@ -954,7 +1019,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		if limit <= 0 {
 			limit = -1
 		}
-		rows, err := m.p.stmts.memoryRecall.QueryContext(ctx, q.Scope.Instance, q.Scope.Project, q.Scope.Workspace, limit)
+		rows, err := m.p.stmts.memoryRecall.QueryContext(ctx, liveAt, q.Scope.Instance, q.Scope.Project, q.Scope.Workspace, limit)
 		if err != nil {
 			return nil, err
 		}
@@ -975,7 +1040,8 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		// Nothing to rank against, so every row scores 1: state.MemoryItem.Score
 		// reserves 1 for "matched, no opinion on how well".
 		sb.WriteString(`SELECT ` + memoryColsQualified + `, 1.0
-			FROM memory_items m WHERE m.deleted = 0`)
+			FROM memory_items m WHERE ` + memoryLiveSQL)
+		args = append(args, liveAt)
 	} else {
 		// FTS5 computes bm25 for the MATCH regardless; the contract used to discard
 		// it. bm25 is <= 0 with a more negative value meaning a better match, so
@@ -983,8 +1049,8 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		// direction and range Score is defined in.
 		sb.WriteString(`SELECT ` + memoryColsQualified + `, (-bm25(memory_fts)) / (1.0 - bm25(memory_fts))
 			FROM memory_items m JOIN memory_fts ON memory_fts.item_id = m.id
-			WHERE memory_fts MATCH ? AND m.deleted = 0`)
-		args = append(args, ftsPhrase(query))
+			WHERE memory_fts MATCH ? AND ` + memoryLiveSQL)
+		args = append(args, ftsPhrase(query), liveAt)
 	}
 	// Kind is an exact match on an indexed column, so it belongs in the query
 	// rather than in a post-filter: it cuts the rows the sort has to order.
@@ -1023,9 +1089,9 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// because LIMIT would otherwise truncate the wrong rows.
 	sb.WriteString(` ORDER BY`)
 	if q.Order == state.OrderRelevance {
-		// Column 15 is the score expression. Ordering by ordinal rather than
+		// Column 16 is the score expression. Ordering by ordinal rather than
 		// repeating the expression keeps bm25 evaluated once per row.
-		sb.WriteString(` 15 DESC,`)
+		sb.WriteString(` 16 DESC,`)
 	}
 	if q.RanksByScope() {
 		sb.WriteString(` CASE
@@ -1058,7 +1124,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// times is the only correct answer available here.
 	out := items[:0]
 	for _, it := range items {
-		if !q.Selects(it) || it.Score < q.MinScore {
+		if !q.Selects(it, now) || it.Score < q.MinScore {
 			continue
 		}
 		out = append(out, it)

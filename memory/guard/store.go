@@ -28,7 +28,10 @@ type Store struct {
 // Refusal is the record of a refused write, passed to the audit callback so a host
 // can append it to the spine (poison attempts leave a trail).
 type Refusal struct {
-	Source   string
+	// Sources is the refused item's full provenance, not just the source that made
+	// it untrusted: an audit of a poisoning attempt wants every input the write
+	// claimed, including the trusted ones it was mixed with.
+	Sources  []string
 	Trust    sandbox.Trust
 	Findings []Finding
 }
@@ -63,13 +66,14 @@ var _ state.MemoryStore = (*Store)(nil)
 // Write screens the item and refuses an untrusted-origin write that carries a
 // screening hit, returning a Forbidden fault; otherwise it delegates to the inner
 // store unchanged. The screen runs on the item's content; trust comes from its
-// Source via TrustOf.
+// Sources via TrustOfAll, which takes the weakest of them, so mixing one trusted
+// input into a distilled item does not buy it past the gate.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
-	trust := TrustOf(m.Source)
+	trust := TrustOfAll(m.Sources)
 	if trust == sandbox.TrustUntrusted {
 		if findings := Screen(m.Content); len(findings) > 0 {
 			if s.audit != nil {
-				s.audit(ctx, Refusal{Source: m.Source, Trust: trust, Findings: findings})
+				s.audit(ctx, Refusal{Sources: m.Sources, Trust: trust, Findings: findings})
 			}
 			return state.MemoryItem{}, fault.New(fault.Forbidden, "memory_poison_refused",
 				"refused to persist untrusted-origin memory carrying a hidden-instruction payload: "+findings[0].Detail)
@@ -79,7 +83,7 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 }
 
 // Recall delegates unchanged. Retrieval-side trust is available to callers via
-// TrustOf on each item's Source, so a governance gate can treat an untrusted-origin
+// TrustOfAll on each item's Sources, so a governance gate can treat an untrusted-origin
 // memory as data rather than as the agent's vetted intent without this store having
 // to alter the recall contract.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {

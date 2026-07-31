@@ -1,6 +1,8 @@
 package state
 
 import (
+	"time"
+
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/hlc"
@@ -36,6 +38,12 @@ func NewStamper(instanceID string, clk clock.Clock, hc *hlc.Clock, gen *ids.Gene
 
 // InstanceID is the instance this Stamper attributes writes to.
 func (s *Stamper) InstanceID() string { return s.instanceID }
+
+// Now reads the clock this Stamper timestamps writes with. Read paths that need
+// the current time - judging MemoryItem.ExpiresAt on a recall - take it from here
+// so they measure against the same clock the writes were stamped by, which is what
+// makes a manual clock in a test move both sides together.
+func (s *Stamper) Now() time.Time { return s.clk.Now() }
 
 func (s *Stamper) sessionEvent(typ string, ses Session) (spine.AppendInput, error) {
 	return s.input(typ, map[string]any{keySession: ses})

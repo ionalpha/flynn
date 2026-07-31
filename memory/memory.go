@@ -18,7 +18,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/envelope"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/state"
@@ -43,7 +45,9 @@ var specSchema = json.RawMessage(`{
   "properties": {
     "kind": {"type": "string"},
     "content": {"type": "string"},
-    "source": {"type": "string"}
+    "sources": {"type": "array", "items": {"type": "string"}},
+    "source": {"type": "string"},
+    "expires_at": {"type": "string"}
   },
   "additionalProperties": false
 }`)
@@ -65,24 +69,55 @@ func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 // spec is the typed shape of a memory resource's Spec (the JSON validated by
 // specSchema). Empty fields are omitted so a minimal item hashes and validates as a
 // small object.
+// Spec fields are omitempty so a minimal item hashes and validates as a small
+// object. Source is the pre-list provenance field: never written any more, still
+// decoded, because resources already stored under the old shape must keep their
+// provenance when they are read back.
+// ExpiresAt is a pointer so the common never-expires item omits it entirely: a
+// time.Time value would encode the zero time into every spec and change what a
+// minimal item hashes to.
 type spec struct {
-	Kind    string `json:"kind,omitempty"`
-	Content string `json:"content,omitempty"`
-	Source  string `json:"source,omitempty"`
+	Kind      string     `json:"kind,omitempty"`
+	Content   string     `json:"content,omitempty"`
+	Sources   []string   `json:"sources,omitempty"`
+	Source    string     `json:"source,omitempty"`
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
 // Store is the typed memory facade over a resource.Store. It is the MemoryStore the
 // agent uses; underneath, every write and recall is a resource operation on one
 // event-sourced foundation.
 type Store struct {
-	rs resource.Store
+	rs  resource.Store
+	clk clock.Clock
 }
 
 var _ state.MemoryStore = (*Store)(nil)
 
+// Option configures a Store.
+type Option func(*Store)
+
+// WithClock sets the clock Recall judges MemoryItem.ExpiresAt against. The default
+// is the system clock; a test that writes an item expiring in an hour and then
+// wants to see it gone passes a clock.Manual and moves it, rather than sleeping.
+// A nil clock is ignored.
+func WithClock(c clock.Clock) Option {
+	return func(s *Store) {
+		if c != nil {
+			s.clk = c
+		}
+	}
+}
+
 // NewStore returns a memory facade over rs. The caller must have registered the
 // Memory kind with the registry rs admits against (see RegisterKind).
-func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
+func NewStore(rs resource.Store, opts ...Option) *Store {
+	s := &Store{rs: rs, clk: clock.System{}}
+	for _, o := range opts {
+		o(s)
+	}
+	return s
+}
 
 // Write persists a memory item as a new Memory resource, assigning the id and name
 // from the foundation's single ID source. Memory is append-only: each Write is a
@@ -114,9 +149,12 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 		return nil, err
 	}
 	query := strings.ToLower(strings.TrimSpace(q.Query))
+	// One clock reading for the whole recall, so every item is judged expired
+	// against the same instant.
+	now := s.clk.Now()
 	out := make([]state.MemoryItem, 0, len(all))
 	for _, it := range all {
-		if !q.Selects(it) {
+		if !q.Selects(it, now) {
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(it.Content), query) {
@@ -175,7 +213,12 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 // name, so a create carries GenerateName and the store assigns Name = mem-<id>;
 // the sync version carries through so the store enforces optimistic concurrency.
 func toResource(m state.MemoryItem) (resource.Resource, error) {
-	body, err := json.Marshal(spec{Kind: m.Kind, Content: m.Content, Source: m.Source})
+	sp := spec{Kind: m.Kind, Content: m.Content, Sources: m.Sources}
+	if !m.ExpiresAt.IsZero() {
+		exp := m.ExpiresAt
+		sp.ExpiresAt = &exp
+	}
+	body, err := json.Marshal(sp)
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("memory: encode spec: %w", err)
 	}
@@ -202,13 +245,24 @@ func toItem(r resource.Resource) (state.MemoryItem, error) {
 	if err != nil {
 		return state.MemoryItem{}, fmt.Errorf("memory: decode spec: %w", err)
 	}
+	sources := sp.Sources
+	if len(sources) == 0 && sp.Source != "" {
+		// Written before provenance became a list; keep the one source it recorded
+		// rather than reading the item back with none.
+		sources = []string{sp.Source}
+	}
+	var expires time.Time
+	if sp.ExpiresAt != nil {
+		expires = *sp.ExpiresAt
+	}
 	return state.MemoryItem{
 		ID:        r.ID,
 		Kind:      sp.Kind,
 		Content:   sp.Content,
-		Source:    sp.Source,
+		Sources:   sources,
 		Scope:     state.Scope(r.Scope),
 		CreatedAt: r.CreatedAt,
+		ExpiresAt: expires,
 		Envelope: state.Envelope{
 			SyncVersion:      r.SyncVersion,
 			OriginInstanceID: r.OriginInstanceID,

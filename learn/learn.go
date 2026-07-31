@@ -218,7 +218,7 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 			mi, err := c.memories.Write(ctx, state.MemoryItem{
 				Kind:    memoryKind,
 				Content: l.Body,
-				Source:  o.Source,
+				Sources: sourcesOf(o.Source),
 				Scope:   o.Scope,
 			})
 			if err != nil {
@@ -228,6 +228,17 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 		}
 	}
 	return captured, nil
+}
+
+// sourcesOf renders an outcome's single provenance string as a memory item's
+// source list. A lesson distilled from one outcome has one origin; an outcome with
+// no recorded source produces no entry rather than a blank one, so provenance is
+// either real or absent.
+func sourcesOf(source string) []string {
+	if source == "" {
+		return nil
+	}
+	return []string{source}
 }
 
 // withProvenance ensures the learned-provenance tag is present exactly once,

@@ -111,8 +111,8 @@ func TestRememberFactPins(t *testing.T) {
 	if got.Kind != "fact" {
 		t.Errorf("kind = %q, want %q", got.Kind, "fact")
 	}
-	if trust := guard.TrustOf(got.Source); trust != sandbox.TrustTrusted {
-		t.Errorf("source %q grades %v, want %v: a hand-pinned fact must outrank a distilled one", got.Source, trust, sandbox.TrustTrusted)
+	if trust := guard.TrustOfAll(got.Sources); trust != sandbox.TrustTrusted {
+		t.Errorf("sources %v grade %v, want %v: a hand-pinned fact must outrank a distilled one", got.Sources, trust, sandbox.TrustTrusted)
 	}
 
 	// The browse surface distinguishes a pinned item from a distilled one.

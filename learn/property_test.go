@@ -2,6 +2,7 @@ package learn
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -83,8 +84,10 @@ func TestProp_CuratorCapturesGatedAndComplete(t *testing.T) {
 			rt.Fatalf("recalled %d memories, want %d", len(items), wantMem)
 		}
 		for _, it := range items {
-			if it.Source != o.Source {
-				rt.Fatalf("memory source = %q, want %q", it.Source, o.Source)
+			// A lesson from one outcome carries that one source, and an outcome with
+			// no source produces no provenance rather than a blank entry.
+			if want := sourcesOf(o.Source); !slices.Equal(it.Sources, want) {
+				rt.Fatalf("memory sources = %v, want %v", it.Sources, want)
 			}
 		}
 	})
