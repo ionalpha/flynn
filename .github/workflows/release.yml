@@ -30,12 +30,12 @@ jobs:
       # Registry logins so `goreleaser release` can push the images and their signatures.
       # GHCR authenticates with the built-in workflow token; Docker Hub uses a scoped
       # access token stored in repository secrets (never committed).
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - uses: docker/login-action@371161bbe7024a29a25c5e19bfcbc0804fe9ad2c # v4.5.2
         with:
           registry: docker.io
           username: ${{ secrets.DOCKERHUB_USERNAME }}
