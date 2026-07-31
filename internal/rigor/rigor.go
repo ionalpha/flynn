@@ -101,6 +101,7 @@ func DefaultPolicy() Policy {
 			"resource":              true,
 			"internal/fetch":        true,
 			"netguard":              true,
+			"skill/skillmd":         true,
 			"internal/tui/input":    true,
 			"internal/tui/mdstream": true,
 			"internal/tui/render":   true,
