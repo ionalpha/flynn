@@ -60,12 +60,6 @@ const (
 	SchemeExternal = "external:"
 )
 
-// TrustOf derives the trust of a memory from its provenance string. It is a pure
-// function so retrieval and the write gate agree without storing a redundant field.
-// The classification is fail-safe for the recall side: an unrecognised scheme is
-// treated as the agent's own run (TrustSemi), never silently promoted to trusted,
-// so a source that should have been tagged untrusted is at worst under-trusted, not
-// over-trusted.
 // TrustOfAll derives the trust of an item distilled from several sources: the
 // weakest of them. A fact assembled from an operator's instruction and a fetched
 // web page is only as vouched-for as the page, because the attacker-influenceable
@@ -91,8 +85,12 @@ func TrustOfAll(sources []string) sandbox.Trust {
 	return worst
 }
 
-// TrustOf derives the trust of one provenance string. See TrustOfAll for an item
-// carrying several.
+// TrustOf derives the trust of one provenance string. It is a pure function so
+// retrieval and the write gate agree without storing a redundant field. The
+// classification is fail-safe for the recall side: an unrecognised scheme is
+// treated as the agent's own run (TrustSemi), never silently promoted to trusted,
+// so a source that should have been tagged untrusted is at worst under-trusted, not
+// over-trusted. See TrustOfAll for an item carrying several sources.
 func TrustOf(source string) sandbox.Trust {
 	switch {
 	case strings.HasPrefix(source, SchemeTool),

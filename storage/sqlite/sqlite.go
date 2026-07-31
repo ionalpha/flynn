@@ -905,9 +905,11 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 		wall, counter int64
 		deleted       int
 	)
-	dst := []any{&m.ID, &m.Kind, &m.Content,
+	dst := []any{
+		&m.ID, &m.Kind, &m.Content,
 		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &created, &expires,
-		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted}
+		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted,
+	}
 	if score != nil {
 		dst = append(dst, score)
 	}

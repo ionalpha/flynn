@@ -360,19 +360,22 @@ func testProvenance(t *testing.T, mem state.MemoryStore) {
 // the general one.
 func testExpiry(t *testing.T, mem state.MemoryStore) {
 	scope := state.Scope{Project: "p"}
-	// Wide margins in both directions: the suite runs against whatever clock the
-	// backend holds, so the assertions must not depend on how long the test takes.
-	past := time.Now().Add(-time.Hour)
-	future := time.Now().Add(time.Hour)
+	// The expiry times are anchored to a stamp the store itself assigned, not to
+	// this process's clock. Recall judges expiry against the backend's clock, so a
+	// suite reading its own time would be asserting the two clocks agree rather
+	// than asserting the contract. An hour either side is wide enough that the
+	// assertions do not depend on how long the test takes to run.
+	anchor := write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "permanent credential", Scope: scope,
+	}).CreatedAt
+	past := anchor.Add(-time.Hour)
+	future := anchor.Add(time.Hour)
 
 	dead := write(t, mem, state.MemoryItem{
 		Kind: "fact", Content: "rotated credential", Scope: scope, ExpiresAt: past,
 	})
 	write(t, mem, state.MemoryItem{
 		Kind: "fact", Content: "live credential", Scope: scope, ExpiresAt: future,
-	})
-	write(t, mem, state.MemoryItem{
-		Kind: "fact", Content: "permanent credential", Scope: scope,
 	})
 
 	// Write accepts an already-expired item and hands it back intact, rather than

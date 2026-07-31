@@ -34,7 +34,7 @@ func TestMemoryItemExpiredAtBoundary(t *testing.T) {
 	// default every existing writer gets, so an item that never opted into expiry
 	// must not acquire one.
 	never := state.MemoryItem{}
-	if never.ExpiredAt(at) || never.ExpiredAt(time.Now().Add(100*365*24*time.Hour)) {
+	if never.ExpiredAt(at) || never.ExpiredAt(at.AddDate(100, 0, 0)) {
 		t.Error("an item with no ExpiresAt must never expire")
 	}
 }
