@@ -10,6 +10,7 @@ package state
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"sort"
@@ -212,14 +213,46 @@ type SkillStore interface {
 }
 
 // MemoryItem is a durable fact the agent has learned, attributable to its
-// source for provenance and rollback.
+// sources for provenance and rollback.
 type MemoryItem struct {
-	ID        string
-	Kind      string // e.g. "fact", "preference", "observation"
-	Content   string
-	Scope     Scope
-	Source    string // provenance: where this memory came from
+	ID      string
+	Kind    string // e.g. "fact", "preference", "observation"
+	Content string
+	Scope   Scope
+	// Sources is the provenance: every input this fact came from, in the order the
+	// writer credits them. It is a list because a distilled item genuinely has more
+	// than one origin - a curator that reads a run's tool output, a chat turn and an
+	// earlier memory produces one fact from three inputs, and a single string can
+	// only record one of them or a lossy join of all three.
+	//
+	// Provenance is what makes a purge exact rather than approximate: retiring
+	// everything a compromised tool contributed to means finding every item that
+	// lists it, including the ones where it was one input among several. A single
+	// source field silently under-reports exactly those.
+	//
+	// Order is the writer's, and carries no ranking. An empty or nil Sources is an
+	// item with no recorded provenance, which readers that classify by origin (see
+	// the memory/guard package) treat as the least-trusted answer they can defend,
+	// never as trusted.
+	Sources   []string
 	CreatedAt time.Time
+	// ExpiresAt is the first instant this item stops being recallable; the zero
+	// value never expires. It is the half-open convention RecallQuery.Since and
+	// Until already use, so an item expiring at T is recalled at T-1ns and not at T.
+	//
+	// Expiry belongs in the record rather than in host policy because the death date
+	// is known at write time and nowhere else: whoever learns "this credential
+	// rotates on Friday" or "this sprint's plan is void at the end of the month"
+	// knows it as they write, and a host sweeping the store later can only guess.
+	// Recall omits an expired item on every backend (see MemoryStore.Recall);
+	// nothing else changes, so an expired item is still on the event stream and
+	// still tombstoned by Delete. Expiry hides a fact from retrieval; it does not
+	// erase it, and it is not a deletion.
+	//
+	// Write accepts an already-expired item rather than rejecting it. A clock skew
+	// or a replayed event must not turn into a write error on a store that would
+	// simply never return the row.
+	ExpiresAt time.Time
 	// Score is how well this item matched the query that recalled it, in [0,1]
 	// with 1 the best match. It is a read-side annotation, not part of the record:
 	// Recall sets it, Write ignores it, and no backend persists it.
@@ -236,6 +269,33 @@ type MemoryItem struct {
 	// is tuning it for one backend and one corpus, not setting a portable constant.
 	Score float64
 	Envelope
+}
+
+// UnmarshalJSON decodes a memory item, accepting the single-valued "Source" that
+// items carried before provenance became a list.
+//
+// The spine is durable and replayable: it still holds events written under the old
+// shape, and a rebuild that decoded them into an item with no provenance would
+// quietly rewrite the history it exists to reproduce. Reading the old field into a
+// one-element Sources is the only decode that makes a replay of those events agree
+// with the state they originally produced. A payload carrying both fields is a new
+// writer's, so Sources wins.
+func (m *MemoryItem) UnmarshalJSON(b []byte) error {
+	// item sheds the method set, so the embedded decode below is the default one
+	// and not a recursive call back into here.
+	type item MemoryItem
+	var v struct {
+		item
+		Source string
+	}
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*m = MemoryItem(v.item)
+	if len(m.Sources) == 0 && v.Source != "" {
+		m.Sources = []string{v.Source}
+	}
+	return nil
 }
 
 // RecallQuery selects memory for prefetch into context. Query is matched
@@ -296,13 +356,32 @@ const (
 	OrderRelevance
 )
 
-// Selects reports whether it satisfies the query's kind filter and time window.
-// These are the per-item selectors, separate from scope resolution (a set
-// membership test a backend does once, via ScopeChain) and from the lexical match
-// (the backend's own, and what Score grades). Backends that filter in Go share it
-// so the implementations cannot drift; one that pushes the same predicates into
-// its query language must produce the identical answer.
-func (q RecallQuery) Selects(it MemoryItem) bool {
+// ExpiredAt reports whether the item has reached its expiry as of now. The zero
+// ExpiresAt never expires, and expiry is inclusive of the instant itself, matching
+// the half-open window RecallQuery.Until describes.
+//
+// It is the single definition of "expired": Selects calls it, and a backend that
+// evaluates expiry in its own query language is answering this question and must
+// answer it identically.
+func (m MemoryItem) ExpiredAt(now time.Time) bool {
+	return !m.ExpiresAt.IsZero() && !now.Before(m.ExpiresAt)
+}
+
+// Selects reports whether it satisfies the query's kind filter and time window and
+// has not expired as of now. These are the per-item selectors, separate from scope
+// resolution (a set membership test a backend does once, via ScopeChain) and from
+// the lexical match (the backend's own, and what Score grades). Backends that
+// filter in Go share it so the implementations cannot drift; one that pushes the
+// same predicates into its query language must produce the identical answer.
+//
+// now is the backend's own reading of the current time, taken once per recall so
+// every item in one result set is judged against the same instant. Expiry rides
+// here rather than in a separate pass because a backend that forgot the separate
+// pass would serve expired memory and pass every other test.
+func (q RecallQuery) Selects(it MemoryItem, now time.Time) bool {
+	if it.ExpiredAt(now) {
+		return false
+	}
 	if len(q.Kinds) > 0 && !slices.Contains(q.Kinds, it.Kind) {
 		return false
 	}
@@ -338,6 +417,25 @@ func (q RecallQuery) RanksByScope() bool { return len(q.ScopeChain()) > 1 }
 // MemoryStore persists and recalls memory. The durable implementation combines
 // lexical (FTS5) and vector (chromem-go) recall; the in-memory implementation
 // does a case-insensitive substring scan, most-recent first.
+//
+// Memory is append-only: a Write is always a new record, never an edit of an
+// earlier one, and Delete tombstones rather than erases. Two consequences are
+// deliberately the host's to resolve, not this interface's, and are stated here so
+// a backend does not quietly invent its own answer:
+//
+//   - Dedup and supersede. Two writes can assert contradictory facts and both
+//     stay live; nothing here links a correction to what it corrects, and Recall
+//     will return both. A host that needs one truth per subject decides what
+//     counts as the same subject and retires the loser with Delete, because the
+//     rule is domain knowledge (one preference per key, but every observation
+//     kept) that a store cannot infer from content.
+//   - Retention. Nothing here ages memory out on its own. An item with a known
+//     death date carries MemoryItem.ExpiresAt and stops being recalled without
+//     any sweep; everything else accumulates until a host deletes it.
+//
+// What a backend may not do is answer these itself: silently dropping a write it
+// judges duplicate, or garbage-collecting old items, makes the store lossy in a
+// way no caller asked for and no other backend matches.
 type MemoryStore interface {
 	// Write persists a memory item, assigning an ID if one is not set.
 	Write(ctx context.Context, m MemoryItem) (MemoryItem, error)
@@ -346,6 +444,10 @@ type MemoryStore interface {
 	// widened over several scope levels (RecallQuery.IncludeAncestors) orders by
 	// scope first, most-specific first, so the nearest memory wins; see
 	// SortRecall, which every backend sorts through.
+	//
+	// Tombstoned items and items whose MemoryItem.ExpiresAt has passed are never
+	// returned. Expiry is judged against one reading of the clock per call, so a
+	// single result set is internally consistent.
 	Recall(ctx context.Context, q RecallQuery) ([]MemoryItem, error)
 	// Delete tombstones a memory item by ID (soft delete), or returns
 	// ErrNotFound.

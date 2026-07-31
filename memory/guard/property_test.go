@@ -92,7 +92,7 @@ func TestProp_StoreRefusesIffUntrustedHit(t *testing.T) {
 			guard.SchemeUser + "op", "run-1", "chat", "", // trusted / semi
 		}).Draw(rt, "source")
 
-		_, err := g.Write(context.Background(), state.MemoryItem{Content: content, Source: source})
+		_, err := g.Write(context.Background(), state.MemoryItem{Content: content, Sources: []string{source}})
 
 		wantRefuse := guard.TrustOf(source) == sandbox.TrustUntrusted && len(guard.Screen(content)) > 0
 		if wantRefuse {

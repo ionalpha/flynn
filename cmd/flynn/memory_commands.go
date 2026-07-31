@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/memory/guard"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -59,8 +60,12 @@ func renderMemory(ctx context.Context, w io.Writer, memories state.MemoryStore) 
 		if kind == "" {
 			kind = "fact"
 		}
+		// Pinned means the user themselves stated it. An item distilled from several
+		// inputs is only pinned if every one of them was the user, which is what
+		// TrustOfAll answers: one user source mixed with a fetched page is not a
+		// fact the user pinned.
 		pinned := ""
-		if strings.HasPrefix(m.Source, guard.SchemeUser) {
+		if guard.TrustOfAll(m.Sources) == sandbox.TrustTrusted {
 			pinned = " [pinned]"
 		}
 		_, _ = fmt.Fprintf(w, "  [%s]%s %s\n", kind, pinned, oneLine(m.Content, 160))
@@ -80,7 +85,7 @@ func rememberFact(ctx context.Context, w io.Writer, memories state.MemoryStore, 
 	if _, err := memories.Write(ctx, state.MemoryItem{
 		Kind:    "fact",
 		Content: fact,
-		Source:  rememberSource,
+		Sources: []string{rememberSource},
 	}); err != nil {
 		_, _ = fmt.Fprintf(w, "could not write memory: %v\n", err)
 		return false

@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	"pgregory.net/rapid"
@@ -48,7 +49,7 @@ func TestRoundTripProperty(t *testing.T) {
 			Workspace: ident.Draw(rt, "workspace"),
 		}
 
-		written, err := store.Write(ctx, state.MemoryItem{Kind: kind, Content: content, Source: source, Scope: scope})
+		written, err := store.Write(ctx, state.MemoryItem{Kind: kind, Content: content, Sources: []string{source}, Scope: scope})
 		if err != nil {
 			rt.Fatalf("write: %v", err)
 		}
@@ -61,7 +62,7 @@ func TestRoundTripProperty(t *testing.T) {
 		if err != nil {
 			rt.Fatalf("recall: %v", err)
 		}
-		if len(got) != 1 || got[0].ID != written.ID || got[0].Content != content || got[0].Kind != kind || got[0].Source != source {
+		if len(got) != 1 || got[0].ID != written.ID || got[0].Content != content || got[0].Kind != kind || !slices.Equal(got[0].Sources, []string{source}) {
 			rt.Fatalf("recall round-trip mismatch: %+v", got)
 		}
 

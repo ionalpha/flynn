@@ -60,12 +60,37 @@ const (
 	SchemeExternal = "external:"
 )
 
-// TrustOf derives the trust of a memory from its provenance string. It is a pure
-// function so retrieval and the write gate agree without storing a redundant field.
-// The classification is fail-safe for the recall side: an unrecognised scheme is
+// TrustOfAll derives the trust of an item distilled from several sources: the
+// weakest of them. A fact assembled from an operator's instruction and a fetched
+// web page is only as vouched-for as the page, because the attacker-influenceable
+// input is in the content either way, and taking the strongest source instead
+// would let one trusted co-author launder everything it was mixed with.
+//
+// No sources at all is TrustSemi, the same answer TrustOf gives for an unlabelled
+// source: an item whose provenance was never recorded is not promoted to trusted.
+func TrustOfAll(sources []string) sandbox.Trust {
+	if len(sources) == 0 {
+		// The unlabelled answer, and the seed below would otherwise floor every
+		// item at it: no recorded provenance is the agent's own run, never trusted.
+		return TrustOf("")
+	}
+	worst := sandbox.TrustTrusted
+	for _, s := range sources {
+		// sandbox.Trust ascends from TrustTrusted to TrustUntrusted, so the weakest
+		// source is the largest value.
+		if t := TrustOf(s); t > worst {
+			worst = t
+		}
+	}
+	return worst
+}
+
+// TrustOf derives the trust of one provenance string. It is a pure function so
+// retrieval and the write gate agree without storing a redundant field. The
+// classification is fail-safe for the recall side: an unrecognised scheme is
 // treated as the agent's own run (TrustSemi), never silently promoted to trusted,
 // so a source that should have been tagged untrusted is at worst under-trusted, not
-// over-trusted.
+// over-trusted. See TrustOfAll for an item carrying several sources.
 func TrustOf(source string) sandbox.Trust {
 	switch {
 	case strings.HasPrefix(source, SchemeTool),

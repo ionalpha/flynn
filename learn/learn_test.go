@@ -2,6 +2,7 @@ package learn
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -107,8 +108,8 @@ func TestCuratorPersistsWithProvenance(t *testing.T) {
 	if len(items) != 1 || items[0].Content != "The widget firmware is v3." {
 		t.Fatalf("recalled = %+v", items)
 	}
-	if items[0].Source != "run-1" || items[0].Kind != memoryKind {
-		t.Fatalf("memory provenance = source %q kind %q", items[0].Source, items[0].Kind)
+	if !slices.Equal(items[0].Sources, []string{"run-1"}) || items[0].Kind != memoryKind {
+		t.Fatalf("memory provenance = sources %v kind %q", items[0].Sources, items[0].Kind)
 	}
 }
 
@@ -363,4 +364,16 @@ func equalLessons(a, b []Lesson) bool {
 		}
 	}
 	return true
+}
+
+// A lesson carries the provenance of the outcome it was distilled from. An outcome
+// that recorded no source produces an item with no provenance rather than one
+// sourced to the empty string, which the guard would otherwise have to grade.
+func TestSourcesOfDropsAnUnrecordedSource(t *testing.T) {
+	if got := sourcesOf(""); got != nil {
+		t.Errorf("sourcesOf(\"\") = %v, want no sources at all", got)
+	}
+	if got := sourcesOf("run-1"); !slices.Equal(got, []string{"run-1"}) {
+		t.Errorf("sourcesOf(run-1) = %v, want [run-1]", got)
+	}
 }

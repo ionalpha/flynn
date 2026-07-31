@@ -388,6 +388,9 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	query := strings.ToLower(strings.TrimSpace(q.Query))
+	// One reading of the clock for the whole recall, so every item is judged
+	// expired-or-not against the same instant.
+	now := c.st.Now()
 	// A nil chain is the unfiltered read; otherwise only the scopes it names match,
 	// which is the one scope asked for or that scope's ancestors when widened.
 	var chain map[Scope]bool
@@ -405,7 +408,7 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 		if chain != nil && !chain[it.Scope] {
 			continue
 		}
-		if !q.Selects(it) {
+		if !q.Selects(it, now) {
 			continue
 		}
 		if query != "" && !strings.Contains(strings.ToLower(it.Content), query) {
