@@ -33,7 +33,7 @@ import (
 )
 
 // CryptoSuiteVersion identifies the cryptographic vector set; bumped with the canon.
-const CryptoSuiteVersion = "0.1.0-draft"
+const CryptoSuiteVersion = "0.1.0"
 
 // Kind is the artifact a cryptographic vector carries, which selects the verifier a
 // conforming implementation must apply.

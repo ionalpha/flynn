@@ -28,7 +28,7 @@ import (
 )
 
 // SuiteVersion identifies the vector set; it is bumped when the canon changes.
-const SuiteVersion = "0.1.0-draft"
+const SuiteVersion = "0.1.0"
 
 // Tier is the conformance tier this suite exercises.
 const Tier = "L1"
