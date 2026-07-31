@@ -79,85 +79,84 @@ func testWriteRecall(t *testing.T, mem state.MemoryStore) {
 // workspace-under-project issues on every turn, so a backend that resolves scopes
 // exactly and only exactly returns nothing useful to it.
 func testScopeResolution(t *testing.T, mem state.MemoryStore) {
-	ctx := context.Background()
-
 	var (
 		instance  = state.Scope{Instance: "i"}
 		project   = state.Scope{Instance: "i", Project: "p"}
 		workspace = state.Scope{Instance: "i", Project: "p", Workspace: "w"}
 		sibling   = state.Scope{Instance: "i", Project: "p", Workspace: "other"}
 	)
-	for _, w := range []struct {
-		scope   state.Scope
-		content string
-	}{
-		{state.Scope{}, "global: ship on Fridays"},
-		{instance, "instance: ship on Fridays"},
-		{project, "project: ship on Fridays"},
-		{workspace, "workspace: ship on Fridays"},
-		{sibling, "sibling: ship on Fridays"},
-	} {
-		if _, err := mem.Write(ctx, state.MemoryItem{Kind: "fact", Content: w.content, Scope: w.scope}); err != nil {
-			t.Fatalf("write at %+v: %v", w.scope, err)
-		}
-	}
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "global: ship", Scope: state.Scope{}})
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "instance: ship", Scope: instance})
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "project: ship", Scope: project})
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "workspace: ship", Scope: workspace})
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "sibling: ship", Scope: sibling})
 
 	// Without widening, a scoped recall sees its own scope and nothing else.
-	narrow, err := mem.Recall(ctx, state.RecallQuery{Query: "ship", Scope: workspace})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(narrow) != 1 || narrow[0].Content != "workspace: ship on Fridays" {
-		t.Fatalf("unwidened Recall = %s, want only the workspace's own item", contents(narrow))
-	}
+	wantOrder(t, "unwidened recall",
+		recall(t, mem, state.RecallQuery{Query: "ship", Scope: workspace}),
+		"workspace: ship")
 
 	// Widening walks the ancestors: own scope, project, instance, global - and
 	// still never the sibling workspace, which encloses nothing.
-	wide, err := mem.Recall(ctx, state.RecallQuery{Query: "ship", Scope: workspace, IncludeAncestors: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{
-		"workspace: ship on Fridays",
-		"project: ship on Fridays",
-		"instance: ship on Fridays",
-		"global: ship on Fridays",
-	}
-	if got := contents(wide); !slices.Equal(got, want) {
-		t.Fatalf("widened Recall = %v, want %v (most-specific first, no sibling scope)", got, want)
-	}
+	wantOrder(t, "widened recall, most-specific first and no sibling scope",
+		recall(t, mem, state.RecallQuery{Query: "ship", Scope: workspace, IncludeAncestors: true}),
+		"workspace: ship", "project: ship", "instance: ship", "global: ship")
 
 	// The chain skips a level that is empty rather than inventing one: a scope with
 	// no instance resolves straight through to the global scope.
-	noInstance, err := mem.Recall(ctx, state.RecallQuery{
-		Query: "ship", Scope: state.Scope{Project: "p"}, IncludeAncestors: true,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := contents(noInstance); !slices.Equal(got, []string{"global: ship on Fridays"}) {
-		t.Fatalf("widened Recall from an instance-less scope = %v, want just the global item", got)
-	}
+	wantOrder(t, "widened recall from an instance-less scope",
+		recall(t, mem, state.RecallQuery{Query: "ship", Scope: state.Scope{Project: "p"}, IncludeAncestors: true}),
+		"global: ship")
 
 	// Limit applies after resolution, so the most-specific results are the ones
 	// that survive the cap rather than whichever the backend happened to scan first.
-	capped, err := mem.Recall(ctx, state.RecallQuery{
-		Query: "ship", Scope: workspace, IncludeAncestors: true, Limit: 2,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := contents(capped); !slices.Equal(got, want[:2]) {
-		t.Fatalf("widened Recall with limit 2 = %v, want %v", got, want[:2])
-	}
+	wantOrder(t, "widened recall capped at 2",
+		recall(t, mem, state.RecallQuery{Query: "ship", Scope: workspace, IncludeAncestors: true, Limit: 2}),
+		"workspace: ship", "project: ship")
 
 	// Widening a zero scope is still the unfiltered read, not the global scope.
-	all, err := mem.Recall(ctx, state.RecallQuery{Query: "ship", IncludeAncestors: true})
+	wantCount(t, "widened recall with a zero scope (which spans everything)",
+		recall(t, mem, state.RecallQuery{Query: "ship", IncludeAncestors: true}), 5)
+}
+
+// The helpers below keep each assertion in the suite to a single call. That is
+// partly readability, and partly so the failure branches - which by construction
+// never run on a green build - live in one place instead of being duplicated at
+// every assertion, where they would read as a wall of untested lines.
+
+// write persists an item, failing the test if the store rejects it.
+func write(t *testing.T, mem state.MemoryStore, it state.MemoryItem) state.MemoryItem {
+	t.Helper()
+	got, err := mem.Write(context.Background(), it)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("write %q at %+v: %v", it.Content, it.Scope, err)
 	}
-	if len(all) != 5 {
-		t.Fatalf("widened Recall with a zero scope = %d, want all 5 (a zero scope spans everything)", len(all))
+	return got
+}
+
+// recall runs a query, failing the test if the store errors.
+func recall(t *testing.T, mem state.MemoryStore, q state.RecallQuery) []state.MemoryItem {
+	t.Helper()
+	got, err := mem.Recall(context.Background(), q)
+	if err != nil {
+		t.Fatalf("recall %+v: %v", q, err)
+	}
+	return got
+}
+
+// wantOrder fails unless the recall returned exactly these contents, in order.
+func wantOrder(t *testing.T, what string, got []state.MemoryItem, want ...string) {
+	t.Helper()
+	if c := contents(got); !slices.Equal(c, want) {
+		t.Fatalf("%s = %v, want %v", what, c, want)
+	}
+}
+
+// wantCount fails unless the recall returned exactly n items.
+func wantCount(t *testing.T, what string, got []state.MemoryItem, n int) {
+	t.Helper()
+	if len(got) != n {
+		t.Fatalf("%s returned %d item(s) (%v), want %d", what, len(got), contents(got), n)
 	}
 }
 

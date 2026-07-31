@@ -128,6 +128,13 @@ func TestRecallBackendErrorsPropagate(t *testing.T) {
 	if _, err := scoped.Recall(ctx, state.RecallQuery{Scope: state.Scope{Instance: "i1"}}); !errors.Is(err, errBackend) {
 		t.Fatalf("scoped recall error = %v", err)
 	}
+	// A widened recall reads one scope per ancestor, so the outage has to be
+	// reported from inside that walk rather than swallowed after the first level.
+	widened := memory.NewStore(faultyStore{Store: backing(t), listErr: errBackend})
+	q := state.RecallQuery{Scope: state.Scope{Instance: "i1", Project: "p", Workspace: "w"}, IncludeAncestors: true}
+	if _, err := widened.Recall(ctx, q); !errors.Is(err, errBackend) {
+		t.Fatalf("widened recall error = %v", err)
+	}
 }
 
 // TestRecallSurfacesCorruptSpec proves an item that cannot be decoded fails the recall
