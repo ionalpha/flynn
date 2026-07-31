@@ -9,6 +9,7 @@ import (
 	"github.com/ionalpha/flynn/memory"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/skill"
+	"github.com/ionalpha/flynn/skill/skillmd"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -149,6 +150,128 @@ func TestCuratorUpsertsSkillBySlug(t *testing.T) {
 	}
 	if all[0].Body != "v2" {
 		t.Fatalf("skill body = %q, want the updated v2", all[0].Body)
+	}
+}
+
+func TestCuratorDoesNotOverwriteAuthoredSkill(t *testing.T) {
+	skills, memories := newStores(t)
+	ctx := context.Background()
+	scope := state.Scope{Instance: "inst"}
+
+	// An authored skill: same slug the lesson below will produce, but no
+	// learned-provenance tag, so it is curated content the loop must protect.
+	authored, err := skills.Upsert(ctx, state.Skill{
+		Slug:  "reset-the-widget",
+		Name:  "Reset the Widget",
+		Body:  "The authored procedure.",
+		Check: "test -f widget",
+		Tags:  []string{"hardware"},
+		Scope: scope,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := &fakeDistiller{lessons: []Lesson{
+		{Kind: LessonSkill, Title: "Reset the Widget", Body: "A learned procedure.", Check: "false"},
+	}}
+	captured, err := NewCurator(d, skills, memories).Curate(ctx, convergedOutcome())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(captured.Skills) != 0 {
+		t.Fatalf("captured %d skills; a collision with an authored skill must store nothing", len(captured.Skills))
+	}
+	if len(captured.Skipped) != 1 {
+		t.Fatalf("Skipped = %d, want 1 so the caller can see the capture was refused", len(captured.Skipped))
+	}
+
+	// The authored skill is untouched: body, check and version all unchanged.
+	got, err := skills.Get(ctx, "reset-the-widget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "The authored procedure." || got.Check != "test -f widget" {
+		t.Fatalf("authored skill was modified: %+v", got)
+	}
+	if got.Version != authored.Version {
+		t.Fatalf("authored skill version moved from %d to %d; it should not have been written", authored.Version, got.Version)
+	}
+	if hasTag(got.Tags, provenanceTag) {
+		t.Fatalf("authored skill gained the learned tag: %v", got.Tags)
+	}
+}
+
+func TestCuratorReCapturesItsOwnLearnedSkill(t *testing.T) {
+	skills, memories := newStores(t)
+	ctx := context.Background()
+	d := &fakeDistiller{lessons: []Lesson{{Kind: LessonSkill, Title: "Learned Thing", Body: "v1"}}}
+	c := NewCurator(d, skills, memories)
+
+	if _, err := c.Curate(ctx, convergedOutcome()); err != nil {
+		t.Fatal(err)
+	}
+	// A learned skill carries the provenance tag, so re-capturing it updates rather
+	// than being refused as if it were authored.
+	d.lessons = []Lesson{{Kind: LessonSkill, Title: "Learned Thing", Body: "v2"}}
+	captured, err := c.Curate(ctx, convergedOutcome())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Skipped) != 0 {
+		t.Fatalf("re-capturing a learned skill was skipped: %+v", captured.Skipped)
+	}
+	if len(captured.Skills) != 1 {
+		t.Fatalf("captured = %d skills, want 1", len(captured.Skills))
+	}
+	got, err := skills.Get(ctx, "learned-thing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Body != "v2" {
+		t.Fatalf("learned skill body = %q, want v2", got.Body)
+	}
+}
+
+func TestSlugifyProducesConformantNames(t *testing.T) {
+	cases := []struct {
+		name  string
+		title string
+		want  string
+	}{
+		{"basic", "Reset the Widget", "reset-the-widget"},
+		{"runs collapse", "a  --  b", "a-b"},
+		{"trims ends", "  !Hello!  ", "hello"},
+		{"empty falls back", "!!!", "skill"},
+		{"caps at the name limit", strings.Repeat("word ", 40), strings.Repeat("word-", 12) + "word"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := slugify(tc.title)
+			if got != tc.want {
+				t.Errorf("slugify(%q) = %q, want %q", tc.title, got, tc.want)
+			}
+			// Whatever slugify returns must be a valid Agent Skills name, so a
+			// learned skill is always exportable.
+			if err := skillmd.ValidateName(got); err != nil {
+				t.Errorf("slugify(%q) = %q, not a conformant name: %v", tc.title, got, err)
+			}
+		})
+	}
+}
+
+func TestSlugifyIsAlwaysAConformantName(t *testing.T) {
+	titles := []string{
+		"", " ", "---", "a", strings.Repeat("x", 200),
+		"CAPS and Ünïcodé mixed 12345", strings.Repeat("a-", 50),
+		"trailing hyphen after cut " + strings.Repeat("z", 60) + " a",
+	}
+	for _, title := range titles {
+		got := slugify(title)
+		if err := skillmd.ValidateName(got); err != nil {
+			t.Errorf("slugify(%q) = %q, not a conformant name: %v", title, got, err)
+		}
 	}
 }
 
