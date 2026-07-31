@@ -30,3 +30,20 @@ func TestMemoryFacadeConformance(t *testing.T) {
 		return memory.NewStore(p.Resources(reg))
 	})
 }
+
+// TestProviderMemoryConformance runs the same contract against the provider's own
+// memory store - the FTS-backed one behind state.Provider, distinct from the
+// facade above. It is a separate implementation of MemoryStore with its own SQL,
+// and it was not covered by this suite: statetest exercises the provider's CRUD
+// but never a recall that resolves across scope levels, so the SQL that widens one
+// had nothing holding it to the shared contract.
+func TestProviderMemoryConformance(t *testing.T) {
+	memorytest.RunSuite(t, func() state.MemoryStore {
+		p, err := sqlite.Open(context.Background(), ":memory:")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		t.Cleanup(func() { _ = p.Close() })
+		return p.Memory()
+	})
+}

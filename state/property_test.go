@@ -217,6 +217,96 @@ func TestProp_SessionTurnsAreOrdered(t *testing.T) {
 	})
 }
 
+// A scope's ancestor chain is well-formed for every scope: it starts at the
+// scope itself, ends at the global scope, never repeats, and strictly loses
+// specificity as it goes. Those four together are what let a backend treat the
+// chain as a ranking as well as a filter.
+func TestProp_ScopeAncestorsAreAWellFormedChain(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		sc := testkit.ScopeGen().Draw(rt, "scope")
+		chain := sc.Ancestors()
+
+		if len(chain) == 0 || chain[0] != sc {
+			rt.Fatalf("Ancestors(%+v) = %+v, want it to start at the scope itself", sc, chain)
+		}
+		if last := chain[len(chain)-1]; last != (state.Scope{}) {
+			rt.Fatalf("Ancestors(%+v) ends at %+v, want the global scope", sc, last)
+		}
+		seen := make(map[state.Scope]bool, len(chain))
+		for i, s := range chain {
+			if seen[s] {
+				rt.Fatalf("Ancestors(%+v) repeats %+v: %+v", sc, s, chain)
+			}
+			seen[s] = true
+			// Strictly decreasing Depth is what makes Depth a total order over the
+			// chain, which is the assumption the SQLite ORDER BY encodes as a CASE
+			// over the innermost set column.
+			if i > 0 && s.Depth() >= chain[i-1].Depth() {
+				rt.Fatalf("Ancestors(%+v) does not lose specificity at %d: %+v", sc, i, chain)
+			}
+		}
+	})
+}
+
+// Every ancestor encloses the scope it was derived from: an ancestor's non-empty
+// fields always agree with the original's. This is the property that makes the
+// chain a containment walk rather than an arbitrary set of scopes, so a widened
+// recall can never reach sideways into a sibling.
+func TestProp_ScopeAncestorsOnlyWiden(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		sc := testkit.ScopeGen().Draw(rt, "scope")
+		for _, a := range sc.Ancestors() {
+			if a.Instance != "" && a.Instance != sc.Instance {
+				rt.Fatalf("ancestor %+v of %+v changed Instance", a, sc)
+			}
+			if a.Project != "" && a.Project != sc.Project {
+				rt.Fatalf("ancestor %+v of %+v changed Project", a, sc)
+			}
+			if a.Workspace != "" && a.Workspace != sc.Workspace {
+				rt.Fatalf("ancestor %+v of %+v changed Workspace", a, sc)
+			}
+		}
+	})
+}
+
+// Widening only ever adds results, never removes or reorders the ones the
+// unwidened recall already returned: the widened read is a superset with the
+// original at its head. A caller can therefore turn IncludeAncestors on without
+// re-checking what it used to get back.
+func TestProp_WidenedRecallExtendsTheNarrowOne(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		ctx := context.Background()
+		p := state.NewMemory()
+		sc := testkit.ScopeGen().Draw(rt, "scope")
+
+		for i, s := range sc.Ancestors() {
+			for range rapid.IntRange(0, 3).Draw(rt, "writes") {
+				it := state.MemoryItem{Kind: "fact", Content: "fact", Scope: s}
+				if _, err := p.Memory().Write(ctx, it); err != nil {
+					rt.Fatalf("write at level %d: %v", i, err)
+				}
+			}
+		}
+
+		narrow, err := p.Memory().Recall(ctx, state.RecallQuery{Scope: sc})
+		if err != nil {
+			rt.Fatalf("narrow recall: %v", err)
+		}
+		wide, err := p.Memory().Recall(ctx, state.RecallQuery{Scope: sc, IncludeAncestors: true})
+		if err != nil {
+			rt.Fatalf("wide recall: %v", err)
+		}
+		if len(wide) < len(narrow) {
+			rt.Fatalf("widened recall returned %d, fewer than the narrow %d", len(wide), len(narrow))
+		}
+		for i := range narrow {
+			if wide[i].ID != narrow[i].ID {
+				rt.Fatalf("widened recall reordered the narrow results at %d: %q vs %q", i, wide[i].ID, narrow[i].ID)
+			}
+		}
+	})
+}
+
 // The provider contract (CRUD, CAS, tombstones, envelope, concurrency, error
 // paths) is covered once by the shared statetest.RunSuite - see
 // conformance_test.go - rather than re-asserted here.
