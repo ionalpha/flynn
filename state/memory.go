@@ -405,9 +405,21 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 		if chain != nil && !chain[it.Scope] {
 			continue
 		}
-		if query == "" || strings.Contains(strings.ToLower(it.Content), query) {
-			out = append(out, it)
+		if !q.Selects(it) {
+			continue
 		}
+		if query != "" && !strings.Contains(strings.ToLower(it.Content), query) {
+			continue
+		}
+		// A substring scan has no notion of a better or worse match, so every hit
+		// scores 1 rather than 0 - see MemoryItem.Score. MinScore consequently
+		// excludes nothing here, which is the honest answer from a store with no
+		// ranking to offer.
+		it.Score = 1
+		if it.Score < q.MinScore {
+			continue
+		}
+		out = append(out, it)
 	}
 	SortRecall(q, out)
 	if q.Limit > 0 && len(out) > q.Limit {
