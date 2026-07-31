@@ -167,6 +167,10 @@ func (s *Stamper) WriteMemory(it MemoryItem) (MemoryItem, spine.AppendInput, err
 	if it.CreatedAt.IsZero() {
 		it.CreatedAt = s.clk.Now()
 	}
+	// Score grades a match against one query; it is not a property of the record.
+	// Clearing it here covers every backend that stamps through this path, so a
+	// recalled item handed straight back to Write cannot persist a stale score.
+	it.Score = 0
 	envelope.StampCreate(&it.Envelope, s.instanceID, s.hlc.Now())
 	ev, err := s.memoryEvent(EvMemoryWritten, it)
 	return it, ev, err

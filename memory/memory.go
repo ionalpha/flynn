@@ -116,9 +116,21 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 	query := strings.ToLower(strings.TrimSpace(q.Query))
 	out := make([]state.MemoryItem, 0, len(all))
 	for _, it := range all {
-		if query == "" || strings.Contains(strings.ToLower(it.Content), query) {
-			out = append(out, it)
+		if !q.Selects(it) {
+			continue
 		}
+		if query != "" && !strings.Contains(strings.ToLower(it.Content), query) {
+			continue
+		}
+		// A substring scan cannot grade a match, so every hit scores 1 rather than
+		// 0 - see state.MemoryItem.Score. A projection that can rank (a full-text or
+		// vector index over the same resource events) reports its own score here
+		// without any other part of this contract changing.
+		it.Score = 1
+		if it.Score < q.MinScore {
+			continue
+		}
+		out = append(out, it)
 	}
 	state.SortRecall(q, out)
 	if q.Limit > 0 && len(out) > q.Limit {

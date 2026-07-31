@@ -837,6 +837,12 @@ type memory struct{ p *Store }
 const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, source, created_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
+// memoryColsQualified is memoryCols against the `m` alias, for the recall query,
+// which joins the FTS table and so cannot use bare column names. Recall appends
+// a fifteenth expression, the relevance score, after these fourteen.
+const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.source, m.created_at,
+	m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted`
+
 func scanMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
 	var (
 		m             state.MemoryItem
@@ -847,6 +853,27 @@ func scanMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
 	if err := sc.Scan(&m.ID, &m.Kind, &m.Content,
 		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &m.Source, &created,
 		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted); err != nil {
+		return state.MemoryItem{}, err
+	}
+	m.CreatedAt = parseTime(created)
+	m.UpdatedHLC = hlcTime(wall, counter)
+	m.Deleted = deleted != 0
+	return m, nil
+}
+
+// scanScoredMemory scans a recall row: the item's columns plus the trailing
+// relevance score.
+func scanScoredMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, error) {
+	var (
+		m             state.MemoryItem
+		created       string
+		wall, counter int64
+		deleted       int
+	)
+	if err := sc.Scan(&m.ID, &m.Kind, &m.Content,
+		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &m.Source, &created,
+		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted,
+		&m.Score); err != nil {
 		return state.MemoryItem{}, err
 	}
 	m.CreatedAt = parseTime(created)
@@ -916,7 +943,13 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// statement binds exactly one scope triple, so it falls through to the built
 	// query below, which is the only shape that can express a variable-length
 	// resolution chain.
-	if query == "" && len(chain) == 1 {
+	// Anything the query language cannot answer correctly is applied after the
+	// rows come back, and forces the cap to be applied there too - a SQL LIMIT
+	// would otherwise truncate rows that the Go stage was going to drop anyway,
+	// returning fewer results than asked for.
+	postFilter := !q.Since.IsZero() || !q.Until.IsZero() || q.MinScore > 0
+
+	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && !postFilter {
 		limit := q.Limit
 		if limit <= 0 {
 			limit = -1
@@ -925,21 +958,47 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		if err != nil {
 			return nil, err
 		}
-		return collectMemory(rows)
+		items, err := collectMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		// No query, so nothing was graded and every row is an equally good match.
+		for i := range items {
+			items[i].Score = 1
+		}
+		return items, nil
 	}
 
 	var sb strings.Builder
-	args := make([]any, 0, 5)
+	args := make([]any, 0, 8)
 	if query == "" {
-		sb.WriteString(`SELECT m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.source, m.created_at,
-			m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted
+		// Nothing to rank against, so every row scores 1: state.MemoryItem.Score
+		// reserves 1 for "matched, no opinion on how well".
+		sb.WriteString(`SELECT ` + memoryColsQualified + `, 1.0
 			FROM memory_items m WHERE m.deleted = 0`)
 	} else {
-		sb.WriteString(`SELECT m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.source, m.created_at,
-			m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted
-			FROM memory_items m JOIN memory_fts f ON f.item_id = m.id
-			WHERE f.memory_fts MATCH ? AND m.deleted = 0`)
+		// FTS5 computes bm25 for the MATCH regardless; the contract used to discard
+		// it. bm25 is <= 0 with a more negative value meaning a better match, so
+		// -b/(1-b) maps it onto [0,1) increasing in match quality, which is the
+		// direction and range Score is defined in.
+		sb.WriteString(`SELECT ` + memoryColsQualified + `, (-bm25(memory_fts)) / (1.0 - bm25(memory_fts))
+			FROM memory_items m JOIN memory_fts ON memory_fts.item_id = m.id
+			WHERE memory_fts MATCH ? AND m.deleted = 0`)
 		args = append(args, ftsPhrase(query))
+	}
+	// Kind is an exact match on an indexed column, so it belongs in the query
+	// rather than in a post-filter: it cuts the rows the sort has to order.
+	for i, k := range q.Kinds {
+		if i == 0 {
+			sb.WriteString(` AND m.kind IN (`)
+		} else {
+			sb.WriteString(`, `)
+		}
+		sb.WriteString(`?`)
+		args = append(args, k)
+	}
+	if len(q.Kinds) > 0 {
+		sb.WriteString(`)`)
 	}
 	// The chain is one scope, or that scope's ancestors when the read widened, so
 	// the predicate is an OR over its triples. Nil means unfiltered, no predicate.
@@ -963,6 +1022,11 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// what Depth reports. It has to be ordered in SQL rather than after collection,
 	// because LIMIT would otherwise truncate the wrong rows.
 	sb.WriteString(` ORDER BY`)
+	if q.Order == state.OrderRelevance {
+		// Column 15 is the score expression. Ordering by ordinal rather than
+		// repeating the expression keeps bm25 evaluated once per row.
+		sb.WriteString(` 15 DESC,`)
+	}
 	if q.RanksByScope() {
 		sb.WriteString(` CASE
 			WHEN m.scope_workspace <> '' THEN 0
@@ -971,7 +1035,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 			ELSE 3 END,`)
 	}
 	sb.WriteString(` m.created_at DESC, m.id DESC`)
-	if q.Limit > 0 {
+	if q.Limit > 0 && !postFilter {
 		sb.WriteString(` LIMIT ?`)
 		args = append(args, q.Limit)
 	}
@@ -980,7 +1044,29 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	if err != nil {
 		return nil, err
 	}
-	return collectMemory(rows)
+	items, err := collectScoredMemory(rows)
+	if err != nil {
+		return nil, err
+	}
+	if !postFilter {
+		return items, nil
+	}
+	// The CreatedAt window is applied here rather than as a SQL range: created_at
+	// is stored as RFC3339Nano, which drops trailing zeros from the fractional
+	// second, so it is not fixed-width and does not compare lexicographically
+	// ("...T00:00:00.000000001Z" sorts before "...T00:00:00Z"). Comparing parsed
+	// times is the only correct answer available here.
+	out := items[:0]
+	for _, it := range items {
+		if !q.Selects(it) || it.Score < q.MinScore {
+			continue
+		}
+		out = append(out, it)
+		if q.Limit > 0 && len(out) == q.Limit {
+			break
+		}
+	}
+	return out, nil
 }
 
 // collectMemory drains rows into memory items, closing rows on every path.
@@ -989,6 +1075,20 @@ func collectMemory(rows *sql.Rows) ([]state.MemoryItem, error) {
 	out := make([]state.MemoryItem, 0)
 	for rows.Next() {
 		it, err := scanMemory(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, it)
+	}
+	return out, rows.Err()
+}
+
+// collectScoredMemory drains recall rows, which carry a trailing score column.
+func collectScoredMemory(rows *sql.Rows) ([]state.MemoryItem, error) {
+	defer func() { _ = rows.Close() }()
+	out := make([]state.MemoryItem, 0)
+	for rows.Next() {
+		it, err := scanScoredMemory(rows)
 		if err != nil {
 			return nil, err
 		}

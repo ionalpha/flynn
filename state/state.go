@@ -11,6 +11,7 @@ package state
 import (
 	"context"
 	"errors"
+	"slices"
 	"sort"
 	"time"
 
@@ -219,6 +220,21 @@ type MemoryItem struct {
 	Scope     Scope
 	Source    string // provenance: where this memory came from
 	CreatedAt time.Time
+	// Score is how well this item matched the query that recalled it, in [0,1]
+	// with 1 the best match. It is a read-side annotation, not part of the record:
+	// Recall sets it, Write ignores it, and no backend persists it.
+	//
+	// A backend that cannot rank reports 1 for every match - "it matched, and I
+	// have no opinion on how well" - rather than 0. A floor (RecallQuery.MinScore)
+	// then excludes nothing on a store with no ranking to offer, instead of
+	// silently emptying every recall against it.
+	//
+	// The scale is the backend's own. Scores order one recall's results against
+	// each other; they are not comparable across backends, and not stable across
+	// queries or as the corpus grows, because a term's weight depends on how rare
+	// it is in the stored memory at the time of the read. A caller tuning MinScore
+	// is tuning it for one backend and one corpus, not setting a portable constant.
+	Score float64
 	Envelope
 }
 
@@ -241,7 +257,62 @@ type RecallQuery struct {
 	// It has no effect on an unfiltered recall (a zero Scope already spans
 	// everything).
 	IncludeAncestors bool
-	Limit            int
+	// Kinds restricts the recall to these MemoryItem kinds; empty matches every
+	// kind. Injecting the user's preferences into a prompt should not have to drag
+	// every observation along with them, and over-fetching to filter afterwards
+	// pays the retrieval cost for rows it then throws away.
+	Kinds []string
+	// Since and Until bound CreatedAt to the half-open window [Since, Until). A
+	// zero Since has no lower bound and a zero Until no upper bound, so the zero
+	// query still spans all of history.
+	Since time.Time
+	Until time.Time
+	// MinScore drops results the backend scored below it, the relevance floor that
+	// makes Limit a "top K of what is actually relevant" rather than "K rows,
+	// however weak". Zero (the default) admits everything. See MemoryItem.Score
+	// for what a backend with no ranking reports.
+	MinScore float64
+	// Order selects the ranking; the zero value is the recency order Recall has
+	// always returned.
+	Order RecallOrder
+	Limit int
+}
+
+// RecallOrder selects how Recall ranks the results it returns.
+type RecallOrder int
+
+const (
+	// OrderRecent returns the most recent memory first. It is the zero value, and
+	// the right default for "what has happened lately".
+	OrderRecent RecallOrder = iota
+	// OrderRelevance returns the best-matching memory first, recency breaking
+	// ties. Combined with Limit it is top-K-by-relevance, which is the lever that
+	// decides how much a per-turn recall costs in context: recency order caps how
+	// many rows come back but not how good they are, so the strongest match can be
+	// truncated away by a row that merely arrived later.
+	//
+	// Against a backend that cannot rank, every match scores 1 and this degrades
+	// to recency rather than to an arbitrary order.
+	OrderRelevance
+)
+
+// Selects reports whether it satisfies the query's kind filter and time window.
+// These are the per-item selectors, separate from scope resolution (a set
+// membership test a backend does once, via ScopeChain) and from the lexical match
+// (the backend's own, and what Score grades). Backends that filter in Go share it
+// so the implementations cannot drift; one that pushes the same predicates into
+// its query language must produce the identical answer.
+func (q RecallQuery) Selects(it MemoryItem) bool {
+	if len(q.Kinds) > 0 && !slices.Contains(q.Kinds, it.Kind) {
+		return false
+	}
+	if !q.Since.IsZero() && it.CreatedAt.Before(q.Since) {
+		return false
+	}
+	if !q.Until.IsZero() && !it.CreatedAt.Before(q.Until) {
+		return false
+	}
+	return true
 }
 
 // ScopeChain returns the scopes a recall reads, most-specific first, or nil when
@@ -285,14 +356,19 @@ type MemoryStore interface {
 // place. Every backend sorts through it, so the contract has one implementation
 // instead of three that drift.
 //
-// Only a widened read (q.RanksByScope) ranks by scope before recency, which is
-// what makes widening useful: a workspace's own memory outranks the project-wide
-// memory it inherits, however old that is. Every other recall keeps the plain
-// most-recent-first order it has always had - an unfiltered search across scopes
-// wants the newest match, not the deepest one.
+// The keys, in order: relevance when q asked for it, then scope when the read
+// widened across levels, then recency, then ID to make the order total. Ranking
+// by scope is what makes widening useful - a workspace's own memory outranks the
+// project-wide memory it inherits, however old that is - and it is skipped
+// entirely for a read that did not widen, so an unfiltered or single-scope recall
+// keeps the plain most-recent-first order it has always had.
 func SortRecall(q RecallQuery, items []MemoryItem) {
+	byScore := q.Order == OrderRelevance
 	byScope := q.RanksByScope()
 	sort.Slice(items, func(i, j int) bool {
+		if byScore && items[i].Score != items[j].Score {
+			return items[i].Score > items[j].Score
+		}
 		if byScope {
 			if di, dj := items[i].Scope.Depth(), items[j].Scope.Depth(); di != dj {
 				return di > dj
