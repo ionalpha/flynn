@@ -198,3 +198,73 @@ func (s *Stamper) DeleteMemory(it MemoryItem) (MemoryItem, spine.AppendInput, er
 	ev, err := s.memoryEvent(EvMemoryDeleted, it)
 	return it, ev, err
 }
+
+// RecordMemoryPush stamps one push of each of memoryIDs and returns the post-image
+// rows with the single event that records them. prev holds this instance's stored
+// usage row for each item, absent for an item this instance has never touched; the
+// caller looks them up under its own lock or transaction, as with every other
+// stamp.
+//
+// A repeated id in one call counts once. The same item cannot be pushed twice by
+// one digest, so counting it twice would be recording a caller's slip as an
+// observation about the memory.
+func (s *Stamper) RecordMemoryPush(prev map[string]MemoryUsage, memoryIDs []string) ([]MemoryUsage, spine.AppendInput, error) {
+	now := s.clk.Now()
+	hnow := s.hlc.Now()
+	seen := make(map[string]bool, len(memoryIDs))
+	out := make([]MemoryUsage, 0, len(memoryIDs))
+	for _, id := range memoryIDs {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		u := s.stampUsage(prev, id, hnow)
+		u.PushCount++
+		u.LastPushedAt = now
+		out = append(out, u)
+	}
+	ev, err := s.usageEvent(EvMemoryPushed, out)
+	return out, ev, err
+}
+
+// RecordMemoryUse stamps one use of an item at the given origin and returns the
+// post-image row with its event. prev is this instance's stored row for the item,
+// or the zero value if it has none. An origin that is neither organic nor primed
+// is ErrInvalid: the split is the measurement, so there is nothing sensible to
+// assume on the caller's behalf.
+func (s *Stamper) RecordMemoryUse(prev map[string]MemoryUsage, memoryID string, origin UsageOrigin) (MemoryUsage, spine.AppendInput, error) {
+	if !origin.Valid() {
+		return MemoryUsage{}, spine.AppendInput{}, ErrInvalid
+	}
+	u := s.stampUsage(prev, memoryID, s.hlc.Now())
+	if origin == UsagePrimed {
+		u.PrimedUses++
+	} else {
+		u.OrganicUses++
+	}
+	u.LastUsedAt = s.clk.Now()
+	ev, err := s.usageEvent(EvMemoryUsed, []MemoryUsage{u})
+	return u, ev, err
+}
+
+// stampUsage returns this instance's usage row for an item with its envelope
+// already advanced for the mutation the caller is about to make. A row this
+// instance has not written before is created rather than looked up: an instance
+// only ever writes its own row (see MemoryUsage), so there is no other writer to
+// conflict with and no CAS to enforce.
+func (s *Stamper) stampUsage(prev map[string]MemoryUsage, memoryID string, hnow hlc.Time) MemoryUsage {
+	u, existed := prev[memoryID]
+	if !existed {
+		u = MemoryUsage{MemoryID: memoryID, InstanceID: s.instanceID}
+		envelope.StampCreate(&u.Envelope, s.instanceID, hnow)
+		return u
+	}
+	u.MemoryID, u.InstanceID = memoryID, s.instanceID
+	before := u.Envelope
+	envelope.StampUpdate(&u.Envelope, before, s.instanceID, hnow)
+	return u
+}
+
+func (s *Stamper) usageEvent(typ string, rows []MemoryUsage) (spine.AppendInput, error) {
+	return s.input(typ, map[string]any{keyUsage: rows})
+}

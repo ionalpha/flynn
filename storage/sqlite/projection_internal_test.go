@@ -100,6 +100,15 @@ func TestRebuildFailsWhenAProjectionTableIsMissing(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "memory_items"},
+		{"memory usage", func(s *Store) {
+			it, err := s.Memory().Write(ctx, state.MemoryItem{Kind: "fact", Content: "blue"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := s.Memory().RecordPush(ctx, []string{it.ID}); err != nil {
+				t.Fatal(err)
+			}
+		}, "memory_usage"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -591,5 +600,33 @@ func TestWarmBodiesRoundTripThroughTheReadPath(t *testing.T) {
 	}
 	if evs[1].Payload["body"] != "second" {
 		t.Fatal("the still-hot body did not read back verbatim")
+	}
+}
+
+// TestMemoryUsageReadsRejectACorruptRow: a usage row whose counter is not a number
+// fails the read rather than being skipped or read as zero. SQLite's dynamic typing
+// lets such a row exist, and a usage read that quietly returned nothing for it would
+// report a heavily pushed item as one nobody has ever seen.
+func TestMemoryUsageReadsRejectACorruptRow(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	it, err := s.Memory().Write(ctx, state.MemoryItem{Kind: "fact", Content: "blue"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Memory().RecordPush(ctx, []string{it.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE memory_usage SET push_count = 'not a number'`); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := s.Memory().Usage(ctx, nil); err == nil {
+		t.Fatal("Usage read a row whose counter is not a number")
+	}
+	// The write path reads the stored row back before incrementing it, so it has to
+	// refuse the same row rather than start the counter over from zero.
+	if err := s.Memory().RecordPush(ctx, []string{it.ID}); err == nil {
+		t.Fatal("RecordPush overwrote a row it could not read back")
 	}
 }

@@ -94,3 +94,21 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 func (s *Store) Delete(ctx context.Context, id string) error {
 	return s.inner.Delete(ctx, id)
 }
+
+// RecordPush delegates unchanged. The gate is a write-time ingest screen on
+// content, and usage carries none: an item that got past the screen is an item
+// this store has no further opinion about, and refusing to count reads of it would
+// leave the selection policy blind on exactly the corpus the guard admitted.
+func (s *Store) RecordPush(ctx context.Context, memoryIDs []string) error {
+	return s.inner.RecordPush(ctx, memoryIDs)
+}
+
+// RecordUse delegates unchanged, origin included.
+func (s *Store) RecordUse(ctx context.Context, memoryID string, origin state.UsageOrigin) error {
+	return s.inner.RecordUse(ctx, memoryID, origin)
+}
+
+// Usage delegates unchanged.
+func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUsage, error) {
+	return s.inner.Usage(ctx, memoryIDs)
+}

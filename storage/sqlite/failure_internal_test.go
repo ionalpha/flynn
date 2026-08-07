@@ -134,7 +134,12 @@ func TestClosedStoreOperationsAllReportErrors(t *testing.T) {
 			_, err := s.Memory().Recall(ctx, state.RecallQuery{Scope: state.Scope{Project: "p"}})
 			return err
 		},
-		"memory.Delete":        func() error { return s.Memory().Delete(ctx, "id") },
+		"memory.Delete":     func() error { return s.Memory().Delete(ctx, "id") },
+		"memory.RecordPush": func() error { return s.Memory().RecordPush(ctx, []string{"id"}) },
+		"memory.RecordUse": func() error {
+			return s.Memory().RecordUse(ctx, "id", state.UsageOrganic)
+		},
+		"memory.Usage":         func() error { _, err := s.Memory().Usage(ctx, nil); return err },
 		"store.Rebuild":        func() error { return s.Rebuild(ctx) },
 		"store.SnapshotState":  func() error { return s.SnapshotState(ctx) },
 		"log.Append":           func() error { _, err := s.Log().Append(ctx, spine.AppendInput{Stream: "x", Type: "t"}); return err },

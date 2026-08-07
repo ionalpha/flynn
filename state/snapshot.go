@@ -6,9 +6,9 @@ import (
 )
 
 // Snapshot is a materialized projection of the state stream up to LastSeq: every
-// session, its turns, every skill (live and tombstoned), every memory item, and the
-// derived skill-slug index, enough to restore the read model without folding the stream
-// from the start. It is the state analogue of the resource snapshot, opaque to the spine
+// session, its turns, every skill (live and tombstoned), every memory item, every
+// per-instance usage row, and the derived skill-slug index, enough to restore the read
+// model without folding the stream from the start. It is the state analogue of the resource snapshot, opaque to the spine
 // and sealed by the same codec when one is configured. The slug index is carried so an
 // in-memory restore is exact; a table-backed store rebuilds it from its own rows and
 // leaves the field nil.
@@ -18,6 +18,7 @@ type Snapshot struct {
 	Turns    []Turn            `json:"turns"`
 	Skills   []Skill           `json:"skills"`
 	Items    []MemoryItem      `json:"items"`
+	Usage    []MemoryUsage     `json:"usage,omitempty"`
 	SlugToID map[string]string `json:"slugToID,omitempty"`
 }
 
@@ -28,6 +29,7 @@ func MarshalSnapshot(s Snapshot) ([]byte, error) {
 	sort.Slice(s.Sessions, func(i, j int) bool { return s.Sessions[i].ID < s.Sessions[j].ID })
 	sort.Slice(s.Skills, func(i, j int) bool { return s.Skills[i].ID < s.Skills[j].ID })
 	sort.Slice(s.Items, func(i, j int) bool { return s.Items[i].ID < s.Items[j].ID })
+	SortUsage(s.Usage)
 	sort.Slice(s.Turns, func(i, j int) bool {
 		if s.Turns[i].SessionID != s.Turns[j].SessionID {
 			return s.Turns[i].SessionID < s.Turns[j].SessionID
@@ -60,6 +62,9 @@ func (c *core) snapshotLocked() Snapshot {
 		s.Skills = append(s.Skills, sk)
 	}
 	s.Items = append(s.Items, c.memItems...)
+	for _, u := range c.memUsage {
+		s.Usage = append(s.Usage, u)
+	}
 	for k, v := range c.slugToID {
 		s.SlugToID[k] = v
 	}
@@ -76,6 +81,10 @@ func (c *core) restoreLocked(s Snapshot) {
 	c.skillsByID = make(map[string]Skill, len(s.Skills))
 	c.slugToID = make(map[string]string, len(s.SlugToID))
 	c.memItems = nil
+	c.memUsage = make(map[string]MemoryUsage, len(s.Usage))
+	for _, u := range s.Usage {
+		c.memUsage[usageKey(u.MemoryID, u.InstanceID)] = u
+	}
 	for _, ses := range s.Sessions {
 		c.sessions[ses.ID] = ses
 	}

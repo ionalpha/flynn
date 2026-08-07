@@ -33,9 +33,18 @@ const GroupVersion = "memory.ionagent.io/v1"
 // Kind is the resource kind name memory items are stored under.
 const Kind = "Memory"
 
+// UsageKind is the resource kind name per-instance memory usage is stored under.
+const UsageKind = "MemoryUsage"
+
 // namePrefix is the GenerateName prefix for a memory item's server-assigned name
 // (Name = "mem-" + ID), since memory items carry no natural name.
 const namePrefix = "mem-"
+
+// usageNamePrefix starts the natural name of a usage record,
+// "memuse-<memoryID>-<instanceID>". Usage has a natural name where the item it is
+// about does not: the pair it is keyed by is exactly what identifies it, so the
+// record is addressable without a lookup and an update is an ordinary Put.
+const usageNamePrefix = "memuse-"
 
 // specSchema is the JSON Schema a memory item's Spec must satisfy (admission). It
 // constrains structure without over-requiring, so an item carrying only content is
@@ -74,9 +83,30 @@ var KindDef = resource.Kind{
 	Plural:     "memories",
 }
 
-// RegisterKind registers the Memory kind with reg so a resource store admits memory
-// items. It is idempotent: registering again replaces the definition.
-func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
+// UsageKindDef is the MemoryUsage kind definition: one resource per memory item
+// per instance, holding how often that instance pushed the item at a reader and
+// how often it was used (see state.MemoryUsage).
+//
+// Usage is its own kind rather than a field on the item, because a memory item is
+// append-only and its spec is what the writer asserted. Folding a counter into it
+// would rewrite the record, and its content hash, every time somebody read it.
+var UsageKindDef = resource.Kind{
+	APIVersion: GroupVersion,
+	Name:       UsageKind,
+	Schema:     usageSpecSchema,
+	Singular:   "memoryusage",
+	Plural:     "memoryusages",
+}
+
+// RegisterKind registers the Memory and MemoryUsage kinds with reg so a resource
+// store admits memory items and their usage. It is idempotent: registering again
+// replaces the definitions.
+func RegisterKind(reg *resource.Registry) error {
+	if err := reg.Register(KindDef); err != nil {
+		return err
+	}
+	return reg.Register(UsageKindDef)
+}
 
 // spec is the typed shape of a memory resource's Spec (the JSON validated by
 // specSchema). Empty fields are omitted so a minimal item hashes and validates as a
@@ -131,8 +161,9 @@ func decodeAnchors(in []anchor) []state.Anchor {
 // agent uses; underneath, every write and recall is a resource operation on one
 // event-sourced foundation.
 type Store struct {
-	rs  resource.Store
-	clk clock.Clock
+	rs         resource.Store
+	clk        clock.Clock
+	instanceID string
 }
 
 var _ state.MemoryStore = (*Store)(nil)
@@ -152,10 +183,26 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
+// WithInstanceID sets the instance usage is attributed to (default "local", the
+// same default the in-memory state provider uses). It must be the identity the
+// underlying resource store stamps its writes with: usage is counted per
+// instance, so two names for one instance would split its counters in half and
+// report the fleet as more diverse than it is. A write that lands under a
+// different origin is rejected rather than recorded, so a mismatch shows up on
+// the first push instead of in the metrics months later.
+func WithInstanceID(id string) Option {
+	return func(s *Store) {
+		if id != "" {
+			s.instanceID = id
+		}
+	}
+}
+
 // NewStore returns a memory facade over rs. The caller must have registered the
-// Memory kind with the registry rs admits against (see RegisterKind).
+// Memory and MemoryUsage kinds with the registry rs admits against (see
+// RegisterKind).
 func NewStore(rs resource.Store, opts ...Option) *Store {
-	s := &Store{rs: rs, clk: clock.System{}}
+	s := &Store{rs: rs, clk: clock.System{}, instanceID: defaultInstanceID}
 	for _, o := range opts {
 		o(s)
 	}
