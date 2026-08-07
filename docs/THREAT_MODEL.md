@@ -305,7 +305,13 @@ Enforced and tested today:
   wake digest, the one path that reaches a reader without anyone asking; they do not bar it
   from recall, where the reader sees its provenance and decides. What the agent wrote for
   itself, untainted, enters the digest only when a named reviewer has promoted it, and every
-  decision and revision is on the event stream as its audit trail.
+  decision and revision is on the event stream as its audit trail. Ride-along surfacing, the
+  second path that delivers memory to a reader who did not ask for it, is gated too: a
+  memory anchored to a host record arrives with a read of that record only if it clears an
+  admission policy, whose default keeps out the two categories the digest denies outright
+  (tainted, untrusted provenance) and whose strict setting holds a surfacing to the digest's
+  own standard. The delivery is cue-bound, capped, and counted, which is why the default
+  admits an unpromoted agent note that the digest would not carry.
 - Credential isolation: vault-held, redacted, never in a child's environment.
 - An append-only, ordered event spine as the record of what happened, and, on a run's
   convergence, a signed, tamper-evident sealed record of it (RFC 6962 Merkle log under a
