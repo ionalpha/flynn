@@ -9,9 +9,11 @@
 package state
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"sort"
 	"time"
@@ -219,6 +221,75 @@ type SkillStore interface {
 	Delete(ctx context.Context, idOrSlug string) error
 }
 
+// ErrInvalid is returned by a write whose record is malformed in a way no backend
+// should have to store: today, an anchor missing its kind or its id.
+var ErrInvalid = errors.New("state: invalid record")
+
+// Anchor is a reference from a memory item to something outside this store: the
+// piece of work, the record, the file the fact is about. It is the cue that makes
+// recall associative rather than purely lexical - reading the anchored thing can
+// surface what was learned about it, without the reader having to suspect the fact
+// exists and go looking for it.
+//
+// An anchor is deliberately opaque. Kind and ID are the referring system's own
+// vocabulary and identifiers, and this package neither interprets them nor resolves
+// them. It cannot: whatever owns the referent is outside Flynn, and a store that
+// pretended otherwise would either need a resolver it has no way to obtain or would
+// have to enumerate somebody else's record types in this file. So the rule is
+// narrow and total: anchors are stored, indexed and matched, never dereferenced.
+//
+// The consequence worth stating plainly is that a dangling anchor is a normal
+// state, not an error. The referent can be deleted, renamed or never have existed;
+// the memory remains valid and recallable, and matching it by anchor simply stops
+// returning it once nobody asks with that ref. Validation is therefore shape only
+// (see Anchor.Valid).
+type Anchor struct {
+	// Kind names the referent's type in the referring system's vocabulary, so ids
+	// from two different systems cannot collide.
+	Kind string
+	// ID identifies the referent within that kind. It is an opaque string: a UUID,
+	// a path, a URL, whatever the owner uses.
+	ID string
+}
+
+// Valid reports whether the anchor is well formed: both halves present. This is
+// the whole of what a store may check. An anchor with an empty kind is ambiguous
+// against every other system's ids, and one with an empty id refers to nothing, so
+// both are rejected at the write rather than stored as a ref that can never match.
+func (a Anchor) Valid() bool { return a.Kind != "" && a.ID != "" }
+
+// NormalizeAnchors returns the anchors in canonical form - sorted by kind then id,
+// with exact duplicates collapsed - or ErrInvalid if any of them is not Valid.
+// Nil and empty both normalize to nil, so an item with no anchors has one
+// representation rather than two.
+//
+// Canonicalizing rather than preserving the writer's order is what makes the same
+// anchor set encode, and therefore content-hash, identically on every write. Order
+// carries no meaning here (unlike MemoryItem.Sources, where it is the writer's
+// credit), so there is nothing to lose by fixing it and a stable hash to gain.
+//
+// Every write path normalizes through this, so a backend cannot invent its own
+// answer to what a duplicate anchor means.
+func NormalizeAnchors(in []Anchor) ([]Anchor, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]Anchor, 0, len(in))
+	for _, a := range in {
+		if !a.Valid() {
+			return nil, fmt.Errorf("%w: anchor needs both a kind and an id, got %+v", ErrInvalid, a)
+		}
+		out = append(out, a)
+	}
+	slices.SortFunc(out, func(x, y Anchor) int {
+		if c := cmp.Compare(x.Kind, y.Kind); c != 0 {
+			return c
+		}
+		return cmp.Compare(x.ID, y.ID)
+	})
+	return slices.Compact(out), nil
+}
+
 // MemoryItem is a durable fact the agent has learned, attributable to its
 // sources for provenance and rollback.
 type MemoryItem struct {
@@ -241,7 +312,17 @@ type MemoryItem struct {
 	// item with no recorded provenance, which readers that classify by origin (see
 	// the memory/guard package) treat as the least-trusted answer they can defend,
 	// never as trusted.
-	Sources   []string
+	Sources []string
+	// Anchors are the things outside this store that the fact is about, the cues a
+	// reader can recall by (see Anchor and RecallQuery.Anchors). They are stored in
+	// canonical form - sorted, deduplicated - by every write path; a caller may pass
+	// them in any order.
+	//
+	// Anchors are not provenance. Sources records where a fact came from, which is
+	// what a purge follows; Anchors records what it is about, which is what a read
+	// matches on. A fact learned from a tool's output while working on something is
+	// perfectly normal, and the two lists then hold different things.
+	Anchors   []Anchor
 	CreatedAt time.Time
 	// ExpiresAt is the first instant this item stops being recallable; the zero
 	// value never expires. It is the half-open convention RecallQuery.Since and
@@ -329,6 +410,20 @@ type RecallQuery struct {
 	// every observation along with them, and over-fetching to filter afterwards
 	// pays the retrieval cost for rows it then throws away.
 	Kinds []string
+	// Anchors restricts the recall to items carrying at least one of these anchors;
+	// empty matches every item. An item matches on any one of them, not all, because
+	// the caller reading a thing wants what is about that thing, and an item anchored
+	// to it and to two others is still about it.
+	//
+	// This is the retrieval half of associative recall: a reader who has a ref in
+	// hand can ask what is known about it without composing a lexical query, which is
+	// exactly the case pull-only search cannot serve, because it requires already
+	// suspecting the fact exists. An anchored recall with an empty Query is the
+	// normal shape.
+	//
+	// Anchors are matched exactly, on both halves. Nothing here resolves a ref, so
+	// an anchor naming a referent that no longer exists simply matches nothing.
+	Anchors []Anchor
 	// Since and Until bound CreatedAt to the half-open window [Since, Until). A
 	// zero Since has no lower bound and a zero Until no upper bound, so the zero
 	// query still spans all of history.
@@ -392,6 +487,9 @@ func (q RecallQuery) Selects(it MemoryItem, now time.Time) bool {
 	if len(q.Kinds) > 0 && !slices.Contains(q.Kinds, it.Kind) {
 		return false
 	}
+	if !q.matchesAnchors(it) {
+		return false
+	}
 	if !q.Since.IsZero() && it.CreatedAt.Before(q.Since) {
 		return false
 	}
@@ -399,6 +497,23 @@ func (q RecallQuery) Selects(it MemoryItem, now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+// matchesAnchors reports whether it carries any of the anchors the query asked
+// for, which an unanchored query trivially satisfies. Both sides are short - a
+// handful of refs at most - so this is a nested scan rather than a set built per
+// call, which would allocate on every item for a membership test over three
+// elements.
+func (q RecallQuery) matchesAnchors(it MemoryItem) bool {
+	if len(q.Anchors) == 0 {
+		return true
+	}
+	for _, want := range q.Anchors {
+		if slices.Contains(it.Anchors, want) {
+			return true
+		}
+	}
+	return false
 }
 
 // ScopeChain returns the scopes a recall reads, most-specific first, or nil when

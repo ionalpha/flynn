@@ -47,6 +47,18 @@ var specSchema = json.RawMessage(`{
     "content": {"type": "string"},
     "sources": {"type": "array", "items": {"type": "string"}},
     "source": {"type": "string"},
+    "anchors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "kind": {"type": "string", "minLength": 1},
+          "id": {"type": "string", "minLength": 1}
+        },
+        "required": ["kind", "id"],
+        "additionalProperties": false
+      }
+    },
     "expires_at": {"type": "string"}
   },
   "additionalProperties": false
@@ -81,7 +93,38 @@ type spec struct {
 	Content   string     `json:"content,omitempty"`
 	Sources   []string   `json:"sources,omitempty"`
 	Source    string     `json:"source,omitempty"`
+	Anchors   []anchor   `json:"anchors,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+}
+
+// anchor is the stored shape of a state.Anchor. It exists so the spec's JSON keys
+// are lowercase like every other field here, rather than inheriting the exported Go
+// names, and so the schema above has something stable to validate against.
+type anchor struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
+func encodeAnchors(in []state.Anchor) []anchor {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]anchor, len(in))
+	for i, a := range in {
+		out[i] = anchor{Kind: a.Kind, ID: a.ID}
+	}
+	return out
+}
+
+func decodeAnchors(in []anchor) []state.Anchor {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]state.Anchor, len(in))
+	for i, a := range in {
+		out[i] = state.Anchor{Kind: a.Kind, ID: a.ID}
+	}
+	return out
 }
 
 // Store is the typed memory facade over a resource.Store. It is the MemoryStore the
@@ -213,7 +256,15 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 // name, so a create carries GenerateName and the store assigns Name = mem-<id>;
 // the sync version carries through so the store enforces optimistic concurrency.
 func toResource(m state.MemoryItem) (resource.Resource, error) {
-	sp := spec{Kind: m.Kind, Content: m.Content, Sources: m.Sources}
+	// Anchors are canonicalized here rather than trusted from the caller: this
+	// facade writes through resource.Store and so never passes state.Stamper, which
+	// is where the other backends normalize. Both paths have to agree, or the same
+	// write would hash differently depending on which store it landed on.
+	anchors, err := state.NormalizeAnchors(m.Anchors)
+	if err != nil {
+		return resource.Resource{}, err
+	}
+	sp := spec{Kind: m.Kind, Content: m.Content, Sources: m.Sources, Anchors: encodeAnchors(anchors)}
 	if !m.ExpiresAt.IsZero() {
 		exp := m.ExpiresAt
 		sp.ExpiresAt = &exp
@@ -260,6 +311,7 @@ func toItem(r resource.Resource) (state.MemoryItem, error) {
 		Kind:      sp.Kind,
 		Content:   sp.Content,
 		Sources:   sources,
+		Anchors:   decodeAnchors(sp.Anchors),
 		Scope:     state.Scope(r.Scope),
 		CreatedAt: r.CreatedAt,
 		ExpiresAt: expires,

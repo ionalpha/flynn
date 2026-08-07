@@ -53,6 +53,53 @@ func TestDecodeSourcesReportsCorruptJSON(t *testing.T) {
 	}
 }
 
+// Anchors ride in one JSON column beside the lookup table, so the encode/decode
+// pair is what a recall hydrates its refs from. The empty case has to stay the
+// empty column value rather than "[]", matching provenance, and a ref's two halves
+// have to survive whatever characters a host puts in its ids.
+func TestMemoryAnchorsRoundTrip(t *testing.T) {
+	for _, anchors := range [][]state.Anchor{
+		nil,
+		{},
+		{{Kind: "widget", ID: "w-1"}},
+		{{Kind: "gadget", ID: "g-9"}, {Kind: "widget", ID: "w-1"}},
+		// A path-shaped and a URL-shaped id: anchors are opaque, so nothing here may
+		// assume an id is a bare token.
+		{{Kind: "file", ID: `src/pkg/"odd" name.go`}, {Kind: "page", ID: "https://example.test/a?b=c&d=e"}},
+	} {
+		raw := encodeAnchors(anchors)
+		back, err := decodeAnchors(raw)
+		if err != nil {
+			t.Fatalf("decode %q: %v", raw, err)
+		}
+		if len(anchors) == 0 {
+			if raw != "" {
+				t.Errorf("no anchors encoded to %q, want the empty column value", raw)
+			}
+			if len(back) != 0 {
+				t.Errorf("no anchors decoded to %v, want none", back)
+			}
+			continue
+		}
+		if !slices.Equal(back, anchors) {
+			t.Errorf("round trip of %v = %v", anchors, back)
+		}
+	}
+}
+
+// An anchors column that is not JSON is a corrupted row. It has to be reported
+// rather than read back as an item with no anchors, which would look exactly like
+// a fact that was never about anything.
+func TestDecodeAnchorsReportsCorruptJSON(t *testing.T) {
+	got, err := decodeAnchors(`{"not":"a list"}`)
+	if err == nil {
+		t.Fatalf("decode of a non-list returned %v and no error", got)
+	}
+	if got != nil {
+		t.Fatalf("decode returned anchors %v alongside its error, want none", got)
+	}
+}
+
 // Expiry is stored as unix nanoseconds with 0 reserved for "never", so the mapping
 // has to be exact in both directions and must not turn a real expiry into never.
 func TestExpiryNanosRoundTrip(t *testing.T) {
@@ -72,6 +119,44 @@ func TestExpiryNanosRoundTrip(t *testing.T) {
 	past := time.Date(1970, 1, 1, 0, 0, 0, 1, time.UTC)
 	if n := expiryNanos(past); n == 0 {
 		t.Error("an expiry one nanosecond after the epoch collided with the never sentinel")
+	}
+}
+
+// The same for anchors, on the scan path rather than the decoder in isolation. An
+// item read back with its anchors silently emptied would stop answering the
+// anchored recalls it is the whole point of, and would look identical to a fact
+// that was never about anything.
+func TestRecallReportsACorruptAnchorsColumn(t *testing.T) {
+	ctx := context.Background()
+	p, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	mem := p.Memory()
+	it, err := mem.Write(ctx, state.MemoryItem{
+		Kind: "fact", Content: "corruptible", Anchors: []state.Anchor{{Kind: "widget", ID: "w-1"}},
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := p.db.ExecContext(ctx,
+		`UPDATE memory_items SET anchors = ? WHERE id = ?`, `{"not":"a list"}`, it.ID); err != nil {
+		t.Fatalf("corrupt the row: %v", err)
+	}
+
+	// The lexical shape, the anchored shape and the prepared scoped statement all
+	// scan the column, so all three have to report it rather than one of them
+	// quietly returning the item stripped of its refs.
+	if _, err := mem.Recall(ctx, state.RecallQuery{Query: "corruptible"}); err == nil {
+		t.Error("full-text recall over a corrupt anchors column returned no error")
+	}
+	if _, err := mem.Recall(ctx, state.RecallQuery{Anchors: []state.Anchor{{Kind: "widget", ID: "w-1"}}}); err == nil {
+		t.Error("anchored recall over a corrupt anchors column returned no error")
+	}
+	if _, err := mem.Recall(ctx, state.RecallQuery{Scope: state.Scope{Project: "p"}}); err != nil {
+		t.Errorf("recall of an unaffected scope must still work: %v", err)
 	}
 }
 

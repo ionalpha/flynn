@@ -23,6 +23,7 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("Selectors", func(t *testing.T) { testSelectors(t, newStore()) })
 	t.Run("Relevance", func(t *testing.T) { testRelevance(t, newStore()) })
 	t.Run("Provenance", func(t *testing.T) { testProvenance(t, newStore()) })
+	t.Run("Anchors", func(t *testing.T) { testAnchors(t, newStore()) })
 	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
 }
@@ -350,6 +351,122 @@ func testProvenance(t *testing.T, mem state.MemoryStore) {
 	// collapsing back to a bare string somewhere in the backend.
 	wantSources(t, "Write of a single-source item",
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: "single origin", Sources: []string{"chat"}}), "chat")
+}
+
+// testAnchors pins anchors as opaque refs: stored, matched, never resolved. The
+// property that matters most here is the one a backend is tempted to improve on -
+// that an anchor pointing at nothing is a perfectly good anchor. A store that
+// checked refs, or dropped the ones it could not resolve, would need a resolver for
+// a namespace it does not own, and would quietly delete facts whose subject it
+// merely could not see.
+func testAnchors(t *testing.T, mem state.MemoryStore) {
+	ctx := context.Background()
+	widget := state.Anchor{Kind: "widget", ID: "w-1"}
+	gadget := state.Anchor{Kind: "gadget", ID: "g-9"}
+	// Deliberately the same id under a different kind, so a backend that matched on
+	// the id alone would fail rather than pass by coincidence.
+	widgetShapedGadget := state.Anchor{Kind: "gadget", ID: "w-1"}
+
+	both := write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "spans two subjects", Anchors: []state.Anchor{gadget, widget},
+	})
+	write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "about the widget only", Anchors: []state.Anchor{widget},
+	})
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "about nothing in particular"})
+
+	// The round trip, and canonical form: a caller may pass anchors in any order,
+	// and every backend stores and returns the same sorted, deduplicated list, so
+	// the same anchor set encodes identically wherever it lands.
+	wantAnchors(t, "Write of a two-anchor item", both, gadget, widget)
+	wantAnchors(t, "recall of the two-anchor item",
+		only(t, mem, state.RecallQuery{Query: "spans"}), gadget, widget)
+	wantAnchors(t, "Write of an item with a duplicated anchor",
+		write(t, mem, state.MemoryItem{
+			Kind:    "fact",
+			Content: "written with a repeat",
+			Anchors: []state.Anchor{widget, gadget, widget},
+		}), gadget, widget)
+	wantAnchors(t, "Write of an unanchored item",
+		write(t, mem, state.MemoryItem{Kind: "fact", Content: "unanchored"}))
+
+	// The ride-along read: a ref in hand, no lexical query, and back come the facts
+	// about that ref and nothing else. This is the shape pull-only search cannot
+	// serve, because it needs the reader to already suspect the fact exists.
+	wantSet(t, "recall by anchor with no query",
+		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget}}),
+		"about the widget only", "spans two subjects", "written with a repeat")
+
+	// Any-of, not all-of: an item anchored to one of the refs asked for matches, and
+	// an item anchored to several of them comes back once rather than per match.
+	wantSet(t, "recall by either of two anchors",
+		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget, gadget}}),
+		"about the widget only", "spans two subjects", "written with a repeat")
+
+	// Both halves are matched. Kind is what keeps two systems' ids from colliding,
+	// so it cannot be the half a backend optimizes away.
+	wantCount(t, "recall by a matching id under the wrong kind",
+		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widgetShapedGadget}}), 0)
+
+	// An anchor nothing is stored under is an empty result, not an error: the store
+	// has no way to tell a ref that never existed from one whose referent is gone,
+	// and must not try.
+	wantCount(t, "recall by an unknown anchor",
+		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{{Kind: "widget", ID: "gone"}}}), 0)
+
+	// Anchors compose with the other selectors rather than replacing them, and the
+	// combination narrows.
+	wantSet(t, "recall by anchor and content",
+		recall(t, mem, state.RecallQuery{Query: "widget", Anchors: []state.Anchor{widget}}),
+		"about the widget only")
+	wantCount(t, "recall by anchor and a non-matching kind",
+		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget}, Kinds: []string{"preference"}}), 0)
+
+	// Anchors are about, sources are from. An item carrying both keeps them
+	// separate; a backend that folded either into the other would pass every
+	// assertion above.
+	mixed := write(t, mem, state.MemoryItem{
+		Kind:    "fact",
+		Content: "learned from a tool while working on the widget",
+		Sources: []string{"tool:web-fetch"},
+		Anchors: []state.Anchor{widget},
+	})
+	wantSources(t, "Write of an item with both", mixed, "tool:web-fetch")
+	wantAnchors(t, "Write of an item with both", mixed, widget)
+
+	// A tombstone drops out of an anchored recall too, not only a lexical one. On a
+	// backend that indexes anchors separately this is a second index to keep honest.
+	mustDelete(t, mem, both.ID, "the anchored item was just written and is live")
+	wantSet(t, "recall by anchor after a delete",
+		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget}}),
+		"about the widget only", "written with a repeat",
+		"learned from a tool while working on the widget")
+
+	// Shape is the whole of what a write may check, and it is checked: half an
+	// anchor can never match anything, so storing it would be storing a ref that is
+	// dead on arrival.
+	for _, bad := range []state.Anchor{{Kind: "widget"}, {ID: "w-1"}, {}} {
+		_, err := mem.Write(ctx, state.MemoryItem{
+			Kind: "fact", Content: "malformed anchor", Anchors: []state.Anchor{bad},
+		})
+		if !errors.Is(err, state.ErrInvalid) {
+			t.Fatalf("Write with anchor %+v = %v, want ErrInvalid", bad, err)
+		}
+	}
+	wantCount(t, "recall after the rejected writes",
+		recall(t, mem, state.RecallQuery{Query: "malformed"}), 0)
+}
+
+// wantAnchors fails unless the item carries exactly these anchors, in canonical
+// order. No expected anchors means the item must carry none.
+func wantAnchors(t *testing.T, what string, it state.MemoryItem, want ...state.Anchor) {
+	t.Helper()
+	if len(want) == 0 && len(it.Anchors) == 0 {
+		return
+	}
+	if !slices.Equal(it.Anchors, want) {
+		t.Fatalf("%s: anchors = %+v, want %+v", what, it.Anchors, want)
+	}
 }
 
 // testExpiry pins MemoryItem.ExpiresAt across every recall shape a backend
