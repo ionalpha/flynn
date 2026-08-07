@@ -312,12 +312,11 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_status_decode", err)
 	}
 
-	// A ledger that lost or rewrote an item between reconciles is the definition of
-	// done being edited mid-run, so the goal fails rather than adopting the edit.
-	if err := status.ValidateLedger(spec.Ledger); err != nil {
-		return reconcile.Result{}, fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
+	// Admit the two records this reconcile is about to act on, and refuse either if it
+	// has been edited under the run.
+	if err := admit(spec, &status); err != nil {
+		return reconcile.Result{}, err
 	}
-	status.SyncLedger(spec.Ledger)
 
 	// Observe an in-flight step.
 	observed := false
@@ -479,6 +478,37 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// per build step rather than one per reconcile tick.
 	kind, reason := g.nextJobKind(spec, &status)
 	return g.dispatch(ctx, r, status, specHash, kind, PhaseRunning, reason)
+}
+
+// admit checks the desired-state records a reconcile reads (the ledger and the unit
+// graph) and brings the status's observation of each into line with it. Everything it
+// refuses is a terminal spec fault, because all of it means the same thing: the
+// definition the run is being judged against changed underneath the run.
+//
+// A ledger that lost or rewrote an item is the definition of done being edited
+// mid-run. A unit graph with a cycle, an edge to a unit that does not exist, or a unit
+// with no way to prove it is a spec that could never run, and it is refused whole
+// before anything is dispatched, because discovering it halfway through a fan-out
+// means children are already running against it. A unit altered or dropped after its
+// child was created is the meaning of work already in flight being rewritten; units
+// nothing has been spent on are not a commitment and may still be added, removed and
+// reordered.
+//
+// A goal that carries neither record passes straight through, so this changes nothing
+// for a goal that neither plans nor fans out.
+func admit(spec Spec, status *Status) error {
+	if err := status.ValidateLedger(spec.Ledger); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
+	}
+	status.SyncLedger(spec.Ledger)
+	if err := ValidateUnits(spec.Units); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_unit_graph_invalid", err)
+	}
+	if err := status.ValidateDispatched(spec.Units); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_unit_rewritten", err)
+	}
+	status.SyncUnits(spec.Units)
+	return nil
 }
 
 // stopGuard reports the reason a goal that has not converged must stop anyway, with the
