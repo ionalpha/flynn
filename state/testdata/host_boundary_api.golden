@@ -5,6 +5,9 @@
   "state.MemoryStore": [
     "Delete(context.Context, string) (error)",
     "Recall(context.Context, state.RecallQuery) ([]state.MemoryItem, error)",
+    "RecordPush(context.Context, []string) (error)",
+    "RecordUse(context.Context, string, state.UsageOrigin) (error)",
+    "Usage(context.Context, []string) ([]state.MemoryUsage, error)",
     "Write(context.Context, state.MemoryItem) (state.MemoryItem, error)"
   ],
   "state.Provider": [

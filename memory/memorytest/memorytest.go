@@ -26,6 +26,7 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("Anchors", func(t *testing.T) { testAnchors(t, newStore()) })
 	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
+	t.Run("Usage", func(t *testing.T) { testUsage(t, newStore()) })
 }
 
 func testWriteRecall(t *testing.T, mem state.MemoryStore) {
@@ -524,6 +525,145 @@ func testExpiry(t *testing.T, mem state.MemoryStore) {
 	// still a live record, so Delete finds it and tombstones it rather than
 	// reporting it already gone.
 	mustDelete(t, mem, dead.ID, "expiry is not deletion, so an expired item is still there to tombstone")
+}
+
+// testUsage pins the usage instrumentation: what counts as a push, what counts as
+// a use, and the organic/primed split that keeps the two apart. The split is the
+// point of the whole feature, so a backend that records a use without its origin,
+// or that lets a push masquerade as a read, fails here.
+func testUsage(t *testing.T, mem state.MemoryStore) {
+	ctx := context.Background()
+	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "the deploy target is Cloudflare"})
+	b := write(t, mem, state.MemoryItem{Kind: "preference", Content: "the user prefers Go"})
+
+	// Nothing has been read, so there is nothing to report. An untouched item has
+	// no row rather than a zeroed one, so it stays distinguishable from an item
+	// that was pushed and ignored.
+	if rows := wantUsage(t, "before any read", mem, nil); len(rows) != 0 {
+		t.Fatalf("usage before any read = %+v, want none", rows)
+	}
+
+	// A push counts once per item, however many times the caller names it.
+	mustRecordPush(t, mem, []string{a.ID, b.ID, a.ID})
+	rows := wantUsage(t, "after one push", mem, []string{a.ID, b.ID})
+	if len(rows) != 2 {
+		t.Fatalf("usage rows after push = %d, want 2", len(rows))
+	}
+	for _, u := range rows {
+		if u.PushCount != 1 || u.UseCount() != 0 || !u.Ignored() {
+			t.Fatalf("usage after push = %+v, want one push, no uses, ignored", u)
+		}
+		if u.LastPushedAt.IsZero() || !u.LastUsedAt.IsZero() {
+			t.Fatalf("usage timestamps after push = (pushed %v, used %v), want pushed only", u.LastPushedAt, u.LastUsedAt)
+		}
+		if u.InstanceID == "" {
+			t.Fatalf("usage row %+v has no instance: usage is counted per instance", u)
+		}
+	}
+
+	// The two origins are counted apart. A primed use is a real use, so it clears
+	// Ignored, but it lands in its own counter because it says more about the push
+	// than about the item.
+	mustRecordUse(t, mem, a.ID, state.UsagePrimed)
+	mustRecordUse(t, mem, b.ID, state.UsageOrganic)
+	mustRecordUse(t, mem, b.ID, state.UsageOrganic)
+	ua := wantOneUsage(t, "after a primed use", mem, a.ID)
+	if ua.PrimedUses != 1 || ua.OrganicUses != 0 || ua.UseCount() != 1 || ua.Ignored() {
+		t.Fatalf("usage after a primed use = %+v, want one primed use and not ignored", ua)
+	}
+	if ua.LastUsedAt.IsZero() {
+		t.Fatalf("usage after a use has no LastUsedAt: %+v", ua)
+	}
+	ub := wantOneUsage(t, "after two organic uses", mem, b.ID)
+	if ub.OrganicUses != 2 || ub.PrimedUses != 0 || ub.PushCount != 1 {
+		t.Fatalf("usage after two organic uses = %+v, want two organic uses and one push", ub)
+	}
+
+	// An origin the contract does not recognise is refused rather than guessed at,
+	// and records nothing.
+	if err := mem.RecordUse(ctx, a.ID, state.UsageOrigin("")); !errors.Is(err, state.ErrInvalid) {
+		t.Fatalf("RecordUse with no origin = %v, want ErrInvalid", err)
+	}
+	if err := mem.RecordUse(ctx, a.ID, state.UsageOrigin("guessed")); !errors.Is(err, state.ErrInvalid) {
+		t.Fatalf("RecordUse with an unknown origin = %v, want ErrInvalid", err)
+	}
+
+	// A set carrying an id with no item behind it records nothing at all, so a
+	// stale digest entry surfaces instead of quietly accruing counts.
+	if err := mem.RecordPush(ctx, []string{a.ID, "missing"}); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("RecordPush over an unknown id = %v, want ErrNotFound", err)
+	}
+	if err := mem.RecordUse(ctx, "missing", state.UsageOrganic); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("RecordUse of an unknown id = %v, want ErrNotFound", err)
+	}
+	if again := wantOneUsage(t, "after the rejected push", mem, a.ID); again.PushCount != 1 {
+		t.Fatalf("push count after a rejected set = %d, want it unchanged at 1", again.PushCount)
+	}
+
+	// An empty push is a no-op, not an error: a digest that selected nothing has
+	// nothing to report.
+	if err := mem.RecordPush(ctx, nil); err != nil {
+		t.Fatalf("RecordPush(nil) = %v, want no error", err)
+	}
+
+	// Usage outlives the item. A tombstoned item can no longer be pushed, but what
+	// was already recorded stays readable, so a curator can still see what was put
+	// in front of readers before it was retired.
+	mustDelete(t, mem, b.ID, "the item was just written and is live")
+	if err := mem.RecordPush(ctx, []string{b.ID}); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("RecordPush of a tombstoned item = %v, want ErrNotFound", err)
+	}
+	if kept := wantOneUsage(t, "after the item was deleted", mem, b.ID); kept.OrganicUses != 2 {
+		t.Fatalf("usage after delete = %+v, want the two organic uses kept", kept)
+	}
+
+	// An empty id list is the fleet-wide read, ordered by item then instance.
+	all := wantUsage(t, "the unfiltered read", mem, nil)
+	if len(all) != 2 {
+		t.Fatalf("unfiltered usage = %d rows, want 2", len(all))
+	}
+	if all[0].MemoryID > all[1].MemoryID {
+		t.Fatalf("unfiltered usage is not ordered by item: %+v", all)
+	}
+}
+
+// wantUsage reads usage for the given ids (nil for every row) and fails on error.
+// It does not assert the contents; the caller does.
+func wantUsage(t *testing.T, what string, mem state.MemoryStore, ids []string) []state.MemoryUsage {
+	t.Helper()
+	rows, err := mem.Usage(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("%s: Usage: %v", what, err)
+	}
+	return rows
+}
+
+// wantOneUsage reads the single usage row for one item, failing unless exactly one
+// instance has recorded against it.
+func wantOneUsage(t *testing.T, what string, mem state.MemoryStore, id string) state.MemoryUsage {
+	t.Helper()
+	rows := wantUsage(t, what, mem, []string{id})
+	if len(rows) != 1 {
+		t.Fatalf("%s: usage rows for %s = %d, want 1", what, id, len(rows))
+	}
+	if rows[0].MemoryID != id {
+		t.Fatalf("%s: usage row is for %s, want %s", what, rows[0].MemoryID, id)
+	}
+	return rows[0]
+}
+
+func mustRecordPush(t *testing.T, mem state.MemoryStore, ids []string) {
+	t.Helper()
+	if err := mem.RecordPush(context.Background(), ids); err != nil {
+		t.Fatalf("RecordPush(%v): %v", ids, err)
+	}
+}
+
+func mustRecordUse(t *testing.T, mem state.MemoryStore, id string, origin state.UsageOrigin) {
+	t.Helper()
+	if err := mem.RecordUse(context.Background(), id, origin); err != nil {
+		t.Fatalf("RecordUse(%s, %s): %v", id, origin, err)
+	}
 }
 
 func contents(items []state.MemoryItem) []string {

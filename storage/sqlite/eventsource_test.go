@@ -47,7 +47,20 @@ func exercise(ctx context.Context, t *testing.T, p state.Provider) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := mem.Write(ctx, state.MemoryItem{Kind: "fact", Content: "deploys go to the edge"}); err != nil {
+	m2, err := mem.Write(ctx, state.MemoryItem{Kind: "fact", Content: "deploys go to the edge"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Usage instrumentation is state like any other: it goes on the stream, and it
+	// is recorded before the delete below so the stream also covers usage outliving
+	// the item it is about.
+	if err := mem.RecordPush(ctx, []string{m1.ID, m2.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.RecordUse(ctx, m2.ID, state.UsagePrimed); err != nil {
+		t.Fatal(err)
+	}
+	if err := mem.RecordUse(ctx, m1.ID, state.UsageOrganic); err != nil {
 		t.Fatal(err)
 	}
 	if err := mem.Delete(ctx, m1.ID); err != nil {
@@ -61,7 +74,7 @@ func exercise(ctx context.Context, t *testing.T, p state.Provider) {
 }
 
 // snapshot serialises the observable state of a provider (live sessions and their
-// turns, all live skills, all live memory) to a stable JSON string, so two
+// turns, all live skills, all live memory, every usage row) to a stable JSON string, so two
 // providers can be compared for byte-for-byte equivalence.
 func snapshot(ctx context.Context, t *testing.T, p state.Provider) string {
 	t.Helper()
@@ -73,6 +86,7 @@ func snapshot(ctx context.Context, t *testing.T, p state.Provider) string {
 		Sessions []sessionView
 		Skills   []state.Skill
 		Memory   []state.MemoryItem
+		Usage    []state.MemoryUsage
 	}
 
 	list, err := p.Sessions().List(ctx)
@@ -91,6 +105,11 @@ func snapshot(ctx context.Context, t *testing.T, p state.Provider) string {
 		t.Fatal(err)
 	}
 	if view.Memory, err = p.Memory().Recall(ctx, state.RecallQuery{}); err != nil {
+		t.Fatal(err)
+	}
+	// Usage is read unfiltered, tombstoned items included, so the comparison covers
+	// rows whose item is no longer recallable.
+	if view.Usage, err = p.Memory().Usage(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -123,14 +142,17 @@ func TestDurableWritesAreEventSourced(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 2 session creates + 2 turns + 3 skill upserts + 1 skill delete +
-	// 2 memory writes + 1 memory delete + 1 session delete = 12 events.
-	if len(events) != 12 {
-		t.Fatalf("state stream has %d events, want 12 (a write bypassed the log?)", len(events))
+	// 2 memory writes + 1 memory push + 2 memory uses + 1 memory delete +
+	// 1 session delete = 15 events. One push of two items is one event: the set
+	// went in front of the reader together.
+	if len(events) != 15 {
+		t.Fatalf("state stream has %d events, want 15 (a write bypassed the log?)", len(events))
 	}
 	want := map[string]bool{
 		state.EvSessionCreated: false, state.EvTurnAppended: false, state.EvSessionDeleted: false,
 		state.EvSkillUpserted: false, state.EvSkillDeleted: false,
 		state.EvMemoryWritten: false, state.EvMemoryDeleted: false,
+		state.EvMemoryPushed: false, state.EvMemoryUsed: false,
 	}
 	for _, e := range events {
 		if _, ok := want[e.Type]; !ok {

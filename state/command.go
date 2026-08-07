@@ -29,6 +29,8 @@ const (
 	EvSkillDeleted   = "skill.deleted"
 	EvMemoryWritten  = "memory.written"
 	EvMemoryDeleted  = "memory.deleted"
+	EvMemoryPushed   = "memory.pushed"
+	EvMemoryUsed     = "memory.used"
 )
 
 // Payload keys under which a state event carries its post-image record(s).
@@ -37,6 +39,7 @@ const (
 	keyTurn    = "turn"
 	keySkill   = "skill"
 	keyItem    = "item"
+	keyUsage   = "usage"
 )
 
 // core is the in-memory read model behind the command path. Every mutation
@@ -59,6 +62,7 @@ type core struct {
 	skillsByID map[string]Skill
 	slugToID   map[string]string // scopeKey+"\x00"+slug -> skill id
 	memItems   []MemoryItem
+	memUsage   map[string]MemoryUsage // usageKey(memoryID, instanceID) -> usage row
 
 	// snapCodec seals a snapshot before it is saved and verifies it before restore;
 	// snapEvery/snapPending drive the automatic snapshot cadence. They are set from the
@@ -76,8 +80,12 @@ func newCore(st *Stamper, log spine.Log) *core {
 		turns:      map[string][]Turn{},
 		skillsByID: map[string]Skill{},
 		slugToID:   map[string]string{},
+		memUsage:   map[string]MemoryUsage{},
 	}
 }
+
+// usageKey is the projection key for a usage row: one row per item per instance.
+func usageKey(memoryID, instanceID string) string { return memoryID + "\x00" + instanceID }
 
 // record appends a stamped event and projects it. The caller holds mu and has
 // already produced the event via the Stamper. Append-then-project is the in-memory
@@ -153,6 +161,11 @@ type payloadRecords struct {
 	Turn    *Turn       `json:"turn"`
 	Skill   *Skill      `json:"skill"`
 	Item    *MemoryItem `json:"item"`
+	// Usage is a list because one push event records the whole digest: the set
+	// went in front of the reader together, so it is counted together or not at
+	// all. A single use carries a one-element list through the same path rather
+	// than a second payload shape.
+	Usage []MemoryUsage `json:"usage"`
 }
 
 // projectRecords projects one event's post-image record(s) onto the read model.
@@ -204,6 +217,13 @@ func (c *core) projectRecords(evType string, w payloadRecords) error {
 				break
 			}
 		}
+	case EvMemoryPushed, EvMemoryUsed:
+		if len(w.Usage) == 0 {
+			return missing(keyUsage)
+		}
+		for _, u := range w.Usage {
+			c.memUsage[usageKey(u.MemoryID, u.InstanceID)] = u
+		}
 	default:
 		return fmt.Errorf("state: unknown event type %q", evType)
 	}
@@ -242,6 +262,13 @@ func (c *core) apply(e spine.Event) error {
 			return err
 		}
 		w.Item = &item
+	}
+	if u, ok := e.Payload[keyUsage]; ok {
+		usage, err := decodeAs[[]MemoryUsage](u)
+		if err != nil {
+			return err
+		}
+		w.Usage = usage
 	}
 	return c.projectRecords(e.Type, w)
 }
@@ -324,6 +351,20 @@ func DecodeSkill(payload map[string]any) (Skill, error) {
 func DecodeMemoryItem(payload map[string]any) (MemoryItem, error) {
 	var it MemoryItem
 	return it, decodeRecord(payload, keyItem, &it)
+}
+
+// DecodeMemoryUsage extracts the usage post-images from a state event payload.
+// It is a list because a push event records a whole digest at once; a use event
+// carries exactly one.
+func DecodeMemoryUsage(payload map[string]any) ([]MemoryUsage, error) {
+	var u []MemoryUsage
+	if err := decodeRecord(payload, keyUsage, &u); err != nil {
+		return nil, err
+	}
+	if len(u) == 0 {
+		return nil, fmt.Errorf("state: event payload is missing %q", keyUsage)
+	}
+	return u, nil
 }
 
 // encodePayload serialises an event's post-image record(s) to the raw JSON

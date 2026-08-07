@@ -567,6 +567,36 @@ type MemoryStore interface {
 	// Delete tombstones a memory item by ID (soft delete), or returns
 	// ErrNotFound.
 	Delete(ctx context.Context, id string) error
+
+	// RecordPush counts one push of each of these items at a reader: the store
+	// put them in front of somebody who did not ask for them. It is recorded
+	// against the writing instance (see MemoryUsage). Every id is checked before
+	// anything is recorded, so a set carrying one bad id records nothing.
+	//
+	// It is the caller that knows a push happened; no read path infers one.
+	// Recall does not count as a push and never records anything, because a
+	// store that instrumented its own reads would count the instrumentation.
+	//
+	// An unknown or tombstoned ID is ErrNotFound and nothing is recorded, so a
+	// stale id in a digest surfaces instead of quietly accruing counts against
+	// an item nobody can read. An empty list is a no-op.
+	RecordPush(ctx context.Context, memoryIDs []string) error
+	// RecordUse counts one use of an item, attributed by origin: the caller
+	// declares whether the reader went and found it (UsageOrganic) or whether it
+	// had already been pushed at them (UsagePrimed). An origin that is not one of
+	// those two is ErrInvalid; there is no default, because the split is the
+	// measurement (see UsageOrigin). An unknown or tombstoned ID is ErrNotFound.
+	RecordUse(ctx context.Context, memoryID string, origin UsageOrigin) error
+	// Usage returns the per-instance usage rows for these items, ordered by item
+	// then instance (SortUsage). An empty list returns every row the store holds,
+	// which is the read the fleet-wide metrics take.
+	//
+	// Items with no usage yet have no rows, rather than a zero row: never pushed
+	// and never used is the absence of an observation, and materializing it would
+	// make an untouched corpus indistinguishable from an ignored one. Rows survive
+	// their item's tombstone, so a curator can still see what was pushed at
+	// readers before it was retired.
+	Usage(ctx context.Context, memoryIDs []string) ([]MemoryUsage, error)
 }
 
 // SortRecall orders q's results into the order MemoryStore.Recall promises, in

@@ -176,6 +176,40 @@ func TestStoreDelegates(t *testing.T) {
 	}
 }
 
+// TestStoreDelegatesUsage pins the instrumentation passing through the gate. The
+// guard screens content at ingest and has no opinion about reads, so an item it
+// admitted must be as countable through the decorator as without it; a decorator
+// that swallowed usage would leave the selection policy blind on exactly the
+// corpus the guard let through.
+func TestStoreDelegatesUsage(t *testing.T) {
+	inner := state.NewMemory().Memory()
+	g := guard.Wrap(inner)
+	ctx := context.Background()
+
+	written, err := g.Write(ctx, state.MemoryItem{Kind: "fact", Content: "count this", Sources: []string{"user:me"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.RecordPush(ctx, []string{written.ID}); err != nil {
+		t.Fatalf("RecordPush through decorator: %v", err)
+	}
+	if err := g.RecordUse(ctx, written.ID, state.UsagePrimed); err != nil {
+		t.Fatalf("RecordUse through decorator: %v", err)
+	}
+	rows, err := g.Usage(ctx, []string{written.ID})
+	if err != nil {
+		t.Fatalf("Usage through decorator: %v", err)
+	}
+	if len(rows) != 1 || rows[0].PushCount != 1 || rows[0].PrimedUses != 1 {
+		t.Fatalf("usage through decorator = %+v, want one push and one primed use", rows)
+	}
+	// The decorator counts against the same store, not a shadow copy of its own.
+	direct, err := inner.Usage(ctx, []string{written.ID})
+	if err != nil || len(direct) != 1 || direct[0] != rows[0] {
+		t.Fatalf("inner usage = (%+v, %v), want the decorator's row %+v", direct, err, rows[0])
+	}
+}
+
 // TestRefusalErrorIsUnwrappable documents that callers can match the refusal by
 // fault class through errors.As, not only by string.
 func TestRefusalErrorIsUnwrappable(t *testing.T) {

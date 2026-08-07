@@ -431,6 +431,83 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 	return out, nil
 }
 
+func (m *memMemory) RecordPush(ctx context.Context, memoryIDs []string) error {
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev, err := c.usagePrevLocked(memoryIDs)
+	if err != nil {
+		return err
+	}
+	_, ev, err := c.st.RecordMemoryPush(prev, memoryIDs)
+	if err != nil {
+		return err
+	}
+	return c.record(ctx, ev)
+}
+
+func (m *memMemory) RecordUse(ctx context.Context, memoryID string, origin UsageOrigin) error {
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	prev, err := c.usagePrevLocked([]string{memoryID})
+	if err != nil {
+		return err
+	}
+	_, ev, err := c.st.RecordMemoryUse(prev, memoryID, origin)
+	if err != nil {
+		return err
+	}
+	return c.record(ctx, ev)
+}
+
+func (m *memMemory) Usage(_ context.Context, memoryIDs []string) ([]MemoryUsage, error) {
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var want map[string]bool
+	if len(memoryIDs) > 0 {
+		want = make(map[string]bool, len(memoryIDs))
+		for _, id := range memoryIDs {
+			want[id] = true
+		}
+	}
+	out := make([]MemoryUsage, 0, len(c.memUsage))
+	for _, u := range c.memUsage {
+		if want != nil && !want[u.MemoryID] {
+			continue
+		}
+		out = append(out, u)
+	}
+	SortUsage(out)
+	return out, nil
+}
+
+// usagePrevLocked collects this instance's stored usage rows for the given items,
+// rejecting an id with no live item behind it. Both checks happen before anything
+// is stamped, so a set with one bad id records nothing at all. Callers hold mu.
+func (c *core) usagePrevLocked(memoryIDs []string) (map[string]MemoryUsage, error) {
+	live := make(map[string]bool, len(c.memItems))
+	for i := range c.memItems {
+		if !c.memItems[i].Deleted {
+			live[c.memItems[i].ID] = true
+		}
+	}
+	prev := make(map[string]MemoryUsage, len(memoryIDs))
+	for _, id := range memoryIDs {
+		if !live[id] {
+			return nil, ErrNotFound
+		}
+		if u, ok := c.memUsage[usageKey(id, c.st.InstanceID())]; ok {
+			prev[id] = u
+		}
+	}
+	return prev, nil
+}
+
 func (m *memMemory) Delete(ctx context.Context, id string) error {
 	c := m.c
 	c.mu.Lock()
