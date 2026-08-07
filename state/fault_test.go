@@ -78,6 +78,8 @@ func TestProjectRecordsRejectsIncompleteEvent(t *testing.T) {
 		{name: "deleted skill missing", evType: EvSkillDeleted, wantMsg: `missing "skill"`},
 		{name: "written item missing", evType: EvMemoryWritten, wantMsg: `missing "item"`},
 		{name: "deleted item missing", evType: EvMemoryDeleted, wantMsg: `missing "item"`},
+		{name: "pushed usage missing", evType: EvMemoryPushed, wantMsg: `missing "usage"`},
+		{name: "used usage missing", evType: EvMemoryUsed, wantMsg: `missing "usage"`},
 		{name: "unknown type", evType: "state.invented", wantMsg: `unknown event type`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -111,6 +113,7 @@ func TestApplyRejectsUndecodableRecord(t *testing.T) {
 		{name: "skill", evType: EvSkillUpserted, payload: map[string]any{keySkill: "not a record"}},
 		{name: "item", evType: EvMemoryWritten, payload: map[string]any{keyItem: "not a record"}},
 		{name: "unmarshalable value", evType: EvMemoryWritten, payload: map[string]any{keyItem: math.NaN()}},
+		{name: "usage", evType: EvMemoryPushed, payload: map[string]any{keyUsage: "not a record list"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := newCore(nil, nil)
@@ -142,6 +145,14 @@ func TestDecodeRecordRejectsUnserializableValue(t *testing.T) {
 	}
 	if _, err := DecodeMemoryItem(map[string]any{keyItem: bad}); err == nil {
 		t.Fatal("DecodeMemoryItem accepted an unserializable value")
+	}
+	if _, err := DecodeMemoryUsage(map[string]any{keyUsage: bad}); err == nil {
+		t.Fatal("DecodeMemoryUsage accepted an unserializable value")
+	}
+	// An empty list is refused too. A push event that names no item is not a push,
+	// and projecting it as a no-op would let a malformed stream fold clean.
+	if _, err := DecodeMemoryUsage(map[string]any{keyUsage: []MemoryUsage{}}); err == nil {
+		t.Fatal("DecodeMemoryUsage accepted an empty post-image list")
 	}
 }
 

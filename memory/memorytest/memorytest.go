@@ -539,26 +539,15 @@ func testUsage(t *testing.T, mem state.MemoryStore) {
 	// Nothing has been read, so there is nothing to report. An untouched item has
 	// no row rather than a zeroed one, so it stays distinguishable from an item
 	// that was pushed and ignored.
-	if rows := wantUsage(t, "before any read", mem, nil); len(rows) != 0 {
-		t.Fatalf("usage before any read = %+v, want none", rows)
-	}
+	wantUsageCount(t, "before any read", wantUsage(t, "before any read", mem, nil), 0)
 
 	// A push counts once per item, however many times the caller names it.
 	mustRecordPush(t, mem, []string{a.ID, b.ID, a.ID})
 	rows := wantUsage(t, "after one push", mem, []string{a.ID, b.ID})
-	if len(rows) != 2 {
-		t.Fatalf("usage rows after push = %d, want 2", len(rows))
-	}
+	wantUsageCount(t, "after one push", rows, 2)
 	for _, u := range rows {
-		if u.PushCount != 1 || u.UseCount() != 0 || !u.Ignored() {
-			t.Fatalf("usage after push = %+v, want one push, no uses, ignored", u)
-		}
-		if u.LastPushedAt.IsZero() || !u.LastUsedAt.IsZero() {
-			t.Fatalf("usage timestamps after push = (pushed %v, used %v), want pushed only", u.LastPushedAt, u.LastUsedAt)
-		}
-		if u.InstanceID == "" {
-			t.Fatalf("usage row %+v has no instance: usage is counted per instance", u)
-		}
+		wantCounts(t, "after one push", u, 1, 0, 0)
+		wantStamps(t, "after one push", u, true, false)
 	}
 
 	// The two origins are counted apart. A primed use is a real use, so it clears
@@ -568,60 +557,40 @@ func testUsage(t *testing.T, mem state.MemoryStore) {
 	mustRecordUse(t, mem, b.ID, state.UsageOrganic)
 	mustRecordUse(t, mem, b.ID, state.UsageOrganic)
 	ua := wantOneUsage(t, "after a primed use", mem, a.ID)
-	if ua.PrimedUses != 1 || ua.OrganicUses != 0 || ua.UseCount() != 1 || ua.Ignored() {
-		t.Fatalf("usage after a primed use = %+v, want one primed use and not ignored", ua)
-	}
-	if ua.LastUsedAt.IsZero() {
-		t.Fatalf("usage after a use has no LastUsedAt: %+v", ua)
-	}
-	ub := wantOneUsage(t, "after two organic uses", mem, b.ID)
-	if ub.OrganicUses != 2 || ub.PrimedUses != 0 || ub.PushCount != 1 {
-		t.Fatalf("usage after two organic uses = %+v, want two organic uses and one push", ub)
-	}
+	wantCounts(t, "after a primed use", ua, 1, 0, 1)
+	wantStamps(t, "after a primed use", ua, true, true)
+	wantCounts(t, "after two organic uses", wantOneUsage(t, "after two organic uses", mem, b.ID), 1, 2, 0)
 
 	// An origin the contract does not recognise is refused rather than guessed at,
 	// and records nothing.
-	if err := mem.RecordUse(ctx, a.ID, state.UsageOrigin("")); !errors.Is(err, state.ErrInvalid) {
-		t.Fatalf("RecordUse with no origin = %v, want ErrInvalid", err)
-	}
-	if err := mem.RecordUse(ctx, a.ID, state.UsageOrigin("guessed")); !errors.Is(err, state.ErrInvalid) {
-		t.Fatalf("RecordUse with an unknown origin = %v, want ErrInvalid", err)
-	}
+	wantErrIs(t, "RecordUse with no origin",
+		mem.RecordUse(ctx, a.ID, state.UsageOrigin("")), state.ErrInvalid)
+	wantErrIs(t, "RecordUse with an unknown origin",
+		mem.RecordUse(ctx, a.ID, state.UsageOrigin("guessed")), state.ErrInvalid)
 
 	// A set carrying an id with no item behind it records nothing at all, so a
 	// stale digest entry surfaces instead of quietly accruing counts.
-	if err := mem.RecordPush(ctx, []string{a.ID, "missing"}); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("RecordPush over an unknown id = %v, want ErrNotFound", err)
-	}
-	if err := mem.RecordUse(ctx, "missing", state.UsageOrganic); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("RecordUse of an unknown id = %v, want ErrNotFound", err)
-	}
-	if again := wantOneUsage(t, "after the rejected push", mem, a.ID); again.PushCount != 1 {
-		t.Fatalf("push count after a rejected set = %d, want it unchanged at 1", again.PushCount)
-	}
+	wantErrIs(t, "RecordPush over an unknown id",
+		mem.RecordPush(ctx, []string{a.ID, "missing"}), state.ErrNotFound)
+	wantErrIs(t, "RecordUse of an unknown id",
+		mem.RecordUse(ctx, "missing", state.UsageOrganic), state.ErrNotFound)
+	wantCounts(t, "after the rejected push", wantOneUsage(t, "after the rejected push", mem, a.ID), 1, 0, 1)
 
 	// An empty push is a no-op, not an error: a digest that selected nothing has
 	// nothing to report.
-	if err := mem.RecordPush(ctx, nil); err != nil {
-		t.Fatalf("RecordPush(nil) = %v, want no error", err)
-	}
+	wantErrIs(t, "RecordPush(nil)", mem.RecordPush(ctx, nil), nil)
 
 	// Usage outlives the item. A tombstoned item can no longer be pushed, but what
 	// was already recorded stays readable, so a curator can still see what was put
 	// in front of readers before it was retired.
 	mustDelete(t, mem, b.ID, "the item was just written and is live")
-	if err := mem.RecordPush(ctx, []string{b.ID}); !errors.Is(err, state.ErrNotFound) {
-		t.Fatalf("RecordPush of a tombstoned item = %v, want ErrNotFound", err)
-	}
-	if kept := wantOneUsage(t, "after the item was deleted", mem, b.ID); kept.OrganicUses != 2 {
-		t.Fatalf("usage after delete = %+v, want the two organic uses kept", kept)
-	}
+	wantErrIs(t, "RecordPush of a tombstoned item",
+		mem.RecordPush(ctx, []string{b.ID}), state.ErrNotFound)
+	wantCounts(t, "after the item was deleted", wantOneUsage(t, "after the item was deleted", mem, b.ID), 1, 2, 0)
 
 	// An empty id list is the fleet-wide read, ordered by item then instance.
 	all := wantUsage(t, "the unfiltered read", mem, nil)
-	if len(all) != 2 {
-		t.Fatalf("unfiltered usage = %d rows, want 2", len(all))
-	}
+	wantUsageCount(t, "the unfiltered read", all, 2)
 	if all[0].MemoryID > all[1].MemoryID {
 		t.Fatalf("unfiltered usage is not ordered by item: %+v", all)
 	}
@@ -638,18 +607,52 @@ func wantUsage(t *testing.T, what string, mem state.MemoryStore, ids []string) [
 	return rows
 }
 
+func wantUsageCount(t *testing.T, what string, rows []state.MemoryUsage, want int) {
+	t.Helper()
+	if len(rows) != want {
+		t.Fatalf("%s: %d usage rows, want %d: %+v", what, len(rows), want, rows)
+	}
+}
+
 // wantOneUsage reads the single usage row for one item, failing unless exactly one
 // instance has recorded against it.
 func wantOneUsage(t *testing.T, what string, mem state.MemoryStore, id string) state.MemoryUsage {
 	t.Helper()
 	rows := wantUsage(t, what, mem, []string{id})
-	if len(rows) != 1 {
-		t.Fatalf("%s: usage rows for %s = %d, want 1", what, id, len(rows))
-	}
-	if rows[0].MemoryID != id {
-		t.Fatalf("%s: usage row is for %s, want %s", what, rows[0].MemoryID, id)
+	wantUsageCount(t, what+", for one item", rows, 1)
+	if rows[0].MemoryID != id || rows[0].InstanceID == "" {
+		t.Fatalf("%s: usage row = %+v, want it for item %s and attributed to an instance", what, rows[0], id)
 	}
 	return rows[0]
+}
+
+// wantCounts fails unless the row carries exactly these counts, and unless the
+// derived UseCount and Ignored agree with them.
+func wantCounts(t *testing.T, what string, u state.MemoryUsage, pushes, organic, primed int64) {
+	t.Helper()
+	uses := organic + primed
+	if u.PushCount != pushes || u.OrganicUses != organic || u.PrimedUses != primed ||
+		u.UseCount() != uses || u.Ignored() != (pushes > 0 && uses == 0) {
+		t.Fatalf("%s: usage = %+v, want (pushes %d, organic %d, primed %d)", what, u, pushes, organic, primed)
+	}
+}
+
+// wantStamps fails unless the row's two timestamps are set exactly where they
+// should be. They are checked apart from the counters because keeping a push from
+// looking like a read is the whole reason there are two of them.
+func wantStamps(t *testing.T, what string, u state.MemoryUsage, pushed, used bool) {
+	t.Helper()
+	if u.LastPushedAt.IsZero() == pushed || u.LastUsedAt.IsZero() == used {
+		t.Fatalf("%s: usage stamps = (pushed %v, used %v), want them set (%v, %v)",
+			what, u.LastPushedAt, u.LastUsedAt, pushed, used)
+	}
+}
+
+func wantErrIs(t *testing.T, what string, got, want error) {
+	t.Helper()
+	if !errors.Is(got, want) {
+		t.Fatalf("%s = %v, want %v", what, got, want)
+	}
 }
 
 func mustRecordPush(t *testing.T, mem state.MemoryStore, ids []string) {
