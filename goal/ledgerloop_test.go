@@ -766,7 +766,7 @@ func TestAProofSurvivesTheDispatchWrite(t *testing.T) {
 // could have, which is a bug in the loop rather than an item nobody did the work for. It is
 // reported as such instead of being papered over as "not done".
 func TestUnprovenReasonReportsAnAdmissibleItemAsTheAnomalyItIs(t *testing.T) {
-	if got := unprovenReason(nil); got != "admissible but not settled" {
+	if got := unprovenReason(nil, "x", nil); got != "admissible but not settled" {
 		t.Fatalf("reason for a nil refusal = %q", got)
 	}
 }
@@ -867,5 +867,38 @@ func TestASettledLedgerBuildsRatherThanVerifyingNothing(t *testing.T) {
 	h.completeJob(t, StepJobKind) // asserts it was not a verification
 	if st := h.status(t, ref); st.VerifyPending {
 		t.Fatal("the pending check outlived the ledger it had nothing left to check")
+	}
+}
+
+// TestAnUnrunnableCheckIsNotReportedAsUnchecked: both reach the gate as ErrNoEvidence,
+// because an unrunnable check records a verdict that did not pass exactly as a failing one
+// does. They need opposite responses, though: one is work still to do, the other is a check
+// the host or the clause cannot execute, and no amount of further building fixes it.
+func TestAnUnrunnableCheckIsNotReportedAsUnchecked(t *testing.T) {
+	ledger, err := AppendItems(nil,
+		LedgerItem{Item: "nobody checked this", Verify: "true"},
+		LedgerItem{Item: "its check ran and failed", Verify: "false"},
+		LedgerItem{Item: "its check could not run here", Verify: "a command this host cannot run"},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st Status
+	st.SyncLedger(ledger)
+	recorded := []Verification{
+		{Ref: "1", Item: ledger[1].ID, Passed: false, Provenance: ProvenanceExecuted},
+		{Ref: "2", Item: ledger[2].ID, Passed: false, Provenance: ProvenanceAsserted},
+	}
+
+	reasons := st.UnprovenReasons(newGate(t, RequireExecuted()), recorded)
+	want := []string{
+		"no recorded passing verification",
+		"its check ran and did not pass",
+		"its check could not be run",
+	}
+	for i, w := range want {
+		if !strings.Contains(reasons[i], w) {
+			t.Fatalf("reason %d = %q, want it to say %q", i, reasons[i], w)
+		}
 	}
 }

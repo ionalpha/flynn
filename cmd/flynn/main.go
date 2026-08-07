@@ -152,7 +152,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		verboseLong = fs.Bool("verbose", false, "alias for -v")
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
-		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: each ledger item's declared check is run, and the goal will not report success over an item the record cannot show a passing check for")
+		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: the goal will not report success over a ledger item the record cannot show a passing check for. Needs a host that can contain semi-trusted work, since the check is a model-authored command; where it cannot be run the item stays unproven and the run stops saying so.")
 		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")

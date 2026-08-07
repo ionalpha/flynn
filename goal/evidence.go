@@ -255,10 +255,13 @@ func (s *Status) ProveRecorded(g *EvidenceGate, recorded []Verification, now tim
 }
 
 // UnprovenReasons names every still-unproven ledger item and why the gate would refuse
-// it, in ledger order. It is what a convergence refusal says instead of "not done": a
-// reader needs to know whether an item has no recorded check at all, has one that was
-// already spent on another item, or has one that was asserted rather than run, because
-// those are three different problems with three different fixes.
+// it, in ledger order. It is what a convergence refusal says instead of "not done".
+//
+// The distinctions it draws are the ones a reader has to act on, and they are different
+// problems with different fixes: nobody checked the item, its check ran and failed, its
+// check could not be run at all, its only passing check was an assertion, or its check was
+// already spent on another item. Collapsing them into "not done" would leave a run whose
+// host could not execute its checks looking exactly like a run that did no work.
 func (s Status) UnprovenReasons(g *EvidenceGate, recorded []Verification) []string {
 	unproven := s.Unproven()
 	if len(unproven) == 0 {
@@ -268,16 +271,24 @@ func (s Status) UnprovenReasons(g *EvidenceGate, recorded []Verification) []stri
 	out := make([]string, 0, len(unproven))
 	for _, id := range unproven {
 		_, err := g.admit(id, recorded, consumed)
-		out = append(out, id+" ("+unprovenReason(err)+")")
+		out = append(out, id+" ("+unprovenReason(err, id, recorded)+")")
 	}
 	return out
 }
 
 // unprovenReason renders one gate refusal as the short phrase UnprovenReasons splices in.
-// A nil error means the gate would have admitted the item, which reaching this function
-// at all says did not happen on the settling pass, so it is reported as the anomaly it is
+//
+// The gate's own error is not always the whole story. Both "nobody checked this" and
+// "the check could not be run" reach it as ErrNoEvidence, because an unrunnable check
+// records a verdict that did not pass exactly as a failing one does, so this reads the
+// item's recorded verifications to tell them apart. Those two need opposite responses:
+// one is work still to do, the other is a check the host or the clause cannot execute, and
+// no amount of further building fixes it.
+//
+// A nil error means the gate would have admitted the item, which reaching this function at
+// all says did not happen on the settling pass, so it is reported as the anomaly it is
 // rather than papered over as "not done".
-func unprovenReason(err error) string {
+func unprovenReason(err error, item string, recorded []Verification) string {
 	switch {
 	case err == nil:
 		return "admissible but not settled"
@@ -285,6 +296,22 @@ func unprovenReason(err error) string {
 		return "its verification was already consumed by another item"
 	case errors.Is(err, ErrEvidenceAsserted):
 		return "its verification was asserted, not executed"
+	}
+	ran, attempted := false, false
+	for _, v := range recorded {
+		if v.Item != item {
+			continue
+		}
+		attempted = true
+		if v.Provenance == ProvenanceExecuted {
+			ran = true
+		}
+	}
+	switch {
+	case ran:
+		return "its check ran and did not pass"
+	case attempted:
+		return "its check could not be run"
 	default:
 		return "no recorded passing verification"
 	}
