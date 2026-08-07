@@ -568,17 +568,14 @@ func TestGoalRefusesAnUnrunnableUnitGraph(t *testing.T) {
 
 // A unit whose child is already running may not be rewritten under it.
 func TestGoalRefusesARewrittenUnitMidRun(t *testing.T) {
-	h := newHarness(t, stopAfter{at: 99})
+	h := newUnitHarness(t, stopAfter{at: 99})
 	units := []Unit{unit("a")}
 	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Units: units})
-	h.reconcile(t, ref) // finalizer
-	h.reconcile(t, ref) // admits the graph and dispatches
+	h.reconcile(t, ref) // finalizer, and the pass that creates a's child
 
-	st := h.status(t, ref)
-	if err := st.MarkUnitDispatched(units[0], "child-a"); err != nil {
-		t.Fatalf("dispatch: %v", err)
+	if st := h.status(t, ref); st.Units[0].Phase != UnitDispatched {
+		t.Fatalf("the unit under test is not in flight: %+v", st.Units[0])
 	}
-	h.putStatus(t, ref, st)
 	h.putSpec(t, ref, Spec{
 		Objective: "o", StopCondition: "c",
 		Units: []Unit{{ID: "a", Objective: "something else", Verify: "check a"}},
@@ -617,7 +614,7 @@ func TestGoalWithoutAUnitGraphIsUnchanged(t *testing.T) {
 // run alone: the graph is desired state the reconciler has observed, not yet work it
 // has done.
 func TestGoalAdmitsAValidUnitGraph(t *testing.T) {
-	h := newHarness(t, stopAfter{at: 99})
+	h := newUnitHarness(t, stopAfter{at: 99})
 	units := []Unit{unit("a"), unit("b", "a")}
 	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Units: units})
 	h.reconcile(t, ref) // finalizer
@@ -630,13 +627,8 @@ func TestGoalAdmitsAValidUnitGraph(t *testing.T) {
 	if len(st.Units) != 2 || st.Units[0].ID != "a" || st.Units[1].ID != "b" {
 		t.Fatalf("admission did not record the graph: %+v", st.Units)
 	}
-	for _, u := range st.Units {
-		if u.Phase != UnitPending || u.ChildID != "" {
-			t.Fatalf("unit %s did not arrive pending: %+v", u.ID, u)
-		}
-	}
-	if got := unitIDs(st.ReadyUnits(units)); !equalIDs(got, []string{"a"}) {
-		t.Fatalf("ready over the admitted graph = %v, want [a]", got)
+	if st.Units[1].Phase != UnitPending || st.Units[1].ChildID != "" {
+		t.Fatalf("a unit behind an unproven dependency was not left pending: %+v", st.Units[1])
 	}
 }
 

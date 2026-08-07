@@ -468,6 +468,30 @@ func (s *Status) MarkUnitFailed(id, failure string, now time.Time) error {
 	})
 }
 
+// RefuseUnit settles a unit whose child could never be created, recording the
+// refusal. It is the one way a unit settles without having been dispatched, and it
+// exists because a spawn refused for good (past the delegation depth, outside the
+// grant, out of budget) is that unit's outcome rather than an error to keep retrying:
+// without it the reconciler would either drop the refusal on the floor or spawn
+// against it forever. A unit that has since been dispatched or settled is left alone,
+// so a refusal arriving late cannot unseat a child that exists.
+func (s *Status) RefuseUnit(id, reason string, now time.Time) error {
+	for i := range s.Units {
+		if s.Units[i].ID != id {
+			continue
+		}
+		if s.Units[i].Phase != UnitPending {
+			return nil
+		}
+		at := now
+		s.Units[i].Phase = UnitSettled
+		s.Units[i].SettledAt = &at
+		s.Units[i].Failure = reason
+		return nil
+	}
+	return fmt.Errorf("%w: %q", ErrUnitUnknown, id)
+}
+
 // settleUnit is the shared body of the two settle paths: find the unit, refuse one
 // that was never dispatched, keep a settlement that already happened, and stamp the
 // outcome.
