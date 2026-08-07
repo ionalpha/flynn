@@ -167,8 +167,16 @@ func (s *Stamper) DeleteSkill(sk Skill) (Skill, spine.AppendInput, error) {
 	return sk, ev, err
 }
 
-// WriteMemory stamps a new memory item and returns the event.
+// WriteMemory stamps a new memory item and returns the event. It rejects a
+// malformed anchor with ErrInvalid, the one shape check on this path: a ref
+// missing half of itself can never match a recall, so storing it would be storing
+// something that is silently dead.
 func (s *Stamper) WriteMemory(it MemoryItem) (MemoryItem, spine.AppendInput, error) {
+	anchors, err := NormalizeAnchors(it.Anchors)
+	if err != nil {
+		return MemoryItem{}, spine.AppendInput{}, err
+	}
+	it.Anchors = anchors
 	if it.ID == "" {
 		it.ID = s.gen.New()
 	}

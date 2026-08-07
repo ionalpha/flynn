@@ -834,14 +834,19 @@ func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 
 type memory struct{ p *Store }
 
-const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, sources, created_at, expires_at,
+const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, sources, anchors, created_at, expires_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
 // memoryColsQualified is memoryCols against the `m` alias, for the recall query,
 // which joins the FTS table and so cannot use bare column names. Recall appends
-// a sixteenth expression, the relevance score, after these fifteen.
-const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.created_at, m.expires_at,
+// a seventeenth expression, the relevance score, after these sixteen.
+const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.anchors, m.created_at, m.expires_at,
 	m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted`
+
+// memoryScoreCol is the ordinal of the relevance score in a recall's select list,
+// which ORDER BY names rather than repeating the bm25 expression, so it is
+// evaluated once per row. It tracks the column count in memoryColsQualified.
+const memoryScoreCol = 17
 
 // memoryLiveSQL is the predicate for a row a recall may return: not tombstoned,
 // and not past its expiry as of the bound instant. Both recall shapes use it, so
@@ -876,6 +881,46 @@ func decodeSources(raw string) ([]string, error) {
 	return out, nil
 }
 
+// encodeAnchors renders anchors for storage as a JSON array of {kind, id}. Like
+// encodeSources, no anchors is the empty string rather than "[]". The item's
+// anchors are already canonical (state.NormalizeAnchors, on the write path), so
+// this preserves their order rather than imposing one.
+func encodeAnchors(anchors []state.Anchor) string {
+	if len(anchors) == 0 {
+		return ""
+	}
+	out := make([]storedAnchor, len(anchors))
+	for i, a := range anchors {
+		out[i] = storedAnchor{Kind: a.Kind, ID: a.ID}
+	}
+	b, _ := json.Marshal(out)
+	return string(b)
+}
+
+// decodeAnchors reads back what encodeAnchors wrote.
+func decodeAnchors(raw string) ([]state.Anchor, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var stored []storedAnchor
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		return nil, fmt.Errorf("sqlite: decode memory anchors: %w", err)
+	}
+	out := make([]state.Anchor, len(stored))
+	for i, a := range stored {
+		out[i] = state.Anchor{Kind: a.Kind, ID: a.ID}
+	}
+	return out, nil
+}
+
+// storedAnchor is the JSON shape of an anchor in the anchors column: lowercase
+// keys, matching the memory facade's resource spec, so the same anchor reads the
+// same on either backend.
+type storedAnchor struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
+}
+
 // expiryNanos renders an expiry for storage: unix nanoseconds, with 0 reserved for
 // "never", which is what the zero time means on the item.
 func expiryNanos(t time.Time) int64 {
@@ -893,13 +938,14 @@ func expiryTime(n int64) time.Time {
 	return time.Unix(0, n).UTC()
 }
 
-// scanMemoryRow scans the fifteen memory columns, and the trailing relevance score
-// too when score is non-nil (the recall shapes select it as a sixteenth
+// scanMemoryRow scans the sixteen memory columns, and the trailing relevance score
+// too when score is non-nil (the recall shapes select it as a seventeenth
 // expression). One scanner so the column list and its readers cannot drift apart.
 func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.MemoryItem, error) {
 	var (
 		m             state.MemoryItem
 		sources       string
+		anchors       string
 		created       string
 		expires       int64
 		wall, counter int64
@@ -907,7 +953,7 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 	)
 	dst := []any{
 		&m.ID, &m.Kind, &m.Content,
-		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &created, &expires,
+		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &anchors, &created, &expires,
 		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted,
 	}
 	if score != nil {
@@ -921,6 +967,11 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 		return state.MemoryItem{}, err
 	}
 	m.Sources = decoded
+	decodedAnchors, err := decodeAnchors(anchors)
+	if err != nil {
+		return state.MemoryItem{}, err
+	}
+	m.Anchors = decodedAnchors
 	m.CreatedAt = parseTime(created)
 	m.ExpiresAt = expiryTime(expires)
 	m.UpdatedHLC = hlcTime(wall, counter)
@@ -944,16 +995,16 @@ func scanScoredMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, err
 
 func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			kind=excluded.kind, content=excluded.content,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
-			sources=excluded.sources, created_at=excluded.created_at, expires_at=excluded.expires_at,
+			sources=excluded.sources, anchors=excluded.anchors, created_at=excluded.created_at, expires_at=excluded.expires_at,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
 		it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, encodeSources(it.Sources),
-		formatTime(it.CreatedAt), expiryNanos(it.ExpiresAt),
+		encodeAnchors(it.Anchors), formatTime(it.CreatedAt), expiryNanos(it.ExpiresAt),
 		it.SyncVersion, it.OriginInstanceID, it.UpdatedHLC.Wall, int64(it.UpdatedHLC.Counter), it.LastWriterID, boolToInt(it.Deleted))
 	return err
 }
@@ -965,7 +1016,35 @@ func projectMemory(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	if err := upsertMemoryRow(ctx, tx, it); err != nil {
 		return err
 	}
-	return reindexMemory(ctx, tx, it)
+	if err := reindexMemory(ctx, tx, it); err != nil {
+		return err
+	}
+	return reindexMemoryAnchors(ctx, tx, it)
+}
+
+// reindexMemoryAnchors keeps the anchor lookup table holding rows only while the
+// item is live, the same rule reindexMemory applies to the content index, so an
+// anchored recall and a lexical one agree on what a tombstone means without either
+// read having to filter for it.
+//
+// It rewrites the item's rows wholesale rather than diffing: an item carries a
+// handful of anchors, and a delete-then-insert is both cheaper to reason about and
+// correct for the case a rebuild replays a post-image whose anchors differ from
+// what is on disk.
+func reindexMemoryAnchors(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memory_anchors WHERE item_id = ?`, it.ID); err != nil {
+		return err
+	}
+	if it.Deleted {
+		return nil
+	}
+	for _, a := range it.Anchors {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO memory_anchors (item_id, kind, ref_id) VALUES (?,?,?)`, it.ID, a.Kind, a.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // reindexMemory keeps the memory FTS index holding an entry only while the item
@@ -1016,7 +1095,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// returning fewer results than asked for.
 	postFilter := !q.Since.IsZero() || !q.Until.IsZero() || q.MinScore > 0
 
-	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && !postFilter {
+	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && len(q.Anchors) == 0 && !postFilter {
 		limit := q.Limit
 		if limit <= 0 {
 			limit = -1
@@ -1068,6 +1147,24 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	if len(q.Kinds) > 0 {
 		sb.WriteString(`)`)
 	}
+	// Anchors are an indexed lookup through the projection table, expressed as an
+	// EXISTS rather than a join so an item anchored to two of the refs asked for
+	// comes back once. It belongs in SQL for the same reason kind does: it is the
+	// selector that cuts the row set hardest, and a ride-along read supplies it with
+	// no lexical query at all, so filtering afterwards would mean pulling the whole
+	// scope back to keep a handful of rows.
+	for i, a := range q.Anchors {
+		if i == 0 {
+			sb.WriteString(` AND EXISTS (SELECT 1 FROM memory_anchors ma WHERE ma.item_id = m.id AND (`)
+		} else {
+			sb.WriteString(` OR `)
+		}
+		sb.WriteString(`(ma.kind = ? AND ma.ref_id = ?)`)
+		args = append(args, a.Kind, a.ID)
+	}
+	if len(q.Anchors) > 0 {
+		sb.WriteString(`))`)
+	}
 	// The chain is one scope, or that scope's ancestors when the read widened, so
 	// the predicate is an OR over its triples. Nil means unfiltered, no predicate.
 	for i, sc := range chain {
@@ -1091,9 +1188,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// because LIMIT would otherwise truncate the wrong rows.
 	sb.WriteString(` ORDER BY`)
 	if q.Order == state.OrderRelevance {
-		// Column 16 is the score expression. Ordering by ordinal rather than
-		// repeating the expression keeps bm25 evaluated once per row.
-		sb.WriteString(` 16 DESC,`)
+		fmt.Fprintf(&sb, ` %d DESC,`, memoryScoreCol)
 	}
 	if q.RanksByScope() {
 		sb.WriteString(` CASE
