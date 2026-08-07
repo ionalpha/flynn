@@ -95,3 +95,25 @@ func ToDoc(sk state.Skill) (skillmd.Doc, error) {
 	}
 	return d, nil
 }
+
+// Export writes skills as a conformant skill tree under dir, one directory per
+// skill, ready to be dropped into any harness that reads the format.
+//
+// The whole set is converted before anything is written, so a skill the format
+// cannot express stops the export with its slug named instead of leaving a directory
+// half-written. The usual cause is a description: the format requires one, and a
+// skill distilled before descriptions existed has none.
+func Export(dir string, skills []state.Skill) error {
+	docs := make([]skillmd.Doc, 0, len(skills))
+	for _, sk := range skills {
+		doc, err := ToDoc(sk)
+		if err != nil {
+			return err
+		}
+		if err := skillmd.Validate(doc, doc.Name); err != nil {
+			return fmt.Errorf("skill: %s cannot be exported: %w", sk.Slug, err)
+		}
+		docs = append(docs, doc)
+	}
+	return skillmd.WriteAll(dir, docs)
+}

@@ -1,0 +1,37 @@
+#!/usr/bin/env sh
+# Check what our SKILL.md writer emits against the format's own reference validator.
+# Mirrors CI.
+#
+# Every other test in skill/skillmd checks our reader against our writer, which
+# proves they agree with each other and nothing about the specification. skills-ref
+# is the reference library for Agent Skills, so this is the check that catches us
+# being self-consistently wrong. Needs Node (npx ships with it).
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# Pin the version so local and CI results match.
+SKILLS_REF_VERSION="0.1.5"
+
+if ! command -v npx >/dev/null 2>&1; then
+  echo "npx not found. Install Node.js to run the reference validator." >&2
+  exit 1
+fi
+
+# Install into a scratch prefix rather than the repository: this is a check, not a
+# dependency, and nothing in the Go module should gain a node_modules beside it.
+PREFIX="${TMPDIR:-/tmp}/flynn-skills-ref-$SKILLS_REF_VERSION"
+if [ ! -x "$PREFIX/node_modules/.bin/skills-ref" ]; then
+  echo "==> installing skills-ref@$SKILLS_REF_VERSION"
+  mkdir -p "$PREFIX"
+  npm install --silent --prefix "$PREFIX" "skills-ref@$SKILLS_REF_VERSION" >/dev/null
+fi
+
+PATH="$PREFIX/node_modules/.bin:$PATH"
+export PATH
+# Set so the test fails rather than skips if the binary is somehow still missing: a
+# conformance check that silently skips is a green tick that proves nothing.
+FLYNN_REQUIRE_SKILLS_REF=1
+export FLYNN_REQUIRE_SKILLS_REF
+
+echo "==> skills-ref validate (over what skillmd.Write produces)"
+go test ./skill/skillmd/ -run TestReferenceValidatorAcceptsWhatWeWrite -count=1 -v

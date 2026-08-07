@@ -3,7 +3,6 @@ package skillmd
 import (
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"path"
 )
@@ -192,24 +191,9 @@ func isResourceDir(name string) bool {
 	return false
 }
 
-// readCapped reads a file, refusing one above MaxDocSize without reading it all. The
-// limit is applied to the reader rather than checked after the fact, so a hostile
-// SKILL.md cannot cost a gigabyte of memory on its way to being rejected.
+// readCapped reads a SKILL.md, refusing one above MaxDocSize without reading it all.
+// The limit is applied to the reader rather than checked after the fact, so a hostile
+// document cannot cost a gigabyte of memory on its way to being rejected.
 func readCapped(fsys fs.FS, name string) ([]byte, error) {
-	f, err := fsys.Open(name)
-	if err != nil {
-		return nil, err
-	}
-	// The close error is dropped deliberately: this reader never wrote anything, so
-	// there is no buffered data whose loss a close could report.
-	defer func() { _ = f.Close() }()
-
-	src, err := io.ReadAll(io.LimitReader(f, MaxDocSize+1))
-	if err != nil {
-		return nil, fmt.Errorf("skillmd: read %s: %w", name, err)
-	}
-	if len(src) > MaxDocSize {
-		return nil, fmt.Errorf("%w: %s exceeds %d bytes", ErrTooLarge, name, MaxDocSize)
-	}
-	return src, nil
+	return readCappedAt(fsys, name, MaxDocSize)
 }
