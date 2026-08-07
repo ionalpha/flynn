@@ -170,12 +170,19 @@ type SessionStore interface {
 // (for provenance/rollback), distinct from Envelope.SyncVersion (the
 // concurrency/sync token).
 type Skill struct {
-	ID    string
-	Slug  string
-	Name  string
-	Body  string
-	Tags  []string
-	Scope Scope
+	ID   string
+	Slug string
+	Name string
+	// Description is the one-paragraph statement of what the skill is for and when
+	// to reach for it. The Agent Skills specification requires it, and it is the
+	// only text a conformant runtime loads at discovery, so it is what activation
+	// keys on: a skill with no description is invisible until something else has
+	// already decided to read its body. Kept separate from Body for that reason,
+	// and bounded by skillmd.MaxDescriptionLen wherever a skill is minted.
+	Description string
+	Body        string
+	Tags        []string
+	Scope       Scope
 	// Uses and Wins are outcome evidence: how many runs recalled this skill, and
 	// how many of those runs then succeeded. They let a skill be ranked and retired
 	// by how well it has actually performed, not by recency alone.
