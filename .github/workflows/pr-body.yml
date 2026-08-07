@@ -65,3 +65,47 @@ jobs:
             exit 1
           fi
           echo "PR body contains all required template sections."
+
+      # Markdown in a pull request body is not markdown in a file. GitHub renders
+      # a single newline inside a paragraph as a line break, so a body wrapped at
+      # 72 columns the way a commit message is arrives as a column of ragged short
+      # lines. Nothing about the source text looks wrong, which is why review does
+      # not catch it: the defect only exists once rendered.
+      #
+      # The rule is one line per paragraph, and let the browser wrap it. Lists,
+      # tables, headings, quotes and fenced code each open their own element, so a
+      # newline before one of those is not a line break and none of them are
+      # touched. Bots are waived for the reason the step above gives.
+      - name: Reject hard-wrapped prose
+        if: github.event.pull_request.user.type != 'Bot'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          printf '%s\n' "$BODY" > pr-body.md
+          # The body comes from the event payload via env, never interpolated
+          # into the script, and awk reads it as data rather than as a program.
+          awk '
+            # A body composed in the browser arrives CRLF. A bare CR left on the
+            # end stops a blank line reading as blank, which would break the
+            # paragraph reset and flag the whole body.
+            { sub(/\r$/, "") }
+            /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
+            fence { next }
+            /^[ \t]*$/ { prev = ""; next }
+            {
+              block = ($0 ~ /^[ \t]*([-*+>|#=]|[0-9]+[.)]|<)/)
+              if (prev != "" && !block) {
+                printf "::error::PR body line %d continues the line above: \"%s\"\n", NR, substr($0, 1, 60)
+                bad++
+              }
+              prev = block ? "" : $0
+            }
+            END { exit (bad > 0) }
+          ' pr-body.md && {
+            echo "PR body has no hard-wrapped paragraphs."
+            exit 0
+          }
+          echo "GitHub renders a newline inside a paragraph as a line break, so the lines above"
+          echo "display as separate ragged lines rather than one flowing paragraph. Put each"
+          echo "paragraph on a single line. Lists, tables and fenced code are unaffected."
+          exit 1
