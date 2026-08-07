@@ -1,0 +1,26 @@
+# Codecov configuration. Until now there was none, so Codecov ran on its defaults
+# and measured the conformance harnesses as if they were product code.
+#
+# The `*test` packages below are test code that happens not to live in _test.go
+# files: they are the shared contract suites every backend of an interface is run
+# against (skilltest, statetest, memorytest and the rest), so they must be
+# importable from another package's tests, which _test.go files are not.
+#
+# Measuring their coverage reports the opposite of what it looks like. A harness is
+# mostly assertions, and an assertion's failure branch is reachable only when the
+# implementation under test is broken. In a green run every t.Fatal in them is
+# uncovered by construction, so a harness sits at roughly 60% no matter how good it
+# is, and adding a case to one lowers the patch coverage of the pull request that
+# adds it. That penalises writing conformance tests, which is backwards.
+#
+# The packages they test are not ignored. Coverage of the real implementations,
+# which is what the harnesses exist to produce, is unaffected.
+ignore:
+  - "bus/bustest"
+  - "jobs/jobstest"
+  - "llm/llmtest"
+  - "memory/memorytest"
+  - "resource/resourcetest"
+  - "skill/skilltest"
+  - "spine/spinetest"
+  - "state/statetest"

@@ -38,6 +38,7 @@ var specSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
     "name": {"type": "string"},
+    "description": {"type": "string"},
     "body": {"type": "string"},
     "tags": {"type": "array", "items": {"type": "string"}},
     "uses": {"type": "integer", "minimum": 0},
@@ -65,12 +66,15 @@ func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 // specSchema). Empty fields are omitted so a bare skill hashes and validates as a
 // minimal object.
 type spec struct {
-	Name  string   `json:"name,omitempty"`
-	Body  string   `json:"body,omitempty"`
-	Tags  []string `json:"tags,omitempty"`
-	Uses  int      `json:"uses,omitempty"`
-	Wins  int      `json:"wins,omitempty"`
-	Check string   `json:"check,omitempty"`
+	Name string `json:"name,omitempty"`
+	// Description is omitempty like every other field, so a skill stored before the
+	// field existed keeps the spec hash it already had rather than being rewritten.
+	Description string   `json:"description,omitempty"`
+	Body        string   `json:"body,omitempty"`
+	Tags        []string `json:"tags,omitempty"`
+	Uses        int      `json:"uses,omitempty"`
+	Wins        int      `json:"wins,omitempty"`
+	Check       string   `json:"check,omitempty"`
 }
 
 // Store is the typed skill facade over a resource.Store. It is the SkillStore the
@@ -182,7 +186,7 @@ func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource
 // the scope is the namespace; the sync version is carried through so the store
 // enforces the same opt-in optimistic concurrency the skill contract promises.
 func toResource(sk state.Skill) (resource.Resource, error) {
-	body, err := json.Marshal(spec{Name: sk.Name, Body: sk.Body, Tags: sk.Tags, Uses: sk.Uses, Wins: sk.Wins, Check: sk.Check})
+	body, err := json.Marshal(spec{Name: sk.Name, Description: sk.Description, Body: sk.Body, Tags: sk.Tags, Uses: sk.Uses, Wins: sk.Wins, Check: sk.Check})
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("skill: encode spec: %w", err)
 	}
@@ -210,18 +214,19 @@ func toSkill(r resource.Resource) (state.Skill, error) {
 		return state.Skill{}, fmt.Errorf("skill: decode spec: %w", err)
 	}
 	return state.Skill{
-		ID:        r.ID,
-		Slug:      r.Name,
-		Name:      sp.Name,
-		Body:      sp.Body,
-		Tags:      sp.Tags,
-		Uses:      sp.Uses,
-		Wins:      sp.Wins,
-		Check:     sp.Check,
-		Scope:     state.Scope(r.Scope),
-		Version:   int(r.Version),
-		CreatedAt: r.CreatedAt,
-		UpdatedAt: r.UpdatedAt,
+		ID:          r.ID,
+		Slug:        r.Name,
+		Name:        sp.Name,
+		Description: sp.Description,
+		Body:        sp.Body,
+		Tags:        sp.Tags,
+		Uses:        sp.Uses,
+		Wins:        sp.Wins,
+		Check:       sp.Check,
+		Scope:       state.Scope(r.Scope),
+		Version:     int(r.Version),
+		CreatedAt:   r.CreatedAt,
+		UpdatedAt:   r.UpdatedAt,
 		Envelope: state.Envelope{
 			SyncVersion:      r.SyncVersion,
 			OriginInstanceID: r.OriginInstanceID,
