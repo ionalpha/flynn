@@ -21,7 +21,11 @@ jobs:
           days-before-close: 14
           stale-issue-label: stale
           stale-pr-label: stale
-          exempt-issue-labels: "pinned,security,roadmap,good first issue"
+          # fuzz-crasher is exempt because the nightly files those issues
+          # automatically: nobody is obliged to comment on one, so the activity
+          # clock would close a live bug report and lose the only durable copy
+          # of the input with it.
+          exempt-issue-labels: "pinned,security,roadmap,good first issue,fuzz-crasher"
           exempt-pr-labels: "pinned,security,work-in-progress"
           stale-issue-message: >
             This issue has had no activity for 45 days and will be closed in 14 days

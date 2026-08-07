@@ -80,6 +80,36 @@ if [ "$have_body" -eq 1 ]; then
         exit 1 ;;
     esac
   done
+
+  # A pull request body is not a commit message. GitHub renders a newline inside
+  # a paragraph as a line break, so prose wrapped at 72 columns displays as a
+  # column of ragged short lines. One line per paragraph is the only form whose
+  # rendering matches what was written.
+  #
+  # This is duplicated in .github/workflows/pr-body.yml rather than shared, the
+  # same way the section list above is. That workflow deliberately checks nothing
+  # out: on a fork's pull request a checkout would take the fork's copy of this
+  # script, and a gate the contributor can edit is not a gate.
+  if ! printf '%s\n' "$body" | awk '
+    { sub(/\r$/, "") }
+    /^[ \t]*(```|~~~)/ { fence = !fence; prev = ""; next }
+    fence { next }
+    /^[ \t]*$/ { prev = ""; next }
+    {
+      block = ($0 ~ /^[ \t]*([-*+>|#=]|[0-9]+[.)]|<)/)
+      if (prev != "" && !block) {
+        printf "  line %d continues the line above: \"%s\"\n", NR, substr($0, 1, 60) > "/dev/stderr"
+        bad++
+      }
+      prev = block ? "" : $0
+    }
+    END { exit (bad > 0) }
+  '; then
+    echo "Refusing to open a PR: the body has hard-wrapped paragraphs." >&2
+    echo "GitHub renders those newlines as line breaks. Put each paragraph on one line;" >&2
+    echo "lists, tables and fenced code are unaffected." >&2
+    exit 1
+  fi
 fi
 
 # --ready is ours, not gh's: drop it and open a pull request that is ready for review.
