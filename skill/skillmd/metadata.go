@@ -41,6 +41,12 @@ const (
 
 	// MetaTags is the skill's tag list, JSON-encoded per EncodeList.
 	MetaTags = MetadataPrefix + "tags"
+
+	// MetaTitle is the skill's human-readable title, which the format has no field
+	// for: its name is an identifier, constrained to lowercase and hyphens, and a
+	// title is prose. Written only when the title says something the name does not,
+	// so a skill whose title is just its slug does not carry a redundant key.
+	MetaTitle = MetadataPrefix + "title"
 )
 
 // EncodeList renders a list of strings as one metadata value. A nil or empty list
