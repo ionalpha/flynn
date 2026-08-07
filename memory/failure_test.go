@@ -20,8 +20,16 @@ var errBackend = errors.New("backend unreachable")
 type faultyStore struct {
 	resource.Store
 	putErr     error
+	getErr     error
 	listErr    error
 	listAllErr error
+}
+
+func (f faultyStore) Get(ctx context.Context, kind string, scope resource.Scope, name string) (resource.Resource, error) {
+	if f.getErr != nil {
+		return resource.Resource{}, f.getErr
+	}
+	return f.Store.Get(ctx, kind, scope, name)
 }
 
 func (f faultyStore) Put(ctx context.Context, r resource.Resource) (resource.Resource, error) {
@@ -148,4 +156,68 @@ func TestRecallSurfacesCorruptSpec(t *testing.T) {
 	if _, err := s.Recall(ctx, state.RecallQuery{Scope: state.Scope{Instance: "i1"}}); err == nil {
 		t.Fatal("a corrupt record must fail the scoped recall")
 	}
+}
+
+// promotedItem writes an item through s and returns its id, so a promotion test has
+// something live to decide about.
+func promotedItem(t *testing.T, s *memory.Store) string {
+	t.Helper()
+	it, err := s.Write(context.Background(), state.MemoryItem{Kind: "fact", Content: "decide about me"})
+	if err != nil {
+		t.Fatalf("seed write: %v", err)
+	}
+	return it.ID
+}
+
+// TestPromoteReportsBackendFailures proves an outage on either half of the decision
+// write is reported rather than swallowed. The read of what is already on file
+// matters most: a lookup error read as "nobody has decided yet" would overwrite a
+// reviewer's answer the store merely could not see.
+func TestPromoteReportsBackendFailures(t *testing.T) {
+	ctx := context.Background()
+	back := backing(t)
+	seeded := memory.NewStore(back)
+	d := state.PromotionDecision{MemoryID: promotedItem(t, seeded), Promoted: true, By: "user:operator"}
+
+	onRead := memory.NewStore(faultyStore{Store: back, getErr: errBackend})
+	if _, err := onRead.Promote(ctx, d); !errors.Is(err, errBackend) {
+		t.Fatalf("Promote error on the prior-decision read = %v, want the backend error", err)
+	}
+	onWrite := memory.NewStore(faultyStore{Store: back, putErr: errBackend})
+	if _, err := onWrite.Promote(ctx, d); !errors.Is(err, errBackend) {
+		t.Fatalf("Promote error on the write = %v, want the backend error", err)
+	}
+	// An item that is not there is the state boundary's not-found, whatever the
+	// backend called it.
+	if _, err := seeded.Promote(ctx, state.PromotionDecision{MemoryID: "no-such-id", Promoted: true, By: "user:operator"}); !errors.Is(err, state.ErrNotFound) {
+		t.Fatalf("Promote of an unknown item = %v, want state.ErrNotFound", err)
+	}
+}
+
+// TestPromotionsReportBackendFailures proves the read side surfaces an outage and a
+// record it cannot decode, rather than reporting an empty or zero-valued decision -
+// either of which the digest would read as "nobody promoted this".
+func TestPromotionsReportBackendFailures(t *testing.T) {
+	ctx := context.Background()
+	down := memory.NewStore(faultyStore{Store: backing(t), listAllErr: errBackend})
+	if _, err := down.Promotions(ctx, nil); !errors.Is(err, errBackend) {
+		t.Fatalf("Promotions error = %v, want the backend error", err)
+	}
+	corrupt := memory.NewStore(corruptPromotions{backing(t)})
+	if _, err := corrupt.Promotions(ctx, nil); err == nil {
+		t.Fatal("a promotion record that cannot be decoded must fail the read")
+	}
+}
+
+// corruptPromotions serves one decision record whose spec is not an object,
+// modelling a record written by an incompatible version.
+type corruptPromotions struct{ resource.Store }
+
+func (corruptPromotions) ListAll(context.Context, string, resource.Selector) ([]resource.Resource, error) {
+	return []resource.Resource{{
+		APIVersion: memory.GroupVersion,
+		Kind:       memory.PromotionKind,
+		Name:       "mempromo-1",
+		Spec:       json.RawMessage(`"not-an-object"`),
+	}}, nil
 }

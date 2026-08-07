@@ -486,6 +486,66 @@ func (m *memMemory) Usage(_ context.Context, memoryIDs []string) ([]MemoryUsage,
 	return out, nil
 }
 
+func (m *memMemory) Promote(ctx context.Context, d PromotionDecision) (MemoryPromotion, error) {
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !d.Valid() {
+		return MemoryPromotion{}, ErrInvalid
+	}
+	// The item is checked before anything is stamped, so a decision about an id
+	// nobody can read surfaces as an error rather than accruing a row that outlives
+	// the item it was never about.
+	if !c.liveMemoryLocked(d.MemoryID) {
+		return MemoryPromotion{}, ErrNotFound
+	}
+	var prev *MemoryPromotion
+	if p, ok := c.memPromo[d.MemoryID]; ok {
+		prev = &p
+	}
+	rec, ev, err := c.st.RecordMemoryPromotion(prev, d)
+	if err != nil {
+		return MemoryPromotion{}, err
+	}
+	if err := c.record(ctx, ev); err != nil {
+		return MemoryPromotion{}, err
+	}
+	return rec, nil
+}
+
+func (m *memMemory) Promotions(_ context.Context, memoryIDs []string) ([]MemoryPromotion, error) {
+	c := m.c
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var want map[string]bool
+	if len(memoryIDs) > 0 {
+		want = make(map[string]bool, len(memoryIDs))
+		for _, id := range memoryIDs {
+			want[id] = true
+		}
+	}
+	out := make([]MemoryPromotion, 0, len(c.memPromo))
+	for _, p := range c.memPromo {
+		if want != nil && !want[p.MemoryID] {
+			continue
+		}
+		out = append(out, p)
+	}
+	SortPromotions(out)
+	return out, nil
+}
+
+// liveMemoryLocked reports whether an id names a memory item that has not been
+// tombstoned. Callers hold mu.
+func (c *core) liveMemoryLocked(id string) bool {
+	for i := range c.memItems {
+		if c.memItems[i].ID == id && !c.memItems[i].Deleted {
+			return true
+		}
+	}
+	return false
+}
+
 // usagePrevLocked collects this instance's stored usage rows for the given items,
 // rejecting an id with no live item behind it. Both checks happen before anything
 // is stamped, so a set with one bad id records nothing at all. Callers hold mu.

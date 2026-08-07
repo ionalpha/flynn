@@ -268,3 +268,31 @@ func (s *Stamper) stampUsage(prev map[string]MemoryUsage, memoryID string, hnow 
 func (s *Stamper) usageEvent(typ string, rows []MemoryUsage) (spine.AppendInput, error) {
 	return s.input(typ, map[string]any{keyUsage: rows})
 }
+
+// RecordMemoryPromotion stamps a reviewer's decision about an item's push
+// eligibility and returns the post-image row with its event. prev is the stored
+// decision for the item, or nil when nobody has decided yet; the caller looks it up
+// under its own lock or transaction, as with every other stamp. A decision missing
+// an item or a reviewer is ErrInvalid.
+//
+// A revision keeps the row and advances its envelope, so the current answer is one
+// row per item however many times it changes, while every decision stays on the
+// event stream. That split is what makes the audit trail readable: the row is the
+// policy in force, the stream is how it got there.
+func (s *Stamper) RecordMemoryPromotion(prev *MemoryPromotion, d PromotionDecision) (MemoryPromotion, spine.AppendInput, error) {
+	if !d.Valid() {
+		return MemoryPromotion{}, spine.AppendInput{}, ErrInvalid
+	}
+	hnow := s.hlc.Now()
+	p := MemoryPromotion{MemoryID: d.MemoryID}
+	if prev == nil {
+		envelope.StampCreate(&p.Envelope, s.instanceID, hnow)
+	} else {
+		p.Envelope = prev.Envelope
+		envelope.StampUpdate(&p.Envelope, prev.Envelope, s.instanceID, hnow)
+	}
+	p.Promoted, p.By, p.Reason = d.Promoted, d.By, d.Reason
+	p.DecidedAt = s.clk.Now()
+	ev, err := s.input(EvMemoryPromoted, map[string]any{keyPromo: p})
+	return p, ev, err
+}

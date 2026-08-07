@@ -31,6 +31,7 @@ const (
 	EvMemoryDeleted  = "memory.deleted"
 	EvMemoryPushed   = "memory.pushed"
 	EvMemoryUsed     = "memory.used"
+	EvMemoryPromoted = "memory.promoted"
 )
 
 // Payload keys under which a state event carries its post-image record(s).
@@ -40,6 +41,7 @@ const (
 	keySkill   = "skill"
 	keyItem    = "item"
 	keyUsage   = "usage"
+	keyPromo   = "promotion"
 )
 
 // core is the in-memory read model behind the command path. Every mutation
@@ -62,7 +64,8 @@ type core struct {
 	skillsByID map[string]Skill
 	slugToID   map[string]string // scopeKey+"\x00"+slug -> skill id
 	memItems   []MemoryItem
-	memUsage   map[string]MemoryUsage // usageKey(memoryID, instanceID) -> usage row
+	memUsage   map[string]MemoryUsage     // usageKey(memoryID, instanceID) -> usage row
+	memPromo   map[string]MemoryPromotion // memoryID -> the current push decision
 
 	// snapCodec seals a snapshot before it is saved and verifies it before restore;
 	// snapEvery/snapPending drive the automatic snapshot cadence. They are set from the
@@ -81,6 +84,7 @@ func newCore(st *Stamper, log spine.Log) *core {
 		skillsByID: map[string]Skill{},
 		slugToID:   map[string]string{},
 		memUsage:   map[string]MemoryUsage{},
+		memPromo:   map[string]MemoryPromotion{},
 	}
 }
 
@@ -166,6 +170,10 @@ type payloadRecords struct {
 	// all. A single use carries a one-element list through the same path rather
 	// than a second payload shape.
 	Usage []MemoryUsage `json:"usage"`
+	// Promotion is singular where Usage is a list: a reviewer decides about one
+	// item at a time, and a bulk approval is that decision repeated, not a
+	// different kind of event.
+	Promotion *MemoryPromotion `json:"promotion"`
 }
 
 // projectRecords projects one event's post-image record(s) onto the read model.
@@ -224,6 +232,11 @@ func (c *core) projectRecords(evType string, w payloadRecords) error {
 		for _, u := range w.Usage {
 			c.memUsage[usageKey(u.MemoryID, u.InstanceID)] = u
 		}
+	case EvMemoryPromoted:
+		if w.Promotion == nil {
+			return missing(keyPromo)
+		}
+		c.memPromo[w.Promotion.MemoryID] = *w.Promotion
 	default:
 		return fmt.Errorf("state: unknown event type %q", evType)
 	}
@@ -269,6 +282,13 @@ func (c *core) apply(e spine.Event) error {
 			return err
 		}
 		w.Usage = usage
+	}
+	if pr, ok := e.Payload[keyPromo]; ok {
+		promo, err := decodeAs[MemoryPromotion](pr)
+		if err != nil {
+			return err
+		}
+		w.Promotion = &promo
 	}
 	return c.projectRecords(e.Type, w)
 }
@@ -365,6 +385,13 @@ func DecodeMemoryUsage(payload map[string]any) ([]MemoryUsage, error) {
 		return nil, fmt.Errorf("state: event payload is missing %q", keyUsage)
 	}
 	return u, nil
+}
+
+// DecodeMemoryPromotion extracts the promotion post-image from a state event
+// payload.
+func DecodeMemoryPromotion(payload map[string]any) (MemoryPromotion, error) {
+	var p MemoryPromotion
+	return p, decodeRecord(payload, keyPromo, &p)
 }
 
 // encodePayload serialises an event's post-image record(s) to the raw JSON

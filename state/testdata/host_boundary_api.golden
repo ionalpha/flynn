@@ -4,6 +4,8 @@
   ],
   "state.MemoryStore": [
     "Delete(context.Context, string) (error)",
+    "Promote(context.Context, state.PromotionDecision) (state.MemoryPromotion, error)",
+    "Promotions(context.Context, []string) ([]state.MemoryPromotion, error)",
     "Recall(context.Context, state.RecallQuery) ([]state.MemoryItem, error)",
     "RecordPush(context.Context, []string) (error)",
     "RecordUse(context.Context, string, state.UsageOrigin) (error)",

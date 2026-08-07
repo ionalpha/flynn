@@ -63,6 +63,14 @@ func exercise(ctx context.Context, t *testing.T, p state.Provider) {
 	if err := mem.RecordUse(ctx, m1.ID, state.UsageOrganic); err != nil {
 		t.Fatal(err)
 	}
+	// A promotion and a revision of it, so the stream covers both the create and
+	// the update path of a decision, and a decision that outlives its item.
+	if _, err := mem.Promote(ctx, state.PromotionDecision{MemoryID: m1.ID, Promoted: true, By: "user:operator"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := mem.Promote(ctx, state.PromotionDecision{MemoryID: m1.ID, By: "user:operator", Reason: "stale"}); err != nil {
+		t.Fatal(err)
+	}
 	if err := mem.Delete(ctx, m1.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -83,10 +91,11 @@ func snapshot(ctx context.Context, t *testing.T, p state.Provider) string {
 		Turns   []state.Turn
 	}
 	var view struct {
-		Sessions []sessionView
-		Skills   []state.Skill
-		Memory   []state.MemoryItem
-		Usage    []state.MemoryUsage
+		Sessions   []sessionView
+		Skills     []state.Skill
+		Memory     []state.MemoryItem
+		Usage      []state.MemoryUsage
+		Promotions []state.MemoryPromotion
 	}
 
 	list, err := p.Sessions().List(ctx)
@@ -110,6 +119,11 @@ func snapshot(ctx context.Context, t *testing.T, p state.Provider) string {
 	// Usage is read unfiltered, tombstoned items included, so the comparison covers
 	// rows whose item is no longer recallable.
 	if view.Usage, err = p.Memory().Usage(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Promotions likewise: a decision outlives its item, so the unfiltered read is
+	// what the two providers have to agree on.
+	if view.Promotions, err = p.Memory().Promotions(ctx, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -142,17 +156,18 @@ func TestDurableWritesAreEventSourced(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 2 session creates + 2 turns + 3 skill upserts + 1 skill delete +
-	// 2 memory writes + 1 memory push + 2 memory uses + 1 memory delete +
-	// 1 session delete = 15 events. One push of two items is one event: the set
-	// went in front of the reader together.
-	if len(events) != 15 {
-		t.Fatalf("state stream has %d events, want 15 (a write bypassed the log?)", len(events))
+	// 2 memory writes + 1 memory push + 2 memory uses + 2 memory promotions +
+	// 1 memory delete + 1 session delete = 17 events. One push of two items is one
+	// event: the set went in front of the reader together.
+	if len(events) != 17 {
+		t.Fatalf("state stream has %d events, want 17 (a write bypassed the log?)", len(events))
 	}
 	want := map[string]bool{
 		state.EvSessionCreated: false, state.EvTurnAppended: false, state.EvSessionDeleted: false,
 		state.EvSkillUpserted: false, state.EvSkillDeleted: false,
 		state.EvMemoryWritten: false, state.EvMemoryDeleted: false,
 		state.EvMemoryPushed: false, state.EvMemoryUsed: false,
+		state.EvMemoryPromoted: false,
 	}
 	for _, e := range events {
 		if _, ok := want[e.Type]; !ok {

@@ -28,6 +28,7 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
 	t.Run("Usage", func(t *testing.T) { testUsage(t, newStore()) })
+	t.Run("Promotions", func(t *testing.T) { testPromotions(t, newStore()) })
 }
 
 func testWriteRecall(t *testing.T, mem state.MemoryStore) {
@@ -645,6 +646,134 @@ func testUsage(t *testing.T, mem state.MemoryStore) {
 	if all[0].MemoryID > all[1].MemoryID {
 		t.Fatalf("unfiltered usage is not ordered by item: %+v", all)
 	}
+}
+
+// testPromotions pins the push-eligibility gate: one decision in force per item,
+// revisable, attributable, and refused where it could not be audited.
+//
+// The property the digest depends on is the boring one - an item nobody has
+// reviewed has no row at all. A backend that materialized a false row instead would
+// read identically to a reviewer's explicit refusal, and the audit could no longer
+// tell silence from a decision anybody made.
+func testPromotions(t *testing.T, mem state.MemoryStore) {
+	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "the deploy target is Cloudflare"})
+	b := write(t, mem, state.MemoryItem{Kind: "preference", Content: "the user prefers Go"})
+
+	wantPromotionCount(t, "before any review", wantPromotions(t, "before any review", mem, nil), 0)
+
+	got := mustPromote(t, mem, state.PromotionDecision{
+		MemoryID: a.ID, Promoted: true, By: "user:operator", Reason: "checked against the runbook",
+	})
+	if !got.Promoted || got.By != "user:operator" || got.Reason != "checked against the runbook" {
+		t.Fatalf("Promote returned %+v, want the decision as made", got)
+	}
+	if got.MemoryID != a.ID || got.DecidedAt.IsZero() || got.SyncVersion == 0 || got.OriginInstanceID == "" {
+		t.Fatalf("Promote returned %+v, want it stamped for item %s", got, a.ID)
+	}
+	if only := wantOnePromotion(t, "after one promotion", mem, a.ID); !only.Promoted {
+		t.Fatalf("the promotion did not survive the round trip: %+v", only)
+	}
+	// Only the reviewed item has a row. The other is not promoted, and says so by
+	// its absence rather than by a row nobody wrote.
+	wantPromotionCount(t, "the unreviewed item", wantPromotions(t, "the unreviewed item", mem, []string{b.ID}), 0)
+
+	// A revision replaces the decision in force rather than accruing a second row,
+	// and advances the record's version so a reader can tell it moved.
+	revoked := mustPromote(t, mem, state.PromotionDecision{MemoryID: a.ID, By: "user:operator", Reason: "stale"})
+	if revoked.Promoted || revoked.Reason != "stale" {
+		t.Fatalf("revocation returned %+v, want it not promoted", revoked)
+	}
+	if revoked.SyncVersion <= got.SyncVersion {
+		t.Fatalf("revocation version %d did not advance past %d", revoked.SyncVersion, got.SyncVersion)
+	}
+	wantPromotionCount(t, "after the revocation", wantPromotions(t, "after the revocation", mem, nil), 1)
+	if now := wantOnePromotion(t, "after the revocation", mem, a.ID); now.Promoted {
+		t.Fatalf("the revoked item reads as promoted: %+v", now)
+	}
+	// A revoked row is a decision, and it is not a promotion: the set a digest
+	// filters on holds neither the revoked item nor the unreviewed one.
+	if set := state.PromotedSet(wantPromotions(t, "the promoted set", mem, nil)); len(set) != 0 {
+		t.Fatalf("PromotedSet = %v, want nothing promoted", set)
+	}
+
+	// A decision that could not be audited is refused: no reviewer, no item.
+	wantPromoteErr(t, "a promotion with no reviewer", mem,
+		state.PromotionDecision{MemoryID: a.ID, Promoted: true}, state.ErrInvalid)
+	wantPromoteErr(t, "a promotion with no item", mem,
+		state.PromotionDecision{Promoted: true, By: "user:operator"}, state.ErrInvalid)
+	wantPromoteErr(t, "a promotion of an unknown item", mem,
+		state.PromotionDecision{MemoryID: "missing", Promoted: true, By: "user:operator"}, state.ErrNotFound)
+
+	// A decision outlives its item, like usage: what was approved before an item was
+	// retired stays readable, and the tombstoned item cannot be promoted afresh.
+	mustPromote(t, mem, state.PromotionDecision{MemoryID: b.ID, Promoted: true, By: "user:operator"})
+	mustDelete(t, mem, b.ID, "the item was just written and is live")
+	wantPromoteErr(t, "a promotion of a tombstoned item", mem,
+		state.PromotionDecision{MemoryID: b.ID, Promoted: true, By: "user:operator"}, state.ErrNotFound)
+	if kept := wantOnePromotion(t, "after the item was deleted", mem, b.ID); !kept.Promoted {
+		t.Fatalf("the decision did not outlive its item: %+v", kept)
+	}
+
+	// A filtered read takes several ids at once, which is the shape a digest asks
+	// in: one lookup for the whole candidate set rather than one per item.
+	pair := wantPromotions(t, "a read of both items", mem, []string{a.ID, b.ID})
+	wantPromotionCount(t, "a read of both items", pair, 2)
+
+	// An empty id list is the whole-store read, ordered by item.
+	all := wantPromotions(t, "the unfiltered read", mem, nil)
+	wantPromotionCount(t, "the unfiltered read", all, 2)
+	if all[0].MemoryID > all[1].MemoryID {
+		t.Fatalf("unfiltered promotions are not ordered by item: %+v", all)
+	}
+}
+
+func mustPromote(t *testing.T, mem state.MemoryStore, d state.PromotionDecision) state.MemoryPromotion {
+	t.Helper()
+	got, err := mem.Promote(context.Background(), d)
+	if err != nil {
+		t.Fatalf("Promote(%+v): %v", d, err)
+	}
+	return got
+}
+
+// wantPromoteErr fails unless the decision is refused with the expected error, and
+// unless nothing was recorded: a refused decision that left a row behind would be a
+// promotion nobody made.
+func wantPromoteErr(t *testing.T, what string, mem state.MemoryStore, d state.PromotionDecision, want error) {
+	t.Helper()
+	before := wantPromotions(t, what, mem, nil)
+	_, err := mem.Promote(context.Background(), d)
+	wantErrIs(t, what, err, want)
+	if after := wantPromotions(t, what, mem, nil); len(after) != len(before) {
+		t.Fatalf("%s: %d rows after the refusal, want the %d there were before", what, len(after), len(before))
+	}
+}
+
+func wantPromotions(t *testing.T, what string, mem state.MemoryStore, ids []string) []state.MemoryPromotion {
+	t.Helper()
+	rows, err := mem.Promotions(context.Background(), ids)
+	if err != nil {
+		t.Fatalf("%s: Promotions: %v", what, err)
+	}
+	return rows
+}
+
+func wantPromotionCount(t *testing.T, what string, rows []state.MemoryPromotion, want int) {
+	t.Helper()
+	if len(rows) != want {
+		t.Fatalf("%s: %d promotion rows, want %d: %+v", what, len(rows), want, rows)
+	}
+}
+
+// wantOnePromotion reads the single decision row for one item.
+func wantOnePromotion(t *testing.T, what string, mem state.MemoryStore, id string) state.MemoryPromotion {
+	t.Helper()
+	rows := wantPromotions(t, what, mem, []string{id})
+	wantPromotionCount(t, what+", for one item", rows, 1)
+	if rows[0].MemoryID != id {
+		t.Fatalf("%s: promotion row = %+v, want it for item %s", what, rows[0], id)
+	}
+	return rows[0]
 }
 
 // wantUsage reads usage for the given ids (nil for every row) and fails on error.

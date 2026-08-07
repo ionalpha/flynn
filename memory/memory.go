@@ -36,6 +36,10 @@ const Kind = "Memory"
 // UsageKind is the resource kind name per-instance memory usage is stored under.
 const UsageKind = "MemoryUsage"
 
+// PromotionKind is the resource kind name a memory item's push-eligibility
+// decision is stored under.
+const PromotionKind = "MemoryPromotion"
+
 // namePrefix is the GenerateName prefix for a memory item's server-assigned name
 // (Name = "mem-" + ID), since memory items carry no natural name.
 const namePrefix = "mem-"
@@ -45,6 +49,11 @@ const namePrefix = "mem-"
 // about does not: the pair it is keyed by is exactly what identifies it, so the
 // record is addressable without a lookup and an update is an ordinary Put.
 const usageNamePrefix = "memuse-"
+
+// promotionNamePrefix starts the natural name of a decision record,
+// "mempromo-<memoryID>". One item has one decision in force, so the item's id is
+// the whole key and a revision is an ordinary Put.
+const promotionNamePrefix = "mempromo-"
 
 // specSchema is the JSON Schema a memory item's Spec must satisfy (admission). It
 // constrains structure without over-requiring, so an item carrying only content is
@@ -99,14 +108,33 @@ var UsageKindDef = resource.Kind{
 	Plural:     "memoryusages",
 }
 
-// RegisterKind registers the Memory and MemoryUsage kinds with reg so a resource
-// store admits memory items and their usage. It is idempotent: registering again
-// replaces the definitions.
+// PromotionKindDef is the MemoryPromotion kind definition: one resource per memory
+// item, holding the reviewer decision in force about whether it may be auto-pushed
+// (see state.MemoryPromotion).
+//
+// It is a separate kind for the same reason usage is. The item is append-only and
+// its spec is what its writer asserted; a promotion is a later, revisable judgment
+// by somebody else, and folding it in would move the item's content hash every time
+// a reviewer changed their mind.
+var PromotionKindDef = resource.Kind{
+	APIVersion: GroupVersion,
+	Name:       PromotionKind,
+	Schema:     promotionSpecSchema,
+	Singular:   "memorypromotion",
+	Plural:     "memorypromotions",
+}
+
+// RegisterKind registers the Memory, MemoryUsage and MemoryPromotion kinds with reg
+// so a resource store admits memory items, their usage and their push decisions. It
+// is idempotent: registering again replaces the definitions.
 func RegisterKind(reg *resource.Registry) error {
 	if err := reg.Register(KindDef); err != nil {
 		return err
 	}
-	return reg.Register(UsageKindDef)
+	if err := reg.Register(UsageKindDef); err != nil {
+		return err
+	}
+	return reg.Register(PromotionKindDef)
 }
 
 // spec is the typed shape of a memory resource's Spec (the JSON validated by
