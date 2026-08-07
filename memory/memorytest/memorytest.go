@@ -714,6 +714,11 @@ func testPromotions(t *testing.T, mem state.MemoryStore) {
 		t.Fatalf("the decision did not outlive its item: %+v", kept)
 	}
 
+	// A filtered read takes several ids at once, which is the shape a digest asks
+	// in: one lookup for the whole candidate set rather than one per item.
+	pair := wantPromotions(t, "a read of both items", mem, []string{a.ID, b.ID})
+	wantPromotionCount(t, "a read of both items", pair, 2)
+
 	// An empty id list is the whole-store read, ordered by item.
 	all := wantPromotions(t, "the unfiltered read", mem, nil)
 	wantPromotionCount(t, "the unfiltered read", all, 2)

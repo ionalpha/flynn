@@ -139,7 +139,12 @@ func TestClosedStoreOperationsAllReportErrors(t *testing.T) {
 		"memory.RecordUse": func() error {
 			return s.Memory().RecordUse(ctx, "id", state.UsageOrganic)
 		},
-		"memory.Usage":         func() error { _, err := s.Memory().Usage(ctx, nil); return err },
+		"memory.Usage": func() error { _, err := s.Memory().Usage(ctx, nil); return err },
+		"memory.Promote": func() error {
+			_, err := s.Memory().Promote(ctx, state.PromotionDecision{MemoryID: "id", Promoted: true, By: "user:operator"})
+			return err
+		},
+		"memory.Promotions":    func() error { _, err := s.Memory().Promotions(ctx, nil); return err },
 		"store.Rebuild":        func() error { return s.Rebuild(ctx) },
 		"store.SnapshotState":  func() error { return s.SnapshotState(ctx) },
 		"log.Append":           func() error { _, err := s.Log().Append(ctx, spine.AppendInput{Stream: "x", Type: "t"}); return err },
@@ -297,6 +302,17 @@ func TestMissingProjectionTablesFailWrites(t *testing.T) {
 		}},
 		{"memory_fts", []string{"memory_fts"}, func(s *Store) error {
 			_, err := s.Memory().Write(ctx, state.MemoryItem{Kind: "f", Content: "c"})
+			return err
+		}},
+		{"memory_promotions", []string{"memory_promotions"}, func(s *Store) error {
+			it, err := s.Memory().Write(ctx, state.MemoryItem{Kind: "f", Content: "c"})
+			if err != nil {
+				return err
+			}
+			// The decision's lookup of what is already on file runs inside the writing
+			// transaction, so a lookup that errors must surface rather than read as
+			// "nobody has decided yet" and overwrite an answer it could not see.
+			_, err = s.Memory().Promote(ctx, state.PromotionDecision{MemoryID: it.ID, Promoted: true, By: "user:operator"})
 			return err
 		}},
 		{"turns", []string{"turns"}, func(s *Store) error {

@@ -2,8 +2,12 @@ package state_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/hlc"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
@@ -52,6 +56,23 @@ func TestSortPromotions(t *testing.T) {
 	for i, want := range []string{"a", "b", "c"} {
 		if rows[i].MemoryID != want {
 			t.Fatalf("sorted = %+v, want ordered by item", rows)
+		}
+	}
+}
+
+// TestStamperRefusesAnUnattributableDecision pins the check at the stamp rather
+// than only at the stores that call it. A backend written against the Stamper is a
+// supported way to implement this contract, and one that forgot to validate would
+// otherwise be able to record a promotion with no reviewer on it.
+func TestStamperRefusesAnUnattributableDecision(t *testing.T) {
+	st := state.NewStamper("local", clock.System{}, hlc.NewClock(), ids.NewGenerator())
+	for _, d := range []state.PromotionDecision{
+		{MemoryID: "m"},
+		{By: "user:operator"},
+		{},
+	} {
+		if _, _, err := st.RecordMemoryPromotion(nil, d); !errors.Is(err, state.ErrInvalid) {
+			t.Errorf("RecordMemoryPromotion(%+v) = %v, want state.ErrInvalid", d, err)
 		}
 	}
 }
