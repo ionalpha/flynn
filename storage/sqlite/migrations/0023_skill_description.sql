@@ -1,0 +1,19 @@
+-- A skill gains the description the Agent Skills specification requires.
+--
+-- The format defines exactly two mandatory frontmatter fields, name and
+-- description, and description is the only text a conformant runtime loads at
+-- discovery. Without a column for it a skill could not round-trip through
+-- SKILL.md: an import would drop the field and an export would have nothing to
+-- write, which is the concrete reason an authored pack and a learned skill could
+-- not be the same record.
+--
+-- Existing rows default to the empty string rather than being backfilled from
+-- body. A generated description reads like an authored one and cannot be told
+-- apart later, and the specification's 1024-character bound would truncate a body
+-- mid-sentence. Empty is honest and is a state the writer can refuse; a plausible
+-- fabrication is neither.
+--
+-- Not indexed in skills_fts. That table is FTS5, whose columns cannot be added by
+-- ALTER, so indexing description means rebuilding the virtual table; kept separate
+-- so this migration does not carry a projection rebuild alongside a schema change.
+ALTER TABLE skills ADD COLUMN description TEXT NOT NULL DEFAULT '';

@@ -19,6 +19,61 @@ func RunSuite(t *testing.T, newStore func() state.SkillStore) {
 	t.Run("UpsertGetListSearch", func(t *testing.T) { testCRUD(t, newStore()) })
 	t.Run("OptimisticConcurrency", func(t *testing.T) { testCAS(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
+	t.Run("Description", func(t *testing.T) { testDescription(t, newStore()) })
+}
+
+// testDescription holds every backend to carrying the specification's description
+// field. It is the only text a conformant runtime loads at discovery, so a backend
+// that drops it makes the skill undiscoverable rather than merely incomplete, and
+// it is separate from Body precisely so it cannot be reconstructed from one.
+func testDescription(t *testing.T, sk state.SkillStore) {
+	ctx := context.Background()
+
+	const desc = "Deploy a release to production, when a change has been reviewed and is ready to ship."
+	created, err := sk.Upsert(ctx, state.Skill{Slug: "deploy", Name: "Deploy", Description: desc, Body: "ship it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Description != desc {
+		t.Fatalf("create returned description %q, want %q", created.Description, desc)
+	}
+
+	got, err := sk.Get(ctx, "deploy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Description != desc {
+		t.Fatalf("Get returned description %q, want %q", got.Description, desc)
+	}
+
+	listed, err := sk.List(ctx, state.Scope{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed) != 1 || listed[0].Description != desc {
+		t.Fatalf("List returned %d skills, first description %q, want 1 and %q", len(listed), listed[0].Description, desc)
+	}
+
+	// A skill with no description is a legal record, not an error: the store holds
+	// what it is given, and refusing an empty description belongs to the writer, which
+	// is the boundary that decides what may be published.
+	empty, err := sk.Upsert(ctx, state.Skill{Slug: "undescribed", Body: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.Description != "" {
+		t.Fatalf("a skill created without a description came back with %q", empty.Description)
+	}
+
+	// An update clears the field when the update omits it, the same as every other
+	// spec field: an upsert is a whole-record write, not a patch.
+	cleared, err := sk.Upsert(ctx, state.Skill{Slug: "deploy", Name: "Deploy", Body: "ship it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleared.Description != "" {
+		t.Fatalf("update without a description kept %q; upsert is a whole-record write", cleared.Description)
+	}
 }
 
 func testCRUD(t *testing.T, sk state.SkillStore) {
