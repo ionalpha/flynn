@@ -152,6 +152,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		verboseLong = fs.Bool("verbose", false, "alias for -v")
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
+		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: each ledger item's declared check is run, and the goal will not report success over an item the record cannot show a passing check for")
 		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
@@ -229,6 +230,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		plain:        *plain,
 		verify:       *verify,
 		fanout:       *fanout,
+		requireProof: *reqProof,
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
 		maxMemoryMiB: *maxMemory,
@@ -248,6 +250,7 @@ type invocation struct {
 	plain          bool
 	verify         string
 	fanout         bool
+	requireProof   bool
 	maxCost        float64
 	maxTokens      int64
 	maxMemoryMiB   int
@@ -276,7 +279,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn goal "<objective>"`)
 			return 2
 		}
-		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
+		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
 
 	case "inspect", "replay":
 		if len(rest) < 2 {
@@ -422,7 +425,7 @@ func printUsage(w io.Writer) {
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --require-proof, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
@@ -451,7 +454,7 @@ func dataDirName() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout bool, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
+func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout, requireProof bool, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -532,6 +535,13 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		// ledger first. An external agent CLI drives its own loop and its own planning, so
 		// the phase is only added to the native path.
 		opts = append(opts, withPlanning())
+		// Hold the run to that plan when asked. Planning alone runs each item's check
+		// and records the verdict, so a run always says how much of its plan it actually
+		// proved; this is what makes an unproven item stop the run rather than only show
+		// up in the record.
+		if requireProof {
+			opts = append(opts, withLedgerProof())
+		}
 	}
 
 	// The objective and the final answer are rendered from the run's own events

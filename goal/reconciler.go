@@ -3,6 +3,8 @@ package goal
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
@@ -51,18 +53,24 @@ type Cleaner interface {
 // completes. That keeps each reconcile quick and idempotent, and because progress
 // is recorded in status, a crash resumes mid-goal instead of restarting.
 type Reconciler struct {
-	store       resource.Store
-	jobs        jobs.Queue
-	clk         clock.Clock
-	stop        StopEvaluator
-	cleaner     Cleaner
-	bus         bus.Bus       // optional; nil disables owner wake signals
-	progress    ProgressProbe // optional; nil disables no-progress detection
-	window      WindowSource  // optional; nil leaves the plan-window share axis unbounded
-	planning    bool
-	poll        time.Duration
-	waitRecheck time.Duration // 0 derives DefaultWaitRecheckFactor * poll
-	stepTries   int
+	store    resource.Store
+	jobs     jobs.Queue
+	clk      clock.Clock
+	stop     StopEvaluator
+	cleaner  Cleaner
+	bus      bus.Bus       // optional; nil disables owner wake signals
+	progress ProgressProbe // optional; nil disables no-progress detection
+	window   WindowSource  // optional; nil leaves the plan-window share axis unbounded
+	evidence Evidence      // optional; set with gate by WithLedgerGate
+	gate     *EvidenceGate // optional; set with evidence by WithLedgerGate
+	// ledgerConverge makes an unsettled ledger refuse a completion claim. It is
+	// deliberately separate from having the loop wired at all: the producer runs first
+	// and this follows once items are seen flipping to proven (see WithLedgerConvergence).
+	ledgerConverge bool
+	planning       bool
+	poll           time.Duration
+	waitRecheck    time.Duration // 0 derives DefaultWaitRecheckFactor * poll
+	stepTries      int
 }
 
 // Option configures a Reconciler.
@@ -100,6 +108,43 @@ func WithWaitRecheck(d time.Duration) Option {
 // park every one of them forever. Wiring the planner and turning this on are the
 // same decision, made in the same place.
 func WithPlanning() Option { return func(g *Reconciler) { g.planning = true } }
+
+// WithLedgerGate runs the ledger loop: after each build step the run's current item has
+// its declared check run, and the verdicts recorded on the run's durable record are folded
+// back through gate to settle the ledger. Items flip to proven from the record, and only
+// from the record.
+//
+// Until this is wired the ledger is planned, validated and protected against tampering,
+// and then never asked whether the work is actually done, which is the exact failure the
+// ledger exists to foreclose, a run declaring victory having written nothing. gate is the
+// self-tested EvidenceGate; a nil gate or nil evidence leaves the loop open, so a goal
+// behaves exactly as it did before, and pairing them is the composition's job (see
+// runtime.Config).
+//
+// On its own this changes what the record says, not what the goal does: convergence is
+// still the model's call. WithLedgerConvergence is what makes the record binding.
+func WithLedgerGate(e Evidence, gate *EvidenceGate) Option {
+	return func(g *Reconciler) {
+		if e != nil && gate != nil {
+			g.evidence, g.gate = e, gate
+		}
+	}
+}
+
+// WithLedgerConvergence makes the ledger, not the final answer, decide whether a planned
+// goal is done: a model reporting completion with items still unproven does not converge,
+// it settles as stalled naming each unproven item and why.
+//
+// It is separate from WithLedgerGate because the two carry different risk, and the
+// staging between them is the point. Turning the refusal on before anything produces
+// verifications stalls every goal, which is why the gate's original deferral was correct;
+// running the producer first makes items visibly flip to proven on real runs, and this is
+// then turned on against evidence rather than hope.
+//
+// It is emphatically not a switch that may ship permanently off. A gate that is loaded and
+// does nothing is precisely the failure the gate's own self-test exists to catch, worn one
+// level up, and a composition that leaves this off indefinitely has rebuilt it.
+func WithLedgerConvergence() Option { return func(g *Reconciler) { g.ledgerConverge = true } }
 
 // WithWakeBus sets the bus the reconciler signals a parked owner on when one of
 // its children settles, so a fan-out parent re-checks on child state-change
@@ -295,13 +340,26 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		default: // StateDone: a step completed.
 			status.InFlight = nil
 			observed = true
+			// Alternate building and verifying. A completed build step leaves the
+			// current item's declared check unrun, so the next dispatch is that
+			// check; observing the check clears the mark and the next dispatch
+			// builds again. Keeping this on the status rather than in memory is what
+			// makes the alternation survive a crash: a run that restarted here would
+			// otherwise build twice and verify once, and the ledger would lag the
+			// work by a step.
+			if g.ledgerGated() {
+				status.markVerifyPending(inFlightKind)
+			}
 			// A step that parked the goal (ErrWaiting) made no progress, so it
 			// does not count against the step budget: a fan-out whose children
 			// outlast the budget's worth of re-checks must wait, not false-stall.
 			// A planning step is not building either: it is the phase that decides
 			// what the build budget will be spent on, so charging the budget for it
 			// would make a goal that plans strictly poorer than one that does not.
-			if status.WaitingSince == nil && inFlightKind != PlanJobKind {
+			// Nor is a verification: it is the run checking work already paid for,
+			// and charging it would halve the build budget of every goal that
+			// proves its items against one that merely claims them.
+			if status.WaitingSince == nil && chargesBuildBudget(inFlightKind) {
 				status.Steps++
 				// Fold the just-completed build step into the idle streak, when a probe is
 				// wired. Only a build step counts: a planning step and a parked wait are not
@@ -353,10 +411,37 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return g.terminal(ctx, r, status, specHash)
 	}
 
+	// Settle the ledger against the run's own record: every unproven item the evidence
+	// gate admits flips to proven here, consuming the verification that proved it. This
+	// is the only path to a proven item on the run path, and it reads the durable record
+	// rather than trusting a claim, so the per-item state is a projection of the spine
+	// instead of a second opinion about it.
+	recorded, err := g.settleLedger(ctx, r, &status)
+	if err != nil {
+		return reconcile.Result{}, err // classified by the record; a transient read retries
+	}
+
 	// Converged?
 	met, reason, err := g.stop.Met(ctx, spec, status)
 	if err != nil {
 		return reconcile.Result{}, err // classified by the evaluator; transient retries
+	}
+	// The ledger, not the final answer, decides whether a planned goal is done. A model
+	// reporting completion over unproven items is the failure mode the whole record exists
+	// to catch, so the claim is held against the record: if the current item's check has
+	// not been run since the last build step, run it before judging the claim; if it has,
+	// and items are still unproven, the goal settles as stalled naming each one and why.
+	//
+	// An unplanned goal, or one whose ledger is empty, is untouched by all of this:
+	// LedgerSettled is false for an empty ledger, so without this guard a goal that never
+	// planned anything could never converge.
+	if met && g.holdsClaimAgainstLedger(spec, status) {
+		if status.VerifyPending {
+			met = false // the claim has not been tested yet; verify below, then judge it
+		} else {
+			g.refuseCompletion(&status, recorded)
+			return g.terminal(ctx, r, status, specHash)
+		}
 	}
 	if met {
 		status.Phase = PhaseConverged
@@ -407,8 +492,102 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return g.terminal(ctx, r, status, specHash)
 	}
 
-	// Dispatch the next step and record it in flight.
-	return g.dispatch(ctx, r, status, specHash, StepJobKind, PhaseRunning, "StepDispatched")
+	// Dispatch the next step and record it in flight. Under the ledger gate a build step
+	// is followed by the current item's declared check, so exactly one verification runs
+	// per build step rather than one per reconcile tick.
+	kind, reason := g.nextJobKind(spec, &status)
+	return g.dispatch(ctx, r, status, specHash, kind, PhaseRunning, reason)
+}
+
+// ledgerGated reports whether this reconciler closes the ledger loop: it has both a record
+// to read verifications from and a gate to judge them with. The two are set together, so
+// this is one question rather than two, and every ledger-loop branch asks it in one place
+// instead of re-deriving the condition.
+func (g *Reconciler) ledgerGated() bool { return g.evidence != nil && g.gate != nil }
+
+// markVerifyPending records what the just-observed job means for the build/verify
+// alternation: a completed build step leaves the current item's declared check unrun, and
+// observing that check clears the mark. A planning step touches neither, because planning
+// decides what the work is rather than doing any of it. An empty kind is a reservation
+// written before this alternation existed, which reads as the build step it was.
+func (s *Status) markVerifyPending(kind string) {
+	switch kind {
+	case StepJobKind, "":
+		s.VerifyPending = true
+	case VerifyJobKind:
+		s.VerifyPending = false
+	}
+}
+
+// chargesBuildBudget reports whether a completed job of this kind counts against the
+// goal's step budget. Only building does. Planning is the phase that decides what the
+// budget will be spent on, so charging it would make a goal that plans strictly poorer
+// than one that does not; a verification is the run checking work already paid for, so
+// charging it would halve the build budget of every goal that proves its items against one
+// that merely claims them.
+func chargesBuildBudget(kind string) bool {
+	return kind != PlanJobKind && kind != VerifyJobKind
+}
+
+// nextJobKind chooses what the goal dispatches next. Under the ledger loop a build step is
+// followed by the current item's declared check, so exactly one verification runs per build
+// step rather than one per reconcile tick; with nothing left to check, or with the loop
+// open, it builds.
+func (g *Reconciler) nextJobKind(spec Spec, status *Status) (kind, reason string) {
+	if g.ledgerGated() && status.VerifyPending {
+		if _, ok := status.CurrentItem(spec.Ledger); ok {
+			return VerifyJobKind, "VerifyDispatched"
+		}
+		status.VerifyPending = false // nothing left to check; build again
+	}
+	return StepJobKind, "StepDispatched"
+}
+
+// settleLedger folds the run's own record back into its ledger: every unproven item the
+// evidence gate admits flips to proven, consuming the verification that proved it. It
+// returns the verifications it read, so a completion refused moments later can name why
+// each remaining item is unproven without reading the record twice.
+//
+// This is the only path to a proven item on the run path. It reads the durable record
+// rather than trusting a claim, which is what makes the per-item state a projection of the
+// spine instead of a second opinion about it.
+func (g *Reconciler) settleLedger(ctx context.Context, r resource.Resource, status *Status) ([]Verification, error) {
+	if !g.ledgerGated() || !status.Planned || len(status.Unproven()) == 0 {
+		return nil, nil
+	}
+	recorded, err := g.evidence.Recorded(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if status.ProveRecorded(g.gate, recorded, g.clk.Now()) > 0 {
+		// The feedback describes a check that failed on an item now proven or moved
+		// past, so it must not ride into the next step.
+		status.ItemFeedback = ""
+	}
+	return recorded, nil
+}
+
+// holdsClaimAgainstLedger reports whether this goal's completion claim has to answer to
+// its ledger. An unplanned goal, or one whose ledger is empty, does not: LedgerSettled is
+// false for an empty ledger, so without this such a goal could never converge at all.
+func (g *Reconciler) holdsClaimAgainstLedger(spec Spec, status Status) bool {
+	return g.ledgerGated() && g.ledgerConverge &&
+		status.Planned && len(spec.Ledger) > 0 && !status.LedgerSettled()
+}
+
+// refuseCompletion settles a goal whose model reported success over an unproven ledger,
+// naming each unproven item and the reason the gate would refuse it.
+//
+// This is the line that must not be softened. An "unless" here (a grace pass, an
+// override, a claim trusted because its check was awkward to run) restores exactly the
+// prose completion the ledger replaced.
+func (g *Reconciler) refuseCompletion(status *Status, recorded []Verification) {
+	reasons := status.UnprovenReasons(g.gate, recorded)
+	status.Phase = PhaseStalled
+	status.Message = fmt.Sprintf("completion reported with %d planned item(s) unproven: %s",
+		len(reasons), strings.Join(reasons, "; "))
+	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "LedgerUnproven", Message: status.Message}, g.clk.Now())
+	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
 }
 
 // observeProgress folds the just-completed build step into the idle streak from the
@@ -505,7 +684,22 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 		// claims and finishes it first would otherwise have its ledger erased here
 		// and be asked to plan the same goal all over again.
 		status.Planned = cur.Planned
-		status.Ledger = cur.Ledger
+		// The ledger has two writers: the worker appends items when it plans, and the
+		// reconciler marks them proven when the record backs them. So it is merged
+		// rather than taken from either side. Carrying the worker's copy wholesale
+		// would drop a proof this very pass admitted; carrying ours would drop an item
+		// a concurrent planning step just appended.
+		var proved bool
+		status.Ledger, proved = mergeLedger(status.Ledger, cur.Ledger)
+		// The failing check's detail is the worker's, and a verify job lands in this
+		// same window: it is enqueued before this reservation is written, so a worker
+		// that claims and finishes it first would otherwise have it erased here, and the
+		// next build step would be asked to fix an item without being told what its own
+		// check reported. The exception is a pass that just proved something, which is
+		// the pass that cleared the feedback on purpose.
+		if !proved {
+			status.ItemFeedback = cur.ItemFeedback
+		}
 		enc, err := status.Encode()
 		if err != nil {
 			return err
@@ -517,6 +711,37 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 		return putErr(err)
 	}
 	return nil
+}
+
+// mergeLedger reconciles this reconcile's per-item state with the copy on the freshest
+// record, and reports whether the merge carried a proof the record did not already have.
+//
+// The shape of the ledger comes from theirs: it is the copy written against the newest
+// version of the goal, so a planning step that appended items in this window is respected
+// and this write does not shorten the plan. The proven marks come from whichever side has
+// them, because a proof only ever goes from unset to set and never back. An item that is
+// proven on either copy is proven, and the earlier proof's evidence and timestamp are kept
+// intact rather than restamped.
+func mergeLedger(mine, theirs []LedgerState) ([]LedgerState, bool) {
+	proofs := make(map[string]LedgerState, len(mine))
+	for _, st := range mine {
+		if st.Proven {
+			proofs[st.ID] = st
+		}
+	}
+	added := false
+	out := make([]LedgerState, len(theirs))
+	copy(out, theirs)
+	for i, st := range out {
+		if st.Proven {
+			continue
+		}
+		if p, ok := proofs[st.ID]; ok {
+			out[i] = p
+			added = true
+		}
+	}
+	return out, added
 }
 
 // persistStatus records the observed spec hash and persists the status via the

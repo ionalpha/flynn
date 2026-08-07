@@ -25,4 +25,32 @@ const (
 	// recorded, not omitted: a verification that ran and failed is evidence the item is
 	// not done, and the gate refuses it as such rather than treating it as no attempt.
 	ItemPassedKey = "passed"
+	// ItemProvenanceKey holds how the verdict was arrived at: ProvenanceExecuted when
+	// the check was actually run, ProvenanceAsserted when it was not. It is a second
+	// axis, not a confidence score, because the two are different kinds of evidence and
+	// only the executed kind can be re-adjudicated by a later regrade.
+	//
+	// A producer must stamp this itself, on the evidence that it ran the action. A model
+	// cannot be given a path to write it: if it could claim ProvenanceExecuted the field
+	// would certify nothing, and every rule built on it would be decoration.
+	ItemProvenanceKey = "provenance"
+	// ItemExitKey holds the exit code of an executed check, and ItemOutputKey the hash of
+	// its output. They are the executed case's own evidence: what the run actually
+	// observed, recorded alongside the verdict so a later reader can tell a check that
+	// passed from one that was merely said to have passed. Both are absent on an asserted
+	// verification, which has no execution to describe.
+	ItemExitKey   = "exit"
+	ItemOutputKey = "outputHash"
+)
+
+// The two kinds of item evidence. They are kinds, not tiers: neither is convertible
+// into the other, and there is no path that promotes an assertion into an execution.
+const (
+	// ProvenanceExecuted marks a verdict the producer reached by running the item's
+	// declared check, with the exit code and output hash on the same event.
+	ProvenanceExecuted = "executed"
+	// ProvenanceAsserted marks a verdict nothing was run for: the model said so. It is
+	// also how a reader must take a verdict whose provenance is missing or unreadable,
+	// since the weakest reading is the only safe default for a gate that fails closed.
+	ProvenanceAsserted = "asserted"
 )

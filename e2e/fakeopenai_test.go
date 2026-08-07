@@ -39,6 +39,10 @@ type fakeOpenAI struct {
 	// existed. A test that wants to script or block the plan turn itself sets this true.
 	autoPlanOff bool
 
+	// plan overrides the canned answer to a planning request, so a scenario can hand the
+	// run a plan whose check fails without taking over the build turns as well.
+	plan *oaiReply
+
 	// block, when set, makes the handler for a request whose zero-based index it
 	// selects hang until the server is torn down, so a test can catch the binary
 	// mid-run (the request is recorded first, so count() still advances) and kill it.
@@ -148,7 +152,7 @@ func (f *fakeOpenAI) handle(w http.ResponseWriter, r *http.Request) {
 		// lines up one-to-one with the build turns.
 		f.plans = append(f.plans, req)
 		f.mu.Unlock()
-		writeCompletion(w, cannedPlan)
+		writeCompletion(w, f.planReply())
 		return
 	}
 	n := len(f.requests)
@@ -181,7 +185,40 @@ func isPlanRequest(req oaiRequest) bool {
 // carrying a verify clause (the ledger refuses an item without one). Its content does not
 // steer the build — convergence is still the model's to declare on a build turn — so one
 // generic item is enough to satisfy the planning gate and let the scripted build turns run.
-var cannedPlan = oaiReply{Text: `[{"item":"accomplish the objective","verify":"the run converges and the sealed record verifies"}]`}
+//
+// The clause is a real command that exits 0, not prose, because the run now executes it:
+// the item's check is what settles it, and a scripted suite whose plans were unrunnable
+// would exercise only the degraded path.
+var cannedPlan = oaiReply{Text: `[{"item":"accomplish the objective","verify":"` + passingCheck + `"}]`}
+
+// failingPlan answers a planning request with an item whose check runs and fails, which is
+// how a scenario drives the case where a run's own plan contradicts its claim of success.
+var failingPlan = oaiReply{Text: `[{"item":"accomplish the objective","verify":"` + failingCheck + `"}]`}
+
+// passingCheck and failingCheck are shell one-liners that work on every platform the suite
+// runs on, so an item's verdict comes from a real execution rather than from a stub.
+const (
+	passingCheck = "cd ."
+	failingCheck = "cd this-directory-does-not-exist"
+)
+
+// planWith replaces the canned plan for this fake, so a scenario chooses what the run's
+// ledger commits to while still scripting only the build turns.
+func (f *fakeOpenAI) planWith(reply oaiReply) *fakeOpenAI {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.plan = &reply
+	return f
+}
+
+// planReply is the answer to a planning request: the scenario's own plan when it set one,
+// else the canned single-item plan.
+func (f *fakeOpenAI) planReply() oaiReply {
+	if f.plan != nil {
+		return *f.plan
+	}
+	return cannedPlan
+}
 
 // count returns how many requests the binary has made so far.
 func (f *fakeOpenAI) count() int {

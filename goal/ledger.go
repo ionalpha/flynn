@@ -286,6 +286,31 @@ func (s Status) Unproven() []string {
 	return out
 }
 
+// CurrentItem returns the item the run is working: the first ledger item whose state is
+// still unproven. It reports false when the ledger is empty or every item is proven.
+//
+// The selection is derived from the ledger and the per-item state rather than stored as a
+// pointer on the status, so there is no second representation of "where the run is" to
+// drift from the record. Every reader (the reconciler deciding what to dispatch, the
+// executor rendering the turn, the producer choosing what to verify) computes the same
+// answer from the same two facts.
+//
+// First-unproven is the whole rule for now. It is the right one while the ledger is a
+// list; when the plan carries dependencies between items this becomes first-ready
+// unproven, and this is the one function that changes.
+func (s Status) CurrentItem(ledger []LedgerItem) (LedgerItem, bool) {
+	proven := make(map[string]bool, len(s.Ledger))
+	for _, st := range s.Ledger {
+		proven[st.ID] = st.Proven
+	}
+	for _, it := range ledger {
+		if !proven[it.ID] {
+			return it, true
+		}
+	}
+	return LedgerItem{}, false
+}
+
 // LedgerSettled reports whether the ledger has items and all of them are proven. An
 // empty ledger is not settled: a goal with nothing planned has not finished, it has
 // not started.
