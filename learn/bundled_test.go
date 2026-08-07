@@ -112,6 +112,40 @@ func TestCurateStoresWhenNoBundledCollision(t *testing.T) {
 	}
 }
 
+// failingBundledList is a skill store whose read of the bundled scope fails,
+// standing in for a store that is unreachable at the moment a run is distilled.
+type failingBundledList struct {
+	state.SkillStore
+	err error
+}
+
+func (f failingBundledList) List(ctx context.Context, scope state.Scope) ([]state.Skill, error) {
+	if scope == state.BundledScope {
+		return nil, f.err
+	}
+	return f.SkillStore.List(ctx, scope)
+}
+
+// If the bundled set cannot be read, the loop does not know which slugs are
+// spoken for, so it stores nothing rather than capturing on the assumption that
+// none are.
+func TestCurateAbortsWhenBundledSetIsUnreadable(t *testing.T) {
+	skills, memories := newStores(t)
+	boom := errors.New("store unavailable")
+	d := &fakeDistiller{lessons: []Lesson{
+		{Kind: LessonSkill, Title: "Reset the Widget", Body: "A learned procedure."},
+	}}
+
+	captured, err := NewCurator(d, failingBundledList{skills, boom}, memories).
+		Curate(context.Background(), convergedOutcome())
+	if !errors.Is(err, boom) {
+		t.Fatalf("Curate: err = %v, want the store's error", err)
+	}
+	if len(captured.Skills) != 0 {
+		t.Fatalf("stored %d skills without knowing the bundled slugs: %+v", len(captured.Skills), captured.Skills)
+	}
+}
+
 // Decay retires a skill by policy and Regrade rewrites its tags. Both are wrong
 // for content that ships with the binary and is replaced by an upgrade, so both
 // refuse the scope rather than leaving it to the caller to remember.
