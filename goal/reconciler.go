@@ -460,58 +460,16 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return g.terminal(ctx, r, status, specHash)
 	}
 
-	// Budget guard.
-	if status.Steps >= maxSteps(spec) {
-		status.Phase = PhaseStalled
-		status.Message = "step budget exhausted before the stop condition was met"
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "BudgetExhausted", Message: status.Message}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
-		return g.terminal(ctx, r, status, specHash)
+	// The goal has not converged. Ask whether it must stop anyway, and settle it under the
+	// first reason that says so.
+	stallReason, stallMessage, err := g.stopGuard(ctx, r, spec, status)
+	if err != nil {
+		return reconcile.Result{}, err
 	}
-
-	// Spend guard: our own ceiling on tokens, cost and share of the plan window, checked
-	// at the same point as the step budget because a step is the wrong unit for cost. It
-	// is our limit, so crossing it stops the goal with a reason naming what it spent
-	// against what it was allowed, distinct from the step-budget reason and from a
-	// provider pause or a transient retry, which this guard never touches.
-	if !spec.Budget.IsZero() {
-		reason, message, err := g.spendGuard(ctx, r, spec)
-		if err != nil {
-			return reconcile.Result{}, err
-		}
-		if reason != "" {
-			status.Phase = PhaseStalled
-			status.Message = message
-			status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: reason, Message: message}, g.clk.Now())
-			status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
-			return g.terminal(ctx, r, status, specHash)
-		}
-	}
-
-	// No-progress guard: the loop noticed it is not getting anywhere. This sits after the
-	// stop and budget checks so a converged or budget-exhausted step settles for its own
-	// reason first; only a goal that would otherwise dispatch yet another step is stopped
-	// here, and it stops with a reason that names what it was stuck doing rather than the
-	// budget reason a no-progress loop would eventually have reached.
-	if status.StalledForNoProgress() {
+	if stallReason != "" {
 		status.Phase = PhaseStalled
-		status.Message = status.NoProgressReason()
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "NoProgress", Message: status.Message}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
-		return g.terminal(ctx, r, status, specHash)
-	}
-
-	// Non-convergence guard: the run is still producing steps, but the answer it gets back
-	// has stopped changing. This sits last among the stop reasons because every one above
-	// it is a more specific account of the same halt — a run that converged, ran out of
-	// allowance, or did nothing at all should say so rather than say it was told the same
-	// thing twice. What reaches here is the run that was busy and got nowhere, which has no
-	// other reason available and would otherwise have spent its whole budget discovering
-	// that its condition was unsatisfiable.
-	if status.StalledForNonConvergence() {
-		status.Phase = PhaseStalled
-		status.Message = status.NonConvergenceReason()
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "NotConverging", Message: status.Message}, g.clk.Now())
+		status.Message = stallMessage
+		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: stallReason, Message: stallMessage}, g.clk.Now())
 		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
 		return g.terminal(ctx, r, status, specHash)
 	}
@@ -521,6 +479,41 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// per build step rather than one per reconcile tick.
 	kind, reason := g.nextJobKind(spec, &status)
 	return g.dispatch(ctx, r, status, specHash, kind, PhaseRunning, reason)
+}
+
+// stopGuard reports the reason a goal that has not converged must stop anyway, with the
+// message that reason carries, or "" to keep going. A guard that cannot answer returns an
+// error for the caller to classify rather than reading as a stall.
+//
+// The order is the ranking: the reasons run from the most specific account of the halt to
+// the least, and the first to fire is the one the run settles under. Budget and spend come
+// first because a run that has used up what it was given has stopped for that reason
+// whatever else was also true. No progress comes next, since a run that did nothing at all
+// is better described that way than by what it was told. Non-convergence is last: it is
+// what remains when a run was busy, was within its allowance, and still got nowhere, and it
+// is the only one of the four that would otherwise have spent the whole budget to be
+// reached as a budget reason.
+func (g *Reconciler) stopGuard(ctx context.Context, r resource.Resource, spec Spec, status Status) (reason, message string, err error) {
+	if status.Steps >= maxSteps(spec) {
+		return "BudgetExhausted", "step budget exhausted before the stop condition was met", nil
+	}
+	// Our own ceiling on tokens, cost and share of the plan window, checked alongside the
+	// step budget because a step is the wrong unit for cost. Crossing it names what the run
+	// spent against what it was allowed, distinct from the step-budget reason and from a
+	// provider pause or a transient retry, which this never touches.
+	if !spec.Budget.IsZero() {
+		reason, message, err := g.spendGuard(ctx, r, spec)
+		if err != nil || reason != "" {
+			return reason, message, err
+		}
+	}
+	if status.StalledForNoProgress() {
+		return "NoProgress", status.NoProgressReason(), nil
+	}
+	if status.StalledForNonConvergence() {
+		return "NotConverging", status.NonConvergenceReason(), nil
+	}
+	return "", "", nil
 }
 
 // ledgerGated reports whether this reconciler closes the ledger loop: it has both a record
