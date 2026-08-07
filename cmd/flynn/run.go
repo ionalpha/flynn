@@ -522,7 +522,7 @@ func childModelResolver(ctx context.Context, dataDir string) driver.ModelResolve
 // above unverified ones. Only the top few survive, since a long, loosely-relevant
 // context hurts the model's use of it more than it helps. This is a lexical first
 // cut; vector recall is a later refinement.
-// recallContext returns the prompt block, the slugs of the skills surfaced (for
+// recallContext returns the prompt block, the ids of the skills surfaced (for
 // outcome reinforcement), and a compact human-readable line per recalled item (a
 // skill name or a memory snippet) so the session can show the user what it pulled in.
 func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string, items []string) {
@@ -542,7 +542,7 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 		b.WriteString("\nSkills:")
 		for _, s := range sk {
 			fmt.Fprintf(&b, "\n- %s: %s", s.Name, truncate(s.Body, 240))
-			recalled = append(recalled, s.Slug)
+			recalled = append(recalled, s.ID)
 			items = append(items, "skill: "+s.Name)
 		}
 	}

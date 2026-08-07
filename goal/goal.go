@@ -272,6 +272,16 @@ type Status struct {
 	// it to the agent — a goal told it is stalling sometimes un-stalls — and clears it
 	// once delivered. Empty when the goal is making progress.
 	ProgressNudge string `json:"progressNudge,omitempty"`
+	// LastVerdict, VerdictMark and VerdictRepeat drive non-convergence detection
+	// (converge.go). LastVerdict is the refusal the run was last given verbatim, kept so
+	// the stall can quote it; VerdictMark is the normalized form that refusal was compared
+	// on, together with how much of the ledger stood proven at the time; and VerdictRepeat
+	// counts the consecutive build-and-check cycles that have ended in that same refusal.
+	// They are the observed state of "is this run still being told something new", which is
+	// a different question from whether it is busy.
+	LastVerdict   string `json:"lastVerdict,omitempty"`
+	VerdictMark   string `json:"verdictMark,omitempty"`
+	VerdictRepeat int    `json:"verdictRepeat,omitempty"`
 }
 
 // Condition is one standard status condition (the shared resource.Condition).
