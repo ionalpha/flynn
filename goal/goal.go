@@ -30,6 +30,11 @@ const (
 	// planning inherits the lease, crash-resume and retry ladder a step already has
 	// rather than growing a second execution path.
 	PlanJobKind = "goal.plan"
+	// VerifyJobKind is the job kind a goal's item-verification step is enqueued under.
+	// Like planning it rides the same queue and worker as a build step, so a
+	// verification inherits the lease, crash-resume and retry ladder rather than
+	// growing a third execution path, and is distinguished only by kind.
+	VerifyJobKind = "goal.verify"
 )
 
 // Phase is a coarse, human-facing lifecycle summary of a goal, derived from its
@@ -238,6 +243,20 @@ type Status struct {
 	// the same order. Every entry starts unproven, so a goal begins from a record
 	// that says nothing is done. Completion is a transition here.
 	Ledger []LedgerState `json:"ledger,omitempty"`
+	// VerifyPending marks that a build step has completed and the current ledger item's
+	// declared check has not been run since. It is what alternates the run between
+	// building and verifying: the reconciler sets it when it observes a build step and
+	// clears it when it observes the verification, so exactly one check runs per build
+	// step rather than one per reconcile tick. It is durable because the alternation has
+	// to survive a crash: a run that restarted here would otherwise build twice and
+	// verify once, and the item's state would lag the work by a step.
+	VerifyPending bool `json:"verifyPending,omitempty"`
+	// ItemFeedback is the detail of the last verification that ran and did not pass, so
+	// the next build step is told what its own declared check reported rather than being
+	// asked to guess why the item is still open. The executor surfaces it and the
+	// reconciler clears it once the item is proven. Empty when the current item has no
+	// failed check behind it.
+	ItemFeedback string `json:"itemFeedback,omitempty"`
 	// IdleStreak, ProgressMark and LastActivity drive no-progress detection
 	// (progress.go). ProgressMark is the fingerprint of substantive work observed after
 	// the last step that made any, LastActivity is a short description of what the most

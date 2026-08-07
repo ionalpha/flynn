@@ -81,6 +81,8 @@ type Worker struct {
 	jobs      jobs.Queue
 	exec      StepExecutor
 	planner   Planner // optional; nil means a plan job is refused rather than guessed at
+	verifier  ItemVerifier
+	evidence  Evidence // optional; nil means a verify job is refused rather than faked
 	clk       clock.Timing
 	bus       bus.Bus // optional; nil disables completion signals
 	lease     time.Duration
@@ -97,6 +99,19 @@ func WithBus(b bus.Bus) WorkerOption { return func(w *Worker) { w.bus = b } }
 // WithPlanner sets the planner that runs a goal's planning step. It pairs with the
 // reconciler's WithPlanning, which is what makes a goal plan before it builds.
 func WithPlanner(p Planner) WorkerOption { return func(w *Worker) { w.planner = p } }
+
+// WithItemVerification sets the verifier that runs a ledger item's declared check and the
+// record its verdict is written to. They are one option because they are one capability:
+// a verifier with nowhere to record produces evidence no gate will ever see, and a record
+// with no verifier is a producer that never produces. It pairs with the reconciler's
+// WithLedgerGate, which is what makes the run alternate build and verify and refuses to
+// converge on an unsettled ledger.
+func WithItemVerification(v ItemVerifier, e Evidence) WorkerOption {
+	return func(w *Worker) {
+		w.verifier = v
+		w.evidence = e
+	}
+}
 
 // WithLease overrides the step lease duration.
 func WithLease(d time.Duration) WorkerOption {
@@ -209,8 +224,11 @@ func (w *Worker) runStep(ctx context.Context, job jobs.Job) error {
 	if r.DeletionTimestamp != nil {
 		return w.jobs.Complete(ctx, job.ID) // terminating; stop working on it
 	}
-	if job.Kind == PlanJobKind {
+	switch job.Kind {
+	case PlanJobKind:
 		return w.runPlan(ctx, job, r)
+	case VerifyJobKind:
+		return w.runVerify(ctx, job, r)
 	}
 
 	checkpoint, err := w.exec.Execute(ctx, r)
@@ -262,6 +280,84 @@ func (w *Worker) runPlan(ctx context.Context, job jobs.Job, r resource.Resource)
 	}
 	w.signal(ctx, r)
 	return nil
+}
+
+// runVerify executes a goal's item-verification step: run the current ledger item's
+// declared check and write the verdict onto the run's durable record.
+//
+// It stops there on purpose. Nothing here marks the item proven; the reconciler does
+// that, by folding the record back through the evidence gate. So the producer has no path
+// to a completion it did not earn, a crash between the recording and the proving costs
+// nothing (the event is durable and the next reconcile settles it), and the item's state
+// stays a projection of the spine rather than a second opinion about it.
+//
+// Like the ledger write, the evidence write is not best-effort. A verdict that fails to
+// land is a check that ran for nothing: the item stays unproven with no record of why, and
+// the run repeats the work. So a failed write fails the job, which puts it on the retry
+// ladder and eventually stalls the goal with the cause attached.
+func (w *Worker) runVerify(ctx context.Context, job jobs.Job, r resource.Resource) error {
+	if w.verifier == nil || w.evidence == nil {
+		// A goal was gated on its ledger by a reconciler wired to a worker that cannot
+		// produce evidence. Every item would stay unproven and the goal would refuse to
+		// converge forever, with nothing on the record saying why, so this fails loudly.
+		return w.fail(ctx, job, fault.Wrap(fault.Terminal, "goal_no_verifier",
+			errors.New("goal: verify step dispatched to a worker with no item verifier")))
+	}
+	spec, err := DecodeSpec(r)
+	if err != nil {
+		return w.fail(ctx, job, fault.Wrap(fault.Terminal, "goal_spec_decode", err))
+	}
+	status, err := DecodeStatus(r)
+	if err != nil {
+		return w.fail(ctx, job, fault.Wrap(fault.Terminal, "goal_status_decode", err))
+	}
+	item, ok := status.CurrentItem(spec.Ledger)
+	if !ok {
+		// Every item is already proven, or the goal carries no ledger. The verification
+		// has nothing to run against; that is not a failure, it is a job that arrived
+		// after the thing it was for was settled.
+		return w.jobs.Complete(ctx, job.ID)
+	}
+
+	verdict, err := w.verifier.VerifyItem(ctx, r, item)
+	if err != nil {
+		return w.fail(ctx, job, err)
+	}
+	if _, err := w.evidence.Record(ctx, r, item.ID, verdict); err != nil {
+		return w.fail(ctx, job, err)
+	}
+	w.markItemFeedback(ctx, r, verdict)
+
+	if err := w.jobs.Complete(ctx, job.ID); err != nil {
+		return err // crashed before completing: the lease lapses and the check re-runs
+	}
+	w.signal(ctx, r)
+	return nil
+}
+
+// markItemFeedback records what a check that did not pass reported, so the next build step
+// is handed its own declared check's output instead of being left to work out why the item
+// is still open. A passing verdict clears it, so stale feedback cannot outlive the failure
+// it described. Best effort like the checkpoint: losing it costs the agent a hint, never
+// correctness, and the verdict itself is already durable on the spine.
+func (w *Worker) markItemFeedback(ctx context.Context, r resource.Resource, v ItemVerdict) {
+	_, _ = resource.UpdateByID(ctx, w.store, r.ID, func(fresh *resource.Resource) error {
+		status, err := DecodeStatus(*fresh)
+		if err != nil {
+			return err
+		}
+		if v.Passed {
+			status.ItemFeedback = ""
+		} else {
+			status.ItemFeedback = v.Detail
+		}
+		enc, err := status.Encode()
+		if err != nil {
+			return err
+		}
+		fresh.Status = enc
+		return nil
+	})
 }
 
 // recordPlan writes the planned items onto the goal's spec and marks the goal

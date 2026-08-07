@@ -8,18 +8,6 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// newGate builds a gate for a test and fails the test if construction (and thus the
-// self-test) does not succeed, so every gate test starts from a gate that has just
-// proved itself.
-func newGate(t *testing.T) *EvidenceGate {
-	t.Helper()
-	g, err := NewEvidenceGate()
-	if err != nil {
-		t.Fatalf("NewEvidenceGate: %v", err)
-	}
-	return g
-}
-
 // provenStatus is a status whose ledger carries items, all unproven, so a test can
 // drive proofs through the gate against it.
 func provenStatus(items ...LedgerItem) *Status {
@@ -157,7 +145,7 @@ func TestGateFailsLoudlyWhenItsOwnLogicBreaks(t *testing.T) {
 	admitEverything := func(string, []Verification, map[string]bool) (string, error) {
 		return "waved-through", nil
 	}
-	if err := selfTest(admitEverything); !errors.Is(err, ErrGateBroken) {
+	if err := selfTest(admitEverything, false); !errors.Is(err, ErrGateBroken) {
 		t.Fatalf("selfTest passed a gate that admits everything: got %v, want ErrGateBroken", err)
 	}
 
@@ -167,7 +155,7 @@ func TestGateFailsLoudlyWhenItsOwnLogicBreaks(t *testing.T) {
 	refuseEverything := func(string, []Verification, map[string]bool) (string, error) {
 		return "", ErrNoEvidence
 	}
-	if err := selfTest(refuseEverything); !errors.Is(err, ErrGateBroken) {
+	if err := selfTest(refuseEverything, false); !errors.Is(err, ErrGateBroken) {
 		t.Fatalf("selfTest passed a gate that refuses valid evidence: got %v, want ErrGateBroken", err)
 	}
 }
@@ -193,9 +181,11 @@ func TestVerificationsFromReadsItemChecksOffTheSpine(t *testing.T) {
 		{Seq: 8, Type: chain.ItemVerified, Payload: map[string]any{chain.ItemPassedKey: true}}, // no item id: skipped
 	}
 	got := VerificationsFrom(events)
+	// An event carrying no provenance is read at its weakest, as an assertion, rather
+	// than as an unset kind the gate would have to interpret later.
 	want := []Verification{
-		{Ref: "5", Item: "aaaa", Passed: true},
-		{Ref: "7", Item: "cccc", Passed: false},
+		{Ref: "5", Item: "aaaa", Passed: true, Provenance: ProvenanceAsserted},
+		{Ref: "7", Item: "cccc", Passed: false, Provenance: ProvenanceAsserted},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("read %d verifications, want %d: %+v", len(got), len(want), got)

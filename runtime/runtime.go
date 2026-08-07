@@ -58,6 +58,39 @@ type Config struct {
 	// eventually reach. Nil leaves detection off, so a goal is bounded only by its step
 	// budget, exactly as before.
 	Progress goal.ProgressProbe
+	// Verifier runs a ledger item's declared check, and Evidence is the durable record
+	// its verdict is written to and read back from. Setting both closes the ledger loop:
+	// the run alternates building an item with running its check, and the verdicts on the
+	// record settle the ledger through a default-FAIL evidence gate, so an item flips to
+	// proven only from evidence the run actually produced. Whether an unsettled ledger
+	// then refuses a completion claim is RequireLedgerProof.
+	//
+	// They are paired here for the reason the planner is: the producer lives on the
+	// worker and the gate on the reconciler, and a goal gated on its ledger by a
+	// reconciler whose worker cannot produce evidence would refuse to converge forever.
+	// Wiring one side without the other is not a degraded mode, it is a hang, so it is
+	// made unrepresentable in the one place that knows about both. Leaving either nil
+	// leaves the loop open and a goal behaves exactly as it did before.
+	Verifier goal.ItemVerifier
+	Evidence goal.Evidence
+	// RequireLedgerProof makes the settled ledger, not the model's final answer, decide
+	// whether a planned goal is done: a completion claim over unproven items settles the
+	// goal as stalled naming each one and why.
+	//
+	// It is staged behind the loop itself on purpose. Wiring Verifier and Evidence makes
+	// items visibly flip to proven on real runs; this is then turned on against that
+	// evidence rather than ahead of it, because a refusal switched on before anything
+	// produces verifications stalls every goal. Leaving it off indefinitely is not an
+	// option a composition has: a gate that is loaded and does nothing is the failure the
+	// gate's self-test exists to catch.
+	RequireLedgerProof bool
+	// AllowAssertedEvidence lets an item be proven on a verification that was asserted
+	// rather than run. It is off by default: a closed loop ships with a producer that
+	// runs checks, which is exactly what makes requiring execution satisfiable, and an
+	// unrunnable verify clause should fail the item rather than quietly pass it. Set it
+	// only for a run whose checks genuinely cannot be executed, knowing that what the
+	// ledger then records is a claim rather than a result.
+	AllowAssertedEvidence bool
 
 	// Store, Jobs, and Bus are the foundation ports. When Store is nil, an in-memory
 	// store, queue, and bus are built over Clock with a registry holding the core
@@ -209,6 +242,29 @@ func New(cfg Config) (*Runtime, error) {
 	// a single-sided wire: the probe reads the record the worker already writes.
 	if cfg.Progress != nil {
 		ropts = append(ropts, goal.WithProgressProbe(cfg.Progress))
+	}
+
+	// Close the ledger loop, both sides at once. The gate is constructed here rather
+	// than injected because constructing it IS the check: NewEvidenceGate refuses to
+	// return a gate that cannot demonstrate, against its own code, that it refuses a
+	// claim with no evidence and admits one with fresh evidence. A broken gate therefore
+	// fails composition, loudly, instead of being wired in and silently certifying every
+	// claim at runtime, which is the failure the self-test was written for, finally
+	// placed where it can stop a process from starting.
+	if cfg.Verifier != nil && cfg.Evidence != nil {
+		var gopts []goal.GateOption
+		if !cfg.AllowAssertedEvidence {
+			gopts = append(gopts, goal.RequireExecuted())
+		}
+		gate, err := goal.NewEvidenceGate(gopts...)
+		if err != nil {
+			return nil, fmt.Errorf("runtime: evidence gate: %w", err)
+		}
+		ropts = append(ropts, goal.WithLedgerGate(cfg.Evidence, gate))
+		if cfg.RequireLedgerProof {
+			ropts = append(ropts, goal.WithLedgerConvergence())
+		}
+		wopts = append(wopts, goal.WithItemVerification(cfg.Verifier, cfg.Evidence))
 	}
 
 	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)

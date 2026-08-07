@@ -20,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
+	"github.com/ionalpha/flynn/evidence"
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
@@ -717,6 +718,7 @@ type driveConfig struct {
 	toolset   *boundToolset
 	observe   func(session.Event)
 	planning  bool
+	proof     bool
 }
 
 // driveOption configures a run driven by drive.
@@ -746,6 +748,19 @@ func withResourceLimits(r sandbox.ResourceLimits) driveOption {
 // paths run unplanned until they adopt it in turn.
 func withPlanning() driveOption {
 	return func(c *driveConfig) { c.planning = true }
+}
+
+// withLedgerProof makes the run's plan binding: each item's declared check is run and the
+// goal will not report success over an item the record cannot show proof for.
+//
+// It is separate from withPlanning because the two carry different risk. Planning always
+// runs the producer, so a run's items visibly flip to proven and a run's report can say
+// how many were proven by execution; this adds the refusal on top, which is the part that
+// can stop a run whose plan wrote checks no machine can run. It is staged, not optional:
+// the refusal is the point of keeping a ledger, and a build that never turns it on has a
+// plan that decides nothing.
+func withLedgerProof() driveOption {
+	return func(c *driveConfig) { c.proof = true }
 }
 
 // withExternalAgent drives the run through an external agent CLI backend (its own
@@ -816,7 +831,7 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	case fanout != nil:
 		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel, cfg.resLimits)
 	default:
-		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits, cfg.planning)
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits, cfg.planning, cfg.proof)
 	}
 	if err != nil {
 		return "", "", nil, err
@@ -984,7 +999,7 @@ func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool
 	for _, t := range toolset {
 		names = append(names, t.Def().Name)
 	}
-	names = append(names, mission.ActionModelGenerate, learn.DistillAction)
+	names = append(names, mission.ActionModelGenerate, learn.DistillAction, evidence.VerifyItemAction)
 	if withSpawn {
 		names = append(names, mission.ActionSpawn)
 	}
@@ -1024,7 +1039,7 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits, planning bool) (*missionRun, error) {
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool) (*missionRun, error) {
 	parts, err := newMissionParts(workdir, log, runID, false, resLimits)
 	if err != nil {
 		return nil, err
@@ -1069,6 +1084,24 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// prompt over the same model; the runtime pairs it with the reconciler's planning gate.
 	if planning {
 		cfg.Planner = mission.NewPlanner(model)
+		// Close the loop the ledger opens. Without this the plan is written, validated and
+		// protected against tampering, and then never asked whether the work was actually
+		// done: the exact failure a ledger exists to foreclose. Each item's declared check
+		// is run in the run's own sandbox, under the same containment gate as the agent's
+		// shell tool (the clause is model-authored, so it is treated as untrusted work), and
+		// the verdict is recorded on the run's own stream where the evidence gate reads it.
+		//
+		// It deliberately does NOT take the governance event sink, and neither does the
+		// learning loop's verifier beside it. A dispatcher's correlation ids are monotonic
+		// within that dispatcher, so two dispatchers writing lifecycle events to one stream
+		// emit colliding call ids, and the record then reads as one call both refused and
+		// completed: a governance violation invented by the wiring. The verification is on
+		// the record where it belongs, as the item-verified event the gate consumes.
+		cfg.Verifier = evidence.NewCommandVerifier(parts.sandbox,
+			dispatch.WithAdmitter(capability.Admitter{}),
+			dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
+		cfg.Evidence = evidence.NewSpineEvidence(log)
+		cfg.RequireLedgerProof = requireProof
 	}
 	// Stop a run that has stopped getting anywhere. The probe reads the run's own recorded
 	// activity (its stream on the spine) and the git HEAD at the working directory, so a

@@ -19,6 +19,8 @@ package mission
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/approval"
@@ -416,6 +418,24 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
 	}
 
+	// Scope the turn to one ledger item. A planned goal is a list of units of work, each
+	// with its own declared check, and a run that is handed the whole objective every turn
+	// has nothing to attribute a verification to, which is why the evidence gate had no
+	// producer to read from. Naming the current item, its check, and where it sits in the
+	// ledger is what makes "you are on item 3 of 7" a fact the run acts on rather than a
+	// shape only the reconciler can see. The full ledger rides along so the item is read in
+	// the context of the work it belongs to, not as an isolated instruction.
+	if item, ok := status.CurrentItem(spec.Ledger); ok && item.ID != cp.Item {
+		cp.Messages = appendNudge(cp.Messages, itemBrief(spec, status, item))
+		cp.Item = item.ID
+	}
+	// What the item's own declared check reported when it last ran and did not pass. It
+	// rides every turn the failure survives, not just the boundary: the item has not
+	// moved, and the failing output is the most useful thing the run can be told.
+	if status.ItemFeedback != "" {
+		cp.Messages = appendNudge(cp.Messages, "The last run of this item's check did not pass: "+status.ItemFeedback)
+	}
+
 	// A stalling nudge the reconciler stamped onto the status: tell the agent, a step
 	// before the run would be stopped, that it is not making progress — a goal told it is
 	// stalling sometimes changes course. It rides into this turn as user-visible text so
@@ -523,6 +543,39 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 
 	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Goal: r.Name, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
 	return encodeCheckpoint(cp)
+}
+
+// itemBrief renders the run's current ledger item as the immediate objective: which item
+// it is, the check it will be held to, its position in the plan, and the plan around it
+// with each item's settled state.
+//
+// The verify clause is stated back deliberately. The item committed to it at planning
+// time, it is what will actually be run, and a run told the check up front can work toward
+// it rather than toward its own idea of done. The rest of the ledger is shown for context
+// and because seeing the proven items above and the unproven ones below is what makes the
+// position mean something.
+func itemBrief(spec goal.Spec, status goal.Status, current goal.LedgerItem) string {
+	proven := make(map[string]bool, len(status.Ledger))
+	for _, st := range status.Ledger {
+		proven[st.ID] = st.Proven
+	}
+	var b strings.Builder
+	b.WriteString("Current item: ")
+	b.WriteString(current.Item)
+	b.WriteString("\nIt is proven when: ")
+	b.WriteString(current.Verify)
+	b.WriteString("\n\nWork this item, not the whole objective. The plan:\n")
+	for i, it := range spec.Ledger {
+		mark := "[ ]"
+		switch {
+		case proven[it.ID]:
+			mark = "[x]"
+		case it.ID == current.ID:
+			mark = "[>]"
+		}
+		fmt.Fprintf(&b, "%s %d. %s\n", mark, i+1, it.Item)
+	}
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // appendNudge folds a stalling warning into the transcript as user-visible text without
@@ -712,6 +765,13 @@ type checkpoint struct {
 	// it means the turn index and its telemetry survive a crash-resume without
 	// rescanning the history each step.
 	Turns int
+	// Item is the ledger item id this conversation was last briefed on. It is what makes
+	// the brief land at an item boundary instead of on every turn: re-stating the same
+	// item each step would copy it into the durable transcript once per turn for no new
+	// information, while a changed id is exactly the moment the run has moved on and
+	// needs telling. It rides the checkpoint so a crash-resumed step does not re-brief an
+	// item the conversation was already given.
+	Item string
 
 	// encoded holds the marshaled JSON of each message in Messages, in order, and is
 	// never itself marshaled onto the wire. decodeCheckpoint fills it from the stored
@@ -731,6 +791,7 @@ type checkpointWire struct {
 	VerifyUsed int               `json:"verifyUsed,omitempty"`
 	Pending    []resultSlot      `json:"pending,omitempty"`
 	Turns      int               `json:"turns,omitempty"`
+	Item       string            `json:"item,omitempty"`
 }
 
 func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
@@ -742,7 +803,7 @@ func decodeCheckpoint(raw json.RawMessage) (checkpoint, error) {
 	if err := json.Unmarshal(raw, &wire); err != nil {
 		return cp, err
 	}
-	cp.Done, cp.Result, cp.VerifyUsed, cp.Pending, cp.Turns = wire.Done, wire.Result, wire.VerifyUsed, wire.Pending, wire.Turns
+	cp.Done, cp.Result, cp.VerifyUsed, cp.Pending, cp.Turns, cp.Item = wire.Done, wire.Result, wire.VerifyUsed, wire.Pending, wire.Turns, wire.Item
 	cp.Messages = make([]llm.Message, len(wire.Messages))
 	for i := range wire.Messages {
 		if err := json.Unmarshal(wire.Messages[i], &cp.Messages[i]); err != nil {
@@ -793,6 +854,7 @@ func encodeCheckpoint(cp checkpoint) (json.RawMessage, error) {
 		VerifyUsed: cp.VerifyUsed,
 		Pending:    cp.Pending,
 		Turns:      cp.Turns,
+		Item:       cp.Item,
 	})
 }
 
