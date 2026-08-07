@@ -378,6 +378,218 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 	return spawnConfined(appName, cmdline, dir, env, &sc, 0, io, resLimits)
 }
 
+// confinedPipes holds the pipe handles wired to a confined child's standard streams.
+// Non-duplex: one output pipe carrying the child's combined stdout+stderr (rdOut is the
+// parent read end, wrOut the child write end) plus an optional one-shot stdin. Duplex:
+// three pipes so an interactive child has a live stdin the parent keeps open (wrIn) and
+// separate stdout (rdOut) and stderr (rdErr) the parent reads, which keeps the child's
+// stderr logging out of its JSON-RPC stdout.
+//
+// The parent-side ends (rdOut, rdErr, wrIn) are the ones handed to the caller on success;
+// the child-side ends (wrOut, wrErr, rdIn) are the only handles the child inherits, and
+// the parent's copies of them are closed as soon as the child holds its own. Naming the
+// two sets apart is what makes the unwind paths checkable by eye: each failure closes one
+// named set, and releaseChildEnds zeroes what it closes so nothing is closed twice.
+type confinedPipes struct {
+	rdOut, wrOut windows.Handle // stdout (combined output when !duplex)
+	rdErr, wrErr windows.Handle // stderr (duplex only)
+	rdIn, wrIn   windows.Handle // stdin
+}
+
+// newConfinedPipes creates the pipes io asks for. Every parent-side end is made
+// non-inheritable so it does not leak into the child; only the child-side ends are
+// inherited, and only those the attribute list names explicitly. A failure closes
+// everything already open and returns no handles.
+func newConfinedPipes(io confinedIO) (*confinedPipes, error) {
+	sa := &windows.SecurityAttributes{InheritHandle: 1}
+	sa.Length = uint32(unsafe.Sizeof(*sa))
+
+	p := &confinedPipes{}
+	if err := windows.CreatePipe(&p.rdOut, &p.wrOut, sa, 0); err != nil {
+		return nil, fmt.Errorf("sandbox: pipe: %w", err)
+	}
+	if err := windows.SetHandleInformation(p.rdOut, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+		p.closeAll()
+		return nil, fmt.Errorf("sandbox: handle info: %w", err)
+	}
+	if io.duplex {
+		if err := windows.CreatePipe(&p.rdErr, &p.wrErr, sa, 0); err != nil {
+			p.closeAll()
+			return nil, fmt.Errorf("sandbox: stderr pipe: %w", err)
+		}
+		if err := windows.SetHandleInformation(p.rdErr, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			p.closeAll()
+			return nil, fmt.Errorf("sandbox: stderr handle info: %w", err)
+		}
+	}
+	// A stdin pipe is created for a duplex session (kept open for the parent to write) or a
+	// one-shot stdin feed. The read end is inheritable (the child reads it); the write end
+	// stays with the parent. With neither, the child simply has no input.
+	if io.duplex || len(io.stdinOnce) > 0 {
+		if err := windows.CreatePipe(&p.rdIn, &p.wrIn, sa, 0); err != nil {
+			p.closeAll()
+			return nil, fmt.Errorf("sandbox: stdin pipe: %w", err)
+		}
+		if err := windows.SetHandleInformation(p.wrIn, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
+			p.closeAll()
+			return nil, fmt.Errorf("sandbox: stdin handle info: %w", err)
+		}
+	}
+	return p, nil
+}
+
+// closeAll closes every pipe handle still open; used to unwind a setup failure before the
+// child holds its own copies.
+func (p *confinedPipes) closeAll() {
+	for _, h := range []windows.Handle{p.rdOut, p.wrOut, p.rdErr, p.wrErr, p.rdIn, p.wrIn} {
+		if h != 0 {
+			_ = windows.CloseHandle(h)
+		}
+	}
+}
+
+// closeParentEnds closes the ends that would have been handed back to the caller on
+// success. It is the unwind for every failure after the pipes exist.
+func (p *confinedPipes) closeParentEnds() {
+	for _, h := range []windows.Handle{p.rdOut, p.rdErr, p.wrIn} {
+		if h != 0 {
+			_ = windows.CloseHandle(h)
+		}
+	}
+}
+
+// closeChildEnds releases the child-side (inherited) ends on a path that fails before the
+// child holds its own copies.
+func (p *confinedPipes) closeChildEnds() {
+	for _, h := range []windows.Handle{p.wrOut, p.wrErr, p.rdIn} {
+		if h != 0 {
+			_ = windows.CloseHandle(h)
+		}
+	}
+}
+
+// releaseChildEnds closes the parent's copies of the inherited ends once the child holds
+// its own, and zeroes them so a later failure cleanup cannot double-close. It runs whether
+// or not process creation succeeded: on failure the child never started, and the parent's
+// copies are dead either way.
+func (p *confinedPipes) releaseChildEnds() {
+	for _, h := range []*windows.Handle{&p.wrOut, &p.wrErr, &p.rdIn} {
+		if *h != 0 {
+			_ = windows.CloseHandle(*h)
+			*h = 0
+		}
+	}
+}
+
+// inheritable lists the child-side ends the child is allowed to inherit: the output write
+// end, the separate stderr write end when duplex, and the stdin read end when there is
+// one. Whatever other inheritable handles this process happens to hold stay behind.
+func (p *confinedPipes) inheritable() []windows.Handle {
+	handles := []windows.Handle{p.wrOut}
+	if p.wrErr != 0 {
+		handles = append(handles, p.wrErr)
+	}
+	if p.rdIn != 0 {
+		handles = append(handles, p.rdIn)
+	}
+	return handles
+}
+
+// startupInfo wires the child's standard handles and the attribute list into the extended
+// startup info. stderr goes to the combined output pipe unless the session is duplex,
+// which gives it its own. A zero StdInput means the child has no input.
+func (p *confinedPipes) startupInfo(al *windows.ProcThreadAttributeListContainer, duplex bool) *windows.StartupInfoEx {
+	si := new(windows.StartupInfoEx)
+	si.Cb = uint32(unsafe.Sizeof(*si))
+	si.Flags |= windows.STARTF_USESTDHANDLES
+	si.StdOutput = p.wrOut
+	si.StdErr = p.wrOut // combined by default; the duplex path redirects stderr to its own pipe
+	if duplex {
+		si.StdErr = p.wrErr
+	}
+	si.StdInput = p.rdIn // zero when no stdin: the child has no input
+	si.ProcThreadAttributeList = al.List()
+	return si
+}
+
+// confinedAttributes builds the proc-thread attribute list that carries the confinement
+// into CreateProcess: the AppContainer identity when sc is non-nil (the security-
+// capabilities attribute is what makes the kernel build the container token at creation),
+// the exact set of handles the child may inherit, and the process-mitigation policies
+// that harden the child on top of the container.
+//
+// The caller owns the returned list and must Delete it, and must keep it alive until
+// CreateProcess returns. That is not only hygiene: Update retains the pointer it is given
+// rather than copying the value, so the handle slice and the policy word built here stay
+// reachable only through the list. Dropping the list early would free memory the kernel
+// still reads.
+func confinedAttributes(sc *securityCapabilities, handles []windows.Handle) (*windows.ProcThreadAttributeListContainer, error) {
+	al, err := windows.NewProcThreadAttributeList(3)
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: attribute list: %w", err)
+	}
+	if sc != nil {
+		if err := al.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(sc), unsafe.Sizeof(*sc)); err != nil {
+			al.Delete()
+			return nil, fmt.Errorf("sandbox: security capabilities: %w", err)
+		}
+	}
+	if err := al.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
+		al.Delete()
+		return nil, fmt.Errorf("sandbox: handle list: %w", err)
+	}
+	// Win32k lockdown is deliberately not in sandboxMitigationPolicy; see the constant.
+	policy := uint64(sandboxMitigationPolicy)
+	if err := al.Update(procThreadAttributeMitigationPolicy, unsafe.Pointer(&policy), unsafe.Sizeof(policy)); err != nil {
+		al.Delete()
+		return nil, fmt.Errorf("sandbox: mitigation policy: %w", err)
+	}
+	return al, nil
+}
+
+// createConfinedProcess creates the child suspended, so it can be placed in its job with
+// the limits in force before it runs a single instruction. A non-zero token is the
+// write-restricted tier: the child's primary token is the restricted one, and
+// CreateProcessAsUser accepts a restricted version of the caller's own token without any
+// assign-primary-token privilege.
+func createConfinedProcess(appName, cmdline, dir string, env *uint16, token windows.Token, si *windows.StartupInfoEx) (windows.ProcessInformation, error) {
+	appPtr, _ := windows.UTF16PtrFromString(appName)
+	clPtr, _ := windows.UTF16PtrFromString(cmdline)
+	dirPtr, _ := windows.UTF16PtrFromString(dir)
+
+	var pi windows.ProcessInformation
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
+	var err error
+	if token != 0 {
+		err = windows.CreateProcessAsUser(token, appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
+	} else {
+		err = windows.CreateProcess(appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
+	}
+	if err != nil {
+		return windows.ProcessInformation{}, fmt.Errorf("sandbox: create process: %w", err)
+	}
+	return pi, nil
+}
+
+// feedStdinOnce writes a one-shot stdin value on a separate goroutine, so a value larger
+// than the pipe buffer cannot deadlock against a child that has not started reading, then
+// closes the writer so the child sees end-of-input. The bytes never touch the command
+// line. Ownership of w passes to the goroutine.
+func feedStdinOnce(w windows.Handle, b []byte) {
+	go func() {
+		for len(b) > 0 {
+			n, werr := windows.Write(w, b)
+			if n > 0 {
+				b = b[n:]
+			}
+			if werr != nil {
+				break
+			}
+		}
+		_ = windows.CloseHandle(w)
+	}()
+}
+
 // spawnConfined creates and starts a confined command and returns a handle to the
 // running process. The confinement identity comes from exactly one of two mechanisms:
 // a non-nil sc launches the child inside that AppContainer (the security-capabilities
@@ -389,159 +601,41 @@ func spawnAppContainer(appName, cmdline, dir string, env *uint16, sid *windows.S
 // resLimits sets a memory or process cap, the job object that contains the child
 // enforces it. The caller reads p.read and, when done, calls p.closeProcess and closes
 // p.read. A failure to launch is an error and leaves no handles for the caller.
+//
+// The phases are: build the pipes, describe the confinement as attributes, create the
+// child suspended, contain it in a job, then resume it. Each phase has one unwind, and
+// the success flag is what keeps a late failure from handing back live handles.
 func spawnConfined(appName, cmdline, dir string, env *uint16, sc *securityCapabilities, token windows.Token, io confinedIO, resLimits ResourceLimits) (*acProcess, error) {
-	sa := &windows.SecurityAttributes{InheritHandle: 1}
-	sa.Length = uint32(unsafe.Sizeof(*sa))
-
-	// Pipe handles. Non-duplex: one output pipe carrying the child's combined stdout+stderr
-	// (rdOut is the parent read end, wrOut the child write end) plus an optional one-shot
-	// stdin. Duplex: three pipes so an interactive child has a live stdin the parent keeps
-	// open (wrIn) and separate stdout (rdOut) and stderr (rdErr) the parent reads, which
-	// keeps the child's stderr logging out of its JSON-RPC stdout. Every parent-side end is
-	// made non-inheritable so it does not leak into the child; only the child-side ends are
-	// inherited, and only those we list explicitly.
-	var (
-		rdOut, wrOut windows.Handle // stdout (combined output when !duplex)
-		rdErr, wrErr windows.Handle // stderr (duplex only)
-		rdIn, wrIn   windows.Handle // stdin
-	)
-	// closeAllPipes closes every pipe handle still open; used to unwind a setup failure
-	// before the child holds its own copies.
-	closeAllPipes := func() {
-		for _, h := range []windows.Handle{rdOut, wrOut, rdErr, wrErr, rdIn, wrIn} {
-			if h != 0 {
-				_ = windows.CloseHandle(h)
-			}
-		}
+	pipes, err := newConfinedPipes(io)
+	if err != nil {
+		return nil, err
 	}
 
-	if err := windows.CreatePipe(&rdOut, &wrOut, sa, 0); err != nil {
-		return nil, fmt.Errorf("sandbox: pipe: %w", err)
-	}
-	if err := windows.SetHandleInformation(rdOut, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-		closeAllPipes()
-		return nil, fmt.Errorf("sandbox: handle info: %w", err)
-	}
-	if io.duplex {
-		if err := windows.CreatePipe(&rdErr, &wrErr, sa, 0); err != nil {
-			closeAllPipes()
-			return nil, fmt.Errorf("sandbox: stderr pipe: %w", err)
-		}
-		if err := windows.SetHandleInformation(rdErr, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-			closeAllPipes()
-			return nil, fmt.Errorf("sandbox: stderr handle info: %w", err)
-		}
-	}
-	// A stdin pipe is created for a duplex session (kept open for the parent to write) or a
-	// one-shot stdin feed. The read end is inheritable (the child reads it); the write end
-	// stays with the parent. With neither, the child simply has no input.
-	if io.duplex || len(io.stdinOnce) > 0 {
-		if err := windows.CreatePipe(&rdIn, &wrIn, sa, 0); err != nil {
-			closeAllPipes()
-			return nil, fmt.Errorf("sandbox: stdin pipe: %w", err)
-		}
-		if err := windows.SetHandleInformation(wrIn, windows.HANDLE_FLAG_INHERIT, 0); err != nil {
-			closeAllPipes()
-			return nil, fmt.Errorf("sandbox: stdin handle info: %w", err)
-		}
-	}
-
-	// On any failure before success, the parent-side ends we would otherwise hand back
-	// (rdOut, rdErr, wrIn) are closed here. The child-side ends (wrOut, wrErr, rdIn) are
-	// closed explicitly after process creation and by failClose before it; the process,
-	// thread, and job handles are guarded by the same flag below.
+	// On any failure from here on, the parent-side ends we would otherwise hand back are
+	// closed here. The child-side ends are closed by closeChildEnds before process creation
+	// and by releaseChildEnds after it; the process, thread, and job handles are guarded by
+	// this same flag below.
 	success := false
 	defer func() {
 		if !success {
-			for _, h := range []windows.Handle{rdOut, rdErr, wrIn} {
-				if h != 0 {
-					_ = windows.CloseHandle(h)
-				}
-			}
+			pipes.closeParentEnds()
 		}
 	}()
 
-	// failClose releases the child-side (inherited) ends on a path that fails before the
-	// child holds its own copies.
-	failClose := func() {
-		for _, h := range []windows.Handle{wrOut, wrErr, rdIn} {
-			if h != 0 {
-				_ = windows.CloseHandle(h)
-			}
-		}
-	}
-
-	al, err := windows.NewProcThreadAttributeList(3)
+	al, err := confinedAttributes(sc, pipes.inheritable())
 	if err != nil {
-		failClose()
-		return nil, fmt.Errorf("sandbox: attribute list: %w", err)
+		pipes.closeChildEnds()
+		return nil, err
 	}
 	defer al.Delete()
-	if sc != nil {
-		if err := al.Update(procThreadAttributeSecurityCapabilities, unsafe.Pointer(sc), unsafe.Sizeof(*sc)); err != nil {
-			failClose()
-			return nil, fmt.Errorf("sandbox: security capabilities: %w", err)
-		}
-	}
-	// Inherit only the pipe handles we set up (the child write ends, and the stdin reader
-	// when present), not whatever other inheritable handles this process happens to hold.
-	handles := []windows.Handle{wrOut}
-	if wrErr != 0 {
-		handles = append(handles, wrErr)
-	}
-	if rdIn != 0 {
-		handles = append(handles, rdIn)
-	}
-	if err := al.Update(windows.PROC_THREAD_ATTRIBUTE_HANDLE_LIST, unsafe.Pointer(&handles[0]), uintptr(len(handles))*unsafe.Sizeof(handles[0])); err != nil {
-		failClose()
-		return nil, fmt.Errorf("sandbox: handle list: %w", err)
-	}
-	// Harden the child with process-mitigation policies (Win32k lockdown, no code
-	// injection or DLL planting, standard exploit mitigations) on top of the container.
-	policy := uint64(sandboxMitigationPolicy)
-	if err := al.Update(procThreadAttributeMitigationPolicy, unsafe.Pointer(&policy), unsafe.Sizeof(policy)); err != nil {
-		failClose()
-		return nil, fmt.Errorf("sandbox: mitigation policy: %w", err)
-	}
 
-	si := new(windows.StartupInfoEx)
-	si.Cb = uint32(unsafe.Sizeof(*si))
-	si.Flags |= windows.STARTF_USESTDHANDLES
-	si.StdOutput = wrOut
-	si.StdErr = wrOut // combined by default; the duplex path redirects stderr to its own pipe
-	if io.duplex {
-		si.StdErr = wrErr
-	}
-	si.StdInput = rdIn // zero when no stdin: the child has no input
-	si.ProcThreadAttributeList = al.List()
-
-	appPtr, _ := windows.UTF16PtrFromString(appName)
-	clPtr, _ := windows.UTF16PtrFromString(cmdline)
-	dirPtr, _ := windows.UTF16PtrFromString(dir)
-
-	var pi windows.ProcessInformation
-	// The child is created suspended so it is placed in its job, with the limits in
-	// force, before it runs a single instruction.
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
-	if token != 0 {
-		// The write-restricted tier: the child's primary token is the restricted one.
-		// CreateProcessAsUser accepts a restricted version of the caller's own token
-		// without any assign-primary-token privilege.
-		err = windows.CreateProcessAsUser(token, appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
-	} else {
-		err = windows.CreateProcess(appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)
-	}
+	pi, err := createConfinedProcess(appName, cmdline, dir, env, token, pipes.startupInfo(al, io.duplex))
 	// The child now holds its own copies of the inherited (child-side) ends; close the
 	// parent's copies and zero them so the failure cleanup does not double-close.
-	for _, h := range []*windows.Handle{&wrOut, &wrErr, &rdIn} {
-		if *h != 0 {
-			_ = windows.CloseHandle(*h)
-			*h = 0
-		}
-	}
+	pipes.releaseChildEnds()
 	if err != nil {
-		// The parent-side ends (rdOut, rdErr, wrIn) are closed by the deferred cleanup.
-		return nil, fmt.Errorf("sandbox: create process: %w", err)
+		// The parent-side ends are closed by the deferred cleanup.
+		return nil, err
 	}
 	// The process, thread, and job handles are kept for the caller on success and closed
 	// here on any error path below, guarded by the same success flag.
@@ -569,30 +663,16 @@ func spawnConfined(appName, cmdline, dir string, env *uint16, sc *securityCapabi
 		return nil, fmt.Errorf("sandbox: resume: %w", err)
 	}
 
-	// A one-shot stdin feed (non-duplex): feed the value on a separate goroutine so a value
-	// larger than the pipe buffer cannot deadlock against a child that has not started
-	// reading, then close the writer so the child sees end-of-input. The bytes never touch
-	// the command line. A duplex session instead keeps wrIn open and hands it to the caller.
-	if !io.duplex && wrIn != 0 {
-		w := wrIn
-		wrIn = 0 // ownership passes to the goroutine; do not hand it back or close it here
-		go func() {
-			b := io.stdinOnce
-			for len(b) > 0 {
-				n, werr := windows.Write(w, b)
-				if n > 0 {
-					b = b[n:]
-				}
-				if werr != nil {
-					break
-				}
-			}
-			_ = windows.CloseHandle(w)
-		}()
+	// A duplex session keeps wrIn open and hands it to the caller; a one-shot feed instead
+	// gives the handle away to the writer goroutine and hands back nothing.
+	if !io.duplex && pipes.wrIn != 0 {
+		w := pipes.wrIn
+		pipes.wrIn = 0 // ownership passes to the goroutine; do not hand it back or close it here
+		feedStdinOnce(w, io.stdinOnce)
 	}
 
 	success = true
-	return &acProcess{pi: pi, job: job, read: rdOut, errRead: rdErr, writeIn: wrIn, reaped: procs.Started()}, nil
+	return &acProcess{pi: pi, job: job, read: pipes.rdOut, errRead: pipes.rdErr, writeIn: pipes.wrIn, reaped: procs.Started()}, nil
 }
 
 // launchAppContainer runs a command inside the AppContainer named by sid and returns its
