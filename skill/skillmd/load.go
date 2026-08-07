@@ -200,7 +200,9 @@ func readCapped(fsys fs.FS, name string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	// The close error is dropped deliberately: this reader never wrote anything, so
+	// there is no buffered data whose loss a close could report.
+	defer func() { _ = f.Close() }()
 
 	src, err := io.ReadAll(io.LimitReader(f, MaxDocSize+1))
 	if err != nil {
