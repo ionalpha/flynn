@@ -490,6 +490,88 @@ func TestUnitAdmissionOrderProperty(t *testing.T) {
 	})
 }
 
+func TestUnitPhaseOfResolvesEveryCase(t *testing.T) {
+	units := []Unit{unit("a"), unit("b", "a")}
+	s := syncedStatus(units)
+	if got := s.UnitPhaseOf(units, "a"); got != UnitPending {
+		t.Fatalf("a root with nothing spent on it = %q, want pending", got)
+	}
+	if got := s.UnitPhaseOf(units, "b"); got != UnitBlocked {
+		t.Fatalf("a unit behind an unproven dependency = %q, want blocked", got)
+	}
+	if got := s.UnitPhaseOf(units, "ghost"); got != UnitPending {
+		t.Fatalf("a unit the record does not carry = %q, want pending", got)
+	}
+	dispatchAndProve(t, &s, units[0])
+	if got := s.UnitPhaseOf(units, "a"); got != UnitSettled {
+		t.Fatalf("a proven unit = %q, want settled", got)
+	}
+	if got := s.UnitPhaseOf(units, "b"); got != UnitPending {
+		t.Fatalf("a unit whose dependency is proven = %q, want pending", got)
+	}
+}
+
+func TestRefuseUnitOnlyTouchesAPendingUnit(t *testing.T) {
+	units := []Unit{unit("a")}
+	s := syncedStatus(units)
+	if err := s.RefuseUnit("ghost", "nope", time.Unix(0, 0)); !errors.Is(err, ErrUnitUnknown) {
+		t.Fatalf("refusing a unit outside the graph = %v, want ErrUnitUnknown", err)
+	}
+	if err := s.RefuseUnit("a", "the delegation depth was exceeded", time.Unix(0, 0)); err != nil {
+		t.Fatalf("refuse: %v", err)
+	}
+	if s.Units[0].Phase != UnitSettled || s.Units[0].Proven || s.Units[0].Failure == "" {
+		t.Fatalf("a refused unit was not settled unproven with its reason: %+v", s.Units[0])
+	}
+
+	// A refusal arriving for a unit that has since been created must not unseat the
+	// child that exists.
+	live := syncedStatus(units)
+	if err := live.MarkUnitDispatched(units[0], "child-a"); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if err := live.RefuseUnit("a", "late refusal", time.Unix(0, 0)); err != nil {
+		t.Fatalf("late refuse: %v", err)
+	}
+	if live.Units[0].Phase != UnitDispatched || live.Units[0].ChildID != "child-a" {
+		t.Fatalf("a late refusal unseated a running child: %+v", live.Units[0])
+	}
+}
+
+func TestUnitsSettledNeedsBothTheGraphAndTheRecord(t *testing.T) {
+	units := []Unit{unit("a")}
+	if (Status{}).UnitsSettled(units) {
+		t.Fatalf("a graph the status has no state for reported settled")
+	}
+	if syncedStatus(units).UnitsSettled(nil) {
+		t.Fatalf("an empty graph reported settled")
+	}
+}
+
+// A stall over a partly-proven graph reports the units that will never be reached
+// and stays quiet about the ones that were.
+func TestUnitStallSkipsTheProvenUnits(t *testing.T) {
+	units := []Unit{unit("done"), unit("bad"), unit("after", "bad")}
+	s := syncedStatus(units)
+	dispatchAndProve(t, &s, units[0])
+	if err := s.MarkUnitDispatched(units[1], "child-bad"); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	if err := s.MarkUnitFailed("bad", "the check did not pass", time.Unix(0, 0)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	stalled, reason := s.UnitStalled(units)
+	if !stalled {
+		t.Fatalf("a graph with a failed unit did not report stalled")
+	}
+	if strings.Contains(reason, "done") {
+		t.Fatalf("stall reason %q names a unit that was proven", reason)
+	}
+	if !strings.Contains(reason, "bad failed") || !strings.Contains(reason, "after blocked on bad") {
+		t.Fatalf("stall reason %q does not name the failure and what it stranded", reason)
+	}
+}
+
 // --- admission on the reconcile path ----------------------------------------
 
 // putStatus writes a status onto the goal, so a test can stand the record up in a

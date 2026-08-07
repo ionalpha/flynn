@@ -247,13 +247,14 @@ func unreachable(units []Unit) []string {
 			queue = append(queue, u.ID)
 		}
 	}
+	// A unit reaches the queue exactly once: a root is queued in the pass above, and
+	// every other unit is queued on the single decrement that takes its outstanding
+	// dependency count to zero. So there is no need to guard against emitting one
+	// twice, and a guard here would be a branch nothing could ever take.
 	emitted := make(map[string]bool, len(units))
 	for len(queue) > 0 {
 		id := queue[0]
 		queue = queue[1:]
-		if emitted[id] {
-			continue
-		}
 		emitted[id] = true
 		for _, dep := range dependents[id] {
 			remaining[dep]--

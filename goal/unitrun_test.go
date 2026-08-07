@@ -28,6 +28,7 @@ type fakeSpawner struct {
 	children map[string]string      // unit id -> child id
 	outcomes map[string]UnitOutcome // child id -> what it produced
 	refuse   map[string]error       // unit id -> the refusal Spawn returns
+	pollErr  error                  // when set, Outcomes fails instead of reporting
 }
 
 func newFakeSpawner() *fakeSpawner {
@@ -56,6 +57,9 @@ func (f *fakeSpawner) Spawn(_ context.Context, _ resource.Resource, u Unit) (str
 func (f *fakeSpawner) Outcomes(_ context.Context, ids []string) ([]UnitOutcome, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.pollErr != nil {
+		return nil, f.pollErr
+	}
 	out := make([]UnitOutcome, 0, len(ids))
 	for _, id := range ids {
 		if o, ok := f.outcomes[id]; ok {
@@ -464,6 +468,37 @@ func TestUnitFanoutProperty(t *testing.T) {
 		}
 		rt.Fatal("the fan-out did not reach a terminal phase")
 	})
+}
+
+// A fan-out that cannot be polled is a read that failed, not a graph that stopped.
+// The reconcile returns the error to be classified and retried, and the goal keeps
+// its children rather than settling over a question nobody answered.
+func TestOutcomesErrorIsRetriedRatherThanStalling(t *testing.T) {
+	h := newUnitHarness(t, stopAfter{at: 0})
+	units := []Unit{unit("a")}
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Units: units})
+	h.reconcile(t, ref) // finalizer, creates a's child and parks
+
+	h.sp.pollErr = fault.New(fault.Transient, "spawn_poll_get", "the store is unreachable")
+	h.wake(t, ref)
+	if _, err := h.gr.Reconcile(h.ctx, ref); err == nil {
+		t.Fatalf("a failed poll was swallowed")
+	}
+	st := h.status(t, ref)
+	if st.Phase == PhaseStalled {
+		t.Fatalf("a failed poll stalled the goal: %q", st.Message)
+	}
+	if st.Units[0].Phase != UnitDispatched {
+		t.Fatalf("a failed poll disturbed the unit's state: %+v", st.Units[0])
+	}
+
+	h.sp.pollErr = nil
+	h.sp.prove("a")
+	h.wake(t, ref)
+	h.reconcile(t, ref)
+	if st := h.status(t, ref); st.Phase != PhaseConverged {
+		t.Fatalf("the goal did not recover once the poll came back: %+v", st)
+	}
 }
 
 // countingStop reports a fixed verdict and counts how often it was asked, which is
