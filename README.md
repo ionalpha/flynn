@@ -618,23 +618,37 @@ Configuration lives in a single file plus environment variables for secrets. Set
 your model and provider, choose which tools and channels are enabled, and set
 budgets and autonomy defaults. See the documentation for the full reference.
 
-## Optional: connect to Ion Alpha
+## Optional: Ion Alpha, the first host to embed Flynn
 
-Flynn runs standalone and stores its state locally in SQLite, and it is gaining
-graph-backed memory and federated, fleet-wide learning in its own right (see the
-roadmap). [Ion Alpha](https://x.com/ionalpha_) is the optional managed host that
-delivers those at team and organization scale, turnkey, with no change to how you
-use the agent:
+None of this section is required. Flynn builds, runs, and stores its state
+locally in SQLite with no host at all, and it is gaining graph-backed memory and
+federated, fleet-wide learning in its own right (see the roadmap).
 
-- A hosted, multi-tenant foundation: one permissioned, compounding pool of skills
-  and knowledge shared across people and projects, so every agent can build on
-  every other agent's verified experience.
+[Ion Alpha](https://ionalpha.io) is the first product to embed Flynn, and the
+clearest demonstration of what embedding buys you. Ion Alpha runs a company end
+to end: projects and areas, tasks and sprints, notes and documents, a typed
+knowledge graph, source control and pull requests, structured data, code
+intelligence, skills, and long-lived goals dispatched across a fleet of
+instances. Flynn is the engine underneath all of it. Every agent in Ion Alpha is
+a Flynn run: the same dispatch waist admitting each model and tool call against a
+capability grant, the same event-sourced spine, the same signed run records. Ion
+Alpha supplies the surfaces and the domain; Flynn decides, calls, remembers, and
+leaves the audit trail. What the agents in it can do is a working answer to what
+this repository can power.
+
+Run against an Ion Alpha instance and Flynn keeps the same commands and
+configuration, with the local ports pointed at hosted implementations:
+
+- One permissioned, compounding pool of skills and knowledge shared across people
+  and projects, so every agent can build on every other agent's verified
+  experience.
 - A typed knowledge graph as memory, able to connect facts and surface
   contradictions, instead of flat recall.
 - Team workspaces, cross-project context, SSO, and full audit and backup.
 
-The boundary is clean: the agent depends only on interfaces, the host implements
-them, and the agent always builds and runs standalone.
+The boundary is clean, and it is the reason the optionality is real: the agent
+depends only on the interfaces in `state/` and `observe/`, a host implements
+them, and nothing in this repository depends on a host.
 
 ## Contributing
 

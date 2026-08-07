@@ -25,6 +25,7 @@ package learn
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"github.com/ionalpha/flynn/llm"
@@ -96,6 +97,13 @@ const (
 // memoryKind is the memory item kind captured lessons are stored under.
 const memoryKind = "lesson"
 
+// ErrBundledScope is returned when the learning loop is asked to write into
+// state.BundledScope, which belongs to the skills shipped in the binary. It is a
+// wiring mistake at the call site rather than a condition the loop can encounter
+// from data, so it is reported instead of skipped: silently capturing nothing
+// would look identical to a run that taught nothing.
+var ErrBundledScope = errors.New("learn: bundled scope is reserved for skills shipped in the binary")
+
 // Curator is the capture half of the learning loop: it distills a converged run
 // into lessons and persists them, stamped with provenance. It holds no model
 // dependency of its own; the Distiller supplies that. With a Verifier set, a
@@ -148,10 +156,17 @@ type Captured struct {
 // first store error aborts and is returned, with whatever was stored before it.
 func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 	var captured Captured
+	if o.Scope == state.BundledScope {
+		return captured, ErrBundledScope
+	}
 	if !o.Converged {
 		return captured, nil // gate: capture only from runs that met their goal
 	}
 	lessons, err := c.distiller.Distill(ctx, o)
+	if err != nil {
+		return captured, err
+	}
+	bundled, err := c.bundledSlugs(ctx)
 	if err != nil {
 		return captured, err
 	}
@@ -173,6 +188,16 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 			// not silently replace its body, check or tags. Skip it before the check
 			// runs, so a capture we will not store costs no sandbox time.
 			if existsInScope && !isLearned(prev.Tags) {
+				captured.Skipped = append(captured.Skipped, l)
+				continue
+			}
+
+			// A bundled skill owns its slug everywhere, not only in its own scope.
+			// Writing a learned skill under a bundled slug would store a record that
+			// no read can reach: Get resolves a slug across scopes by earliest
+			// created row, and a bundled skill is seeded before any run distils
+			// anything. Skipping it reports the collision instead.
+			if bundled[slug] {
 				captured.Skipped = append(captured.Skipped, l)
 				continue
 			}
@@ -228,6 +253,23 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 		}
 	}
 	return captured, nil
+}
+
+// bundledSlugs is the set of slugs owned by the skills shipped in the binary. It
+// is read by listing the reserved scope rather than by looking each candidate slug
+// up with Get, because Get resolves a slug across every scope and would answer
+// about the wrong record exactly when the answer matters. One list per Curate call
+// covers every lesson in it; the bundled set is a pack, not a corpus.
+func (c *Curator) bundledSlugs(ctx context.Context) (map[string]bool, error) {
+	all, err := c.skills.List(ctx, state.BundledScope)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(all))
+	for _, sk := range all {
+		out[sk.Slug] = true
+	}
+	return out, nil
 }
 
 // sourcesOf renders an outcome's single provenance string as a memory item's

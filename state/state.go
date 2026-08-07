@@ -49,6 +49,25 @@ type Scope struct {
 	Workspace string
 }
 
+// BundledScope is where skills shipped inside the binary live, and nothing else
+// may be written there. It exists because the agent's own scopes are occupied:
+// the CLI lists, regrades and distills at the zero scope, so a pack seeded there
+// would share a slug namespace with the learning loop's output.
+//
+// The instance name is not a legal instance identifier - identifiers are host
+// names and UUIDs - so no real instance can land in this scope by accident, and a
+// generator drawing instance names from an alphabet cannot produce it either.
+//
+// Reserving it is a correctness boundary rather than a naming convention. Skills
+// are keyed by (Scope, Slug) on write but resolved by slug alone on read, and Get
+// breaks a cross-scope slug tie by taking the earliest created row. A bundled
+// skill is seeded at install, so it is always the earliest: were the loop allowed
+// to mint a learned skill with a bundled skill's slug, every later read of that
+// slug would return the bundled record, and the learned one would be unreachable
+// while still counting as stored. learn.Curate enforces the boundary from the
+// write side; see the guards there for what is refused and why.
+var BundledScope = Scope{Instance: "@bundled"}
+
 // Ancestors returns s and the scopes enclosing it, most-specific first and ending
 // at the global (zero) scope: {I,P,W}, {I,P}, {I}, {}. It is the resolution chain
 // a widened read walks, and the single definition of "encloses" every backend

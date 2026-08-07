@@ -24,8 +24,16 @@ type RegradeResult struct {
 // re-graded as the environment changes, so a procedure that has quietly stopped
 // working is caught and removed rather than recalled forever. A nil verifier is a
 // no-op; the first store or verifier error aborts and is returned.
+//
+// The bundled scope is refused with ErrBundledScope. Skills shipped in the binary
+// are versioned with it, so a regrade there would rewrite authored tags and could
+// archive an authored skill on a check that fails for reasons of the machine it
+// ran on; the next upgrade would then have to resurrect it.
 func Regrade(ctx context.Context, skills state.SkillStore, scope state.Scope, v Verifier) (RegradeResult, error) {
 	var res RegradeResult
+	if scope == state.BundledScope {
+		return res, ErrBundledScope
+	}
 	if v == nil {
 		return res, nil
 	}

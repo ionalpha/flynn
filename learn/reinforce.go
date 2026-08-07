@@ -41,17 +41,23 @@ func Confidence(uses, wins int) float64 {
 // Reinforce records one run's outcome against the skills it recalled: each is used
 // once more, and once more a win if the run succeeded. The evidence accrues on the
 // skill so it can be ranked and retired by how it actually performs. A duplicate or
-// empty slug, or one with no live skill, is skipped; the first store error is
+// empty reference, or one with no live skill, is skipped; the first store error is
 // returned. It is a read-modify-write per skill, which is safe under the agent's
 // single-writer local store.
-func Reinforce(ctx context.Context, skills state.SkillStore, slugs []string, success bool) error {
+//
+// Pass the ids of the recalled skills, not their slugs. Recall is scope-blind, so
+// what it returns can be a bundled skill or a learned one, and two scopes may hold
+// the same slug; Get resolves a slug by earliest created row, which would credit
+// the run to whichever record happens to be older. An id names the record that was
+// actually put in front of the model.
+func Reinforce(ctx context.Context, skills state.SkillStore, ids []string, success bool) error {
 	seen := map[string]bool{}
-	for _, slug := range slugs {
-		if slug == "" || seen[slug] {
+	for _, id := range ids {
+		if id == "" || seen[id] {
 			continue
 		}
-		seen[slug] = true
-		sk, err := skills.Get(ctx, slug)
+		seen[id] = true
+		sk, err := skills.Get(ctx, id)
 		if errors.Is(err, state.ErrNotFound) {
 			continue
 		}
@@ -85,7 +91,14 @@ func DefaultDecay() DecayPolicy { return DecayPolicy{MinUses: 5, MinConfidence: 
 // the ones it archived. Archiving is a soft delete (a tombstone), so a retired
 // skill is recoverable and never silently lost, and a skill with little evidence is
 // kept because it has not yet earned retirement.
+//
+// The bundled scope is refused with ErrBundledScope: a skill shipped in the binary
+// is replaced by an upgrade, not retired by a policy, and archiving one would leave
+// a tombstone for the next seed to fight with.
 func Decay(ctx context.Context, skills state.SkillStore, scope state.Scope, p DecayPolicy) ([]state.Skill, error) {
+	if scope == state.BundledScope {
+		return nil, ErrBundledScope
+	}
 	all, err := skills.List(ctx, scope)
 	if err != nil {
 		return nil, err

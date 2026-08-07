@@ -170,6 +170,56 @@ func TestRecallContext(t *testing.T) {
 	}
 }
 
+// TestRecallReturnsIDsForReinforcement pins what recall hands to the reinforcement
+// path. Recall is scope-blind, so a bundled skill and a learned one can hold the
+// same slug; a slug would then credit the run to whichever record the store
+// resolves to, which is the older of the two. Ids name the record the model was
+// actually shown.
+func TestRecallReturnsIDsForReinforcement(t *testing.T) {
+	st := memStore(t)
+	ctx := context.Background()
+
+	bundled, err := st.Skills().Upsert(ctx, state.Skill{
+		Slug: "deploy-flow", Name: "Deploy flow",
+		Body: "run the deploy script then verify", Scope: state.BundledScope,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	learned, err := st.Skills().Upsert(ctx, state.Skill{
+		Slug: "deploy-flow", Name: "Deploy flow", Tags: []string{"learned"},
+		Body: "run the deploy script then verify", Scope: state.Scope{Instance: "inst"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, recalled, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
+	if len(recalled) != 2 {
+		t.Fatalf("recalled %d skills, want both records: %v", len(recalled), recalled)
+	}
+	for _, ref := range recalled {
+		if ref != bundled.ID && ref != learned.ID {
+			t.Fatalf("recalled %q, want a skill id; a slug cannot name one of two records", ref)
+		}
+	}
+
+	// Reinforcement resolves those references exactly: both records take the credit
+	// they earned, which is impossible when the reference is the slug they share.
+	if err := learn.Reinforce(ctx, st.Skills(), recalled, true); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []state.Skill{bundled, learned} {
+		got, err := st.Skills().Get(ctx, want.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Uses != 1 || got.Wins != 1 {
+			t.Fatalf("skill %s in scope %+v: uses/wins = %d/%d, want 1/1", got.ID, got.Scope, got.Uses, got.Wins)
+		}
+	}
+}
+
 // TestRunRemembersAcrossRuns is the end-to-end proof of the learning loop: a first
 // run captures a memory into the durable store, and a second run over the same
 // store recalls it into the model's system prompt. The agent starts the second run
