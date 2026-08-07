@@ -321,8 +321,10 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 
 	// Observe an in-flight step.
 	observed := false
+	observedKind := ""
 	if status.InFlight != nil {
 		inFlightKind := status.InFlight.Kind
+		observedKind = inFlightKind
 		job, err := g.jobs.Get(ctx, status.InFlight.JobID)
 		switch {
 		case err != nil:
@@ -443,6 +445,13 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 			return g.terminal(ctx, r, status, specHash)
 		}
 	}
+	// Fold this cycle's refusal into the non-convergence count. It sits here because this
+	// is the first point where both halves of the refusal are current: the evaluator has
+	// just spoken, and under the ledger gate the item's check has just been settled, so
+	// the feedback describes the cycle that ended rather than the one before it.
+	if !met && g.countsAsCycle(observed, observedKind, status) {
+		status.ObserveVerdict(reason, status.ItemFeedback)
+	}
 	if met {
 		status.Phase = PhaseConverged
 		status.Message = reason
@@ -492,6 +501,21 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return g.terminal(ctx, r, status, specHash)
 	}
 
+	// Non-convergence guard: the run is still producing steps, but the answer it gets back
+	// has stopped changing. This sits last among the stop reasons because every one above
+	// it is a more specific account of the same halt — a run that converged, ran out of
+	// allowance, or did nothing at all should say so rather than say it was told the same
+	// thing twice. What reaches here is the run that was busy and got nowhere, which has no
+	// other reason available and would otherwise have spent its whole budget discovering
+	// that its condition was unsatisfiable.
+	if status.StalledForNonConvergence() {
+		status.Phase = PhaseStalled
+		status.Message = status.NonConvergenceReason()
+		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "NotConverging", Message: status.Message}, g.clk.Now())
+		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+		return g.terminal(ctx, r, status, specHash)
+	}
+
 	// Dispatch the next step and record it in flight. Under the ledger gate a build step
 	// is followed by the current item's declared check, so exactly one verification runs
 	// per build step rather than one per reconcile tick.
@@ -517,6 +541,27 @@ func (s *Status) markVerifyPending(kind string) {
 	case VerifyJobKind:
 		s.VerifyPending = false
 	}
+}
+
+// countsAsCycle reports whether this reconcile is standing at the end of one complete
+// attempt at the work, which is the unit non-convergence counts in. Getting this unit
+// right is what keeps the count meaningful: too coarse and a run that is genuinely stuck
+// takes several cycles to be caught, too fine and every re-check tick that changes nothing
+// reads as another identical refusal and a healthy goal is stopped in seconds.
+//
+// A pass that observed no completed job is not a cycle, so a re-check poll and the very
+// first pass of a goal that has not run anything yet are both ignored. A planning step is
+// not a cycle either: planning decides what the work is, and the refusal standing before
+// any of it has been attempted says nothing about whether attempting it will help.
+//
+// Under the ledger gate a cycle is a build step and then that item's declared check, so
+// the boundary is the pass that observed the check rather than the pass that observed the
+// build: VerifyPending is set by the build and cleared by the check, so waiting for it to
+// be clear lands on the pass where the item's own feedback is current. Without the gate
+// nothing sets it and every observed build step is its own cycle, which is the correct
+// unit for a goal that has no per-item check to wait for.
+func (g *Reconciler) countsAsCycle(observed bool, kind string, status Status) bool {
+	return observed && kind != PlanJobKind && !status.VerifyPending
 }
 
 // chargesBuildBudget reports whether a completed job of this kind counts against the
