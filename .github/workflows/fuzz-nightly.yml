@@ -1,6 +1,7 @@
 # The long-budget sibling of the CI fuzz smoke: same script, same targets,
-# minutes of mutation per target instead of seconds. A crasher fails the run
-# and is uploaded as an artifact so it can be committed as a regression seed.
+# minutes of mutation per target instead of seconds. A crasher fails the run,
+# is uploaded as an artifact, and is filed as an issue carrying its own input,
+# so it can be committed as a regression seed alongside the fix.
 #
 # The budget is per target, so one job pays the sum of every target's budget:
 # 80-odd targets at 2m each ran for close to three hours. Fuzz targets are
@@ -54,3 +55,112 @@ jobs:
           name: fuzz-crashers-${{ matrix.shard }}
           path: fuzz-crashers/
           if-no-files-found: ignore
+
+  # An artifact is a poor home for a finding. Reading it means noticing that a
+  # scheduled run went red, and it ages out on the repository's retention
+  # window, taking the only copy of the input with it. This job moves the
+  # finding somewhere durable: one issue per crashing target, carrying the
+  # failing input inline, so the fix does not depend on anyone having watched
+  # the run that found it.
+  report:
+    name: File the crashers
+    needs: fuzz
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write # open and comment on one issue per crashing target
+    steps:
+      # A shard can fail without leaving a finding: a build break, or a runner
+      # that died mid-run. That uploads nothing, so a missing artifact is an
+      # ordinary outcome here and not an error.
+      - name: Download the crasher artifacts
+        continue-on-error: true
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
+        with:
+          pattern: fuzz-crashers-*
+          merge-multiple: true
+          path: crashers
+      - name: File an issue per crasher
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -eu
+
+          # Paths here are "<package>/testdata/fuzz/<target>/<hash>": Go writes
+          # a failing input nowhere else, and no element can contain a space,
+          # so the list survives ordinary word splitting.
+          crashers=$(find crashers -type f 2>/dev/null | sort || true)
+          if [ -z "$crashers" ]; then
+            echo "The fuzz job failed without leaving a crasher input."
+            echo "Look at the run itself for a build or infrastructure failure: $RUN_URL"
+            exit 0
+          fi
+
+          # The label is what exempts these from the stale bot, so it has to
+          # exist before the first issue wants it. Creating it is idempotent.
+          gh label create fuzz-crasher \
+            --repo "$REPO" \
+            --color d73a4a \
+            --description "A fuzz target crashed; the failing input is in the issue" \
+            2>/dev/null || true
+
+          # One listing for every crasher in the run, rather than a search per
+          # target: the dedupe below is an exact title match, which a search
+          # query cannot promise anyway. A title cannot contain a tab, so the
+          # pair survives the split.
+          gh issue list --repo "$REPO" --state open --label fuzz-crasher \
+            --limit 200 --json number,title \
+            --jq '.[] | "\(.number)\t\(.title)"' > open-crashers.tsv
+
+          for file in $crashers; do
+            rel=${file#crashers/}
+            target=$(basename "$(dirname "$rel")")
+            # The module root owns its own testdata, so it has no prefix to
+            # strip and addresses as "." rather than "./.".
+            case $rel in
+              testdata/fuzz/*) pkg=. ; pkgpath=. ;;
+              *) pkg=${rel%%/testdata/fuzz/*} ; pkgpath=./$pkg ;;
+            esac
+            seed=$(basename "$rel")
+            title="Fuzz crasher in $target"
+            existing=$(awk -F'\t' -v t="$title" '$2 == t { print $1; exit }' open-crashers.tsv)
+
+            # The input is copied byte for byte and never expanded: it is
+            # attacker-shaped data by construction, and the whole point of the
+            # target is that it is hostile.
+            {
+              printf 'The nightly fuzz run found a crasher in `%s`.\n\n' "$target"
+              printf -- '- Package: `%s`\n' "$pkgpath"
+              printf -- '- Commit: `%s`\n' "$SHA"
+              printf -- '- Run: %s\n\n' "$RUN_URL"
+              printf '`dev/fuzz` reproduces every finding by replaying it before failing the\n'
+              printf 'run, so this input crashed twice and is not a killed worker.\n\n'
+              printf '## Reproduce\n\n'
+              printf 'Save the input below as `%s/testdata/fuzz/%s/%s`, then:\n\n' "$pkg" "$target" "$seed"
+              printf '```sh\ngo test -run='"'"'^%s$'"'"' %s\n```\n\n' "$target" "$pkgpath"
+              printf '## Failing input\n\n'
+              printf '```\n'
+              head -c 50000 "$file"
+              printf '\n```\n'
+              if [ "$(wc -c < "$file")" -gt 50000 ]; then
+                printf '\nTruncated to fit an issue body. The whole input is in this run'"'"'s\n'
+                printf '`fuzz-crashers-*` artifact, until that expires.\n'
+              fi
+              printf '\nCommit that file under `testdata/fuzz/` with the fix. `dev/test` replays\n'
+              printf 'every committed seed, which is what stops this one coming back.\n'
+            } > body.md
+
+            if [ -n "$existing" ]; then
+              # A target the fuzzer rediscovers before anyone fixes it belongs
+              # on the issue that is already open, not on a new one every night.
+              gh issue comment "$existing" --repo "$REPO" --body-file body.md
+              echo "$target: commented on #$existing"
+            else
+              gh issue create --repo "$REPO" --title "$title" \
+                --label fuzz-crasher --label bug --body-file body.md
+              echo "$target: opened a new issue"
+            fi
+          done
