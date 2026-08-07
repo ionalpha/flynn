@@ -13,13 +13,14 @@ import (
 // in-memory restore is exact; a table-backed store rebuilds it from its own rows and
 // leaves the field nil.
 type Snapshot struct {
-	LastSeq  int64             `json:"lastSeq"`
-	Sessions []Session         `json:"sessions"`
-	Turns    []Turn            `json:"turns"`
-	Skills   []Skill           `json:"skills"`
-	Items    []MemoryItem      `json:"items"`
-	Usage    []MemoryUsage     `json:"usage,omitempty"`
-	SlugToID map[string]string `json:"slugToID,omitempty"`
+	LastSeq    int64             `json:"lastSeq"`
+	Sessions   []Session         `json:"sessions"`
+	Turns      []Turn            `json:"turns"`
+	Skills     []Skill           `json:"skills"`
+	Items      []MemoryItem      `json:"items"`
+	Usage      []MemoryUsage     `json:"usage,omitempty"`
+	Promotions []MemoryPromotion `json:"promotions,omitempty"`
+	SlugToID   map[string]string `json:"slugToID,omitempty"`
 }
 
 // MarshalSnapshot serializes a state projection into the payload a Replay or Rebuild
@@ -30,6 +31,7 @@ func MarshalSnapshot(s Snapshot) ([]byte, error) {
 	sort.Slice(s.Skills, func(i, j int) bool { return s.Skills[i].ID < s.Skills[j].ID })
 	sort.Slice(s.Items, func(i, j int) bool { return s.Items[i].ID < s.Items[j].ID })
 	SortUsage(s.Usage)
+	SortPromotions(s.Promotions)
 	sort.Slice(s.Turns, func(i, j int) bool {
 		if s.Turns[i].SessionID != s.Turns[j].SessionID {
 			return s.Turns[i].SessionID < s.Turns[j].SessionID
@@ -65,6 +67,9 @@ func (c *core) snapshotLocked() Snapshot {
 	for _, u := range c.memUsage {
 		s.Usage = append(s.Usage, u)
 	}
+	for _, pr := range c.memPromo {
+		s.Promotions = append(s.Promotions, pr)
+	}
 	for k, v := range c.slugToID {
 		s.SlugToID[k] = v
 	}
@@ -84,6 +89,10 @@ func (c *core) restoreLocked(s Snapshot) {
 	c.memUsage = make(map[string]MemoryUsage, len(s.Usage))
 	for _, u := range s.Usage {
 		c.memUsage[usageKey(u.MemoryID, u.InstanceID)] = u
+	}
+	c.memPromo = make(map[string]MemoryPromotion, len(s.Promotions))
+	for _, pr := range s.Promotions {
+		c.memPromo[pr.MemoryID] = pr
 	}
 	for _, ses := range s.Sessions {
 		c.sessions[ses.ID] = ses

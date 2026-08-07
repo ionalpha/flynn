@@ -117,3 +117,17 @@ func (s *Store) RecordUse(ctx context.Context, memoryID string, origin state.Usa
 func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUsage, error) {
 	return s.inner.Usage(ctx, memoryIDs)
 }
+
+// Promote delegates unchanged. The gate does not second-guess a reviewer: whether
+// a promotion can make an item pushable at all is decided by PushEligibility on the
+// read, where a tainted or untrusted-origin item is denied whatever its decision
+// record says. Refusing the write instead would leave the operator unable to record
+// a decision the store then ignores anyway.
+func (s *Store) Promote(ctx context.Context, d state.PromotionDecision) (state.MemoryPromotion, error) {
+	return s.inner.Promote(ctx, d)
+}
+
+// Promotions delegates unchanged.
+func (s *Store) Promotions(ctx context.Context, memoryIDs []string) ([]state.MemoryPromotion, error) {
+	return s.inner.Promotions(ctx, memoryIDs)
+}

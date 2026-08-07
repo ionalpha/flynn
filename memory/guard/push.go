@@ -1,6 +1,8 @@
 package guard
 
 import (
+	"context"
+
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 )
@@ -94,6 +96,39 @@ func PushEligible(it state.MemoryItem, promoted bool) bool {
 	default:
 		return false
 	}
+}
+
+// PromotionReader is the slice of state.MemoryStore Pushable needs: the decision
+// rows for a set of items. A whole store satisfies it, and so does a cache or a
+// test double, without either having to be a memory store.
+type PromotionReader interface {
+	Promotions(ctx context.Context, memoryIDs []string) ([]state.MemoryPromotion, error)
+}
+
+// Pushable returns the items of in that may be auto-pushed, resolving promotions
+// through store. It is the call a digest builder makes, and the reason the
+// promotion lookup is not folded into PushEligibility: eligibility is a pure
+// function of a record, and a pure function has no business doing IO.
+//
+// Only the items whose classification actually turns on a promotion are looked up.
+// A digest of the operator's own memory therefore costs no promotion read at all,
+// and one of unreviewed agent notes costs exactly one.
+func Pushable(ctx context.Context, store PromotionReader, in []state.MemoryItem) ([]state.MemoryItem, error) {
+	var pending []string
+	for _, it := range in {
+		if PushEligibility(it) == PushOnPromotion {
+			pending = append(pending, it.ID)
+		}
+	}
+	promoted := map[string]bool{}
+	if len(pending) > 0 {
+		rows, err := store.Promotions(ctx, pending)
+		if err != nil {
+			return nil, err
+		}
+		promoted = state.PromotedSet(rows)
+	}
+	return FilterPushable(in, func(id string) bool { return promoted[id] }), nil
 }
 
 // FilterPushable returns the items of in that may be auto-pushed, in order.

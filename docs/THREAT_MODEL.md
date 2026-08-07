@@ -303,7 +303,9 @@ Enforced and tested today:
   produced in a run that read untrusted input is marked tainted at the write even when it
   credits only the agent itself. Taint and untrusted provenance both bar an item from the
   wake digest, the one path that reaches a reader without anyone asking; they do not bar it
-  from recall, where the reader sees its provenance and decides.
+  from recall, where the reader sees its provenance and decides. What the agent wrote for
+  itself, untainted, enters the digest only when a named reviewer has promoted it, and every
+  decision and revision is on the event stream as its audit trail.
 - Credential isolation: vault-held, redacted, never in a child's environment.
 - An append-only, ordered event spine as the record of what happened, and, on a run's
   convergence, a signed, tamper-evident sealed record of it (RFC 6962 Merkle log under a
@@ -339,13 +341,13 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   benchmark above measures how often an injected instruction changes the agent's action.
   Actively lowering that rate (input-provenance separation, instruction-versus-data
   isolation) is not yet built.
-- The promotion flow that lets the agent's own untainted notes into the wake digest. Their
-  classification says "eligible once a trusted reviewer promotes it", and until the reviewed
-  promotion record exists the digest can only carry the operator's own untainted memories.
-  Two residuals go with it: a host that never marks its ingest path leaves taint to what
-  provenance alone implies, and a promotion performed by an LLM review is itself attack
-  surface, which is why an untrusted-origin or tainted item is denied outright rather than
-  made promotable.
+- An operator-facing review queue for promotions. The decision record exists and is
+  enforced (above), but nothing yet presents a reviewer with the untainted agent notes
+  waiting on one, so in practice a digest carries the operator's own memory until somebody
+  promotes through the API. Two residuals stay open whatever the queue looks like: a host
+  that never marks its ingest path leaves taint to what provenance alone implies, and a
+  promotion performed by an LLM review is itself attack surface, which is why an
+  untrusted-origin or tainted item is denied outright rather than made promotable.
 - Provenance-tagged learned skills. Durable memory carries provenance, trust classification
   and taint (above); a skill is loaded as procedure the agent follows and is not yet
   classified the same way, so a skill written from untrusted content is read back with the

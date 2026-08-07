@@ -623,6 +623,26 @@ type MemoryStore interface {
 	// their item's tombstone, so a curator can still see what was pushed at
 	// readers before it was retired.
 	Usage(ctx context.Context, memoryIDs []string) ([]MemoryUsage, error)
+
+	// Promote records a trusted reviewer's standing decision about whether an item
+	// may be pushed at a reader who did not ask for it, and returns the post-image
+	// row (see MemoryPromotion). A decision on an item that already has one replaces
+	// it, so revoking is Promote with Promoted false rather than a second method:
+	// there is one current answer per item, and the history of how it got there
+	// lives on the event stream, not in a pile of rows.
+	//
+	// A decision missing an item or a reviewer is ErrInvalid, and an unknown or
+	// tombstoned item is ErrNotFound: a promotion nobody can attribute, or one
+	// pointing at nothing, is an audit trail with a hole in it.
+	Promote(ctx context.Context, d PromotionDecision) (MemoryPromotion, error)
+	// Promotions returns the decision rows for these items, ordered by item
+	// (SortPromotions). An empty list returns every row the store holds.
+	//
+	// An item nobody has reviewed has no row rather than a false one, the same rule
+	// usage follows: silence is not a decision. A reader building the push set
+	// treats both as not-promoted (see PromotedSet), and only an audit needs to tell
+	// them apart. Rows survive their item's tombstone.
+	Promotions(ctx context.Context, memoryIDs []string) ([]MemoryPromotion, error)
 }
 
 // SortRecall orders q's results into the order MemoryStore.Recall promises, in
