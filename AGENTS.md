@@ -47,7 +47,11 @@ Run `./dev/check` until it is green before opening a PR.
 - **Tests:** add tests with behavior changes; prefer table-driven and property-based
   tests. The race detector must stay clean.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, ...). Sign off
-  with DCO (`git commit -s`).
+  with DCO (`git commit -s`). Wrap the message body at 72 columns.
+- **Pull request bodies:** one line per paragraph, wrapped by the browser and not by
+  you. GitHub renders a newline inside a paragraph as a line break, so a body wrapped
+  like a commit message displays as ragged short lines. Lists, tables and fenced code
+  are unaffected. CI rejects the wrapped form.
 - **Security:** never commit secrets. Report vulnerabilities privately (see `SECURITY.md`).
 
 ## Out of scope here
