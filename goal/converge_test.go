@@ -265,6 +265,54 @@ func TestProvingItemsHoldsOffTheGuard(t *testing.T) {
 	}
 }
 
+// TestAnUnrunnableCheckIsNotARefusal: a check that could not be executed reports on the
+// host rather than on the work. On a machine that cannot contain a model-authored command
+// every check comes back unrunnable with identical wording forever, so counting it would
+// stop every goal on that host for the one reason that says nothing about whether it was
+// converging.
+func TestAnUnrunnableCheckIsNotARefusal(t *testing.T) {
+	ledger := twoItemLedger(t)
+	var s Status
+	s.SyncLedger(ledger)
+	s.ItemFeedback = "the check could not be run: no kernel containment on this host"
+
+	unrun := []Verification{{Ref: "1", Item: ledger[0].ID, Passed: false, Provenance: ProvenanceAsserted}}
+	if got := s.ExecutedFeedback(ledger, unrun); got != "" {
+		t.Fatalf("an unrunnable check offered %q as a refusal to count", got)
+	}
+	for range VerdictRepeatLimit + 2 {
+		s.ObserveVerdict("", s.ExecutedFeedback(ledger, unrun))
+	}
+	if s.StalledForNonConvergence() {
+		t.Fatal("stopped a run because its checks could not run, which is a host problem")
+	}
+
+	// The same detail behind a check that did run is exactly what must be counted.
+	ran := []Verification{{Ref: "2", Item: ledger[0].ID, Passed: false, Provenance: ProvenanceExecuted}}
+	if got := s.ExecutedFeedback(ledger, ran); got != s.ItemFeedback {
+		t.Fatalf("an executed check's detail was dropped: %q", got)
+	}
+}
+
+// TestExecutedFeedbackWithNothingToReportOn: no feedback, no current item, or no recorded
+// verification for it all mean there is no refusal to count.
+func TestExecutedFeedbackWithNothingToReportOn(t *testing.T) {
+	ledger := twoItemLedger(t)
+	var s Status
+	s.SyncLedger(ledger)
+
+	if got := s.ExecutedFeedback(ledger, nil); got != "" {
+		t.Fatalf("empty feedback produced %q", got)
+	}
+	s.ItemFeedback = "something failed"
+	if got := s.ExecutedFeedback(ledger, nil); got != "" {
+		t.Fatalf("feedback with no recorded verification behind it produced %q", got)
+	}
+	if got := s.ExecutedFeedback(nil, nil); got != "" {
+		t.Fatalf("feedback with no current item produced %q", got)
+	}
+}
+
 // TestPlanningIsNotACycle: the refusal standing before any work has been attempted says
 // nothing about whether attempting it will help, so the planning step does not count
 // toward repetition and a planned goal is not stopped a cycle early.

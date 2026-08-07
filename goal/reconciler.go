@@ -450,7 +450,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// just spoken, and under the ledger gate the item's check has just been settled, so
 	// the feedback describes the cycle that ended rather than the one before it.
 	if !met && g.countsAsCycle(observed, observedKind, status) {
-		status.ObserveVerdict(reason, status.ItemFeedback)
+		status.ObserveVerdict(reason, status.ExecutedFeedback(spec.Ledger, recorded))
 	}
 	if met {
 		status.Phase = PhaseConverged

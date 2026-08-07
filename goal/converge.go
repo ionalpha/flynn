@@ -79,6 +79,40 @@ func (s *Status) ObserveVerdict(stopReason, itemDetail string) int {
 	return s.VerdictRepeat
 }
 
+// ExecutedFeedback is the current item's failed-check detail when that check actually
+// ran, and "" when it did not. It is what non-convergence may count; the raw feedback is
+// not.
+//
+// The two look identical on the status and mean opposite things. A check that ran and
+// reported a failure is the run being told its work is not done, and repeating it is the
+// signal this file is about. A check that could not be run at all reports on the host, not
+// on the work: on a machine that cannot contain a model-authored command every check comes
+// back unrunnable with the same wording forever, and counting that would stop every goal on
+// such a host for the one reason that has nothing to do with whether it was converging.
+//
+// The distinction is the recorded verdict's provenance rather than anything re-derived
+// here, so it is the same evidence the gate refuses a claim on.
+func (s Status) ExecutedFeedback(ledger []LedgerItem, recorded []Verification) string {
+	if s.ItemFeedback == "" {
+		return ""
+	}
+	item, ok := s.CurrentItem(ledger)
+	if !ok {
+		return ""
+	}
+	// Recorded verifications arrive in the order they were written, so the last one for
+	// this item is the check the feedback describes.
+	for i := len(recorded) - 1; i >= 0; i-- {
+		if recorded[i].Item == item.ID {
+			if recorded[i].Provenance == ProvenanceExecuted {
+				return s.ItemFeedback
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
 // StalledForNonConvergence reports whether the run has been refused for the same reason
 // often enough that another cycle will not change it.
 func (s Status) StalledForNonConvergence() bool {
