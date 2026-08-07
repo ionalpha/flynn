@@ -337,6 +337,29 @@ jobs:
         run: pipx install semgrep==1.167.0
       - run: ./dev/semgrep
 
+  # Independent conformance for the SKILL.md writer. The rest of the skill tests
+  # check our reader against our writer, which proves the two agree with each other
+  # and nothing about whether either agrees with the Agent Skills specification.
+  # skills-ref is that format's own reference library, so this job is the one that
+  # can catch us being self-consistently wrong. Discovering non-conformance from a
+  # user's Cursor install is the failure mode it exists to prevent.
+  skillsref:
+    name: Skill conformance
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: true
+      - uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: "22"
+      - run: ./dev/skillsref
+
   # The performance gate: allocation-ceiling tests and the curated hot-path
   # benchmarks, run without the race detector (the test matrix runs -race, whose
   # instrumentation skews allocation counts, so the ceilings are !race-tagged
@@ -552,7 +575,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, bench, fuzz]
+    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, skillsref, bench, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Fast tier only (draft)
@@ -579,6 +602,7 @@ jobs:
             secrets=${{ needs.secrets.result }}
             osv=${{ needs.osv.result }}
             semgrep=${{ needs.semgrep.result }}
+            skillsref=${{ needs.skillsref.result }}
             bench=${{ needs.bench.result }}
             fuzz=${{ needs.fuzz.result }}
         run: |

@@ -2,6 +2,8 @@ package skill_test
 
 import (
 	"errors"
+	"os"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -110,6 +112,83 @@ func TestFromPackReadsTheLoadedDocument(t *testing.T) {
 	want := state.Skill{Slug: "debugging", Name: "debugging", Description: "How to debug.", Body: "Body.\n", Scope: packScope}
 	if diff := cmp.Diff(want, sk); diff != "" {
 		t.Errorf("FromPack (-want +got):\n%s", diff)
+	}
+}
+
+func TestExport(t *testing.T) {
+	t.Parallel()
+
+	skills := []state.Skill{
+		{Slug: "debugging", Name: "Systematic debugging", Description: "How to debug.", Body: "Body.\n", Tags: []string{"craft"}, Scope: packScope},
+		{Slug: "testing", Name: "testing", Description: "How to test.", Body: "Body.\n", Check: "go test ./...", Scope: packScope},
+	}
+	dir := t.TempDir()
+	if err := skill.Export(dir, skills); err != nil {
+		t.Fatalf("Export: %v", err)
+	}
+
+	packs, err := skillmd.LoadAll(os.DirFS(dir), ".")
+	if err != nil {
+		t.Fatalf("LoadAll what Export wrote: %v", err)
+	}
+	got := make([]state.Skill, 0, len(packs))
+	for _, p := range packs {
+		sk, err := skill.FromPack(p, packScope)
+		if err != nil {
+			t.Fatalf("FromPack: %v", err)
+		}
+		got = append(got, sk)
+	}
+	if diff := cmp.Diff(skills, got); diff != "" {
+		t.Errorf("skills through an export (-want +got):\n%s", diff)
+	}
+}
+
+func TestExportRefusesASkillTheFormatCannotCarry(t *testing.T) {
+	t.Parallel()
+
+	// Two ways a stored skill fails to be expressible. A skill distilled before
+	// descriptions existed has none, and the format requires one; a slug minted as a
+	// database key can be illegal as a skill name. Either stops the export with the
+	// skill named, before anything is written.
+	for _, tt := range []struct {
+		name   string
+		skills []state.Skill
+	}{
+		{
+			name: "no description",
+			skills: []state.Skill{
+				{Slug: "debugging", Description: "How to debug.", Body: "Body.\n"},
+				{Slug: "testing", Body: "Body.\n"},
+			},
+		},
+		{
+			name: "a slug the format cannot name",
+			skills: []state.Skill{
+				{Slug: "debugging", Description: "How to debug.", Body: "Body.\n"},
+				{Slug: "testing_2026", Description: "How to test.", Body: "Body.\n"},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			dir := t.TempDir()
+			err := skill.Export(dir, tt.skills)
+			if !errors.Is(err, skillmd.ErrInvalid) {
+				t.Fatalf("Export: err = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), "testing") {
+				t.Errorf("Export error %q does not name the skill that failed", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatalf("read the export directory: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("a refused export left %d entries behind, want none", len(entries))
+			}
+		})
 	}
 }
 
