@@ -24,6 +24,7 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("Relevance", func(t *testing.T) { testRelevance(t, newStore()) })
 	t.Run("Provenance", func(t *testing.T) { testProvenance(t, newStore()) })
 	t.Run("Anchors", func(t *testing.T) { testAnchors(t, newStore()) })
+	t.Run("Taint", func(t *testing.T) { testTaint(t, newStore()) })
 	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
 	t.Run("Usage", func(t *testing.T) { testUsage(t, newStore()) })
@@ -352,6 +353,56 @@ func testProvenance(t *testing.T, mem state.MemoryStore) {
 	// collapsing back to a bare string somewhere in the backend.
 	wantSources(t, "Write of a single-source item",
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: "single origin", Sources: []string{"chat"}}), "chat")
+}
+
+// testTaint pins the taint flag as part of the record. A backend that dropped it
+// would read back an item that looks clean, and the digest that reads the store
+// would push the laundered fact it was written to keep out - a silent failure with
+// no error anywhere, which is why this is a contract test and not a backend's own.
+//
+// The flag is deliberately independent of provenance here: the items below carry
+// agent- and user-scheme sources, the ones that look most trustworthy, because a
+// backend that "helpfully" recomputed taint from sources would pass a test that
+// only ever tainted tool-sourced writes.
+func testTaint(t *testing.T, mem state.MemoryStore) {
+	clean := write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "an untainted note", Sources: []string{"agent:run-1"},
+	})
+	if clean.Tainted {
+		t.Fatalf("Write of an unmarked item returned Tainted, want it clear: %+v", clean)
+	}
+	laundered := write(t, mem, state.MemoryItem{
+		Kind: "fact", Content: "a conclusion drawn from a fetched page",
+		Sources: []string{"agent:run-1"}, Tainted: true,
+	})
+	if !laundered.Tainted {
+		t.Fatalf("Write of a tainted item returned it clean: %+v", laundered)
+	}
+	if got := only(t, mem, state.RecallQuery{Query: "conclusion"}); !got.Tainted {
+		t.Fatalf("recall of the tainted item returned it clean: %+v", got)
+	}
+	if got := only(t, mem, state.RecallQuery{Query: "untainted note"}); got.Tainted {
+		t.Fatalf("recall of the clean item returned it tainted: %+v", got)
+	}
+
+	// A taint does not hide anything: the item is recallable like any other, which
+	// is the whole distinction between the taint flag and the ingest refusal.
+	wantCount(t, "recall spanning both items", recall(t, mem, state.RecallQuery{}), 2)
+
+	// A user-scheme source does not clear a taint. This is the ordering the design
+	// turns on - taint beats provenance, never the other way round - and a backend
+	// that stored the flag but let a trusted source override it on read would put
+	// exactly the laundered item back in the push set.
+	fromUser := write(t, mem, state.MemoryItem{
+		Kind: "preference", Content: "operator said so, in a poisoned context",
+		Sources: []string{"user:operator"}, Tainted: true,
+	})
+	if !fromUser.Tainted {
+		t.Fatalf("a user-sourced write shed its taint: %+v", fromUser)
+	}
+	if got := only(t, mem, state.RecallQuery{Query: "operator said"}); !got.Tainted {
+		t.Fatalf("recall of the user-sourced tainted item returned it clean: %+v", got)
+	}
 }
 
 // testAnchors pins anchors as opaque refs: stored, matched, never resolved. The

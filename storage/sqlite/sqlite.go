@@ -849,19 +849,19 @@ func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 
 type memory struct{ p *Store }
 
-const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, sources, anchors, created_at, expires_at,
+const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, sources, anchors, created_at, expires_at, tainted,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
 // memoryColsQualified is memoryCols against the `m` alias, for the recall query,
 // which joins the FTS table and so cannot use bare column names. Recall appends
-// a seventeenth expression, the relevance score, after these sixteen.
-const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.anchors, m.created_at, m.expires_at,
+// an eighteenth expression, the relevance score, after these seventeen.
+const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.anchors, m.created_at, m.expires_at, m.tainted,
 	m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted`
 
 // memoryScoreCol is the ordinal of the relevance score in a recall's select list,
 // which ORDER BY names rather than repeating the bm25 expression, so it is
 // evaluated once per row. It tracks the column count in memoryColsQualified.
-const memoryScoreCol = 17
+const memoryScoreCol = 18
 
 // memoryLiveSQL is the predicate for a row a recall may return: not tombstoned,
 // and not past its expiry as of the bound instant. Both recall shapes use it, so
@@ -963,12 +963,13 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 		anchors       string
 		created       string
 		expires       int64
+		tainted       int
 		wall, counter int64
 		deleted       int
 	)
 	dst := []any{
 		&m.ID, &m.Kind, &m.Content,
-		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &anchors, &created, &expires,
+		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &anchors, &created, &expires, &tainted,
 		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted,
 	}
 	if score != nil {
@@ -989,6 +990,7 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 	m.Anchors = decodedAnchors
 	m.CreatedAt = parseTime(created)
 	m.ExpiresAt = expiryTime(expires)
+	m.Tainted = tainted != 0
 	m.UpdatedHLC = hlcTime(wall, counter)
 	m.Deleted = deleted != 0
 	if score != nil {
@@ -1010,16 +1012,17 @@ func scanScoredMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, err
 
 func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			kind=excluded.kind, content=excluded.content,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
 			sources=excluded.sources, anchors=excluded.anchors, created_at=excluded.created_at, expires_at=excluded.expires_at,
+			tainted=excluded.tainted,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
 		it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, encodeSources(it.Sources),
-		encodeAnchors(it.Anchors), formatTime(it.CreatedAt), expiryNanos(it.ExpiresAt),
+		encodeAnchors(it.Anchors), formatTime(it.CreatedAt), expiryNanos(it.ExpiresAt), boolToInt(it.Tainted),
 		it.SyncVersion, it.OriginInstanceID, it.UpdatedHLC.Wall, int64(it.UpdatedHLC.Counter), it.LastWriterID, boolToInt(it.Deleted))
 	return err
 }

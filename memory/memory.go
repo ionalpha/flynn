@@ -68,7 +68,8 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
-    "expires_at": {"type": "string"}
+    "expires_at": {"type": "string"},
+    "tainted": {"type": "boolean"}
   },
   "additionalProperties": false
 }`)
@@ -118,6 +119,9 @@ func RegisterKind(reg *resource.Registry) error {
 // ExpiresAt is a pointer so the common never-expires item omits it entirely: a
 // time.Time value would encode the zero time into every spec and change what a
 // minimal item hashes to.
+// Tainted is omitempty for the same reason: the common untainted item encodes and
+// hashes exactly as it did before the field existed, so adding it does not rewrite
+// what every stored item hashes to.
 type spec struct {
 	Kind      string     `json:"kind,omitempty"`
 	Content   string     `json:"content,omitempty"`
@@ -125,6 +129,7 @@ type spec struct {
 	Source    string     `json:"source,omitempty"`
 	Anchors   []anchor   `json:"anchors,omitempty"`
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	Tainted   bool       `json:"tainted,omitempty"`
 }
 
 // anchor is the stored shape of a state.Anchor. It exists so the spec's JSON keys
@@ -311,7 +316,7 @@ func toResource(m state.MemoryItem) (resource.Resource, error) {
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	sp := spec{Kind: m.Kind, Content: m.Content, Sources: m.Sources, Anchors: encodeAnchors(anchors)}
+	sp := spec{Kind: m.Kind, Content: m.Content, Sources: m.Sources, Anchors: encodeAnchors(anchors), Tainted: m.Tainted}
 	if !m.ExpiresAt.IsZero() {
 		exp := m.ExpiresAt
 		sp.ExpiresAt = &exp
@@ -359,6 +364,7 @@ func toItem(r resource.Resource) (state.MemoryItem, error) {
 		Content:   sp.Content,
 		Sources:   sources,
 		Anchors:   decodeAnchors(sp.Anchors),
+		Tainted:   sp.Tainted,
 		Scope:     state.Scope(r.Scope),
 		CreatedAt: r.CreatedAt,
 		ExpiresAt: expires,

@@ -14,6 +14,14 @@
 //     agent's own converged run is in between. Retrieval consults this so a recalled
 //     memory is treated as input carrying its source's trust, never as the agent's
 //     own vetted intent.
+//   - Taint propagation and the push gate. Trust derived from a write's channel is
+//     not the provenance of its content: an agent that reads a poisoned tool output,
+//     concludes something from it and writes the conclusion as its own has laundered
+//     the untrusted input into a record whose sources look clean. A run therefore
+//     carries a taint scope (NewTaintScope, Observe), the write records what the run
+//     had consumed (TaintItem), and the wake digest - the one path that reaches every
+//     reader unasked - admits only what PushEligibility clears. Recall is unchanged:
+//     a tainted fact is retrievable, with its provenance, by a reader that asks.
 //   - Ingest screening. Content entering memory is scanned for hidden-instruction
 //     smuggling (invisible characters, bidi overrides, tag-character payloads) and
 //     for overt instruction-injection phrasing (Screen). A hit from an untrusted

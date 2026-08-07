@@ -322,7 +322,26 @@ type MemoryItem struct {
 	// what a purge follows; Anchors records what it is about, which is what a read
 	// matches on. A fact learned from a tool's output while working on something is
 	// perfectly normal, and the two lists then hold different things.
-	Anchors   []Anchor
+	Anchors []Anchor
+	// Tainted records that attacker-influenceable input was in the context that
+	// produced this fact, whatever its Sources say. It is set at write and never
+	// cleared: taint only ever spreads.
+	//
+	// The field exists because the channel a write arrives on is not the provenance
+	// of its content. An agent that reads a poisoned tool output, draws a conclusion
+	// from it and writes that conclusion as its own has laundered the untrusted
+	// input into a semi-trusted record, and Sources - which credits the inputs the
+	// writer names - records the laundered story faithfully. Nothing derivable from
+	// the stored item can tell that apart from an honest agent note, so the writing
+	// context has to say so at the time, and the store has to keep it.
+	//
+	// A taint is not a refusal. A tainted fact is written, recalled, and used like
+	// any other; what it cannot do is enter the wake digest, which is the one path
+	// that reaches every reader without anyone asking for it (see
+	// guard.PushEligibility). Marking is the host's job: a store with no taint
+	// source behind it records only what provenance already implies, so a host that
+	// has not wired one up is trusting its own agent's channel labels.
+	Tainted   bool
 	CreatedAt time.Time
 	// ExpiresAt is the first instant this item stops being recallable; the zero
 	// value never expires. It is the half-open convention RecallQuery.Since and

@@ -64,10 +64,15 @@ func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 var _ state.MemoryStore = (*Store)(nil)
 
 // Write screens the item and refuses an untrusted-origin write that carries a
-// screening hit, returning a Forbidden fault; otherwise it delegates to the inner
-// store unchanged. The screen runs on the item's content; trust comes from its
-// Sources via TrustOfAll, which takes the weakest of them, so mixing one trusted
-// input into a distilled item does not buy it past the gate.
+// screening hit, returning a Forbidden fault; otherwise it records the write's taint
+// and delegates to the inner store. The screen runs on the item's content; trust
+// comes from its Sources via TrustOfAll, which takes the weakest of them, so mixing
+// one trusted input into a distilled item does not buy it past the gate.
+//
+// Taint is recorded here rather than left to the caller because this is the one
+// place every guarded write passes through while the writing context is still in
+// hand (see TaintItem). It is not a refusal: a tainted item is stored and recalled
+// normally, and only the wake digest treats it differently.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
 	trust := TrustOfAll(m.Sources)
 	if trust == sandbox.TrustUntrusted {
@@ -79,7 +84,7 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 				"refused to persist untrusted-origin memory carrying a hidden-instruction payload: "+findings[0].Detail)
 		}
 	}
-	return s.inner.Write(ctx, m)
+	return s.inner.Write(ctx, TaintItem(ctx, m))
 }
 
 // Recall delegates unchanged. Retrieval-side trust is available to callers via
