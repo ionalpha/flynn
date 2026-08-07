@@ -91,6 +91,22 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
+    "units": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "objective", "verify"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "objective": {"type": "string", "minLength": 1},
+          "verify": {"type": "string", "minLength": 1},
+          "dependsOn": {"type": "array", "items": {"type": "string", "minLength": 1}},
+          "actions": {"type": "array", "items": {"type": "string"}},
+          "agent": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
     "system": {"type": "string"},
     "driver": {"type": "string"},
     "model": {"type": "string"},
@@ -171,6 +187,15 @@ type Spec struct {
 	// append-and-mark-only from then on (see ledger.go). Empty on a goal that runs
 	// without a planner, which is every goal composed before planning is wired.
 	Ledger []LedgerItem `json:"ledger,omitempty"`
+	// Units is the goal's fan-out written down in advance: a graph of child units with
+	// dependency edges, admitted in dependency order as governed children (see
+	// units.go). It is desired state for the same reason the ledger is, and it is the
+	// plan-driven counterpart to the model deciding to spawn mid-conversation: the
+	// decomposition is already agreed, so it arrives written rather than rediscovered.
+	// A malformed graph (a cycle, an edge to a unit that does not exist) is refused at
+	// admission, before a child is created. Empty on every goal that does not fan out
+	// from a plan, and such a goal behaves exactly as it did before.
+	Units []Unit `json:"units,omitempty"`
 }
 
 // SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total
@@ -243,6 +268,12 @@ type Status struct {
 	// the same order. Every entry starts unproven, so a goal begins from a record
 	// that says nothing is done. Completion is a transition here.
 	Ledger []LedgerState `json:"ledger,omitempty"`
+	// Units is the observed state of Spec.Units, one entry per unit and in the same
+	// order: which units have had a child goal created for them, which of those
+	// children have finished, and which finished having proven their unit. It is what
+	// makes a fan-out resumable, so a run that crashes with children in flight comes
+	// back knowing they exist rather than creating them a second time.
+	Units []UnitState `json:"units,omitempty"`
 	// VerifyPending marks that a build step has completed and the current ledger item's
 	// declared check has not been run since. It is what alternates the run between
 	// building and verifying: the reconciler sets it when it observes a build step and
