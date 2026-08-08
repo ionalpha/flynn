@@ -14,19 +14,19 @@ import (
 
 type memory struct{ p *Store }
 
-const memoryCols = `id, kind, content, scope_instance, scope_project, scope_workspace, sources, anchors, created_at, expires_at, tainted,
+const memoryCols = `id, kind, content, subject, supersedes, scope_instance, scope_project, scope_workspace, sources, anchors, created_at, expires_at, tainted,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, deleted`
 
 // memoryColsQualified is memoryCols against the `m` alias, for the recall query,
 // which joins the FTS table and so cannot use bare column names. Recall appends
-// an eighteenth expression, the relevance score, after these seventeen.
-const memoryColsQualified = `m.id, m.kind, m.content, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.anchors, m.created_at, m.expires_at, m.tainted,
+// one more expression, the relevance score, after these nineteen.
+const memoryColsQualified = `m.id, m.kind, m.content, m.subject, m.supersedes, m.scope_instance, m.scope_project, m.scope_workspace, m.sources, m.anchors, m.created_at, m.expires_at, m.tainted,
 	m.sync_version, m.origin_instance_id, m.updated_hlc_wall, m.updated_hlc_counter, m.last_writer_id, m.deleted`
 
 // memoryScoreCol is the ordinal of the relevance score in a recall's select list,
 // which ORDER BY names rather than repeating the bm25 expression, so it is
 // evaluated once per row. It tracks the column count in memoryColsQualified.
-const memoryScoreCol = 18
+const memoryScoreCol = 20
 
 // memoryLiveSQL is the predicate for a row a recall may return: not tombstoned,
 // and not past its expiry as of the bound instant. Both recall shapes use it, so
@@ -57,6 +57,30 @@ func decodeSources(raw string) ([]string, error) {
 	var out []string
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return nil, fmt.Errorf("sqlite: decode memory sources: %w", err)
+	}
+	return out, nil
+}
+
+// encodeSupersedes renders the superseded ids the same way provenance is rendered:
+// a JSON array, or the empty string for none. They are a separate pair of helpers
+// rather than a reuse of encodeSources so the decode error names the column the
+// operator has to go and look at.
+func encodeSupersedes(ids []string) string {
+	if len(ids) == 0 {
+		return ""
+	}
+	b, _ := json.Marshal(ids)
+	return string(b)
+}
+
+// decodeSupersedes reads back what encodeSupersedes wrote.
+func decodeSupersedes(raw string) ([]string, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	var out []string
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil, fmt.Errorf("sqlite: decode memory supersedes: %w", err)
 	}
 	return out, nil
 }
@@ -118,12 +142,14 @@ func expiryTime(n int64) time.Time {
 	return time.Unix(0, n).UTC()
 }
 
-// scanMemoryRow scans the sixteen memory columns, and the trailing relevance score
-// too when score is non-nil (the recall shapes select it as a seventeenth
-// expression). One scanner so the column list and its readers cannot drift apart.
+// scanMemoryRow scans the memory columns named by memoryCols, and the trailing
+// relevance score too when score is non-nil (the recall shapes select it as one
+// more expression). One scanner so the column list and its readers cannot drift
+// apart.
 func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.MemoryItem, error) {
 	var (
 		m             state.MemoryItem
+		supersedes    string
 		sources       string
 		anchors       string
 		created       string
@@ -133,7 +159,7 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 		deleted       int
 	)
 	dst := []any{
-		&m.ID, &m.Kind, &m.Content,
+		&m.ID, &m.Kind, &m.Content, &m.Subject, &supersedes,
 		&m.Scope.Instance, &m.Scope.Project, &m.Scope.Workspace, &sources, &anchors, &created, &expires, &tainted,
 		&m.SyncVersion, &m.OriginInstanceID, &wall, &counter, &m.LastWriterID, &deleted,
 	}
@@ -143,6 +169,11 @@ func scanMemoryRow(sc interface{ Scan(...any) error }, score *float64) (state.Me
 	if err := sc.Scan(dst...); err != nil {
 		return state.MemoryItem{}, err
 	}
+	decodedSupersedes, err := decodeSupersedes(supersedes)
+	if err != nil {
+		return state.MemoryItem{}, err
+	}
+	m.Supersedes = decodedSupersedes
 	decoded, err := decodeSources(sources)
 	if err != nil {
 		return state.MemoryItem{}, err
@@ -177,16 +208,18 @@ func scanScoredMemory(sc interface{ Scan(...any) error }) (state.MemoryItem, err
 
 func upsertMemoryRow(ctx context.Context, tx *sql.Tx, it state.MemoryItem) error {
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+		`INSERT INTO memory_items (`+memoryCols+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 		 ON CONFLICT(id) DO UPDATE SET
 			kind=excluded.kind, content=excluded.content,
+			subject=excluded.subject, supersedes=excluded.supersedes,
 			scope_instance=excluded.scope_instance, scope_project=excluded.scope_project, scope_workspace=excluded.scope_workspace,
 			sources=excluded.sources, anchors=excluded.anchors, created_at=excluded.created_at, expires_at=excluded.expires_at,
 			tainted=excluded.tainted,
 			sync_version=excluded.sync_version, origin_instance_id=excluded.origin_instance_id,
 			updated_hlc_wall=excluded.updated_hlc_wall, updated_hlc_counter=excluded.updated_hlc_counter,
 			last_writer_id=excluded.last_writer_id, deleted=excluded.deleted`,
-		it.ID, it.Kind, it.Content, it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, encodeSources(it.Sources),
+		it.ID, it.Kind, it.Content, it.Subject, encodeSupersedes(it.Supersedes),
+		it.Scope.Instance, it.Scope.Project, it.Scope.Workspace, encodeSources(it.Sources),
 		encodeAnchors(it.Anchors), formatTime(it.CreatedAt), expiryNanos(it.ExpiresAt), boolToInt(it.Tainted),
 		it.SyncVersion, it.OriginInstanceID, it.UpdatedHLC.Wall, int64(it.UpdatedHLC.Counter), it.LastWriterID, boolToInt(it.Deleted))
 	return err
@@ -278,7 +311,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// returning fewer results than asked for.
 	postFilter := !q.Since.IsZero() || !q.Until.IsZero() || q.MinScore > 0
 
-	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && len(q.Anchors) == 0 && !postFilter {
+	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && len(q.Subjects) == 0 && len(q.Anchors) == 0 && !postFilter {
 		limit := q.Limit
 		if limit <= 0 {
 			limit = -1
@@ -316,20 +349,10 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 			WHERE memory_fts MATCH ? AND ` + memoryLiveSQL)
 		args = append(args, ftsPhrase(query), liveAt)
 	}
-	// Kind is an exact match on an indexed column, so it belongs in the query
-	// rather than in a post-filter: it cuts the rows the sort has to order.
-	for i, k := range q.Kinds {
-		if i == 0 {
-			sb.WriteString(` AND m.kind IN (`)
-		} else {
-			sb.WriteString(`, `)
-		}
-		sb.WriteString(`?`)
-		args = append(args, k)
-	}
-	if len(q.Kinds) > 0 {
-		sb.WriteString(`)`)
-	}
+	// Kind and subject are exact matches on indexed columns, so they belong in the
+	// query rather than in a post-filter: they cut the rows the sort has to order.
+	args = writeInClause(&sb, args, "m.kind", q.Kinds)
+	args = writeInClause(&sb, args, "m.subject", q.Subjects)
 	// Anchors are an indexed lookup through the projection table, expressed as an
 	// EXISTS rather than a join so an item anchored to two of the refs asked for
 	// comes back once. It belongs in SQL for the same reason kind does: it is the
@@ -413,6 +436,28 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		}
 	}
 	return out, nil
+}
+
+// writeInClause appends ` AND <col> IN (?, ?, ...)` to sb and the values to args,
+// returning the extended args. An empty value list writes nothing at all, which is
+// what an unset filter means: matching everything, not matching an empty set.
+//
+// The column name is a constant from this file and never a caller's string, so the
+// only thing crossing into the SQL text is one this package wrote.
+func writeInClause(sb *strings.Builder, args []any, col string, vals []string) []any {
+	if len(vals) == 0 {
+		return args
+	}
+	sb.WriteString(` AND ` + col + ` IN (`)
+	for i, v := range vals {
+		if i > 0 {
+			sb.WriteString(`, `)
+		}
+		sb.WriteString(`?`)
+		args = append(args, v)
+	}
+	sb.WriteString(`)`)
+	return args
 }
 
 // collectMemory drains rows into memory items, closing rows on every path.

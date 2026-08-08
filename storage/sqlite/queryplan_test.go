@@ -60,6 +60,29 @@ func TestScopedRecallIndex(t *testing.T) {
 	}
 }
 
+// TestSubjectRecallIndex is the query-plan gate for the read a write policy takes
+// before every write whose semantics depend on what is already stored under the
+// subject: it must seek idx_memory_items_subject rather than scan the store. The
+// query is the unqualified-scope, no-query shape the policy issues, which is the
+// one with no other index to fall back on.
+func TestSubjectRecallIndex(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+
+	plan := explainPlan(ctx, t, s,
+		`SELECT `+memoryColsQualified+`, 1.0 FROM memory_items m
+		 WHERE `+memoryLiveSQL+` AND m.subject IN (?)
+		 ORDER BY m.created_at DESC, m.id DESC`,
+		0, "db-choice")
+	if !strings.Contains(plan, "idx_memory_items_subject") {
+		t.Fatalf("subject recall does not use idx_memory_items_subject; plan: %s", plan)
+	}
+}
+
 // TestSkillSlugIndex is the query-plan gate for the bare-slug skill lookup: the
 // slug fallback in Get must seek idx_skills_live_slug (slug had no index, so the
 // lookup was a table scan) and read its single row without a sort pass.

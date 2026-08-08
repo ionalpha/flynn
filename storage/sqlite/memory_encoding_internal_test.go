@@ -53,6 +53,50 @@ func TestDecodeSourcesReportsCorruptJSON(t *testing.T) {
 	}
 }
 
+// Supersession rides in one JSON column, the same shape provenance uses. The
+// empty case has to stay the empty column value: a correction chain that decoded
+// to an empty list where the row said nothing at all would be indistinguishable
+// from a fact that replaced nothing.
+func TestMemorySupersedesRoundTrip(t *testing.T) {
+	for _, ids := range [][]string{
+		nil,
+		{},
+		{"mem-1"},
+		{"mem-1", "mem-2", "mem-3"},
+	} {
+		raw := encodeSupersedes(ids)
+		back, err := decodeSupersedes(raw)
+		if err != nil {
+			t.Fatalf("decode %q: %v", raw, err)
+		}
+		if len(ids) == 0 {
+			if raw != "" {
+				t.Errorf("no supersession encoded to %q, want the empty column value", raw)
+			}
+			if len(back) != 0 {
+				t.Errorf("no supersession decoded to %v, want none", back)
+			}
+			continue
+		}
+		if !slices.Equal(back, ids) {
+			t.Errorf("round trip of %v = %v", ids, back)
+		}
+	}
+}
+
+// A supersedes column that is not JSON is a corrupted row, and reading it back as
+// no supersession would erase the link between a correction and what it corrected
+// with no error anywhere.
+func TestDecodeSupersedesReportsCorruptJSON(t *testing.T) {
+	got, err := decodeSupersedes(`{"not":"a list"}`)
+	if err == nil {
+		t.Fatalf("decode of a non-list returned %v and no error", got)
+	}
+	if got != nil {
+		t.Fatalf("decode returned ids %v alongside its error, want none", got)
+	}
+}
+
 // Anchors ride in one JSON column beside the lookup table, so the encode/decode
 // pair is what a recall hydrates its refs from. The empty case has to stay the
 // empty column value rather than "[]", matching provenance, and a ref's two halves
@@ -190,5 +234,39 @@ func TestRecallReportsACorruptSourcesColumn(t *testing.T) {
 	}
 	if _, err := mem.Recall(ctx, state.RecallQuery{Scope: state.Scope{Project: "p"}}); err != nil {
 		t.Errorf("recall of an unaffected scope must still work: %v", err)
+	}
+}
+
+// A supersedes column that is not a JSON list is a corrupted row, and a recall
+// that swallowed it would hand back a correction that claims to replace nothing -
+// the one reading that makes a superseded fact look like a live disagreement.
+func TestRecallReportsACorruptSupersedesColumn(t *testing.T) {
+	ctx := context.Background()
+	p, err := Open(ctx, ":memory:")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+
+	mem := p.Memory()
+	it, err := mem.Write(ctx, state.MemoryItem{
+		Kind: "decision", Content: "corruptible", Subject: "db-choice", Supersedes: []string{"mem-old"},
+	})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := p.db.ExecContext(ctx,
+		`UPDATE memory_items SET supersedes = ? WHERE id = ?`, `{"not":"a list"}`, it.ID); err != nil {
+		t.Fatalf("corrupt the row: %v", err)
+	}
+
+	if _, err := mem.Recall(ctx, state.RecallQuery{Query: "corruptible"}); err == nil {
+		t.Error("full-text recall over a corrupt supersedes column returned no error")
+	}
+	// The subject filter reads through the same scanner, and is the read a write
+	// policy takes, so it has to report the corruption rather than decide against a
+	// row it could not fully read.
+	if _, err := mem.Recall(ctx, state.RecallQuery{Subjects: []string{"db-choice"}}); err == nil {
+		t.Error("subject recall over a corrupt supersedes column returned no error")
 	}
 }
