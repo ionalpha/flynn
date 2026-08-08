@@ -27,12 +27,28 @@ Every row carries exactly one.
   comment, and the absence is visible. `goal.WithInvariantAudit` is the form to
   copy: a goal that states terms with no auditor stalls and says which auditor is
   missing, rather than running unaudited and finishing like a goal whose terms held.
+- **staged**: Flynn ships the implementation, the binary can wire it, and it is off
+  by default while confidence is built. A staged row states two things or it is not a
+  staged row: **the switch** that turns it on, and **the promotion condition** under
+  which it becomes the default, written specifically enough that somebody can later
+  check whether it has been met. "Revisit this" is not a promotion condition. The
+  state must also be visible from the binary, because a capability an operator cannot
+  see is how default-off becomes permanent without anyone deciding it should.
 - **gap**: neither. Every gap row has an open issue describing what to build. A gap
   with no issue is how one becomes permanent without anyone deciding it should.
 
 The test behind a verdict: if the capability cannot be exercised by the `flynn`
 binary plus a temp SQLite file with no host present, it is `justified` with a
 written reason, or it is a `gap`.
+
+A default-off flag is not automatically `staged`. Most of the binary's off-by-default
+flags are the safe end state rather than a waypoint: `--endpoint-local`,
+`--api-expose` and `review --approve` widen something, and off is where they should
+stay. `runtime.Config.AllowAssertedEvidence` is the same shape, one level down: off
+means a check has to have been run, and a closed loop that runs checks is exactly
+what makes requiring execution satisfiable. `--fanout`, `--no-learn` and `--plain`
+select a mode. A row is `staged` only when off-by-default is a temporary position on
+something Flynn otherwise ships and wires, which today is one row.
 
 ## What a `justified` seam must do when it is absent
 
@@ -79,7 +95,16 @@ tests and a durable one for the binary.
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
+| `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
+
+`allowance.Policy` is wired but marks nothing until the operator names an action, and
+that empty default is the intended answer rather than a gap. Which actions reach
+outside the workspace irreversibly is something the waist cannot derive: it governs an
+action's identity and never its arguments, and one action name covers both a command
+that lists a directory and a command that deletes what was not backed up. So the
+operator says, with `--irreversible`. A binary that guessed would be marking too much
+(stopping runs that were fine) or too little (a gate that reads as present and is not).
 
 ## The goal reconciler
 
@@ -99,6 +124,26 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Cleaner` | none | n/a | justified |
 | `goal.WindowSource` | none | n/a | justified |
 | `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
+| `runtime.Config.RequireLedgerProof` | `goal.EvidenceGate`, built by `runtime.New` | `cmd/flynn/mission.go` behind `--require-proof`; `fanout.go` always, for a unit's child | staged |
+
+`RequireLedgerProof` is the register's one `staged` row, and the two fields it owes:
+
+- **Switch:** `--require-proof` on `flynn goal`. It is already on and not optional for
+  a unit's child, because a unit settles from its child's ledger and a child that
+  converged on the model's say-so fails the unit as unproven every time.
+- **Promotion condition:** it becomes the default when a run of the repository's own
+  acceptance goals, planned and unmodified, proves every ledger item it plans through
+  an executed check, over the platforms CI runs on. That is the claim the refusal
+  makes, so it is the claim that has to hold first. Turning it on ahead of the
+  evidence stalls every goal whose check happens to be unrunnable, which reads to an
+  operator as the loop being broken rather than as the check being wrong.
+
+Verification itself is not staged and is not behind the flag: on every planned goal
+each item's declared check runs in the run's own sandbox and its verdict goes on the
+record. What the flag adds is the refusal that reads those verdicts. A run says which
+of the two it is before it starts (`ledgerLine` in `cmd/flynn/run.go`), so an
+operator can see from the run that proof is available and off rather than having to
+find this file.
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are reaped through owner references, not

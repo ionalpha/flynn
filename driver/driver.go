@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ionalpha/flynn/allowance"
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/budget"
@@ -76,6 +77,12 @@ type Spec struct {
 	// chooses how a run reasons, never how much authority it has. Nil requires nothing,
 	// which keeps a standalone run zero-config.
 	Approval *Approval
+	// Allowance, when set, marks the actions whose effects leave the workspace and
+	// cannot be undone, so one of them runs only where the goal declared it in advance.
+	// It applies regardless of which loop is built, for the reason approval does, and it
+	// applies to a delegated child as much as to the root: a gate that stopped at the
+	// root is a gate a run walks around by delegating. Nil marks nothing.
+	Allowance allowance.Policy
 	// EventSink, when set, records every governed action's lifecycle (admitted,
 	// completed, or rejected) onto the event spine, so the admission decisions are
 	// part of the run's recorded and sealed history rather than only the live trace.
