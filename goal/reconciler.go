@@ -570,11 +570,24 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, "goal_unit_rewritten", err)
 	}
 	status.SyncUnits(spec.Units)
-	if err := ValidateInvariants(spec.Invariants); err != nil {
-		return fault.Wrap(fault.Terminal, "goal_invariants_invalid", err)
-	}
+	// The relaxation check runs before the validity check, which is the reverse of the
+	// ledger and the unit graph above. A term that was reworded is usually also worse in
+	// some other way (a check dropped, a statement softened past what any auditor could
+	// settle), and both diagnoses are true at once. The relaxation is the one worth
+	// saying: it names what the run just did, where the validity fault would send the
+	// author off to fix the wording of a term they were not allowed to touch.
 	if err := status.ValidateInvariantsAdopted(spec.Invariants); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_invariant_relaxed", err)
+	}
+	if err := ValidateInvariants(spec.Invariants); err != nil {
+		// An unsearchable term gets its own code because it is the one an author can
+		// fix in a line, and a generic "invalid" would bury the instruction to write
+		// the search under a class of faults that mostly mean something else.
+		code := "goal_invariants_invalid"
+		if errors.Is(err, ErrInvariantUnsearchable) {
+			code = "goal_invariant_unsearchable"
+		}
+		return fault.Wrap(fault.Terminal, code, err)
 	}
 	status.SyncInvariants(spec.Invariants)
 	return nil
