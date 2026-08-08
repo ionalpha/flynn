@@ -108,6 +108,45 @@ without touching the engine. The critical ones:
   budget enforcement composes alongside it as a `dispatch` hook (charge after,
   refuse before) rather than a second gate.
 
+### A port lands with a producer or with a written reason
+
+Depending on an interface answers whether the thing behind it can be replaced. It
+does not answer whether Flynn can do the work when nobody supplies one, and only the
+first question gets asked during review. A package that defines a port and ships no
+producer reads as correct: the boundary is clean, the contract is small, a host can
+implement it. What it cannot do is work. Four memory packages landed that way and a
+goal capability sat fully built and unwired for a release.
+
+So every port carries one of three verdicts, recorded in
+[`docs/HOST_BOUNDARY.md`](docs/HOST_BOUNDARY.md):
+
+- **shipped**: Flynn has an implementation and the binary wires it. The interface
+  stays, so a host replaces it and loses nothing.
+- **justified**: Flynn ships nothing on purpose, the reason is in the doc comment,
+  and the absence is visible. A goal that states terms with no auditor stalls naming
+  the auditor it wanted; it does not run unaudited and finish like a goal whose terms
+  held.
+- **staged**: Flynn ships it, the binary can wire it, and it is off while confidence
+  is built. The row names the switch and the condition for promotion to the default.
+
+The test: **if the capability cannot be exercised by the `flynn` binary plus a temp
+SQLite file with no host present, it is `justified` with a written reason, or it is a
+gap.** The asymmetry is the point. Deferring to a host is right for a backend a host
+genuinely owns, and wrong for anything Flynn could do with the model port, the
+sandbox, the store and the spine it already has.
+
+The shape to copy is already in the tree: the rule lives in the domain package, the
+producer lives in a sibling that may depend on a sandbox and a log, and the binary
+wires the pair. `goal` with `evidence` and `progress`; `learn` with its own model
+distiller; `memory/consolidate` with `memory/distil`.
+
+This is one direction of the boundary. The other is host neutrality: a Flynn contract
+names only what Flynn owns, and anything belonging to a host is an opaque typed ref,
+stored and matched, never resolved. `internal/hostneutral` enforces that half over
+the public band. The two rules are the same rule read from each end. A contract that
+names a host's records cannot be exercised without a host, and a capability that only
+works when a host is present is not Flynn's.
+
 ## The run and its foundation
 
 A run is the unit the engine governs, and one stable id ties its pieces together:

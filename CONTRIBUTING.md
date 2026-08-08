@@ -42,6 +42,24 @@ remote without a per-clone setup step, set it from a conditional include in
 - Bug fixes with a regression test.
 - Docs improvements.
 
+## Adding an interface the engine depends on
+
+Two rules, both in the same change as the interface.
+
+**Ship a producer, or write the reason.** An interface the engine depends on and
+nothing implements is a capability Flynn only has when somebody else turns up. Ship
+an implementation and wire it in the binary, or write in the doc comment why Flynn
+ships none and make its absence visible: stall or refuse by name, never a silent
+no-op that lets a run finish looking like it did the work. Then add the row to
+[`docs/HOST_BOUNDARY.md`](docs/HOST_BOUNDARY.md). The test is whether the `flynn`
+binary plus a temp SQLite file can exercise the capability with no host present.
+
+**Name only what Flynn owns.** Anything belonging to whoever embeds Flynn is an
+opaque typed ref, stored and matched, never resolved. `internal/hostneutral` fails
+the build on the mechanical half of this.
+
+[`ARCHITECTURE.md`](ARCHITECTURE.md) has both in full.
+
 ## What gets closed
 
 - Unfocused or bundled PRs, unreviewed AI output, or changes with no linked issue.
