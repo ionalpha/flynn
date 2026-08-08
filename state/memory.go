@@ -469,6 +469,16 @@ func (m *memMemory) Usage(_ context.Context, memoryIDs []string) ([]MemoryUsage,
 	c := m.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	out := recordsFor(c.memUsage, memoryIDs, func(u MemoryUsage) string { return u.MemoryID })
+	SortUsage(out)
+	return out, nil
+}
+
+// recordsFor collects the records held for the named items, or every record when
+// memoryIDs is empty, which is how a caller asks for a whole digest at once. The result
+// is unordered because a map is: each caller sorts with the comparison its record type
+// defines.
+func recordsFor[T any](held map[string]T, memoryIDs []string, idOf func(T) string) []T {
 	var want map[string]bool
 	if len(memoryIDs) > 0 {
 		want = make(map[string]bool, len(memoryIDs))
@@ -476,15 +486,14 @@ func (m *memMemory) Usage(_ context.Context, memoryIDs []string) ([]MemoryUsage,
 			want[id] = true
 		}
 	}
-	out := make([]MemoryUsage, 0, len(c.memUsage))
-	for _, u := range c.memUsage {
-		if want != nil && !want[u.MemoryID] {
+	out := make([]T, 0, len(held))
+	for _, rec := range held {
+		if want != nil && !want[idOf(rec)] {
 			continue
 		}
-		out = append(out, u)
+		out = append(out, rec)
 	}
-	SortUsage(out)
-	return out, nil
+	return out
 }
 
 func (m *memMemory) Promote(ctx context.Context, d PromotionDecision) (MemoryPromotion, error) {
@@ -518,20 +527,7 @@ func (m *memMemory) Promotions(_ context.Context, memoryIDs []string) ([]MemoryP
 	c := m.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var want map[string]bool
-	if len(memoryIDs) > 0 {
-		want = make(map[string]bool, len(memoryIDs))
-		for _, id := range memoryIDs {
-			want[id] = true
-		}
-	}
-	out := make([]MemoryPromotion, 0, len(c.memPromo))
-	for _, p := range c.memPromo {
-		if want != nil && !want[p.MemoryID] {
-			continue
-		}
-		out = append(out, p)
-	}
+	out := recordsFor(c.memPromo, memoryIDs, func(p MemoryPromotion) string { return p.MemoryID })
 	SortPromotions(out)
 	return out, nil
 }

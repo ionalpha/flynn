@@ -125,7 +125,29 @@ func (s *Store) RecordUse(ctx context.Context, memoryID string, origin state.Usa
 // lookup plus one scoped list per item to answer a question the caller asks about
 // a whole digest at once.
 func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUsage, error) {
-	rs, err := s.rs.ListAll(ctx, UsageKind, nil)
+	out, err := listByMemoryID(ctx, s, UsageKind, memoryIDs, toUsage, func(u state.MemoryUsage) string { return u.MemoryID })
+	if err != nil {
+		return nil, err
+	}
+	state.SortUsage(out)
+	return out, nil
+}
+
+// listByMemoryID reads every record of kind, decodes each one and keeps those whose item
+// the caller named, or all of them when memoryIDs is empty. Usage and Promotions both
+// answer a question about a whole digest, so both list across scopes and filter here.
+//
+// The filter is a set built once rather than a scan per record: a digest read passes as
+// many ids as it has items, and the store holds a record per item per instance.
+func listByMemoryID[T any](
+	ctx context.Context,
+	s *Store,
+	kind string,
+	memoryIDs []string,
+	decode func(resource.Resource) (T, error),
+	idOf func(T) string,
+) ([]T, error) {
+	rs, err := s.rs.ListAll(ctx, kind, nil)
 	if err != nil {
 		return nil, translateErr(err)
 	}
@@ -136,18 +158,17 @@ func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUs
 			want[id] = true
 		}
 	}
-	out := make([]state.MemoryUsage, 0, len(rs))
+	out := make([]T, 0, len(rs))
 	for _, r := range rs {
-		u, err := toUsage(r)
+		v, err := decode(r)
 		if err != nil {
 			return nil, err
 		}
-		if want != nil && !want[u.MemoryID] {
+		if want != nil && !want[idOf(v)] {
 			continue
 		}
-		out = append(out, u)
+		out = append(out, v)
 	}
-	state.SortUsage(out)
 	return out, nil
 }
 
