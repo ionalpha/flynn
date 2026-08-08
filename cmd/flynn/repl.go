@@ -338,9 +338,9 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
 		// grant, and governance recording as a native turn, but the turn is an episode of
 		// the CLI's own conversation rather than a step of ours.
-		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID, sandbox.ResourceLimits{})
+		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.store.Skills(), s.runID, sandbox.ResourceLimits{})
 	} else {
-		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.runID, sandbox.ResourceLimits{}, false, false)
+		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.store.Skills(), s.runID, sandbox.ResourceLimits{}, false, false)
 	}
 	if err != nil {
 		return "", err

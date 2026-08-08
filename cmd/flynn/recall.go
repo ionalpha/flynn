@@ -8,6 +8,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/text"
 	"github.com/ionalpha/flynn/learn"
+	"github.com/ionalpha/flynn/skill/skillmd"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -26,6 +27,13 @@ const recallLimit = 5
 // above unverified ones. Only the top few survive, since a long, loosely-relevant
 // context hurts the model's use of it more than it helps. This is a lexical first
 // cut; vector recall is a later refinement.
+//
+// What a surviving skill contributes to the prompt is its name and its description,
+// which is the discovery stage of the Agent Skills disclosure model and the whole of
+// what a skill says about itself before something has decided it applies. The
+// procedure is not here: the model calls skill_read for it. So the prompt carries a
+// complete offer at roughly the cost of the truncated one it replaced, and a skill
+// that is read leaves a record saying so.
 // recallContext returns the prompt block, the ids of the skills surfaced (for
 // outcome reinforcement), and a compact human-readable line per recalled item (a
 // skill name or a memory snippet) so the session can show the user what it pulled in.
@@ -46,9 +54,14 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 	// learned something it was given is a false claim in its own standing context.
 	b.WriteString("The following skills and memory are available to you. Use anything relevant; ignore the rest.")
 	if len(sk) > 0 {
-		b.WriteString("\nSkills:")
+		// The offer, and only the offer. Each line is a name and the whole of what the
+		// skill is for, which is the stage the specification says activation keys on;
+		// the procedure itself is fetched with skill_read once the model has decided a
+		// skill applies. Pasting bodies here would spend the activation budget on skills
+		// the run turns out not to need, and would leave no record of which ones it used.
+		b.WriteString("\nSkills. Call skill_read with a skill's name to load its full procedure before acting on it:")
 		for _, s := range sk {
-			fmt.Fprintf(&b, "\n- %s: %s", s.Name, truncate(s.Body, 240))
+			fmt.Fprintf(&b, "\n- %s: %s", s.Slug, offer(s))
 			recalled = append(recalled, s.ID)
 			items = append(items, "skill: "+s.Name)
 		}
@@ -61,6 +74,21 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 		}
 	}
 	return b.String(), recalled, items
+}
+
+// offer returns what a skill says about itself at discovery: its description, which
+// the format requires and bounds, and which is written to be exactly this - the
+// statement of what the skill is for and when to reach for it.
+//
+// A skill the distiller minted has none, and falls back to the head of its body.
+// That is the old behaviour, kept so a learned skill stays recallable rather than
+// because it is any good: the head of a procedure is a poor account of when to reach
+// for it. It stops being needed once capture writes a description of its own.
+func offer(s state.Skill) string {
+	if d := strings.TrimSpace(s.Description); d != "" {
+		return truncate(d, skillmd.MaxDescriptionLen)
+	}
+	return truncate(s.Body, 240)
 }
 
 // gatherSkills unions the per-keyword full-text hits into a deduped candidate set
@@ -113,7 +141,10 @@ func rankSkills(terms []string, cands []state.Skill) []state.Skill {
 	}
 	ss := make([]scored, len(cands))
 	for i, s := range cands {
-		text := strings.ToLower(s.Name + " " + s.Body + " " + strings.Join(s.Tags, " "))
+		// Scored over the text the offer will carry, not over the body. A skill ranked
+		// on words the model never sees produces an offer that reads as irrelevant to
+		// the objective that surfaced it.
+		text := strings.ToLower(s.Slug + " " + s.Name + " " + offer(s) + " " + strings.Join(s.Tags, " "))
 		score := float64(matchScore(terms, text)+verifiedBoost(s.Tags)) + learn.Confidence(s.Uses, s.Wins)
 		ss[i] = scored{s, score}
 	}
