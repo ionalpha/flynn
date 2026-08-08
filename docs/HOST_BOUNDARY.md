@@ -106,7 +106,7 @@ because the check the plan author wrote never got a turn to run.
 | `mission.ResultSummarizer` | `tools` bash, glob, grep, read | implicit on the tool | shipped |
 | `mission.Fanout` | `orchestration.Spawner` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `mission.Reporter` | `session.reporter` | `mission.WithObserver` | shipped |
-| `mission.ApprovalPrompter` + `approval.Gate` | `cmd/flynn.approvalPrompter`, `approval` policy, `spinesink.ApprovalSink`, signer, nonce store | `cmd/flynn/approval_gate.go`, wired at every assembly | shipped |
+| `mission.ApprovalPrompter` + `approval.Gate` (with `approval.Policy`, `approval.Signer`, `approval.NonceStore`) | `cmd/flynn.approvalPrompter`, `approval.Requirements`, `spinesink.ApprovalSink`, `approval.Ed25519Signer`, `approval.MemStore` | `cmd/flynn/approval_gate.go`, wired at every assembly | shipped |
 | `mission.GenerationRecorder` | `nopGenerationRecorder` only | n/a | justified |
 | `brakes.Switch` | `brakes.MemSwitch` | `cmd/flynn/fanout.go` `defaultBrakes` | shipped |
 | `brakes.AnomalyDetector` | none | n/a | justified |
@@ -211,6 +211,76 @@ job, so it is tracked separately rather than guessed at here.
 | `chain.NodeStore` / `CheckpointStore` | `storage/sqlite` merkle store | durable record path | shipped |
 | `harness.ProfileSource` | `harness.StaticProfiles`, `internal/profilestore.Source` | `cmd/flynn/modelrun.go` | shipped |
 
+## Seams the first audit missed
+
+The drift guard was written after the register and found twenty-nine exported
+interfaces in the public band with nothing said about them. That is the finding, not
+a footnote: an audit done by hand once misses roughly a third of a surface this size,
+which is the whole argument for the check.
+
+| Deferral | Shipped producer | Wired at | Verdict |
+|---|---|---|---|
+| `bus.Bus` | `bus.NewMemory` | `runtime.New`, built alongside the store when none is supplied | shipped |
+| `dispatch.EventSink` | `internal/spinesink.Sink`, `dispatch.MemorySink`, `dispatch.DiscardSink` | `cmd/flynn/mission.go` at every assembly | shipped |
+| `dispatch.Hook` | `brakes.Hook`, `budget.Hook`, `approval.Gate`, `capability.ContainmentGate` | `cmd/flynn/fanout.go`, `mission.go` | shipped |
+| `inbox.Worker` | `cmd/flynn.goalWorker` | `cmd/flynn/serve.go` | shipped |
+| `externagent.Recorder` | `cmd/flynn.attestedSink` | `cmd/flynn/externagent.go` | shipped |
+| `extension.Point` | `extension.Registry`'s registered handlers | `cmd/flynn/extensions.go` | shipped |
+| `extension.Conn` | `extension.sessionConn` over a sandbox session | `extension.SandboxLauncher` | shipped |
+| `sandbox.ContainerDriver` | `sandbox.NewContainerDriver` over an `OCIEngine` | `RegisterContainerDriver` at init, for Docker and Podman | shipped |
+| `sandbox.Machine` / `Driver` / `Serving` | `sandbox.commandMachine`, the per-platform drivers registered in `init`, `sandbox.containerServing` | `sandbox.NewMicroVM`, container exec | shipped |
+| `sandbox.Transport` | none | n/a | justified |
+| `memory/hybrid.Embedder` | none yet; build one over the local model serving the binary already carries, wired behind the same staging as ledger proof | n/a | gap |
+
+`sandbox.Transport`: a remote sandbox backend (E2B, Daytona, Modal) is an account
+somebody has and Flynn does not. `Remote` adds a default-deny path check of its own
+on top of whatever the backend enforces, so confinement never depends on the backend
+alone, and with no transport there is simply no remote sandbox: the local and
+container backends are what the binary uses and both ship. Nothing degrades, because
+nothing is asked for.
+
+`memory/hybrid.Embedder` is the register's one `gap`, and it is a gap rather than a
+`justified` row because Flynn could ship it. The binary already provisions and serves
+local models, so an embedder over that path needs no account and no host. Until it
+exists, `hybrid.Store` ranks lexically and says so with `ErrNotFused`, which is the
+same answer the plain store gives, so the absence costs recall quality and never a
+read. The package is not wired into the binary at all today.
+
+## Optional capabilities
+
+An interface a producer may also implement, found by type assertion rather than
+injected. Nothing is deferred through these: not implementing one is a supported
+answer, and what matters is the fallback. They are listed for the same reason a
+verdict is written down, which is that "what happens when this is absent" is the
+question the register exists to answer.
+
+| Capability | Implemented by | Fallback when it is not |
+|---|---|---|
+| `chain.FlushNodeStore` | the durable node store | a checkpoint is signed without forcing buffered nodes first, so a crash can leave proof nodes short of the size the checkpoint claims |
+| `resource.KeyLister` | both bundled backends | the reconcile resync lists records instead of keys, copying every record of the kind to enqueue names |
+| `resource.AnyScopeGetter` | a backend with a name index | the caller falls back to `ListAll` and a name scan |
+| `sandbox.Contained` | `sandbox.Local` with confinement, the container and microVM backends | the sandbox is treated as the weakest tier, so an unknown tier is never assumed to contain more than it proves |
+| `mission.TrustedWork` | the shell tool and every tool that runs model-authored content | the tool is the agent's own trusted code and runs at any tier |
+| `extension.SelfPolicing` | `extension.RoutedSigner` | the host signer signs whatever it is handed, and the decision about what may be signed is nobody's |
+
+## Interfaces that are not deferrals
+
+Neither a seam nor an optional capability. Each is here with its reason, because an
+unexplained exclusion is how the register loses coverage without anyone deciding it
+should.
+
+- `bus.Subscription`, `clock.Timer`, `observe.Span`, `observe.Counter`,
+  `observe.Histogram`: handles a port hands back. Whoever implements `bus.Bus`,
+  `clock.Timing` or `observe.Meter` implements these with it; there is no separate
+  decision and nothing to wire.
+- `reconcile.Reconciler`: the interface Flynn implements and the reconcile loop
+  consumes. It runs the other way, so there is nothing here for a host to supply.
+- `controlplane.Watcher`: a read-model surface Flynn ships an implementation of
+  (`PollWatcher`) and does not itself depend on. The served watch endpoint tails the
+  resource stream directly, so nothing defers through the port; it is there so an
+  embedder gets list, get and watch as one read model, and adding a streaming
+  transport later is a new implementation rather than a new query path.
+
 ## Deferrals that are not interfaces
 
 Places a doc comment hands the work to whoever embeds Flynn, without a port.
@@ -237,6 +307,12 @@ or `runtime` passes it in. An implementation that exists and is never handed ove
 a gap, not a shipped default, because the difference is invisible to a reader of the
 package and decisive for an operator.
 
-The derivation is meant to become a check that fails when a deferral has no row, when
-a row names something that no longer exists, or when a gap row has no open issue. A
-register kept by hand decays; this one is written so it does not have to be.
+`internal/portregister` is that check, and it runs in CI. Every exported interface in
+the public band has to be accounted for here, the register may name no package the
+tree has lost, and a `gap` row that says nothing about what to build is refused. Only
+membership and the code references are mechanical; the verdict stays a judgment,
+because a checker that guessed at one would be wrong in the cases that matter.
+
+Being named anywhere in this document counts, not only in a row's first cell. Several
+interfaces are one deferral (the approval stack is four), and demanding a row each
+would push the register into a shape that hides the seam it is about.
