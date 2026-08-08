@@ -338,6 +338,16 @@ func NewExecutor(model llm.Model, opts ...Option) *Executor {
 
 var _ goal.StepExecutor = (*Executor)(nil)
 
+// Dispatcher returns the waist this executor governs every action through: the
+// admitter, the hooks, the metering and the event sink a composition configured.
+//
+// It is exported for the one caller that has to govern the same actions from outside
+// the conversation loop: plan-driven fan-out, where the reconciler rather than a model
+// turn decides to spawn. That path has to be admitted, metered and recorded the same
+// way, and the only way for it to be the same way rather than a lookalike is to be the
+// same dispatcher.
+func (e *Executor) Dispatcher() *dispatch.Dispatcher { return e.dispatcher }
+
 // ActionModelGenerate is the dispatch action name a model call runs under, so the
 // model call is admitted, traced, metered, and recorded on the spine like any tool
 // call. It is a normal action, not implicitly allowed: a least-privilege grant must

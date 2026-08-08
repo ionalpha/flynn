@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/evidence"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/llm"
@@ -15,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/orchestration"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
+	"github.com/ionalpha/flynn/spine"
 )
 
 // fanoutModel is a stateless content-routing fake: the parent run fans out two
@@ -192,4 +194,131 @@ func decodeMessage(t *testing.T, r resource.Resource) string {
 		t.Fatal(err)
 	}
 	return st.Message
+}
+
+// --- plan-driven fan-out, end to end ------------------------------------------
+
+// alwaysDone is a model whose every turn is a final one. Plan-driven fan-out puts the
+// decomposition on the spec rather than in the conversation, so nothing here needs a
+// model that decides to delegate: what is under test is whether the graph runs.
+type alwaysDone struct{}
+
+func (alwaysDone) Generate(context.Context, llm.Request) (llm.Response, error) {
+	return llmtest.SayText("the unit's work is done"), nil
+}
+
+// passingVerifier reports every item's declared check as run and passing, which is what
+// puts a real verification on each child's record for the evidence gate to consume. It
+// stands in for a command runner, not for the gate: the gate, the record and the
+// settlement are all the shipped ones.
+type passingVerifier struct{}
+
+func (passingVerifier) VerifyItem(context.Context, resource.Resource, goal.LedgerItem) (goal.ItemVerdict, error) {
+	return goal.ItemVerdict{Passed: true, Executed: true, Output: "ok"}, nil
+}
+
+// TestUnitGraphEndToEnd is F17 whole: a goal whose spec carries a unit graph with a
+// dependency edge runs those units as governed children through a real runtime, each
+// child proves its own ledger item through the shipped evidence gate, each unit settles
+// from that proof, and the parent converges only once the graph has. Nothing below the
+// model and the command runner is a fake.
+func TestUnitGraphEndToEnd(t *testing.T) {
+	reg := resource.NewRegistry()
+	if err := resource.RegisterCoreKinds(reg); err != nil {
+		t.Fatal(err)
+	}
+	if err := goal.RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	store := resource.NewMemory(reg)
+	q := jobs.NewMemory()
+	sp := orchestration.NewSpawner(store, nil, orchestration.WithConcurrency(4))
+	exec := mission.NewExecutor(alwaysDone{}, mission.WithFanout(sp))
+
+	rt, err := runtime.New(runtime.Config{
+		Store:    store,
+		Jobs:     q,
+		Executor: exec,
+		Stop:     mission.Convergence{},
+		// The plan path is governed through the executor's own waist, so a unit spawn is
+		// admitted against the goal's grant exactly as the spawn tool is.
+		Units:              orchestration.Units(sp, exec.Dispatcher()),
+		Verifier:           passingVerifier{},
+		Evidence:           evidence.NewSpineEvidence(spine.NewMemoryLog()),
+		RequireLedgerProof: true,
+		PollInterval:       20 * time.Millisecond,
+		WorkerPoll:         10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sp.SetEnqueue(func(ctx context.Context, key resource.Key) error {
+		_, rerr := rt.Resume(ctx, key.Name)
+		return rerr
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = rt.Start(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+
+	units := []goal.Unit{
+		{
+			ID: "parser", Objective: "build the parser", Verify: "go test ./parser",
+			Actions: []string{mission.ActionModelGenerate},
+		},
+		{
+			ID: "api", Objective: "build the api on the parser", Verify: "go test ./api",
+			DependsOn: []string{"parser"}, Actions: []string{mission.ActionModelGenerate},
+		},
+	}
+	if _, err := rt.SubmitGoal(ctx, "root", goal.Spec{
+		Objective:     "deliver the parser and the api",
+		StopCondition: "both units are proven",
+		Grant:         []string{mission.ActionSpawn, mission.ActionModelGenerate},
+		Units:         units,
+	}); err != nil {
+		t.Fatalf("submit: %v", err)
+	}
+
+	parent := waitForPhase(ctx, t, store, "root", goal.PhaseConverged)
+	status, err := goal.DecodeStatus(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !status.UnitsSettled(units) {
+		t.Fatalf("the parent converged over an unsettled graph: %+v", status.Units)
+	}
+	for _, st := range status.Units {
+		if !st.Proven {
+			t.Fatalf("unit %s settled unproven: %+v", st.ID, st)
+		}
+		if st.Evidence == "" {
+			t.Fatalf("unit %s was proven with nothing behind it: %+v", st.ID, st)
+		}
+		if want := orchestration.UnitChildName("root", st.ID); st.ChildID != want {
+			t.Fatalf("unit %s ran as %q, want the derived %q", st.ID, st.ChildID, want)
+		}
+	}
+
+	// Each unit ran as a governed child of the parent, narrowed to what the unit asked
+	// for: the right to fan out again did not flow down a plan any more than it flows
+	// down a tool call.
+	children := childrenOf(ctx, t, store, "root")
+	if len(children) != 2 {
+		t.Fatalf("expected one child per unit, got %d", len(children))
+	}
+	for _, c := range children {
+		cs, err := goal.DecodeSpec(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(cs.Grant) != 1 || cs.Grant[0] != mission.ActionModelGenerate {
+			t.Fatalf("child grant = %v, want [%s]", cs.Grant, mission.ActionModelGenerate)
+		}
+		if len(cs.Ledger) != 1 {
+			t.Fatalf("child %s did not carry its unit's ledger: %+v", c.Name, cs.Ledger)
+		}
+	}
 }
