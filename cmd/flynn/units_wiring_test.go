@@ -74,20 +74,18 @@ func TestFanoutAssemblyRunsAUnitGraph(t *testing.T) {
 
 	status := waitForUnitDispatch(ctx, t, rstore, "root")
 
-	// The parent stalling here is the exact regression: it is what a goal carrying a graph
-	// did in the released binary, and the reason it gave was that nothing was wired to run
-	// the graph.
-	if status.Phase == goal.PhaseStalled {
-		t.Fatalf("a goal with a unit graph stalled in the shipped fan-out assembly: %s", status.Message)
-	}
-
 	byID := map[string]goal.UnitState{}
 	for _, st := range status.Units {
 		byID[st.ID] = st
 	}
+	// A graph that settles without ever creating a child is the exact regression: it is
+	// what a goal carrying a unit graph did in the released binary, where the reason given
+	// was that nothing was wired to run it. A unit that ran and then failed is a different
+	// outcome and the assertions below say which.
 	parser := byID["parser"]
 	if parser.ChildID == "" {
-		t.Fatalf("the ready unit was never dispatched: %+v", status.Units)
+		t.Fatalf("the ready unit was never dispatched (phase %s: %s): %+v",
+			status.Phase, status.Message, status.Units)
 	}
 	if want := orchestration.UnitChildName("root", "parser"); parser.ChildID != want {
 		t.Fatalf("unit parser ran as %q, want the derived %q", parser.ChildID, want)
@@ -120,6 +118,16 @@ func TestFanoutAssemblyRunsAUnitGraph(t *testing.T) {
 	// The whole graph then runs to proof: each child's declared check is executed in the
 	// run's own sandbox, its verdict lands on the record, the unit settles from that, and
 	// the parent converges only once every unit has.
+	//
+	// A verify clause is a semi-trusted command, so whether it runs at all is the host's
+	// answer, not this change's: a runner that cannot contain semi-trusted work refuses
+	// every check and every unit settles unproven, for a reason that has nothing to do
+	// with the wiring under test. Everything above holds on every host; this half is
+	// asserted where the host can actually execute the check.
+	if !hostContainsSemiTrusted(t) {
+		t.Log("host cannot contain semi-trusted work: skipping the proof half, dispatch is asserted above")
+		return
+	}
 	final := waitForGoalPhase(ctx, t, rstore, "root", goal.PhaseConverged)
 	if !final.UnitsSettled(units) {
 		t.Fatalf("the parent converged over an unsettled graph: %+v", final.Units)
@@ -129,6 +137,20 @@ func TestFanoutAssemblyRunsAUnitGraph(t *testing.T) {
 			t.Fatalf("unit %s converged without proof: %+v", st.ID, st)
 		}
 	}
+}
+
+// hostContainsSemiTrusted reports whether this machine's default confinement is strong
+// enough to run a model-authored command, which is the tier a ledger item's verify clause
+// is admitted at. It asks the same sandbox the assembly builds, so the answer is the one
+// the run would get rather than a guess from the OS name.
+func hostContainsSemiTrusted(t *testing.T) bool {
+	t.Helper()
+	sb, err := sandbox.NewLocal(t.TempDir(), sandbox.WithDefaultConfinement())
+	if err != nil {
+		return false
+	}
+	t.Cleanup(func() { _ = sb.Close() })
+	return sandbox.Admit(sb, sandbox.TrustSemi) == nil
 }
 
 // waitForGoalPhase polls the goal until it reaches want, failing with whatever it last
