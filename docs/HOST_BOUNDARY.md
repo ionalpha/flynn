@@ -67,6 +67,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same | shipped |
+| `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `goal.Cleaner` | none | n/a | justified |
