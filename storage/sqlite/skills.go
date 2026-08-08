@@ -228,7 +228,7 @@ func reindexSkill(ctx context.Context, tx *sql.Tx, sk state.Skill) error {
 		return nil
 	}
 	_, err := tx.ExecContext(ctx,
-		`INSERT INTO skills_fts (skill_id, name, body, tags) VALUES (?,?,?,?)`,
-		sk.ID, sk.Name, sk.Body, strings.Join(sk.Tags, " "))
+		`INSERT INTO skills_fts (skill_id, name, description, body, tags) VALUES (?,?,?,?,?)`,
+		sk.ID, sk.Name, sk.Description, sk.Body, strings.Join(sk.Tags, " "))
 	return err
 }

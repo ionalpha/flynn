@@ -54,6 +54,20 @@ func testDescription(t *testing.T, sk state.SkillStore) {
 		t.Fatalf("List returned %d skills, first description %q, want 1 and %q", len(listed), listed[0].Description, desc)
 	}
 
+	// Search reaches the description, and this is the part that decides whether a
+	// skill is ever offered. The word below appears nowhere but there, which is the
+	// normal case for a well-written skill: the description states the situation the
+	// skill is for, and the body states the procedure. A backend that indexes only
+	// the body answers every objective phrased the way a user phrases one with
+	// nothing, and the skill is invisible without anything reporting a fault.
+	found, err := sk.Search(ctx, "reviewed", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(found) != 1 || found[0].Slug != "deploy" {
+		t.Fatalf("Search on a word only the description carries = %+v, want the deploy skill", found)
+	}
+
 	// A skill with no description is a legal record, not an error: the store holds
 	// what it is given, and refusing an empty description belongs to the writer, which
 	// is the boundary that decides what may be published.

@@ -251,7 +251,9 @@ type SkillStore interface {
 	// List returns the skills in a scope, ordered by slug.
 	List(ctx context.Context, scope Scope) ([]Skill, error)
 	// Search returns skills matching query, ordered by slug, capped at limit
-	// (limit <= 0 means no cap).
+	// (limit <= 0 means no cap). A skill matches on its name, description, body
+	// or tags; the description is included because it is the text discovery
+	// keys on.
 	Search(ctx context.Context, query string, limit int) ([]Skill, error)
 	// Delete tombstones a skill by ID or slug (soft delete), or returns
 	// ErrNotFound.
