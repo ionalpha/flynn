@@ -13,9 +13,9 @@ import (
 // The failure this is for is not a run that was refused something. It is a run that was
 // never refused anything: told what to accomplish, it worked out that accomplishing it
 // needed a destructive change to persistent state, and made it. The reported instance
-// deleted OS-level saved settings and load-bearing user state, with no confirmation and no
-// backup, several times in one session. Every step was a reasonable reading of the
-// instruction. Nobody had said the instruction reached that far.
+// deleted OS-level saved settings and user state nothing could restore, with no
+// confirmation and no backup, several times in one session. Each step was a defensible
+// reading of the instruction. Nobody had said the instruction reached that far.
 //
 // Under goal mode the answer cannot be a confirmation prompt, because the arrangement is
 // that nobody is watching: a prompt is a question asked into an empty room and a run that
