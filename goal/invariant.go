@@ -46,7 +46,10 @@ import (
 //
 // A term nobody can check is not a term. A goal that states terms with no auditor wired
 // stalls before its first step, because the alternative is a run that reads as governed,
-// is never checked, and finishes indistinguishable from one whose terms held.
+// is never checked, and finishes indistinguishable from one whose terms held. A term that
+// asserts an absence is refused outright unless it declares the search that would find a
+// counterexample, since nothing in a run's record is the absence and "I could not find
+// any" is worth what the search behind it was worth (absence.go).
 
 // invariantMarkLen is how many hex characters of an invariant's content hash form its
 // fingerprint. Sixteen (64 bits) is far past collision range for the handful of terms
@@ -81,10 +84,14 @@ type Invariant struct {
 	// whoever is handed the stopped goal.
 	Statement string `json:"statement"`
 	// Check is the declared way to observe the statement: the command to run, the
-	// search to make, the place to look. It is optional because not every term reduces
-	// to a command, and an auditor handed a statement with no check rules on the run's
-	// record instead. Where a check can be written, writing it is what turns the term
-	// from a judgement call into an observation.
+	// search to make, the place to look. A zero exit says the term holds.
+	//
+	// It is optional for a term that claims something about what the run did, since an
+	// auditor handed one with no check can rule on the run's record. It is required for
+	// a term that claims something is not there, because the record cannot settle that:
+	// admission refuses an absence claim with no search (see AssertsAbsence). Where a
+	// check can be written, writing it is what turns the term from a judgement call
+	// into an observation.
 	Check string `json:"check,omitempty"`
 }
 
@@ -155,9 +162,16 @@ type InvariantAuditor interface {
 }
 
 // ValidateInvariants refuses a set of terms that could never be audited: one missing its
-// id or statement, or two claiming the same id. It runs at admission, before anything is
-// dispatched, so a goal is never part-way through work it is being held to terms it
-// cannot be judged against.
+// id or statement, two claiming the same id, or one asserting an absence with no search
+// declared to find a counterexample. It runs at admission, before anything is dispatched,
+// so a goal is never part-way through work it is being held to terms it cannot be judged
+// against.
+//
+// The absence rule is the one with teeth, because the term it refuses is the one that
+// would otherwise pass. A term saying no credentials remain, audited by reading the run's
+// account of itself, is settled by a sentence the run writes about a search it may never
+// have made, and it settles that way most easily for exactly the run that did not look.
+// See absence.go for why a search is the only thing that can settle it.
 func ValidateInvariants(invs []Invariant) error {
 	seen := make(map[string]bool, len(invs))
 	for i, inv := range invs {
@@ -168,6 +182,9 @@ func ValidateInvariants(invs []Invariant) error {
 			return fmt.Errorf("%w: %q", ErrInvariantDuplicate, inv.ID)
 		}
 		seen[inv.ID] = true
+		if strings.TrimSpace(inv.Check) == "" && AssertsAbsence(inv.Statement) {
+			return fmt.Errorf("%w: %q says %q", ErrInvariantUnsearchable, inv.ID, inv.Statement)
+		}
 	}
 	return nil
 }

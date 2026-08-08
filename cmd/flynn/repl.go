@@ -23,6 +23,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
@@ -227,7 +228,12 @@ type replSession struct {
 	// /clear drops it; /compact sets it.
 	carriedContext string
 
-	recalled   []string
+	recalled []string
+	// skillset serves skill bodies for every turn and accumulates what the session
+	// read across all of them. One set for the session, not one per turn: the outcome
+	// the reads are credited against is the session's, so a skill read on turn two of
+	// six has to still be on the record when the session ends.
+	skillset   *skilltool.Set
 	transcript []llm.Message
 	lastResult string
 }
@@ -334,13 +340,18 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		run *missionRun
 		err error
 	)
+	// The turn is reassembled each message; the skill toolset is not, so what the
+	// session has read accumulates across the whole conversation.
+	if s.skillset == nil {
+		s.skillset = skilltool.New(s.store.Skills())
+	}
 	if s.ext != nil {
 		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
 		// grant, and governance recording as a native turn, but the turn is an episode of
 		// the CLI's own conversation rather than a step of ours.
-		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.store.Skills(), s.runID, sandbox.ResourceLimits{})
+		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{})
 	} else {
-		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.store.Skills(), s.runID, sandbox.ResourceLimits{}, false, false)
+		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{}, false, false)
 	}
 	if err != nil {
 		return "", err
@@ -478,9 +489,11 @@ func (s *replSession) finish(ctx context.Context) error {
 		return nil
 	}
 	s.declareProvenance(ctx)
-	if len(s.recalled) > 0 {
-		_ = learn.Reinforce(ctx, s.store.Skills(), s.recalled, s.converged)
-	}
+	// What the session was shown and what it read are recorded apart: every recalled
+	// skill was offered, and the session's outcome is credited only to the ones it
+	// loaded through skill_read.
+	_ = learn.Offer(ctx, s.store.Skills(), s.recalled)
+	_ = learn.Reinforce(ctx, s.store.Skills(), s.skillset.Reads(), s.converged)
 	if s.distiller != nil && s.converged {
 		_, _ = fmt.Fprintln(s.out, "\nlearning from this session...")
 		distillOutcome(ctx, s.out, s.distiller, s.store.Skills(), s.store.Memory(), s.cwd, learn.Outcome{

@@ -14,9 +14,13 @@ func TestValidateInvariants(t *testing.T) {
 	}{
 		{name: "none", invs: nil},
 		{name: "ok", invs: []Invariant{
-			{ID: "no-force-push", Statement: "never force-push a shared branch"},
+			{ID: "in-scope", Statement: "every edit lands under the module the objective names"},
+			{ID: "no-force-push", Statement: "never force-push a shared branch", Check: "git reflog | grep forced-update"},
 			{ID: "no-secrets", Statement: "no credential leaves the workspace", Check: "grep the diff for key material"},
 		}},
+		{name: "absence with no search", invs: []Invariant{
+			{ID: "no-secrets", Statement: "no credential leaves the workspace"},
+		}, want: ErrInvariantUnsearchable},
 		{name: "no id", invs: []Invariant{{Statement: "s"}}, want: ErrInvariantIncomplete},
 		{name: "no statement", invs: []Invariant{{ID: "a"}}, want: ErrInvariantIncomplete},
 		{name: "duplicate id", invs: []Invariant{

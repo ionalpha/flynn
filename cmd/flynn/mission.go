@@ -23,7 +23,6 @@ import (
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
-	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/tools"
 )
 
@@ -82,10 +81,12 @@ func (p *missionParts) Close() error {
 // and process count of the commands the run's tools execute (its zero value applies
 // no cap).
 //
-// skills is the durable skill store the skill tools read, and may be nil: a run
-// assembled without one (a served control-plane run, a test) simply offers no skill
-// tool, rather than offering one that answers nothing.
-func newMissionParts(workdir string, log spine.Log, skills state.SkillStore, runID string, withSpawn bool, resLimits sandbox.ResourceLimits) (*missionParts, error) {
+// skills is the skill toolset the run reads procedures through, and may be nil: a
+// run assembled without one (a served control-plane run, a test) simply offers no
+// skill tool, rather than offering one that answers nothing. It is passed in rather
+// than built here because it accumulates the run's reads and the caller grades the
+// run against them; a session spanning several turns hands the same set to each.
+func newMissionParts(workdir string, log spine.Log, skills *skilltool.Set, runID string, withSpawn bool, resLimits sandbox.ResourceLimits) (*missionParts, error) {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement(), sandbox.WithResourceLimits(resLimits))
 	if err != nil {
 		return nil, err
@@ -101,7 +102,7 @@ func newMissionParts(workdir string, log spine.Log, skills state.SkillStore, run
 	// They are one toolset from here on: the grant below is built from whatever this
 	// list holds, so a tool that is offered is a tool the waist admits, and adding one
 	// cannot leave its authority behind.
-	toolset := append(tools.New(sb).Tools(), skilltool.New(skills).Tools()...)
+	toolset := append(tools.New(sb).Tools(), skills.Tools()...)
 	// The grant lists every action the run may take: the tools, plus the model call
 	// and the distillation, and (for a fan-out) the spawn that delegates a sub-goal. A
 	// child narrows from this set, so a delegation can never widen authority; a run
@@ -152,7 +153,7 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills state.SkillStore, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool) (*missionRun, error) {
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool) (*missionRun, error) {
 	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
 	if err != nil {
 		return nil, err
@@ -222,11 +223,17 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// is not part of the ledger: a goal can state what must stay true without expanding
 	// its objective into items, and one that states terms with no auditor would stall.
 	//
+	// A term that declares no check goes to the model auditor, which reads the run's own
+	// recorded events. That is the weaker of the two and is wired knowing it: it refuses
+	// to rule on a claim that something is not there, and refuses a verdict that cites
+	// nothing in the record. Those two refusals stop the goal, which is the same
+	// fail-closed direction as an unrunnable check.
+	//
 	// The event sink is left off for the reason the item verifier leaves it off: a second
 	// dispatcher writing lifecycle events onto one stream emits colliding call ids, and
 	// the record then reads as one call both refused and completed. The audit is on the
 	// record as its own invariant-audited event, which is the part that matters.
-	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log,
+	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log, evidence.NewModelAuditor(model, log),
 		dispatch.WithAdmitter(capability.Admitter{}),
 		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
 	// Stop a run that has stopped getting anywhere. The probe reads the run's own recorded
@@ -304,7 +311,7 @@ func externalModel(ea *externAgent) string {
 // unobserved-but-contained and are recorded as a declared provenance gap. A run driven
 // this way does not fan out (the external harness owns its own loop), so the spawn
 // action is withheld from the grant.
-func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills state.SkillStore, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
+func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
 	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
 	if err != nil {
 		return nil, err

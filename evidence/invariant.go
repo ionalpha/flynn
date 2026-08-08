@@ -32,26 +32,39 @@ const AuditInvariantAction = "goal.audit.invariant"
 // looks locally compliant at every step, and asking that run whether it kept to its
 // terms is asking the wrong witness. A check that exits non-zero is not an opinion.
 //
-// Everything an audit cannot answer is an error rather than a clean verdict. A term with
-// no check, a missing sandbox, a check that could not be started, an admission that
-// refused it: none of them is evidence a term holds, and reporting no breach would hand
-// the run a pass it never earned. The reconciler stops the goal on the error, which is
-// the fail-closed direction. This is the opposite of CommandVerifier's rule for a ledger
-// item, and deliberately so: an item that cannot be checked is unproven and the run
-// carries on trying, while a term that cannot be checked means the run is no longer
-// governed and there is nothing to carry on to.
+// Everything an audit cannot answer is an error rather than a clean verdict. A missing
+// sandbox, a check that could not be started, an admission that refused it, a term with no
+// check and nobody to rule on it: none of them is evidence a term holds, and reporting no
+// breach would hand the run a pass it never earned. The reconciler stops the goal on the
+// error, which is the fail-closed direction. This is the opposite of CommandVerifier's
+// rule for a ledger item, and deliberately so: an item that cannot be checked is unproven
+// and the run carries on trying, while a term that cannot be checked means the run is no
+// longer governed and there is nothing to carry on to.
+//
+// A term that declares no check is not this auditor's to rule on, and it hands those to
+// the prose auditor it was built with (ModelAuditor in production). The split is by what
+// the term declares rather than by what it says, so a term with a check is always settled
+// by running it: a model asked to judge from the record whether the check would have
+// passed is guessing at something one command away.
 type CommandAuditor struct {
 	sb         sandbox.Sandbox
 	log        spine.Log
 	dispatcher *dispatch.Dispatcher
+	prose      goal.InvariantAuditor
 }
 
 // NewCommandAuditor builds an auditor running each term's check in sb, recording every
 // audit on log, governed by a dispatcher built from opts. Pass the same admitter, event
 // sink and observability the rest of the run uses, so an audit shares its governance and
 // its spine.
-func NewCommandAuditor(sb sandbox.Sandbox, log spine.Log, opts ...dispatch.Option) *CommandAuditor {
-	return &CommandAuditor{sb: sb, log: log, dispatcher: dispatch.New(opts...)}
+//
+// prose is where terms that declare no check are sent, and it is an explicit argument
+// rather than an option because every host has to decide what happens to them. A nil prose
+// auditor is a legitimate answer, and it means the strict one: a goal may only state terms
+// that reduce to a command, and one that states anything else stops rather than running
+// against a term nobody rules on.
+func NewCommandAuditor(sb sandbox.Sandbox, log spine.Log, prose goal.InvariantAuditor, opts ...dispatch.Option) *CommandAuditor {
+	return &CommandAuditor{sb: sb, log: log, prose: prose, dispatcher: dispatch.New(opts...)}
 }
 
 var _ goal.InvariantAuditor = (*CommandAuditor)(nil)
@@ -63,8 +76,9 @@ var _ goal.InvariantAuditor = (*CommandAuditor)(nil)
 // plan-driven spawn. An audit is therefore admitted against the authority of the run
 // being audited: a goal that cannot run its own checks cannot be audited by running
 // them, and it stops rather than being waved through.
-func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec goal.Spec, _ goal.Status, terms []goal.Invariant) ([]goal.Breach, error) {
-	if a.sb == nil {
+func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec goal.Spec, status goal.Status, terms []goal.Invariant) ([]goal.Breach, error) {
+	declared, prose := splitByCheck(terms)
+	if len(declared) > 0 && a.sb == nil {
 		return nil, fault.Wrap(fault.Terminal, "audit_no_sandbox", ErrNoSandbox)
 	}
 	// A goal with no grant is unconstrained, exactly as it is everywhere else, so an
@@ -73,7 +87,7 @@ func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec go
 		ctx = capability.Into(ctx, capability.NewGrant(spec.Grant...))
 	}
 	var breaches []goal.Breach
-	for _, term := range terms {
+	for _, term := range declared {
 		held, detail, err := a.auditOne(ctx, r, term)
 		if err != nil {
 			return nil, err
@@ -82,7 +96,34 @@ func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec go
 			breaches = append(breaches, goal.Breach{ID: term.ID, Detail: detail})
 		}
 	}
-	return breaches, nil
+	if len(prose) == 0 {
+		return breaches, nil
+	}
+	if a.prose == nil {
+		return nil, fault.New(fault.Terminal, "audit_no_check",
+			"audit: invariant "+prose[0].ID+" declares no check to run and no prose auditor is wired, "+
+				"so nothing can rule on it")
+	}
+	// The prose terms go in one call so the auditor reads the record once and judges them
+	// all against the same reading. They are handed the status this pass built, the same
+	// as the ones audited here, since that is the run as it stands after the step.
+	found, err := a.prose.Audit(ctx, r, spec, status, prose)
+	if err != nil {
+		return nil, err
+	}
+	return append(breaches, found...), nil
+}
+
+// splitByCheck separates the terms that declare a check from the terms that do not.
+func splitByCheck(terms []goal.Invariant) (declared, prose []goal.Invariant) {
+	for _, term := range terms {
+		if strings.TrimSpace(term.Check) == "" {
+			prose = append(prose, term)
+			continue
+		}
+		declared = append(declared, term)
+	}
+	return declared, prose
 }
 
 // auditOne runs one term's check and records the audit on the run's stream. The record
@@ -91,11 +132,6 @@ func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec go
 // terms were checked, and a log that only ever mentions the breaches cannot show that.
 func (a *CommandAuditor) auditOne(ctx context.Context, r resource.Resource, term goal.Invariant) (held bool, detail string, err error) {
 	check := strings.TrimSpace(term.Check)
-	if check == "" {
-		return false, "", fault.New(fault.Terminal, "audit_no_check",
-			"audit: invariant "+term.ID+" declares no check to run, so this auditor cannot rule on it")
-	}
-
 	var res sandbox.ExecResult
 	gerr := a.dispatcher.Govern(ctx, dispatch.Action{
 		Name:  AuditInvariantAction,

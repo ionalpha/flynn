@@ -78,8 +78,14 @@ func termSpec(invs ...Invariant) Spec {
 	return Spec{Objective: "ship the change", StopCondition: "the change is shipped", Invariants: invs}
 }
 
+// noForcePush is the term these tests run under. It carries a check because its statement
+// is a negative-space claim, and admission refuses one of those with no search declared.
 func noForcePush() Invariant {
-	return Invariant{ID: "no-force-push", Statement: "never force-push a shared branch"}
+	return Invariant{
+		ID:        "no-force-push",
+		Statement: "never force-push a shared branch",
+		Check:     "git reflog show origin/main | grep -q 'forced-update' && exit 1 || exit 0",
+	}
 }
 
 // start reconciles a fresh goal to its first dispatched step.
@@ -344,7 +350,11 @@ func TestATermCanBeAddedToARunningGoal(t *testing.T) {
 	ref := h.createGoal(t, "g", termSpec(noForcePush()))
 	h.step(t, ref)
 
-	added := Invariant{ID: "no-history-rewrite", Statement: "never rewrite published history"}
+	added := Invariant{
+		ID:        "no-history-rewrite",
+		Statement: "never rewrite published history",
+		Check:     "git log --format=%H origin/main | head -1 | grep -qF \"$BASE\"",
+	}
 	h.putSpec(t, ref, termSpec(noForcePush(), added))
 	h.completeStep(t)
 	h.reconcile(t, ref)
@@ -381,6 +391,38 @@ func TestUnauditableTermsAreRefusedAtAdmission(t *testing.T) {
 	}
 	if st := h.status(t, ref); st.InFlight != nil {
 		t.Fatalf("a step was dispatched under terms that could never be checked: %+v", st.InFlight)
+	}
+}
+
+// TestAnAbsenceTermWithNoSearchIsRefusedAtAdmission: a term saying something is not there
+// is refused before the first step, and the auditor is never even asked. That is the only
+// place it can be caught cleanly. Once the run is going, the term reads as a guard, and
+// the auditor available to rule on a term with no check is one reading the run's record,
+// where the absence is exactly the thing that leaves no trace.
+func TestAnAbsenceTermWithNoSearchIsRefusedAtAdmission(t *testing.T) {
+	h := newTermHarness(t, stopAfter{at: 99})
+	ref := h.createGoal(t, "g", termSpec(
+		Invariant{ID: "no-secrets", Statement: "no credential leaves the workspace"},
+	))
+
+	_, err := h.gr.reconcile(h.ctx, ref)
+	if err == nil {
+		t.Fatal("a goal stating an absence with no search was admitted")
+	}
+	if !errors.Is(err, ErrInvariantUnsearchable) {
+		t.Fatalf("error %v does not carry ErrInvariantUnsearchable", err)
+	}
+	if got := faultCode(t, err); got != "goal_invariant_unsearchable" {
+		t.Fatalf("fault code %q, want goal_invariant_unsearchable", got)
+	}
+	if got := fault.Classify(err); got != fault.Terminal {
+		t.Fatalf("classified %q, want %q: no retry fixes the wording", got, fault.Terminal)
+	}
+	if st := h.status(t, ref); st.InFlight != nil {
+		t.Fatalf("a step was dispatched under a term nobody could check: %+v", st.InFlight)
+	}
+	if h.au.calls != 0 {
+		t.Fatalf("the auditor was asked about a term admission refused (%d)", h.au.calls)
 	}
 }
 

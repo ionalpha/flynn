@@ -145,7 +145,7 @@ func rankSkills(terms []string, cands []state.Skill) []state.Skill {
 		// on words the model never sees produces an offer that reads as irrelevant to
 		// the objective that surfaced it.
 		text := strings.ToLower(s.Slug + " " + s.Name + " " + offer(s) + " " + strings.Join(s.Tags, " "))
-		score := float64(matchScore(terms, text)+verifiedBoost(s.Tags)) + learn.Confidence(s.Uses, s.Wins)
+		score := float64(matchScore(terms, text)+verifiedBoost(s.Tags)) + learn.Confidence(s.Reads, s.Wins)
 		ss[i] = scored{s, score}
 	}
 	sort.SliceStable(ss, func(i, j int) bool {

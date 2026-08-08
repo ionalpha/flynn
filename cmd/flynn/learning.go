@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
@@ -32,7 +33,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	skills, memories := store.Skills(), store.Memory()
 
 	// Recall first: fold what was learned before into the standing instructions, and
-	// remember which skills were surfaced so the run's outcome can reinforce them.
+	// remember which skills were surfaced so the run can be told what it was shown.
 	system := defaultSystemPrompt
 	block, recalled, _ := recallContext(ctx, skills, memories, objective)
 	if block != "" {
@@ -50,17 +51,23 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	}
 
 	resources := store.Resources(reg)
-	// The run reads skills from the store recall just offered from. Prepended rather
-	// than appended so a caller could override it, and passed unconditionally: the
-	// offer in the prompt names skill_read, so the tool has to be there.
-	opts = append([]driveOption{withSkills(skills)}, opts...)
+	// The run reads skills from the store recall just offered from, through a toolset
+	// that keeps the list of what it served. Prepended rather than appended so a caller
+	// could override it, and passed unconditionally: the offer in the prompt names
+	// skill_read, so the tool has to be there.
+	skillset := skilltool.New(skills)
+	opts = append([]driveOption{withSkills(skillset)}, opts...)
 	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout, opts...)
 
-	// Reinforce the recalled skills by the run's outcome: a skill present in a run
-	// that converged earns a win; one in a run that failed earns only a use. This is
-	// gated with capture (a read-only --no-learn run records nothing).
-	if distiller != nil && len(recalled) > 0 {
-		_ = learn.Reinforce(ctx, skills, recalled, err == nil)
+	// Record what the run was shown and what it took up as two separate facts. Every
+	// recalled skill was offered; only the ones the model loaded through skill_read
+	// are credited with the run's outcome, because being in the prompt establishes
+	// nothing about whether a skill was used and a win handed to all five makes the
+	// number a property of the run. Both are gated with capture, so a read-only
+	// --no-learn run records neither.
+	if distiller != nil {
+		_ = learn.Offer(ctx, skills, recalled)
+		_ = learn.Reinforce(ctx, skills, skillset.Reads(), err == nil)
 	}
 	if err != nil {
 		return "", err

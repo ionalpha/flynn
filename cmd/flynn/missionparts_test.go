@@ -6,6 +6,7 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
@@ -18,7 +19,7 @@ import (
 // would silently diverge what single vs fan-out runs are allowed to do; this test
 // fails if that divergence ever returns.
 func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
-	skills := state.NewMemory().Skills()
+	skills := skilltool.New(state.NewMemory().Skills())
 	single, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", false, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("newMissionParts single: %v", err)
@@ -70,10 +71,10 @@ func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
 func TestMissionPartsSkillToolsFollowTheStore(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
-		skills state.SkillStore
+		skills *skilltool.Set
 		want   bool
 	}{
-		{"with a store", state.NewMemory().Skills(), true},
+		{"with a store", skilltool.New(state.NewMemory().Skills()), true},
 		{"without one", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

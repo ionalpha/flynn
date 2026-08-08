@@ -324,68 +324,16 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	}
 
 	// Observe an in-flight step.
-	observed := false
-	observedKind := ""
-	if status.InFlight != nil {
-		inFlightKind := status.InFlight.Kind
-		observedKind = inFlightKind
-		job, err := g.jobs.Get(ctx, status.InFlight.JobID)
-		switch {
-		case err != nil:
-			// The job record is gone; treat the step as lost and retry from clean.
-			status.InFlight = nil
-		case job.State == jobs.StateRunning || job.State == jobs.StatePending:
-			return reconcile.Result{RequeueAfter: g.poll}, nil // still working
-		case job.State == jobs.StateDead:
-			status.InFlight = nil
-			status.Phase = PhaseStalled
-			status.Message = "step failed: " + job.LastError
-			status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "StepFailed", Message: job.LastError}, g.clk.Now())
-			status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "StepFailed"}, g.clk.Now())
-			return g.terminal(ctx, r, status, specHash)
-		default: // StateDone: a step completed.
-			status.InFlight = nil
-			observed = true
-			// Alternate building and verifying. A completed build step leaves the
-			// current item's declared check unrun, so the next dispatch is that
-			// check; observing the check clears the mark and the next dispatch
-			// builds again. Keeping this on the status rather than in memory is what
-			// makes the alternation survive a crash: a run that restarted here would
-			// otherwise build twice and verify once, and the ledger would lag the
-			// work by a step.
-			if g.ledgerGated() {
-				status.markVerifyPending(inFlightKind)
-			}
-			// A step that parked the goal (ErrWaiting) made no progress, so it
-			// does not count against the step budget: a fan-out whose children
-			// outlast the budget's worth of re-checks must wait, not false-stall.
-			// A planning step is not building either: it is the phase that decides
-			// what the build budget will be spent on, so charging the budget for it
-			// would make a goal that plans strictly poorer than one that does not.
-			// Nor is a verification: it is the run checking work already paid for,
-			// and charging it would halve the build budget of every goal that
-			// proves its items against one that merely claims them.
-			if status.WaitingSince == nil && chargesBuildBudget(inFlightKind) {
-				status.Steps++
-				// Fold the just-completed build step into the idle streak, when a probe is
-				// wired. Only a build step counts: a planning step and a parked wait are not
-				// the agent failing to get anywhere. The stall itself is deferred to the
-				// no-progress guard below, so a step that both finished the work and changed
-				// nothing converges for that reason first.
-				if g.progress != nil {
-					if err := g.observeProgress(ctx, r, &status); err != nil {
-						return reconcile.Result{}, err
-					}
-				}
-			}
-		}
+	obs, res, handled, err := g.observeInFlight(ctx, r, &status, specHash)
+	if handled {
+		return res, err
 	}
 
 	// The terms of the run, checked against the step that just finished and before the
 	// goal parks, plans more work, fans out, settles its ledger or is judged done. A
 	// broken term settles the goal from here, so nothing below it can be traded against
 	// it: not the stop evaluator's verdict, and not a wait on children either.
-	if res, handled, err := g.auditInvariants(ctx, r, spec, &status, specHash, observed); handled {
+	if res, handled, err := g.auditInvariants(ctx, r, spec, &status, specHash, obs.completed); handled {
 		return res, err
 	}
 
@@ -397,7 +345,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// durable step per poll cycle.
 	if status.WaitingSince != nil {
 		if wait := status.WaitingSince.Add(g.recheckAfter()).Sub(g.clk.Now()); wait > 0 {
-			if observed {
+			if obs.completed {
 				status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "AwaitingChildren", Message: "waiting on child goals"}, g.clk.Now())
 				if err := g.persistStatus(ctx, r, status, specHash); err != nil {
 					return reconcile.Result{}, err
@@ -457,7 +405,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// is the first point where both halves of the refusal are current: the evaluator has
 	// just spoken, and under the ledger gate the item's check has just been settled, so
 	// the feedback describes the cycle that ended rather than the one before it.
-	if !met && g.countsAsCycle(observed, observedKind, status) {
+	if !met && g.countsAsCycle(obs.completed, obs.kind, status) {
 		status.ObserveVerdict(reason, status.ExecutedFeedback(spec.Ledger, recorded))
 	}
 	if met {
@@ -487,6 +435,79 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// per build step rather than one per reconcile tick.
 	kind, reason := g.nextJobKind(spec, &status)
 	return g.dispatch(ctx, r, status, specHash, kind, PhaseRunning, reason)
+}
+
+// observation is what a reconcile learned from the step it had in flight: whether one
+// completed this pass, and of what kind. Both halves are read further down the
+// reconcile by the guards that only apply to a cycle in which the agent did something.
+type observation struct {
+	completed bool
+	kind      string
+}
+
+// observeInFlight resolves the step this goal had in flight and folds its outcome into
+// the status: a lost job clears the mark and retries from clean, a completed one banks
+// its progress against the budget and the verify alternation. It reports handled when
+// the reconcile ends here, which is either of the two outcomes that are not progress:
+// the step is still working, so requeue and wait, or it died, so the goal settles as
+// stalled naming the step's own error. A goal with nothing in flight passes through.
+func (g *Reconciler) observeInFlight(ctx context.Context, r resource.Resource, status *Status, specHash string) (observation, reconcile.Result, bool, error) {
+	if status.InFlight == nil {
+		return observation{}, reconcile.Result{}, false, nil
+	}
+	obs := observation{kind: status.InFlight.Kind}
+	job, err := g.jobs.Get(ctx, status.InFlight.JobID)
+	switch {
+	case err != nil:
+		// The job record is gone; treat the step as lost and retry from clean.
+		status.InFlight = nil
+	case job.State == jobs.StateRunning || job.State == jobs.StatePending:
+		return obs, reconcile.Result{RequeueAfter: g.poll}, true, nil // still working
+	case job.State == jobs.StateDead:
+		status.InFlight = nil
+		status.Phase = PhaseStalled
+		status.Message = "step failed: " + job.LastError
+		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "StepFailed", Message: job.LastError}, g.clk.Now())
+		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "StepFailed"}, g.clk.Now())
+		res, err := g.terminal(ctx, r, *status, specHash)
+		return obs, res, true, err
+	default: // StateDone: a step completed.
+		status.InFlight = nil
+		obs.completed = true
+		// Alternate building and verifying. A completed build step leaves the
+		// current item's declared check unrun, so the next dispatch is that
+		// check; observing the check clears the mark and the next dispatch
+		// builds again. Keeping this on the status rather than in memory is what
+		// makes the alternation survive a crash: a run that restarted here would
+		// otherwise build twice and verify once, and the ledger would lag the
+		// work by a step.
+		if g.ledgerGated() {
+			status.markVerifyPending(obs.kind)
+		}
+		// A step that parked the goal (ErrWaiting) made no progress, so it
+		// does not count against the step budget: a fan-out whose children
+		// outlast the budget's worth of re-checks must wait, not false-stall.
+		// A planning step is not building either: it is the phase that decides
+		// what the build budget will be spent on, so charging the budget for it
+		// would make a goal that plans strictly poorer than one that does not.
+		// Nor is a verification: it is the run checking work already paid for,
+		// and charging it would halve the build budget of every goal that
+		// proves its items against one that merely claims them.
+		if status.WaitingSince == nil && chargesBuildBudget(obs.kind) {
+			status.Steps++
+			// Fold the just-completed build step into the idle streak, when a probe is
+			// wired. Only a build step counts: a planning step and a parked wait are not
+			// the agent failing to get anywhere. The stall itself is deferred to the
+			// no-progress guard below, so a step that both finished the work and changed
+			// nothing converges for that reason first.
+			if g.progress != nil {
+				if err := g.observeProgress(ctx, r, status); err != nil {
+					return obs, reconcile.Result{}, true, err
+				}
+			}
+		}
+	}
+	return obs, reconcile.Result{}, false, nil
 }
 
 // planGate holds a planning goal at its planning phase and reports whether it handled
@@ -549,11 +570,24 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, "goal_unit_rewritten", err)
 	}
 	status.SyncUnits(spec.Units)
-	if err := ValidateInvariants(spec.Invariants); err != nil {
-		return fault.Wrap(fault.Terminal, "goal_invariants_invalid", err)
-	}
+	// The relaxation check runs before the validity check, which is the reverse of the
+	// ledger and the unit graph above. A term that was reworded is usually also worse in
+	// some other way (a check dropped, a statement softened past what any auditor could
+	// settle), and both diagnoses are true at once. The relaxation is the one worth
+	// saying: it names what the run just did, where the validity fault would send the
+	// author off to fix the wording of a term they were not allowed to touch.
 	if err := status.ValidateInvariantsAdopted(spec.Invariants); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_invariant_relaxed", err)
+	}
+	if err := ValidateInvariants(spec.Invariants); err != nil {
+		// An unsearchable term gets its own code because it is the one an author can
+		// fix in a line, and a generic "invalid" would bury the instruction to write
+		// the search under a class of faults that mostly mean something else.
+		code := "goal_invariants_invalid"
+		if errors.Is(err, ErrInvariantUnsearchable) {
+			code = "goal_invariant_unsearchable"
+		}
+		return fault.Wrap(fault.Terminal, code, err)
 	}
 	status.SyncInvariants(spec.Invariants)
 	return nil

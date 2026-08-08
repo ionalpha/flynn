@@ -18,6 +18,7 @@ import (
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
@@ -356,7 +357,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	t.Cleanup(ea.close)
 
 	run, err := assembleExternalMission(ea, t.TempDir(), defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), store.Skills(), "", sandbox.ResourceLimits{})
+		store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "", sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -378,7 +379,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 
 	// A native fan-out run, by contrast, is granted the delegation it exists to make.
 	fan, err := assembleFanoutMission(llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
-		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), store.Skills(), "",
+		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "",
 		nil, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)

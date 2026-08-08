@@ -17,7 +17,8 @@
 // wants a bundled skill changed copies it into a scope of their own, where the
 // learning loop's guards already keep authored content safe.
 //
-// What is carried across an upgrade is outcome evidence. Uses and Wins record what
+// What is carried across an upgrade is the evidence: how often the skill was
+// offered, how often a run read it, and how many of those runs won. That is what
 // happened on this machine, not what the pack says, so replacing a skill's body
 // keeps its record of how well it has performed rather than resetting its rank.
 package bundled
@@ -132,7 +133,7 @@ func reconcile(ctx context.Context, store state.SkillStore, want []state.Skill) 
 		prev, seeded := stale[sk.Slug]
 		delete(stale, sk.Slug)
 		if seeded {
-			sk.Uses, sk.Wins = prev.Uses, prev.Wins
+			sk.Offers, sk.Reads, sk.Wins = prev.Offers, prev.Reads, prev.Wins
 			if sameContent(prev, sk) {
 				res.Unchanged = append(res.Unchanged, sk.Slug)
 				continue
