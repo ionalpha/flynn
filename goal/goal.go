@@ -120,6 +120,18 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
+    "allowances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": {"type": "string", "minLength": 1},
+          "target": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
     "system": {"type": "string"},
     "driver": {"type": "string"},
     "model": {"type": "string"},
@@ -218,6 +230,13 @@ type Spec struct {
 	// Empty on a goal that states no terms, and such a goal behaves exactly as it did
 	// before.
 	Invariants []Invariant `json:"invariants,omitempty"`
+	// Allowances are the irreversible actions outside the workspace this run is
+	// authorized to take (see allowance.go). They are the standing form of a decision
+	// nobody will be present to make: a run that reaches an undeclared one is paused with
+	// the ask rather than refused into a model that would look for another route. Empty
+	// on a goal that declares none, and such a goal can take no such action at all, which
+	// is the default and the point.
+	Allowances []Allowance `json:"allowances,omitempty"`
 }
 
 // SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total

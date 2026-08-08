@@ -147,7 +147,7 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 	// installed. A paused action raises the modal overlay and the operator's allow or
 	// deny resolves it; without this the session would have a gate and nobody to ask, and
 	// every listed action would be refused.
-	s.approval.prompter = approvalPrompter{host: host}
+	s.gates.prompter = approvalPrompter{host: host}
 	return a, host
 }
 

@@ -53,6 +53,7 @@ tests and a durable one for the binary.
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
+| `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
 
 ## The goal reconciler
@@ -73,6 +74,14 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Cleaner` | none | n/a | justified |
 | `goal.WindowSource` | none | n/a | justified |
 | `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
+
+`allowance.Policy` is the one deferral on this list whose empty answer is the intended
+default rather than a gap. Which actions reach outside the workspace irreversibly is
+something the waist cannot derive: it governs an action's identity and never its
+arguments, and one action name covers both a command that lists a directory and a
+command that deletes what was not backed up. So the operator says, with
+`--irreversible`, and a binary that guessed would be marking too much (stopping runs
+that were fine) or too little (a gate that reads as present and is not).
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are reaped through owner references, not

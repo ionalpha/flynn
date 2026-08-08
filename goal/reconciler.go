@@ -344,7 +344,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// and above everything else for the same reason: a run that kept pushing on one gate
 	// is not a run to judge on whether it finished, and the case this exists for is
 	// exactly the run that finished by the route it was refused.
-	if res, handled, err := g.checkRefusals(ctx, r, &status, specHash, obs.completed); handled {
+	if res, handled, err := g.checkRefusals(ctx, r, spec, &status, specHash, obs.completed); handled {
 		return res, err
 	}
 

@@ -308,7 +308,7 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	// A served conversation has no operator at a terminal, so it carries no approval
 	// policy and no prompter. Adding one here would need a way to reach whoever is on
 	// the other end of the channel, which is a different mechanism from a modal prompt.
-	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, nil, "", sandbox.ResourceLimits{}, false, false, approvalSetup{})
+	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
 	if err != nil {
 		return err
 	}

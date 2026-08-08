@@ -260,6 +260,12 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		// this is not narrowed, because there is no narrower version of an obligation:
 		// the child is held to everything its parent is.
 		Invariants: parentSpec.Invariants,
+		// Allowances are copied, which is neither widening nor inference: a child holds
+		// exactly what its parent was declared to hold, and holds it only for the actions
+		// its narrowed grant lets it take at all. What a delegation cannot do is mint one.
+		// A run that could declare an allowance for its child would be a run declaring its
+		// own authority, which is the reading of the objective this refuses.
+		Allowances: parentSpec.Allowances,
 	}
 	raw, err := json.Marshal(childSpec)
 	if err != nil {

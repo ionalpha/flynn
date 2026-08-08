@@ -6,6 +6,7 @@ import (
 
 	"pgregory.net/rapid"
 
+	"github.com/ionalpha/flynn/allowance"
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/fault"
@@ -152,4 +153,19 @@ func TestRegistryResolveProperty(t *testing.T) {
 			rt.Fatal("an unregistered name must fail closed")
 		}
 	})
+}
+
+// TestDefaultDriverBuildsWithAllowance: the pre-declaration gate is a governance ingredient
+// like the approval gate, so it travels in the Spec and reaches every loop the Router
+// builds, the root's and each delegated child's. A gate that stopped at the root would be a
+// gate a run walks around by delegating.
+func TestDefaultDriverBuildsWithAllowance(t *testing.T) {
+	d, err := driver.Default().Resolve(driver.NameDefault)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	exec, stop, berr := d.Build(driver.Spec{Allowance: allowance.NewActions("deploy")})
+	if berr != nil || exec == nil || stop == nil {
+		t.Fatalf("build with an allowance policy: exec=%v stop=%v err=%v", exec, stop, berr)
+	}
 }
