@@ -609,7 +609,7 @@ func TestLoadRefusesAResourceItCannotRead(t *testing.T) {
 	}
 }
 
-// TestATooErrorResultIsReturnedNotRaised checks an extension reporting a tool error hands
+// TestAToolErrorResultIsReturnedNotRaised checks an extension reporting a tool error hands
 // the message back to the caller as a bounded result, so the model can read what went wrong
 // instead of the run failing on the extension's word.
 func TestAToolErrorResultIsReturnedNotRaised(t *testing.T) {

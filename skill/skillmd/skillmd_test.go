@@ -12,7 +12,7 @@ import (
 	"github.com/ionalpha/flynn/skill/skillmd"
 )
 
-// ignoreUnexported lets a Doc be compared on the fields callers can set; the key
+// docOpts lets a Doc be compared on the fields callers can set; the key
 // order it remembers is an implementation detail of lossless rendering.
 var docOpts = []cmp.Option{
 	cmpopts.IgnoreUnexported(skillmd.Doc{}),
@@ -261,7 +261,7 @@ func TestValidate(t *testing.T) {
 	}
 }
 
-// TestValidateAcceptsWhatParseAccepts pins the boundary between the two levels of
+// TestParseToleratesWhatValidateRefuses pins the boundary between the two levels of
 // strictness: a document carrying an undefined key is readable and is not
 // publishable. Import tolerance and export conformance are different questions and
 // this is the test that keeps them different.
