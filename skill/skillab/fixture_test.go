@@ -274,7 +274,7 @@ func TestCopyFixtureRefusesAFixtureWithNoFiles(t *testing.T) {
 // which is the kind of mistake that gets noticed after the bill.
 func TestCopyFixtureStopsAtTheFileBound(t *testing.T) {
 	fsys := fstest.MapFS{}
-	for i := 0; i < 2100; i++ {
+	for i := range 2100 {
 		fsys[fmt.Sprintf("set/fixtures/huge/f%04d.txt", i)] = &fstest.MapFile{Data: []byte("x")}
 	}
 	err := skillab.CopyFixture(fsys, "set", "huge", t.TempDir())
