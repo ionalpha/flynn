@@ -11,7 +11,7 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// haltAction is the reference verb the action-gate tests exercise. The actual
+// haltActionName is the reference verb the action-gate tests exercise. The actual
 // halt/pause/run verbs are owned by the kill-switch and lifecycle layers; this stands
 // in for one, recording whether its body ran so a test can prove a denied action has
 // no side effect.

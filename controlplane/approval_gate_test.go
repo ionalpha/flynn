@@ -25,7 +25,7 @@ const (
 	approverKeyID2 = "approver-b"
 )
 
-// dgClock is a fixed instant so an approval window is deterministic.
+// apNow is a fixed instant so an approval window is deterministic.
 var apNow = time.Unix(1_900_000_000, 0).UTC()
 
 // dangerServer builds a server exposing a dangerous "wipe" verb (admin scope, action

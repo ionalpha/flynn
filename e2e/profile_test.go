@@ -120,9 +120,9 @@ func TestProfileBundleFromAGoalRun(t *testing.T) {
 	}
 }
 
-// TestProfileContentionAddsBlockAndMutex asserts the opt-in members appear only when
-// asked for, and that the environment variable turns capture on for a process whose
-// command line an operator cannot change.
+// TestProfileContentionViaEnvironment asserts the opt-in block and mutex members are
+// added when contention profiling is asked for, and that asking through the
+// environment works for a process whose command line an operator cannot change.
 func TestProfileContentionViaEnvironment(t *testing.T) {
 	fake := newFakeOpenAI(t, finalText("done"))
 	in := newInstance(t).withModel(fake)

@@ -16,7 +16,7 @@ import (
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
-// spineKeyPair builds a deterministic Ed25519 pair from a one-byte seed, so a test can
+// spineTestKeys builds a deterministic Ed25519 pair from a one-byte seed, so a test can
 // state which key signed what without any randomness.
 func spineTestKeys(t *testing.T, seed byte) (ed25519.PrivateKey, ed25519.PublicKey) {
 	t.Helper()
@@ -26,7 +26,7 @@ func spineTestKeys(t *testing.T, seed byte) (ed25519.PrivateKey, ed25519.PublicK
 	return priv, priv.Public().(ed25519.PublicKey)
 }
 
-// selfCertifyingSigner signs under the key id a verifier can recover the public key
+// spineSelfSigner signs under the key id a verifier can recover the public key
 // from, which is what lets a stored run be verified from the durable store alone.
 func spineSelfSigner(t *testing.T, seed byte) (chain.RootSigner, ed25519.PublicKey) {
 	t.Helper()
@@ -38,7 +38,7 @@ func spineSelfSigner(t *testing.T, seed byte) (chain.RootSigner, ed25519.PublicK
 	return signer, pub
 }
 
-// namedSigner signs under an opaque key id that carries no public key, which is the
+// spineNamedSigner signs under an opaque key id that carries no public key, which is the
 // shape of a published conformance vector: verifying it needs the key supplied.
 func spineNamedSigner(t *testing.T, keyID string, seed byte) (chain.RootSigner, ed25519.PublicKey) {
 	t.Helper()
@@ -50,7 +50,7 @@ func spineNamedSigner(t *testing.T, keyID string, seed byte) (chain.RootSigner, 
 	return signer, pub
 }
 
-// sealedRun writes n plain events onto a stream in a durable store under dataDir, seals
+// spineSealedRun writes n plain events onto a stream in a durable store under dataDir, seals
 // them with signer, and closes the store, leaving exactly what a finished run leaves
 // behind. It returns the run id.
 func spineSealedRun(t *testing.T, dataDir string, signer chain.RootSigner, n int) string {

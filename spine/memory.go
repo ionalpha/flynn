@@ -8,7 +8,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// MemoryLog is an in-memory Log and SnapshotStore: ordered, per-stream monotonic
+// MemoryLog is an in-memory Log, snapshots included: ordered, per-stream monotonic
 // Seq, safe for concurrent use. Its semantics are the contract the durable
 // (SQLite) implementation must match.
 type MemoryLog struct {
@@ -68,7 +68,7 @@ func (l *MemoryLog) Read(_ context.Context, q Query) ([]Event, error) {
 	return out, nil
 }
 
-// SaveSnapshot implements SnapshotStore. It clones the payload so the stored
+// SaveSnapshot implements Log. It clones the payload so the stored
 // snapshot is decoupled from the caller's slice, and replaces any snapshot already
 // at (Stream, Seq).
 func (l *MemoryLog) SaveSnapshot(_ context.Context, s Snapshot) error {
@@ -88,7 +88,7 @@ func (l *MemoryLog) SaveSnapshot(_ context.Context, s Snapshot) error {
 	return nil
 }
 
-// LatestSnapshot implements SnapshotStore. Returned payloads are cloned, so a
+// LatestSnapshot implements Log. Returned payloads are cloned, so a
 // caller may retain or mutate them freely.
 func (l *MemoryLog) LatestSnapshot(_ context.Context, stream string, upToSeq int64) (Snapshot, bool, error) {
 	l.mu.Lock()
