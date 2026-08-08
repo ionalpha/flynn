@@ -197,3 +197,56 @@ func TestSessionMemoryIsCuratedAndStable(t *testing.T) {
 		t.Fatalf("facts = %d, want 1: the session writes through the curated store", len(facts))
 	}
 }
+
+// TestWithWakeFoldsTheDigestIn covers the three answers the wake step has: a
+// digest to add, nothing to add, and a store that could not be read.
+func TestWithWakeFoldsTheDigestIn(t *testing.T) {
+	ctx := ridealong.NewPrimeScope(context.Background())
+
+	t.Run("a digest is appended to the prompt", func(t *testing.T) {
+		mem := newMemoryStack(state.NewMemory().Memory(), nil)
+		if _, err := mem.store.Write(ctx, state.MemoryItem{
+			Kind: curate.KindPreference, Subject: "review-style", Content: "state the risk before the fix", Sources: []string{rememberSource},
+		}); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		var out bytes.Buffer
+		got := withWake(ctx, mem, "standing instructions", &out)
+		if !strings.HasPrefix(got, "standing instructions\n\n") {
+			t.Fatalf("prompt = %q, want the digest appended to what was there", got)
+		}
+		if !strings.Contains(got, "state the risk before the fix") {
+			t.Fatalf("prompt does not carry the memory:\n%s", got)
+		}
+		if out.Len() != 0 {
+			t.Errorf("wrote %q on a successful build, want nothing", out.String())
+		}
+	})
+
+	t.Run("an empty store changes nothing", func(t *testing.T) {
+		var out bytes.Buffer
+		mem := newMemoryStack(state.NewMemory().Memory(), nil)
+		if got := withWake(ctx, mem, "standing instructions", &out); got != "standing instructions" {
+			t.Fatalf("prompt = %q, want it untouched", got)
+		}
+		if out.Len() != 0 {
+			t.Errorf("wrote %q with nothing to report, want nothing", out.String())
+		}
+	})
+
+	t.Run("a failed read costs the head start, not the run", func(t *testing.T) {
+		var out bytes.Buffer
+		mem := newMemoryStack(failingMemory{MemoryStore: state.NewMemory().Memory(), err: errors.New("the store is gone")}, nil)
+		if got := withWake(ctx, mem, "standing instructions", &out); got != "standing instructions" {
+			t.Fatalf("prompt = %q, want the run to carry on without a digest", got)
+		}
+		if !strings.Contains(out.String(), "no memory digest") {
+			t.Fatalf("nothing reported for a failed read:\n%s", out.String())
+		}
+		// A caller with nowhere to put it says so by passing no writer, and must not
+		// then be the reason the run stops.
+		if got := withWake(ctx, mem, "standing instructions", nil); got != "standing instructions" {
+			t.Fatalf("prompt = %q with no writer, want it untouched", got)
+		}
+	})
+}

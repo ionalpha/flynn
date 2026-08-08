@@ -138,8 +138,12 @@ func TestConsolidateCapDeclinesRatherThanFailing(t *testing.T) {
 func TestReportConsolidationNamesAFailedSubject(t *testing.T) {
 	var out bytes.Buffer
 	reportConsolidation(&out, consolidate.Report{
+		Results:  []consolidate.Result{{Subject: "quiet-subject", Outcome: consolidate.OutcomeTooFew, Episodes: 2}},
 		Failures: []consolidate.Failure{{Subject: "deploy-api", Err: errors.New("the model timed out")}},
 	})
+	if !strings.Contains(out.String(), "1 not yet a series") {
+		t.Errorf("report does not count the subject that is short of a series:\n%s", out.String())
+	}
 	for _, want := range []string{"deploy-api", "the model timed out"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("report is missing %q:\n%s", want, out.String())
@@ -191,5 +195,22 @@ func TestRunConsolidationReportsItsOwnFailures(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("wrote %q, want nothing: neither sweep got as far as a report", out.String())
+	}
+}
+
+// TestRunMemoryCommandRouting proves `flynn memory` reaches the sweep and that a
+// subcommand nobody has written is a usage error rather than a crash.
+func TestRunMemoryCommandRouting(t *testing.T) {
+	if got := runCLI(t, "memory"); got.code != 2 || !strings.Contains(got.stderr, "flynn memory consolidate") {
+		t.Errorf("flynn memory = %+v, want the usage line and exit 2", got)
+	}
+	if got := runCLI(t, "memory", "forget"); got.code != 2 {
+		t.Errorf("flynn memory forget = %+v, want exit 2", got)
+	}
+	// With no credential configured the sweep cannot resolve a model, which is a
+	// command failure and not a usage error.
+	got := runCLI(t, "memory", "consolidate")
+	if got.code != 1 || got.stdout != "" {
+		t.Errorf("flynn memory consolidate = %+v, want exit 1 and no report", got)
 	}
 }

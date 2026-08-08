@@ -128,15 +128,15 @@ func consolidateDistiller(model llm.Model, maxCalls int) consolidate.Distiller {
 // nothing happening: a subject short of a series and a subject a model declined
 // both look like silence, and only one of them is worth looking into.
 func reportConsolidation(out io.Writer, rep consolidate.Report) {
+	// The two that acted are counted by the report itself and named line by line
+	// below; these two are the ones only this function counts.
 	var tooFew, declined int
 	for _, r := range rep.Results {
-		switch r.Outcome {
-		case consolidate.OutcomeTooFew:
+		if r.Outcome == consolidate.OutcomeTooFew {
 			tooFew++
-		case consolidate.OutcomeDeclined:
+		}
+		if r.Outcome == consolidate.OutcomeDeclined {
 			declined++
-		case consolidate.OutcomeDistilled, consolidate.OutcomeResumed:
-			// Counted by the report itself, and named line by line below.
 		}
 	}
 	_, _ = fmt.Fprintf(out, "consolidate: %d distilled, %d resumed, %d not yet a series, %d declined\n",

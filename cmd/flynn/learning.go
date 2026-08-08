@@ -46,12 +46,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// the half a pull-only store cannot do. Recall is the pull: what this objective's
 	// own words match, plus the skills to offer, and which of them were surfaced so
 	// the run can be told what it was shown.
-	system := defaultSystemPrompt
-	if wake, werr := mem.wakeBlock(ctx, state.Scope{}); wake != "" {
-		system += "\n\n" + wake
-	} else if werr != nil {
-		_, _ = fmt.Fprintf(out, "  (no memory digest: %v)\n", werr)
-	}
+	system := withWake(ctx, mem, defaultSystemPrompt, out)
 	block, recalled, _ := recallContext(ctx, skills, memories, objective)
 	if block != "" {
 		system += "\n\n" + block

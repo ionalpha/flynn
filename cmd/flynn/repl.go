@@ -25,7 +25,6 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
-	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
@@ -369,11 +368,13 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		// or not the opening line mentions it. It goes in before recall because it is
 		// the standing background the conversation runs against, where recall answers
 		// the line the user actually typed.
-		if wake, werr := s.memory().wakeBlock(turnCtx, state.Scope{}); wake != "" {
-			s.system += "\n\n" + wake
-		} else if werr != nil && s.verbose {
-			_, _ = fmt.Fprintf(s.out, "  (no memory digest: %v)\n", werr)
+		// A failed read is only reported in a verbose session: a chat interface that
+		// opened with a store diagnostic would be answering a question nobody asked.
+		var digestErrs io.Writer
+		if s.verbose {
+			digestErrs = s.out
 		}
+		s.system = withWake(turnCtx, s.memory(), s.system, digestErrs)
 		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.memory().store, userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
