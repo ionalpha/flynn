@@ -63,6 +63,7 @@ type Reconciler struct {
 	window   WindowSource  // optional; nil leaves the plan-window share axis unbounded
 	evidence Evidence      // optional; set with gate by WithLedgerGate
 	gate     *EvidenceGate // optional; set with evidence by WithLedgerGate
+	units    UnitSpawner   // optional; a goal carrying a unit graph without one stalls
 	// ledgerConverge makes an unsettled ledger refuse a completion claim. It is
 	// deliberately separate from having the loop wired at all: the producer runs first
 	// and this follows once items are seen flipping to proven (see WithLedgerConvergence).
@@ -395,21 +396,17 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		status.WaitingSince = nil // fallback elapsed with no wake: re-check now
 	}
 
-	// Planning gate. A goal that plans expands its objective into a ledger before it
-	// builds anything, so the first dispatch is a planning step and the stop
-	// condition is not evaluated until there is a record to evaluate it against.
-	if g.planning && !status.Planned {
-		return g.dispatch(ctx, r, status, specHash, PlanJobKind, PhasePlanning, "PlanDispatched")
+	// Planning gate: a goal that plans has to have a ledger before it builds anything.
+	if res, handled, err := g.planGate(ctx, r, spec, status, specHash); handled {
+		return res, err
 	}
-	// A planner that ran and produced nothing leaves a goal with no definition of
-	// done, which is a stall. Letting it build anyway is how a run ends up claiming
-	// success against a record that never said what success was.
-	if g.planning && len(spec.Ledger) == 0 {
-		status.Phase = PhaseStalled
-		status.Message = "planning produced an empty ledger"
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "EmptyLedger", Message: status.Message}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
-		return g.terminal(ctx, r, status, specHash)
+
+	// Unit graph: while a goal's fan-out has units outstanding, the goal admits rather
+	// than builds, and it returns from here. Everything below (the ledger settle, the
+	// stop evaluator, the step dispatch) is what a goal does once its graph is settled,
+	// so a goal cannot be judged done over a graph that is not.
+	if res, handled, err := g.advanceUnits(ctx, r, spec, &status, specHash); handled {
+		return res, err
 	}
 
 	// Settle the ledger against the run's own record: every unproven item the evidence
@@ -478,6 +475,31 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// per build step rather than one per reconcile tick.
 	kind, reason := g.nextJobKind(spec, &status)
 	return g.dispatch(ctx, r, status, specHash, kind, PhaseRunning, reason)
+}
+
+// planGate holds a planning goal at its planning phase and reports whether it handled
+// the reconcile. A goal that plans expands its objective into a ledger before it
+// builds anything, so the first dispatch is a planning step and the stop condition is
+// not evaluated until there is a record to evaluate it against. A planner that ran and
+// produced nothing leaves a goal with no definition of done, which is a stall: letting
+// it build anyway is how a run ends up claiming success against a record that never
+// said what success was.
+func (g *Reconciler) planGate(ctx context.Context, r resource.Resource, spec Spec, status Status, specHash string) (reconcile.Result, bool, error) {
+	switch {
+	case !g.planning:
+		return reconcile.Result{}, false, nil
+	case !status.Planned:
+		res, err := g.dispatch(ctx, r, status, specHash, PlanJobKind, PhasePlanning, "PlanDispatched")
+		return res, true, err
+	case len(spec.Ledger) == 0:
+		status.Phase = PhaseStalled
+		status.Message = "planning produced an empty ledger"
+		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "EmptyLedger", Message: status.Message}, g.clk.Now())
+		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+		res, err := g.terminal(ctx, r, status, specHash)
+		return res, true, err
+	}
+	return reconcile.Result{}, false, nil
 }
 
 // admit checks the desired-state records a reconcile reads (the ledger and the unit
