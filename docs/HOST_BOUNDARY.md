@@ -67,6 +67,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same | shipped |
+| `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `goal.Cleaner` | none | n/a | justified |
@@ -105,16 +106,28 @@ because the check the plan author wrote never got a turn to run.
 | `mission.ResultSummarizer` | `tools` bash, glob, grep, read | implicit on the tool | shipped |
 | `mission.Fanout` | `orchestration.Spawner` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `mission.Reporter` | `session.reporter` | `mission.WithObserver` | shipped |
-| `mission.ApprovalPrompter` + `approval.Gate` | `cmd/flynn.approvalPrompter`, `approval` policy, sink, signer, nonce store | nowhere | gap |
+| `mission.ApprovalPrompter` + `approval.Gate` | `cmd/flynn.approvalPrompter`, `approval` policy, `spinesink.ApprovalSink`, signer, nonce store | `cmd/flynn/approval_gate.go`, wired at every assembly | shipped |
 | `mission.GenerationRecorder` | `nopGenerationRecorder` only | n/a | justified |
 | `brakes.Switch` | `brakes.MemSwitch` | `cmd/flynn/fanout.go` `defaultBrakes` | shipped |
 | `brakes.AnomalyDetector` | none | n/a | justified |
 
-`approval`: both halves are written. `mission.WithApprovalPrompter` takes the
-prompter and the signer, `cmd/flynn/approval.go` implements the prompter against the
-shell's live prompt, and the `approval` package has its policy, sink, signer and
-nonce store. No caller connects them, in the binary or in the `agent` facade, so a
-run that should pause for a human never pauses.
+`approval`: both halves were written and nothing connected them, so a run that
+should have paused for a person never paused. They are connected now, and the
+policy that decides which actions pause is the operator's: `--require-approval
+<action>`, repeatable, empty by default.
+
+Empty by default is a decision, not an omission. A run's standing controls are its
+capability grant and its sandbox, which apply on every path including the ones
+nobody is watching; approval is the second gate above them, for the actions a
+particular operator wants to see before they happen. A default that paused
+something would be a default that deadlocks every run with no one to ask.
+
+The other half of that decision is what a run with a policy and no prompter does.
+It refuses the listed action rather than taking it: the interactive shell installs
+the modal prompt, and every other path (a one-shot `flynn goal`, a served
+conversation) carries the gate without one. Every decision, granted or denied, is
+recorded on the run's own stream as an `approval.decision` event, so it is sealed
+with the rest of what the run did.
 
 `mission.GenerationRecorder`: the only implementation discards, and it stays that
 way. Nothing in the binary calls `mission.WithSampling`, so every model call a Flynn

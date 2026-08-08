@@ -80,6 +80,13 @@ type Config struct {
 	// while a run that was never audited finishes looking exactly like one whose terms
 	// held. A goal that states no terms is unaffected either way.
 	Auditor goal.InvariantAuditor
+	// Refusals reads the gates that refused this run, so a run that kept pushing on one
+	// is stopped naming what refused it rather than being judged on whether it finished.
+	//
+	// Nil leaves detection off. Refusals are still recorded on the spine either way, so
+	// this is a question of whether anything reads them as a verdict, not of whether the
+	// run's governance decisions are kept.
+	Refusals goal.RefusalProbe
 	// Verifier runs a ledger item's declared check, and Evidence is the durable record
 	// its verdict is written to and read back from. Setting both closes the ledger loop:
 	// the run alternates building an item with running its check, and the verdicts on the
@@ -277,6 +284,14 @@ func New(cfg Config) (*Runtime, error) {
 	// the audit is a judgement about the record the steps left, made between them.
 	if cfg.Auditor != nil {
 		ropts = append(ropts, goal.WithInvariantAudit(cfg.Auditor))
+	}
+
+	// Reading the refusals is single-sided as well: the waist writes them from wherever a
+	// step runs, and the reconciler is where a whole run's worth of them can be read at
+	// once. A step cannot make this judgement about itself, because no step is the
+	// problem.
+	if cfg.Refusals != nil {
+		ropts = append(ropts, goal.WithRefusalProbe(cfg.Refusals))
 	}
 
 	// Close the ledger loop, both sides at once. The gate is constructed here rather

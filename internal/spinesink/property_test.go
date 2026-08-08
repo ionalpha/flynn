@@ -33,6 +33,7 @@ func genDispatchEvent(rt *rapid.T) dispatch.Event {
 		Goal:  rapid.StringMatching(`([a-z0-9]{4,12})?`).Draw(rt, "goal"),
 		At:    rapid.Int64Range(0, 4_102_444_800_000_000_000).Draw(rt, "at"), // up to year 2100
 		Err:   rapid.SampledFrom([]string{"", "budget_exceeded", "needs_approval"}).Draw(rt, "err"),
+		Code:  rapid.SampledFrom([]string{"", "capability_denied", "over_budget", "approval_required"}).Draw(rt, "code"),
 	}
 }
 
@@ -88,6 +89,7 @@ func TestProp_SinkTranslationPreservesEvent(t *testing.T) {
 		}
 		checkOptional("trust", e.Trust)
 		checkOptional("error_class", e.Err)
+		checkOptional("error_code", e.Code)
 		checkOptional("goal", e.Goal)
 
 		_, scopePresent := got.Payload["scope"]
