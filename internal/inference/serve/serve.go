@@ -26,10 +26,19 @@ import (
 // whether it is up, read why it failed, wait for it, and stop it. *sandbox.Process
 // satisfies it; a test supplies a fake.
 type Proc interface {
+	// PID is the operating-system process id, recorded so a later Flynn process can
+	// stop the server without holding this handle. Zero when the process never started.
 	PID() int
+	// Running reports whether the process has not yet exited.
 	Running() bool
+	// Output is the retained tail of combined stdout and stderr, which is the only
+	// account of why a server exited before its endpoint ever answered.
 	Output() string
+	// Done is closed when the process exits, so a readiness wait can select on it
+	// instead of polling an endpoint that will never answer.
 	Done() <-chan struct{}
+	// Stop ends the process and waits for it to exit. It is idempotent: stopping an
+	// already-exited process returns nil.
 	Stop() error
 }
 
