@@ -232,7 +232,7 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 			// earned, so reinforcement is not reset every time the same lesson is
 			// learned again.
 			if existsInScope {
-				skill.Uses, skill.Wins = prev.Uses, prev.Wins
+				skill.Offers, skill.Reads, skill.Wins = prev.Offers, prev.Reads, prev.Wins
 			}
 			sk, err := c.skills.Upsert(ctx, skill)
 			if err != nil {

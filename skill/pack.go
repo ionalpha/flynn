@@ -17,7 +17,7 @@ import (
 //
 // Three fields do not cross, each for its own reason.
 //
-// Uses and Wins are outcome evidence about runs on this machine. They are not
+// Offers, Reads and Wins are evidence about runs on this machine. They are not
 // content, they do not describe the skill, and importing someone else's counters
 // would let a pack arrive pre-ranked. An imported skill starts with none.
 //

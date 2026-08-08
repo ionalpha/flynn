@@ -145,7 +145,7 @@ func TestRenderSkillsMarksBundledOnes(t *testing.T) {
 	var sb bytes.Buffer
 	renderSkills(ctx, &sb, st.Skills())
 	out := sb.String()
-	for _, want := range []string{"2 skill(s), 1 of them learned here", "craft [bundled]", "learned here (used 0"} {
+	for _, want := range []string{"2 skill(s), 1 of them learned here", "craft [bundled]", "learned here (offered 0, read 0, won 0)"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("render missing %q:\n%s", want, out)
 		}

@@ -231,3 +231,70 @@ func TestNoStoreOffersNoTools(t *testing.T) {
 		t.Errorf("a toolset with no store offered %d tools, want none", len(got))
 	}
 }
+
+// TestReadsRecordWhatTheRunLoaded covers the fact the grading loop is credited
+// against. The set is the run's record: a body handed over is a read, a repeat is
+// the same read, and the id is what comes back, because a slug can name two records
+// in two scopes and the run loaded exactly one of them.
+func TestReadsRecordWhatTheRunLoaded(t *testing.T) {
+	skills := state.NewMemory().Skills()
+	ctx := context.Background()
+	first, err := skills.Upsert(ctx, bundledSkill())
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	second, err := skills.Upsert(ctx, state.Skill{Slug: "other", Name: "other", Body: "another procedure"})
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	set := skilltool.New(skills, skilltool.WithPack(pack(), "skills"))
+	if got := set.Reads(); len(got) != 0 {
+		t.Fatalf("a set that served nothing reports %v, want no reads", got)
+	}
+
+	var read mission.Tool
+	for _, tool := range set.Tools() {
+		if tool.Def().Name == "skill_read" {
+			read = tool
+		}
+	}
+	for _, name := range []string{"other", "tidy-diff", "other"} {
+		if _, err := call(t, read, map[string]string{"skill": name}); err != nil {
+			t.Fatalf("skill_read %s: %v", name, err)
+		}
+	}
+	got := set.Reads()
+	want := []string{second.ID, first.ID}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("reads = %v, want %v (deduped, first-read order, by id)", got, want)
+	}
+}
+
+// TestARefusedReadIsNotARead is what keeps the counter honest at its own boundary.
+// skill_read refuses a name it cannot resolve and a body it cannot hand over whole;
+// in both cases no procedure reached the model, so crediting the run's outcome to
+// the skill would be the same overclaim as crediting it to an offer.
+func TestARefusedReadIsNotARead(t *testing.T) {
+	empty := bundledSkill()
+	empty.Slug, empty.Name, empty.Body = "hollow", "hollow", "   "
+	skills := state.NewMemory().Skills()
+	if _, err := skills.Upsert(context.Background(), empty); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	set := skilltool.New(skills, skilltool.WithPack(pack(), "skills"))
+	var read mission.Tool
+	for _, tool := range set.Tools() {
+		if tool.Def().Name == "skill_read" {
+			read = tool
+		}
+	}
+
+	for _, name := range []string{"hollow", "no-such-skill"} {
+		if _, err := call(t, read, map[string]string{"skill": name}); err == nil {
+			t.Fatalf("skill_read %s returned no error, want a refusal", name)
+		}
+	}
+	if got := set.Reads(); len(got) != 0 {
+		t.Fatalf("reads = %v after two refusals, want none", got)
+	}
+}

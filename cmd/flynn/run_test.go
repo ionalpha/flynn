@@ -215,8 +215,8 @@ func TestRecallReturnsIDsForReinforcement(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Uses != 1 || got.Wins != 1 {
-			t.Fatalf("skill %s in scope %+v: uses/wins = %d/%d, want 1/1", got.ID, got.Scope, got.Uses, got.Wins)
+		if got.Reads != 1 || got.Wins != 1 {
+			t.Fatalf("skill %s in scope %+v: reads/wins = %d/%d, want 1/1", got.ID, got.Scope, got.Reads, got.Wins)
 		}
 	}
 }
@@ -358,29 +358,50 @@ func TestRegradeOverDurableStore(t *testing.T) {
 	}
 }
 
-// TestRunReinforcesRecalledSkill proves the outcome loop closes: a skill recalled
-// into a run that converges earns a use and a win.
-func TestRunReinforcesRecalledSkill(t *testing.T) {
+// TestRunCreditsTheOutcomeToWhatItRead is the whole point of separating the two
+// counters. Both skills are recalled into the run, so both are offered; the model
+// loads one of them and the run converges. The read one takes the win. The other
+// takes nothing, because appearing in a prompt is not evidence that a skill helped,
+// and crediting it would make the win rate a fact about the objective's keywords.
+func TestRunCreditsTheOutcomeToWhatItRead(t *testing.T) {
 	dir := t.TempDir()
 	store := memStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var out bytes.Buffer
 
-	if _, err := store.Skills().Upsert(ctx, state.Skill{Slug: "docker-deploy", Name: "Docker deploy", Body: "how to deploy with docker"}); err != nil {
-		t.Fatal(err)
+	for _, sk := range []state.Skill{
+		{Slug: "docker-deploy", Name: "Docker deploy", Body: "how to deploy with docker"},
+		{Slug: "docker-registry", Name: "Docker registry", Body: "how to push to a docker registry"},
+	} {
+		if _, err := store.Skills().Upsert(ctx, sk); err != nil {
+			t.Fatal(err)
+		}
 	}
-	model := llmtest.NewScripted(llmtest.SayText("done"))
+	model := llmtest.NewScripted(
+		llmtest.CallTool("c1", "skill_read", json.RawMessage(`{"skill":"docker-deploy"}`)),
+		llmtest.SayText("done"),
+	)
 	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, &fakeDistiller{}, dir, "deploy with docker", "", store, nil, false, nil); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	sk, err := store.Skills().Get(ctx, "docker-deploy")
+	read, err := store.Skills().Get(ctx, "docker-deploy")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sk.Uses != 1 || sk.Wins != 1 {
-		t.Fatalf("recalled skill evidence = (%d,%d), want (1,1)", sk.Uses, sk.Wins)
+	if read.Offers != 1 || read.Reads != 1 || read.Wins != 1 {
+		t.Fatalf("the skill the run read = (offers %d, reads %d, wins %d), want (1,1,1)", read.Offers, read.Reads, read.Wins)
+	}
+	ignored, err := store.Skills().Get(ctx, "docker-registry")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ignored.Offers != 1 {
+		t.Fatalf("the skill the run ignored has %d offers, want 1: it was in the prompt", ignored.Offers)
+	}
+	if ignored.Reads != 0 || ignored.Wins != 0 {
+		t.Fatalf("the skill the run ignored = (reads %d, wins %d), want (0,0): it was never loaded", ignored.Reads, ignored.Wins)
 	}
 }
 

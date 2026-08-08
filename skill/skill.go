@@ -43,6 +43,8 @@ var specSchema = json.RawMessage(`{
     "tags": {"type": "array", "items": {"type": "string"}},
     "uses": {"type": "integer", "minimum": 0},
     "wins": {"type": "integer", "minimum": 0},
+    "reads": {"type": "integer", "minimum": 0},
+    "read_wins": {"type": "integer", "minimum": 0},
     "check": {"type": "string"}
   },
   "additionalProperties": false
@@ -72,9 +74,16 @@ type spec struct {
 	Description string   `json:"description,omitempty"`
 	Body        string   `json:"body,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
-	Uses        int      `json:"uses,omitempty"`
-	Wins        int      `json:"wins,omitempty"`
-	Check       string   `json:"check,omitempty"`
+	// Offers keeps the `uses` key it was written under, and reads back every count
+	// accumulated before offers and reads were told apart: that counter only ever
+	// moved when a skill was put in front of a run. Reads and wins-on-reads are new
+	// keys for the two facts it was mistaken for. The old `wins` key is still
+	// admitted, so a spec stored before the split validates, and nothing decodes it:
+	// it counted offers on successful runs, which is not a fact about the skill.
+	Offers int    `json:"uses,omitempty"`
+	Reads  int    `json:"reads,omitempty"`
+	Wins   int    `json:"read_wins,omitempty"`
+	Check  string `json:"check,omitempty"`
 }
 
 // Store is the typed skill facade over a resource.Store. It is the SkillStore the
@@ -186,7 +195,7 @@ func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource
 // the scope is the namespace; the sync version is carried through so the store
 // enforces the same opt-in optimistic concurrency the skill contract promises.
 func toResource(sk state.Skill) (resource.Resource, error) {
-	body, err := json.Marshal(spec{Name: sk.Name, Description: sk.Description, Body: sk.Body, Tags: sk.Tags, Uses: sk.Uses, Wins: sk.Wins, Check: sk.Check})
+	body, err := json.Marshal(spec{Name: sk.Name, Description: sk.Description, Body: sk.Body, Tags: sk.Tags, Offers: sk.Offers, Reads: sk.Reads, Wins: sk.Wins, Check: sk.Check})
 	if err != nil {
 		return resource.Resource{}, fmt.Errorf("skill: encode spec: %w", err)
 	}
@@ -220,7 +229,8 @@ func toSkill(r resource.Resource) (state.Skill, error) {
 		Description: sp.Description,
 		Body:        sp.Body,
 		Tags:        sp.Tags,
-		Uses:        sp.Uses,
+		Offers:      sp.Offers,
+		Reads:       sp.Reads,
 		Wins:        sp.Wins,
 		Check:       sp.Check,
 		Scope:       state.Scope(r.Scope),

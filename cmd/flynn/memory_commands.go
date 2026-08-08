@@ -17,8 +17,9 @@ import (
 const rememberSource = guard.SchemeUser + "session"
 
 // renderSkills writes the skills in play to w: each one's name, where it came from,
-// whether it is verified, its outcome record (uses and wins), and a one-line preview
-// of its body, so a user can see what the agent knows and how well it has performed.
+// whether it is verified, its record (offers, reads and wins), and a one-line
+// preview of its body, so a user can see what the agent knows and how well it has
+// performed.
 //
 // Two scopes are read, not one. The skills shipped in the binary live in their own
 // reserved scope and are recalled alongside the learned ones, so a listing that
@@ -61,7 +62,11 @@ func renderSkillLine(w io.Writer, s state.Skill, origin string) {
 	if hasTag(s.Tags, "verified") {
 		verified = " [verified]"
 	}
-	_, _ = fmt.Fprintf(w, "  %s%s%s (used %d, won %d)\n", s.Name, origin, verified, s.Uses, s.Wins)
+	// All three counts, because two of them read as the same number otherwise. A
+	// skill offered forty times and read twice is a description that is not working,
+	// and a listing that showed only reads and wins would present it as a skill
+	// nothing has tried.
+	_, _ = fmt.Fprintf(w, "  %s%s%s (offered %d, read %d, won %d)\n", s.Name, origin, verified, s.Offers, s.Reads, s.Wins)
 	if body := oneLine(s.Body, 160); body != "" {
 		_, _ = fmt.Fprintf(w, "    %s\n", body)
 	}

@@ -105,8 +105,8 @@ func testCRUD(t *testing.T, sk state.SkillStore) {
 	if byID.ID != bySlug.ID || byID.Body != "ship it" || len(byID.Tags) != 1 || byID.Tags[0] != "ops" {
 		t.Fatalf("get-by-id/slug disagree or wrong content: %+v / %+v", byID, bySlug)
 	}
-	if byID.Uses != 0 || byID.Wins != 0 {
-		t.Fatalf("a fresh skill should carry zero outcome evidence, got uses=%d wins=%d", byID.Uses, byID.Wins)
+	if byID.Offers != 0 || byID.Reads != 0 || byID.Wins != 0 {
+		t.Fatalf("a fresh skill should carry no evidence, got offers=%d reads=%d wins=%d", byID.Offers, byID.Reads, byID.Wins)
 	}
 
 	// Update preserves CreatedAt and id, bumps content and sync versions.

@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/mcp"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
 // runMCP serves the agent's toolset to a Model Context Protocol client over stdio,
@@ -81,7 +82,7 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	// assembly is the point: a served session is governed by the same grant and records
 	// onto the same kind of stream as the agent's own run, so authority cannot drift
 	// between the two paths.
-	parts, err := newMissionParts(dir, store.Log(), store.Skills(), "", false, sandbox.ResourceLimits{})
+	parts, err := newMissionParts(dir, store.Log(), skilltool.New(store.Skills()), "", false, sandbox.ResourceLimits{})
 	if err != nil {
 		return err
 	}
