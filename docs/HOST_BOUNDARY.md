@@ -67,11 +67,11 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same | shipped |
-| `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same, planning runs only | shipped |
-| `goal.UnitSpawner` | `orchestration.UnitFanout` | nowhere | gap |
+| `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
+| `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `goal.Cleaner` | none | n/a | justified |
 | `goal.WindowSource` | none | n/a | justified |
-| `orchestration.Governor` | `dispatch.Dispatcher` | nowhere | gap |
+| `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are reaped through owner references, not
@@ -83,13 +83,19 @@ unbounded. Every other spend bound (step budget, token and cost ceiling) is enfo
 without it. The wording is worth re-checking, since a bound that is declared and not
 enforced is quieter than a stall.
 
-`goal.UnitSpawner` is the plain case for this register: the producer exists, the
-refusal when it is absent is honest (`UnitSpawnerMissing`), and the binary never
-hands it over, so a goal carrying a unit graph stalls on a capability that is
-already written. `orchestration.Governor` is the same gap seen from the other end.
-Its producer is the dispatcher itself, and the only call that takes one is
-`orchestration.Units`, which nothing outside the package calls. Wiring the unit
-fan-out closes both rows.
+`goal.UnitSpawner` was the plain case for this register: the producer existed, the
+refusal when it was absent was honest (`UnitSpawnerMissing`), and the binary never
+handed it over, so a goal carrying a unit graph stalled on a capability that was
+already written. `orchestration.Governor` was the same gap seen from the other end,
+its producer being the dispatcher itself. Both are now wired, from one call:
+`orchestration.Units(spawner, orchestration.UnitGovernor(...))`, in the fan-out
+assembly and in the `agent` facade.
+
+Closing them moved the ledger loop too. A unit is settled from its child's ledger,
+so the fan-out assembly wires `ItemVerifier`, `Evidence` and ledger convergence for
+every goal on that path rather than only a planning one: without them a child
+converges the moment the model says it is finished, and the unit fails as unproven
+because the check the plan author wrote never got a turn to run.
 
 ## The conversation executor
 

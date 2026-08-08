@@ -42,7 +42,7 @@ func TestFanoutAssemblyRunsAUnitGraph(t *testing.T) {
 	rstore := store.Resources(reg)
 
 	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{},
-		t.TempDir(), defaultSystemPrompt, rstore, store.Jobs(), store.Log(), store.Skills(), "",
+		t.TempDir(), defaultSystemPrompt, rstore, store.Jobs(), store.Log(), nil, "",
 		nil, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
