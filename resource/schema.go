@@ -141,84 +141,119 @@ func compileNode(doc any) (*schema, error) {
 // Validate implements Validator.
 func (s *schema) Validate(instance any) error { return s.validate("", instance) }
 
+// validate checks one instance node against this schema: first the keywords that
+// apply whatever the value is (type, const, enum), then the ones that only mean
+// something for the type it turned out to be. Each of those four sets lives in its own
+// method below, so the shape of the dispatch stays readable as keywords are added.
 func (s *schema) validate(path string, v any) error {
-	at := func(msg string) error {
-		if path == "" {
-			return fmt.Errorf("%s", msg)
-		}
-		return fmt.Errorf("%s: %s", path, msg)
-	}
-
 	if len(s.types) > 0 && !matchesType(s.types, v) {
-		return at(fmt.Sprintf("expected type %s, got %s", strings.Join(s.types, "|"), jsonType(v)))
+		return errAt(path, fmt.Sprintf("expected type %s, got %s", strings.Join(s.types, "|"), jsonType(v)))
 	}
 	if s.hasConst && !reflect.DeepEqual(v, s.constVal) {
-		return at("value is not the required constant")
+		return errAt(path, "value is not the required constant")
 	}
 	if len(s.enum) > 0 && !containsValue(s.enum, v) {
-		return at("value is not one of the allowed enum values")
+		return errAt(path, "value is not one of the allowed enum values")
 	}
 
 	switch tv := v.(type) {
 	case map[string]any:
-		for _, req := range s.required {
-			if _, ok := tv[req]; !ok {
-				return at(fmt.Sprintf("missing required property %q", req))
-			}
-		}
-		for name, val := range tv {
-			sub, declared := s.properties[name]
-			switch {
-			case declared:
-				if err := sub.validate(join(path, name), val); err != nil {
-					return err
-				}
-			case s.addlSchema != nil:
-				if err := s.addlSchema.validate(join(path, name), val); err != nil {
-					return err
-				}
-			case !s.addlAllowed:
-				return at(fmt.Sprintf("additional property %q is not allowed", name))
-			}
-		}
+		return s.validateObject(path, tv)
 	case []any:
-		if s.minItems != nil && len(tv) < *s.minItems {
-			return at(fmt.Sprintf("array has %d items, fewer than minItems %d", len(tv), *s.minItems))
-		}
-		if s.maxItems != nil && len(tv) > *s.maxItems {
-			return at(fmt.Sprintf("array has %d items, more than maxItems %d", len(tv), *s.maxItems))
-		}
-		if s.items != nil {
-			for i, el := range tv {
-				if err := s.items.validate(fmt.Sprintf("%s[%d]", path, i), el); err != nil {
-					return err
-				}
-			}
-		}
+		return s.validateArray(path, tv)
 	case string:
-		n := len([]rune(tv))
-		if s.minLen != nil && n < *s.minLen {
-			return at(fmt.Sprintf("string length %d is below minLength %d", n, *s.minLen))
-		}
-		if s.maxLen != nil && n > *s.maxLen {
-			return at(fmt.Sprintf("string length %d exceeds maxLength %d", n, *s.maxLen))
-		}
-		if s.pattern != nil && !s.pattern.MatchString(tv) {
-			return at("string does not match the required pattern")
-		}
+		return s.validateString(path, tv)
 	case float64:
-		if s.min != nil && tv < *s.min {
-			return at(fmt.Sprintf("%v is below minimum %v", tv, *s.min))
+		return s.validateNumber(path, tv)
+	}
+	return nil
+}
+
+// errAt names where a violation was found. A failure at the root of the instance has
+// no path to name, so it reports the message on its own.
+func errAt(path, msg string) error {
+	if path == "" {
+		return errors.New(msg)
+	}
+	return fmt.Errorf("%s: %s", path, msg)
+}
+
+// validateObject checks required, properties and additionalProperties. A property the
+// schema declares is checked against its own subschema; one it does not is checked
+// against additionalProperties when that is a schema, and refused when the schema says
+// no additional properties are allowed.
+func (s *schema) validateObject(path string, tv map[string]any) error {
+	for _, req := range s.required {
+		if _, ok := tv[req]; !ok {
+			return errAt(path, fmt.Sprintf("missing required property %q", req))
 		}
-		if s.max != nil && tv > *s.max {
-			return at(fmt.Sprintf("%v is above maximum %v", tv, *s.max))
+	}
+	for name, val := range tv {
+		sub, declared := s.properties[name]
+		switch {
+		case declared:
+			if err := sub.validate(join(path, name), val); err != nil {
+				return err
+			}
+		case s.addlSchema != nil:
+			if err := s.addlSchema.validate(join(path, name), val); err != nil {
+				return err
+			}
+		case !s.addlAllowed:
+			return errAt(path, fmt.Sprintf("additional property %q is not allowed", name))
 		}
-		if s.exclMin != nil && tv <= *s.exclMin {
-			return at(fmt.Sprintf("%v is not above exclusiveMinimum %v", tv, *s.exclMin))
+	}
+	return nil
+}
+
+// validateArray checks minItems, maxItems and the items subschema.
+func (s *schema) validateArray(path string, tv []any) error {
+	if s.minItems != nil && len(tv) < *s.minItems {
+		return errAt(path, fmt.Sprintf("array has %d items, fewer than minItems %d", len(tv), *s.minItems))
+	}
+	if s.maxItems != nil && len(tv) > *s.maxItems {
+		return errAt(path, fmt.Sprintf("array has %d items, more than maxItems %d", len(tv), *s.maxItems))
+	}
+	if s.items == nil {
+		return nil
+	}
+	for i, el := range tv {
+		if err := s.items.validate(fmt.Sprintf("%s[%d]", path, i), el); err != nil {
+			return err
 		}
-		if s.exclMax != nil && tv >= *s.exclMax {
-			return at(fmt.Sprintf("%v is not below exclusiveMaximum %v", tv, *s.exclMax))
-		}
+	}
+	return nil
+}
+
+// validateString checks minLength, maxLength and pattern. Length is counted in runes,
+// as JSON Schema specifies, so a multi-byte character counts once.
+func (s *schema) validateString(path, tv string) error {
+	n := len([]rune(tv))
+	if s.minLen != nil && n < *s.minLen {
+		return errAt(path, fmt.Sprintf("string length %d is below minLength %d", n, *s.minLen))
+	}
+	if s.maxLen != nil && n > *s.maxLen {
+		return errAt(path, fmt.Sprintf("string length %d exceeds maxLength %d", n, *s.maxLen))
+	}
+	if s.pattern != nil && !s.pattern.MatchString(tv) {
+		return errAt(path, "string does not match the required pattern")
+	}
+	return nil
+}
+
+// validateNumber checks minimum and maximum in both their inclusive and exclusive forms.
+func (s *schema) validateNumber(path string, tv float64) error {
+	if s.min != nil && tv < *s.min {
+		return errAt(path, fmt.Sprintf("%v is below minimum %v", tv, *s.min))
+	}
+	if s.max != nil && tv > *s.max {
+		return errAt(path, fmt.Sprintf("%v is above maximum %v", tv, *s.max))
+	}
+	if s.exclMin != nil && tv <= *s.exclMin {
+		return errAt(path, fmt.Sprintf("%v is not above exclusiveMinimum %v", tv, *s.exclMin))
+	}
+	if s.exclMax != nil && tv >= *s.exclMax {
+		return errAt(path, fmt.Sprintf("%v is not below exclusiveMaximum %v", tv, *s.exclMax))
 	}
 	return nil
 }

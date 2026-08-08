@@ -46,9 +46,10 @@ linters:
       # Switches without a default are still checked, catching real missing cases.
       default-signifies-exhaustive: true
     gocyclo:
-      # The two functions at the current ceiling (a JSON-schema validator and a test
-      # helper) are branchy but clear; this guards against new sprawl past them.
-      min-complexity: 45
+      # A ratchet, lowered as the functions that set it are decomposed. The ceiling is
+      # now a single test double (a fake GitHub API whose one handler routes every
+      # endpoint the tests use); every shipping function is well under it.
+      min-complexity: 40
     # Enforce the observability ports: nothing logs through log/slog directly.
     # slog lives only inside package observe (its adapter and tests). Every other
     # package depends on the observe.Logger port, so the backend stays swappable.
