@@ -100,7 +100,7 @@ fan-out closes both rows.
 | `mission.Fanout` | `orchestration.Spawner` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `mission.Reporter` | `session.reporter` | `mission.WithObserver` | shipped |
 | `mission.ApprovalPrompter` + `approval.Gate` | `cmd/flynn.approvalPrompter`, `approval` policy, sink, signer, nonce store | nowhere | gap |
-| `mission.GenerationRecorder` | `nopGenerationRecorder` only | nowhere | gap |
+| `mission.GenerationRecorder` | `nopGenerationRecorder` only | n/a | justified |
 | `brakes.Switch` | `brakes.MemSwitch` | `cmd/flynn/fanout.go` `defaultBrakes` | shipped |
 | `brakes.AnomalyDetector` | none | n/a | justified |
 
@@ -110,9 +110,19 @@ shell's live prompt, and the `approval` package has its policy, sink, signer and
 nonce store. No caller connects them, in the binary or in the `agent` facade, so a
 run that should pause for a human never pauses.
 
-`mission.GenerationRecorder`: the only implementation discards. A standalone run
-therefore keeps no record of the decoding envelope each model call ran under, which
-is a piece of the record the rest of the verifiability story assumes is there.
+`mission.GenerationRecorder`: the only implementation discards, and it stays that
+way. Nothing in the binary calls `mission.WithSampling`, so every model call a Flynn
+run makes is free-running and the envelope a recorder would write is the zero
+envelope on every call: not pinned, no seed, no temperature. Recording that once per
+model call would put a constant on the sealed stream and call it evidence, and the
+fact it encodes is one fact about the run rather than one per turn.
+
+What would change the answer is pinning the sampling, not wiring the recorder. Pin
+it and the envelope stops being a constant and becomes the half of a generation's
+identity the serving layer does not carry. That is a decision about Flynn's default
+decoding posture and it comes first; a recorder wired ahead of it records only the
+absence of one. The reason is written on `mission.GenerationRecorder` itself, so the
+next reader does not have to re-derive it from the call sites.
 
 `brakes.AnomalyDetector`: the doc comment says the default is no detector and the
 configured breakers carry in-process detection, so an absent one narrows the signal
