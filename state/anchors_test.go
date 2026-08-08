@@ -85,3 +85,36 @@ func TestAnchorValidityIsShapeNotExistence(t *testing.T) {
 		}
 	}
 }
+
+// The skill anchor is the one kind this package names, because a skill is the one
+// referent Flynn issues an id for and can read back with no host present. That is
+// what makes a ride-along on skill_read work standalone, so the constant and the
+// helpers are part of the contract rather than a caller's private convention.
+func TestSkillAnchorIsFlynnsOwnReferent(t *testing.T) {
+	a := state.SkillAnchor("sk-1")
+	if a.Kind != state.AnchorKindSkill || a.ID != "sk-1" {
+		t.Errorf("SkillAnchor(sk-1) = %+v, want kind %q and that id", a, state.AnchorKindSkill)
+	}
+	if !a.Valid() {
+		t.Errorf("SkillAnchor(sk-1) = %+v reports itself invalid", a)
+	}
+}
+
+// An empty id yields the zero anchor rather than one referring to nothing under a
+// real kind, and the plural form drops it. A caller passing the ids of the skills a
+// run read should not have to filter that list to build anchors from it.
+func TestSkillAnchorsSkipEmptyIDs(t *testing.T) {
+	if a := state.SkillAnchor(""); a != (state.Anchor{}) {
+		t.Errorf("SkillAnchor(\"\") = %+v, want the zero anchor", a)
+	}
+	for _, ids := range [][]string{nil, {}, {""}, {"", ""}} {
+		if got := state.SkillAnchors(ids); got != nil {
+			t.Errorf("SkillAnchors(%q) = %v, want none", ids, got)
+		}
+	}
+	got := state.SkillAnchors([]string{"sk-1", "", "sk-2"})
+	want := []state.Anchor{{Kind: state.AnchorKindSkill, ID: "sk-1"}, {Kind: state.AnchorKindSkill, ID: "sk-2"}}
+	if !slices.Equal(got, want) {
+		t.Errorf("SkillAnchors = %v, want %v", got, want)
+	}
+}

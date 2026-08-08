@@ -398,7 +398,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	// The turn is reassembled each message; the skill toolset is not, so what the
 	// session has read accumulates across the whole conversation.
 	if s.skillset == nil {
-		s.skillset = skilltool.New(s.store.Skills())
+		s.skillset = skilltool.New(s.store.Skills(), skilltool.WithNotes(s.memory().skillNotes()))
 	}
 	if s.ext != nil {
 		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
@@ -557,6 +557,7 @@ func (s *replSession) finish(ctx context.Context) error {
 			Transcript: s.transcript,
 			Converged:  true,
 			Source:     s.runID,
+			SkillsRead: s.skillset.Reads(),
 		})
 	}
 	_, _ = fmt.Fprintf(s.out, "\nsession %s ended.\n", s.runID)
