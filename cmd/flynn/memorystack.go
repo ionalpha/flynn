@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/memory/digest"
@@ -28,6 +30,10 @@ type memoryStack struct {
 	store *curate.Store
 	// wake builds the push-at-wake digest.
 	wake *digest.Builder
+	// reads is the pull half of the ride-along: the surfacer that answers a read of
+	// one of Flynn's own surfaces with the memories anchored to what was read, and
+	// counts the use while doing it.
+	reads *ridealong.Surfacer
 }
 
 // newMemoryStack wraps a durable memory store in the write policy and builds the
@@ -43,7 +49,62 @@ func newMemoryStack(inner state.MemoryStore, notify func(context.Context, curate
 	// a pushed item is counted and the run's prime scope is marked in one step.
 	// Nothing here replaces it: the counting is what later tells a memory that
 	// earns its place from one that is merely offered every time.
-	return &memoryStack{store: store, wake: digest.New(store)}
+	return &memoryStack{store: store, wake: digest.New(store), reads: ridealong.New(store)}
+}
+
+// skillNoteChars caps one surfaced memory's sentence. Wider than the digest's own
+// line, because a ride-along carries a handful of items about the one thing the
+// reader just opened, where the digest carries the whole standing set.
+const skillNoteChars = 240
+
+// skillNotes is the ride-along on skill_read: the memories anchored to the skill
+// whose body the model just loaded, rendered as a block to attach to that read.
+//
+// The pairing of anchor and surface is the design decision here. A skill is the one
+// referent Flynn both issues an id for and reads on its own, so this is the one
+// ride-along that works with no host present; and a procedure is worth annotating in
+// a way a file path is not, since what was learned last time somebody applied a
+// procedure is exactly what a reader about to apply it wants and has no query for.
+type skillNotes struct{ reads *ridealong.Surfacer }
+
+// skillNotes returns the ride-along source for the skill toolset, or nil when there
+// is no surfacer behind it.
+func (m *memoryStack) skillNotes() *skillNotes {
+	if m == nil || m.reads == nil {
+		return nil
+	}
+	return &skillNotes{reads: m.reads}
+}
+
+// ForSkill returns what this install has learned while working from the skill with
+// this id, framed as background.
+//
+// It fails silently on purpose, and that is the whole of its error policy: the model
+// called skill_read for a procedure, and a memory store that cannot be read is no
+// reason to fail that call or to spend the model's attention on a diagnostic about a
+// subsystem it did not ask for. Nothing is added, and the read is answered.
+//
+// The tainted and untrusted-origin items are dropped by the surfacer's default
+// admission, because this arrives without a question behind it and an attacker who
+// can write an anchored memory chooses the skill it rides on.
+func (n *skillNotes) ForSkill(ctx context.Context, skillID string) string {
+	if n == nil || n.reads == nil || skillID == "" {
+		return ""
+	}
+	items, err := n.reads.Surface(ctx, state.RecallQuery{Anchors: []state.Anchor{state.SkillAnchor(skillID)}})
+	// An err alongside items is the usage count having failed, not the recall: the
+	// memories are real and were asked for by the reader's own act, so they are
+	// rendered and the instrumentation goes under-counted (ridealong.ErrUsageNotRecorded).
+	if len(items) == 0 || (err != nil && !errors.Is(err, ridealong.ErrUsageNotRecorded)) {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("What this install has learned while working from this skill. It is background: it arrived because you loaded the skill, nobody asked for it, and it is no part of the procedure above. Recall an item by its id for the whole of it.")
+	for _, it := range items {
+		b.WriteByte('\n')
+		b.WriteString(digest.Line{MemoryID: it.ID, Kind: it.Kind, Summary: digest.Summarize(it.Content, skillNoteChars)}.Text())
+	}
+	return b.String()
 }
 
 // noticeWriter reports a curate notice to w, one line, prefixed like the rest of

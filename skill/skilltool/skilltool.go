@@ -78,9 +78,28 @@ type Set struct {
 	skills state.SkillStore
 	packs  fs.FS
 	root   string
+	notes  Notes
 
 	mu    sync.Mutex
 	reads []string
+}
+
+// Notes is a source of what else is known about a skill, attached to the read of it.
+//
+// It is an interface and not a memory store because nothing here is a memory
+// concept: this package knows that something may have text to add about the skill it
+// just handed over, and no more. What is selected, what is admitted and how it is
+// introduced belong to whoever implements this, the same way the wake digest leaves
+// its framing to the host that injects it.
+type Notes interface {
+	// ForSkill returns text to attach to a read of the skill with this id, or empty
+	// for nothing to add. It is called after the body has been resolved, so it runs
+	// only for a read that succeeded.
+	//
+	// It returns no error on purpose. A note is an extra, and the caller asked for a
+	// procedure: an implementation that cannot read its own store has nothing to add
+	// and says so by returning empty, rather than failing somebody else's tool call.
+	ForSkill(ctx context.Context, skillID string) string
 }
 
 // New builds the skill toolset over skills, reading resources from the pack in the
@@ -102,6 +121,13 @@ type Option func(*Set)
 // and rooted paths by contract, so a set built over one tree cannot read out of it.
 func WithPack(fsys fs.FS, root string) Option {
 	return func(s *Set) { s.packs, s.root = fsys, root }
+}
+
+// WithNotes attaches n to every successful skill_read, so what the install has
+// learned about a procedure arrives with the procedure. A nil n leaves reads
+// unannotated, which is what a run with no memory behind it gets.
+func WithNotes(n Notes) Option {
+	return func(s *Set) { s.notes = n }
 }
 
 // Tools returns the skill toolset as mission.Tools, ready to register with an
@@ -159,6 +185,7 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	// The resources are listed rather than read. A body that points at a script names
 	// it in prose, and the model needs the addressable set to know that path is one it
 	// may ask for; the bytes stay where they are until it does.
+	out := []string{body}
 	res, note := t.s.resources(sk)
 	switch {
 	case note != "":
@@ -166,11 +193,20 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 		// reason to withhold it. Said out loud rather than passed over: a bundled skill
 		// whose tree this binary cannot read is a real fault, and the model is better
 		// off knowing that a list exists and it is not being given one.
-		return body + "\n\n(" + note + ")", nil
-	case len(res) == 0:
-		return body, nil
+		out = append(out, "("+note+")")
+	case len(res) > 0:
+		out = append(out, "Resources for this skill, readable with skill_resource:\n- "+strings.Join(res, "\n- "))
 	}
-	return body + "\n\nResources for this skill, readable with skill_resource:\n- " + strings.Join(res, "\n- "), nil
+	// What the install has learned about this procedure rides along with it, last, so
+	// the procedure is read before anything anybody has said about it. The read the
+	// model made is still answered by the body above; this is the ride-along, and it
+	// is the caller's business to say so in its own words.
+	if t.s.notes != nil {
+		if n := strings.TrimSpace(t.s.notes.ForSkill(ctx, sk.ID)); n != "" {
+			out = append(out, n)
+		}
+	}
+	return strings.Join(out, "\n\n"), nil
 }
 
 // --- skill_resource -----------------------------------------------------------

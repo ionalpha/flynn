@@ -33,32 +33,12 @@ func (l *Local) grantReadableDirs(sid *windows.SID) error {
 // (which grants full access to the one writable workspace), this grants only read and
 // traverse: the child can read the directory's contents but cannot write there.
 func grantReadDir(dir string, sid *windows.SID) error {
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return fmt.Errorf("read access list: %w", err)
-	}
-	existing, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("access list: %w", err)
-	}
-	entries := []windows.EXPLICIT_ACCESS{{
+	return mergeAccessEntry(dir, windows.EXPLICIT_ACCESS{
 		AccessPermissions: fileGenericReadExecute,
 		AccessMode:        windows.SET_ACCESS,
 		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-		Trustee: windows.TRUSTEE{
-			TrusteeForm:  windows.TRUSTEE_IS_SID,
-			TrusteeType:  windows.TRUSTEE_IS_GROUP,
-			TrusteeValue: windows.TrusteeValueFromSID(sid),
-		},
-	}}
-	merged, err := windows.ACLFromEntries(entries, existing)
-	if err != nil {
-		return fmt.Errorf("merge access list: %w", err)
-	}
-	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil); err != nil {
-		return fmt.Errorf("apply access list: %w", err)
-	}
-	return nil
+		Trustee:           sidTrustee(sid, windows.TRUSTEE_IS_GROUP),
+	})
 }
 
 // revokeReadableDirs removes the read grants added for this Local's container sid from
@@ -85,28 +65,8 @@ func (l *Local) revokeReadableDirs() {
 // by dropping the trustee's existing entries; since sid is this sandbox's ephemeral
 // container identity, that removes exactly the grant this Local added and nothing else.
 func revokeDirAccess(dir string, sid *windows.SID) error {
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return fmt.Errorf("read access list: %w", err)
-	}
-	existing, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("access list: %w", err)
-	}
-	entries := []windows.EXPLICIT_ACCESS{{
+	return mergeAccessEntry(dir, windows.EXPLICIT_ACCESS{
 		AccessMode: windows.REVOKE_ACCESS,
-		Trustee: windows.TRUSTEE{
-			TrusteeForm:  windows.TRUSTEE_IS_SID,
-			TrusteeType:  windows.TRUSTEE_IS_GROUP,
-			TrusteeValue: windows.TrusteeValueFromSID(sid),
-		},
-	}}
-	merged, err := windows.ACLFromEntries(entries, existing)
-	if err != nil {
-		return fmt.Errorf("merge access list: %w", err)
-	}
-	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil); err != nil {
-		return fmt.Errorf("apply access list: %w", err)
-	}
-	return nil
+		Trustee:    sidTrustee(sid, windows.TRUSTEE_IS_GROUP),
+	})
 }

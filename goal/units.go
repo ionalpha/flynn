@@ -283,23 +283,36 @@ func unreachable(units []Unit) []string {
 // reaching this case at all means the unit was still pending, and carrying orphan
 // state forward would only let a phase survive the unit it described.
 func (s *Status) SyncUnits(units []Unit) {
-	if len(units) == 0 {
-		s.Units = nil
-		return
+	s.Units = syncStateByID(s.Units, units,
+		func(st UnitState) string { return st.ID },
+		func(u Unit) string { return u.ID },
+		func(id string) UnitState { return UnitState{ID: id} })
+}
+
+// syncStateByID rebuilds per-item state to line up with items: state for an item still
+// listed is carried across untouched, an item with no state yet gets a fresh one, and
+// state for an item that is gone is dropped. An empty item list clears the state.
+//
+// Both SyncLedger and SyncUnits are this, and both depend on the same property: nothing
+// is created here except a zero state, so the sync can never fabricate a proof or a
+// dispatch for an item that did not already carry one.
+func syncStateByID[S, I any](have []S, items []I, stateID func(S) string, itemID func(I) string, fresh func(string) S) []S {
+	if len(items) == 0 {
+		return nil
 	}
-	by := make(map[string]UnitState, len(s.Units))
-	for _, st := range s.Units {
-		by[st.ID] = st
+	by := make(map[string]S, len(have))
+	for _, st := range have {
+		by[stateID(st)] = st
 	}
-	out := make([]UnitState, 0, len(units))
-	for _, u := range units {
-		if st, ok := by[u.ID]; ok {
+	out := make([]S, 0, len(items))
+	for _, it := range items {
+		if st, ok := by[itemID(it)]; ok {
 			out = append(out, st)
 			continue
 		}
-		out = append(out, UnitState{ID: u.ID})
+		out = append(out, fresh(itemID(it)))
 	}
-	s.Units = out
+	return out
 }
 
 // ValidateDispatched checks the graph on the spec against the units the status

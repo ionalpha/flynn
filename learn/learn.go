@@ -72,6 +72,21 @@ type Outcome struct {
 	// Source identifies the run this knowledge came from (a session or stream id),
 	// stamped onto every captured item so a lesson is always traceable to its run.
 	Source string
+	// SkillsRead are the ids of the skills the run loaded the body of, in the order
+	// it loaded them. A memory lesson from this run is anchored to each of them, so
+	// the next read of that skill surfaces what was learned while working from it.
+	//
+	// Loaded, not offered. A skill named in the prompt establishes nothing: the run
+	// may have read past it. Loading one is an act the run chose, which makes it the
+	// best evidence available that the run was working on that procedure, and the
+	// caller already has the list because reinforcement is credited from it.
+	//
+	// This is the closest to aboutness Flynn can compute on its own, and it is a
+	// proxy rather than a judgment: a run that loads five procedures anchors its
+	// lesson to all five, and the surfacing cap is what keeps that from being a
+	// reader's problem. Skill lessons take no anchors, because a skill already
+	// carries its own evidence (Offers, Reads, Wins).
+	SkillsRead []string
 }
 
 // Distiller turns a run outcome into zero or more lessons. Returning none is a
@@ -245,6 +260,7 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 				Content: l.Body,
 				Sources: sourcesOf(o.Source),
 				Scope:   o.Scope,
+				Anchors: state.SkillAnchors(o.SkillsRead),
 			})
 			if err != nil {
 				return captured, err
