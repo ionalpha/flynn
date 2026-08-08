@@ -1,13 +1,13 @@
 package main
 
 import (
-	"crypto/rand"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/driver"
+	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/internal/spinesink"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/spine"
@@ -58,7 +58,7 @@ func newApprovalStack(actions []string, log spine.Log, stream string) (*approval
 		// binds host-to-host, so a constant is still a consistent binding within the run.
 		host = "localhost"
 	}
-	signer, pub, err := approval.GenerateEd25519Signer(approvalKeyID, rand.Reader)
+	signer, pub, err := approval.GenerateEd25519Signer(approvalKeyID, ids.Entropy(nil))
 	if err != nil {
 		return nil, err
 	}

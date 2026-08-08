@@ -124,5 +124,18 @@ var def = NewGenerator()
 // New returns a new UUIDv7 from the default generator.
 func New() string { return def.New() }
 
+// Entropy returns the randomness source the given generator draws from, or the package
+// default's when g is nil. It exists so a caller that needs raw bytes rather than an
+// identifier (minting a keypair, say) takes them from the same place every identifier
+// comes from, instead of importing crypto/rand directly and putting a second,
+// un-injectable source of randomness in the process. A deterministic generator hands back
+// its deterministic reader, so a replay stays a replay all the way down.
+func Entropy(g *Generator) io.Reader {
+	if g == nil {
+		g = def
+	}
+	return g.rand
+}
+
 // Token returns an opaque 256-bit bearer secret from the default generator.
 func Token() (string, error) { return def.Token(defaultTokenBytes) }
