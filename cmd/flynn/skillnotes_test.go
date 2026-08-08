@@ -148,3 +148,29 @@ func TestSkillNotesAttributeAPrimedMemoryAsPrimed(t *testing.T) {
 		t.Fatalf("usage = %+v, want the use attributed as primed", usage)
 	}
 }
+
+// uncountableMemory recalls normally and cannot count a use, which ridealong reports
+// alongside the items rather than instead of them.
+type uncountableMemory struct {
+	state.MemoryStore
+	err error
+}
+
+func (u uncountableMemory) RecordUse(context.Context, string, state.UsageOrigin) error { return u.err }
+
+// A memory that was read and could not be counted still rides along. The reader
+// asked for the procedure and what was learned about it is real, so withholding it
+// to keep the instrumentation tidy would trade the product for the measurement of
+// it. The count goes under, which is what ErrUsageNotRecorded is for.
+func TestSkillNotesSurviveAnUncountableUse(t *testing.T) {
+	ctx := context.Background()
+	mem := newMemoryStack(uncountableMemory{
+		MemoryStore: state.NewMemory().Memory(),
+		err:         errors.New("the usage table is gone"),
+	}, nil)
+	anchoredLesson(t, mem, "sk-1", theLesson)
+
+	if note := mem.skillNotes().ForSkill(ctx, "sk-1"); !strings.Contains(note, theLesson) {
+		t.Fatalf("an uncountable use cost the reader the memory:\n%s", note)
+	}
+}
