@@ -3,6 +3,7 @@ package main
 import (
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
@@ -21,7 +22,11 @@ type driveConfig struct {
 	planning  bool
 	proof     bool
 	skills    *skilltool.Set
-	approval  approvalSetup
+	gates     gateSetup
+	// allowances are the irreversible actions outside the workspace this run was declared
+	// to be allowed, carried onto the goal spec so the waist checks them and the
+	// reconciler can tell an ask that has been answered from one that has not.
+	allowances []goal.Allowance
 }
 
 // driveOption configures a run driven by drive.
@@ -116,7 +121,25 @@ func withSkills(s *skilltool.Set) driveOption {
 // the listed action is refused rather than taken. Naming no actions leaves the run
 // ungated, which is the default.
 func withApproval(actions []string, prompter mission.ApprovalPrompter) driveOption {
-	return func(c *driveConfig) { c.approval = approvalSetup{actions: actions, prompter: prompter} }
+	return func(c *driveConfig) {
+		c.gates.approve, c.gates.prompter = actions, prompter
+	}
+}
+
+// withAllowance marks the actions that reach outside the workspace and cannot be undone,
+// and declares which of them this run may take. A marked action the run did not declare is
+// refused at the waist and the goal is paused with the ask, so the decision lands with the
+// person who wrote the objective rather than with the run that read it.
+//
+// The two lists are set together because neither means anything alone: marking with nothing
+// declared is a run that stops the first time it reaches one, and declaring an action
+// nothing marked authorizes what was never gated. Marking nothing is the default and leaves
+// the run exactly as it was.
+func withAllowance(outside, declared []string) driveOption {
+	return func(c *driveConfig) {
+		c.gates.outside = outside
+		c.allowances = declaredAllowances(declared)
+	}
 }
 
 // boundToolset is a toolset paired with the grant that bounds it. They travel

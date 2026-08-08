@@ -38,15 +38,24 @@ import (
 func WithRefusalProbe(p RefusalProbe) Option { return func(g *Reconciler) { g.refusals = p } }
 
 // checkRefusals reads the run's recorded refusals and reports whether it handled the
-// reconcile. It handles it when the refusals amount to a verdict, which settles the goal;
-// otherwise it hands back and the goal carries on.
+// reconcile. One read answers two questions: whether the refusals amount to a verdict,
+// which settles the goal, and whether one of them is a run asking for authority nobody gave
+// it, which pauses the goal (allowance.go). Otherwise it hands back and the goal carries on.
+//
+// The verdict is asked first. A run refused for want of an allowance and a run working its
+// way around a gate can leave overlapping records, and where both readings fire the verdict
+// is the truer account: the ask would have the author widen the authority of a run that was
+// looking for a way through, which is the opposite of what either shape needs.
 //
 // observed paces the read the way it paces the audit: a poll tick, a resync and a wake see
 // the record the last pass already ruled on. There is no already-seen state to carry,
-// because the verdict is a function of the record rather than of what previous passes made
-// of it.
-func (g *Reconciler) checkRefusals(ctx context.Context, r resource.Resource, status *Status, specHash string, observed bool) (reconcile.Result, bool, error) {
-	if g.refusals == nil || !observed {
+// because both readings are functions of the record rather than of what previous passes
+// made of it.
+func (g *Reconciler) checkRefusals(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash string, observed bool) (reconcile.Result, bool, error) {
+	// A paused goal reads too, on the one pass an edit to its spec brings it back: it has
+	// no step in flight, so the record is the only place the answer to the ask can be, and
+	// a goal that only read after a completed step could never see itself released.
+	if g.refusals == nil || (!observed && !status.pausedForAllowance()) {
 		return reconcile.Result{}, false, nil
 	}
 	refusals, err := g.refusals.Refusals(ctx, r)
@@ -59,7 +68,7 @@ func (g *Reconciler) checkRefusals(ctx context.Context, r resource.Resource, sta
 	}
 	verdict, stop := ReadRefusals(refusals)
 	if !stop {
-		return reconcile.Result{}, false, nil
+		return g.pauseForAllowance(ctx, r, spec, status, specHash, refusals)
 	}
 	msg := verdict.RefusalReason()
 	status.Phase = PhaseStalled

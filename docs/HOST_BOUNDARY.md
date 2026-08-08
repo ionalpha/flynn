@@ -95,7 +95,16 @@ tests and a durable one for the binary.
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
+| `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
+
+`allowance.Policy` is wired but marks nothing until the operator names an action, and
+that empty default is the intended answer rather than a gap. Which actions reach
+outside the workspace irreversibly is something the waist cannot derive: it governs an
+action's identity and never its arguments, and one action name covers both a command
+that lists a directory and a command that deletes what was not backed up. So the
+operator says, with `--irreversible`. A binary that guessed would be marking too much
+(stopping runs that were fine) or too little (a gate that reads as present and is not).
 
 ## The goal reconciler
 

@@ -156,17 +156,28 @@ func (s *approvalStack) spec(prompter mission.ApprovalPrompter) *driver.Approval
 	return &driver.Approval{Gate: s.gate, Prompter: prompter, Signer: s.signer, Host: s.host}
 }
 
-// approvalSetup is what an entry point asks for: the actions that need a person, and the
-// prompter that asks them. It travels as one value so an assembly signature grows by one
-// parameter rather than by two that must always agree.
+// gateSetup is what an entry point asks for from the two gates that sit above the run's
+// capability grant: the actions that need a person to authorize them and the prompter that
+// asks them, and the actions whose effects leave the workspace and cannot be undone. It
+// travels as one value so an assembly signature grows by one parameter rather than by
+// several that must always agree.
 //
-// A zero value is a run with no approval policy, which is the default, and the two fields
-// are meaningfully independent: actions with no prompter is the non-interactive run that
-// refuses rather than proceeds, and a prompter with no actions is an interactive session
-// where nothing has been asked to pause.
-type approvalSetup struct {
-	actions  []string
+// A zero value is a run with neither gate, which is the default. The approval fields are
+// meaningfully independent of each other: actions with no prompter is the non-interactive
+// run that refuses rather than proceeds, and a prompter with no actions is an interactive
+// session where nothing has been asked to pause.
+//
+// The two gates ask different questions and are deliberately not folded together. Approval
+// asks a person now, which needs someone reachable; an allowance was written down before
+// the run started, for a run nobody will be watching, and is answered by editing the goal
+// rather than by replying to a prompt.
+type gateSetup struct {
+	approve  []string
 	prompter mission.ApprovalPrompter
+	// outside names the actions that reach outside the workspace irreversibly. One of them
+	// runs only if the goal declares it, and a run that reaches an undeclared one is paused
+	// with the ask rather than handed a refusal it would look for a way around.
+	outside []string
 }
 
 // stringList is a flag.Value that accumulates every occurrence of a repeatable flag,

@@ -78,7 +78,7 @@ type fanoutConfig struct {
 // agent's model, while the root and every child fold into one recorded, sealable
 // stream. The shared store backs the child goals a fan-out spawns, so they land
 // where the runtime reconciles them.
-func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resolveModel driver.ModelResolver, resLimits sandbox.ResourceLimits, appr approvalSetup) (*missionRun, error) {
+func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resolveModel driver.ModelResolver, resLimits sandbox.ResourceLimits, appr gateSetup) (*missionRun, error) {
 	parts, err := newMissionParts(workdir, log, skills, runID, true, resLimits)
 	if err != nil {
 		return nil, err
@@ -86,7 +86,7 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 	// Approval is carried in the Router's base spec, so it applies to every loop the
 	// Router builds: the root's and each delegated child's. A gate that stopped at the
 	// root would be a gate a run walks around by delegating.
-	stack, err := newApprovalStack(appr.actions, log, parts.sess.ID())
+	stack, err := newApprovalStack(appr.approve, log, parts.sess.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -134,6 +134,11 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 			// Pause a privileged action the run's policy lists until a person allows it,
 			// on the root and on every delegated child alike.
 			Approval: stack.spec(appr.prompter),
+			// Refuse an action that reaches outside the workspace and cannot be undone
+			// unless the goal declared it, on the root and on every delegated child. A
+			// child inherits its parent's declarations and can mint none of its own, so
+			// delegating is not a way to acquire authority the run was not given.
+			Allowance: outsideGate(appr.outside),
 			// Apply the model's scaffolding plan so a weaker model is driven with the
 			// support it needs; the zero plan of a strong model adds nothing.
 			Plan: plan,

@@ -51,16 +51,16 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	case cfg.toolset != nil:
 		// A caller-supplied toolset and grant: no sandbox, no working-tree tools, the
 		// same session recording and governance as every other path.
-		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID, cfg.planning, cfg.approval)
+		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID, cfg.planning, cfg.gates)
 	case cfg.extAgent != nil:
 		// An external agent CLI drives the loop: the same sandbox, session, toolset,
 		// grant, and governance recording as a native run, but the run loop is the CLI's
 		// episode driver rather than a model conversation.
 		run, err = assembleExternalMission(cfg.extAgent, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits)
 	case fanout != nil:
-		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, fanout.resolveModel, cfg.resLimits, cfg.approval)
+		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, fanout.resolveModel, cfg.resLimits, cfg.gates)
 	default:
-		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits, cfg.planning, cfg.proof, cfg.approval)
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits, cfg.planning, cfg.proof, cfg.gates)
 	}
 	if err != nil {
 		return "", "", nil, err
@@ -70,9 +70,9 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	// Say up front that the run will stop for a person, and on what. A run that halts
 	// halfway through with no warning reads as a hang, and one that refuses an action
 	// because nobody could be asked should have said so before it started.
-	if gated := gatedActions(approvalPolicy(cfg.approval.actions)); len(gated) > 0 {
+	if gated := gatedActions(approvalPolicy(cfg.gates.approve)); len(gated) > 0 {
 		how := "refused, nothing here can prompt"
-		if cfg.approval.prompter != nil {
+		if cfg.gates.prompter != nil {
 			how = "paused for your decision"
 		}
 		_, _ = fmt.Fprintf(w, "  approval required (%s): %s\n", how, strings.Join(gated, ", "))
@@ -130,6 +130,11 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		// a few children is not cut off mid-fold; a single conversation keeps the
 		// default. The safety brake and fan-out width still bound a runaway.
 		MaxSteps: fanoutMaxSteps(fanout),
+		// The irreversible actions outside the workspace this run was declared to be
+		// allowed. They ride on the goal rather than on the executor because the pause
+		// that answers a missing one is the reconciler's, and it reads the declarations
+		// off the goal to tell an ask that has been answered from one that has not.
+		Allowances: cfg.allowances,
 	}); err != nil {
 		return "", "", nil, err
 	}

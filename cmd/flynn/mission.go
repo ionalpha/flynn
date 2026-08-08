@@ -154,7 +154,7 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool, appr approvalSetup) (*missionRun, error) {
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool, appr gateSetup) (*missionRun, error) {
 	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
 	if err != nil {
 		return nil, err
@@ -162,7 +162,7 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// The stack is built against the session's own id, which is the stream its
 	// authorization decisions are recorded on, so a run's approvals are sealed with the
 	// rest of what it did rather than landing in a log beside it.
-	stack, err := newApprovalStack(appr.actions, log, parts.sess.ID())
+	stack, err := newApprovalStack(appr.approve, log, parts.sess.ID())
 	if err != nil {
 		return nil, err
 	}
@@ -200,6 +200,11 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// policy and no prompter (any non-interactive run) the refusal stands, which is the
 	// only safe answer when there is nobody to ask.
 	opts = append(opts, stack.options(appr.prompter)...)
+	// Refuse an action that reaches outside the workspace and cannot be undone unless the
+	// goal declared it. This gate needs nobody to be present, which is why it is the one
+	// that applies to a goal-mode run: the authority was written down before the run
+	// started, and a run that reaches past it is paused by its reconciler with the ask.
+	opts = append(opts, appr.allowanceOptions()...)
 	// Apply the model's scaffolding plan last so a present field (a tighter context
 	// budget, simplified schemas, verify passes) overrides the lean defaults, while an
 	// absent one (the zero plan of a strong model) leaves them in place.
@@ -273,7 +278,7 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 // grant it arrived with is the complete authority the waist consults. Budget,
 // brakes, governance recording, and compaction are identical to the sandboxed
 // path, so a specialised run is not a less-governed run.
-func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, planning bool, appr approvalSetup) (*missionRun, error) {
+func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, planning bool, appr gateSetup) (*missionRun, error) {
 	var sopts []session.Option
 	if runID != "" {
 		sopts = append(sopts, session.WithID(runID))
@@ -298,11 +303,14 @@ func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset
 	}
 	// A specialised run is not a less-governed run, so the approval gate applies here
 	// exactly as it does on the sandboxed path.
-	stack, aerr := newApprovalStack(appr.actions, log, sess.ID())
+	stack, aerr := newApprovalStack(appr.approve, log, sess.ID())
 	if aerr != nil {
 		return nil, aerr
 	}
 	opts = append(opts, stack.options(appr.prompter)...)
+	// The pre-declaration gate applies here too: a specialised toolset is not a less
+	// governed run.
+	opts = append(opts, appr.allowanceOptions()...)
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
 	cfg := parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq)

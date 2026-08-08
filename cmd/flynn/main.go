@@ -155,6 +155,8 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
 		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: the goal will not report success over a ledger item the record cannot show a passing check for. Needs a host that can contain semi-trusted work, since the check is a model-authored command; where it cannot be run the item stays unproven and the run stops saying so.")
 		reqApproval = &stringList{}
+		outside     = &stringList{}
+		allowed     = &stringList{}
 		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
@@ -167,6 +169,8 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
 	)
 	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval shell). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
+	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible shell). The run takes it only where --allow declared it, and a run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
+	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow shell). It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
 	if err := fs.Parse(args); err != nil {
 		// flag.CommandLine exits the process on a bad flag, so this is reached only by a
 		// flag set that was asked to hand parse errors back: a bad flag is a usage error.
@@ -239,6 +243,8 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		fanout:       *fanout,
 		requireProof: *reqProof,
 		reqApproval:  reqApproval.values,
+		outside:      outside.values,
+		allowed:      allowed.values,
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
 		maxMemoryMiB: *maxMemory,
@@ -260,6 +266,8 @@ type invocation struct {
 	fanout         bool
 	requireProof   bool
 	reqApproval    []string
+	outside        []string
+	allowed        []string
 	maxCost        float64
 	maxTokens      int64
 	maxMemoryMiB   int
@@ -288,7 +296,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn goal "<objective>"`)
 			return 2
 		}
-		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
+		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
 
 	case "inspect", "replay":
 		if len(rest) < 2 {
@@ -462,7 +470,7 @@ func printUsage(w io.Writer) {
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --require-proof, --require-approval <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
@@ -491,7 +499,7 @@ func dataDirName() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout, requireProof bool, reqApproval []string, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
+func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -568,6 +576,12 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		// prompter: a listed action is refused rather than taken. That is the fail-closed
 		// half of the same mechanism the interactive session resolves by asking.
 		withApproval(reqApproval, nil),
+		// The actions that reach outside the workspace, and the ones this run was declared
+		// to be allowed among them. Both belong to the person who started the run: the run
+		// itself can neither mark an action safe nor declare itself authorized, which is
+		// what makes a declaration something other than the run's own reading of the
+		// objective.
+		withAllowance(outside, allowed),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))

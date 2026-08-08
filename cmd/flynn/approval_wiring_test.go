@@ -100,7 +100,7 @@ func TestApprovalWithNoPrompterRefusesTheAction(t *testing.T) {
 // for a mechanism it has not turned on.
 func TestUngatedRunIsUnchanged(t *testing.T) {
 	prompter := newStubPrompter(mission.ApprovalDecision{Allow: false})
-	dir, log, stream := driveRun(t, approvalSetup{prompter: prompter})
+	dir, log, stream := driveRun(t, gateSetup{prompter: prompter})
 
 	if _, err := os.Stat(filepath.Join(dir, "hello.txt")); err != nil {
 		t.Fatalf("an ungated run did not perform its write: %v", err)
@@ -168,14 +168,14 @@ func TestGatedRunAnnouncesItselfAndRefuses(t *testing.T) {
 // write would have landed in and the log its decisions were recorded on.
 func driveGatedRun(t *testing.T, prompter mission.ApprovalPrompter) (string, spine.Log, string) {
 	t.Helper()
-	return driveRun(t, approvalSetup{actions: []string{"write"}, prompter: prompter})
+	return driveRun(t, gateSetup{approve: []string{"write"}, prompter: prompter})
 }
 
 // driveRun assembles the shipped single-conversation runtime under appr and drives one goal
 // through it with a scripted model that writes a file and then reports done. It returns the
 // working directory and the run's log so the caller can assert on both what happened and
 // what was recorded.
-func driveRun(t *testing.T, appr approvalSetup) (string, spine.Log, string) {
+func driveRun(t *testing.T, appr gateSetup) (string, spine.Log, string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
