@@ -70,6 +70,16 @@ type Config struct {
 	// admitted, validated and then quietly skipped is the failure that reads as a goal
 	// which simply never fanned out.
 	Units goal.UnitSpawner
+	// Auditor rules on the terms a goal states beside its stop condition: after each
+	// completed step the reconciler asks it whether any invariant has been broken, and a
+	// breach stops the goal before the stop evaluator is consulted.
+	//
+	// Leaving it nil is not a way to run a goal's terms unchecked, because a goal that
+	// states terms with no auditor wired stalls saying so. That is the same rule Units
+	// follows, and the case for it is stronger: a fan-out that never happens is visible,
+	// while a run that was never audited finishes looking exactly like one whose terms
+	// held. A goal that states no terms is unaffected either way.
+	Auditor goal.InvariantAuditor
 	// Verifier runs a ledger item's declared check, and Evidence is the durable record
 	// its verdict is written to and read back from. Setting both closes the ledger loop:
 	// the run alternates building an item with running its check, and the verdicts on the
@@ -261,6 +271,12 @@ func New(cfg Config) (*Runtime, error) {
 	// because a parked parent is a goal that dispatches no step at all.
 	if cfg.Units != nil {
 		ropts = append(ropts, goal.WithUnitSpawner(cfg.Units))
+	}
+
+	// The terms of a run are audited on the reconcile path only, for the same reason:
+	// the audit is a judgement about the record the steps left, made between them.
+	if cfg.Auditor != nil {
+		ropts = append(ropts, goal.WithInvariantAudit(cfg.Auditor))
 	}
 
 	// Close the ledger loop, both sides at once. The gate is constructed here rather

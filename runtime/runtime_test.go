@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -406,4 +407,95 @@ func TestRuntimeResumesAcrossRestart(t *testing.T) {
 
 	cancel2()
 	<-done2
+}
+
+// breachingAuditor reports a breach against every term it is handed, which is enough to
+// show the wire is live: with Config.Auditor set the reconciler asks somebody, and with
+// it unset a goal that states terms cannot run at all.
+type breachingAuditor struct{}
+
+func (breachingAuditor) Audit(_ context.Context, _ resource.Resource, _ goal.Spec, _ goal.Status, terms []goal.Invariant) ([]goal.Breach, error) {
+	out := make([]goal.Breach, 0, len(terms))
+	for _, t := range terms {
+		out = append(out, goal.Breach{ID: t.ID, Detail: "the check reported it broken"})
+	}
+	return out, nil
+}
+
+// TestRuntimeAuditsTheTermsOfTheRun: Config.Auditor is the wire, and it reaches the
+// reconciler's audit. The stop evaluator here would converge the goal at the first step,
+// and it does not, because the terms are ruled on first.
+func TestRuntimeAuditsTheTermsOfTheRun(t *testing.T) {
+	rt, err := New(Config{
+		Executor:     noopExec{},
+		Stop:         stopAfter{at: 1},
+		Auditor:      breachingAuditor{},
+		PollInterval: 20 * time.Millisecond,
+		WorkerPoll:   10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = rt.Start(ctx); close(done) }()
+
+	g, err := rt.SubmitGoal(ctx, "ship", goal.Spec{
+		Objective:     "ship it",
+		StopCondition: "shipped",
+		Invariants:    []goal.Invariant{{ID: "no-force-push", Statement: "never force-push a shared branch"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := waitFor(t, rt.Store(), g.Key(),
+		func(s goal.Status) bool { return s.Phase == goal.PhaseStalled },
+		3*time.Second, "stop on the broken term")
+	if !strings.Contains(st.Message, "never force-push a shared branch") {
+		t.Fatalf("the goal did not stop on its term: %q", st.Message)
+	}
+	cancel()
+	<-done
+}
+
+// TestRuntimeWithNoAuditorRefusesToRunATermedGoal: leaving Auditor nil is not a way to
+// run a goal's terms unchecked. A goal that states no terms is unaffected, which the
+// convergence test above already shows.
+func TestRuntimeWithNoAuditorRefusesToRunATermedGoal(t *testing.T) {
+	rt, err := New(Config{
+		Executor:     noopExec{},
+		Stop:         stopAfter{at: 1},
+		PollInterval: 20 * time.Millisecond,
+		WorkerPoll:   10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { _ = rt.Start(ctx); close(done) }()
+
+	g, err := rt.SubmitGoal(ctx, "ship", goal.Spec{
+		Objective:     "ship it",
+		StopCondition: "shipped",
+		Invariants:    []goal.Invariant{{ID: "no-force-push", Statement: "never force-push a shared branch"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	st := waitFor(t, rt.Store(), g.Key(),
+		func(s goal.Status) bool { return s.Phase == goal.PhaseStalled },
+		3*time.Second, "stall with no auditor")
+	if !strings.Contains(st.Message, "no auditor") {
+		t.Fatalf("the goal stalled for another reason: %q", st.Message)
+	}
+	if st.Steps != 0 {
+		t.Fatalf("the goal spent %d steps before stalling, want none", st.Steps)
+	}
+	cancel()
+	<-done
 }

@@ -79,7 +79,7 @@ func (g *Reconciler) auditInvariants(ctx context.Context, r resource.Resource, s
 	// one that held at step 3 says nothing about step 4. Nor is there a breached set to
 	// skip, because the check above means a run that reaches here has no broken term.
 	terms := spec.Invariants
-	breaches, err := g.auditor.Audit(ctx, spec, *status, terms)
+	breaches, err := g.auditor.Audit(ctx, r, spec, *status, terms)
 	if err != nil {
 		// Classified by the auditor: a transient failure retries, and everything else
 		// (including an unclassified error, which classifies Terminal) settles the goal.
