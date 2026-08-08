@@ -56,6 +56,14 @@ tests and a durable one for the binary.
 | `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
 
+`allowance.Policy` is wired but marks nothing until the operator names an action, and
+that empty default is the intended answer rather than a gap. Which actions reach
+outside the workspace irreversibly is something the waist cannot derive: it governs an
+action's identity and never its arguments, and one action name covers both a command
+that lists a directory and a command that deletes what was not backed up. So the
+operator says, with `--irreversible`. A binary that guessed would be marking too much
+(stopping runs that were fine) or too little (a gate that reads as present and is not).
+
 ## The goal reconciler
 
 The reconciler takes its judgments as options. An option left unset changes what a
@@ -74,14 +82,6 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Cleaner` | none | n/a | justified |
 | `goal.WindowSource` | none | n/a | justified |
 | `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
-
-`allowance.Policy` is the one deferral on this list whose empty answer is the intended
-default rather than a gap. Which actions reach outside the workspace irreversibly is
-something the waist cannot derive: it governs an action's identity and never its
-arguments, and one action name covers both a command that lists a directory and a
-command that deletes what was not backed up. So the operator says, with
-`--irreversible`, and a binary that guessed would be marking too much (stopping runs
-that were fine) or too little (a gate that reads as present and is not).
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are reaped through owner references, not
