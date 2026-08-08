@@ -5,6 +5,7 @@ One directory per skill, named for the skill:
     evals/<skill-name>/
       exercises.txt   required, written with the skill
       holdout.txt     optional to load, needed in practice, written by someone else
+      fixtures/       optional, one directory per starting state
 
 Each line is one exercise: an objective in the words a user would give it, then the
 command that decides whether the run did it.
@@ -15,6 +16,24 @@ command that decides whether the run did it.
 `#` opens a comment and blank lines are ignored. Both columns are required. An
 exercise with no verifier has no outcome, and admitting one would put a run in the
 tally that nothing graded.
+
+## Fixtures: the state an exercise starts from
+
+A trial begins in an empty directory. That suits "write me a parser" and is useless
+for "the tests fail after my change", which has to be given the failing tests. A row
+may open with a fixture in brackets, naming a directory under `fixtures/` that is
+copied into the working directory before the run starts:
+
+    [broken-parser] the tests fail after my change | go test ./... 2>&1 | grep -q ok
+
+Both arms get the same fixture, copied fresh, so nothing one trial does to it reaches
+the next. The fixture goes in front rather than in a third column so the verifier
+stays the last field and can hold as many pipes as a shell command needs. A fixture
+is one directory: no separators in the name, no symbolic links inside it, and an
+empty one is refused because it seeds nothing while looking like it seeded something.
+
+A named fixture that is not there fails when the set loads, before the first model
+call.
 
 ## Running it
 

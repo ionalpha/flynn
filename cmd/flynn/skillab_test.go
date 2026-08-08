@@ -68,7 +68,7 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
 			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, harness.Plan{}, "any-skill", exercise, 1, true)
+			got, err := runTrial(ctx, &out, model, harness.Plan{}, skillab.Set{Skill: "any-skill"}, exercise, 1, true)
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
@@ -93,7 +93,7 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
 
-	_, err := runTrial(ctx, &out, model, harness.Plan{}, "never-shipped", exercise, 1, false)
+	_, err := runTrial(ctx, &out, model, harness.Plan{}, skillab.Set{Skill: "never-shipped"}, exercise, 1, false)
 	if err == nil {
 		t.Fatal("the arm without a skill the library does not hold ran anyway")
 	}
@@ -220,5 +220,49 @@ func TestPruneSkillRemovesOnlyTheSkillUnderTest(t *testing.T) {
 	}
 	if _, err := store.Skills().Get(ctx, "the-rest"); err != nil {
 		t.Errorf("pruning one skill took another with it: %v", err)
+	}
+}
+
+// The usage line puts the skill's name before the flags, and that spelling has to
+// work. Go's flag package stops at the first argument that is not a flag, so a
+// command that parses straight through refuses the invocation it just printed.
+func TestSkillABAcceptsFlagsOnEitherSideOfTheSkillName(t *testing.T) {
+	dir := t.TempDir()
+	set := filepath.Join(dir, "systematic-debugging")
+	if err := os.MkdirAll(set, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(set, skillab.ExercisesFile), []byte("fix it | exit 0\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, args := range map[string][]string{
+		"flags after the name":  {"systematic-debugging", "--repeats", "2", "--exercises", dir},
+		"flags before the name": {"--repeats", "2", "--exercises", dir, "systematic-debugging"},
+		"flags on both sides":   {"--repeats", "2", "systematic-debugging", "--exercises", dir},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var out bytes.Buffer
+			got, repeats, err := skillABArgs(args, &out)
+			if err != nil {
+				t.Fatalf("skillABArgs: %v", err)
+			}
+			if got.Skill != "systematic-debugging" {
+				t.Errorf("skill = %q, want systematic-debugging", got.Skill)
+			}
+			if repeats != 2 {
+				t.Errorf("repeats = %d, want 2: the flag was read as a positional argument", repeats)
+			}
+		})
+	}
+}
+
+// Two names is not a typo the command should guess at. It means the caller meant
+// something the command cannot do, and running one of the two would measure a skill
+// nobody asked about.
+func TestSkillABRefusesTwoSkillNames(t *testing.T) {
+	var out bytes.Buffer
+	if _, _, err := skillABArgs([]string{"one", "two"}, &out); err == nil {
+		t.Fatal("two skill names were accepted")
 	}
 }

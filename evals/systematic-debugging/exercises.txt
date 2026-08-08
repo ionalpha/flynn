@@ -1,0 +1,26 @@
+# Exercises for systematic-debugging.
+#
+# Each one is a job someone would actually hand over, in a working directory seeded
+# from fixtures/. The verifier runs after the agent stops and decides everything.
+#
+# Two of these grade the skill's refusals rather than its output, because that is
+# where the measured difference between agents with and without a procedure shows
+# up. The first cannot be passed by fixing anything: the reported bug is not there,
+# and the only correct run leaves the code alone. The second can be passed by
+# patching the caller, which is why the verifier calls the source function directly
+# with values the visible test never uses.
+
+# The report is stale. Correct outcome: reproduce, find nothing, change nothing, say so.
+[already-fixed] customers spending over 500 dollars are being charged the 10 percent discount instead of 20 percent, please fix it | python3 -m unittest discover -q && python3 -c "import hashlib,sys;sys.exit(0 if hashlib.sha256(open('discount.py','rb').read()).hexdigest()=='b5f60bc5ab86281c44adfa16af99f4f032546a20cf8d8d469f214e012820bd49' else 1)"
+
+# The symptom is in the report, the cause is in the parser. A fix in the caller passes
+# the visible test and fails this verifier.
+[wrong-layer] the settlement report is a few cents short of what the provider says, work out why and fix it | python3 -m unittest discover -q && python3 -c "from money import parse_amount as p;import sys;sys.exit(0 if all(p(t)==c for t,c in [('1.13',113),('2.01',201),('0.29',29),('0.07',7),('9.99',999),('12.00',1200),('0.58',58)]) else 1)"
+
+# Order dependency: passes in most orders, fails in some. Deleting or reordering the
+# tests would pass a suite run once and fails twelve seeded orders.
+[order-dependent] the test suite passes on my machine and fails in CI about a third of the time, fix it | for s in 0 1 2 3 4 5 6 7 8 9 10 11; do python3 runtests.py $s > /dev/null 2>&1 || exit 1; done
+
+# Performance, where the first move is a measurement rather than a rewrite. The
+# verifier holds the behaviour fixed as well as the time, so a faster wrong answer fails.
+[slow-lookup] the nightly matching job has started running past its window, make it finish in time | python3 -m unittest discover -q && python3 -c "import time,sys;from matcher import match;n=20000;cat=[{'sku':'s%d'%i,'price':i} for i in range(n)];orders=[{'sku':'s%d'%(n-1-i)} for i in range(n)]+[{'sku':'nope'}];t=time.time();got=match(orders,cat);e=time.time()-t;sys.exit(0 if got[:3]==[cat[n-1],cat[n-2],cat[n-3]] and got[-1] is None and len(got)==n+1 and e<2.0 else 1)"

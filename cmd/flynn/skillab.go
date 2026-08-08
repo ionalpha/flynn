@@ -41,7 +41,7 @@ func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
 		return err
 	}
 	return measureSkill(ctx, out, set, repeats, func(ctx context.Context, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
-		return runTrial(ctx, out, model, plan, set.Skill, exercise, repeat, withSkill)
+		return runTrial(ctx, out, model, plan, set, exercise, repeat, withSkill)
 	})
 }
 
@@ -54,13 +54,17 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, error) {
 	fs.SetOutput(out)
 	repeats := fs.Int("repeats", 3, "runs per exercise per condition; the variance between runs is larger than the effect")
 	root := fs.String("exercises", defaultEvalRoot, "directory holding each skill's exercise set, one subdirectory per skill")
-	if err := fs.Parse(args); err != nil {
+	// Parsed around the skill's name rather than up to it. Go's flag package stops at
+	// the first argument that is not a flag, so the usage line this command prints,
+	// with the name before the flags, is the one spelling it would otherwise refuse.
+	bare, err := parseAroundArgs(fs, args)
+	if err != nil {
 		return skillab.Set{}, 0, err
 	}
-	if fs.NArg() != 1 {
+	if len(bare) != 1 {
 		return skillab.Set{}, 0, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
 	}
-	slug := fs.Arg(0)
+	slug := bare[0]
 
 	set, err := skillab.LoadDir(filepath.Join(*root, slug), slug)
 	if err != nil {
@@ -74,6 +78,25 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, error) {
 			slug, skillab.HoldoutFile)
 	}
 	return set, *repeats, nil
+}
+
+// parseAroundArgs parses fs over args and returns the arguments that are not flags,
+// in the order they appeared. It re-parses from just after each one, which is what
+// lets a flag follow a positional argument: the flag set keeps deciding which tokens
+// are flag values, so a value that looks like a name is still read as a value.
+func parseAroundArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var bare []string
+	rest := args
+	for {
+		if err := fs.Parse(rest); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return bare, nil
+		}
+		bare = append(bare, fs.Arg(0))
+		rest = fs.Args()[1:]
+	}
 }
 
 // measureSkill runs the measurement and writes the report. It takes the attempt
@@ -108,7 +131,8 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 // a previous run left behind cannot make the next exercise easier. Learning is off for
 // the same reason, and because a measurement that changed the thing it measures
 // would be reporting on a library that no longer exists.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, slug string, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, set skillab.Set, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
+	slug := set.Skill
 	arm := "without"
 	if withSkill {
 		arm = "with"
@@ -125,6 +149,11 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.
 		return false, err
 	}
 	defer func() { _ = os.RemoveAll(workdir) }()
+	// The state the exercise starts from, copied fresh for every trial. Both arms get
+	// the same one, and neither inherits what the previous run did to it.
+	if err := set.Materialise(exercise, workdir); err != nil {
+		return false, err
+	}
 
 	store, err := openDataStore(ctx, dataDir)
 	if err != nil {

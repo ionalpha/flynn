@@ -48,6 +48,11 @@ import (
 type Exercise struct {
 	Objective string
 	Verify    string
+	// Fixture names the directory under FixturesDir copied into the trial's working
+	// directory before the run. Empty means the run starts in an empty directory,
+	// which suits an exercise that builds something and not one that begins from an
+	// existing state.
+	Fixture string
 	// Holdout marks an exercise from the held-out half of the set: written to measure the
 	// skill rather than by whoever wrote it. A gap between the two halves is the
 	// signature of a skill authored against its own eval.
@@ -66,6 +71,20 @@ func (t Exercise) Name() string { return t.Objective }
 type Set struct {
 	Skill     string
 	Exercises []Exercise
+	// fsys and dir locate the set, so an exercise's fixture can be copied into a trial's
+	// working directory later without the caller having to carry where the set was
+	// read from alongside the set itself.
+	fsys fs.FS
+	dir  string
+}
+
+// Materialise puts an exercise's starting state into dest, the trial's working
+// directory. An exercise with no fixture starts in the empty directory it was given.
+func (s Set) Materialise(e Exercise, dest string) error {
+	if e.Fixture == "" {
+		return nil
+	}
+	return CopyFixture(s.fsys, s.dir, e.Fixture, dest)
 }
 
 // Holdout reports how many of the set's exercises are held out.
@@ -92,7 +111,7 @@ const (
 // there. A missing ExercisesFile is an error, because a skill with no exercise set has not
 // been measured and the harness will not pretend otherwise by reporting on nothing.
 func LoadSet(fsys fs.FS, dir, skill string) (Set, error) {
-	set := Set{Skill: skill}
+	set := Set{Skill: skill, fsys: fsys, dir: dir}
 	open, err := fs.ReadFile(fsys, path(dir, ExercisesFile))
 	if err != nil {
 		return Set{}, fmt.Errorf("skillab: %s has no exercise set: %w", skill, err)
@@ -116,6 +135,19 @@ func LoadSet(fsys fs.FS, dir, skill string) (Set, error) {
 	}
 	if len(set.Exercises) == 0 {
 		return Set{}, fmt.Errorf("skillab: %s has an empty exercise set", skill)
+	}
+	// A named fixture that is not there is refused now rather than when the trial that
+	// needs it starts. By then the harness has been charging for model calls for
+	// several minutes, and the run it fails is one arm of one pair, which would leave
+	// the report unable to say what the missing half would have done.
+	for _, t := range set.Exercises {
+		if t.Fixture == "" {
+			continue
+		}
+		if _, err := fs.Stat(fsys, path(dir, fixturePath(t.Fixture))); err != nil {
+			return Set{}, fmt.Errorf("skillab: %s line %d names fixture %s, which is not in %s: %w",
+				t.Source, t.Line, t.Fixture, FixturesDir, err)
+		}
 	}
 	return set, nil
 }
@@ -144,6 +176,11 @@ const exerciseSep = "|"
 // opening a comment and blank lines ignored. Both columns are required, because a
 // exercise with no verifier has no outcome and a verifier with no objective measures a
 // run nobody asked for.
+//
+// A row may open with a fixture in brackets, `[broken-parser] objective | verify`,
+// naming the state the run starts from. It goes in front rather than in a third
+// column so the verifier stays the last field and can hold as many pipes as a shell
+// command needs.
 func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error) {
 	var out []Exercise
 	for i, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
@@ -154,6 +191,10 @@ func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
+		fixture, line, err := splitFixture(line, source, i+1)
+		if err != nil {
+			return nil, err
+		}
 		cols := strings.SplitN(line, exerciseSep, 2)
 		if len(cols) != 2 {
 			return nil, fmt.Errorf("skillab: %s line %d: no verifier; an exercise is `objective %s command`", source, i+1, exerciseSep)
@@ -161,6 +202,7 @@ func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error
 		t := Exercise{
 			Objective: strings.TrimSpace(cols[0]),
 			Verify:    strings.TrimSpace(cols[1]),
+			Fixture:   fixture,
 			Holdout:   holdout,
 			Source:    source,
 			Line:      i + 1,
@@ -174,4 +216,25 @@ func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error
 		out = append(out, t)
 	}
 	return out, nil
+}
+
+// splitFixture takes an optional leading `[name]` off a row and returns it with the
+// rest of the line. An opening bracket with no closing one is an error rather than
+// an objective that happens to start with a bracket: reading it as prose would run
+// the exercise in an empty directory and report the result as if the state had been
+// there.
+func splitFixture(line, source string, num int) (fixture, rest string, err error) {
+	trimmed := strings.TrimLeft(line, " \t")
+	if !strings.HasPrefix(trimmed, "[") {
+		return "", line, nil
+	}
+	end := strings.Index(trimmed, "]")
+	if end < 0 {
+		return "", "", fmt.Errorf("skillab: %s line %d: a fixture opens with [ and is never closed", source, num)
+	}
+	fixture = strings.TrimSpace(trimmed[1:end])
+	if verr := ValidateFixture(fixture); verr != nil {
+		return "", "", fmt.Errorf("%s line %d: %w", source, num, verr)
+	}
+	return fixture, trimmed[end+1:], nil
 }
