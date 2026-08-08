@@ -16,29 +16,54 @@ import (
 // Semi a distilled item gets, and the poison screen does not gate it.
 const rememberSource = guard.SchemeUser + "session"
 
-// renderSkills writes the learned skills to w: each one's name, whether it is
-// verified, its outcome record (uses and wins), and a one-line preview of its body,
-// so a user can see what the agent has learned and how well it has performed.
+// renderSkills writes the skills in play to w: each one's name, where it came from,
+// whether it is verified, its outcome record (uses and wins), and a one-line preview
+// of its body, so a user can see what the agent knows and how well it has performed.
+//
+// Two scopes are read, not one. The skills shipped in the binary live in their own
+// reserved scope and are recalled alongside the learned ones, so a listing that
+// showed only what this install had learned would omit most of what the agent
+// actually reaches for. They are marked rather than separated: a section per origin
+// would sort a short list into two shorter ones for no gain, and what a reader wants
+// from the mark is to know which skills their runs produced.
 func renderSkills(ctx context.Context, w io.Writer, skills state.SkillStore) {
-	list, err := skills.List(ctx, state.Scope{})
+	shipped, err := skills.List(ctx, state.BundledScope)
 	if err != nil {
 		_, _ = fmt.Fprintf(w, "could not read skills: %v\n", err)
 		return
 	}
-	if len(list) == 0 {
+	learned, err := skills.List(ctx, state.Scope{})
+	if err != nil {
+		_, _ = fmt.Fprintf(w, "could not read skills: %v\n", err)
+		return
+	}
+	if len(learned)+len(shipped) == 0 {
 		_, _ = fmt.Fprintln(w, "no skills learned yet")
 		return
 	}
-	_, _ = fmt.Fprintf(w, "%d learned skill(s):\n", len(list))
-	for _, s := range list {
-		verified := ""
-		if hasTag(s.Tags, "verified") {
-			verified = " [verified]"
-		}
-		_, _ = fmt.Fprintf(w, "  %s%s (used %d, won %d)\n", s.Name, verified, s.Uses, s.Wins)
-		if body := oneLine(s.Body, 160); body != "" {
-			_, _ = fmt.Fprintf(w, "    %s\n", body)
-		}
+	if len(shipped) == 0 {
+		_, _ = fmt.Fprintf(w, "%d learned skill(s):\n", len(learned))
+	} else {
+		_, _ = fmt.Fprintf(w, "%d skill(s), %d of them learned here:\n", len(learned)+len(shipped), len(learned))
+	}
+	for _, s := range shipped {
+		renderSkillLine(w, s, " [bundled]")
+	}
+	for _, s := range learned {
+		renderSkillLine(w, s, "")
+	}
+}
+
+// renderSkillLine writes one skill's two lines: its name with any marks, then a
+// preview of its body indented under it.
+func renderSkillLine(w io.Writer, s state.Skill, origin string) {
+	verified := ""
+	if hasTag(s.Tags, "verified") {
+		verified = " [verified]"
+	}
+	_, _ = fmt.Fprintf(w, "  %s%s%s (used %d, won %d)\n", s.Name, origin, verified, s.Uses, s.Wins)
+	if body := oneLine(s.Body, 160); body != "" {
+		_, _ = fmt.Fprintf(w, "    %s\n", body)
 	}
 }
 

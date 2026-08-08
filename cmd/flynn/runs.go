@@ -25,6 +25,7 @@ import (
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/skill/bundled"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -63,7 +64,32 @@ func openDataStore(ctx context.Context, dataDir string, opts ...sqlite.Option) (
 	if err != nil {
 		return nil, explainStoreOpenError(err, dataDir)
 	}
+	if err := reconcileBundledSkills(ctx, store); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return store, nil
+}
+
+// reconcileBundledSkills brings the skills shipped in this binary into line with
+// what the store holds, or removes them when the user asked to run without them.
+//
+// It happens here, where the store is opened, because that is the one place every
+// command passes through, and because which skills exist is a property of the store
+// rather than of the command reading it. A fresh install is seeded before its first
+// turn, an install upgraded in place notices at the first command afterwards, and a
+// start with nothing to do costs one list and no writes.
+//
+// A failure is fatal rather than a warning. The only way it fails is the store
+// refusing to be read or written, and a command that cannot do either is not going
+// to get further on its own work.
+func reconcileBundledSkills(ctx context.Context, store *sqlite.Store) error {
+	if bundledSkillsDisabled {
+		_, err := bundled.Prune(ctx, store.Skills())
+		return err
+	}
+	_, err := bundled.Seed(ctx, store.Skills())
+	return err
 }
 
 // explainStoreOpenError turns a store-open failure the user can act on into a clear

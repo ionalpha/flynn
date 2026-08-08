@@ -41,7 +41,10 @@ func recallContext(ctx context.Context, skills state.SkillStore, memories state.
 	}
 
 	var b strings.Builder
-	b.WriteString("From earlier runs you have learned the following. Use anything relevant; ignore the rest.")
+	// Not "from earlier runs": recall is scope-blind, so a skill here may be one this
+	// binary ships rather than one this install learned, and telling the model it
+	// learned something it was given is a false claim in its own standing context.
+	b.WriteString("The following skills and memory are available to you. Use anything relevant; ignore the rest.")
 	if len(sk) > 0 {
 		b.WriteString("\nSkills:")
 		for _, s := range sk {
