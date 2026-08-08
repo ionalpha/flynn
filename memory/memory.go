@@ -63,6 +63,8 @@ var specSchema = json.RawMessage(`{
   "properties": {
     "kind": {"type": "string"},
     "content": {"type": "string"},
+    "subject": {"type": "string"},
+    "supersedes": {"type": "array", "items": {"type": "string"}},
     "sources": {"type": "array", "items": {"type": "string"}},
     "source": {"type": "string"},
     "anchors": {
@@ -151,13 +153,18 @@ func RegisterKind(reg *resource.Registry) error {
 // hashes exactly as it did before the field existed, so adding it does not rewrite
 // what every stored item hashes to.
 type spec struct {
-	Kind      string     `json:"kind,omitempty"`
-	Content   string     `json:"content,omitempty"`
-	Sources   []string   `json:"sources,omitempty"`
-	Source    string     `json:"source,omitempty"`
-	Anchors   []anchor   `json:"anchors,omitempty"`
-	ExpiresAt *time.Time `json:"expires_at,omitempty"`
-	Tainted   bool       `json:"tainted,omitempty"`
+	Kind    string `json:"kind,omitempty"`
+	Content string `json:"content,omitempty"`
+	// Subject and Supersedes are omitempty for the same reason Tainted is: the
+	// common item carries neither, and encoding an empty slug and a null list into
+	// every spec would move what every already-stored item hashes to.
+	Subject    string     `json:"subject,omitempty"`
+	Supersedes []string   `json:"supersedes,omitempty"`
+	Sources    []string   `json:"sources,omitempty"`
+	Source     string     `json:"source,omitempty"`
+	Anchors    []anchor   `json:"anchors,omitempty"`
+	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
+	Tainted    bool       `json:"tainted,omitempty"`
 }
 
 // anchor is the stored shape of a state.Anchor. It exists so the spec's JSON keys
@@ -344,7 +351,21 @@ func toResource(m state.MemoryItem) (resource.Resource, error) {
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	sp := spec{Kind: m.Kind, Content: m.Content, Sources: m.Sources, Anchors: encodeAnchors(anchors), Tainted: m.Tainted}
+	subject, err := state.NormalizeSubject(m.Subject)
+	if err != nil {
+		return resource.Resource{}, err
+	}
+	// The self-loop half of the check needs an id, and a create has none until the
+	// store assigns one below; an id the caller supplied is checked. A generated id
+	// is fresh, so it cannot be in a list the caller wrote before it existed.
+	supersedes, err := state.NormalizeSupersedes(m.Supersedes, m.ID)
+	if err != nil {
+		return resource.Resource{}, err
+	}
+	sp := spec{
+		Kind: m.Kind, Content: m.Content, Subject: subject, Supersedes: supersedes,
+		Sources: m.Sources, Anchors: encodeAnchors(anchors), Tainted: m.Tainted,
+	}
 	if !m.ExpiresAt.IsZero() {
 		exp := m.ExpiresAt
 		sp.ExpiresAt = &exp
@@ -387,15 +408,17 @@ func toItem(r resource.Resource) (state.MemoryItem, error) {
 		expires = *sp.ExpiresAt
 	}
 	return state.MemoryItem{
-		ID:        r.ID,
-		Kind:      sp.Kind,
-		Content:   sp.Content,
-		Sources:   sources,
-		Anchors:   decodeAnchors(sp.Anchors),
-		Tainted:   sp.Tainted,
-		Scope:     state.Scope(r.Scope),
-		CreatedAt: r.CreatedAt,
-		ExpiresAt: expires,
+		ID:         r.ID,
+		Kind:       sp.Kind,
+		Content:    sp.Content,
+		Subject:    sp.Subject,
+		Supersedes: sp.Supersedes,
+		Sources:    sources,
+		Anchors:    decodeAnchors(sp.Anchors),
+		Tainted:    sp.Tainted,
+		Scope:      state.Scope(r.Scope),
+		CreatedAt:  r.CreatedAt,
+		ExpiresAt:  expires,
 		Envelope: state.Envelope{
 			SyncVersion:      r.SyncVersion,
 			OriginInstanceID: r.OriginInstanceID,

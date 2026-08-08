@@ -16,7 +16,9 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/ionalpha/flynn/envelope"
 )
@@ -309,6 +311,73 @@ func NormalizeAnchors(in []Anchor) ([]Anchor, error) {
 	return slices.Compact(out), nil
 }
 
+// NormalizeSubject returns the canonical form of a subject slug: lower-cased,
+// with each run of characters that is neither a letter nor a digit collapsed to a
+// single hyphen and the ends trimmed. "DB choice" and "db_choice" both normalize
+// to "db-choice", so two writers naming the same topic in their own house style
+// key on the same subject rather than forking it.
+//
+// An empty input normalizes to empty, which is the item that is about no
+// particular subject. A non-empty input that leaves nothing behind - punctuation
+// only - is ErrInvalid: the writer named a subject and there is nothing to key on,
+// and silently storing it as unsubjected would hide the mistake at exactly the
+// point the caller was relying on the key.
+//
+// Letters and digits are judged by Unicode category rather than by the ASCII
+// ranges, so a subject written in a non-Latin script normalizes to itself instead
+// of collapsing to nothing.
+//
+// Every write path normalizes through this, so a backend cannot invent its own
+// answer to what the same subject is.
+func NormalizeSubject(in string) (string, error) {
+	var b strings.Builder
+	b.Grow(len(in))
+	dash := false
+	for _, r := range in {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			b.WriteRune(unicode.ToLower(r))
+			dash = false
+		default:
+			if !dash && b.Len() > 0 {
+				b.WriteByte('-')
+				dash = true
+			}
+		}
+	}
+	out := strings.Trim(b.String(), "-")
+	if out == "" && strings.TrimSpace(in) != "" {
+		return "", fmt.Errorf("%w: subject %q has no letters or digits to key on", ErrInvalid, in)
+	}
+	return out, nil
+}
+
+// NormalizeSupersedes returns the superseded ids in canonical form - sorted, with
+// duplicates collapsed - or ErrInvalid if self is among them or any id is blank.
+// Nil and empty both normalize to nil.
+//
+// An item may not supersede itself: the chain is what a reader walks backwards to
+// find what a fact replaced, and a self-loop makes that walk non-terminating for
+// no expressible meaning. Order carries nothing here, so fixing it buys a stable
+// encoding at no cost, exactly as it does for anchors.
+func NormalizeSupersedes(in []string, self string) ([]string, error) {
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(in))
+	for _, id := range in {
+		if strings.TrimSpace(id) == "" {
+			return nil, fmt.Errorf("%w: superseded id is blank", ErrInvalid)
+		}
+		if self != "" && id == self {
+			return nil, fmt.Errorf("%w: item %s cannot supersede itself", ErrInvalid, self)
+		}
+		out = append(out, id)
+	}
+	slices.Sort(out)
+	return slices.Compact(out), nil
+}
+
 // MemoryItem is a durable fact the agent has learned, attributable to its
 // sources for provenance and rollback.
 type MemoryItem struct {
@@ -316,6 +385,41 @@ type MemoryItem struct {
 	Kind    string // e.g. "fact", "preference", "observation"
 	Content string
 	Scope   Scope
+	// Subject is the slug this item is about, the key a host groups writes on when
+	// it decides what a new fact does to the ones already stored: replace the
+	// standing answer, or join a running series. Kind says what sort of thing the
+	// item is; Subject says which topic it belongs to, and neither is derivable
+	// from the other.
+	//
+	// It exists as its own field rather than as an Anchor of kind "subject"
+	// because the two answer different questions and are matched differently.
+	// Anchors are opaque refs into somebody else's namespace, an item carries any
+	// number of them, and a dangling one is normal. A subject is this store's own
+	// vocabulary, an item has exactly one, and it is the key a write path keys on -
+	// which means it has to be normalized (see NormalizeSubject) so two spellings
+	// of one topic do not fork the chain, and anchors are deliberately never
+	// normalized beyond their shape.
+	//
+	// Empty is the item about no particular subject, and is the common case for an
+	// observation nobody intends to revise. Nothing here decides what a subject
+	// implies: a store records the key, and the host's write policy decides whether
+	// the next write on that subject replaces or appends (see MemoryStore).
+	Subject string
+	// Supersedes are the ids of the items this one replaces: the correction's link
+	// back to what it corrected. It is recorded at the write because that is the
+	// only moment anybody knows - a later reader looking at two contradictory facts
+	// on one subject cannot tell a revision from an honest disagreement.
+	//
+	// Superseding does not retire anything. The store still returns both items
+	// until the loser is tombstoned with Delete, and keeping the two acts separate
+	// is what lets a host retire the old fact while the audit trail still says what
+	// replaced it, or keep both live deliberately. A backend that inferred a delete
+	// from this field would make the record lossy in a way nobody asked for.
+	//
+	// Ids are opaque here in the way anchors are: nothing resolves them, so an id
+	// naming an item that has since been purged is a dead link in the chain rather
+	// than an error.
+	Supersedes []string
 	// Sources is the provenance: every input this fact came from, in the order the
 	// writer credits them. It is a list because a distilled item genuinely has more
 	// than one origin - a curator that reads a run's tool output, a chat turn and an
@@ -448,6 +552,18 @@ type RecallQuery struct {
 	// every observation along with them, and over-fetching to filter afterwards
 	// pays the retrieval cost for rows it then throws away.
 	Kinds []string
+	// Subjects restricts the recall to items whose Subject is one of these; empty
+	// matches every item. The values are matched exactly and are not normalized
+	// here, so a caller filtering on a subject it did not get from a stored item
+	// passes it through NormalizeSubject first, the same form the write path stored.
+	//
+	// This is the read a write policy takes before it decides what a new fact does
+	// to the ones already on its subject, and the read a consolidation pass takes to
+	// collect the series it is about to distil. Both want every item on one topic and
+	// nothing else, which a lexical query cannot express: the subject is a key, and
+	// searching for its text finds the items that merely mention it and misses the
+	// ones that never spell it out.
+	Subjects []string
 	// Anchors restricts the recall to items carrying at least one of these anchors;
 	// empty matches every item. An item matches on any one of them, not all, because
 	// the caller reading a thing wants what is about that thing, and an item anchored
@@ -507,8 +623,8 @@ func (m MemoryItem) ExpiredAt(now time.Time) bool {
 	return !m.ExpiresAt.IsZero() && !now.Before(m.ExpiresAt)
 }
 
-// Selects reports whether it satisfies the query's kind filter and time window and
-// has not expired as of now. These are the per-item selectors, separate from scope
+// Selects reports whether it satisfies the query's kind, subject and anchor
+// filters and its time window, and has not expired as of now. These are the per-item selectors, separate from scope
 // resolution (a set membership test a backend does once, via ScopeChain) and from
 // the lexical match (the backend's own, and what Score grades). Backends that
 // filter in Go share it so the implementations cannot drift; one that pushes the
@@ -523,6 +639,9 @@ func (q RecallQuery) Selects(it MemoryItem, now time.Time) bool {
 		return false
 	}
 	if len(q.Kinds) > 0 && !slices.Contains(q.Kinds, it.Kind) {
+		return false
+	}
+	if len(q.Subjects) > 0 && !slices.Contains(q.Subjects, it.Subject) {
 		return false
 	}
 	if !q.matchesAnchors(it) {
@@ -584,9 +703,10 @@ func (q RecallQuery) RanksByScope() bool { return len(q.ScopeChain()) > 1 }
 // a backend does not quietly invent its own answer:
 //
 //   - Dedup and supersede. Two writes can assert contradictory facts and both
-//     stay live; nothing here links a correction to what it corrects, and Recall
-//     will return both. A host that needs one truth per subject decides what
-//     counts as the same subject and retires the loser with Delete, because the
+//     stay live, and Recall will return both. A host that needs one truth per
+//     subject groups the writes by MemoryItem.Subject, links the correction to
+//     what it corrects with MemoryItem.Supersedes, and retires the loser with
+//     Delete. The store records all three and decides none of them, because the
 //     rule is domain knowledge (one preference per key, but every observation
 //     kept) that a store cannot infer from content.
 //   - Retention. Nothing here ages memory out on its own. An item with a known

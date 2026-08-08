@@ -24,6 +24,8 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("Relevance", func(t *testing.T) { testRelevance(t, newStore()) })
 	t.Run("Provenance", func(t *testing.T) { testProvenance(t, newStore()) })
 	t.Run("Anchors", func(t *testing.T) { testAnchors(t, newStore()) })
+	t.Run("Subjects", func(t *testing.T) { testSubjects(t, newStore()) })
+	t.Run("Supersedes", func(t *testing.T) { testSupersedes(t, newStore()) })
 	t.Run("Taint", func(t *testing.T) { testTaint(t, newStore()) })
 	t.Run("Expiry", func(t *testing.T) { testExpiry(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
@@ -508,6 +510,161 @@ func testAnchors(t *testing.T, mem state.MemoryStore) {
 	}
 	wantCount(t, "recall after the rejected writes",
 		recall(t, mem, state.RecallQuery{Query: "malformed"}), 0)
+}
+
+// testSubjects pins the subject as a stored, normalized key rather than a phrase
+// in the content. The two properties a backend can get wrong independently are
+// both here: that two spellings of one topic land on the same key, and that the
+// filter matches that key exactly rather than searching the text for it. A store
+// that filtered subjects lexically would pass every recall assertion below except
+// the ones about items that never mention their own subject.
+func testSubjects(t *testing.T, mem state.MemoryStore) {
+	ctx := context.Background()
+
+	// The three spellings a writer plausibly reaches for, all naming one topic.
+	// They must come back identical, or the write policy that reads by subject sees
+	// three chains where there is one.
+	for _, spelling := range []string{"db-choice", "DB Choice", "db_choice"} {
+		got := write(t, mem, state.MemoryItem{
+			Kind: "decision", Content: "wrote it as " + spelling, Subject: spelling,
+		})
+		if got.Subject != "db-choice" {
+			t.Fatalf("Write of subject %q stored %q, want %q", spelling, got.Subject, "db-choice")
+		}
+	}
+	// Deliberately never says "db-choice" in its content: this is the item a
+	// lexical filter would miss and an exact key match must find.
+	write(t, mem, state.MemoryItem{
+		Kind: "decision", Content: "we are going with Postgres", Subject: "db-choice",
+	})
+	write(t, mem, state.MemoryItem{
+		Kind: "decision", Content: "the queue runs on NATS", Subject: "queue-choice",
+	})
+	// No subject at all: the item about nothing in particular, which must not be
+	// swept up by a filter for somebody else's key.
+	write(t, mem, state.MemoryItem{Kind: "observation", Content: "the build was slow today"})
+
+	wantSet(t, "recall by subject with no query",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}}),
+		"wrote it as db-choice", "wrote it as DB Choice", "wrote it as db_choice",
+		"we are going with Postgres")
+	wantSet(t, "recall by either of two subjects",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"queue-choice", "nothing-here"}}),
+		"the queue runs on NATS")
+	wantCount(t, "recall by a subject nothing was written under",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"nothing-here"}}), 0)
+	// The filter is exact, so the un-normalized spelling of a stored subject matches
+	// nothing: a caller filters on the form the write path stored.
+	wantCount(t, "recall by an un-normalized subject",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"DB Choice"}}), 0)
+	// The empty subject is a value like any other, and is the one a filter can only
+	// reach by asking for it.
+	wantSet(t, "recall by the empty subject",
+		recall(t, mem, state.RecallQuery{Subjects: []string{""}}),
+		"the build was slow today")
+
+	// Subject composes with the other selectors rather than replacing them.
+	wantSet(t, "recall by subject and content",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}, Query: "Postgres"}),
+		"we are going with Postgres")
+	wantCount(t, "recall by subject and a non-matching kind",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}, Kinds: []string{"observation"}}), 0)
+
+	// A tombstoned item leaves the subject's series, so a policy reading the series
+	// does not decide against a fact somebody retired.
+	retired := write(t, mem, state.MemoryItem{
+		Kind: "decision", Content: "an earlier answer", Subject: "db-choice",
+	})
+	mustDelete(t, mem, retired.ID, "the subjected item was just written and is live")
+	wantCount(t, "recall by subject after a delete",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}}), 4)
+
+	// A subject with nothing to key on is refused rather than silently stored as
+	// unsubjected, which would leave the writer believing it had a key.
+	for _, bad := range []string{"---", ".", " ?! "} {
+		_, err := mem.Write(ctx, state.MemoryItem{
+			Kind: "decision", Content: "unkeyable subject", Subject: bad,
+		})
+		if !errors.Is(err, state.ErrInvalid) {
+			t.Fatalf("Write with subject %q = %v, want ErrInvalid", bad, err)
+		}
+	}
+	wantCount(t, "recall after the rejected writes",
+		recall(t, mem, state.RecallQuery{Query: "unkeyable"}), 0)
+}
+
+// testSupersedes pins supersession as a recorded link and nothing more. The rule a
+// backend is most likely to improve on is the one asserted hardest here: writing a
+// replacement does not retire what it replaced. Inferring the tombstone would make
+// a host unable to record a correction while deliberately keeping both facts live,
+// and would hide the retirement from the audit trail that Delete leaves.
+func testSupersedes(t *testing.T, mem state.MemoryStore) {
+	ctx := context.Background()
+	first := write(t, mem, state.MemoryItem{
+		Kind: "decision", Content: "we are going with MySQL", Subject: "db-choice",
+	})
+	second := write(t, mem, state.MemoryItem{
+		Kind: "decision", Content: "we are going with Postgres", Subject: "db-choice",
+		Supersedes: []string{first.ID},
+	})
+	if !slices.Equal(second.Supersedes, []string{first.ID}) {
+		t.Fatalf("Write supersedes = %v, want [%s]", second.Supersedes, first.ID)
+	}
+	wantSupersedes(t, "recall of the superseding item",
+		only(t, mem, state.RecallQuery{Query: "Postgres"}), first.ID)
+	// Both are live: the link is a record of what replaced what, not an instruction.
+	wantCount(t, "recall of the subject after a supersession",
+		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}}), 2)
+	wantSupersedes(t, "recall of the superseded item",
+		only(t, mem, state.RecallQuery{Query: "MySQL"}))
+
+	// Canonical form, as for anchors: sorted and deduplicated, so one consolidation
+	// distilling the same series twice encodes identically both times.
+	a := write(t, mem, state.MemoryItem{Kind: "episode", Content: "failure one", Subject: "flaky-deploy"})
+	b := write(t, mem, state.MemoryItem{Kind: "episode", Content: "failure two", Subject: "flaky-deploy"})
+	ids := []string{a.ID, b.ID}
+	slices.Sort(ids)
+	lesson := write(t, mem, state.MemoryItem{
+		Kind: "lesson", Content: "the deploy fails when the cache is cold", Subject: "flaky-deploy",
+		Supersedes: []string{b.ID, a.ID, b.ID},
+	})
+	wantSupersedes(t, "Write of a lesson distilled from two episodes", lesson, ids...)
+
+	// An id naming an item that is gone is a dead link, not an error: nothing here
+	// resolves ids, exactly as nothing resolves an anchor's ref.
+	mustDelete(t, mem, a.ID, "the episode was just written and is live")
+	wantSupersedes(t, "recall of a lesson whose episode was deleted",
+		only(t, mem, state.RecallQuery{Query: "cold"}), ids...)
+
+	// Self-supersession is refused: the chain is walked backwards, and a self-loop
+	// is a walk with no end for no meaning anybody can state.
+	self := "mem-self-loop"
+	_, err := mem.Write(ctx, state.MemoryItem{
+		ID: self, Kind: "decision", Content: "supersedes itself", Supersedes: []string{self},
+	})
+	if !errors.Is(err, state.ErrInvalid) {
+		t.Fatalf("Write superseding itself = %v, want ErrInvalid", err)
+	}
+	_, err = mem.Write(ctx, state.MemoryItem{
+		Kind: "decision", Content: "supersedes a blank", Supersedes: []string{""},
+	})
+	if !errors.Is(err, state.ErrInvalid) {
+		t.Fatalf("Write superseding a blank id = %v, want ErrInvalid", err)
+	}
+	wantCount(t, "recall after the rejected writes",
+		recall(t, mem, state.RecallQuery{Query: "supersedes"}), 0)
+}
+
+// wantSupersedes fails unless the item supersedes exactly these ids, in canonical
+// order. No expected ids means the item must supersede nothing.
+func wantSupersedes(t *testing.T, what string, it state.MemoryItem, want ...string) {
+	t.Helper()
+	if len(want) == 0 && len(it.Supersedes) == 0 {
+		return
+	}
+	if !slices.Equal(it.Supersedes, want) {
+		t.Fatalf("%s: supersedes = %v, want %v", what, it.Supersedes, want)
+	}
 }
 
 // wantAnchors fails unless the item carries exactly these anchors, in canonical

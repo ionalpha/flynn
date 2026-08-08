@@ -167,19 +167,38 @@ func (s *Stamper) DeleteSkill(sk Skill) (Skill, spine.AppendInput, error) {
 	return sk, ev, err
 }
 
-// WriteMemory stamps a new memory item and returns the event. It rejects a
-// malformed anchor with ErrInvalid, the one shape check on this path: a ref
-// missing half of itself can never match a recall, so storing it would be storing
-// something that is silently dead.
+// WriteMemory stamps a new memory item and returns the event, canonicalizing the
+// three fields a later read keys on: anchors, subject and supersession. Each is
+// shape-checked here and nowhere else, so every backend stores the same bytes for
+// the same write.
+//
+// The checks reject with ErrInvalid, and all three refuse the same class of
+// mistake: a value that can never match the read it was written for. An anchor
+// missing half of itself matches no recall, a subject with nothing but punctuation
+// keys nothing, and an item superseding itself is a chain a reader cannot walk to
+// the end of.
 func (s *Stamper) WriteMemory(it MemoryItem) (MemoryItem, spine.AppendInput, error) {
 	anchors, err := NormalizeAnchors(it.Anchors)
 	if err != nil {
 		return MemoryItem{}, spine.AppendInput{}, err
 	}
 	it.Anchors = anchors
+	subject, err := NormalizeSubject(it.Subject)
+	if err != nil {
+		return MemoryItem{}, spine.AppendInput{}, err
+	}
+	it.Subject = subject
 	if it.ID == "" {
 		it.ID = s.gen.New()
 	}
+	// Supersession is checked after the id is assigned, so a caller that supplied
+	// its own id is held to the no-self-loop rule too; a generated id cannot collide
+	// with one the caller already named.
+	supersedes, err := NormalizeSupersedes(it.Supersedes, it.ID)
+	if err != nil {
+		return MemoryItem{}, spine.AppendInput{}, err
+	}
+	it.Supersedes = supersedes
 	if it.CreatedAt.IsZero() {
 		it.CreatedAt = s.clk.Now()
 	}
