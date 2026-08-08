@@ -19,6 +19,15 @@ const (
 	GovEnd      = "dispatch.end"
 	GovRejected = "dispatch.rejected"
 	GovCallKey  = "call"
+	// GovActionKey holds the name of the action a lifecycle event concerns.
+	GovActionKey = "action"
+	// GovErrorClassKey holds how a caller should react to a refusal or failure.
+	GovErrorClassKey = "error_class"
+	// GovErrorCodeKey holds which rule refused, beside the class saying how to react to
+	// it. Several gates refuse with one class, so a record keyed on the class alone
+	// cannot tell a run refused three times by one gate from a run refused once by each
+	// of three, and those are different runs.
+	GovErrorCodeKey = "error_code"
 )
 
 // Governance failure codes, matching the published Provetrail registry.
