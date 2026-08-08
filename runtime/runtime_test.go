@@ -444,7 +444,11 @@ func TestRuntimeAuditsTheTermsOfTheRun(t *testing.T) {
 	g, err := rt.SubmitGoal(ctx, "ship", goal.Spec{
 		Objective:     "ship it",
 		StopCondition: "shipped",
-		Invariants:    []goal.Invariant{{ID: "no-force-push", Statement: "never force-push a shared branch"}},
+		Invariants: []goal.Invariant{{
+			ID:        "no-force-push",
+			Statement: "never force-push a shared branch",
+			Check:     "git reflog show origin/main | grep -q forced-update && exit 1 || exit 0",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -481,7 +485,11 @@ func TestRuntimeWithNoAuditorRefusesToRunATermedGoal(t *testing.T) {
 	g, err := rt.SubmitGoal(ctx, "ship", goal.Spec{
 		Objective:     "ship it",
 		StopCondition: "shipped",
-		Invariants:    []goal.Invariant{{ID: "no-force-push", Statement: "never force-push a shared branch"}},
+		Invariants: []goal.Invariant{{
+			ID:        "no-force-push",
+			Statement: "never force-push a shared branch",
+			Check:     "git reflog show origin/main | grep -q forced-update && exit 1 || exit 0",
+		}},
 	})
 	if err != nil {
 		t.Fatal(err)

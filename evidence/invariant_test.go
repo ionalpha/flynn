@@ -35,7 +35,7 @@ func TestAuditRulesOnTheExitCode(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			sb := &fakeSandbox{exit: tc.exit, output: "pushed --force to main"}
-			a := NewCommandAuditor(sb, spine.NewMemoryLog())
+			a := NewCommandAuditor(sb, spine.NewMemoryLog(), nil)
 
 			breaches, err := a.Audit(context.Background(), goalRes("run-1"), goal.Spec{}, goal.Status{},
 				[]goal.Invariant{term("no-force-push", "git reflog | grep -q forced")})
@@ -68,7 +68,7 @@ func TestEveryAuditIsRecorded(t *testing.T) {
 	log := spine.NewMemoryLog()
 	sb := &fakeSandbox{exit: 0, output: "clean"}
 	ctx := context.Background()
-	a := NewCommandAuditor(sb, log)
+	a := NewCommandAuditor(sb, log, nil)
 
 	if _, err := a.Audit(ctx, goalRes("run-2"), goal.Spec{}, goal.Status{}, []goal.Invariant{
 		term("a", "true"),
@@ -113,7 +113,7 @@ func TestEveryAuditIsRecorded(t *testing.T) {
 func TestABreachIsRecordedWithWhatWasObserved(t *testing.T) {
 	log := spine.NewMemoryLog()
 	ctx := context.Background()
-	a := NewCommandAuditor(&fakeSandbox{exit: 3, output: "two secrets in the diff"}, log)
+	a := NewCommandAuditor(&fakeSandbox{exit: 3, output: "two secrets in the diff"}, log, nil)
 
 	breaches, err := a.Audit(ctx, goalRes("run-3"), goal.Spec{}, goal.Status{},
 		[]goal.Invariant{term("no-secrets", "scan-diff")})
@@ -154,28 +154,28 @@ func TestAnAuditThatCannotRunIsAnError(t *testing.T) {
 	}{
 		{
 			name:  "no check declared",
-			a:     NewCommandAuditor(&fakeSandbox{}, spine.NewMemoryLog()),
+			a:     NewCommandAuditor(&fakeSandbox{}, spine.NewMemoryLog(), nil),
 			terms: []goal.Invariant{{ID: "prose-only", Statement: "be careful"}},
 			class: fault.Terminal,
 			code:  "audit_no_check",
 		},
 		{
 			name:  "a check of only whitespace",
-			a:     NewCommandAuditor(&fakeSandbox{}, spine.NewMemoryLog()),
+			a:     NewCommandAuditor(&fakeSandbox{}, spine.NewMemoryLog(), nil),
 			terms: []goal.Invariant{term("blank", "   \n ")},
 			class: fault.Terminal,
 			code:  "audit_no_check",
 		},
 		{
 			name:  "no sandbox to run it in",
-			a:     NewCommandAuditor(nil, spine.NewMemoryLog()),
+			a:     NewCommandAuditor(nil, spine.NewMemoryLog(), nil),
 			terms: []goal.Invariant{term("a", "true")},
 			class: fault.Terminal,
 			code:  "audit_no_sandbox",
 		},
 		{
 			name:  "the check could not be started",
-			a:     NewCommandAuditor(&fakeSandbox{execErr: errors.New("no shell")}, spine.NewMemoryLog()),
+			a:     NewCommandAuditor(&fakeSandbox{execErr: errors.New("no shell")}, spine.NewMemoryLog(), nil),
 			terms: []goal.Invariant{term("a", "true")},
 			class: fault.Terminal,
 			code:  "audit_check_unrun",
@@ -183,14 +183,14 @@ func TestAnAuditThatCannotRunIsAnError(t *testing.T) {
 		{
 			name: "the audit was not admitted",
 			a: NewCommandAuditor(&fakeSandbox{}, spine.NewMemoryLog(),
-				dispatch.WithAdmitter(refusingAdmitter{})),
+				nil, dispatch.WithAdmitter(refusingAdmitter{})),
 			terms: []goal.Invariant{term("a", "true")},
 			class: fault.Forbidden,
 			code:  "audit_check_unrun",
 		},
 		{
 			name:  "no log to record the audit on",
-			a:     NewCommandAuditor(&fakeSandbox{}, nil),
+			a:     NewCommandAuditor(&fakeSandbox{}, nil, nil),
 			terms: []goal.Invariant{term("a", "true")},
 			class: fault.Terminal,
 			code:  "audit_no_log",
@@ -220,7 +220,7 @@ func TestAnAuditThatCannotRunIsAnError(t *testing.T) {
 // happened is what auditing on the spine exists to prevent, so a log that refuses the
 // write fails the audit rather than being dropped in favour of the verdict.
 func TestAnAppendFailureFailsTheAudit(t *testing.T) {
-	a := NewCommandAuditor(&fakeSandbox{exit: 0}, failingLog{})
+	a := NewCommandAuditor(&fakeSandbox{exit: 0}, failingLog{}, nil)
 
 	_, err := a.Audit(context.Background(), goalRes("run-5"), goal.Spec{}, goal.Status{},
 		[]goal.Invariant{term("a", "true")})
@@ -238,7 +238,7 @@ func TestAnAppendFailureFailsTheAudit(t *testing.T) {
 // through.
 func TestTheAuditRunsUnderTheGoalsOwnGrant(t *testing.T) {
 	audited := NewCommandAuditor(&fakeSandbox{exit: 0}, spine.NewMemoryLog(),
-		dispatch.WithAdmitter(capability.Admitter{}))
+		nil, dispatch.WithAdmitter(capability.Admitter{}))
 	ctx := context.Background()
 	terms := []goal.Invariant{term("a", "true")}
 
@@ -267,7 +267,7 @@ func TestTheAuditRunsUnderTheGoalsOwnGrant(t *testing.T) {
 // is returned, so a run that broke two of them is not reported as having broken one.
 func TestOneBrokenTermDoesNotHideTheRest(t *testing.T) {
 	sb := &perCommandSandbox{exits: map[string]int{"check-a": 1, "check-b": 0, "check-c": 2}}
-	a := NewCommandAuditor(sb, spine.NewMemoryLog())
+	a := NewCommandAuditor(sb, spine.NewMemoryLog(), nil)
 
 	breaches, err := a.Audit(context.Background(), goalRes("run-7"), goal.Spec{}, goal.Status{},
 		[]goal.Invariant{term("a", "check-a"), term("b", "check-b"), term("c", "check-c")})
@@ -304,7 +304,7 @@ func (failingLog) Append(context.Context, spine.AppendInput) (spine.Event, error
 func TestACancelledAuditIsTheCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	a := NewCommandAuditor(&fakeSandbox{execErr: errors.New("context cancelled")}, spine.NewMemoryLog())
+	a := NewCommandAuditor(&fakeSandbox{execErr: errors.New("context cancelled")}, spine.NewMemoryLog(), nil)
 
 	_, err := a.Audit(ctx, goalRes("run-8"), goal.Spec{}, goal.Status{}, []goal.Invariant{term("a", "true")})
 	if !errors.Is(err, context.Canceled) {
