@@ -31,21 +31,40 @@ const defaultEvalRoot = "evals"
 // whether a skill is reachable and costs nothing, and this says whether reaching it
 // was worth the tokens.
 func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
+	set, repeats, err := skillABArgs(args, out)
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
+	if err != nil {
+		return err
+	}
+	return measureSkill(ctx, out, set, repeats, func(ctx context.Context, task skillab.Task, repeat int, withSkill bool) (bool, error) {
+		return runTrial(ctx, out, model, plan, set.Skill, task, repeat, withSkill)
+	})
+}
+
+// skillABArgs parses the command's arguments and loads the task set. Everything it
+// can refuse, it refuses here, before a model is resolved or a store is opened: a
+// missing task set costs nothing to detect and would otherwise be found after the
+// harness had already started charging for runs.
+func skillABArgs(args []string, out io.Writer) (skillab.Set, int, error) {
 	fs := flag.NewFlagSet("skill ab", flag.ContinueOnError)
 	fs.SetOutput(out)
 	repeats := fs.Int("repeats", 3, "runs per task per condition; the variance between runs is larger than the effect")
 	root := fs.String("tasks", defaultEvalRoot, "directory holding each skill's task set, one subdirectory per skill")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return skillab.Set{}, 0, err
 	}
 	if fs.NArg() != 1 {
-		return errors.New(`usage: flynn skill ab <skill> [--repeats n] [--tasks dir]`)
+		return skillab.Set{}, 0, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--tasks dir]`)
 	}
 	slug := fs.Arg(0)
 
 	set, err := skillab.LoadDir(filepath.Join(*root, slug), slug)
 	if err != nil {
-		return err
+		return skillab.Set{}, 0, err
 	}
 	if set.Holdout() == 0 {
 		// Said out loud and not refused. A set with no holdout still measures something;
@@ -54,23 +73,28 @@ func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "note: %s has no %s, so nothing here is held back from whoever wrote the skill\n",
 			slug, skillab.HoldoutFile)
 	}
+	return set, *repeats, nil
+}
 
-	ctx := context.Background()
-	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
-	if err != nil {
-		return err
+// measureSkill runs the measurement and writes the report. It takes the attempt
+// rather than the model, so the half that decides what a reader is told is separable
+// from the half that spends money on model calls.
+func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats int, attempt skillab.Attempt) error {
+	if repeats < 1 {
+		repeats = 1
 	}
-
 	_, _ = fmt.Fprintf(out, "measuring %s over %d task(s) x %d repeat(s), both conditions: %d runs\n",
-		slug, len(set.Tasks), *repeats, 2*len(set.Tasks)**repeats)
-	report, err := skillab.Measure(ctx, set, *repeats, func(ctx context.Context, task skillab.Task, repeat int, withSkill bool) (bool, error) {
-		return runTrial(ctx, out, model, plan, slug, task, repeat, withSkill)
-	})
+		set.Skill, len(set.Tasks), repeats, 2*len(set.Tasks)*repeats)
+	report, err := skillab.Measure(ctx, set, repeats, attempt)
 	if err != nil {
 		return err
 	}
 	_, _ = fmt.Fprint(out, report.String())
 	if h := report.Holdout(); len(h.Pairs) > 0 {
+		// The held-out half gets its own line and is never folded into the total. A
+		// skill that helps on the tasks its author wrote and does nothing on the tasks
+		// someone else wrote has been fitted to its own eval, and one averaged verdict
+		// hides exactly that.
 		_, _ = fmt.Fprintf(out, "\nheld-out tasks alone: %s (%+.1f points, p=%.3f)\n", h.Verdict, h.Gain, h.P)
 	}
 	return nil

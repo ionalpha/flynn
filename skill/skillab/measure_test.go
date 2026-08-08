@@ -239,3 +239,64 @@ func TestRepeatsBelowOneStillRunOnce(t *testing.T) {
 		t.Fatalf("%d pairs from %d attempts, want 2 pairs from 4 attempts", len(rep.Pairs), *calls)
 	}
 }
+
+// A pair is discordant when the arms disagreed, and only those carry information
+// about the difference between them. It is the report's own vocabulary, so a caller
+// reading pairs back can ask the same question the verdict was built on.
+func TestPairDiscordant(t *testing.T) {
+	for _, tc := range []struct {
+		with, without, want bool
+	}{
+		{true, false, true},
+		{false, true, true},
+		{true, true, false},
+		{false, false, false},
+	} {
+		p := skillab.Pair{With: tc.with, Without: tc.without}
+		if p.Discordant() != tc.want {
+			t.Errorf("Pair{%v,%v}.Discordant() = %v, want %v", tc.with, tc.without, p.Discordant(), tc.want)
+		}
+	}
+}
+
+// A harness failure in the first arm stops the measurement too, and says which arm
+// it was. The two messages differ because the repairs do: a run that cannot start
+// with the skill is usually the skill's own resources, and one that cannot start
+// without it is usually the pruning.
+func TestAnErrorInEitherArmNamesTheArm(t *testing.T) {
+	boom := errors.New("the sandbox would not start")
+	_, err := skillab.Measure(context.Background(), set(2), 1, func(context.Context, skillab.Task, int, bool) (bool, error) {
+		return false, boom
+	})
+	if err == nil || !strings.Contains(err.Error(), "with the skill") {
+		t.Fatalf("err = %v, want it to name the arm that failed", err)
+	}
+}
+
+// A set can agree on every pair without every run passing or every run failing: both
+// arms pass some tasks, both fail others, and the skill made no difference to any of
+// them. The report says so plainly, because a reader seeing a middling pass rate
+// would otherwise take it for a measurement that worked.
+func TestAMixedButAgreeingSetIsStillReportedAsMeasuringNothing(t *testing.T) {
+	s := set(4, "held out")
+	attempt := func(_ context.Context, tk skillab.Task, _ int, _ bool) (bool, error) {
+		// The outcome depends on the task and never on the condition.
+		return tk.Holdout || strings.HasSuffix(tk.Objective, "0") || strings.HasSuffix(tk.Objective, "2"), nil
+	}
+	rep, err := skillab.Measure(context.Background(), s, 1, attempt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.AllPass() || rep.AllFail() {
+		t.Fatalf("the set is mixed, not degenerate one way: %d/%d passes", rep.WithPasses, rep.WithoutPasses)
+	}
+	out := rep.String()
+	if !strings.Contains(out, "never disagreed") {
+		t.Errorf("the report does not say the set could not tell the conditions apart:\n%s", out)
+	}
+	// The held-out rows are marked in the per-task listing, so a reader sees which
+	// half a task came from without going back to the files.
+	if !strings.Contains(out, "[holdout]") {
+		t.Errorf("the per-task listing does not mark the held-out task:\n%s", out)
+	}
+}

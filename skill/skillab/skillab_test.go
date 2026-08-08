@@ -1,6 +1,8 @@
 package skillab_test
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -103,5 +105,57 @@ func TestLoadSetWithoutAHoldout(t *testing.T) {
 	}
 	if len(got.Tasks) != 1 || got.Holdout() != 0 {
 		t.Fatalf("got %d tasks, %d held out; want one open task", len(got.Tasks), got.Holdout())
+	}
+}
+
+// LoadDir is the same load from a directory on disk, which is where an author keeps
+// a task set while writing the skill.
+func TestLoadDirReadsFromDisk(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write(skillab.TasksFile, "the tests fail after my change | go test ./...\n")
+	write(skillab.HoldoutFile, "a flaky test passes on a rerun | ./flaky-check.sh\n")
+
+	got, err := skillab.LoadDir(dir, "systematic-debugging")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(got.Tasks) != 2 || got.Holdout() != 1 {
+		t.Fatalf("loaded %d tasks with %d held out, want 2 and 1", len(got.Tasks), got.Holdout())
+	}
+}
+
+// A malformed row in either half stops the load, and the message names which file.
+// Guessing at what a broken row meant would put a task in the tally that nobody
+// wrote.
+func TestLoadSetRefusesAMalformedRowInEitherHalf(t *testing.T) {
+	good := "the tests fail after my change | go test ./...\n"
+	bad := "a row with no verifier at all\n"
+	for name, files := range map[string]map[string]string{
+		"in the open half":     {skillab.TasksFile: bad},
+		"in the held-out half": {skillab.TasksFile: good, skillab.HoldoutFile: bad},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fsys := fstest.MapFS{}
+			for file, body := range files {
+				fsys["evals/x/"+file] = &fstest.MapFile{Data: []byte(body)}
+			}
+			_, err := skillab.LoadSet(fsys, "evals/x", "x")
+			if err == nil {
+				t.Fatal("a malformed row loaded")
+			}
+			want := skillab.TasksFile
+			if len(files) == 2 {
+				want = skillab.HoldoutFile
+			}
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("err = %v, want it to name %s", err, want)
+			}
+		})
 	}
 }
