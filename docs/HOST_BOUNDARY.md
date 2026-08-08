@@ -167,7 +167,8 @@ rather than removing the halt.
 | `memory/digest.Pusher` | `memory/ridealong.Surfacer` | `digest.New`'s default, via `newMemoryStack` | shipped |
 | `memory/curate` write policy | `curate.Wrap` | `cmd/flynn/memorystack.go` `newMemoryStack` | shipped |
 | `memory/guard.PromotionReader` | every memory store | via the store | shipped |
-| `memory/ridealong` anchors | n/a, the vocabulary is the host's | n/a | justified |
+| `memory/ridealong.Surfacer` (pull) | `memoryStack.skillNotes` behind `skilltool.Notes` | `cmd/flynn/memorystack.go`, into `skilltool.New` at `learning.go` and `repl.go` | shipped |
+| `memory/ridealong` anchors | `state.SkillAnchor`, written by the curator from `Outcome.SkillsRead` | `learn.Curator.Curate` | shipped |
 
 `learn` is the pattern the other two should follow. The interface stays a port, the
 model-backed implementation ships beside it, the governed wrapper puts its model
@@ -196,12 +197,32 @@ store would push contradictions at every reader unasked.
 memory that reaches a reader unasked is counted and the run's prime scope marked
 in the same step. That is what gives the decay policy a usage signal to read.
 
-The pull side is still open. An anchor is an opaque `{Kind, ID}` pair and nothing
-here resolves one, which is deliberate and documented; what is undecided is which
-of the binary's own reads should surface anchored memory, and what writes those
-anchors in the first place. Flynn holds candidates of its own (a run id, a file
-path, a skill slug) and picking one is a design decision rather than a wiring
-job, so it is tracked separately rather than guessed at here.
+The pull side rides on `skill_read`. A memory lesson is anchored to the skills the
+run that produced it loaded, and loading a skill surfaces what was learned while
+working from it, framed as background and counted as a use. Both ends are Flynn's:
+it issues the skill's id, and `skill_read` is its own tool, so the loop closes with
+no host present. `cmd/flynn/ridealong_wiring_test.go` runs it over two missions and
+one store.
+
+A skill was chosen over the other referents Flynn holds. A file path is cheaper to
+write and higher-traffic, and a memory about a path is worth less than one about a
+procedure: what somebody learned the last time they applied a procedure is exactly
+what the next reader about to apply it wants and has no query to ask for. A run id
+anchors a lesson to the one run that will never read it again. One mechanism
+exercised on a real read beats two half-wired ones, so only this one is wired.
+
+`state.AnchorKindSkill` is the one anchor kind this codebase names, and it does not
+weaken the rule above it. An anchor stays an opaque `{Kind, ID}` pair that nothing
+resolves; the vocabulary is still the host's for every kind a host refers with. A
+skill is not another system's record. It is a row in Flynn's own store, under an id
+Flynn issued, which is the whole test for what belongs on this side of the boundary.
+
+The anchor is written from the skills the run loaded, not the ones it was offered.
+Loading is an act the run chose, which is the best evidence available that it was
+working on that procedure, and the caller already holds the list because
+reinforcement is credited from it. It is a proxy for aboutness rather than a
+judgment about it: a run that loads five procedures anchors its lesson to all five,
+and the surfacing cap is what keeps that from becoming a reader's problem.
 
 ## Channels, extensions, external agents
 
