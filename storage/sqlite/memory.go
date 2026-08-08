@@ -420,11 +420,11 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	if !postFilter {
 		return items, nil
 	}
-	// The CreatedAt window is applied here rather than as a SQL range: created_at
-	// is stored as RFC3339Nano, which drops trailing zeros from the fractional
-	// second, so it is not fixed-width and does not compare lexicographically
-	// ("...T00:00:00.000000001Z" sorts before "...T00:00:00Z"). Comparing parsed
-	// times is the only correct answer available here.
+	// The CreatedAt window is applied here rather than as a SQL range. Since
+	// migration 0029 created_at is fixed-width and does compare lexicographically,
+	// so a SQL range is now correct and would let the index serve the window; it
+	// is a separate change because MinScore also lands in this stage and only the
+	// window can move, so the post-filter and its deferred LIMIT stay either way.
 	out := items[:0]
 	for _, it := range items {
 		if !q.Selects(it, now) || it.Score < q.MinScore {
