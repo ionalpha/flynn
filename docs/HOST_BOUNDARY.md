@@ -276,6 +276,42 @@ Places a doc comment hands the work to whoever embeds Flynn, without a port.
 | `archetypes/review`: an empty model field defers to the host's configured model | the binary's configured model applies | justified |
 | `state.Scope` levels (instance, project, workspace) | defined in Flynn's own terms, not a host's | justified |
 
+## Standalone acceptance
+
+The rows above and the drift guard are static: they say a producer exists and is
+referenced. Neither proves the capability works from the binary, which is the claim
+the register is actually making. `cmd/flynn/standalone_acceptance_test.go` is that
+claim tested, one pass per capability, over a temp data directory with a scripted
+model and no host. The store is SQLite on disk, the sandbox is the local one with its
+confinement, every action crosses the dispatch waist, and the record is the run's own
+spine. Only the model is scripted, because the point is the absence of a host and not
+the absence of a model.
+
+| Capability | Pass |
+|---|---|
+| A goal runs, acts through the sandbox and converges | `TestStandaloneAGoalRunsThroughTheSandboxAndConverges` |
+| A stated term is audited, and a breach stops the run | `TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun` |
+| A goal carrying a unit graph dispatches its units as governed children | `TestFanoutAssemblyRunsAUnitGraph` |
+| A converged run is distilled into a skill and a memory, with the skill's check run in the sandbox | `TestStandaloneAConvergedRunIsDistilledWithItsCheckRun` |
+| A session wakes with a digest, and the push is counted | `TestStandaloneASessionWakesWithADigestAndCountsThePush` |
+| A repeated failure accumulates as a series and consolidates into a lesson | `TestStandaloneASeriesConsolidatesIntoALesson` |
+| A run seals and its record verifies from the store alone | `TestStandaloneARunSealsAndItsRecordVerifies` |
+| The ride-along closes over two runs and one store | `TestRideAlongClosesTheLoopAcrossTwoRuns` |
+
+Writing the suite produced one finding. **A goal's stated terms have no operator
+surface.** `goal.InvariantAuditor` is wired on every assembly and the engine enforces
+the rule (a breach stops the goal before its stop condition is consulted), but nothing
+in `cmd/flynn` sets `goal.Spec.Invariants`, so an operator running `flynn goal` cannot
+state a term for their run. The capability is real and only the surface is missing.
+Its pass therefore drives a shipped assembly directly and says so; a pass that quietly
+tested the engine and called it acceptance would be the exact thing this suite exists
+to catch.
+
+Two passes are driven through a shipped assembly rather than through
+`runLearningMission`, because the single-conversation assembly is driven by the
+session the CLI opens around it: a goal submitted straight to its runtime sits with
+its step in flight. The fan-out assembly drives its own reconcile loop.
+
 ## How this list is derived
 
 Membership is mechanical. Only the verdict column is a judgment.
