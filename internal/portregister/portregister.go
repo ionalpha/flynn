@@ -114,9 +114,7 @@ func Seams(root string) ([]Seam, error) {
 			// either way, and reporting it here would only say so twice.
 			return nil //nolint:nilerr // parse errors are reported by the build
 		}
-		for _, seam := range interfacesIn(fset, file, filepath.ToSlash(rel)) {
-			out = append(out, seam)
-		}
+		out = append(out, interfacesIn(fset, file, filepath.ToSlash(rel))...)
 		return nil
 	})
 	if err != nil {
@@ -208,7 +206,7 @@ var knownVerdicts = map[string]bool{"shipped": true, "justified": true, "staged"
 
 // ParseRegister reads the register at path.
 func ParseRegister(path string) (Register, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(path) //nolint:gosec // the caller names the register; there is no untrusted input here
 	if err != nil {
 		return Register{}, err
 	}
@@ -338,10 +336,11 @@ func packageExists(root, pkg string) bool {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		f, perr := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly)
-		if perr == nil && f.Name.Name == pkg {
+		if f, perr := parser.ParseFile(fset, path, nil, parser.PackageClauseOnly); perr == nil && f.Name.Name == pkg {
 			found = true
 		}
+		// A file that does not parse cannot answer which package it is in, and the build
+		// reports it anyway; skipping it is the whole handling this deserves.
 		return nil
 	})
 	return found
