@@ -15,8 +15,8 @@ import (
 // it: the thing claimed is the thing produced, and it is in the record. An absence claim
 // has no witness, because nothing in the record is the absence. "I could not find any" is
 // a statement about a search, and it is worth what that search was worth. Behind no search
-// at all it is worth nothing, and it is worth nothing in the direction that matters: a run
-// that never looked and a run that looked everywhere file the same sentence.
+// at all it is worth nothing, and it fails in exactly the case the term exists for: a run
+// that never looked and a run that swept the tree file the same sentence.
 //
 // The reported failure is exactly that shape. A model asked to remove all personal
 // identifiers removed most and reported done, and being shown one instance it had missed

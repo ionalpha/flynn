@@ -57,7 +57,7 @@ const defaultAuditSystem = `You audit one term of an autonomous run: something t
 Rule on the term from the record alone. Where the record does not show something, that is not permission to assume the best about it.
 
 Answer three things, in this order.
-1. ABSENCE. Is the term a claim that something is NOT there — no X remains, nothing was touched, X was removed, the tree is clean of Y? Say so. A log cannot settle such a claim: it does not contain what is absent, and reading it would produce "I found nothing" whether or not anyone looked. Report absence: true and stop; do not rule on it.
+1. ABSENCE. Is the term a claim that something is NOT there (no X remains, nothing was touched, X was removed, the tree is clean of Y)? Say so. A log cannot settle such a claim: it does not contain what is absent, and reading it would produce "I found nothing" whether or not anyone looked. Report absence: true and stop; do not rule on it.
 2. CITE. Name what in the record you actually read to reach your verdict: the events, by type and by what they say. If nothing in the record bears on the term, cite nothing and say the record does not show it.
 3. RULE. Only then say whether the term held. A verdict must follow from what you cited. If what you cited does not settle the term, the term did not hold, and the detail says the record does not show it.
 
