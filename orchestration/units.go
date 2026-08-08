@@ -51,6 +51,34 @@ func Units(sp *Spawner, gov Governor) *UnitFanout { return &UnitFanout{sp: sp, g
 
 var _ goal.UnitSpawner = (*UnitFanout)(nil)
 
+// UnitGovernor builds the waist a plan-driven spawn is admitted through when the run's
+// own executor is not one object to borrow a dispatcher from. A Router builds a loop per
+// (driver, model) pair on demand, so there is no single executor at assembly time, and
+// the alternative to this is leaving the fan-out ungoverned.
+//
+// It is configured to match the model path rather than to be a second policy: the same
+// capability admitter, the same containment gate over the run's sandbox, and the run's
+// own brake and budget hooks passed in, so a ceiling or a halt that stops the model from
+// delegating stops a plan from delegating too.
+//
+// It deliberately takes no event sink. A dispatcher's correlation ids are monotonic
+// within that dispatcher, so two dispatchers writing lifecycle events to one stream emit
+// colliding call ids and the record then reads as one call both refused and completed.
+// The unit spawn is on the record either way: the child goal is a resource, and the
+// child's own run records onto the same stream.
+func UnitGovernor(sb sandbox.Sandbox, hooks ...dispatch.Hook) *dispatch.Dispatcher {
+	opts := []dispatch.Option{
+		dispatch.WithAdmitter(capability.Admitter{}),
+		dispatch.WithHook(capability.NewContainmentGate(sb)),
+	}
+	for _, h := range hooks {
+		if h != nil {
+			opts = append(opts, dispatch.WithHook(h))
+		}
+	}
+	return dispatch.New(opts...)
+}
+
 // Spawn creates the child that runs one unit, through the same dispatch waist a model's
 // spawn goes through: admitted under ActionSpawn against the parent's own grant, metered,
 // and recorded on the spine. A goal that was never granted the right to fan out cannot

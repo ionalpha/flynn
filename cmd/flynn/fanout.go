@@ -6,7 +6,10 @@ import (
 
 	"github.com/ionalpha/flynn/brakes"
 	budgetpkg "github.com/ionalpha/flynn/budget"
+	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
+	"github.com/ionalpha/flynn/evidence"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/llm"
@@ -86,6 +89,12 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 	// runtime. Its enqueue hook is bound once the runtime exists (below).
 	spawner := orchestration.NewSpawner(rstore, nil, orchestration.WithConcurrency(defaultFanoutWidth))
 
+	// The brake and the spend pool are built once and shared by every loop the Router
+	// builds and by the plan-driven fan-out below, so a halt or a ceiling bounds the whole
+	// run rather than one path through it.
+	brk := defaultBrakes()
+	pool := budgetpkg.NewHook(rstore)
+
 	// The Router drives each goal through the loop and model its spec selects: the
 	// default loop and host model for the root, and the bound Agent's loop and model
 	// for a delegated child. The shared ingredients (tools, default prompt and grant,
@@ -110,18 +119,47 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 			// Halt a runaway from outside the model loop: the same circuit breaker the
 			// single conversation runs under, shared by every child (which run under this
 			// pool), so the whole fan-out is braked as one.
-			Brakes: defaultBrakes(),
+			Brakes: brk,
 			// Charge every action (root and every child, which share one pool) against the
 			// run's spend pool, so a ceiling set for the run halts the whole fan-out. Inert
 			// until a budget is opened: an absent pool is unlimited.
-			Budget: budgetpkg.NewHook(rstore),
+			Budget: pool,
 			// Apply the model's scaffolding plan so a weaker model is driven with the
 			// support it needs; the zero plan of a strong model adds nothing.
 			Plan: plan,
 		},
 	})
 
-	rt, err := runtime.New(parts.runtimeConfig(router, router, rstore, jq))
+	cfg := parts.runtimeConfig(router, router, rstore, jq)
+	// Run the units of a goal's plan as governed child goals, in dependency order,
+	// through the same spawner the model's own delegation uses. Without this a goal that
+	// carries a unit graph stalls saying no spawner is wired, which is an honest refusal
+	// on a capability the binary otherwise has: the graph is admitted and validated at
+	// submit time and then has nothing to run it.
+	cfg.Units = orchestration.Units(spawner, orchestration.UnitGovernor(parts.sandbox, brk, pool))
+	// A unit is settled from its child's ledger, so the fan-out needs the evidence loop
+	// closed or every unit fails as unproven: the child carries the unit's verify clause
+	// as a ledger item, and without a verifier nothing ever runs that check. The clause is
+	// plan-authored, so it runs in the run's own sandbox under the same containment gate
+	// as the agent's shell tool.
+	//
+	// The governance event sink is left off here for the reason assembleMission leaves it
+	// off: a second dispatcher's correlation ids are monotonic only within itself, so two
+	// dispatchers writing lifecycle events onto one stream emit colliding call ids. The
+	// verdict is on the record as its own item-verified event, which is the part the
+	// evidence gate reads.
+	cfg.Verifier = evidence.NewCommandVerifier(parts.sandbox,
+		dispatch.WithAdmitter(capability.Admitter{}),
+		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
+	cfg.Evidence = evidence.NewSpineEvidence(log)
+	// Make the settled ledger, not the model's final answer, decide whether a goal
+	// carrying one is done. A unit is settled from its child's ledger, so without this a
+	// child converges the moment the model says it is finished and the unit fails as
+	// unproven every time: the check the plan author wrote would never get a turn to run.
+	// A goal with no ledger, which is every goal on this path that is not a unit's child,
+	// is unaffected.
+	cfg.RequireLedgerProof = true
+	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err
 	}
