@@ -45,101 +45,146 @@ func drawWorkload(rt *rapid.T) ([]Desired, []Resident, int64) {
 // for any workload: launches are desired and not already resident, evictions are resident
 // and neither pinned nor active, the two never overlap, and the kept set never exceeds the
 // budget unless forced (pinned or active) load already does.
+//
+// Each property is checked by its own method on scheduleCase, so a failing run names the
+// invariant that broke rather than a line number inside one long body.
 func TestScheduleInvariants(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		desired, resident, budget := drawWorkload(rt)
-		p := Schedule(desired, resident, budget)
-
-		desiredSet := idSet(desiredIDs(desired))
-		residentByID := map[string]Resident{}
-		for _, r := range resident {
-			residentByID[r.ModelID] = r
-		}
-
-		launchSet := idSet(p.Launch)
-		for _, id := range p.Launch {
-			if !desiredSet[id] {
-				rt.Fatalf("launched a model that is not desired: %q", id)
-			}
-			if _, ok := residentByID[id]; ok {
-				rt.Fatalf("launched a model that is already resident: %q", id)
-			}
-		}
-
-		// A pinned desired model is never evicted and never unschedulable: a pin overrides
-		// the budget.
-		evictedSet := idSet(p.Evict)
-		unschedSet := idSet(p.Unschedulable)
-		for _, d := range desired {
-			if d.Pinned {
-				if unschedSet[d.ModelID] {
-					rt.Fatalf("pinned desired model is unschedulable: %q", d.ModelID)
-				}
-				if evictedSet[d.ModelID] {
-					rt.Fatalf("pinned desired model is evicted: %q", d.ModelID)
-				}
-			}
-		}
-		for _, id := range p.Evict {
-			r, ok := residentByID[id]
-			if !ok {
-				rt.Fatalf("evicted a model that is not resident: %q", id)
-			}
-			if r.Pinned || r.Active {
-				rt.Fatalf("evicted a pinned or active model: %q (%+v)", id, r)
-			}
-			if launchSet[id] {
-				rt.Fatalf("model %q is both launched and evicted", id)
-			}
-		}
-
-		// Budget invariant: the kept set (forced load + admitted models) does not exceed the
-		// budget, unless the forced load alone already exceeds it (which cannot be evicted).
-		// Footprint is single-valued per model, matching the policy: a desired model at its
-		// estimate, a resident-only model at its observed size.
-		dByID := desiredByID(desired)
-		footOf := func(id string) int64 {
-			if d, ok := dByID[id]; ok {
-				return nonNeg(d.Footprint)
-			}
-			return nonNeg(residentByID[id].Footprint)
-		}
-		// Forced models (pinned desired, plus pinned or active residents) are kept regardless
-		// of budget, so the kept footprint may exceed the budget only up to the forced load.
-		forcedSet := map[string]bool{}
-		for _, d := range desired {
-			if d.Pinned {
-				forcedSet[d.ModelID] = true
-			}
-		}
-		for _, r := range resident {
-			if r.Pinned || r.Active {
-				forcedSet[r.ModelID] = true
-			}
-		}
-		var forced int64
-		for id := range forcedSet {
-			forced += footOf(id)
-		}
-
-		evicted := idSet(p.Evict)
-		keptIDs := map[string]bool{}
-		for _, r := range resident {
-			if !evicted[r.ModelID] {
-				keptIDs[r.ModelID] = true
-			}
-		}
-		for _, id := range p.Launch {
-			keptIDs[id] = true
-		}
-		var kept int64
-		for id := range keptIDs {
-			kept += footOf(id)
-		}
-		if kept > budget && kept > forced {
-			rt.Fatalf("kept footprint %d exceeds budget %d and forced %d", kept, budget, forced)
-		}
+		c := newScheduleCase(drawWorkload(rt))
+		c.checkLaunchesAreWantedAndAbsent(rt)
+		c.checkPinsOverrideTheBudget(rt)
+		c.checkEvictionsAreEvictable(rt)
+		c.checkKeptLoadFitsTheBudget(rt)
 	})
+}
+
+// scheduleCase is one drawn workload together with the plan Schedule produced for it. It
+// holds the lookups every invariant needs, so each check reads as the property it states
+// rather than as the bookkeeping that gets it there.
+type scheduleCase struct {
+	desired  []Desired
+	resident []Resident
+	budget   int64
+	plan     Plan
+
+	desiredByID  map[string]Desired
+	residentByID map[string]Resident
+	launched     map[string]bool
+	evicted      map[string]bool
+}
+
+func newScheduleCase(desired []Desired, resident []Resident, budget int64) scheduleCase {
+	p := Schedule(desired, resident, budget)
+	byID := make(map[string]Resident, len(resident))
+	for _, r := range resident {
+		byID[r.ModelID] = r
+	}
+	return scheduleCase{
+		desired:      desired,
+		resident:     resident,
+		budget:       budget,
+		plan:         p,
+		desiredByID:  desiredByID(desired),
+		residentByID: byID,
+		launched:     idSet(p.Launch),
+		evicted:      idSet(p.Evict),
+	}
+}
+
+// footprintOf reports the single footprint the policy charges a model: a desired model at
+// its estimate, a resident-only model at its observed size.
+func (c scheduleCase) footprintOf(id string) int64 {
+	if d, ok := c.desiredByID[id]; ok {
+		return nonNeg(d.Footprint)
+	}
+	return nonNeg(c.residentByID[id].Footprint)
+}
+
+// checkLaunchesAreWantedAndAbsent: a launch is only ever for a model somebody asked for and
+// that is not already running, because launching either would waste a slot.
+func (c scheduleCase) checkLaunchesAreWantedAndAbsent(rt *rapid.T) {
+	desiredSet := idSet(desiredIDs(c.desired))
+	for _, id := range c.plan.Launch {
+		if !desiredSet[id] {
+			rt.Fatalf("launched a model that is not desired: %q", id)
+		}
+		if _, ok := c.residentByID[id]; ok {
+			rt.Fatalf("launched a model that is already resident: %q", id)
+		}
+	}
+}
+
+// checkPinsOverrideTheBudget: a pinned desired model is never evicted and never
+// unschedulable. A pin is the caller's statement that this model outranks the budget.
+func (c scheduleCase) checkPinsOverrideTheBudget(rt *rapid.T) {
+	unschedSet := idSet(c.plan.Unschedulable)
+	for _, d := range c.desired {
+		if !d.Pinned {
+			continue
+		}
+		if unschedSet[d.ModelID] {
+			rt.Fatalf("pinned desired model is unschedulable: %q", d.ModelID)
+		}
+		if c.evicted[d.ModelID] {
+			rt.Fatalf("pinned desired model is evicted: %q", d.ModelID)
+		}
+	}
+}
+
+// checkEvictionsAreEvictable: an eviction names a resident model that is neither pinned nor
+// serving a request, and the launch and evict sets never overlap.
+func (c scheduleCase) checkEvictionsAreEvictable(rt *rapid.T) {
+	for _, id := range c.plan.Evict {
+		r, ok := c.residentByID[id]
+		if !ok {
+			rt.Fatalf("evicted a model that is not resident: %q", id)
+		}
+		if r.Pinned || r.Active {
+			rt.Fatalf("evicted a pinned or active model: %q (%+v)", id, r)
+		}
+		if c.launched[id] {
+			rt.Fatalf("model %q is both launched and evicted", id)
+		}
+	}
+}
+
+// checkKeptLoadFitsTheBudget: the kept set (survivors plus launches) stays inside the
+// budget, unless the forced load alone already exceeds it. Forced models are the pinned
+// desired ones plus pinned or active residents, and none of them can be evicted to make
+// room, so the overshoot they cause is the one the budget has to tolerate.
+func (c scheduleCase) checkKeptLoadFitsTheBudget(rt *rapid.T) {
+	forcedSet := map[string]bool{}
+	for _, d := range c.desired {
+		if d.Pinned {
+			forcedSet[d.ModelID] = true
+		}
+	}
+	for _, r := range c.resident {
+		if r.Pinned || r.Active {
+			forcedSet[r.ModelID] = true
+		}
+	}
+	var forced int64
+	for id := range forcedSet {
+		forced += c.footprintOf(id)
+	}
+
+	keptIDs := map[string]bool{}
+	for _, r := range c.resident {
+		if !c.evicted[r.ModelID] {
+			keptIDs[r.ModelID] = true
+		}
+	}
+	for _, id := range c.plan.Launch {
+		keptIDs[id] = true
+	}
+	var kept int64
+	for id := range keptIDs {
+		kept += c.footprintOf(id)
+	}
+	if kept > c.budget && kept > forced {
+		rt.Fatalf("kept footprint %d exceeds budget %d and forced %d", kept, c.budget, forced)
+	}
 }
 
 // TestScheduleIsAFixedPoint asserts the chosen set is stable: applying a plan and scheduling
