@@ -222,11 +222,17 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// is not part of the ledger: a goal can state what must stay true without expanding
 	// its objective into items, and one that states terms with no auditor would stall.
 	//
+	// A term that declares no check goes to the model auditor, which reads the run's own
+	// recorded events. That is the weaker of the two and is wired knowing it: it refuses
+	// to rule on a claim that something is not there, and refuses a verdict that cites
+	// nothing in the record. Those two refusals stop the goal, which is the same
+	// fail-closed direction as an unrunnable check.
+	//
 	// The event sink is left off for the reason the item verifier leaves it off: a second
 	// dispatcher writing lifecycle events onto one stream emits colliding call ids, and
 	// the record then reads as one call both refused and completed. The audit is on the
 	// record as its own invariant-audited event, which is the part that matters.
-	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log,
+	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log, evidence.NewModelAuditor(model, log),
 		dispatch.WithAdmitter(capability.Admitter{}),
 		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
 	// Stop a run that has stopped getting anywhere. The probe reads the run's own recorded
