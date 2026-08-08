@@ -519,3 +519,27 @@ func TestGoalOrphanIsGarbageCollected(t *testing.T) {
 		t.Fatal("orphaned child was not garbage-collected after its owner was deleted")
 	}
 }
+
+// A goal deleted with no Cleaner wired completes its deletion rather than hanging on
+// a finalizer nobody will clear.
+//
+// This is the register's other kind of honest absence: a documented no-op for
+// something genuinely optional. A nil Cleaner means there is nothing external to tear
+// down, which is true of the standalone binary; child goals are reaped through owner
+// references and the finalizer guards a teardown that a host with worktrees or remote
+// runs supplies. A reader of the finished delete could not tell the difference,
+// because there was nothing to do.
+func TestGoalDeletionCompletesWithNoCleaner(t *testing.T) {
+	h := newHarness(t, stopAfter{at: 99}) // no WithCleaner
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
+	h.reconcile(t, ref) // adds the finalizer
+
+	if err := h.store.Delete(h.ctx, ref.Kind, ref.Scope, ref.Name); err != nil {
+		t.Fatal(err)
+	}
+	h.reconcile(t, ref) // finalize: nothing to clean, so the finalizer clears
+
+	if _, err := h.store.Get(h.ctx, ref.Kind, ref.Scope, ref.Name); err == nil {
+		t.Fatal("the goal outlived its delete because no cleaner was wired")
+	}
+}

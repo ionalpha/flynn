@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -90,36 +89,7 @@ func (m *memory) promotionPrevTx(ctx context.Context, tx *sql.Tx, memoryID strin
 }
 
 func (m *memory) Promotions(ctx context.Context, memoryIDs []string) ([]state.MemoryPromotion, error) {
-	var q strings.Builder
-	q.WriteString(`SELECT ` + memoryPromotionCols + ` FROM memory_promotions`)
-	args := make([]any, 0, len(memoryIDs))
-	for i, id := range memoryIDs {
-		if i == 0 {
-			q.WriteString(` WHERE memory_id IN (`)
-		} else {
-			q.WriteString(`, `)
-		}
-		q.WriteString(`?`)
-		args = append(args, id)
-	}
-	if len(memoryIDs) > 0 {
-		q.WriteString(`)`)
-	}
-	q.WriteString(` ORDER BY memory_id`)
-	rows, err := m.p.reads().QueryContext(ctx, q.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	out := make([]state.MemoryPromotion, 0)
-	for rows.Next() {
-		p, err := scanMemoryPromotion(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
+	return selectByMemoryID(ctx, m.p.reads(), memoryPromotionCols, `memory_promotions`, `memory_id`, memoryIDs, scanMemoryPromotion)
 }
 
 // getLiveMemoryTx loads a live memory item by id within tx, or returns

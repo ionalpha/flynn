@@ -377,3 +377,57 @@ func TestSourcesOfDropsAnUnrecordedSource(t *testing.T) {
 		t.Errorf("sourcesOf(run-1) = %v, want [run-1]", got)
 	}
 }
+
+// A memory lesson is anchored to the skills the run loaded, so the next read of one
+// of those procedures surfaces what was learned while working from it. Without the
+// anchor the ride-along has nothing to match on however well it is wired, which is
+// why this is written at the capture end rather than left to a caller.
+func TestCuratorAnchorsMemoryToTheSkillsTheRunRead(t *testing.T) {
+	skills, memories := newStores(t)
+	d := &fakeDistiller{lessons: []Lesson{
+		{Kind: LessonMemory, Body: "The firmware reset needs the case open."},
+		{Kind: LessonSkill, Title: "Reset the Widget", Body: "Hold for 10s."},
+	}}
+	c := NewCurator(d, skills, memories)
+	ctx := context.Background()
+
+	o := convergedOutcome()
+	o.SkillsRead = []string{"sk-2", "sk-1", ""}
+	captured, err := c.Curate(ctx, o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Memories) != 1 {
+		t.Fatalf("captured %d memories, want 1", len(captured.Memories))
+	}
+	// Canonical order, and the empty id dropped: the store normalizes what it is
+	// given, and a list of read ids is not the caller's to clean up first.
+	want := []state.Anchor{{Kind: state.AnchorKindSkill, ID: "sk-1"}, {Kind: state.AnchorKindSkill, ID: "sk-2"}}
+	if got := captured.Memories[0].Anchors; !slices.Equal(got, want) {
+		t.Errorf("memory anchors = %v, want %v", got, want)
+	}
+
+	// Recallable by the anchor, which is the whole point of writing it.
+	items, err := memories.Recall(ctx, state.RecallQuery{Anchors: []state.Anchor{state.SkillAnchor("sk-1")}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Content != "The firmware reset needs the case open." {
+		t.Fatalf("recall by skill anchor = %+v", items)
+	}
+}
+
+// A run that loaded no skill anchors nothing. The alternative would be an anchor to
+// whatever else was to hand, and a memory anchored to something it is not about is
+// worse than one a reader has to search for.
+func TestCuratorAnchorsNothingWhenNoSkillWasRead(t *testing.T) {
+	skills, memories := newStores(t)
+	d := &fakeDistiller{lessons: []Lesson{{Kind: LessonMemory, Body: "A fact from a run that read nothing."}}}
+	captured, err := NewCurator(d, skills, memories).Curate(context.Background(), convergedOutcome())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := captured.Memories[0].Anchors; got != nil {
+		t.Errorf("memory anchors = %v, want none", got)
+	}
+}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"strings"
 
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -101,34 +100,5 @@ func (m *memory) RecordUse(ctx context.Context, memoryID string, origin state.Us
 }
 
 func (m *memory) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUsage, error) {
-	var q strings.Builder
-	q.WriteString(`SELECT ` + memoryUsageCols + ` FROM memory_usage`)
-	args := make([]any, 0, len(memoryIDs))
-	for i, id := range memoryIDs {
-		if i == 0 {
-			q.WriteString(` WHERE memory_id IN (`)
-		} else {
-			q.WriteString(`, `)
-		}
-		q.WriteString(`?`)
-		args = append(args, id)
-	}
-	if len(memoryIDs) > 0 {
-		q.WriteString(`)`)
-	}
-	q.WriteString(` ORDER BY memory_id, instance_id`)
-	rows, err := m.p.reads().QueryContext(ctx, q.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = rows.Close() }()
-	out := make([]state.MemoryUsage, 0)
-	for rows.Next() {
-		u, err := scanMemoryUsage(rows)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, u)
-	}
-	return out, rows.Err()
+	return selectByMemoryID(ctx, m.p.reads(), memoryUsageCols, `memory_usage`, `memory_id, instance_id`, memoryIDs, scanMemoryUsage)
 }

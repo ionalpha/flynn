@@ -11,11 +11,17 @@ import (
 // WindowSource reports how much of the current plan window has been consumed, as a
 // fraction in [0,1]: 0 is an untouched window, 1 is a spent one. It is the seam an app
 // implements over its own subscription's plan-window data. Flynn defines the port and
-// enforces a goal's WindowFraction ceiling against it, but ships no source of its own,
-// so a goal's window bound has no effect until one is wired with WithWindowSource.
+// enforces a goal's WindowFraction ceiling against it, but ships no source of its own.
 // Keeping the source out of the runtime is deliberate: the window belongs to the
 // account the app runs under, not to the agent, and the shape of that data differs per
-// app. A nil source leaves the window axis unbounded, which is the zero-config default.
+// app.
+//
+// A goal that sets no WindowFraction needs none of this, and nothing here applies to
+// it. A goal that sets one and has no source wired stalls with WindowSourceMissing
+// rather than running unbounded: the ceiling is a bound the goal declares about
+// itself, and a run that finishes without it having been checked is indistinguishable
+// from one that stayed inside it. Wiring a source with WithWindowSource and
+// reconciling again picks the work up where it stopped.
 type WindowSource interface {
 	Fraction(ctx context.Context) (float64, error)
 }
@@ -53,7 +59,18 @@ func (g *Reconciler) spendGuard(ctx context.Context, r resource.Resource, spec S
 				fmt.Sprintf("cost budget exhausted: spent %.4f of %.4f allowed", spent.Cost, b.Cost), nil
 		}
 	}
-	if b.WindowFraction > 0 && g.window != nil {
+	if b.WindowFraction > 0 {
+		// The one bound this guard could otherwise pass over in silence. Tokens and cost
+		// read spend Flynn records itself, so they are checked whenever they are set; the
+		// window reads a quota belonging to the account the app runs under, and Flynn
+		// ships no source for it. With none wired the goal would run to its natural end
+		// and finish looking exactly like one that stayed inside a ceiling nobody
+		// measured. So it stalls by name, the way a goal that states terms with no
+		// auditor to check them does, and for the same reason.
+		if g.window == nil {
+			return "WindowSourceMissing",
+				fmt.Sprintf("the goal caps its share of the plan window at %.1f%% and no window source is wired to measure it", b.WindowFraction*100), nil
+		}
 		frac, err := g.window.Fraction(ctx)
 		if err != nil {
 			return "", "", err

@@ -115,22 +115,11 @@ var _ SnapshotSigner = (*Ed25519RootSigner)(nil)
 // VerifyCheckpoint, and additionally rejects a checkpoint signature presented as a
 // snapshot (the content types differ).
 func VerifySnapshotClaim(coseBytes []byte, ring *RootKeyring) (SnapshotClaim, error) {
-	var msg cose.Sign1Message
-	if err := msg.UnmarshalCBOR(coseBytes); err != nil {
-		return SnapshotClaim{}, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
+	payload, err := verifiedPayload(coseBytes, ring, snapshotContentType, "snapshot")
+	if err != nil {
+		return SnapshotClaim{}, err
 	}
-	if ct, _ := msg.Headers.Protected[cose.HeaderLabelContentType].(string); ct != snapshotContentType {
-		return SnapshotClaim{}, fault.New(fault.Terminal, CodeContentType, "chain: unexpected snapshot content type")
-	}
-	kid, _ := msg.Headers.Protected[cose.HeaderLabelKeyID].([]byte)
-	pub, ok := ring.keys[string(kid)]
-	if !ok {
-		return SnapshotClaim{}, fault.New(fault.Terminal, CodeUnknownKey, "chain: snapshot signed by an unknown key")
-	}
-	if err := msg.Verify(nil, ed25519CoseVerifier{key: pub}); err != nil {
-		return SnapshotClaim{}, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
-	}
-	return decodeSnapshotClaim(msg.Payload)
+	return decodeSnapshotClaim(payload)
 }
 
 // snapshotWire is the stored form of a verified snapshot: the projection payload
