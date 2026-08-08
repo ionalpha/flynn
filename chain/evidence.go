@@ -41,6 +41,17 @@ const (
 	// verification, which has no execution to describe.
 	ItemExitKey   = "exit"
 	ItemOutputKey = "outputHash"
+	// ItemReasonKey holds why a verdict nothing was run for was not run: no clause to
+	// run, no sandbox to run it in, a gate that refused it, a command that could not
+	// start. It is the unexecuted case's counterpart to the exit code, and it is on the
+	// record for the same reason the exit code is.
+	//
+	// Without it the record says an item is unproven and stops there, and "its check
+	// could not be run" is the one outcome a reader can do nothing with: it names no
+	// cause, so it is indistinguishable from a check that failed for a reason worth
+	// fixing and one that was never going to run on this host. It is absent on an
+	// executed verification, whose exit code and output hash are what happened.
+	ItemReasonKey = "reason"
 )
 
 // The two kinds of item evidence. They are kinds, not tiers: neither is convertible

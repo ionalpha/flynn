@@ -84,6 +84,13 @@ func (s *SpineEvidence) Record(ctx context.Context, r resource.Resource, item st
 		payload[chain.ItemProvenanceKey] = chain.ProvenanceExecuted
 		payload[chain.ItemExitKey] = v.ExitCode
 		payload[chain.ItemOutputKey] = outputHash(v.Output)
+	} else if detail := strings.TrimSpace(v.Detail); detail != "" {
+		// Why nothing was run, which is the unexecuted case's whole evidence. An item the
+		// gate refuses reports only that its check could not be run, and that sentence
+		// names no cause: a clause no host could ever execute and a sandbox that failed to
+		// start read the same to whoever is handed the stopped goal. Recording the reason
+		// is what makes those two different outcomes on the record rather than one.
+		payload[chain.ItemReasonKey] = clip(detail, maxDetail)
 	}
 	e, err := s.log.Append(ctx, spine.AppendInput{
 		Stream:  r.Name,

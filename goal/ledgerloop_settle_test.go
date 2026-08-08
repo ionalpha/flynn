@@ -139,3 +139,25 @@ func TestAnUnrunnableCheckIsNotReportedAsUnchecked(t *testing.T) {
 		}
 	}
 }
+
+// TestAnUnrunnableCheckSaysWhyItCouldNotRun: "could not be run" names no cause, so a clause
+// no host could ever execute and a sandbox that failed to start read identically to whoever
+// is handed the stopped goal, and only one of those is worth trying to fix. The verifier
+// knows which it was; this is the path that carries it to a reader.
+func TestAnUnrunnableCheckSaysWhyItCouldNotRun(t *testing.T) {
+	ledger, err := AppendItems(nil, LedgerItem{Item: "its check could not run here", Verify: "make test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st Status
+	st.SyncLedger(ledger)
+	const why = "the check could not run: the sandbox refused to start"
+	recorded := []Verification{
+		{Ref: "1", Item: ledger[0].ID, Passed: false, Provenance: ProvenanceAsserted, Reason: why},
+	}
+
+	reasons := st.UnprovenReasons(newGate(t, RequireExecuted()), recorded)
+	if len(reasons) != 1 || !strings.Contains(reasons[0], why) {
+		t.Fatalf("reasons = %v, want the one item's refusal to quote %q", reasons, why)
+	}
+}
