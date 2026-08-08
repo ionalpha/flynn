@@ -346,7 +346,7 @@ func TestRunInteractiveWithoutTerminal(t *testing.T) {
 	replaceStdin(t, "")
 	stdout := captureStdout(t)
 
-	if err := runInteractive("openai:gpt-5.5", t.TempDir(), false, false, true); err != nil {
+	if err := runInteractive("openai:gpt-5.5", t.TempDir(), false, false, true, nil); err != nil {
 		t.Fatalf("runInteractive: %v", err)
 	}
 	out := stdout()
@@ -365,7 +365,7 @@ func TestRunInteractiveReportsUnresolvableModel(t *testing.T) {
 	replaceStdin(t, "")
 	captureStdout(t)
 
-	err := runInteractive("notaprovider:x", t.TempDir(), false, false, true)
+	err := runInteractive("notaprovider:x", t.TempDir(), false, false, true, nil)
 	if err == nil {
 		t.Fatal("an unresolvable model opened a session")
 	}

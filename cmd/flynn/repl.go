@@ -36,7 +36,7 @@ import (
 // session (unless learning is disabled). It assumes stdin is a terminal; the caller
 // falls back to usage when it is not. By default it runs the full-screen interface;
 // plain (or a non-terminal stdout) selects the line-based interface instead.
-func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool) error {
+func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string) error {
 	ctx := context.Background()
 
 	cwd, err := os.Getwd()
@@ -122,6 +122,9 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		signer:       signer,
 		dataDir:      dataDir,
 		modelSpec:    modelSpec,
+		// The policy is the session's for its whole life; the prompter that resolves a
+		// pause is installed by whichever interface runs, because only one of them can ask.
+		approval: approvalSetup{actions: reqApproval},
 	}
 
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
@@ -208,6 +211,12 @@ type replSession struct {
 	// summary) to the user. The full-screen shell appends it to the transcript; the
 	// line interface prints it. Nil discards it, so a non-interactive run is quiet.
 	notice func(string)
+
+	// approval carries the session's approval policy and the prompter that resolves a
+	// pause. The full-screen shell installs its own prompter (the modal overlay) when it
+	// builds the host; the line interface installs none, so a listed action is refused
+	// there rather than silently taken.
+	approval approvalSetup
 
 	// observer, when set, receives every session event as the turn renders. The
 	// interactive shell installs it to render the typed stream itself (transcript,
@@ -351,7 +360,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		// the CLI's own conversation rather than a step of ours.
 		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{})
 	} else {
-		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{}, false, false)
+		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{}, false, false, s.approval)
 	}
 	if err != nil {
 		return "", err

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/goal"
@@ -50,22 +51,32 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	case cfg.toolset != nil:
 		// A caller-supplied toolset and grant: no sandbox, no working-tree tools, the
 		// same session recording and governance as every other path.
-		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID, cfg.planning)
+		run, err = assembleToolsetMission(model, plan, cfg.toolset, system, rstore, jq, log, resumeID, cfg.planning, cfg.approval)
 	case cfg.extAgent != nil:
 		// An external agent CLI drives the loop: the same sandbox, session, toolset,
 		// grant, and governance recording as a native run, but the run loop is the CLI's
 		// episode driver rather than a model conversation.
 		run, err = assembleExternalMission(cfg.extAgent, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits)
 	case fanout != nil:
-		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, fanout.resolveModel, cfg.resLimits)
+		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, fanout.resolveModel, cfg.resLimits, cfg.approval)
 	default:
-		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits, cfg.planning, cfg.proof)
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits, cfg.planning, cfg.proof, cfg.approval)
 	}
 	if err != nil {
 		return "", "", nil, err
 	}
 	defer func() { _ = run.Close() }()
 	_, _ = fmt.Fprintf(w, "  run %s\n", run.sess.ID())
+	// Say up front that the run will stop for a person, and on what. A run that halts
+	// halfway through with no warning reads as a hang, and one that refuses an action
+	// because nobody could be asked should have said so before it started.
+	if gated := gatedActions(approvalPolicy(cfg.approval.actions)); len(gated) > 0 {
+		how := "refused, nothing here can prompt"
+		if cfg.approval.prompter != nil {
+			how = "paused for your decision"
+		}
+		_, _ = fmt.Fprintf(w, "  approval required (%s): %s\n", how, strings.Join(gated, ", "))
+	}
 
 	// Open the run's spend pool before the goal is submitted, so the ceiling is in
 	// force from the first action rather than after a race. The pool is keyed by the
