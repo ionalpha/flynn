@@ -28,4 +28,28 @@ Our own fields ride in `metadata` under the `ionagent.io/` prefix (`title`, `tag
 `check`); see `skill/skillmd/metadata.go` for the convention and `skill/pack.go` for
 what crosses into a stored skill and what does not.
 
+## What the prose gate refuses
+
+`TestPackProseIsAuthored` reads every file below this one, including reference
+documents and scripts, and fails on marks a shipped skill must not carry:
+
+- The em-dash, the horizontal bar, the en-dash, and the single-character ellipsis.
+  Write a colon, a semicolon, parentheses, a full stop, a hyphen, the word "to", or
+  three dots.
+- An identifier from the system this work is planned in: a `@task:` or `@note:` link,
+  a bare record id next to the words task, note or epic, or a UUID. A reader outside
+  this workspace cannot follow one, so say the thing rather than pointing at where it
+  is recorded.
+- The names of the workspace this was authored in, and of the other skill libraries.
+  A skill teaches its craft; comparing the shelf it sits on to another shelf dates
+  immediately.
+
+Every refusal is reported at once, with its file, line, column and the text, so a
+pack is fixed in one pass rather than one CI run per mark.
+
+There is no vocabulary check and no escape hatch, deliberately. Every rule above
+catches something with no legitimate use in a skill, which is why it can refuse
+without an appeal; a check on ordinary words needs an escape designed first, or it
+gets switched off the first week it is wrong.
+
 This file is not a skill. `LoadAll` reads directories and ignores the rest.
