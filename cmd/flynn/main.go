@@ -310,6 +310,19 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	case "regrade":
 		return inv.exit(regradeSkills(inv.stdout, inv.dataDir))
 
+	case "memory":
+		// Not a dataDirCommands entry: consolidation distils a series through a model,
+		// so this one needs the run's model spec as well as the data directory.
+		if err := dispatchMemory(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
+			if errors.Is(err, errMemoryUsage) {
+				_, _ = fmt.Fprintln(inv.stderr, err)
+				return 2
+			}
+			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+			return 1
+		}
+		return 0
+
 	case "skill":
 		if len(rest) < 2 || rest[1] != "ab" {
 			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
@@ -442,6 +455,7 @@ func printUsage(w io.Writer) {
   flynn db reset             move an unusable database aside (backed up) so the next run recreates it; also 'db path' and 'db backup'
   flynn notices [--refresh] [--all]  show the signed security advisories and release notices that apply to this build
   flynn regrade              re-grade learned skills against the working directory
+  flynn memory consolidate   distil each subject's accumulated episodes into one lesson and retire them (--max-calls n caps the model spend)
   flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded

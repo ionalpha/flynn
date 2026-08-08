@@ -30,11 +30,28 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	if err != nil {
 		return "", err
 	}
-	skills, memories := store.Skills(), store.Memory()
+	skills := store.Skills()
+	// Every write in this run goes through the curated store, so a fact supersedes
+	// the standing answer on its subject and an episode joins the series the
+	// consolidation pass later reads.
+	mem := newMemoryStack(store.Memory(), noticeWriter(out))
+	memories := mem.store
 
-	// Recall first: fold what was learned before into the standing instructions, and
-	// remember which skills were surfaced so the run can be told what it was shown.
+	// The run carries a prime scope from here on, so a memory the digest pushed is
+	// attributed as primed when it is used rather than as the run having found it.
+	ctx = wakeContext(ctx)
+
+	// Two halves of memory, in the order they matter. The digest is the push: what
+	// this install knows, offered whether or not the objective mentions it, which is
+	// the half a pull-only store cannot do. Recall is the pull: what this objective's
+	// own words match, plus the skills to offer, and which of them were surfaced so
+	// the run can be told what it was shown.
 	system := defaultSystemPrompt
+	if wake, werr := mem.wakeBlock(ctx, state.Scope{}); wake != "" {
+		system += "\n\n" + wake
+	} else if werr != nil {
+		_, _ = fmt.Fprintf(out, "  (no memory digest: %v)\n", werr)
+	}
 	block, recalled, _ := recallContext(ctx, skills, memories, objective)
 	if block != "" {
 		system += "\n\n" + block
