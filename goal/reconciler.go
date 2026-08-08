@@ -64,6 +64,10 @@ type Reconciler struct {
 	evidence Evidence      // optional; set with gate by WithLedgerGate
 	gate     *EvidenceGate // optional; set with evidence by WithLedgerGate
 	units    UnitSpawner   // optional; a goal carrying a unit graph without one stalls
+	// auditor rules on the goal's invariants. Optional: with none wired a goal's terms
+	// are carried, admitted and protected against being relaxed, but never checked,
+	// which is the honest behaviour for a host that has not supplied an auditor.
+	auditor InvariantAuditor
 	// ledgerConverge makes an unsettled ledger refuse a completion claim. It is
 	// deliberately separate from having the loop wired at all: the producer runs first
 	// and this follows once items are seen flipping to proven (see WithLedgerConvergence).
@@ -377,6 +381,14 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		}
 	}
 
+	// The terms of the run, checked against the step that just finished and before the
+	// goal parks, plans more work, fans out, settles its ledger or is judged done. A
+	// broken term settles the goal from here, so nothing below it can be traded against
+	// it: not the stop evaluator's verdict, and not a wait on children either.
+	if res, handled, err := g.auditInvariants(ctx, r, spec, &status, specHash, observed); handled {
+		return res, err
+	}
+
 	// A parked goal: its last step reported it is waiting on external state (a
 	// fan-out's children). Do not dispatch a re-check, evaluate the stop condition,
 	// or touch the budget; a settling child clears the park and signals (prompt),
@@ -502,8 +514,9 @@ func (g *Reconciler) planGate(ctx context.Context, r resource.Resource, spec Spe
 	return reconcile.Result{}, false, nil
 }
 
-// admit checks the desired-state records a reconcile reads (the ledger and the unit
-// graph) and brings the status's observation of each into line with it. Everything it
+// admit checks the desired-state records a reconcile reads (the ledger, the unit graph
+// and the run's terms) and brings the status's observation of each into line with it.
+// Everything it
 // refuses is a terminal spec fault, because all of it means the same thing: the
 // definition the run is being judged against changed underneath the run.
 //
@@ -516,8 +529,14 @@ func (g *Reconciler) planGate(ctx context.Context, r resource.Resource, spec Spe
 // nothing has been spent on are not a commitment and may still be added, removed and
 // reordered.
 //
-// A goal that carries neither record passes straight through, so this changes nothing
-// for a goal that neither plans nor fans out.
+// An invariant dropped or reworded after the run adopted it is the terms of the run
+// being renegotiated by the run, which is the move invariants exist to foreclose, so it
+// is refused here whether or not an auditor is wired to check those terms. Adding a term
+// is always allowed: the rule is one-directional because tightening the terms mid-run is
+// its author's to do and loosening them is nobody's.
+//
+// A goal that carries none of these records passes straight through, so this changes
+// nothing for a goal that neither plans, fans out, nor states any terms.
 func admit(spec Spec, status *Status) error {
 	if err := status.ValidateLedger(spec.Ledger); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
@@ -530,6 +549,13 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, "goal_unit_rewritten", err)
 	}
 	status.SyncUnits(spec.Units)
+	if err := ValidateInvariants(spec.Invariants); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_invariants_invalid", err)
+	}
+	if err := status.ValidateInvariantsAdopted(spec.Invariants); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_invariant_relaxed", err)
+	}
+	status.SyncInvariants(spec.Invariants)
 	return nil
 }
 
