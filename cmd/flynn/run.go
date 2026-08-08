@@ -55,11 +55,11 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		// An external agent CLI drives the loop: the same sandbox, session, toolset,
 		// grant, and governance recording as a native run, but the run loop is the CLI's
 		// episode driver rather than a model conversation.
-		run, err = assembleExternalMission(cfg.extAgent, workdir, system, rstore, jq, log, resumeID, cfg.resLimits)
+		run, err = assembleExternalMission(cfg.extAgent, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits)
 	case fanout != nil:
-		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, resumeID, fanout.resolveModel, cfg.resLimits)
+		run, err = assembleFanoutMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, fanout.resolveModel, cfg.resLimits)
 	default:
-		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, resumeID, cfg.resLimits, cfg.planning, cfg.proof)
+		run, err = assembleMission(model, plan, workdir, system, rstore, jq, log, cfg.skills, resumeID, cfg.resLimits, cfg.planning, cfg.proof)
 	}
 	if err != nil {
 		return "", "", nil, err

@@ -50,6 +50,10 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	}
 
 	resources := store.Resources(reg)
+	// The run reads skills from the store recall just offered from. Prepended rather
+	// than appended so a caller could override it, and passed unconditionally: the
+	// offer in the prompt names skill_read, so the tool has to be there.
+	opts = append([]driveOption{withSkills(skills)}, opts...)
 	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout, opts...)
 
 	// Reinforce the recalled skills by the run's outcome: a skill present in a run

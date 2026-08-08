@@ -21,7 +21,9 @@ import (
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
+	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/tools"
 )
 
@@ -79,7 +81,11 @@ func (p *missionParts) Close() error {
 // everything else is identical across the two paths. resLimits caps the host memory
 // and process count of the commands the run's tools execute (its zero value applies
 // no cap).
-func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool, resLimits sandbox.ResourceLimits) (*missionParts, error) {
+//
+// skills is the durable skill store the skill tools read, and may be nil: a run
+// assembled without one (a served control-plane run, a test) simply offers no skill
+// tool, rather than offering one that answers nothing.
+func newMissionParts(workdir string, log spine.Log, skills state.SkillStore, runID string, withSpawn bool, resLimits sandbox.ResourceLimits) (*missionParts, error) {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement(), sandbox.WithResourceLimits(resLimits))
 	if err != nil {
 		return nil, err
@@ -91,7 +97,11 @@ func newMissionParts(workdir string, log spine.Log, runID string, withSpawn bool
 	}
 	sess := session.New(log, bus.NewMemory(), sopts...)
 
-	toolset := tools.New(sb).Tools()
+	// The working-tree tools, plus the skill tools when there is a store behind them.
+	// They are one toolset from here on: the grant below is built from whatever this
+	// list holds, so a tool that is offered is a tool the waist admits, and adding one
+	// cannot leave its authority behind.
+	toolset := append(tools.New(sb).Tools(), skilltool.New(skills).Tools()...)
 	// The grant lists every action the run may take: the tools, plus the model call
 	// and the distillation, and (for a fan-out) the spawn that delegates a sub-goal. A
 	// child narrows from this set, so a delegation can never widen authority; a run
@@ -142,8 +152,8 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, runID, false, resLimits)
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills state.SkillStore, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
 	if err != nil {
 		return nil, err
 	}
@@ -281,8 +291,8 @@ func externalModel(ea *externAgent) string {
 // unobserved-but-contained and are recorded as a declared provenance gap. A run driven
 // this way does not fan out (the external harness owns its own loop), so the spawn
 // action is withheld from the grant.
-func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, runID, false, resLimits)
+func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills state.SkillStore, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
 	if err != nil {
 		return nil, err
 	}

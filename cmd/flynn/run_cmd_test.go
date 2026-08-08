@@ -356,7 +356,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	t.Cleanup(ea.close)
 
 	run, err := assembleExternalMission(ea, t.TempDir(), defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), "", sandbox.ResourceLimits{})
+		store.Resources(reg), store.Jobs(), store.Log(), store.Skills(), "", sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 
 	// A native fan-out run, by contrast, is granted the delegation it exists to make.
 	fan, err := assembleFanoutMission(llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
-		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), "",
+		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), store.Skills(), "",
 		nil, sandbox.ResourceLimits{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)

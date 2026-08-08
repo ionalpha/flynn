@@ -81,7 +81,7 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	// assembly is the point: a served session is governed by the same grant and records
 	// onto the same kind of stream as the agent's own run, so authority cannot drift
 	// between the two paths.
-	parts, err := newMissionParts(dir, store.Log(), "", false, sandbox.ResourceLimits{})
+	parts, err := newMissionParts(dir, store.Log(), store.Skills(), "", false, sandbox.ResourceLimits{})
 	if err != nil {
 		return err
 	}

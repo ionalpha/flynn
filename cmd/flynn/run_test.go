@@ -165,7 +165,8 @@ func TestRecallContext(t *testing.T) {
 	}
 
 	block, _, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the service")
-	if !strings.Contains(block, "Deploy flow") || !strings.Contains(block, "fly.io") {
+	// The skill is offered under its slug, which is the name skill_read resolves.
+	if !strings.Contains(block, "deploy-flow") || !strings.Contains(block, "fly.io") {
 		t.Fatalf("recall block missing learned content:\n%s", block)
 	}
 }
@@ -271,7 +272,7 @@ func TestRecallRanksByRelevanceAndVerification(t *testing.T) {
 	mk("charlie", "Charlie", "notes about the service")         // matches service = 1
 
 	block, _, _ := recallContext(ctx, st.Skills(), st.Memory(), "deploy the docker service")
-	iB, iA, iC := strings.Index(block, "Bravo"), strings.Index(block, "Alpha"), strings.Index(block, "Charlie")
+	iB, iA, iC := strings.Index(block, "bravo"), strings.Index(block, "alpha"), strings.Index(block, "charlie")
 	if iB < 0 || iA < 0 || iC < 0 {
 		t.Fatalf("recall block missing entries:\n%s", block)
 	}

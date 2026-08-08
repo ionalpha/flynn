@@ -6,6 +6,7 @@ import (
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
+	"github.com/ionalpha/flynn/state"
 )
 
 // driveConfig collects the optional levers a run is driven with. Its zero value (no
@@ -19,6 +20,7 @@ type driveConfig struct {
 	observe   func(session.Event)
 	planning  bool
 	proof     bool
+	skills    state.SkillStore
 }
 
 // driveOption configures a run driven by drive.
@@ -88,6 +90,15 @@ func withToolset(t *boundToolset) driveOption {
 // out of band, so what the caller acts on and what the record says cannot differ.
 func withEventObserver(fn func(session.Event)) driveOption {
 	return func(c *driveConfig) { c.observe = fn }
+}
+
+// withSkills gives the run the durable skill store, which is what the skill tools
+// read: recall offers a skill by name and description, and the model calls skill_read
+// to get the procedure. Without it a run is offered nothing and can read nothing, so
+// a caller that recalls skills into the prompt must pass the same store it recalled
+// from, or the offer names a tool that is not there.
+func withSkills(s state.SkillStore) driveOption {
+	return func(c *driveConfig) { c.skills = s }
 }
 
 // boundToolset is a toolset paired with the grant that bounds it. They travel
