@@ -17,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/progress"
+	"github.com/ionalpha/flynn/refusal"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
 	"github.com/ionalpha/flynn/sandbox"
@@ -254,6 +255,11 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// burn its whole step budget. It reads the record the run already writes, so it adds
 	// no obligation on the executor.
 	cfg.Progress = progress.NewSpineProbe(log, workdir)
+	// Read the gates that refused this run as a verdict about it. The refusals are already
+	// on the stream, one per governed action the waist turned down; this is what reads a
+	// run's worth of them together, so a run that met one gate and kept trying doors stops
+	// instead of reaching the stop evaluator with the workaround counted as progress.
+	cfg.Refusals = refusal.NewSpineProbe(log)
 	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err

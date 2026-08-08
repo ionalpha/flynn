@@ -73,9 +73,9 @@ func TestDecodeGovernanceEvents(t *testing.T) {
 		},
 		{
 			name:       "rejected",
-			se:         spine.Event{Type: typeDispatchRejected, Payload: govPayload("write", 9, "model", "capability_denied")},
+			se:         spine.Event{Type: typeDispatchRejected, Payload: govPayload("write", 9, "model", "forbidden")},
 			wantKind:   KindActionRejected,
-			wantAction: "write", wantCall: 9, wantTrust: "model", wantFault: "capability_denied",
+			wantAction: "write", wantCall: 9, wantTrust: "model", wantFault: "forbidden",
 		},
 		{
 			name:     "record sealed",
@@ -102,6 +102,30 @@ func TestDecodeGovernanceEvents(t *testing.T) {
 				t.Errorf("Fault = %q, want %q", e.Fault, tc.wantFault)
 			}
 		})
+	}
+}
+
+// TestRefusedActionProjectsTheRuleThatSpoke covers the axis the class cannot carry. Every
+// gate at the waist refuses with one of a handful of classes, so a consumer reading the
+// class alone can tell that an action was refused and never what refused it, and the
+// question of whether a run kept pushing on one gate cannot be asked at all.
+func TestRefusedActionProjectsTheRuleThatSpoke(t *testing.T) {
+	e := fromSpine(spine.Event{Type: typeDispatchRejected, Payload: map[string]any{
+		"action": "write_file", "call": int64(3), "error_class": "forbidden", "error_code": "capability_denied",
+	}})
+	if e.Kind != KindActionRejected {
+		t.Fatalf("Kind = %q, want %q", e.Kind, KindActionRejected)
+	}
+	if e.Fault != "forbidden" || e.Code != "capability_denied" {
+		t.Errorf("Fault/Code = %q/%q, want forbidden/capability_denied", e.Fault, e.Code)
+	}
+	// A record written before the code was carried, or an unclassified refusal, names no
+	// rule and must project as naming none rather than borrowing the class.
+	old := fromSpine(spine.Event{Type: typeDispatchRejected, Payload: map[string]any{
+		"action": "write_file", "call": int64(3), "error_class": "forbidden",
+	}})
+	if old.Code != "" {
+		t.Errorf("Code = %q, want empty for a refusal that named no rule", old.Code)
 	}
 }
 

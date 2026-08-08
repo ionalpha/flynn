@@ -68,6 +68,9 @@ type Reconciler struct {
 	// are carried, admitted and protected against being relaxed, but never checked,
 	// which is the honest behaviour for a host that has not supplied an auditor.
 	auditor InvariantAuditor
+	// refusals reads the gates that refused this run. Optional: with none wired a run's
+	// refusals are still recorded on the spine, they are just never read as a verdict.
+	refusals RefusalProbe
 	// ledgerConverge makes an unsettled ledger refuse a completion claim. It is
 	// deliberately separate from having the loop wired at all: the producer runs first
 	// and this follows once items are seen flipping to proven (see WithLedgerConvergence).
@@ -334,6 +337,14 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// broken term settles the goal from here, so nothing below it can be traded against
 	// it: not the stop evaluator's verdict, and not a wait on children either.
 	if res, handled, err := g.auditInvariants(ctx, r, spec, &status, specHash, obs.completed); handled {
+		return res, err
+	}
+
+	// The gates that refused this run, read as a verdict about it. It sits with the audit
+	// and above everything else for the same reason: a run that kept pushing on one gate
+	// is not a run to judge on whether it finished, and the case this exists for is
+	// exactly the run that finished by the route it was refused.
+	if res, handled, err := g.checkRefusals(ctx, r, &status, specHash, obs.completed); handled {
 		return res, err
 	}
 
