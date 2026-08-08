@@ -153,9 +153,10 @@ rather than removing the halt.
 |---|---|---|---|
 | `learn.Distiller` | `learn.ModelDistiller` under `NewGovernedDistiller` | `cmd/flynn/learning.go` `governedDistiller` | shipped |
 | `learn.Verifier` | `learn.SandboxVerifier` under `NewGovernedVerifier` | `cmd/flynn/learning.go` `governedVerifier` | shipped |
-| `memory/consolidate.Distiller` | `memory/distil.ModelDistiller` under `NewGoverned` | nowhere | gap |
-| `memory/digest.Pusher` | `memory/ridealong.Surfacer` | nowhere | gap |
-| `memory/curate` write policy | `curate.Wrap` | nowhere | gap |
+| `memory/consolidate.Distiller` | `memory/distil.ModelDistiller` under `NewGoverned` | `cmd/flynn/memory_cmd.go` `consolidateDistiller` | shipped |
+| `memory/digest.Builder` | n/a, the digest is Flynn's own | `cmd/flynn/memorystack.go` `newMemoryStack`, built at wake | shipped |
+| `memory/digest.Pusher` | `memory/ridealong.Surfacer` | `digest.New`'s default, via `newMemoryStack` | shipped |
+| `memory/curate` write policy | `curate.Wrap` | `cmd/flynn/memorystack.go` `newMemoryStack` | shipped |
 | `memory/guard.PromotionReader` | every memory store | via the store | shipped |
 | `memory/ridealong` anchors | n/a, the vocabulary is the host's | n/a | justified |
 
@@ -169,13 +170,29 @@ keep no model. The sibling that has one is now `memory/distil`, which stands to
 `consolidate` as `evidence` does to `goal`, and the pass is exercised end to end
 over a temp database in `storage/sqlite/distil_test.go`.
 
-The row stays a gap until the binary wires it, because the register's test is what
-a released `flynn` can do and not what the repository contains. A producer nothing
-calls is half the answer.
+The binary wires it as `flynn memory consolidate`. Consolidation is a command
+rather than something a run does on its way past, because it is the one piece of
+memory work that is nobody's turn: distilling five failures into a lesson spends
+model calls on material the current run is not about, and hanging that off a
+session would charge whichever conversation happened to be open.
 
-`memory/ridealong`: an anchor is an opaque `{Kind, ID}` pair and nothing here
-resolves one, which is deliberate and documented. Whether the binary anchors
-anything of its own (a run, a file, a skill) is a separate question.
+The rest of the memory stack is wired at `cmd/flynn/memorystack.go`, in one
+assembly rather than three calls in three places, because the pieces only work
+together. The digest offers what the write path curated: a subject whose fact was
+superseded has one standing answer to offer, where the raw store has every version
+anyone ever wrote and no way to say which is current. A digest over an uncurated
+store would push contradictions at every reader unasked.
+
+`memory/ridealong` is wired on the push side: it is the digest's pusher, so a
+memory that reaches a reader unasked is counted and the run's prime scope marked
+in the same step. That is what gives the decay policy a usage signal to read.
+
+The pull side is still open. An anchor is an opaque `{Kind, ID}` pair and nothing
+here resolves one, which is deliberate and documented; what is undecided is which
+of the binary's own reads should surface anchored memory, and what writes those
+anchors in the first place. Flynn holds candidates of its own (a run id, a file
+path, a skill slug) and picking one is a design decision rather than a wiring
+job, so it is tracked separately rather than guessed at here.
 
 ## Channels, extensions, external agents
 

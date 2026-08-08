@@ -19,6 +19,7 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
@@ -127,6 +128,12 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		approval: approvalSetup{actions: reqApproval},
 	}
 
+	// Every turn runs under a prime scope, so a memory the wake digest pushed is
+	// attributed as primed when it is used rather than as the session having gone
+	// and found it. It is the session's, not the turn's: the digest is built once at
+	// the opening line and what it primed stays primed for the conversation.
+	ctx = wakeContext(ctx)
+
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
 	// resumed run is seeded so the session continues the same durable conversation.
 	var seed string
@@ -151,6 +158,30 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		return s.runLineMode(ctx, cwd)
 	}
 	return runInteractiveTUI(ctx, s)
+}
+
+// memory returns the session's memory: the curated write path and the wake digest
+// over it, built on first use.
+//
+// Every read and write of memory in a session goes through this rather than
+// through store.Memory(), so a fact the user pins supersedes the standing answer
+// on its subject instead of stacking a second one beside it. Conflict notices go
+// wherever the session can speak: the interface's own notice channel once one is
+// installed, and the session writer before that. It is built lazily because the
+// notice sink is not known when the session is constructed, and because a session
+// assembled by hand (a test, a host embedding the shell) then gets the same
+// memory the front door does rather than none.
+func (s *replSession) memory() *memoryStack {
+	if s.mem == nil {
+		s.mem = newMemoryStack(s.store.Memory(), func(_ context.Context, n curate.Notice) {
+			if s.notice != nil {
+				s.notice("memory: " + n.Detail)
+				return
+			}
+			_, _ = fmt.Fprintf(s.out, "  (memory: %s)\n", n.Detail)
+		})
+	}
+	return s.mem
 }
 
 // runLineMode is the line-based session: a terminal reader giving line editing,
@@ -193,9 +224,13 @@ type replSession struct {
 	verbose      bool
 	cwd          string
 	store        *sqlite.Store
-	reg          *resource.Registry
-	keys         editor.Keymap // composer bindings; nil selects the default map
-	theme        *theme.Theme  // session theme; nil selects the default theme
+	// mem is the session's memory: the curated write path and the wake digest over
+	// it. Every read and write of memory in a session goes through this rather than
+	// through store.Memory(), which is the raw durable store with no write policy.
+	mem   *memoryStack
+	reg   *resource.Registry
+	keys  editor.Keymap // composer bindings; nil selects the default map
+	theme *theme.Theme  // session theme; nil selects the default theme
 
 	// signer is the instance identity the session seals its run under; nil when no key
 	// could be loaded, in which case /seal reports the run cannot be sealed rather than
@@ -329,7 +364,18 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		if s.carriedContext != "" {
 			s.system += "\n\n" + s.carriedContext
 		}
-		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.store.Memory(), userText); block != "" {
+		// The digest is the push half: what this install has learned, offered whether
+		// or not the opening line mentions it. It goes in before recall because it is
+		// the standing background the conversation runs against, where recall answers
+		// the line the user actually typed.
+		// A failed read is only reported in a verbose session: a chat interface that
+		// opened with a store diagnostic would be answering a question nobody asked.
+		var digestErrs io.Writer
+		if s.verbose {
+			digestErrs = s.out
+		}
+		s.system = withWake(turnCtx, s.memory(), s.system, digestErrs)
+		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.memory().store, userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
 			// Surface what past learning was pulled into context (naming each item), so
@@ -505,7 +551,7 @@ func (s *replSession) finish(ctx context.Context) error {
 	_ = learn.Reinforce(ctx, s.store.Skills(), s.skillset.Reads(), s.converged)
 	if s.distiller != nil && s.converged {
 		_, _ = fmt.Fprintln(s.out, "\nlearning from this session...")
-		distillOutcome(ctx, s.out, s.distiller, s.store.Skills(), s.store.Memory(), s.cwd, learn.Outcome{
+		distillOutcome(ctx, s.out, s.distiller, s.store.Skills(), s.memory().store, s.cwd, learn.Outcome{
 			Objective:  s.objective,
 			Result:     s.lastResult,
 			Transcript: s.transcript,
@@ -544,10 +590,10 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		_, _ = fmt.Fprintf(s.out, "  compacted %d messages into a summary; continuing with less context\n", n)
 		return true, nil
 	case "/memory":
-		renderMemory(ctx, s.out, s.store.Memory())
+		renderMemory(ctx, s.out, s.memory().store)
 		return true, nil
 	case "/remember":
-		rememberFact(ctx, s.out, s.store.Memory(), strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fields[0])))
+		rememberFact(ctx, s.out, s.memory().store, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fields[0])))
 		return true, nil
 	case "/skills":
 		renderSkills(ctx, s.out, s.store.Skills())
