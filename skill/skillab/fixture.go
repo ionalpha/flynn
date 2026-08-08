@@ -38,9 +38,9 @@ func ValidateFixture(name string) error {
 	case name == "." || name == "..":
 		return fmt.Errorf("skillab: %q is not a fixture name", name)
 	case strings.ContainsAny(name, `/\`):
+		// Both separators, on every host. An absolute path needs no case of its own:
+		// on either platform it holds one of these before it holds anything else.
 		return fmt.Errorf("skillab: fixture %q holds a path separator; a fixture is one directory under %s", name, FixturesDir)
-	case filepath.IsAbs(name):
-		return fmt.Errorf("skillab: fixture %q is an absolute path", name)
 	}
 	return nil
 }

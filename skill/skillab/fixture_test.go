@@ -1,6 +1,8 @@
 package skillab_test
 
 import (
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -191,5 +193,143 @@ func TestMaterialiseSeedsOnlyWhatTheExerciseNames(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("an exercise with no fixture started with %d file(s) in its directory", len(entries))
+	}
+}
+
+// errorFS fails on Open for one named file and behaves normally otherwise, which is
+// the shape of a fixture that walks fine and cannot be read: a permission that
+// changed under the run, or a file removed between the walk and the copy.
+type errorFS struct {
+	fs.FS
+	fail     string
+	failStat string
+}
+
+func (e errorFS) Open(name string) (fs.File, error) {
+	if name == e.fail {
+		return nil, fmt.Errorf("open %s: %w", name, fs.ErrPermission)
+	}
+	f, err := e.FS.Open(name)
+	if err != nil || name != e.failStat {
+		return f, err
+	}
+	return statErrFile{f}, nil
+}
+
+// statErrFile opens and then cannot say what it is, which is what a file removed
+// between the walk and the copy looks like from here.
+type statErrFile struct{ fs.File }
+
+func (statErrFile) Stat() (fs.FileInfo, error) { return nil, fs.ErrNotExist }
+
+// Whatever goes wrong mid-copy reaches the caller. A fixture half-written into the
+// working directory would run the trial against a state nobody described, and the
+// verifier would grade it as though the state had been the one in the set.
+func TestCopyFixtureReportsWhatItCouldNotRead(t *testing.T) {
+	base := fstest.MapFS{
+		"set/fixtures/partial/a.txt": {Data: []byte("readable")},
+		"set/fixtures/partial/b.txt": {Data: []byte("not readable")},
+	}
+	err := skillab.CopyFixture(errorFS{FS: base, fail: "set/fixtures/partial/b.txt"}, "set", "partial", t.TempDir())
+	if err == nil {
+		t.Fatal("a fixture that could not be read fully was reported as copied")
+	}
+	if !strings.Contains(err.Error(), "b.txt") {
+		t.Errorf("err = %v, want it to name the file", err)
+	}
+}
+
+// A fixture holding a device node, a socket, or a named pipe is refused for the
+// reason a symbolic link is: what arrives in the working directory has to be the
+// bytes the author committed.
+func TestCopyFixtureRefusesAnIrregularEntry(t *testing.T) {
+	fsys := fstest.MapFS{
+		"set/fixtures/odd/real.txt": {Data: []byte("here")},
+		"set/fixtures/odd/device":   {Mode: fs.ModeDevice},
+	}
+	err := skillab.CopyFixture(fsys, "set", "odd", t.TempDir())
+	if err == nil {
+		t.Fatal("a fixture holding an irregular entry was copied")
+	}
+	if !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("err = %v, want it to say what was refused", err)
+	}
+}
+
+// A fixture of nothing but directories seeds nothing while looking like it seeded
+// something, which the run cannot notice and the report would not mention.
+func TestCopyFixtureRefusesAFixtureWithNoFiles(t *testing.T) {
+	fsys := fstest.MapFS{"set/fixtures/hollow/sub": {Mode: fs.ModeDir}}
+	err := skillab.CopyFixture(fsys, "set", "hollow", t.TempDir())
+	if err == nil {
+		t.Fatal("a fixture with no files was copied")
+	}
+	if !strings.Contains(err.Error(), "empty") {
+		t.Errorf("err = %v, want it to say the fixture is empty", err)
+	}
+}
+
+// The bound is a backstop for a fixture directory pointed somewhere it should not
+// be. Copying a home directory into every trial would be slow rather than wrong,
+// which is the kind of mistake that gets noticed after the bill.
+func TestCopyFixtureStopsAtTheFileBound(t *testing.T) {
+	fsys := fstest.MapFS{}
+	for i := 0; i < 2100; i++ {
+		fsys[fmt.Sprintf("set/fixtures/huge/f%04d.txt", i)] = &fstest.MapFile{Data: []byte("x")}
+	}
+	err := skillab.CopyFixture(fsys, "set", "huge", t.TempDir())
+	if err == nil {
+		t.Fatal("a fixture past the bound was copied whole")
+	}
+	if !strings.Contains(err.Error(), "more than") {
+		t.Errorf("err = %v, want it to say what the bound was", err)
+	}
+}
+
+// A malformed name inside the brackets fails when the row is read, so the author is
+// told which line to edit rather than which fixture went missing.
+func TestParseExercisesRefusesAMalformedFixtureName(t *testing.T) {
+	_, err := skillab.ParseExercises([]byte("[../escape] fix it | exit 0\n"), "exercises.txt", false)
+	if err == nil {
+		t.Fatal("a fixture name reaching out of the set was accepted")
+	}
+	if !strings.Contains(err.Error(), "line 1") {
+		t.Errorf("err = %v, want it to name the row", err)
+	}
+}
+
+// A directory that cannot be listed stops the copy. The walk is where a fixture's
+// shape is discovered, so an error there means the tree that would have arrived is
+// not the tree the author committed.
+func TestCopyFixtureStopsWhenTheTreeCannotBeWalked(t *testing.T) {
+	base := fstest.MapFS{"set/fixtures/blocked/sub/a.txt": {Data: []byte("here")}}
+	err := skillab.CopyFixture(errorFS{FS: base, fail: "set/fixtures/blocked/sub"}, "set", "blocked", t.TempDir())
+	if err == nil {
+		t.Fatal("a fixture whose directory could not be read was reported as copied")
+	}
+}
+
+// A file that opens and then cannot be described is refused rather than copied with
+// a guessed mode.
+func TestCopyFixtureStopsWhenAFileCannotBeDescribed(t *testing.T) {
+	base := fstest.MapFS{"set/fixtures/vanishing/a.txt": {Data: []byte("here")}}
+	err := skillab.CopyFixture(errorFS{FS: base, failStat: "set/fixtures/vanishing/a.txt"}, "set", "vanishing", t.TempDir())
+	if err == nil {
+		t.Fatal("a file whose mode could not be read was copied anyway")
+	}
+}
+
+// The destination is a fresh temporary directory in a real run. When it is not, and
+// something already occupies the path a fixture file needs, the copy fails rather
+// than working around it: the trial would otherwise start from a state that is
+// neither the fixture nor what was there before.
+func TestCopyFixtureStopsWhenTheDestinationIsOccupied(t *testing.T) {
+	fsys := fstest.MapFS{"set/fixtures/collide/a.txt": {Data: []byte("here")}}
+	dest := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dest, "a.txt"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := skillab.CopyFixture(fsys, "set", "collide", dest); err == nil {
+		t.Fatal("a fixture wrote over an occupied path")
 	}
 }
