@@ -34,6 +34,32 @@ The test behind a verdict: if the capability cannot be exercised by the `flynn`
 binary plus a temp SQLite file with no host present, it is `justified` with a
 written reason, or it is a `gap`.
 
+## What a `justified` seam must do when it is absent
+
+A written reason is half of it. The other half is that the absence is visible, and
+the line is whether a reader of the finished run could tell the difference.
+
+- **Outcome-affecting: stall or refuse, by name.** A seam whose absence changes what
+  a run means never degrades quietly. `WithInvariantAudit` stalls with
+  `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`, a declared
+  plan-window ceiling with no source with `WindowSourceMissing`, and
+  `memory/consolidate` refuses at construction with `ErrNoDistiller` rather than on a
+  nightly job nobody is watching. Each has a test asserting the condition an operator
+  would see, because the name is the sentence worth being able to say about the run
+  afterwards.
+- **Instrumentation: a documented no-op.** `mission.WithGenerationRecorder` falls
+  back to `nopGenerationRecorder`, a nil `goal.Cleaner` has nothing to tear down, and
+  a Hook with no `brakes.AnomalyDetector` still halts on the breakers it was
+  configured with. These change no outcome, they say so in their doc comments, and
+  each has a test that the absence costs nothing.
+
+A missing-producer stall is recoverable, which is what makes stalling the right
+answer rather than a refusal wearing a softer word. `Status.Unwired` marks a stall as
+describing the loop rather than the run, and those are the only stalls a later
+reconcile re-examines: wiring the thing the goal needed and reconciling again picks
+the work back up, where a spent budget or a run that got nowhere stays settled. A new
+`…Missing` stall belongs in `goal.unwiredStalls` on the commit that introduces it.
+
 ## Foundation
 
 The backends a host genuinely owns. Every one has an in-process implementation for
@@ -76,13 +102,21 @@ run can do, so this is the group where an unwired producer costs the most.
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are reaped through owner references, not
-through this.
+through this. Instrumentation-side of the line below: a delete with no cleaner
+completes rather than hanging on a finalizer nobody will clear
+(`TestGoalDeletionCompletesWithNoCleaner`).
 
 `goal.WindowSource`: a plan window is a quota a host meters, and Flynn has no
-equivalent to read. The doc comment says a nil source leaves that one axis
-unbounded. Every other spend bound (step budget, token and cost ceiling) is enforced
-without it. The wording is worth re-checking, since a bound that is declared and not
-enforced is quieter than a stall.
+equivalent to read. Every other spend bound (step budget, token and cost ceiling) is
+enforced without it.
+
+A goal that declares no `WindowFraction` asks nothing of the source and runs with
+none wired, which is the standalone case. A goal that declares one and meets a
+reconciler with no source stalls with `WindowSourceMissing` and names the ceiling
+that went unmeasured. It used to run unbounded, and that was the one declared bound
+in the register that could be passed over in silence: a run that finishes without its
+ceiling having been checked is indistinguishable from one that stayed inside it, and
+the operator who set the ceiling would read the second where the first happened.
 
 `goal.UnitSpawner` was the plain case for this register: the producer existed, the
 refusal when it was absent was honest (`UnitSpawnerMissing`), and the binary never

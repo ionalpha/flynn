@@ -228,10 +228,7 @@ func (g *Reconciler) parkOnUnits(ctx context.Context, r resource.Resource, statu
 // it.
 func (g *Reconciler) stallUnits(ctx context.Context, r resource.Resource, status *Status, specHash, reason, message string) (reconcile.Result, bool, error) {
 	status.WaitingSince = nil
-	status.Phase = PhaseStalled
-	status.Message = message
-	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: reason, Message: message}, g.clk.Now())
-	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+	status.stall(reason, message, g.clk.Now())
 	// persistUnits rather than terminal's blind write: this pass may already have
 	// written the record when it admitted units, so the resource in hand is a version
 	// behind and a blind Put would lose the race and drop the stall.
