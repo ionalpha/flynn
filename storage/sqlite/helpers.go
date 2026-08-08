@@ -1,6 +1,8 @@
 package sqlite
 
 import (
+	"context"
+	"database/sql"
 	"encoding/json"
 	"strings"
 	"time"
@@ -25,6 +27,53 @@ func hlcTime(wall, counter int64) hlc.Time {
 // double quotes are doubled per the FTS5 string-literal rules.
 func ftsPhrase(q string) string {
 	return `"` + strings.ReplaceAll(q, `"`, `""`) + `"`
+}
+
+// selectByMemoryID reads cols from table for the named items, or every row when
+// memoryIDs is empty, and scans each row with scan. orderBy is appended verbatim.
+//
+// The ids go in as placeholders built to match their count, never interpolated, so the
+// caller can pass whatever a digest hands it. cols, table and orderBy are package
+// constants and literals, which is what lets them be concatenated.
+func selectByMemoryID[T any](
+	ctx context.Context,
+	db interface {
+		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	},
+	cols, table, orderBy string,
+	memoryIDs []string,
+	scan func(interface{ Scan(...any) error }) (T, error),
+) ([]T, error) {
+	var q strings.Builder
+	q.WriteString(`SELECT ` + cols + ` FROM ` + table)
+	args := make([]any, 0, len(memoryIDs))
+	for i, id := range memoryIDs {
+		if i == 0 {
+			q.WriteString(` WHERE memory_id IN (`)
+		} else {
+			q.WriteString(`, `)
+		}
+		q.WriteString(`?`)
+		args = append(args, id)
+	}
+	if len(memoryIDs) > 0 {
+		q.WriteString(`)`)
+	}
+	q.WriteString(` ORDER BY ` + orderBy)
+	rows, err := db.QueryContext(ctx, q.String(), args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := make([]T, 0)
+	for rows.Next() {
+		v, err := scan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
 }
 
 func boolToInt(b bool) int {

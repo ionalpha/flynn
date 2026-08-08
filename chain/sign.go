@@ -202,20 +202,36 @@ func (k *RootKeyring) Add(keyID string, pub ed25519.PublicKey) error {
 // payload that does not decode are all rejected. The returned checkpoint comes from
 // the signed payload, never from any unsigned carried copy.
 func VerifyCheckpoint(coseBytes []byte, ring *RootKeyring) (Checkpoint, error) {
+	payload, err := verifiedPayload(coseBytes, ring, checkpointContentType, "checkpoint")
+	if err != nil {
+		return Checkpoint{}, err
+	}
+	return decodeCheckpoint(payload)
+}
+
+// verifiedPayload is the shared fail-closed path behind VerifyCheckpoint and
+// VerifySnapshotClaim: it decodes the envelope, insists on wantType, looks the key id
+// up in the keyring and checks the signature, returning the signed payload only when
+// all four hold. subject names the artefact in the rejection messages.
+//
+// The content-type check is what keeps the two callers apart. Both sign the same way
+// with the same keys, so without it a checkpoint signature would verify when presented
+// as a snapshot claim.
+func verifiedPayload(coseBytes []byte, ring *RootKeyring, wantType, subject string) ([]byte, error) {
 	var msg cose.Sign1Message
 	if err := msg.UnmarshalCBOR(coseBytes); err != nil {
-		return Checkpoint{}, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
+		return nil, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
 	}
-	if ct, _ := msg.Headers.Protected[cose.HeaderLabelContentType].(string); ct != checkpointContentType {
-		return Checkpoint{}, fault.New(fault.Terminal, CodeContentType, "chain: unexpected checkpoint content type")
+	if ct, _ := msg.Headers.Protected[cose.HeaderLabelContentType].(string); ct != wantType {
+		return nil, fault.New(fault.Terminal, CodeContentType, "chain: unexpected "+subject+" content type")
 	}
 	kid, _ := msg.Headers.Protected[cose.HeaderLabelKeyID].([]byte)
 	pub, ok := ring.keys[string(kid)]
 	if !ok {
-		return Checkpoint{}, fault.New(fault.Terminal, CodeUnknownKey, "chain: checkpoint signed by an unknown key")
+		return nil, fault.New(fault.Terminal, CodeUnknownKey, "chain: "+subject+" signed by an unknown key")
 	}
 	if err := msg.Verify(nil, ed25519CoseVerifier{key: pub}); err != nil {
-		return Checkpoint{}, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
+		return nil, fault.Wrap(fault.Terminal, CodeSignatureInvalid, err)
 	}
-	return decodeCheckpoint(msg.Payload)
+	return msg.Payload, nil
 }

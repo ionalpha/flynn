@@ -221,32 +221,12 @@ const (
 // the one writable location the contained command is given; everything else on the
 // host stays default-deny.
 func grantDir(dir string, sid *windows.SID) error {
-	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return fmt.Errorf("read access list: %w", err)
-	}
-	existing, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("access list: %w", err)
-	}
-	entries := []windows.EXPLICIT_ACCESS{{
+	return mergeAccessEntry(dir, windows.EXPLICIT_ACCESS{
 		AccessPermissions: fileAllAccess,
 		AccessMode:        windows.SET_ACCESS,
 		Inheritance:       windows.SUB_CONTAINERS_AND_OBJECTS_INHERIT,
-		Trustee: windows.TRUSTEE{
-			TrusteeForm:  windows.TRUSTEE_IS_SID,
-			TrusteeType:  windows.TRUSTEE_IS_GROUP,
-			TrusteeValue: windows.TrusteeValueFromSID(sid),
-		},
-	}}
-	merged, err := windows.ACLFromEntries(entries, existing)
-	if err != nil {
-		return fmt.Errorf("merge access list: %w", err)
-	}
-	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil); err != nil {
-		return fmt.Errorf("apply access list: %w", err)
-	}
-	return nil
+		Trustee:           sidTrustee(sid, windows.TRUSTEE_IS_GROUP),
+	})
 }
 
 // jobActiveProcessLimit is a generous backstop on the number of processes a confined
