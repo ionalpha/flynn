@@ -107,6 +107,19 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
+    "invariants": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "statement"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "statement": {"type": "string", "minLength": 1},
+          "check": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
     "system": {"type": "string"},
     "driver": {"type": "string"},
     "model": {"type": "string"},
@@ -196,6 +209,15 @@ type Spec struct {
 	// admission, before a child is created. Empty on every goal that does not fan out
 	// from a plan, and such a goal behaves exactly as it did before.
 	Units []Unit `json:"units,omitempty"`
+	// Invariants are the terms of the run: what must stay true while the goal works,
+	// as against the stop condition's one thing that must become true (see
+	// invariant.go). They are desired state, and they are the one part of it the run
+	// may never trade against progress: an auditor rules on them before the stop
+	// evaluator is asked anything, a breach settles the goal whatever the evaluator
+	// was about to say, and a term already adopted cannot be dropped or reworded.
+	// Empty on a goal that states no terms, and such a goal behaves exactly as it did
+	// before.
+	Invariants []Invariant `json:"invariants,omitempty"`
 }
 
 // SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total
@@ -274,6 +296,13 @@ type Status struct {
 	// makes a fan-out resumable, so a run that crashes with children in flight comes
 	// back knowing they exist rather than creating them a second time.
 	Units []UnitState `json:"units,omitempty"`
+	// Invariants is the observed state of Spec.Invariants: which terms the run has
+	// adopted, what each said when it was adopted, how often it has been audited, and
+	// any breach found. It is durable because both halves of the rule need to outlive
+	// a reconcile: the adopted wording is what a later spec's rewording is caught
+	// against, and a recorded breach is what stops the goal converging on a pass that
+	// runs no audit of its own.
+	Invariants []InvariantState `json:"invariants,omitempty"`
 	// VerifyPending marks that a build step has completed and the current ledger item's
 	// declared check has not been run since. It is what alternates the run between
 	// building and verifying: the reconciler sets it when it observes a build step and
