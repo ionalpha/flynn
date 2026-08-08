@@ -55,6 +55,12 @@ func TestStartDisabledDoesNothing(t *testing.T) {
 	}
 }
 
+// TestBundleWritesEveryMemberAndAHashedManifest drives one whole capture and then reads
+// the bundle back four ways: the members that must be there and the ones that must not,
+// the framing each profile needs to be openable, what the manifest says about the run,
+// and whether its hashes match the bytes on disk. The capture runs once and the subtests
+// read the same directory, because starting a second capture would restart the
+// process-global CPU profile.
 func TestBundleWritesEveryMemberAndAHashedManifest(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "bundle") // not pre-created: Start must create it
 	clk := clock.NewManual(epoch)
@@ -90,85 +96,94 @@ func TestBundleWritesEveryMemberAndAHashedManifest(t *testing.T) {
 
 	// Contention was off, so neither contention member exists.
 	want := []string{MemberCPU, MemberHeap, MemberAllocs, MemberGoroutine, MemberGoroutineTxt, MemberGoroutineLbl, MemberThreadcreate, MemberTimeline, MemberManifest}
-	for _, name := range want {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("member %s missing: %v", name, err)
-		}
-	}
-	for _, name := range []string{MemberBlock, MemberMutex} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
-			t.Errorf("member %s written without --profile-contention", name)
-		}
-	}
 
-	// Every pprof protobuf member is gzip-framed, which is what `go tool pprof`
-	// requires to open it. The text member is the human-readable goroutine dump.
-	for _, name := range []string{MemberCPU, MemberHeap, MemberAllocs, MemberGoroutine, MemberThreadcreate} {
-		data := readFile(t, dir, name)
-		if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
-			t.Errorf("member %s is not a gzip-framed pprof profile", name)
+	t.Run("every member is written and nothing else", func(t *testing.T) {
+		for _, name := range want {
+			if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+				t.Errorf("member %s missing: %v", name, err)
+			}
 		}
-	}
-	// debug=2 renders raw stacks ("goroutine 1 [running]:"), not the debug=1 summary
-	// header. That is the point: it is readable with no pprof tooling at all.
-	txt := string(readFile(t, dir, MemberGoroutineTxt))
-	if !strings.HasPrefix(txt, "goroutine ") || !strings.Contains(txt, "[running]") {
-		t.Errorf("%s is not a full goroutine stack dump, got %.60q", MemberGoroutineTxt, txt)
-	}
+		for _, name := range []string{MemberBlock, MemberMutex} {
+			if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+				t.Errorf("member %s written without --profile-contention", name)
+			}
+		}
+	})
 
-	// debug=1 folds stacks into counts and prints the labels each carries.
-	lbl := string(readFile(t, dir, MemberGoroutineLbl))
-	if !strings.HasPrefix(lbl, "goroutine profile: total ") {
-		t.Errorf("%s is not a debug=1 goroutine summary, got %.60q", MemberGoroutineLbl, lbl)
-	}
+	t.Run("each member is in the framing its reader needs", func(t *testing.T) {
+		// Every pprof protobuf member is gzip-framed, which is what `go tool pprof`
+		// requires to open it. The text member is the human-readable goroutine dump.
+		for _, name := range []string{MemberCPU, MemberHeap, MemberAllocs, MemberGoroutine, MemberThreadcreate} {
+			data := readFile(t, dir, name)
+			if len(data) < 2 || data[0] != 0x1f || data[1] != 0x8b {
+				t.Errorf("member %s is not a gzip-framed pprof profile", name)
+			}
+		}
+		// debug=2 renders raw stacks ("goroutine 1 [running]:"), not the debug=1 summary
+		// header. That is the point: it is readable with no pprof tooling at all.
+		txt := string(readFile(t, dir, MemberGoroutineTxt))
+		if !strings.HasPrefix(txt, "goroutine ") || !strings.Contains(txt, "[running]") {
+			t.Errorf("%s is not a full goroutine stack dump, got %.60q", MemberGoroutineTxt, txt)
+		}
 
-	m := readManifest(t, dir)
-	if m.BundleID != b.ID() {
-		t.Errorf("manifest bundle_id = %q, want %q", m.BundleID, b.ID())
-	}
-	if m.OS != runtime.GOOS || m.Arch != runtime.GOARCH {
-		t.Errorf("manifest platform = %s/%s, want %s/%s", m.OS, m.Arch, runtime.GOOS, runtime.GOARCH)
-	}
-	if m.GoVersion != runtime.Version() {
-		t.Errorf("manifest go_version = %q, want %q", m.GoVersion, runtime.Version())
-	}
-	if m.Contention {
-		t.Error("manifest reports contention profiling, which was off")
-	}
-	if m.SampleIntervalMs != 1000 {
-		t.Errorf("manifest sample_interval_ms = %d, want 1000", m.SampleIntervalMs)
-	}
-	if !m.StartedAt.Equal(epoch) {
-		t.Errorf("manifest started_at = %v, want %v", m.StartedAt, epoch)
-	}
-	if want := epoch.Add(ticks * time.Second); !m.EndedAt.Equal(want) {
-		t.Errorf("manifest ended_at = %v, want %v (the clock never advanced past the last tick)", m.EndedAt, want)
-	}
-	if m.Annotations["run"] != "run-123" {
-		t.Errorf("manifest annotations = %v, want run=run-123", m.Annotations)
-	}
-	// The objective is free user text and never reaches the manifest.
-	if got := strings.Join(m.Args, " "); strings.Contains(got, "ship the thing") {
-		t.Errorf("manifest args leak the objective: %q", got)
-	}
+		// debug=1 folds stacks into counts and prints the labels each carries.
+		lbl := string(readFile(t, dir, MemberGoroutineLbl))
+		if !strings.HasPrefix(lbl, "goroutine profile: total ") {
+			t.Errorf("%s is not a debug=1 goroutine summary, got %.60q", MemberGoroutineLbl, lbl)
+		}
+	})
 
-	// The manifest hashes every other member, and nothing else.
-	if len(m.Members) != len(want)-1 {
-		t.Errorf("manifest lists %d members, want %d (all but the manifest itself)", len(m.Members), len(want)-1)
-	}
-	for _, mem := range m.Members {
-		if mem.Name == MemberManifest {
-			t.Error("manifest lists itself as a member")
+	t.Run("the manifest describes the run", func(t *testing.T) {
+		m := readManifest(t, dir)
+		if m.BundleID != b.ID() {
+			t.Errorf("manifest bundle_id = %q, want %q", m.BundleID, b.ID())
 		}
-		data := readFile(t, dir, mem.Name)
-		sum := sha256.Sum256(data)
-		if got := hex.EncodeToString(sum[:]); got != mem.SHA256 {
-			t.Errorf("member %s: manifest hash %s, actual %s", mem.Name, mem.SHA256, got)
+		if m.OS != runtime.GOOS || m.Arch != runtime.GOARCH {
+			t.Errorf("manifest platform = %s/%s, want %s/%s", m.OS, m.Arch, runtime.GOOS, runtime.GOARCH)
 		}
-		if int64(len(data)) != mem.Bytes {
-			t.Errorf("member %s: manifest size %d, actual %d", mem.Name, mem.Bytes, len(data))
+		if m.GoVersion != runtime.Version() {
+			t.Errorf("manifest go_version = %q, want %q", m.GoVersion, runtime.Version())
 		}
-	}
+		if m.Contention {
+			t.Error("manifest reports contention profiling, which was off")
+		}
+		if m.SampleIntervalMs != 1000 {
+			t.Errorf("manifest sample_interval_ms = %d, want 1000", m.SampleIntervalMs)
+		}
+		if !m.StartedAt.Equal(epoch) {
+			t.Errorf("manifest started_at = %v, want %v", m.StartedAt, epoch)
+		}
+		if want := epoch.Add(ticks * time.Second); !m.EndedAt.Equal(want) {
+			t.Errorf("manifest ended_at = %v, want %v (the clock never advanced past the last tick)", m.EndedAt, want)
+		}
+		if m.Annotations["run"] != "run-123" {
+			t.Errorf("manifest annotations = %v, want run=run-123", m.Annotations)
+		}
+		// The objective is free user text and never reaches the manifest.
+		if got := strings.Join(m.Args, " "); strings.Contains(got, "ship the thing") {
+			t.Errorf("manifest args leak the objective: %q", got)
+		}
+	})
+
+	t.Run("the manifest hashes every other member, and nothing else", func(t *testing.T) {
+		m := readManifest(t, dir)
+		if len(m.Members) != len(want)-1 {
+			t.Errorf("manifest lists %d members, want %d (all but the manifest itself)", len(m.Members), len(want)-1)
+		}
+		for _, mem := range m.Members {
+			if mem.Name == MemberManifest {
+				t.Error("manifest lists itself as a member")
+			}
+			data := readFile(t, dir, mem.Name)
+			sum := sha256.Sum256(data)
+			if got := hex.EncodeToString(sum[:]); got != mem.SHA256 {
+				t.Errorf("member %s: manifest hash %s, actual %s", mem.Name, mem.SHA256, got)
+			}
+			if int64(len(data)) != mem.Bytes {
+				t.Errorf("member %s: manifest size %d, actual %d", mem.Name, mem.Bytes, len(data))
+			}
+		}
+	})
 }
 
 // The timeline is the series D3 fits a growth slope over, so its shape is a
