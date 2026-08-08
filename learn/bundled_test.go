@@ -189,14 +189,14 @@ func TestReinforceCreditsTheRecalledRecord(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Uses != 1 || got.Wins != 1 {
-		t.Fatalf("recalled skill uses/wins = %d/%d, want 1/1", got.Uses, got.Wins)
+	if got.Reads != 1 || got.Wins != 1 {
+		t.Fatalf("read skill reads/wins = %d/%d, want 1/1", got.Reads, got.Wins)
 	}
 	other, err := skills.Get(ctx, bundled.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if other.Uses != 0 || other.Wins != 0 {
-		t.Fatalf("bundled skill uses/wins = %d/%d, want 0/0: evidence was credited to the wrong record", other.Uses, other.Wins)
+	if other.Reads != 0 || other.Wins != 0 {
+		t.Fatalf("bundled skill reads/wins = %d/%d, want 0/0: evidence was credited to the wrong record", other.Reads, other.Wins)
 	}
 }

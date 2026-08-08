@@ -206,11 +206,27 @@ type Skill struct {
 	Body        string
 	Tags        []string
 	Scope       Scope
-	// Uses and Wins are outcome evidence: how many runs recalled this skill, and
-	// how many of those runs then succeeded. They let a skill be ranked and retired
-	// by how well it has actually performed, not by recency alone.
-	Uses int
-	Wins int
+	// Offers, Reads and Wins are the three separable facts about a skill, and the
+	// reason there are three of them is that the first is not evidence about the
+	// skill at all. Offers counts the runs that were shown this skill's name and
+	// description; Reads counts the runs that then asked for its body; Wins counts
+	// the reads on runs that went on to succeed. Ranking and retirement key on
+	// Reads and Wins, so a skill is graded on runs that took it up rather than on
+	// runs whose objective happened to share a keyword with it.
+	//
+	// Offers is kept because offered-and-never-read is a real signal with a real
+	// repair: it says a description is failing to sell a skill that might have
+	// helped, which is an authoring defect rather than a bad skill.
+	//
+	// The wire keys are deliberate. `Uses` was the old counter, and what it
+	// actually accumulated was one increment per run the skill was injected into,
+	// which is exactly an offer; it decodes into Offers so a record written before
+	// this split keeps the count it really held. Wins used to mean offers on
+	// successful runs, a quantity with no meaning under the new definition, so it
+	// is left on the old key and decodes into nothing.
+	Offers int `json:"Uses"`
+	Reads  int `json:"Reads"`
+	Wins   int `json:"ReadWins"`
 	// Check is an optional shell command that verifies the skill still works, kept
 	// so the skill can be re-graded later (re-run as the environment changes).
 	Check     string

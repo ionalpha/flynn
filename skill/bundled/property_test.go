@@ -28,13 +28,13 @@ func TestProp_ReconcileMakesTheScopeExact(t *testing.T) {
 		// What an older binary seeded, each with outcome evidence this machine earned.
 		seeded := map[string]int{}
 		for i, slug := range rapid.SliceOfN(slugs, 0, 5).Draw(rt, "seeded") {
-			uses := rapid.IntRange(0, 9).Draw(rt, "uses")
+			reads := rapid.IntRange(0, 9).Draw(rt, "reads")
 			sk := bundledSkill(slug, body.Draw(rt, "seededBody"))
-			sk.Uses, sk.Wins = uses, uses
+			sk.Offers, sk.Reads, sk.Wins = reads, reads, reads
 			if _, err := store.Upsert(ctx, sk); err != nil {
 				rt.Fatalf("seed %d: %v", i, err)
 			}
-			seeded[slug] = uses
+			seeded[slug] = reads
 		}
 
 		// A skill of the user's own, in their own scope, sharing a slug with the pack
@@ -81,8 +81,8 @@ func TestProp_ReconcileMakesTheScopeExact(t *testing.T) {
 			}
 			// Evidence survives an upgrade of a skill that was already there, and a
 			// skill this pack introduces starts with none.
-			if sk.Uses != seeded[sk.Slug] || sk.Wins != seeded[sk.Slug] {
-				rt.Errorf("%s: uses/wins %d/%d, want %d", sk.Slug, sk.Uses, sk.Wins, seeded[sk.Slug])
+			if sk.Offers != seeded[sk.Slug] || sk.Reads != seeded[sk.Slug] || sk.Wins != seeded[sk.Slug] {
+				rt.Errorf("%s: offers/reads/wins %d/%d/%d, want %d", sk.Slug, sk.Offers, sk.Reads, sk.Wins, seeded[sk.Slug])
 			}
 		}
 

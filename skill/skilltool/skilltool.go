@@ -35,6 +35,7 @@ import (
 	"path"
 	"slices"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/ionalpha/flynn/llm"
@@ -68,10 +69,18 @@ var (
 // Set is the skill toolset over a skill store and the pack tree whose resources it
 // reads. Construct it with New and hand its tools to a mission executor alongside
 // the working-tree tools.
+//
+// A Set belongs to one run, and it is also that run's record of which skills it
+// loaded: every body handed over is remembered, and Reads returns them when the run
+// ends. That record is what the run's outcome is credited to, so the set has to
+// outlive the tool calls and be reachable by whoever grades the run.
 type Set struct {
 	skills state.SkillStore
 	packs  fs.FS
 	root   string
+
+	mu    sync.Mutex
+	reads []string
 }
 
 // New builds the skill toolset over skills, reading resources from the pack in the
@@ -142,6 +151,11 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if n := utf8.RuneCountInString(body); n > MaxBodyRunes {
 		return "", fmt.Errorf("%w: %s is %d characters, over the %d limit", ErrUnreadable, sk.Slug, n, MaxBodyRunes)
 	}
+	// The run has now loaded this skill, and that is the fact its outcome is credited
+	// to. Recorded here, past every refusal above, so a name that resolved to nothing
+	// readable never counts as a read: what is being claimed is that the procedure
+	// reached the model, and a returned error did not.
+	t.s.recordRead(sk.ID)
 	// The resources are listed rather than read. A body that points at a script names
 	// it in prose, and the model needs the addressable set to know that path is one it
 	// may ask for; the bytes stay where they are until it does.
@@ -207,6 +221,43 @@ func (t resourceTool) Invoke(ctx context.Context, input json.RawMessage) (string
 		return "", fmt.Errorf("%w: %s: %w", ErrNoResource, sk.Slug, err)
 	}
 	return string(b), nil
+}
+
+// --- the read record ------------------------------------------------------------
+
+// recordRead notes that the run loaded this skill's body. Ids, because that is what
+// reinforcement credits and what names one record where two scopes hold the same
+// slug. Repeats are kept as they happen and deduped on the way out, so the record
+// stays a plain append under whatever concurrency the executor runs tools with.
+func (s *Set) recordRead(id string) {
+	if s == nil || id == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reads = append(s.reads, id)
+}
+
+// Reads returns the ids of the skills this run loaded, deduped, in the order they
+// were first read. It is the run's evidence of what it took up, and the argument
+// Reinforce expects; a run that read nothing returns nothing, which is a fact worth
+// recording rather than an absence to fill in from the offers.
+func (s *Set) Reads() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	seen := make(map[string]bool, len(s.reads))
+	out := make([]string, 0, len(s.reads))
+	for _, id := range s.reads {
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // --- shared -------------------------------------------------------------------

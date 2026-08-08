@@ -252,7 +252,7 @@ func TestUpgradeKeepsOutcomeEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	seeded.Uses, seeded.Wins = 7, 4
+	seeded.Offers, seeded.Reads, seeded.Wins = 12, 7, 4
 	if _, err := store.Upsert(ctx, seeded); err != nil {
 		t.Fatalf("record outcomes: %v", err)
 	}
@@ -264,8 +264,8 @@ func TestUpgradeKeepsOutcomeEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after upgrade: %v", err)
 	}
-	if got.Uses != 7 || got.Wins != 4 {
-		t.Errorf("uses/wins %d/%d after upgrade, want 7/4", got.Uses, got.Wins)
+	if got.Offers != 12 || got.Reads != 7 || got.Wins != 4 {
+		t.Errorf("offers/reads/wins %d/%d/%d after upgrade, want 12/7/4", got.Offers, got.Reads, got.Wins)
 	}
 	if got.Body != "one, revised" {
 		t.Errorf("body %q, want the upgraded one", got.Body)

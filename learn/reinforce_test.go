@@ -28,26 +28,26 @@ func TestConfidence(t *testing.T) {
 }
 
 // Property: confidence is a lower bound in [0, winrate], and rises (never falls)
-// as wins increase for a fixed number of uses.
+// as wins increase for a fixed number of reads.
 func TestProp_ConfidenceIsAMonotoneLowerBound(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		uses := rapid.IntRange(0, 200).Draw(rt, "uses")
-		wins := rapid.IntRange(0, uses).Draw(rt, "wins")
-		c := Confidence(uses, wins)
+		reads := rapid.IntRange(0, 200).Draw(rt, "reads")
+		wins := rapid.IntRange(0, reads).Draw(rt, "wins")
+		c := Confidence(reads, wins)
 		if c < 0 || c > 1 {
 			rt.Fatalf("confidence %v out of [0,1]", c)
 		}
-		if uses == 0 {
+		if reads == 0 {
 			if c != 0 {
-				rt.Fatalf("zero uses must be zero confidence, got %v", c)
+				rt.Fatalf("zero reads must be zero confidence, got %v", c)
 			}
 			return
 		}
-		if rate := float64(wins) / float64(uses); c > rate+1e-9 {
+		if rate := float64(wins) / float64(reads); c > rate+1e-9 {
 			rt.Fatalf("lower bound %v exceeds win rate %v", c, rate)
 		}
-		if wins < uses && Confidence(uses, wins+1) < c-1e-9 {
-			rt.Fatalf("confidence fell when wins rose: %v -> %v", c, Confidence(uses, wins+1))
+		if wins < reads && Confidence(reads, wins+1) < c-1e-9 {
+			rt.Fatalf("confidence fell when wins rose: %v -> %v", c, Confidence(reads, wins+1))
 		}
 	})
 }
@@ -61,30 +61,81 @@ func TestReinforce(t *testing.T) {
 		}
 	}
 
-	// A converged run that recalled a (twice, deduped) and b.
+	// A converged run that read a (twice, deduped) and b.
 	if err := Reinforce(ctx, skills, []string{"a", "a", "b", "ghost"}, true); err != nil {
 		t.Fatal(err)
 	}
-	// A failed run that recalled a.
+	// A failed run that read a.
 	if err := Reinforce(ctx, skills, []string{"a"}, false); err != nil {
 		t.Fatal(err)
 	}
 
 	a, _ := skills.Get(ctx, "a")
 	b, _ := skills.Get(ctx, "b")
-	if a.Uses != 2 || a.Wins != 1 {
-		t.Fatalf("a evidence = (%d,%d), want (2,1)", a.Uses, a.Wins)
+	if a.Reads != 2 || a.Wins != 1 {
+		t.Fatalf("a evidence = (%d,%d), want (2,1)", a.Reads, a.Wins)
 	}
-	if b.Uses != 1 || b.Wins != 1 {
-		t.Fatalf("b evidence = (%d,%d), want (1,1)", b.Uses, b.Wins)
+	if b.Reads != 1 || b.Wins != 1 {
+		t.Fatalf("b evidence = (%d,%d), want (1,1)", b.Reads, b.Wins)
+	}
+	// Reinforcement is about reads alone. Neither run was recorded as an offer, so
+	// neither skill has one: the two counters cannot be moved by the same call.
+	if a.Offers != 0 || b.Offers != 0 {
+		t.Fatalf("offers = (%d,%d), want (0,0): reinforcement must not touch them", a.Offers, b.Offers)
+	}
+}
+
+// TestOfferRecordsTheImpressionAndNothingElse is the defect this split exists for.
+// A skill that recall put in front of five runs and that no run ever loaded has to
+// end up with five offers, no reads, no wins, and a confidence of zero: it has been
+// shown, not tried, and ranking it as though it had been tried is what made the old
+// counter a measure of keyword luck.
+func TestOfferRecordsTheImpressionAndNothingElse(t *testing.T) {
+	skills, _ := newStores(t)
+	ctx := context.Background()
+	if _, err := skills.Upsert(ctx, state.Skill{Slug: "shown", Body: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	for range 5 {
+		if err := Offer(ctx, skills, []string{"shown", "shown", "ghost", ""}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sk, err := skills.Get(ctx, "shown")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sk.Offers != 5 || sk.Reads != 0 || sk.Wins != 0 {
+		t.Fatalf("evidence = (offers %d, reads %d, wins %d), want (5,0,0)", sk.Offers, sk.Reads, sk.Wins)
+	}
+	if c := Confidence(sk.Reads, sk.Wins); c != 0 {
+		t.Fatalf("confidence = %v, want 0: an offered-and-unread skill has no record", c)
+	}
+}
+
+// A skill offered often and never read is never retired. Decay is about skills that
+// were tried and did not help; an unread one has a description problem, and archiving
+// it would delete the body nobody has judged.
+func TestDecayIgnoresOffers(t *testing.T) {
+	skills, _ := newStores(t)
+	ctx := context.Background()
+	if _, err := skills.Upsert(ctx, state.Skill{Slug: "unread", Body: "x", Offers: 100}); err != nil {
+		t.Fatal(err)
+	}
+	archived, err := Decay(ctx, skills, state.Scope{}, DefaultDecay())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(archived) != 0 {
+		t.Fatalf("archived %+v, want none: offers are not evidence a skill failed", archived)
 	}
 }
 
 func TestDecayRetiresProvenLosers(t *testing.T) {
 	skills, _ := newStores(t)
 	ctx := context.Background()
-	seed := func(slug string, uses, wins int) {
-		if _, err := skills.Upsert(ctx, state.Skill{Slug: slug, Body: "x", Uses: uses, Wins: wins}); err != nil {
+	seed := func(slug string, reads, wins int) {
+		if _, err := skills.Upsert(ctx, state.Skill{Slug: slug, Body: "x", Reads: reads, Wins: wins}); err != nil {
 			t.Fatal(err)
 		}
 	}

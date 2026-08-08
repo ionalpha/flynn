@@ -17,7 +17,7 @@ import (
 func TestRenderSkillsAndMemory(t *testing.T) {
 	st := memStore(t)
 	ctx := context.Background()
-	if _, err := st.Skills().Upsert(ctx, state.Skill{Slug: "deploy", Name: "Deploy service", Body: "run the deploy script", Tags: []string{"verified"}, Uses: 3, Wins: 2}); err != nil {
+	if _, err := st.Skills().Upsert(ctx, state.Skill{Slug: "deploy", Name: "Deploy service", Body: "run the deploy script", Tags: []string{"verified"}, Offers: 9, Reads: 3, Wins: 2}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.Memory().Write(ctx, state.MemoryItem{Kind: "fact", Content: "Flynn is a Go agent runtime"}); err != nil {
@@ -26,7 +26,7 @@ func TestRenderSkillsAndMemory(t *testing.T) {
 
 	var sb bytes.Buffer
 	renderSkills(ctx, &sb, st.Skills())
-	for _, want := range []string{"Deploy service", "verified", "used 3", "won 2", "run the deploy script"} {
+	for _, want := range []string{"Deploy service", "verified", "offered 9", "read 3", "won 2", "run the deploy script"} {
 		if !strings.Contains(sb.String(), want) {
 			t.Fatalf("skills render missing %q:\n%s", want, sb.String())
 		}
