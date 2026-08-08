@@ -6,8 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ionalpha/flynn/internal/portregister"
 	"pgregory.net/rapid"
+
+	"github.com/ionalpha/flynn/internal/portregister"
 )
 
 // The live gate. Every exported interface in the public band is accounted for in

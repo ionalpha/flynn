@@ -324,8 +324,11 @@ func packageExists(root, pkg string) bool {
 	found := false
 	fset := token.NewFileSet()
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		// A directory this walk cannot read holds no answer about the package, and the
+		// question is only whether one exists: stopping the walk on it would report a
+		// live package as gone, which is a worse answer than looking in the rest.
 		if err != nil || found {
-			return nil
+			return nil //nolint:nilerr // an unreadable directory cannot say the package is absent
 		}
 		if d.IsDir() {
 			if skipDirs[d.Name()] && d.Name() != "internal" {
