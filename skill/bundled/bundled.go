@@ -33,6 +33,7 @@ import (
 
 	"github.com/ionalpha/flynn/skill"
 	"github.com/ionalpha/flynn/skill/skillmd"
+	"github.com/ionalpha/flynn/skill/skillrecall"
 	"github.com/ionalpha/flynn/state"
 )
 
@@ -52,6 +53,27 @@ func FS() fs.FS { return embedded }
 // specification fails here rather than at seeding time, which is what the
 // conformance test in this package exists to catch before a release does.
 func Packs() ([]skillmd.Pack, error) { return skillmd.LoadAll(embedded, Root) }
+
+// RetrievalPath is the pack's retrieval table, beside the skill directories rather
+// than inside any one of them: what it asserts is which skill an objective reaches,
+// which is a fact about the library and not about a member of it.
+const RetrievalPath = Root + "/retrieval.txt"
+
+// RetrievalTable returns the objectives the pack claims each of its skills is
+// reached for, and the objectives each must stay out of. The test in this package
+// runs it against the real ranker, so a description that misses its own subject
+// fails a build rather than going quiet in production.
+func RetrievalTable() (skillrecall.Table, error) {
+	b, err := fs.ReadFile(embedded, RetrievalPath)
+	if err != nil {
+		return skillrecall.Table{}, fmt.Errorf("bundled: read the retrieval table: %w", err)
+	}
+	t, err := skillrecall.ParseTable(b)
+	if err != nil {
+		return skillrecall.Table{}, fmt.Errorf("bundled: %s: %w", RetrievalPath, err)
+	}
+	return t, nil
+}
 
 // Skills returns the pack mapped into state.BundledScope, ordered by slug.
 func Skills() ([]state.Skill, error) { return skillsFrom(embedded, Root) }

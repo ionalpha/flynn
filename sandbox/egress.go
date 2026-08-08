@@ -195,5 +195,5 @@ func mergeEnv(env []string, vars map[string]string) []string {
 }
 
 // egressActive reports whether this Local governs child egress, so the launch paths
-// know to call applyEgress and treat the launch as one that must be confined.
+// know to call startEgress and treat the launch as one that must be confined.
 func (l *Local) egressActive() bool { return l.egress != nil }

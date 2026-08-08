@@ -211,7 +211,8 @@ func TestRoutedSignerDrivesAMountedTool(t *testing.T) {
 
 	h, _, m := mountStub(t, []mission.Tool{worker},
 		WithHostSigner(func(string, string) HostSigner { return routed }))
-	// Deliberately NO WithSignPolicy: the signer is the one that looks.
+	// There is deliberately no host-side policy option to pass: a routed signer is
+	// SelfPolicing, so it is the one that looks at the payload.
 
 	out, err := h.Tools(m.ID)[0].Invoke(ctx, json.RawMessage(`{}`))
 	if err != nil {

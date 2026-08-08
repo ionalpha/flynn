@@ -77,8 +77,9 @@ func driveToDone(t *testing.T, exec *Executor, maxSteps int) (steps int, cp chec
 	return 0, checkpoint{}, nil
 }
 
-// TestExecutorDrivesToolThenText is the core loop: the model calls a tool, the
-// executor runs it and feeds the result back, and the next turn ends the mission.
+// TestExecutorPinsSamplingWhenConfigured checks WithSampling reaches the model call
+// itself: a run configured with a seed and temperature carries them on the request,
+// which is what makes a replayed run reproduce.
 func TestExecutorPinsSamplingWhenConfigured(t *testing.T) {
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	want := &llm.Sampling{Seed: 99, Temperature: 0, TopP: 0.9}
@@ -106,6 +107,8 @@ func TestExecutorFreeRunningByDefault(t *testing.T) {
 	}
 }
 
+// TestExecutorDrivesToolThenText is the core loop: the model calls a tool, the
+// executor runs it and feeds the result back, and the next turn ends the mission.
 func TestExecutorDrivesToolThenText(t *testing.T) {
 	model := llmtest.NewScripted(
 		llmtest.CallTool("t1", "echo", json.RawMessage(`{"msg":"hi"}`)),

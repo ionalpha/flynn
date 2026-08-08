@@ -30,6 +30,9 @@ const IdentityVaultRef = "controlplane/instance-identity"
 // the production wiring passes the real vault while a test passes an in-memory stub, and
 // controlplane never has to import the vault backend.
 type SeedVault interface {
+	// Lookup returns secret.ErrNotFound for a ref that was never sealed. That is the
+	// signal LoadOrCreateIdentity reads as "first run" before it mints a new seed, so an
+	// implementation must not collapse absence into a generic error.
 	Lookup(ctx context.Context, ref string) (secret.Text, error)
 	Set(ctx context.Context, ref string, value secret.Text) error
 }

@@ -133,9 +133,14 @@ func (s *Store) List(ctx context.Context, scope state.Scope) ([]state.Skill, err
 	return toSkills(rs)
 }
 
-// Search returns live skills whose name, body, or tags contain query (case
-// insensitive), across every scope, ordered by slug and capped at limit (limit <= 0
-// means no cap). An empty query matches every live skill.
+// Search returns live skills whose name, description, body, or tags contain query
+// (case insensitive), across every scope, ordered by slug and capped at limit
+// (limit <= 0 means no cap). An empty query matches every live skill.
+//
+// The description is searched because it is what a skill says about itself at
+// discovery: the specification asks an author to put the words that identify a
+// relevant task there, so a search that skipped it would refuse to find a skill by
+// the one text written to be found by.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]state.Skill, error) {
 	rs, err := s.rs.ListAll(ctx, Kind, nil)
 	if err != nil {
@@ -272,6 +277,7 @@ func lessBySlug(a, b state.Skill) bool {
 // query.
 func matches(sk state.Skill, lowerQuery string) bool {
 	return strings.Contains(strings.ToLower(sk.Name), lowerQuery) ||
+		strings.Contains(strings.ToLower(sk.Description), lowerQuery) ||
 		strings.Contains(strings.ToLower(sk.Body), lowerQuery) ||
 		strings.Contains(strings.ToLower(strings.Join(sk.Tags, " ")), lowerQuery)
 }

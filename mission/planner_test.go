@@ -69,7 +69,7 @@ func TestPlannerEmptyPlanIsNotAnError(t *testing.T) {
 	}
 }
 
-// TestPlannerTolueratesFenceAndProse: a model that wraps its array in a code fence or a
+// TestPlannerToleratesFenceAndProse: a model that wraps its array in a code fence or a
 // sentence still plans, because the parser extracts the outermost JSON array.
 func TestPlannerToleratesFenceAndProse(t *testing.T) {
 	p := NewPlanner(llmtest.NewScripted(llmtest.SayText(

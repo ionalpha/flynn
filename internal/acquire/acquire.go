@@ -231,7 +231,7 @@ func writeFile(dst string, r io.Reader, limit int64) (int64, error) {
 		return 0, err
 	}
 	// 0o600: extracted files are owner-only; the wanted binary is made executable after.
-	//nolint:gosec // G304: dst is confined under destDir by safeJoin before this write
+	//nolint:gosec // G304: dst is confined under destDir by SafeJoin before this write
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		return 0, fault.Wrap(fault.Terminal, "acquire_create", err)

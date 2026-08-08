@@ -148,8 +148,8 @@ func TestStatusBadge(t *testing.T) {
 	}
 }
 
-// TestActivityFor maps events to the in-flight line, and TestActivityRender
-// proves the live component draws the current line and nothing when idle.
+// TestActivityFor covers both halves of the in-flight line: which events map to one,
+// and that the live component draws the current line and nothing when idle.
 func TestActivityFor(t *testing.T) {
 	if line, ok := activityFor(session.Event{Kind: session.KindToolCall, Tool: "grep"}); !ok || !strings.Contains(line, "grep") {
 		t.Fatalf("tool call activity = %q, %v", line, ok)

@@ -46,13 +46,33 @@ func envelopeOf(s *llm.Sampling) GenerationEnvelope {
 // GenerationRecorder records the decoding envelope of each model call onto a run's durable
 // history, so the parameters that make a run reproducible are not lost. It is a narrow port,
 // kept separate from the dispatch waist (which governs an action's metadata, not a model call's
-// typed request) so the envelope is a domain event in its own right rather than waist payload. The
-// default is a no-op; a host wires it to the event spine.
+// typed request) so the envelope is a domain event in its own right rather than waist payload.
+//
+// Flynn ships no implementation but the discarding one, and that is deliberate rather than
+// an unfinished wire. Nothing in the binary calls WithSampling, so every model call a Flynn
+// run makes is free-running, and the envelope such a run would record is the zero envelope:
+// Pinned false, no seed, no temperature, on every single call. Writing that to the sealed
+// stream once per model call would put a constant on the record and call it evidence, and
+// the fact it encodes ("this run did not pin its sampling") is one fact about the whole run
+// rather than one per turn.
+//
+// The port stays because the question it answers is real and the answer can change. Pin a
+// run's sampling and the envelope stops being a constant: it becomes the half of a
+// generation's identity the serving layer does not carry, and a replay that cannot say what
+// seed and temperature a call ran under is missing something a verifier would want. The
+// order matters, though. Deciding Flynn's default sampling posture comes first; a recorder
+// wired ahead of it records only the absence of one.
+//
+// So: a host that pins its own sampling wires this to its event spine and gets a complete
+// decoding record. A standalone Flynn run does not, and does not pretend to.
 type GenerationRecorder interface {
 	RecordGeneration(ctx context.Context, env GenerationEnvelope)
 }
 
-// nopGenerationRecorder discards every envelope; the zero-setup standalone default.
+// nopGenerationRecorder discards every envelope. It is the standalone default for the reason
+// GenerationRecorder gives: with no run pinning its sampling, the envelope carries no
+// per-call information, and a recorder writing the same "not pinned" to the record on every
+// turn would be volume rather than evidence.
 type nopGenerationRecorder struct{}
 
 // RecordGeneration implements GenerationRecorder by doing nothing.

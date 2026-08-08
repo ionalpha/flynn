@@ -191,7 +191,7 @@ func TestDriveOptionsApplyToTheRunConfig(t *testing.T) {
 	}
 }
 
-// TestDriveUnderABudgetOpensThePoolBeforeTheFirstAction: a run driven with a ceiling
+// TestDriveUnderABudgetOpensThePool: a run driven with a ceiling
 // opens its spend pool keyed by the run id, so the limit is in force from the first
 // action rather than after a race.
 func TestDriveUnderABudgetOpensThePool(t *testing.T) {

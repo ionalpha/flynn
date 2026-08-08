@@ -28,6 +28,13 @@ const (
 	// is what gets quoted to whoever is handed the stopped goal, so it says what
 	// happened rather than that something happened.
 	InvariantDetailKey = "detail"
+	// InvariantCitedKey holds what an audit that ran no command read to reach its
+	// verdict: the part of the run's record the auditor is pointing at. A verdict with
+	// nothing cited is refused rather than recorded, so this key is present on every
+	// asserted audit, and a reader can go back to what was actually looked at instead
+	// of taking the verdict's word for it. An executed audit does not carry it: the
+	// command line and its exit code are the citation.
+	InvariantCitedKey = "cited"
 )
 
 // An audit reuses the item vocabulary's provenance axis (ItemProvenanceKey, ItemExitKey,

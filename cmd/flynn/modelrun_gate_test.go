@@ -129,7 +129,7 @@ func TestRiskSurfaceReportsIntegrity(t *testing.T) {
 	}
 }
 
-// TestKnownPublisherCountsTheCatalogsOwn checks a publisher the curated catalog already
+// TestKnownPublisherRecognizesACatalogPublisher checks a publisher the curated catalog already
 // vouches for is recognized on the hub, while an unknown owner is not.
 func TestKnownPublisherRecognizesACatalogPublisher(t *testing.T) {
 	r := newGatedRunner(t, 1, &bytes.Buffer{})
