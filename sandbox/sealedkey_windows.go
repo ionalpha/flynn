@@ -46,30 +46,13 @@ func GrantSealedKeyReadable(keyPath string) error {
 // well-known-group trustee, and no inheritance, because the sealed-key grant is a leaf
 // grant on named objects rather than the working directory's inheritable write grant.
 func grantPackagesAccess(path string, mask windows.ACCESS_MASK, sid *windows.SID) error {
-	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
-	if err != nil {
-		return fmt.Errorf("sandbox: read access list: %w", err)
-	}
-	existing, _, err := sd.DACL()
-	if err != nil {
-		return fmt.Errorf("sandbox: access list: %w", err)
-	}
-	entries := []windows.EXPLICIT_ACCESS{{
+	if err := mergeAccessEntry(path, windows.EXPLICIT_ACCESS{
 		AccessPermissions: mask,
 		AccessMode:        windows.SET_ACCESS,
 		Inheritance:       windows.NO_INHERITANCE,
-		Trustee: windows.TRUSTEE{
-			TrusteeForm:  windows.TRUSTEE_IS_SID,
-			TrusteeType:  windows.TRUSTEE_IS_WELL_KNOWN_GROUP,
-			TrusteeValue: windows.TrusteeValueFromSID(sid),
-		},
-	}}
-	merged, err := windows.ACLFromEntries(entries, existing)
-	if err != nil {
-		return fmt.Errorf("sandbox: merge access list: %w", err)
-	}
-	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, merged, nil); err != nil {
-		return fmt.Errorf("sandbox: apply access list: %w", err)
+		Trustee:           sidTrustee(sid, windows.TRUSTEE_IS_WELL_KNOWN_GROUP),
+	}); err != nil {
+		return fmt.Errorf("sandbox: %w", err)
 	}
 	return nil
 }

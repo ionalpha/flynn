@@ -94,27 +94,9 @@ func (s *Store) Promote(ctx context.Context, d state.PromotionDecision) (state.M
 // store holds when no ids are given. Like Usage it reads across scopes and filters
 // here, because the caller asks about a whole digest at once.
 func (s *Store) Promotions(ctx context.Context, memoryIDs []string) ([]state.MemoryPromotion, error) {
-	rs, err := s.rs.ListAll(ctx, PromotionKind, nil)
+	out, err := listByMemoryID(ctx, s, PromotionKind, memoryIDs, toPromotion, func(p state.MemoryPromotion) string { return p.MemoryID })
 	if err != nil {
-		return nil, translateErr(err)
-	}
-	var want map[string]bool
-	if len(memoryIDs) > 0 {
-		want = make(map[string]bool, len(memoryIDs))
-		for _, id := range memoryIDs {
-			want[id] = true
-		}
-	}
-	out := make([]state.MemoryPromotion, 0, len(rs))
-	for _, r := range rs {
-		p, err := toPromotion(r)
-		if err != nil {
-			return nil, err
-		}
-		if want != nil && !want[p.MemoryID] {
-			continue
-		}
-		out = append(out, p)
+		return nil, err
 	}
 	state.SortPromotions(out)
 	return out, nil

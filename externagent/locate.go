@@ -106,8 +106,21 @@ func isNativeExecutable(path string) bool {
 // cannot be found yields a distinct error naming the path that was looked for, because
 // that is a broken or unfamiliar installation rather than a missing one.
 func LocateCodex(bin string) (Program, error) {
+	return locateCLI(bin, "codex", locateVendored)
+}
+
+// locateCLI is the resolution both LocateCodex and LocateClaude perform: fall back to
+// onPath when bin is empty, resolve through PATH and any symlink to a real file, and take
+// it as the program to launch when it is already a native executable. Only the fallback
+// for a launcher script differs, because the two CLIs vendor their native binary in
+// different places, so behindLauncher is the parameter.
+//
+// The symlink is followed before the native-executable test rather than after: an npm
+// install puts a symlink on PATH, and testing the link itself would read the shim's own
+// bytes instead of the file it names.
+func locateCLI(bin, onPath string, behindLauncher func(string) (Program, error)) (Program, error) {
 	if bin == "" {
-		bin = "codex"
+		bin = onPath
 	}
 	resolved := bin
 	if !filepath.IsAbs(bin) {
@@ -129,7 +142,7 @@ func LocateCodex(bin string) (Program, error) {
 	if isNativeExecutable(resolved) {
 		return Program{Path: resolved, ReadableDirs: []string{filepath.Dir(resolved)}}, nil
 	}
-	return locateVendored(resolved)
+	return behindLauncher(resolved)
 }
 
 // LocateClaude resolves the claude CLI (Claude Code) to the native executable to launch
@@ -147,30 +160,7 @@ func LocateCodex(bin string) (Program, error) {
 // cannot be found yields a distinct error naming the path that was looked for, because
 // that is a broken or unfamiliar installation rather than a missing one.
 func LocateClaude(bin string) (Program, error) {
-	if bin == "" {
-		bin = "claude"
-	}
-	resolved := bin
-	if !filepath.IsAbs(bin) {
-		var err error
-		if resolved, err = sandbox.LookPath(bin); err != nil {
-			return Program{}, fmt.Errorf("%w: %s", ErrProgramNotFound, bin)
-		}
-	}
-	if _, err := os.Stat(resolved); err != nil {
-		return Program{}, fmt.Errorf("%w: %s", ErrProgramNotFound, bin)
-	}
-	if abs, err := filepath.Abs(resolved); err == nil {
-		resolved = abs
-	}
-	if link, err := filepath.EvalSymlinks(resolved); err == nil {
-		resolved = link
-	}
-
-	if isNativeExecutable(resolved) {
-		return Program{Path: resolved, ReadableDirs: []string{filepath.Dir(resolved)}}, nil
-	}
-	return locateClaudeNative(resolved)
+	return locateCLI(bin, "claude", locateClaudeNative)
 }
 
 // claudePackagePath is the npm package directory of Claude Code, relative to the global
