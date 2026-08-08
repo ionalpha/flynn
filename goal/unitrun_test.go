@@ -2,6 +2,8 @@ package goal
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -29,6 +31,9 @@ type fakeSpawner struct {
 	outcomes map[string]UnitOutcome // child id -> what it produced
 	refuse   map[string]error       // unit id -> the refusal Spawn returns
 	pollErr  error                  // when set, Outcomes fails instead of reporting
+	// extra is reported alongside the children that were actually polled, which is how
+	// a test plays a spawner that knows about a child the parent's record does not.
+	extra []UnitOutcome
 }
 
 func newFakeSpawner() *fakeSpawner {
@@ -68,7 +73,7 @@ func (f *fakeSpawner) Outcomes(_ context.Context, ids []string) ([]UnitOutcome, 
 		}
 		out = append(out, UnitOutcome{ChildID: id}) // still running
 	}
-	return out, nil
+	return append(out, f.extra...), nil
 }
 
 // finish tells the spawner what a unit's child produced. Evidence proves the unit;
@@ -499,6 +504,167 @@ func TestOutcomesErrorIsRetriedRatherThanStalling(t *testing.T) {
 	if st := h.status(t, ref); st.Phase != PhaseConverged {
 		t.Fatalf("the goal did not recover once the poll came back: %+v", st)
 	}
+}
+
+// --- the record and the spawner disagreeing ----------------------------------
+//
+// What follows is exercised against the fan-out's methods rather than through a whole
+// reconcile, because a reconcile re-observes the graph before it admits anything and
+// only ever admits a pending unit, so none of these states can be reached from
+// outside. They are still the states the record can be in after a partial write or a
+// hand-edit, and the alternative to a branch that refuses them is no branch: a unit
+// settled by a child nothing created, or a write-back failure reported as a graph that
+// stopped.
+
+// An outcome for a unit the record cannot settle means the record and the spawner
+// disagree about what this goal has running, which is not a state to carry on from.
+func TestOutcomeForAUnitThatWasNeverDispatchedIsTerminal(t *testing.T) {
+	h := newUnitHarness(t, stopAfter{at: 0})
+	// b carries a child id with no dispatch behind it.
+	status := Status{Units: []UnitState{
+		{ID: "a", Phase: UnitDispatched, ChildID: "child-a"},
+		{ID: "b", ChildID: "child-b"},
+	}}
+	h.sp.extra = []UnitOutcome{{ChildID: "child-b", Done: true, Evidence: "spine:b"}}
+
+	err := h.gr.settleUnits(h.ctx, &status)
+	if err == nil {
+		t.Fatal("a proof for a unit that was never dispatched was accepted")
+	}
+	if !errors.Is(err, ErrUnitNotDispatched) {
+		t.Fatalf("settle error %v does not carry ErrUnitNotDispatched", err)
+	}
+	if got := faultCode(t, err); got != "goal_unit_settle" {
+		t.Fatalf("fault code %q, want goal_unit_settle", got)
+	}
+	if status.Units[1].Phase == UnitSettled || status.Units[1].Proven {
+		t.Fatalf("the unit settled on the outcome anyway: %+v", status.Units[1])
+	}
+}
+
+// Neither outcome of a spawn can be written for a unit the status carries no state
+// for, so both refuse rather than dropping what the spawn decided.
+func TestAdmittingAUnitTheRecordDoesNotCarryIsTerminal(t *testing.T) {
+	tests := []struct {
+		name   string
+		refuse error
+		code   string
+	}{
+		{name: "spawned", code: "goal_unit_dispatch"},
+		{
+			name:   "refused",
+			refuse: fault.New(fault.Forbidden, "spawn_max_depth", "delegation depth exceeded"),
+			code:   "goal_unit_refuse",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newUnitHarness(t, stopAfter{at: 0})
+			if tc.refuse != nil {
+				h.sp.refuse["a"] = tc.refuse
+			}
+			err := h.gr.admitReadyUnits(h.ctx, resource.Resource{ID: "goal-1"},
+				Spec{Units: []Unit{unit("a")}}, &Status{}, "hash")
+			if err == nil {
+				t.Fatal("a unit the record does not carry was admitted anyway")
+			}
+			if !errors.Is(err, ErrUnitUnknown) {
+				t.Fatalf("admit error %v does not carry ErrUnitUnknown", err)
+			}
+			if got := faultCode(t, err); got != tc.code {
+				t.Fatalf("fault code %q, want %q", got, tc.code)
+			}
+		})
+	}
+}
+
+// A transient refusal writes the units admitted before it on the way out. When that
+// write fails it is the write that the pass reports, because the refusal is retryable
+// and a lost record is not: retrying against a record that never landed is how the
+// same unit gets a second child.
+func TestTransientRefusalReportsAFailedWriteBack(t *testing.T) {
+	h := newUnitHarness(t, stopAfter{at: 0})
+	h.sp.refuse["b"] = fault.New(fault.Transient, "spawn_at_capacity", "fan-out is at capacity")
+	status := Status{Units: []UnitState{{ID: "a"}, {ID: "b"}}}
+
+	err := h.gr.admitReadyUnits(h.ctx, resource.Resource{ID: "no-such-goal"},
+		Spec{Units: []Unit{unit("a"), unit("b")}}, &status, "hash")
+	if err == nil {
+		t.Fatal("a failed write-back was swallowed behind a retryable refusal")
+	}
+	if strings.Contains(err.Error(), "at capacity") {
+		t.Fatalf("the pass reported the refusal rather than the failed write: %v", err)
+	}
+}
+
+// A write-back that fails is the pass's error, and the pass still owns the reconcile:
+// handing it back as unhandled would let the loop below carry on over a record that
+// does not say what the fan-out just did.
+func TestUnitWriteBackFailuresAreReported(t *testing.T) {
+	tests := []struct {
+		name string
+		call func(*Reconciler, context.Context, resource.Resource) (reconcile.Result, bool, error)
+	}{
+		{"park", func(g *Reconciler, ctx context.Context, r resource.Resource) (reconcile.Result, bool, error) {
+			return g.parkOnUnits(ctx, r, &Status{}, "hash")
+		}},
+		{"stall", func(g *Reconciler, ctx context.Context, r resource.Resource) (reconcile.Result, bool, error) {
+			return g.stallUnits(ctx, r, &Status{}, "hash", "UnitGraphStalled", "a failed unit stranded the rest")
+		}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newUnitHarness(t, stopAfter{at: 0})
+			res, handled, err := tc.call(h.gr, h.ctx, resource.Resource{ID: "no-such-goal"})
+			if err == nil {
+				t.Fatal("a failed write-back was swallowed")
+			}
+			if !handled {
+				t.Fatal("a failed write-back was handed back as though the pass had not run")
+			}
+			if res.RequeueAfter != 0 {
+				t.Fatalf("a failed write-back asked to be requeued in %v", res.RequeueAfter)
+			}
+		})
+	}
+}
+
+// The write-back reads the record before it applies the fields this loop owns, so a
+// status it cannot read stops it rather than being overwritten with a status assembled
+// from a failed decode.
+func TestUnitWriteBackRefusesAnUnreadableRecord(t *testing.T) {
+	h := newUnitHarness(t, stopAfter{at: 0})
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Units: []Unit{unit("a")}})
+	r, err := h.store.Get(h.ctx, ref.Kind, ref.Scope, ref.Name)
+	if err != nil {
+		t.Fatalf("get goal: %v", err)
+	}
+	r.Status = json.RawMessage(`["this is not a goal status"]`)
+	if _, err := h.store.Put(h.ctx, r); err != nil {
+		t.Fatalf("put an unreadable status: %v", err)
+	}
+
+	if err := h.gr.persistUnits(h.ctx, r, Status{Phase: PhaseRunning}, "hash"); err == nil {
+		t.Fatal("a status that could not be read was written over")
+	}
+	after, err := h.store.Get(h.ctx, ref.Kind, ref.Scope, ref.Name)
+	if err != nil {
+		t.Fatalf("re-get goal: %v", err)
+	}
+	if string(after.Status) != `["this is not a goal status"]` {
+		t.Fatalf("the refused write landed anyway: %s", after.Status)
+	}
+}
+
+// faultCode reports the code of the classified error in the chain, so a test can say
+// which refusal it got rather than only that it got one.
+func faultCode(t *testing.T, err error) string {
+	t.Helper()
+	var fe *fault.Error
+	if !errors.As(err, &fe) {
+		t.Fatalf("error %v is not classified", err)
+	}
+	return fe.Code
 }
 
 // countingStop reports a fixed verdict and counts how often it was asked, which is
