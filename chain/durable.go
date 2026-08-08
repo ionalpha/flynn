@@ -20,6 +20,9 @@ type FlushNodeStore interface {
 // records its authenticated length as it grows and recovers it after a restart.
 type CheckpointStore interface {
 	SaveCheckpoint(ctx context.Context, stream string, size uint64, cose []byte) error
+	// LatestCheckpoint returns the newest saved head for stream. A stream that has
+	// never been checkpointed reports ok false with a nil error, so a recorder starting
+	// on a fresh stream is not an error case it has to distinguish from a read failure.
 	LatestCheckpoint(ctx context.Context, stream string) (size uint64, cose []byte, ok bool, err error)
 }
 
