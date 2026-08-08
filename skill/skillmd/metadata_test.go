@@ -157,7 +157,8 @@ func TestIsOurs(t *testing.T) {
 		{"tags", false},
 		{"", false},
 		{"example.com/check", false},
-		{"ionagent.io", false},
+		{"flynnhq.com", false},
+		{"ionagent.io/check", true},
 		{" " + skillmd.MetadataPrefix + "check", false},
 	} {
 		if got := skillmd.IsOurs(tc.key); got != tc.want {
@@ -177,5 +178,40 @@ func TestReservedKeysAreNamespaced(t *testing.T) {
 		if rest := strings.TrimPrefix(key, skillmd.MetadataPrefix); rest == "" {
 			t.Errorf("metadata key %q is the bare prefix", key)
 		}
+	}
+}
+
+// A skill exported by a build before 2026-08-09 carries the retired namespace, and
+// it still has to give up its check, title and tags. The alternative is a corpus of
+// files that parse into skills with no verification command and a name that reverted
+// to the slug, which nothing would report because every field is optional.
+func TestGetReadsTheRetiredNamespace(t *testing.T) {
+	old := map[string]string{
+		"ionagent.io/check": "go test ./...",
+		"ionagent.io/title": "Ship a release",
+	}
+	if got, ok := skillmd.Get(old, skillmd.MetaCheck); !ok || got != "go test ./..." {
+		t.Errorf("Get(check) = %q, %v; want the retired key to answer", got, ok)
+	}
+	if got, ok := skillmd.Get(old, skillmd.MetaTitle); !ok || got != "Ship a release" {
+		t.Errorf("Get(title) = %q, %v; want the retired key to answer", got, ok)
+	}
+
+	// A document holding both spellings answers with the current one, which is the
+	// value this build would have written.
+	both := map[string]string{
+		"ionagent.io/check": "the old command",
+		skillmd.MetaCheck:   "the current command",
+	}
+	if got, _ := skillmd.Get(both, skillmd.MetaCheck); got != "the current command" {
+		t.Errorf("Get(check) = %q, want the current spelling to win", got)
+	}
+
+	// A key that is nobody's business of ours is not invented out of the fallback.
+	if _, ok := skillmd.Get(map[string]string{"example.com/check": "x"}, "example.com/check"); !ok {
+		t.Error("Get should still read a key handed to it verbatim")
+	}
+	if _, ok := skillmd.Get(map[string]string{}, skillmd.MetaTags); ok {
+		t.Error("Get answered for a key that is in neither namespace")
 	}
 }

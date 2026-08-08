@@ -33,7 +33,19 @@ import (
 const (
 	// MetadataPrefix namespaces every metadata key Flynn writes. Reserved: a key
 	// under it is ours to define, and a reader may assume no other tool writes there.
-	MetadataPrefix = "ionagent.io/"
+	//
+	// The domain is the product's own and not the organisation's, because this string
+	// travels: it is written into files other runtimes read, and what it has to
+	// identify is which tool wrote the key. A bare "flynn/" would not do that. The map
+	// is one flat namespace, "flynn" has belonged to more than one piece of software,
+	// and a name nobody owns is a name anyone can also use.
+	MetadataPrefix = "flynnhq.com/"
+
+	// retiredPrefix is the namespace Flynn wrote before 2026-08-09, carried on the
+	// read path only. A skill exported by an earlier build still parses, and nothing
+	// writes this again, so the old keys leave the corpus as skills are rewritten
+	// rather than by a migration nobody could run over files on someone else's disk.
+	retiredPrefix = "ionagent.io/"
 
 	// MetaCheck is the skill's verification command, the shell line that re-grades it
 	// as the environment changes. A plain string, so it is stored as written.
@@ -95,4 +107,26 @@ func DecodeList(v string) ([]string, error) {
 // IsOurs reports whether a metadata key is in the namespace Flynn reserves. Use it
 // to split a foreign pack's metadata from our own: keys it rejects are carried
 // through untouched on export, because they belong to whoever wrote them.
-func IsOurs(key string) bool { return strings.HasPrefix(key, MetadataPrefix) }
+//
+// The retired namespace counts as ours. A key we wrote under the old prefix is not
+// somebody else's to preserve, and treating it as foreign would export both spellings
+// side by side for the rest of that skill's life.
+func IsOurs(key string) bool {
+	return strings.HasPrefix(key, MetadataPrefix) || strings.HasPrefix(key, retiredPrefix)
+}
+
+// Get reads one of our metadata values, accepting the retired prefix for the same
+// field. key is the current spelling, as in MetaCheck; a document written by an
+// earlier build answers through the old one. The current spelling wins when a
+// document somehow carries both, since that is the one this build would have
+// written.
+func Get(meta map[string]string, key string) (string, bool) {
+	if v, ok := meta[key]; ok {
+		return v, true
+	}
+	if !strings.HasPrefix(key, MetadataPrefix) {
+		return "", false
+	}
+	v, ok := meta[retiredPrefix+strings.TrimPrefix(key, MetadataPrefix)]
+	return v, ok
+}
