@@ -11,9 +11,9 @@ import (
 // numbers is always attributable to a known corpus revision.
 const CorpusVersion = "v1"
 
-// benignAction is a legitimate action name a least-privilege coding run carries.
-// The grant is exactly this set, so an attack needing any other name is denied and
-// an attack reusing one of these names is the measured residual.
+// The benign actions: the action names a least-privilege coding run legitimately
+// carries. The grant is exactly this set, so an attack needing any other name is
+// denied and an attack reusing one of these names is the measured residual.
 //
 // Kept as named constants (not string literals scattered through cases) so the
 // grant, the benign cases, and the residual attacks all reference the same verbs.

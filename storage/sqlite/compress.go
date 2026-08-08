@@ -20,7 +20,7 @@ import (
 )
 
 // zstdEncoder compresses warm-tier bodies. It is built once and shared: a zstd.Encoder is
-// safe for concurrent use through EncodeAll, which is stateless per call. SpeedBetter is
+// safe for concurrent use through EncodeAll, which is stateless per call. SpeedBetterCompression is
 // the archival level - the move to warm runs off the hot write path, so the extra ratio
 // over the default is worth the compress time, and decode speed is unaffected by the
 // encode level. The nil-destination EncodeAll allocates a fresh slice per call, so a

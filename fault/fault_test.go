@@ -50,3 +50,31 @@ func TestClassify(t *testing.T) {
 		t.Fatalf("Classify(unknown) = %q, want terminal (no blind retry)", got)
 	}
 }
+
+// TestCodeOf covers the half of a classified error that says which rule spoke, as against
+// the half that says how to react. A record keyed on the class alone cannot tell a run
+// refused three times by one gate from a run refused once by each of three.
+func TestCodeOf(t *testing.T) {
+	if got := fault.CodeOf(nil); got != "" {
+		t.Fatalf("CodeOf(nil) = %q, want empty", got)
+	}
+
+	e := fault.New(fault.Forbidden, "capability_denied", "not granted")
+	if got := fault.CodeOf(e); got != "capability_denied" {
+		t.Fatalf("CodeOf(direct) = %q, want capability_denied", got)
+	}
+
+	wrapped := fmt.Errorf("dispatching action: %w", e)
+	if got := fault.CodeOf(wrapped); got != "capability_denied" {
+		t.Fatalf("CodeOf(wrapped) = %q, want capability_denied", got)
+	}
+
+	// An unclassified error names no kind. Inventing one here would attribute a refusal
+	// to a rule that never spoke, and everything downstream counts by rule.
+	if got := fault.CodeOf(errors.New("mystery")); got != "" {
+		t.Fatalf("CodeOf(unknown) = %q, want empty", got)
+	}
+	if got := fault.CodeOf(context.Canceled); got != "" {
+		t.Fatalf("CodeOf(context.Canceled) = %q, want empty", got)
+	}
+}

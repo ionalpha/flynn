@@ -48,6 +48,14 @@ func (s *Sink) Append(ctx context.Context, e dispatch.Event) error {
 	if e.Err != "" {
 		payload["error_class"] = e.Err
 	}
+	// Record which rule spoke, not only how a caller should react to it. Every gate at
+	// the waist refuses with the same few classes, so a sealed record carrying the class
+	// alone can show that a run was blocked and never show what blocked it, and a run
+	// that was refused by one gate three different ways is indistinguishable in it from
+	// a run that met three different gates once.
+	if e.Code != "" {
+		payload["error_code"] = e.Code
+	}
 	// Record the goal the action ran under, so a fan-out's per-child governance posture
 	// (which child was admitted, which hit a boundary) is derivable from the one stream.
 	if e.Goal != "" {

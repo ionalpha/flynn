@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
@@ -69,6 +70,12 @@ type Spec struct {
 	// (the model is offered a spawn tool). A loop that does not fan out (a single-shot
 	// responder) ignores it. The default is nil: a goal runs as a single conversation.
 	Fanout mission.Fanout
+	// Approval, when set, requires a fresh human authorization for the privileged
+	// actions its policy lists, above the capability grant. It applies regardless of
+	// which loop is built, for the same reason the brake and the budget do: a loop
+	// chooses how a run reasons, never how much authority it has. Nil requires nothing,
+	// which keeps a standalone run zero-config.
+	Approval *Approval
 	// EventSink, when set, records every governed action's lifecycle (admitted,
 	// completed, or rejected) onto the event spine, so the admission decisions are
 	// part of the run's recorded and sealed history rather than only the live trace.
@@ -82,6 +89,22 @@ type Spec struct {
 	// hard the loop should work to keep it reliable. The zero Plan adds nothing, so a
 	// capable model runs leanly.
 	Plan harness.Plan
+}
+
+// Approval is the human-authorization half of a run's governance, carried to whichever
+// loop is built. Gate is what pauses a privileged action; Prompter, Signer and Host are
+// what resolve the pause, by asking a person and minting the single-use approval their
+// decision authorizes.
+//
+// The two halves are separate because a run can have the first without the second, and
+// that combination is meaningful rather than broken: a run with no one to ask refuses the
+// action instead of proceeding, which is what a non-interactive run should do. A Prompter
+// without a Signer cannot mint anything and is ignored.
+type Approval struct {
+	Gate     *approval.Gate
+	Prompter mission.ApprovalPrompter
+	Signer   approval.Signer
+	Host     string
 }
 
 // Driver builds the run loop for an agent. Name identifies it in the registry and

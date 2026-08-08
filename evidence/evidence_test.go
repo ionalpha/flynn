@@ -118,6 +118,36 @@ func TestExecutedEvidenceCarriesWhatWasObserved(t *testing.T) {
 	if e.Payload[chain.ItemExitKey] == nil {
 		t.Fatal("an executed verdict recorded no exit code")
 	}
+	// The detail of an executed verdict is the check's own output, which is hashed rather
+	// than stored. Copying it into the reason as well would put the output back on the
+	// record by another name.
+	if _, ok := e.Payload[chain.ItemReasonKey]; ok {
+		t.Fatal("an executed verdict recorded a reason nothing ran")
+	}
+}
+
+// TestUnexecutedEvidenceRecordsWhyNothingRan is the counterpart to the exit code. An item
+// whose check never ran reports only that it could not be run, and that names no cause: a
+// clause no host could execute and a sandbox that failed to start read identically to
+// whoever is handed the stopped goal, and only one of those is worth trying to fix.
+func TestUnexecutedEvidenceRecordsWhyNothingRan(t *testing.T) {
+	log := spine.NewMemoryLog()
+	ctx := context.Background()
+	const why = "the check could not run: the sandbox refused to start"
+	if _, err := NewSpineEvidence(log).Record(ctx, goalRes("run-9"), "eeee",
+		goal.ItemVerdict{Detail: why}); err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	events, _ := log.Read(ctx, spine.Query{Stream: "run-9"})
+	if got := events[0].Payload[chain.ItemReasonKey]; got != why {
+		t.Fatalf("reason = %v, want %q", got, why)
+	}
+	// And it reads back through the gate's own decoder, which is what puts it in front of
+	// whoever is handed the goal rather than only in the log.
+	vs := goal.VerificationsFrom(events)
+	if len(vs) != 1 || vs[0].Reason != why {
+		t.Fatalf("decoded = %+v, want one verification carrying the reason", vs)
+	}
 }
 
 // TestAssertedEvidenceDescribesNoExecution: a verdict nothing was run for has no exit code

@@ -36,10 +36,16 @@ var ErrConflict = errors.New("resource: version conflict")
 // unregistered kind, or a Spec that does not satisfy its kind's JSON schema).
 var ErrInvalid = errors.New("resource: invalid")
 
-// Scope locates a resource on the instance/project/workspace axis (the namespace),
-// so resources can be partitioned and resolved most-specific-first and shared
-// selectively across a fleet. The zero Scope is the global (instance) scope.
+// Scope is the resource namespace: the same three nested levels state.Scope
+// defines, so a resource can be partitioned, resolved most-specific-first, and
+// shared selectively across a fleet. The zero Scope is the global scope.
 // Scope is comparable.
+//
+// Instance is the widest level, one installation of the agent; Project sits
+// inside it and Workspace inside Project. Each is an opaque label Flynn compares
+// and never interprets, and an empty label means "not narrowed at this level".
+// The levels are Flynn's own: a host maps its own hierarchy onto them or leaves
+// them empty, and no behaviour here depends on what they stand for.
 type Scope struct {
 	Instance  string
 	Project   string

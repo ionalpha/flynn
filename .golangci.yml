@@ -50,6 +50,26 @@ linters:
       # now a single test double (a fake GitHub API whose one handler routes every
       # endpoint the tests use); every shipping function is well under it.
       min-complexity: 40
+    # Doc comments are the rendered docs: `go doc` and pkg.go.dev serve them straight
+    # from the source, so an undocumented exported symbol is a hole in the public API
+    # reference, not a style slip. Both rules pass tree-wide today (every exported
+    # declaration is documented and all 120 packages carry a package comment), so
+    # turning them on costs nothing now and stops the surface regressing later.
+    #
+    # Two optional sub-checks of `exported` are deliberately off:
+    #   checkPrivateReceivers would demand a comment on the 167 methods of unexported
+    #     types. Those never render in godoc, and most are one-line adapters that
+    #     satisfy an interface already documented at its declaration.
+    #   checkPublicInterface would demand one on all 95 interface methods. The house
+    #     style (see spine.Log) documents the contract once on the interface type and
+    #     gives a method its own line only where that method has a contract the type
+    #     comment cannot carry. Forcing a line onto every method turns those into
+    #     restatement, which is the drift risk the commenting convention exists to
+    #     avoid.
+    revive:
+      rules:
+        - name: exported
+        - name: package-comments
     # Enforce the observability ports: nothing logs through log/slog directly.
     # slog lives only inside package observe (its adapter and tests). Every other
     # package depends on the observe.Logger port, so the backend stays swappable.

@@ -70,6 +70,12 @@ type Event struct {
 	Goal   string // id of the goal the action ran under, empty when it ran under no goal
 	At     int64  // unix nanos, from the dispatcher's clock
 	Err    string // fault class on failure; empty on success
+	// Code is the stable identifier of the rule that refused or the failure that
+	// occurred, beside the class in Err. A class is a reaction, not an account: every
+	// gate at the waist refuses with the same handful of classes, so a record carrying
+	// only the class can say that a run was blocked and never which gate blocked it. A
+	// refusal is only a verdict if the record names what refused.
+	Code string
 }
 
 // Event types.
@@ -192,6 +198,7 @@ func (d *Dispatcher) Govern(ctx context.Context, a Action, work func(context.Con
 	if err != nil {
 		class := fault.Classify(err)
 		end.Err = string(class)
+		end.Code = fault.CodeOf(err)
 		outcome = "error"
 		span.RecordError(err)
 		d.ob.Log.Warn(ctx, "dispatch failed",
@@ -250,9 +257,10 @@ func actionLabels(a Action, call int64) []string {
 func (d *Dispatcher) rejected(ctx context.Context, a Action, err error, span observe.Span, entered int, call int64) error {
 	class := fault.Classify(err)
 	span.RecordError(err)
-	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano(), Err: string(class)})
+	code := fault.CodeOf(err)
+	d.emit(ctx, Event{Type: EventRejected, Action: a.Name, Call: call, Scope: a.Scope, Trust: a.Trust.String(), Goal: a.Goal, At: d.clk.Now().UnixNano(), Err: string(class), Code: code})
 	d.ob.Log.Warn(ctx, "dispatch rejected",
-		observe.String("action", a.Name), observe.String("class", string(class)))
+		observe.String("action", a.Name), observe.String("class", string(class)), observe.String("code", code))
 	d.actions.Add(ctx, 1, observe.String("action", a.Name), observe.String("outcome", "rejected"))
 	d.unwind(ctx, a, Metering{}, err, entered)
 	return err

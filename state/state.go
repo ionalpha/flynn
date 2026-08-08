@@ -31,9 +31,26 @@ var ErrNotFound = errors.New("state: not found")
 // (someone else wrote in between). Re-read and retry.
 var ErrConflict = errors.New("state: version conflict")
 
-// Scope locates a resource on the instance/project/workspace axis, so skills and
-// memory can be partitioned and resolved most-specific-first. The zero Scope is
-// the global (instance) scope. Scope is comparable.
+// Scope partitions a store into three nested levels so skills and memory can be
+// kept apart and resolved most-specific-first. The zero Scope is the global
+// scope, which is where a single-node agent that partitions nothing keeps
+// everything. Scope is comparable.
+//
+// The three levels are Flynn's own and carry exactly one meaning here:
+// containment. Instance is the widest, one installation of the agent, the whole
+// of what a single operator runs. Project sits inside an instance and Workspace
+// inside a project. Each level is an opaque label that Flynn stores and compares
+// and never interprets, and an empty label means "not narrowed at this level"
+// rather than a level named "". Ancestors is the only rule about them: the walk
+// from a scope to the global one, which is what "encloses" means for every
+// backend.
+//
+// Nothing here is a taxonomy borrowed from whoever embeds Flynn. A host with its
+// own hierarchy chooses which of its levels to write into which label, or leaves
+// them empty and keeps one flat store; either way Flynn's behaviour is defined
+// without knowing what the labels stand for. Three fixed levels rather than an
+// arbitrary path is a deliberate limit: depth is then a fixed expression a store
+// can order by (see Depth), which an unbounded path could not be.
 //
 // Matching a scope is exact by default: {Project: "x"} and {Project: "x",
 // Workspace: "w"} are two different scopes, and a read at one does not see the
@@ -490,7 +507,7 @@ type MemoryItem struct {
 	//
 	// Expiry belongs in the record rather than in host policy because the death date
 	// is known at write time and nowhere else: whoever learns "this credential
-	// rotates on Friday" or "this sprint's plan is void at the end of the month"
+	// rotates on Friday" or "this plan is void at the end of the month"
 	// knows it as they write, and a host sweeping the store later can only guess.
 	// Recall omits an expired item on every backend (see MemoryStore.Recall);
 	// nothing else changes, so an expired item is still on the event stream and

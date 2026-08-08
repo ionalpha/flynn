@@ -191,7 +191,7 @@ func TestDriveOptionsApplyToTheRunConfig(t *testing.T) {
 	}
 }
 
-// TestDriveUnderABudgetOpensThePoolBeforeTheFirstAction: a run driven with a ceiling
+// TestDriveUnderABudgetOpensThePool: a run driven with a ceiling
 // opens its spend pool keyed by the run id, so the limit is in force from the first
 // action rather than after a race.
 func TestDriveUnderABudgetOpensThePool(t *testing.T) {
@@ -380,7 +380,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	// A native fan-out run, by contrast, is granted the delegation it exists to make.
 	fan, err := assembleFanoutMission(llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
 		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "",
-		nil, sandbox.ResourceLimits{})
+		nil, sandbox.ResourceLimits{}, approvalSetup{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
 	}

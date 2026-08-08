@@ -87,5 +87,25 @@ func Classify(err error) Class {
 	}
 }
 
+// CodeOf returns the stable identifier of the error kind, or "" when the chain
+// carries no classified error and so names no kind.
+//
+// It answers a different question from Classify, and a recorded refusal needs
+// both. The class says how a caller should react; the code says which rule
+// spoke. "forbidden" tells a reader that a wall exists, "capability_denied"
+// tells them which wall, and a reader deciding whether a run kept pushing on one
+// wall or bumped into several has nothing to work with unless the record says
+// which.
+func CodeOf(err error) string {
+	if err == nil {
+		return ""
+	}
+	var fe *Error
+	if errors.As(err, &fe) {
+		return fe.Code
+	}
+	return ""
+}
+
 // Compile-time check that Error satisfies the error interface.
 var _ error = (*Error)(nil)

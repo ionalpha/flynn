@@ -300,8 +300,10 @@ func WithSampling(s *llm.Sampling) Option {
 }
 
 // WithGenerationRecorder records the decoding envelope of every model call, so a run's
-// reproducibility parameters become part of its durable history. The default discards them; a
-// host wires this to the event spine.
+// reproducibility parameters become part of its durable history. The default discards them,
+// and a Flynn run leaves it there on purpose: nothing here pins its sampling, so the
+// envelope is the same zero value on every call. See GenerationRecorder for what would have
+// to change first. A host that pins its own sampling wires this to its event spine.
 func WithGenerationRecorder(r GenerationRecorder) Option {
 	return func(e *Executor) {
 		if r != nil {

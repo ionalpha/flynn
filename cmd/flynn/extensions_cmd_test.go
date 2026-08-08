@@ -105,7 +105,7 @@ func TestExtensionsDevLinkListRemove(t *testing.T) {
 	}
 }
 
-// TestExtensionsDevRemoveRestoresBundled: unlinking a dev build of an extension that is
+// TestExtensionsDevRemoveLeavesNoHole: unlinking a dev build of an extension that is
 // NOT in the catalog leaves nothing behind.
 func TestExtensionsDevRemoveLeavesNoHole(t *testing.T) {
 	ctx := context.Background()

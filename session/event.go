@@ -74,8 +74,8 @@ const (
 // The dispatch waist and the sealer write these event types onto a run's stream
 // alongside the conversation. They are the wire contract this package projects into
 // the session vocabulary above; the values mirror dispatch's own constants and the
-// sealer's record type, and decodeGovernance/record round-trip tests pin them so the
-// two cannot silently drift.
+// sealer's record type, and TestDecodeGovernanceEvents pins them so the two cannot
+// silently drift.
 const (
 	typeDispatchStart    = "dispatch.start"
 	typeDispatchEnd      = "dispatch.end"
@@ -141,11 +141,16 @@ type Event struct {
 	// Trust is the action's trust level (action.* events): how far the work is
 	// trusted, which is the containment a gate requires to admit it.
 	Trust string `json:"trust,omitempty"`
-	// Fault is the fault class on a refused or failed action: the denial reason on
-	// action.rejected (capability_denied, budget_exceeded, needs_approval, ...) or the
-	// failure class on an action.completed that ran but errored (transient, ...). Empty
-	// on a clean completion.
+	// Fault is the fault class on a refused or failed action: how a caller should react
+	// (forbidden, budget_exceeded, needs_approval, transient, ...). Empty on a clean
+	// completion.
 	Fault string `json:"fault,omitempty"`
+	// Code names the rule that spoke, where Fault says only how to react to it:
+	// capability_denied, containment_unavailable, and so on. A class is shared by every
+	// gate that reacts the same way, so a reader with the class alone can tell that an
+	// action was refused and not what refused it. Empty on a clean completion, and empty
+	// on an unclassified failure, which names no kind.
+	Code string `json:"code,omitempty"`
 
 	// Host is the destination an egress decision concerned (net.egress): the literal
 	// address netguard resolved before deciding whether to connect.
@@ -234,7 +239,8 @@ func decodeBody(se spine.Event) Event {
 }
 
 // governanceEvent projects one dispatch-waist event into the session vocabulary,
-// reading the waist's payload shape (action, call, trust, error_class, goal). The
+// reading the waist's payload shape (action, call, trust, error_class, error_code,
+// goal). The
 // correlation id survives a durable log's JSON round trip as a float, so it is read
 // through a numeric coercion rather than a direct int64 assertion.
 func governanceEvent(kind Kind, se spine.Event) Event {
@@ -242,6 +248,7 @@ func governanceEvent(kind Kind, se spine.Event) Event {
 	e.Action, _ = se.Payload["action"].(string)
 	e.Trust, _ = se.Payload["trust"].(string)
 	e.Fault, _ = se.Payload["error_class"].(string)
+	e.Code, _ = se.Payload["error_code"].(string)
 	e.Goal, _ = se.Payload["goal"].(string)
 	e.Call = asInt64(se.Payload["call"])
 	return e

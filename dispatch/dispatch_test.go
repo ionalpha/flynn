@@ -116,6 +116,12 @@ func TestGovernAdmissionRejects(t *testing.T) {
 	if evs[0].Err != string(fault.NeedsApproval) {
 		t.Fatalf("rejected class = %q, want %q", evs[0].Err, fault.NeedsApproval)
 	}
+	// The class says how to react and every gate that pauses for a human shares it, so
+	// the record has to carry which rule spoke as well, or a reader can tell that an
+	// action was refused and never what refused it.
+	if evs[0].Code != "approval_required" {
+		t.Fatalf("rejected code = %q, want the rule that refused", evs[0].Code)
+	}
 	if hook.afters != 1 {
 		t.Fatalf("After hooks ran %d times, want 1 even on rejection", hook.afters)
 	}
@@ -184,6 +190,28 @@ func TestGovernWorkFailureClassified(t *testing.T) {
 	}
 	if evs[1].Err != string(fault.Transient) {
 		t.Fatalf("end event Err = %q, want transient", evs[1].Err)
+	}
+	if evs[1].Code != "upstream_503" {
+		t.Fatalf("end event Code = %q, want the failure's own kind", evs[1].Code)
+	}
+}
+
+// TestGovernUnclassifiedRejectionNamesNoRule keeps the waist from inventing one. An error
+// with no fault code names no kind, and the honest record of that is an empty code rather
+// than a guess: a refusal attributed to a rule that did not speak would be counted against
+// that rule by everything downstream.
+func TestGovernUnclassifiedRejectionNamesNoRule(t *testing.T) {
+	sink := &dispatch.MemorySink{}
+	d := dispatch.New(
+		dispatch.WithAdmitter(denyAdmitter{err: errors.New("no")}),
+		dispatch.WithEventSink(sink),
+	)
+	if err := d.Govern(context.Background(), dispatch.Action{Name: "rm-rf"}, okWork(new(bool), 0)); err == nil {
+		t.Fatal("expected an admission rejection error")
+	}
+	evs := sink.Events()
+	if len(evs) != 1 || evs[0].Code != "" {
+		t.Fatalf("events = %+v, want one rejection naming no rule", evs)
 	}
 }
 

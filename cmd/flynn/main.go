@@ -154,6 +154,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
 		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: the goal will not report success over a ledger item the record cannot show a passing check for. Needs a host that can contain semi-trusted work, since the check is a model-authored command; where it cannot be run the item stays unproven and the run stops saying so.")
+		reqApproval = &stringList{}
 		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
@@ -165,6 +166,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		leakWatch   = fs.Bool("leak-watch", false, "watch the --profile bundle's timeline for sustained growth in goroutines, live heap, open descriptors, or child processes, and dump a labelled goroutine profile, a heap profile, and the offending window into the bundle when one of them grows; requires --profile")
 		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
 	)
+	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval shell). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
 	if err := fs.Parse(args); err != nil {
 		// flag.CommandLine exits the process on a bad flag, so this is reached only by a
 		// flag set that was asked to hand parse errors back: a bad flag is a usage error.
@@ -236,6 +238,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		verify:       *verify,
 		fanout:       *fanout,
 		requireProof: *reqProof,
+		reqApproval:  reqApproval.values,
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
 		maxMemoryMiB: *maxMemory,
@@ -256,6 +259,7 @@ type invocation struct {
 	verify         string
 	fanout         bool
 	requireProof   bool
+	reqApproval    []string
 	maxCost        float64
 	maxTokens      int64
 	maxMemoryMiB   int
@@ -284,7 +288,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn goal "<objective>"`)
 			return 2
 		}
-		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
+		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
 
 	case "inspect", "replay":
 		if len(rest) < 2 {
@@ -355,7 +359,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	// is a turn of one continuing conversation. With stdin redirected (a pipe, a file, a CI
 	// step) there is no one to prompt, so print usage instead.
 	if len(rest) == 0 && stdinIsTerminal() {
-		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain))
+		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain, inv.reqApproval))
 	}
 
 	printUsage(inv.stderr)
@@ -444,7 +448,7 @@ func printUsage(w io.Writer) {
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --require-proof, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --require-proof, --require-approval <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
@@ -473,7 +477,7 @@ func dataDirName() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout, requireProof bool, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
+func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout, requireProof bool, reqApproval []string, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -546,6 +550,10 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 	opts := []driveOption{
 		withBudget(budgetpkg.Limits{Tokens: maxTokens, Cost: maxCost}),
 		withResourceLimits(sandbox.ResourceLimits{MemoryMiB: maxMemoryMiB, MaxProcesses: maxProcesses}),
+		// A one-shot run has no operator at a prompt, so it carries the gate without a
+		// prompter: a listed action is refused rather than taken. That is the fail-closed
+		// half of the same mechanism the interactive session resolves by asking.
+		withApproval(reqApproval, nil),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))

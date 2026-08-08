@@ -18,7 +18,7 @@ package conformance
 //
 // Every artifact is produced from a fixed Ed25519 key over fixed events, and Ed25519
 // signing is deterministic, so the committed golden artifacts are reproducible byte
-// for byte. The suite publishes the signing key's public half (see CryptoKeyring) so
+// for byte. The suite publishes the signing key's public half (see RootPublicKey) so
 // a verifier in any language can build the same keyring and reach the same verdicts.
 
 import (

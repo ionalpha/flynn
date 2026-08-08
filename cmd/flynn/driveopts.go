@@ -21,6 +21,7 @@ type driveConfig struct {
 	planning  bool
 	proof     bool
 	skills    *skilltool.Set
+	approval  approvalSetup
 }
 
 // driveOption configures a run driven by drive.
@@ -103,6 +104,19 @@ func withEventObserver(fn func(session.Event)) driveOption {
 // outcome is credited to.
 func withSkills(s *skilltool.Set) driveOption {
 	return func(c *driveConfig) { c.skills = s }
+}
+
+// withApproval requires a person to authorize each of the named actions before the run
+// takes it, and resolves that pause through prompter. It is opt-in per action rather than
+// on by default: a run's standing controls are its capability grant and its sandbox, and
+// approval is the second gate an operator adds above them for the actions they want to
+// see before they happen.
+//
+// A nil prompter is the non-interactive case and it is fail-closed: with nobody to ask,
+// the listed action is refused rather than taken. Naming no actions leaves the run
+// ungated, which is the default.
+func withApproval(actions []string, prompter mission.ApprovalPrompter) driveOption {
+	return func(c *driveConfig) { c.approval = approvalSetup{actions: actions, prompter: prompter} }
 }
 
 // boundToolset is a toolset paired with the grant that bounds it. They travel
