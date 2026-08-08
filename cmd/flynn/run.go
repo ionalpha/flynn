@@ -77,6 +77,9 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		}
 		_, _ = fmt.Fprintf(w, "  approval required (%s): %s\n", how, strings.Join(gated, ", "))
 	}
+	if line := ledgerLine(cfg.planning || fanout != nil, cfg.proof || fanout != nil); line != "" {
+		_, _ = fmt.Fprintln(w, line)
+	}
 
 	// Open the run's spend pool before the goal is submitted, so the ceiling is in
 	// force from the first action rather than after a race. The pool is keyed by the
@@ -159,4 +162,27 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	cancel()
 	<-done
 	return result, run.sess.ID(), transcript, runErr
+}
+
+// ledgerLine is what a run says about its ledger before it starts: whether each
+// planned item's declared check runs, and whether an item the record cannot show a
+// passing check for will stop the run.
+//
+// It exists because a capability that is available and off is invisible otherwise.
+// Requiring proof is the one thing in the boundary register with a `staged` verdict:
+// the producer ships, the loop runs and records verdicts on every planned goal, and
+// the refusal that reads those verdicts is behind `--require-proof` until enough real
+// runs show items flipping to proven. An operator who cannot see that from the run
+// has no way to know the dial exists, and a capability nobody can see is how
+// default-off becomes permanent without anyone deciding it should.
+//
+// A goal that was never planned has no ledger and says nothing here.
+func ledgerLine(planned, proof bool) string {
+	switch {
+	case !planned:
+		return ""
+	case proof:
+		return "  ledger: each item's check runs, and an item with no passing check on the record stops the run"
+	}
+	return "  ledger: each item's check runs and is recorded; --require-proof also stops the run on an item it cannot prove"
 }
