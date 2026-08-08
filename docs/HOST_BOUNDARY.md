@@ -153,7 +153,7 @@ rather than removing the halt.
 |---|---|---|---|
 | `learn.Distiller` | `learn.ModelDistiller` under `NewGovernedDistiller` | `cmd/flynn/learning.go` `governedDistiller` | shipped |
 | `learn.Verifier` | `learn.SandboxVerifier` under `NewGovernedVerifier` | `cmd/flynn/learning.go` `governedVerifier` | shipped |
-| `memory/consolidate.Distiller` | none (`DistillerFunc` is the adapter, not a producer) | nowhere | gap |
+| `memory/consolidate.Distiller` | `memory/distil.ModelDistiller` under `NewGoverned` | nowhere | gap |
 | `memory/digest.Pusher` | `memory/ridealong.Surfacer` | nowhere | gap |
 | `memory/curate` write policy | `curate.Wrap` | nowhere | gap |
 | `memory/guard.PromotionReader` | every memory store | via the store | shipped |
@@ -165,8 +165,13 @@ call through the dispatch waist, and the binary wires the pair.
 
 `memory/consolidate` made the same call and stopped at the interface. The reasoning
 in its doc comment holds: a lesson is a language judgment and the package should
-keep no model. What is missing is the sibling that has one, the way `evidence`
-supplies what `goal` refuses to.
+keep no model. The sibling that has one is now `memory/distil`, which stands to
+`consolidate` as `evidence` does to `goal`, and the pass is exercised end to end
+over a temp database in `storage/sqlite/distil_test.go`.
+
+The row stays a gap until the binary wires it, because the register's test is what
+a released `flynn` can do and not what the repository contains. A producer nothing
+calls is half the answer.
 
 `memory/ridealong`: an anchor is an opaque `{Kind, ID}` pair and nothing here
 resolves one, which is deliberate and documented. Whether the binary anchors
