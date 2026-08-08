@@ -67,7 +67,11 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// that keeps the list of what it served. Prepended rather than appended so a caller
 	// could override it, and passed unconditionally: the offer in the prompt names
 	// skill_read, so the tool has to be there.
-	skillset := skilltool.New(skills)
+	//
+	// Loading a skill also surfaces what past runs learned while working from it, and
+	// counts that as a use of those memories. It is the pull half of the ride-along,
+	// against the same store the digest pushes from.
+	skillset := skilltool.New(skills, skilltool.WithNotes(mem.skillNotes()))
 	opts = append([]driveOption{withSkills(skillset)}, opts...)
 	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout, opts...)
 
@@ -123,6 +127,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 			Transcript: transcript,
 			Converged:  true,
 			Source:     source,
+			SkillsRead: skillset.Reads(),
 		})
 	}
 	return result, nil

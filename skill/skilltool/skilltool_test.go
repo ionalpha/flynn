@@ -298,3 +298,113 @@ func TestARefusedReadIsNotARead(t *testing.T) {
 		t.Fatalf("reads = %v after two refusals, want none", got)
 	}
 }
+
+// notes is a Notes that records what it was asked about and answers with a fixed
+// line, so a test can prove both that the read carried it and that the id it was
+// asked about is the skill's own.
+type notes struct {
+	answer string
+	asked  []string
+}
+
+func (n *notes) ForSkill(_ context.Context, skillID string) string {
+	n.asked = append(n.asked, skillID)
+	return n.answer
+}
+
+// setupWithNotes returns a toolset over a store holding sk, annotated by n, and the
+// stored skill so a test can check what the note source was asked about.
+func setupWithNotes(t *testing.T, sk state.Skill, n skilltool.Notes) (map[string]mission.Tool, state.Skill) {
+	t.Helper()
+	skills := state.NewMemory().Skills()
+	stored, err := skills.Upsert(context.Background(), sk)
+	if err != nil {
+		t.Fatalf("seed skill: %v", err)
+	}
+	tools := map[string]mission.Tool{}
+	for _, tool := range skilltool.New(skills, skilltool.WithPack(pack(), "skills"), skilltool.WithNotes(n)).Tools() {
+		tools[tool.Def().Name] = tool
+	}
+	return tools, stored
+}
+
+// What the install has learned about a procedure arrives with the procedure, and
+// after it: the body is what the call asked for, and a note about it is read second.
+func TestReadCarriesTheNoteAfterTheBody(t *testing.T) {
+	sk := bundledSkill()
+	n := &notes{answer: "Learned: the checklist misses generated files."}
+	tools, stored := setupWithNotes(t, sk, n)
+
+	got, err := call(t, tools["skill_read"], map[string]string{"skill": "tidy-diff"})
+	if err != nil {
+		t.Fatalf("skill_read: %v", err)
+	}
+	if !strings.Contains(got, n.answer) {
+		t.Errorf("skill_read did not carry the note, got:\n%s", got)
+	}
+	if !strings.HasPrefix(got, "Read the diff as a reviewer would.") {
+		t.Errorf("skill_read did not lead with the body, got:\n%s", got)
+	}
+	if strings.Index(got, n.answer) < strings.Index(got, "readable with skill_resource") {
+		t.Error("the note came before the resource list; a note about the procedure is read last")
+	}
+	// Asked about the stored skill's id, not the name the model typed: two scopes can
+	// hold one slug, and a rename must not orphan what is anchored to the skill.
+	if len(n.asked) != 1 || n.asked[0] != stored.ID {
+		t.Errorf("notes asked about %q, want the skill's id %q", n.asked, stored.ID)
+	}
+}
+
+// An empty or whitespace-only note adds nothing, so a source with nothing to say
+// costs the read no blank section and no dangling heading.
+func TestReadWithAnEmptyNoteIsUnchanged(t *testing.T) {
+	sk := bundledSkill()
+	empty, _ := setupWithNotes(t, sk, &notes{answer: ""})
+	plain, err := call(t, empty["skill_read"], map[string]string{"skill": "tidy-diff"})
+	if err != nil {
+		t.Fatalf("skill_read: %v", err)
+	}
+	whitespace, _ := setupWithNotes(t, sk, &notes{answer: "  \n "})
+	blank, err := call(t, whitespace["skill_read"], map[string]string{"skill": "tidy-diff"})
+	if err != nil {
+		t.Fatalf("skill_read: %v", err)
+	}
+	if plain != blank {
+		t.Errorf("a whitespace-only note changed the read:\n%q\nvs\n%q", plain, blank)
+	}
+	if strings.HasSuffix(plain, "\n") {
+		t.Errorf("skill_read ended in a blank line: %q", plain[len(plain)-20:])
+	}
+}
+
+// A note is only attached to a read that happened. A name that resolved to nothing
+// readable is a refusal, and annotating a refusal would credit the procedure with
+// having reached the model when it did not.
+func TestNoNoteOnARefusedRead(t *testing.T) {
+	sk := bundledSkill()
+	sk.Body = ""
+	n := &notes{answer: "Learned: something."}
+	tools, _ := setupWithNotes(t, sk, n)
+	if _, err := call(t, tools["skill_read"], map[string]string{"skill": "tidy-diff"}); !errors.Is(err, skilltool.ErrUnreadable) {
+		t.Fatalf("skill_read of an empty body: err = %v, want ErrUnreadable", err)
+	}
+	if len(n.asked) != 0 {
+		t.Errorf("the note source was consulted for a refused read: %q", n.asked)
+	}
+}
+
+// A skill with no resources to list still carries its note, so the note is not
+// coupled to whether the pack happened to load.
+func TestNoteRidesAlongWithoutResources(t *testing.T) {
+	sk := bundledSkill()
+	sk.Slug, sk.Name = "no-pack-here", "no-pack-here"
+	n := &notes{answer: "Learned: run it twice."}
+	tools, _ := setupWithNotes(t, sk, n)
+	got, err := call(t, tools["skill_read"], map[string]string{"skill": "no-pack-here"})
+	if err != nil {
+		t.Fatalf("skill_read: %v", err)
+	}
+	if !strings.Contains(got, n.answer) {
+		t.Errorf("skill_read of a skill with no readable pack dropped the note, got:\n%s", got)
+	}
+}

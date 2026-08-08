@@ -136,17 +136,66 @@ func TestSpendGuardWindowCeilingStalls(t *testing.T) {
 	}
 }
 
-// TestSpendGuardWindowUnboundedWithoutSource: a WindowFraction ceiling has no effect
-// when no source is wired (Flynn ships none), so the goal runs normally rather than
-// stalling or erroring on a bound it cannot evaluate.
-func TestSpendGuardWindowUnboundedWithoutSource(t *testing.T) {
+// TestSpendGuardStallsOnAWindowCeilingItCannotMeasure: a goal that caps its share of
+// the plan window with no source wired to read the window stalls by name instead of
+// running unbounded.
+//
+// Flynn ships no source, so this is the seam where a declared bound could have been
+// passed over in silence. It must not be: a run that finishes without its ceiling
+// having been checked is indistinguishable from one that stayed inside it, and the
+// operator who set the ceiling would read the second where the first happened.
+func TestSpendGuardStallsOnAWindowCeilingItCannotMeasure(t *testing.T) {
 	h, _ := newSpendHarness(t) // no WithWindowSource
 	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Budget: SpendBudget{WindowFraction: 0.1}})
 
 	h.reconcile(t, ref)
 
+	st := h.status(t, ref)
+	if st.Phase != PhaseStalled || !condReason(st, CondStalled, "WindowSourceMissing") {
+		t.Fatalf("a window ceiling with nothing to measure it did not stall by name: %+v", st)
+	}
+	// The message names the ceiling that went unchecked, because that is the sentence
+	// worth being able to say about the run afterwards.
+	if !strings.Contains(st.Message, "10.0%") || !strings.Contains(st.Message, "no window source is wired") {
+		t.Fatalf("message does not name the unmeasured ceiling: %q", st.Message)
+	}
+	if st.InFlight != nil {
+		t.Error("a step was dispatched under a ceiling nobody could check")
+	}
+}
+
+// A goal that declares no window ceiling asks nothing of the source, so it runs with
+// none wired. That is the standalone binary's case and the stall above must not reach
+// it.
+func TestSpendGuardIgnoresTheWindowWhenNoCeilingIsSet(t *testing.T) {
+	h, _ := newSpendHarness(t) // no WithWindowSource
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Budget: SpendBudget{Tokens: 100}})
+
+	h.reconcile(t, ref)
+
 	if st := h.status(t, ref); st.Phase != PhaseRunning || st.InFlight == nil {
-		t.Fatalf("window bound with no source should not stop the goal: %+v", st)
+		t.Fatalf("a goal with no window ceiling was held up by the missing source: %+v", st)
+	}
+}
+
+// The stall is recoverable, which is what makes stalling the right answer rather than
+// a refusal. Wiring the source the goal was missing and reconciling again finishes the
+// work; the goal does not have to be recreated.
+func TestAWindowStallResumesOnceTheSourceIsWired(t *testing.T) {
+	h, _ := newSpendHarness(t)
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c", Budget: SpendBudget{WindowFraction: 0.9}})
+	h.reconcile(t, ref)
+	if st := h.status(t, ref); !condReason(st, CondStalled, "WindowSourceMissing") {
+		t.Fatalf("expected the stall first: %+v", st)
+	}
+
+	// The same store and the same goal, reconciled by a loop that now has a source.
+	wired := NewReconciler(h.store, h.jobs, h.clk, stopAfter{at: 99}, WithWindowSource(fixedWindow{frac: 0.1}))
+	if _, err := wired.Reconcile(h.ctx, ref); err != nil {
+		t.Fatalf("reconcile with the source wired: %v", err)
+	}
+	if st := h.status(t, ref); st.Phase != PhaseRunning || st.InFlight == nil {
+		t.Fatalf("the goal did not pick its work back up: %+v", st)
 	}
 }
 

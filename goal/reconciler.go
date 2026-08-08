@@ -242,10 +242,7 @@ func (g *Reconciler) stall(ctx context.Context, ref reconcile.Ref, cause error) 
 	msg := cause.Error()
 	status.InFlight = nil
 	status.WaitingSince = nil
-	status.Phase = PhaseStalled
-	status.Message = "reconcile failed terminally: " + msg
-	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "ReconcileFailed", Message: msg}, g.clk.Now())
-	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "ReconcileFailed"}, g.clk.Now())
+	status.stall("ReconcileFailed", "reconcile failed terminally: "+msg, g.clk.Now())
 	_, err = g.terminal(ctx, r, status, r.SpecHash)
 	return err
 }
@@ -309,7 +306,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// no-op check reads a field instead of re-canonicalizing the spec each tick.
 	specHash := r.SpecHash
 	// No-op skip: spec unchanged and the goal has already settled.
-	if head.ObservedSpecHash == specHash && (head.Phase == PhaseConverged || head.Phase == PhaseStalled) {
+	if head.ObservedSpecHash == specHash && head.settled() {
 		return reconcile.Result{}, nil
 	}
 
@@ -434,10 +431,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		return reconcile.Result{}, err
 	}
 	if stallReason != "" {
-		status.Phase = PhaseStalled
-		status.Message = stallMessage
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: stallReason, Message: stallMessage}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+		status.stall(stallReason, stallMessage, g.clk.Now())
 		return g.terminal(ctx, r, status, specHash)
 	}
 
@@ -476,10 +470,7 @@ func (g *Reconciler) observeInFlight(ctx context.Context, r resource.Resource, s
 		return obs, reconcile.Result{RequeueAfter: g.poll}, true, nil // still working
 	case job.State == jobs.StateDead:
 		status.InFlight = nil
-		status.Phase = PhaseStalled
-		status.Message = "step failed: " + job.LastError
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "StepFailed", Message: job.LastError}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "StepFailed"}, g.clk.Now())
+		status.stall("StepFailed", "step failed: "+job.LastError, g.clk.Now())
 		res, err := g.terminal(ctx, r, *status, specHash)
 		return obs, res, true, err
 	default: // StateDone: a step completed.
@@ -536,10 +527,7 @@ func (g *Reconciler) planGate(ctx context.Context, r resource.Resource, spec Spe
 		res, err := g.dispatch(ctx, r, status, specHash, PlanJobKind, PhasePlanning, "PlanDispatched")
 		return res, true, err
 	case len(spec.Ledger) == 0:
-		status.Phase = PhaseStalled
-		status.Message = "planning produced an empty ledger"
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "EmptyLedger", Message: status.Message}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+		status.stall("EmptyLedger", "planning produced an empty ledger", g.clk.Now())
 		res, err := g.terminal(ctx, r, status, specHash)
 		return res, true, err
 	}
@@ -744,11 +732,8 @@ func (g *Reconciler) holdsClaimAgainstLedger(spec Spec, status Status) bool {
 // prose completion the ledger replaced.
 func (g *Reconciler) refuseCompletion(status *Status, recorded []Verification) {
 	reasons := status.UnprovenReasons(g.gate, recorded)
-	status.Phase = PhaseStalled
-	status.Message = fmt.Sprintf("completion reported with %d planned item(s) unproven: %s",
-		len(reasons), strings.Join(reasons, "; "))
-	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "LedgerUnproven", Message: status.Message}, g.clk.Now())
-	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, g.clk.Now())
+	status.stall("LedgerUnproven", fmt.Sprintf("completion reported with %d planned item(s) unproven: %s",
+		len(reasons), strings.Join(reasons, "; ")), g.clk.Now())
 }
 
 // observeProgress folds the just-completed build step into the idle streak from the
