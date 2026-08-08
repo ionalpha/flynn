@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -110,6 +112,54 @@ func TestUngatedRunIsUnchanged(t *testing.T) {
 	}
 	if events := approvalEvents(t, log, stream); len(events) != 0 {
 		t.Fatalf("an ungated run recorded %d approval decisions", len(events))
+	}
+}
+
+// TestGatedRunAnnouncesItselfAndRefuses is the whole CLI path, the way `flynn goal
+// --require-approval write` takes it: the option carries the policy through drive, the run
+// says up front that it will stop and on what, and with nobody to ask it refuses the write
+// rather than taking it. A run that halted with no warning would read as a hang, and one
+// that refused an action because nobody could be asked should have said so before it began.
+func TestGatedRunAnnouncesItselfAndRefuses(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	dir := t.TempDir()
+	model := llmtest.NewScripted(
+		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi"}`)),
+		llmtest.SayText("could not write"),
+	)
+	var out bytes.Buffer
+	if _, err := runLearningMission(ctx, &out, model, harness.Plan{}, nil, dir,
+		"create hello.txt", "", memStore(t), nil, false, nil,
+		withApproval([]string{"write"}, nil)); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	printed := out.String()
+	if !strings.Contains(printed, "approval required") || !strings.Contains(printed, "write") {
+		t.Fatalf("the run did not say it was gated before it started:\n%s", printed)
+	}
+	// A one-shot run has no operator at a prompt, so the line has to say which of the two
+	// shapes this is rather than implying somebody will be asked.
+	if !strings.Contains(printed, "nothing here can prompt") {
+		t.Fatalf("the run implied it would prompt when nothing could:\n%s", printed)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "hello.txt")); err == nil {
+		t.Fatal("a gated run with nobody to ask took the action anyway")
+	}
+
+	// The same run with someone to ask says the other thing, because the two are a
+	// different experience: one is going to stop and wait, the other is going to refuse.
+	dir2 := t.TempDir()
+	var out2 bytes.Buffer
+	if _, err := runLearningMission(ctx, &out2, llmtest.NewScripted(llmtest.SayText("nothing to do")),
+		harness.Plan{}, nil, dir2, "do nothing", "", memStore(t), nil, false, nil,
+		withApproval([]string{"write"}, newStubPrompter(mission.ApprovalDecision{Allow: true}))); err != nil {
+		t.Fatalf("run with a prompter: %v", err)
+	}
+	if !strings.Contains(out2.String(), "paused for your decision") {
+		t.Fatalf("a run that can prompt did not say so:\n%s", out2.String())
 	}
 }
 

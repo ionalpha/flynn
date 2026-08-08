@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"testing"
+	"testing/iotest"
 
+	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -36,6 +41,58 @@ func TestRequireApprovalFlagAccumulates(t *testing.T) {
 	var empty *stringList
 	if empty.String() != "" {
 		t.Fatal("the zero flag value did not render as empty")
+	}
+}
+
+// TestApprovalHostNeverResolvesEmpty: a machine that will not name itself falls back to a
+// constant rather than to the empty string. The verifier reads an empty host as "valid on
+// any host", so a broken hostname would silently widen every approval the run minted.
+func TestApprovalHostNeverResolvesEmpty(t *testing.T) {
+	if got := approvalHost(func() (string, error) { return "box-7", nil }); got != "box-7" {
+		t.Fatalf("host = %q, want the name the machine gave", got)
+	}
+	if got := approvalHost(func() (string, error) { return "", errors.New("no hostname") }); got != "localhost" {
+		t.Fatalf("a failed lookup resolved to %q, want the localhost fallback", got)
+	}
+	// A lookup that succeeds and hands back nothing is the same hazard as one that fails.
+	if got := approvalHost(func() (string, error) { return "   ", nil }); got != "localhost" {
+		t.Fatalf("a blank hostname resolved to %q, want the localhost fallback", got)
+	}
+}
+
+// TestApprovalIdentityRefusesADegradedKey: the run's approver is minted from real entropy
+// or not at all. An approval is a signature over what was authorized, so one signed with a
+// key from a failing source would claim a binding it does not have; the run is refused
+// rather than gated by a key nobody should trust.
+func TestApprovalIdentityRefusesADegradedKey(t *testing.T) {
+	signer, keyring, err := approvalIdentity(iotest.ErrReader(errors.New("no entropy")))
+	if err == nil {
+		t.Fatal("a failing entropy source still minted an approver")
+	}
+	if signer != nil || keyring != nil {
+		t.Fatal("a refused identity handed back half of itself")
+	}
+
+	// The two halves are one identity: the keyring trusts exactly the key the signer holds,
+	// so an approval the run mints verifies against the keyring the run checks with.
+	signer, keyring, err = approvalIdentity(bytes.NewReader(bytes.Repeat([]byte{7}, 128)))
+	if err != nil {
+		t.Fatalf("mint: %v", err)
+	}
+	if signer.KeyID() != approvalKeyID {
+		t.Fatalf("signer key id = %q, want %q", signer.KeyID(), approvalKeyID)
+	}
+	appr, err := signer.Sign(approval.Envelope{Action: "shell", Nonce: "n1"})
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	dec, err := approval.NewVerifier(keyring, approval.NewMemStore()).Check(
+		context.Background(), approval.Envelope{Action: "shell", Nonce: "n1"}, []approval.Approval{appr}, 1)
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	if !dec.Granted {
+		t.Fatalf("the run's own keyring did not trust the run's own signature: %s", dec.Reason)
 	}
 }
 

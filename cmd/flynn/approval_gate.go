@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -52,18 +53,9 @@ func newApprovalStack(actions []string, log spine.Log, stream string) (*approval
 	if len(policy) == 0 {
 		return nil, nil
 	}
-	host, err := os.Hostname()
+	host := approvalHost(os.Hostname)
+	signer, keyring, err := approvalIdentity(ids.Entropy(nil))
 	if err != nil {
-		// A host that will not name itself is not a reason to run ungated. The envelope
-		// binds host-to-host, so a constant is still a consistent binding within the run.
-		host = "localhost"
-	}
-	signer, pub, err := approval.GenerateEd25519Signer(approvalKeyID, ids.Entropy(nil))
-	if err != nil {
-		return nil, err
-	}
-	keyring := approval.NewKeyring()
-	if err := keyring.Add(approvalKeyID, pub); err != nil {
 		return nil, err
 	}
 	verifier := approval.NewVerifier(keyring, approval.NewMemStore(), approval.WithHost(host))
@@ -71,6 +63,44 @@ func newApprovalStack(actions []string, log spine.Log, stream string) (*approval
 		approval.WithGateHost(host),
 		approval.WithSink(spinesink.NewApproval(log, stream)))
 	return &approvalStack{gate: gate, signer: signer, host: host}, nil
+}
+
+// approvalIdentity mints the run's approver: a fresh keypair from entropy, and a keyring
+// trusting exactly its public half. The signer and the keyring are built together and
+// returned together because they are two views of one identity, and a keyring that trusted
+// a key the signer does not hold would refuse every approval the run minted.
+//
+// A failing entropy source is a hard error rather than a fallback. There is no weaker key
+// worth minting: an approval is a signature over what was authorized, and one signed with
+// degraded randomness would claim a binding it does not have.
+func approvalIdentity(entropy io.Reader) (approval.Signer, *approval.Keyring, error) {
+	keyring := approval.NewKeyring()
+	signer, pub, err := approval.GenerateEd25519Signer(approvalKeyID, entropy)
+	if err == nil {
+		// A key that was just generated is always the right size, so this does not fail in
+		// practice. It is checked rather than discarded because a keyring that quietly
+		// dropped the run's only approver would refuse every approval the run minted, and
+		// the run would read as one where the operator's decisions never took effect.
+		err = keyring.Add(approvalKeyID, pub)
+	}
+	if err != nil {
+		return nil, nil, err
+	}
+	return signer, keyring, nil
+}
+
+// approvalHost is the host id the gate stamps on the envelope it requires and the signer
+// binds a minted approval to, so an approval for one machine cannot authorize an action on
+// another. A host that will not name itself falls back to a constant rather than to the
+// empty string, which the verifier reads as "valid on any host": a machine with a broken
+// hostname would otherwise widen every approval it minted. Within one run the gate and the
+// signer see the same value either way, which is all the binding needs.
+func approvalHost(hostname func() (string, error)) string {
+	name, err := hostname()
+	if err != nil || strings.TrimSpace(name) == "" {
+		return "localhost"
+	}
+	return name
 }
 
 // approvalPolicy turns the operator's list of action names into the gate's policy, one
