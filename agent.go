@@ -183,6 +183,9 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 	// parent, grant narrowed, depth- and concurrency-bounded) and hands them to the
 	// runtime. Its enqueue hook is bound once the runtime exists (below).
 	spawner := orchestration.NewSpawner(store, nil, orchestration.WithConcurrency(defaultFanoutWidth))
+	// One brake for the whole run: every loop the router builds and the plan-driven
+	// fan-out below share it, so a halt stops both paths rather than one.
+	brk := brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil)
 
 	// The session streams the run as an event spine; its Reporter is wired into the
 	// executor so every turn, tool call, and result is recorded.
@@ -245,7 +248,7 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 			// Halt a runaway from outside the model loop. The default is a generous rate
 			// backstop: a real run dispatches far fewer than this per minute, so the
 			// breaker fires only on a degenerate tight loop, never on legitimate tool use.
-			Brakes: brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil),
+			Brakes: brk,
 		},
 	})
 	rt, err := runtime.New(runtime.Config{
@@ -255,6 +258,11 @@ func (a *Agent) runGoal(ctx context.Context, model llm.Model, objective string, 
 		Stop:         router,
 		PollInterval: 200 * time.Millisecond,
 		WorkerPoll:   50 * time.Millisecond,
+		// Run the units of a goal's plan as governed child goals, in dependency order,
+		// through the same spawner the model's own delegation uses and under the same
+		// brake. Without it a goal carrying a unit graph stalls saying no spawner is
+		// wired, on a capability the facade otherwise has.
+		Units: orchestration.Units(spawner, orchestration.UnitGovernor(sb, brk)),
 	})
 	if err != nil {
 		return "", err

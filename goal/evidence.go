@@ -82,6 +82,10 @@ type Verification struct {
 	Item       string
 	Passed     bool
 	Provenance Provenance
+	// Reason is why nothing was run, on a verification that was not executed. It is what
+	// turns "its check could not be run" into a sentence someone can act on, and it is
+	// empty on an executed verification, whose exit code is what happened.
+	Reason string
 }
 
 // VerificationsFrom reads the item verifications a run recorded on its spine, in the
@@ -105,11 +109,13 @@ func VerificationsFrom(events []spine.Event) []Verification {
 			continue
 		}
 		passed, _ := e.Payload[chain.ItemPassedKey].(bool)
+		reason, _ := e.Payload[chain.ItemReasonKey].(string)
 		out = append(out, Verification{
 			Ref:        strconv.FormatInt(e.Seq, 10),
 			Item:       item,
 			Passed:     passed,
 			Provenance: provenanceOf(e.Payload[chain.ItemProvenanceKey]),
+			Reason:     reason,
 		})
 	}
 	return out
@@ -298,6 +304,7 @@ func unprovenReason(err error, item string, recorded []Verification) string {
 		return "its verification was asserted, not executed"
 	}
 	ran, attempted := false, false
+	reason := ""
 	for _, v := range recorded {
 		if v.Item != item {
 			continue
@@ -306,10 +313,15 @@ func unprovenReason(err error, item string, recorded []Verification) string {
 		if v.Provenance == ProvenanceExecuted {
 			ran = true
 		}
+		if v.Reason != "" {
+			reason = v.Reason // the latest attempt's account of why nothing ran
+		}
 	}
 	switch {
 	case ran:
 		return "its check ran and did not pass"
+	case attempted && reason != "":
+		return "its check could not be run: " + reason
 	case attempted:
 		return "its check could not be run"
 	default:

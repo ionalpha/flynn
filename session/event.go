@@ -74,8 +74,8 @@ const (
 // The dispatch waist and the sealer write these event types onto a run's stream
 // alongside the conversation. They are the wire contract this package projects into
 // the session vocabulary above; the values mirror dispatch's own constants and the
-// sealer's record type, and decodeGovernance/record round-trip tests pin them so the
-// two cannot silently drift.
+// sealer's record type, and TestDecodeGovernanceEvents pins them so the two cannot
+// silently drift.
 const (
 	typeDispatchStart    = "dispatch.start"
 	typeDispatchEnd      = "dispatch.end"

@@ -171,8 +171,24 @@ not merely encouraged.
    `layer-direction` rule guards the core-to-engine boundary; finer edges between
    adjacent engine layers are convention, not mechanically gated.)*
 
-5. **The host boundary is interfaces only.** The engine never imports a concrete
-   host. Persistence and observability cross only through `state` and `observe`.
+5. **The host boundary is interfaces only, and it runs one way.** The engine never
+   imports a concrete host; persistence and observability cross only through
+   `state` and `observe`. The same boundary read from the other side is host
+   neutrality: a Flynn contract names only what Flynn owns and can verify on its
+   own. A record belonging to whoever embeds Flynn is carried as an opaque typed
+   ref (`state.Anchor` is the shape: a `{Kind, ID}` pair, stored, indexed and
+   matched, never resolved and never checked for referential integrity), so a ref
+   to something that no longer exists simply matches nothing. Handing work out to
+   a host through an interface is the intended direction; naming a host's record
+   type in a Flynn contract is the leak, because it makes Flynn's correctness
+   depend on a record only the host can produce. The test for any acceptance
+   criterion: if it cannot be exercised by Flynn plus a temp SQLite file with no
+   host present, it is the host's criterion and does not belong in a Flynn
+   contract. *(Enforcement: `internal/hostneutral` fails the build when an
+   exported name or serialized property in the public band names a host record
+   type, or when a ref-shaped type closes its vocabulary with a named `Kind`; the
+   shared memory vectors in `memory/memorytest` hold every backend to storing and
+   matching an anchor that resolves to nothing.)*
 
 6. **Budgets bound spend.** A run's token and cost pool is charged at the dispatch
    waist after each action and checked before the next; an action is refused with a

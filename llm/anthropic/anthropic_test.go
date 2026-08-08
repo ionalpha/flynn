@@ -170,12 +170,6 @@ func TestErrorClassification(t *testing.T) {
 	}
 }
 
-// TestBlockMappingProperty pins that assistant content (text, tool calls, and
-// opaque provider blocks) survives the encode-into-request then decode-from-response
-// mapping unchanged. This is the fidelity the thinking-block replay depends on.
-// TestEncodeImageBlockToBase64Source pins that an image block becomes an Anthropic
-// base64 image source block: the media type is carried through and the bytes are
-// base64-encoded, which is the wire shape the vision API expects.
 // fataler is the slice of the test handle rawContent needs, satisfied by both
 // *testing.T and *rapid.T so the helper serves ordinary and property tests alike.
 type fataler interface {
@@ -201,6 +195,9 @@ func rawContent(tb fataler, blocks []llm.Block, markLast bool) []json.RawMessage
 	return out
 }
 
+// TestEncodeImageBlockToBase64Source pins that an image block becomes an Anthropic
+// base64 image source block: the media type is carried through and the bytes are
+// base64-encoded, which is the wire shape the vision API expects.
 func TestEncodeImageBlockToBase64Source(t *testing.T) {
 	data := []byte{0x89, 'P', 'N', 'G', 0x0d, 0x0a}
 	enc := rawContent(t, []llm.Block{llm.ImageBlock("image/png", data)}, false)
@@ -226,6 +223,9 @@ func TestEncodeImageBlockToBase64Source(t *testing.T) {
 	}
 }
 
+// TestBlockMappingProperty pins that assistant content (text, tool calls, and
+// opaque provider blocks) survives the encode-into-request then decode-from-response
+// mapping unchanged. This is the fidelity the thinking-block replay depends on.
 func TestBlockMappingProperty(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		n := rapid.IntRange(0, 5).Draw(rt, "n")

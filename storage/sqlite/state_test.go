@@ -22,7 +22,7 @@ func open(t *testing.T) state.Provider {
 	return p
 }
 
-// TestConformance holds the SQLite provider to the identical contract as the
+// TestStateConformance holds the SQLite provider to the identical contract as the
 // in-memory one. This is the payoff of the shared suite: a single line proves
 // byte-for-byte parity across backends.
 func TestStateConformance(t *testing.T) {
@@ -57,7 +57,7 @@ func TestWithInstanceID(t *testing.T) {
 	}
 }
 
-// TestPersistsAcrossReopen is the whole point of a durable provider: state
+// TestStatePersistsAcrossReopen is the whole point of a durable provider: state
 // written by one process is read back by the next. A file is closed and
 // reopened, and the records survive.
 func TestStatePersistsAcrossReopen(t *testing.T) {
@@ -105,7 +105,7 @@ func TestStatePersistsAcrossReopen(t *testing.T) {
 	}
 }
 
-// TestReopenRerunsMigrationsCleanly verifies the migration runner is idempotent
+// TestStateReopenRerunsMigrationsCleanly verifies the migration runner is idempotent
 // against a populated database: reopening an existing store must not error or
 // re-apply.
 func TestStateReopenRerunsMigrationsCleanly(t *testing.T) {

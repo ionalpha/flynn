@@ -40,7 +40,7 @@ type Client struct {
 	toolGrammar bool
 	vision      bool
 
-	// grammarCache memoizes the compiled tool-call grammar. The tool set is
+	// The grammar fields below memoize the compiled tool-call grammar. The tool set is
 	// byte-identical turn to turn across a conversation, but the grammar is a pure
 	// function of the tool names and schemas, so recompiling and re-rendering it on
 	// every Generate is wasted work (gbnf compile + GBNF text render). A single-entry

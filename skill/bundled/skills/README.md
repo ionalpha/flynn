@@ -52,4 +52,20 @@ catches something with no legitimate use in a skill, which is why it can refuse
 without an appeal; a check on ordinary words needs an escape designed first, or it
 gets switched off the first week it is wrong.
 
-This file is not a skill. `LoadAll` reads directories and ignores the rest.
+## What retrieval.txt is for
+
+`retrieval.txt` beside this file is the pack's retrieval table: one row per
+objective, naming the skills that objective must be offered and the skills it must
+not be. `TestPackIsRetrievable` runs the runtime's own ranker over the real pack
+against every row, with no model and no tokens.
+
+It exists because a description is the only text loaded at discovery, so getting one
+wrong does not fail anything. The skill is simply never offered, the run proceeds
+without it, and the only other signal is a counter someone has to think to read.
+
+Adding a skill means adding a row. `TestEveryPackSkillStatesItsTriggers` refuses a
+skill that no row expects to be offered, because the objectives a skill is reached
+for are part of its design and are worth writing before its body: a skill whose
+trigger set cannot be stated does not yet have a scope.
+
+Neither file is a skill. `LoadAll` reads directories and ignores the rest.

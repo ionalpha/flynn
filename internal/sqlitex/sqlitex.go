@@ -105,12 +105,28 @@ func Tx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 	return tx.Commit()
 }
 
-// FormatTime renders t as UTC RFC3339Nano, the canonical on-disk time format
-// shared by every durable backend.
-func FormatTime(t time.Time) string { return t.UTC().Format(time.RFC3339Nano) }
+// TimeLayout is the canonical on-disk time format shared by every durable
+// backend: RFC 3339 with the fractional second zero-padded to nine digits.
+//
+// The padding is the whole point. time.RFC3339Nano *strips* trailing zeros, so
+// its output is variable-width and does not compare lexicographically: '.'
+// (0x2E) sorts before 'Z' (0x5A), which puts "2026-01-01T00:00:00Z" *after*
+// "2026-01-01T00:00:00.000000001Z" one nanosecond later than it. A clock
+// reading lands exactly on the second often enough (about one in ten, and far
+// more on a coarse-resolution clock) that every ORDER BY over such a column was
+// wrong for a share of its rows. Padded, the string order is the time order, so
+// SQL can sort and range-filter these columns directly.
+//
+// A stored value is therefore always exactly 30 characters. Migration 0029
+// rewrote the columns written before this layout existed.
+const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// FormatTime renders t as UTC in TimeLayout.
+func FormatTime(t time.Time) string { return t.UTC().Format(TimeLayout) }
 
 // ParseTime parses a FormatTime string back to a UTC time, returning the zero
-// time if s is not valid RFC3339Nano.
+// time if s is not valid RFC 3339. It reads the pre-0029 unpadded encoding too:
+// RFC3339Nano accepts any number of fractional digits, padding included.
 func ParseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {

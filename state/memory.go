@@ -361,6 +361,7 @@ func sliceSkillsBySlug(s []Skill) func(i, j int) bool {
 
 func skillMatches(sk Skill, lowerQuery string) bool {
 	return strings.Contains(strings.ToLower(sk.Name), lowerQuery) ||
+		strings.Contains(strings.ToLower(sk.Description), lowerQuery) ||
 		strings.Contains(strings.ToLower(sk.Body), lowerQuery) ||
 		strings.Contains(strings.ToLower(strings.Join(sk.Tags, " ")), lowerQuery)
 }
