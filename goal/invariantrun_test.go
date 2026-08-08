@@ -8,6 +8,7 @@ import (
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/reconcile"
+	"github.com/ionalpha/flynn/resource"
 )
 
 // --- fakes ------------------------------------------------------------------
@@ -25,7 +26,7 @@ func newFakeAuditor() *fakeAuditor {
 	return &fakeAuditor{breach: map[string]string{}}
 }
 
-func (a *fakeAuditor) Audit(_ context.Context, _ Spec, _ Status, terms []Invariant) ([]Breach, error) {
+func (a *fakeAuditor) Audit(_ context.Context, _ resource.Resource, _ Spec, _ Status, terms []Invariant) ([]Breach, error) {
 	a.calls++
 	ids := make([]string, 0, len(terms))
 	for _, t := range terms {

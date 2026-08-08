@@ -316,3 +316,58 @@ func toSet(xs []string) map[string]bool {
 	}
 	return m
 }
+
+// TestAChildInheritsItsParentsTerms: the terms of a run travel down the delegation the
+// way authority does. A grant a child cannot widen would be worth little if the child
+// could be handed the work its parent was forbidden to do a certain way and then do it
+// that way, so spawning is not a way out of the terms.
+//
+// Unlike the grant they are not narrowed: there is no narrower version of an obligation,
+// and the child is held to everything its parent is.
+func TestAChildInheritsItsParentsTerms(t *testing.T) {
+	s := newStore(t)
+	sp := orchestration.NewSpawner(s, nil)
+	sp.SetEnqueue((&recordingEnqueue{}).fn)
+	terms := []goal.Invariant{
+		{ID: "no-force-push", Statement: "never force-push a shared branch", Check: "check-reflog"},
+		{ID: "no-secrets", Statement: "no credential leaves the workspace"},
+	}
+	parent := putParent(t, s, "root", goal.Spec{
+		Objective: "lead", StopCondition: "done",
+		Grant: []string{"read", "write"}, Invariants: terms,
+	})
+
+	id, err := sp.Spawn(context.Background(), parent, mission.SubGoal{
+		Objective: "a piece of it", Actions: []string{"read"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	got := childSpec(t, s, id).Invariants
+	if len(got) != len(terms) {
+		t.Fatalf("child carries %d terms, want its parent's %d", len(got), len(terms))
+	}
+	for i, want := range terms {
+		if got[i] != want {
+			t.Fatalf("child term %d = %+v, want %+v unchanged", i, got[i], want)
+		}
+	}
+}
+
+// A parent that states no terms hands its child none, so an ordinary delegation is
+// unchanged by any of this.
+func TestAChildOfAnUntermedParentCarriesNoTerms(t *testing.T) {
+	s := newStore(t)
+	sp := orchestration.NewSpawner(s, nil)
+	sp.SetEnqueue((&recordingEnqueue{}).fn)
+	parent := putParent(t, s, "root", goal.Spec{Objective: "o", StopCondition: "c", Grant: []string{"read"}})
+
+	id, err := sp.Spawn(context.Background(), parent, mission.SubGoal{Objective: "x", Actions: []string{"read"}})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if got := childSpec(t, s, id).Invariants; len(got) != 0 {
+		t.Fatalf("child invented terms its parent never stated: %+v", got)
+	}
+}

@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/ionalpha/flynn/resource"
 )
 
 // A goal's invariants are the terms of the run: things that must stay true while the
@@ -135,17 +137,21 @@ type Breach struct {
 }
 
 // InvariantAuditor rules on whether a run has broken any of its terms. It is handed the
-// goal's spec and status and the terms it carries, and returns a finding per broken
-// term. Every term is offered every time: a term is a standing obligation, so one that
-// held at step 3 says nothing about step 4.
+// goal's record, its spec and the status this reconcile is working on, and the terms it
+// carries, and returns a finding per broken term. Every term is offered every time: a
+// term is a standing obligation, so one that held at step 3 says nothing about step 4.
 //
-// It is a port, not a policy: the production auditor reads the run's durable record and
-// runs each term's declared check, and a test supplies a deterministic one. An auditor
+// The status is passed separately from r because it is the one this pass has built and
+// not yet written: an auditor reading r.Status would be ruling on the run as it stood
+// before the step it is being asked about.
+//
+// It is a port, not a policy: the production auditor runs each term's declared check
+// against the run's own workspace, and a test supplies a deterministic one. An auditor
 // that cannot answer returns an error rather than an empty finding, because "I could not
 // check" and "I checked and it holds" are the difference between a guard and a
-// formality, and only the caller can decide whether a failed audit is transient.
+// formality, and only the auditor can say whether its failure is transient.
 type InvariantAuditor interface {
-	Audit(ctx context.Context, spec Spec, status Status, terms []Invariant) ([]Breach, error)
+	Audit(ctx context.Context, r resource.Resource, spec Spec, status Status, terms []Invariant) ([]Breach, error)
 }
 
 // ValidateInvariants refuses a set of terms that could never be audited: one missing its

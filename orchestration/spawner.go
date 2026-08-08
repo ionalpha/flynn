@@ -253,6 +253,13 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		Model:         childModel,
 		System:        childSystem,
 		Ledger:        req.Ledger,
+		// The terms of the run travel down the delegation, exactly as authority does and
+		// for the same reason. A grant a child cannot widen would be worth little if the
+		// child could be handed the work its parent was forbidden to do a certain way and
+		// then do it that way; spawning is not a way out of the terms. Unlike the grant
+		// this is not narrowed, because there is no narrower version of an obligation:
+		// the child is held to everything its parent is.
+		Invariants: parentSpec.Invariants,
 	}
 	raw, err := json.Marshal(childSpec)
 	if err != nil {
