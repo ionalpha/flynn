@@ -515,7 +515,8 @@ full flag list.
 | `flynn --version` | Print the version |
 
 Key flags: `--model`, `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`,
-`--max-memory`, `--max-processes`, `--no-learn`, `--data-dir`, `--profile <dir>`.
+`--max-memory`, `--max-processes`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
+`--profile <dir>`.
 
 ## Use it as a library
 

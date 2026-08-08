@@ -148,6 +148,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		model       = fs.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
 		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
+		noBundled   = fs.Bool("no-bundled-skills", false, "run without the skills shipped in the binary: the bundled set is removed from the store rather than merely left unseeded, so a run measures the learning loop against a clean baseline. Your own and learned skills are untouched.")
 		verbose     = fs.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
 		verboseLong = fs.Bool("verbose", false, "alias for -v")
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
@@ -170,6 +171,10 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	vrb := *verbose || *verboseLong
+
+	// Whether the binary's own skills apply is settled here, before anything opens a
+	// store, because opening one is what reconciles them.
+	bundledSkillsDisabled = *noBundled
 
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, version.String())
@@ -369,6 +374,12 @@ func effectiveModelSpec(flagValue string, explicit bool, dataDir string) string 
 // which provider may see the work, so the resolver refuses a missing credential instead
 // of falling back when this is set.
 var modelSpecExplicit bool
+
+// bundledSkillsDisabled records whether --no-bundled-skills was named. It is read
+// where the durable store is opened rather than passed through every command,
+// because reconciling the pack is part of opening the store and every command that
+// opens one has to agree about it.
+var bundledSkillsDisabled bool
 
 // flagPassed reports whether the named flag was set on the command line, so a default can
 // be told apart from a value the user passed explicitly.
