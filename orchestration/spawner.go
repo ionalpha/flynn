@@ -13,6 +13,7 @@ package orchestration
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -104,13 +105,60 @@ func (s *Spawner) SetEnqueue(fn func(ctx context.Context, key resource.Key) erro
 
 var _ mission.Fanout = (*Spawner)(nil)
 
+// Request is one spawn as the caller specifies it. Sub is the child's work and is the
+// whole of what a model-driven spawn asks for; the other fields are what a spawn
+// driven by a written plan needs, and they are what let both paths share one create.
+type Request struct {
+	// Sub is the child's objective and its authority: an ad-hoc action set, or a named
+	// archetype whose prompt and capabilities configure it.
+	Sub mission.SubGoal
+	// Name is the child's resource name. Setting it makes the spawn idempotent: the
+	// same request twice returns the same child and creates and charges for only one,
+	// which is what a caller that records the child after the create needs, because the
+	// gap between the two is a crash window. Empty asks the store for a generated name,
+	// which is what a model-driven spawn wants: each tool call is its own delegation and
+	// there is nothing to be idempotent about.
+	Name string
+	// StopCondition overrides the generic delegated-sub-goal condition. A child never
+	// inherits its parent's, which is the failure that produces a fork still running
+	// after the parent is done, so this is the caller's own narrower condition or
+	// nothing.
+	StopCondition string
+	// Ledger is the child's definition of done, written before it starts. A child handed
+	// one is created already planned, so it builds against the record it was given
+	// instead of planning its way to a different one.
+	Ledger []goal.LedgerItem
+}
+
 // Spawn creates a child goal for sub, owned by parent, with a narrowed grant, a
 // reserved share of the shared budget, at the next depth, under the concurrency
 // cap. It returns the child's id, or a refusal (depth exceeded, budget exhausted,
 // at capacity) the model sees as a failed spawn it can adapt to.
 func (s *Spawner) Spawn(ctx context.Context, parent resource.Resource, sub mission.SubGoal) (string, error) {
+	return s.SpawnRequest(ctx, parent, Request{Sub: sub})
+}
+
+// SpawnRequest is Spawn with the plan-driven fields available: a fixed child name, the
+// child's own stop condition, and the ledger it is to be judged against. Everything
+// that governs a spawn happens here, so neither caller can reach a create the other's
+// rules did not apply to.
+func (s *Spawner) SpawnRequest(ctx context.Context, parent resource.Resource, req Request) (string, error) {
 	if s.enqueue == nil {
 		return "", fault.New(fault.Terminal, "spawner_unbound", "spawner: enqueue not bound")
+	}
+	// A named request that already has its child is the idempotent case: return the
+	// child that exists without taking a concurrency slot or reserving a second share
+	// of the pool, so a caller re-entering after a crash resumes its fan-out rather
+	// than doubling it.
+	if req.Name != "" {
+		existing, err := s.store.Get(ctx, goal.Kind, parent.Scope, req.Name)
+		switch {
+		case err == nil:
+			s.adopt(existing, parent)
+			return existing.Name, nil
+		case !errors.Is(err, resource.ErrNotFound):
+			return "", fault.Wrap(fault.Transient, "spawn_lookup", err)
+		}
 	}
 	parentSpec, err := goal.DecodeSpec(parent)
 	if err != nil {
@@ -154,7 +202,7 @@ func (s *Spawner) Spawn(ctx context.Context, parent resource.Resource, sub missi
 		}
 	}
 
-	child, err := s.create(ctx, parent, parentSpec, sub, depth, pool)
+	child, err := s.create(ctx, parent, parentSpec, req, depth, pool)
 	if err != nil {
 		s.refund(ctx, pool, scope)
 		s.releaseSlot()
@@ -175,7 +223,8 @@ func (s *Spawner) Spawn(ctx context.Context, parent resource.Resource, sub missi
 // create builds and stores the child goal resource: owned by the parent (controller
 // owner, for cascade teardown), with a grant narrowed to the subset of the parent's
 // authority the sub-goal asked for, at the next depth, sharing the pool.
-func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSpec goal.Spec, sub mission.SubGoal, depth int, pool string) (resource.Resource, error) {
+func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSpec goal.Spec, req Request, depth int, pool string) (resource.Resource, error) {
+	sub := req.Sub
 	// A named Agent configures the child from its resolved bundle: its capabilities
 	// (intersected with the parent's authority, never widened) and its system prompt.
 	// An ad-hoc child takes its authority from the requested actions. An unknown Agent
@@ -190,26 +239,44 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		childGrant = narrowGrant(parentSpec.Grant, withModelGenerate(resolved.Capabilities))
 		childSystem, childDriver, childModel = resolved.System, resolved.Driver, resolved.Model
 	}
+	stop := req.StopCondition
+	if stop == "" {
+		stop = "the delegated sub-goal is accomplished"
+	}
 	childSpec := goal.Spec{
 		Objective:     sub.Objective,
-		StopCondition: "the delegated sub-goal is accomplished",
+		StopCondition: stop,
 		Grant:         childGrant,
 		Depth:         depth,
 		BudgetPool:    pool,
 		Driver:        childDriver,
 		Model:         childModel,
 		System:        childSystem,
+		Ledger:        req.Ledger,
 	}
 	raw, err := json.Marshal(childSpec)
 	if err != nil {
 		return resource.Resource{}, fault.Wrap(fault.Terminal, "spawn_encode", err)
 	}
 	child := resource.Resource{
-		APIVersion:   goal.GroupVersion,
-		Kind:         goal.Kind,
-		GenerateName: parent.Name + "-child-",
-		Scope:        parent.Scope,
-		Spec:         raw,
+		APIVersion: goal.GroupVersion,
+		Kind:       goal.Kind,
+		Name:       req.Name,
+		Scope:      parent.Scope,
+		Spec:       raw,
+	}
+	if req.Name == "" {
+		child.GenerateName = parent.Name + "-child-"
+	}
+	// A child handed its ledger has been planned, by whoever wrote the plan. Saying so
+	// on the record is what stops a planning-enabled runtime dispatching a planning step
+	// that would expand the objective into a second, different ledger.
+	if len(req.Ledger) > 0 {
+		enc, err := goal.Status{Planned: true}.Encode()
+		if err != nil {
+			return resource.Resource{}, fault.Wrap(fault.Terminal, "spawn_status_encode", err)
+		}
+		child.Status = enc
 	}
 	// OwnerReferences is a promoted embedded field, so it is set after the literal.
 	// The parent is the controller owner, so the child is garbage-collected when the
@@ -236,14 +303,7 @@ func (s *Spawner) Poll(ctx context.Context, ids []string) ([]mission.ChildResult
 	results := make([]mission.ChildResult, 0, len(ids))
 	allDone := true
 	for _, id := range ids {
-		s.mu.Lock()
-		rec := s.children[id]
-		s.mu.Unlock()
-		scope := resource.Scope{}
-		if rec != nil {
-			scope = rec.scope
-		}
-		r, err := s.store.Get(ctx, goal.Kind, scope, id)
+		r, err := s.store.Get(ctx, goal.Kind, s.childScope(id), id)
 		if err != nil {
 			return nil, false, fault.Wrap(fault.Transient, "spawn_poll_get", err)
 		}
@@ -263,6 +323,27 @@ func (s *Spawner) Poll(ctx context.Context, ids []string) ([]mission.ChildResult
 		}
 	}
 	return results, allDone, nil
+}
+
+// adopt takes bookkeeping for a child the spawner was handed back rather than created.
+// It only ever has anything to do in the resume case: a same-process repeat of a named
+// request already has its record, so this returns early and the one reservation that was
+// made is still the one that gets released. After a restart the map is empty while the
+// reservation is not, because a reservation lives on the budget resource rather than in
+// this process, so the adopted child is recorded as still holding it and the release
+// happens when it finishes. The pool is read off the child, which is where the spawn
+// that created it wrote the pool it charged.
+func (s *Spawner) adopt(child resource.Resource, parent resource.Resource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, known := s.children[child.Name]; known {
+		return
+	}
+	pool := parent.Name
+	if spec, err := goal.DecodeSpec(child); err == nil && spec.BudgetPool != "" {
+		pool = spec.BudgetPool
+	}
+	s.children[child.Name] = &childRec{scope: child.Scope, pool: pool}
 }
 
 // finish releases a terminal child's reservation and concurrency slot exactly once.

@@ -58,6 +58,18 @@ type Config struct {
 	// eventually reach. Nil leaves detection off, so a goal is bounded only by its step
 	// budget, exactly as before.
 	Progress goal.ProgressProbe
+	// Units runs the units of a goal's declared plan as governed child goals, in
+	// dependency order. Setting it turns plan-driven fan-out on: a goal whose spec
+	// carries a unit graph admits ready units through this rather than building, and it
+	// converges only once every unit is proven.
+	//
+	// It is the plan-driven half of fan-out and it does not replace the model-driven
+	// half: the spawn tool on the executor is untouched, and a goal carrying no units
+	// runs exactly as before. Leaving it nil is not a way to ignore a plan, because a
+	// goal that carries a graph with nothing wired to run it stalls saying so; a graph
+	// admitted, validated and then quietly skipped is the failure that reads as a goal
+	// which simply never fanned out.
+	Units goal.UnitSpawner
 	// Verifier runs a ledger item's declared check, and Evidence is the durable record
 	// its verdict is written to and read back from. Setting both closes the ledger loop:
 	// the run alternates building an item with running its check, and the verdicts on the
@@ -242,6 +254,13 @@ func New(cfg Config) (*Runtime, error) {
 	// a single-sided wire: the probe reads the record the worker already writes.
 	if cfg.Progress != nil {
 		ropts = append(ropts, goal.WithProgressProbe(cfg.Progress))
+	}
+
+	// Plan-driven fan-out is a single-sided wire too: the reconciler admits the units and
+	// settles them from what their children recorded, and the worker has no part in it,
+	// because a parked parent is a goal that dispatches no step at all.
+	if cfg.Units != nil {
+		ropts = append(ropts, goal.WithUnitSpawner(cfg.Units))
 	}
 
 	// Close the ledger loop, both sides at once. The gate is constructed here rather
