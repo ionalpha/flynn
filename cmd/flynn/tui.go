@@ -143,6 +143,11 @@ func newSessionShell(ctx context.Context, s *replSession, in io.Reader, out io.W
 	// Recall (and any future out-of-band note) lands in the scrollback as a muted
 	// line, so what the agent pulled in from earlier runs is visible.
 	s.notice = func(text string) { a.Append(th.Render(theme.Muted, "  "+text)) }
+	// This is the shell that can actually ask a person, so this is where the prompter is
+	// installed. A paused action raises the modal overlay and the operator's allow or
+	// deny resolves it; without this the session would have a gate and nobody to ask, and
+	// every listed action would be refused.
+	s.approval.prompter = approvalPrompter{host: host}
 	return a, host
 }
 

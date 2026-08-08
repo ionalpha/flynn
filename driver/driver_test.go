@@ -1,13 +1,17 @@
 package driver_test
 
 import (
+	"context"
 	"testing"
 
 	"pgregory.net/rapid"
 
+	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/ids"
+	"github.com/ionalpha/flynn/mission"
 )
 
 // fakeDriver is a no-op Driver for registry tests.
@@ -80,6 +84,43 @@ func TestBuiltinDriversBuild(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestDefaultDriverBuildsWithApproval: the approval gate is a governance ingredient, so it
+// travels in the Spec and reaches the loop the default driver builds, exactly as the brake
+// and the budget do. A loop chooses how a run reasons, never how much authority it has, and
+// a gate that a Router silently dropped would be a gate a run walks around by delegating.
+func TestDefaultDriverBuildsWithApproval(t *testing.T) {
+	d, err := driver.Default().Resolve(driver.NameDefault)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	gate := approval.NewGate(approval.Requirements{"shell": 1},
+		approval.NewVerifier(approval.NewKeyring(), approval.NewMemStore()))
+	signer, _, err := approval.GenerateEd25519Signer("operator", ids.Entropy(nil))
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+
+	// A gate with no prompter is the fail-closed non-interactive shape and it must still
+	// build: the two halves are independent on purpose.
+	if exec, stop, berr := d.Build(driver.Spec{
+		Approval: &driver.Approval{Gate: gate, Signer: signer, Host: "box"},
+	}); berr != nil || exec == nil || stop == nil {
+		t.Fatalf("build with a gate and no prompter: exec=%v stop=%v err=%v", exec, stop, berr)
+	}
+	if exec, stop, berr := d.Build(driver.Spec{
+		Approval: &driver.Approval{Gate: gate, Prompter: stubPrompter{}, Signer: signer, Host: "box"},
+	}); berr != nil || exec == nil || stop == nil {
+		t.Fatalf("build with both halves: exec=%v stop=%v err=%v", exec, stop, berr)
+	}
+}
+
+// stubPrompter satisfies the prompter port for the build test; nothing calls it.
+type stubPrompter struct{}
+
+func (stubPrompter) Prompt(context.Context, mission.ApprovalRequest) (mission.ApprovalDecision, error) {
+	return mission.ApprovalDecision{}, nil
 }
 
 // TestRegistryResolveProperty is the rigor property: a registry resolves every

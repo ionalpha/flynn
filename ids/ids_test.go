@@ -2,6 +2,7 @@ package ids_test
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -9,6 +10,29 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/ids"
 )
+
+// TestEntropyHandsBackTheGeneratorsSource: a caller that needs raw bytes rather than an
+// identifier takes them from the same source every identifier comes from. A deterministic
+// generator hands back its deterministic reader, which is what keeps a replay a replay all
+// the way down to a minted key; a nil generator falls back to the package default rather
+// than to a second, un-injectable source of randomness.
+func TestEntropyHandsBackTheGeneratorsSource(t *testing.T) {
+	fixed := bytes.NewReader(bytes.Repeat([]byte{0xab}, 64))
+	g := ids.NewGenerator(ids.WithEntropy(fixed))
+	if ids.Entropy(g) != io.Reader(fixed) {
+		t.Fatal("Entropy did not hand back the generator's own source")
+	}
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(ids.Entropy(g), got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if !bytes.Equal(got, []byte{0xab, 0xab, 0xab, 0xab}) {
+		t.Fatalf("read %x from the injected source, want the bytes it holds", got)
+	}
+	if ids.Entropy(nil) == nil {
+		t.Fatal("the package default has no entropy source")
+	}
+}
 
 func TestUUIDv7Format(t *testing.T) {
 	id := ids.New()
