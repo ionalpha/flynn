@@ -16,12 +16,12 @@ import (
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
-// defaultEvalRoot is where a skill's task set lives: outside the pack, so the agent
+// defaultEvalRoot is where a skill's exercise set lives: outside the pack, so the agent
 // cannot read its own eval through skill_resource mid-run, and outside the binary,
 // because it is an authoring instrument rather than something an install needs.
 const defaultEvalRoot = "evals"
 
-// runSkillAB measures one skill: it runs every task in the skill's set under both
+// runSkillAB measures one skill: it runs every exercise in the skill's set under both
 // conditions and prints the verdict. Each trial gets a fresh store and a fresh
 // working directory, so nothing a run learns or writes reaches the next one and the
 // only difference between the two arms is the skill.
@@ -40,25 +40,25 @@ func runSkillAB(args []string, modelSpec, dataDir string, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return measureSkill(ctx, out, set, repeats, func(ctx context.Context, task skillab.Task, repeat int, withSkill bool) (bool, error) {
-		return runTrial(ctx, out, model, plan, set.Skill, task, repeat, withSkill)
+	return measureSkill(ctx, out, set, repeats, func(ctx context.Context, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
+		return runTrial(ctx, out, model, plan, set.Skill, exercise, repeat, withSkill)
 	})
 }
 
-// skillABArgs parses the command's arguments and loads the task set. Everything it
+// skillABArgs parses the command's arguments and loads the exercise set. Everything it
 // can refuse, it refuses here, before a model is resolved or a store is opened: a
-// missing task set costs nothing to detect and would otherwise be found after the
+// missing exercise set costs nothing to detect and would otherwise be found after the
 // harness had already started charging for runs.
 func skillABArgs(args []string, out io.Writer) (skillab.Set, int, error) {
 	fs := flag.NewFlagSet("skill ab", flag.ContinueOnError)
 	fs.SetOutput(out)
-	repeats := fs.Int("repeats", 3, "runs per task per condition; the variance between runs is larger than the effect")
-	root := fs.String("tasks", defaultEvalRoot, "directory holding each skill's task set, one subdirectory per skill")
+	repeats := fs.Int("repeats", 3, "runs per exercise per condition; the variance between runs is larger than the effect")
+	root := fs.String("exercises", defaultEvalRoot, "directory holding each skill's exercise set, one subdirectory per skill")
 	if err := fs.Parse(args); err != nil {
 		return skillab.Set{}, 0, err
 	}
 	if fs.NArg() != 1 {
-		return skillab.Set{}, 0, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--tasks dir]`)
+		return skillab.Set{}, 0, errors.New(`usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
 	}
 	slug := fs.Arg(0)
 
@@ -69,7 +69,7 @@ func skillABArgs(args []string, out io.Writer) (skillab.Set, int, error) {
 	if set.Holdout() == 0 {
 		// Said out loud and not refused. A set with no holdout still measures something;
 		// what it cannot do is tell a skill that helps from a skill written to pass the
-		// tasks its own author chose.
+		// exercises its own author chose.
 		_, _ = fmt.Fprintf(out, "note: %s has no %s, so nothing here is held back from whoever wrote the skill\n",
 			slug, skillab.HoldoutFile)
 	}
@@ -83,8 +83,8 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 	if repeats < 1 {
 		repeats = 1
 	}
-	_, _ = fmt.Fprintf(out, "measuring %s over %d task(s) x %d repeat(s), both conditions: %d runs\n",
-		set.Skill, len(set.Tasks), repeats, 2*len(set.Tasks)*repeats)
+	_, _ = fmt.Fprintf(out, "measuring %s over %d exercise(s) x %d repeat(s), both conditions: %d runs\n",
+		set.Skill, len(set.Exercises), repeats, 2*len(set.Exercises)*repeats)
 	report, err := skillab.Measure(ctx, set, repeats, attempt)
 	if err != nil {
 		return err
@@ -92,28 +92,28 @@ func measureSkill(ctx context.Context, out io.Writer, set skillab.Set, repeats i
 	_, _ = fmt.Fprint(out, report.String())
 	if h := report.Holdout(); len(h.Pairs) > 0 {
 		// The held-out half gets its own line and is never folded into the total. A
-		// skill that helps on the tasks its author wrote and does nothing on the tasks
+		// skill that helps on the exercises its author wrote and does nothing on the ones
 		// someone else wrote has been fitted to its own eval, and one averaged verdict
 		// hides exactly that.
-		_, _ = fmt.Fprintf(out, "\nheld-out tasks alone: %s (%+.1f points, p=%.3f)\n", h.Verdict, h.Gain, h.P)
+		_, _ = fmt.Fprintf(out, "\nheld-out exercises alone: %s (%+.1f points, p=%.3f)\n", h.Verdict, h.Gain, h.P)
 	}
 	return nil
 }
 
-// runTrial is one arm of one pair: a run of the task's objective in a throwaway
-// workspace, graded by the task's verifier after the agent has stopped.
+// runTrial is one arm of one pair: a run of the exercise's objective in a throwaway
+// workspace, graded by the exercise's verifier after the agent has stopped.
 //
 // Everything is fresh. A new data directory, so no skill learned or memory written
 // by an earlier trial is recalled by this one; a new working directory, so the state
-// a previous run left behind cannot make the next task easier. Learning is off for
+// a previous run left behind cannot make the next exercise easier. Learning is off for
 // the same reason, and because a measurement that changed the thing it measures
 // would be reporting on a library that no longer exists.
-func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, slug string, task skillab.Task, repeat int, withSkill bool) (bool, error) {
+func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, slug string, exercise skillab.Exercise, repeat int, withSkill bool) (bool, error) {
 	arm := "without"
 	if withSkill {
 		arm = "with"
 	}
-	_, _ = fmt.Fprintf(out, "  [%s, repeat %d] %s\n", arm, repeat, task.Objective)
+	_, _ = fmt.Fprintf(out, "  [%s, repeat %d] %s\n", arm, repeat, exercise.Objective)
 
 	dataDir, err := os.MkdirTemp("", "flynn-ab-data-")
 	if err != nil {
@@ -138,12 +138,12 @@ func runTrial(ctx context.Context, out io.Writer, model llm.Model, plan harness.
 	}
 
 	// The run's own error is not the measurement. A run that stopped short failed the
-	// task, which is an observation; the verifier says so on its own, and it is the
+	// exercise, which is an observation; the verifier says so on its own, and it is the
 	// only thing that does.
-	if _, rerr := runLearningMission(ctx, io.Discard, model, plan, nil, workdir, task.Objective, "", store, nil, false, nil); rerr != nil {
+	if _, rerr := runLearningMission(ctx, io.Discard, model, plan, nil, workdir, exercise.Objective, "", store, nil, false, nil); rerr != nil {
 		_, _ = fmt.Fprintf(out, "    (the run stopped: %v)\n", rerr)
 	}
-	return runVerification(ctx, workdir, task.Verify), nil
+	return runVerification(ctx, workdir, exercise.Verify), nil
 }
 
 // pruneSkill removes one skill from the library, which is the whole of what

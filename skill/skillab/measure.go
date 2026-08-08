@@ -13,7 +13,7 @@ import (
 // after seeing the numbers is not measuring anything.
 const Alpha = 0.05
 
-// Attempt runs one task under one condition and reports whether the task's verifier
+// Attempt runs one exercise under one condition and reports whether the exercise's verifier
 // passed. withSkill is the only thing that differs between the two conditions: the
 // same objective, the same model, the same tools, the same fresh working directory,
 // and the skill under test either offered and readable or pruned from the library.
@@ -21,24 +21,24 @@ const Alpha = 0.05
 // An error is the harness failing rather than the run failing, and it stops the
 // measurement. A run that does not accomplish the objective is a false verdict, not
 // an error; those are the observations being counted.
-type Attempt func(ctx context.Context, t Task, repeat int, withSkill bool) (passed bool, err error)
+type Attempt func(ctx context.Context, t Exercise, repeat int, withSkill bool) (passed bool, err error)
 
-// Pair is one task attempted once in each condition. Pairing is what makes the
+// Pair is one exercise attempted once in each condition. Pairing is what makes the
 // comparison affordable: the variance between two runs of the same objective is
 // larger than the effect a skill has, so unpaired samples would need far more runs
 // to say anything.
 type Pair struct {
-	Task    Task
-	Repeat  int
-	With    bool
-	Without bool
+	Exercise Exercise
+	Repeat   int
+	With     bool
+	Without  bool
 }
 
 // Discordant reports whether the two conditions disagreed, which is the only kind of
 // pair that carries information about the difference between them.
 func (p Pair) Discordant() bool { return p.With != p.Without }
 
-// Measure runs every task in the set repeats times under both conditions and returns
+// Measure runs every exercise in the set repeats times under both conditions and returns
 // the report. Repeats below one are treated as one.
 //
 // The order is deliberate: both conditions of a pair run before the next pair
@@ -49,17 +49,17 @@ func Measure(ctx context.Context, set Set, repeats int, attempt Attempt) (Report
 		repeats = 1
 	}
 	rep := Report{Skill: set.Skill, Repeats: repeats}
-	for _, task := range set.Tasks {
+	for _, exercise := range set.Exercises {
 		for r := 1; r <= repeats; r++ {
-			with, err := attempt(ctx, task, r, true)
+			with, err := attempt(ctx, exercise, r, true)
 			if err != nil {
-				return Report{}, fmt.Errorf("skillab: %s repeat %d with the skill: %w", task.Name(), r, err)
+				return Report{}, fmt.Errorf("skillab: %s repeat %d with the skill: %w", exercise.Name(), r, err)
 			}
-			without, err := attempt(ctx, task, r, false)
+			without, err := attempt(ctx, exercise, r, false)
 			if err != nil {
-				return Report{}, fmt.Errorf("skillab: %s repeat %d without the skill: %w", task.Name(), r, err)
+				return Report{}, fmt.Errorf("skillab: %s repeat %d without the skill: %w", exercise.Name(), r, err)
 			}
-			rep.Pairs = append(rep.Pairs, Pair{Task: task, Repeat: r, With: with, Without: without})
+			rep.Pairs = append(rep.Pairs, Pair{Exercise: exercise, Repeat: r, With: with, Without: without})
 		}
 	}
 	return rep.scored(), nil
@@ -77,7 +77,7 @@ const (
 	// until it says something else.
 	NoDifference Verdict = "no measurable difference"
 	// Hurt is the skill's arm passing less often. A skill can make a run worse by
-	// spending the model's attention on a procedure the task did not need.
+	// spending the model's attention on a procedure the exercise did not need.
 	Hurt Verdict = "hurt"
 )
 
@@ -141,10 +141,10 @@ func (r Report) scored() Report {
 	return r
 }
 
-// Uninformative reports that the task set could not have told the two conditions
+// Uninformative reports that the exercise set could not have told the two conditions
 // apart: every pair agreed, so no arrangement of the skill would have changed the
 // numbers. It is the answer to "every skill passes on the first run", and it means
-// the tasks are wrong rather than the skill being fine.
+// the exercises are wrong rather than the skill being fine.
 func (r Report) Uninformative() bool {
 	return len(r.Pairs) > 0 && r.HelpedOnly == 0 && r.HurtOnly == 0
 }
@@ -160,32 +160,32 @@ func (r Report) AllFail() bool {
 	return len(r.Pairs) > 0 && r.WithPasses == 0 && r.WithoutPasses == 0
 }
 
-// Holdout returns the report restricted to the held-out tasks, rescored. A skill
-// that helps on the tasks its author wrote and does nothing on the tasks someone
+// Holdout returns the report restricted to the held-out exercises, rescored. A skill
+// that helps on the exercises its author wrote and does nothing on the ones someone
 // else wrote has been fitted to its own eval, and the two verdicts side by side are
 // what makes that visible.
 func (r Report) Holdout() Report {
 	out := Report{Skill: r.Skill, Repeats: r.Repeats}
 	for _, p := range r.Pairs {
-		if p.Task.Holdout {
+		if p.Exercise.Holdout {
 			out.Pairs = append(out.Pairs, p)
 		}
 	}
 	return out.scored()
 }
 
-// PerTask summarises each task: how often each arm passed. A task that never passes
+// PerExercise summarises each exercise: how often each arm passed. An exercise that never passes
 // in either arm is measuring nothing and is worth rewriting, and the only place that
 // shows is here.
-func (r Report) PerTask() []TaskResult {
+func (r Report) PerExercise() []ExerciseResult {
 	index := map[string]int{}
-	var out []TaskResult
+	var out []ExerciseResult
 	for _, p := range r.Pairs {
-		i, ok := index[p.Task.Objective]
+		i, ok := index[p.Exercise.Objective]
 		if !ok {
 			i = len(out)
-			index[p.Task.Objective] = i
-			out = append(out, TaskResult{Task: p.Task})
+			index[p.Exercise.Objective] = i
+			out = append(out, ExerciseResult{Exercise: p.Exercise})
 		}
 		out[i].Attempts++
 		if p.With {
@@ -195,20 +195,20 @@ func (r Report) PerTask() []TaskResult {
 			out[i].WithoutPasses++
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Task.Objective < out[j].Task.Objective })
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Exercise.Objective < out[j].Exercise.Objective })
 	return out
 }
 
-// TaskResult is one task's tally across its repeats.
-type TaskResult struct {
-	Task          Task
+// ExerciseResult is one exercise's tally across its repeats.
+type ExerciseResult struct {
+	Exercise      Exercise
 	Attempts      int
 	WithPasses    int
 	WithoutPasses int
 }
 
-// Decided reports whether this task ever separated the two arms.
-func (t TaskResult) Decided() bool { return t.WithPasses != t.WithoutPasses }
+// Decided reports whether this exercise ever separated the two arms.
+func (t ExerciseResult) Decided() bool { return t.WithPasses != t.WithoutPasses }
 
 // String renders the report as the paragraph an author reads before deciding
 // whether to keep the skill.
@@ -216,38 +216,38 @@ func (r Report) String() string {
 	var b strings.Builder
 	n := len(r.Pairs)
 	fmt.Fprintf(&b, "%s: %s\n", r.Skill, r.Verdict)
-	fmt.Fprintf(&b, "  %d paired runs (%d tasks x %d repeats)\n", n, taskCount(r.Pairs), r.Repeats)
+	fmt.Fprintf(&b, "  %d paired runs (%d exercises x %d repeats)\n", n, exerciseCount(r.Pairs), r.Repeats)
 	fmt.Fprintf(&b, "  passed with the skill %d/%d, without it %d/%d (%+.1f points)\n",
 		r.WithPasses, n, r.WithoutPasses, n, r.Gain)
 	fmt.Fprintf(&b, "  disagreed on %d pairs: %d only with, %d only without (p=%.3f)\n",
 		r.HelpedOnly+r.HurtOnly, r.HelpedOnly, r.HurtOnly, r.P)
 	switch {
 	case r.AllPass():
-		b.WriteString("  every run passed in both conditions: the tasks are too easy to measure anything\n")
+		b.WriteString("  every run passed in both conditions: the exercises are too easy to measure anything\n")
 	case r.AllFail():
-		b.WriteString("  no run passed in either condition: the tasks are out of reach, so nothing was measured\n")
+		b.WriteString("  no run passed in either condition: the exercises are out of reach, so nothing was measured\n")
 	case r.Uninformative():
-		b.WriteString("  the two conditions never disagreed: this task set cannot tell them apart\n")
+		b.WriteString("  the two conditions never disagreed: this exercise set cannot tell them apart\n")
 	}
-	for _, t := range r.PerTask() {
+	for _, t := range r.PerExercise() {
 		mark := " "
 		if !t.Decided() {
 			mark = "="
 		}
 		held := ""
-		if t.Task.Holdout {
+		if t.Exercise.Holdout {
 			held = " [holdout]"
 		}
-		fmt.Fprintf(&b, "  %s %d/%d vs %d/%d%s  %s\n", mark, t.WithPasses, t.Attempts, t.WithoutPasses, t.Attempts, held, t.Task.Objective)
+		fmt.Fprintf(&b, "  %s %d/%d vs %d/%d%s  %s\n", mark, t.WithPasses, t.Attempts, t.WithoutPasses, t.Attempts, held, t.Exercise.Objective)
 	}
 	return b.String()
 }
 
-// taskCount counts the distinct tasks behind a set of pairs.
-func taskCount(pairs []Pair) int {
+// exerciseCount counts the distinct exercises behind a set of pairs.
+func exerciseCount(pairs []Pair) int {
 	seen := map[string]bool{}
 	for _, p := range pairs {
-		seen[p.Task.Objective] = true
+		seen[p.Exercise.Objective] = true
 	}
 	return len(seen)
 }

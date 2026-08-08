@@ -17,22 +17,22 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// writeTaskSet lays out one skill's task set the way an author keeps it: outside the
+// writeExerciseSet lays out one skill's exercise set the way an author keeps it: outside the
 // pack, one directory per skill.
-func writeTaskSet(t *testing.T, slug, tasks string) string {
+func writeExerciseSet(t *testing.T, slug, exercises string) string {
 	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, slug)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, skillab.TasksFile), []byte(tasks), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, skillab.ExercisesFile), []byte(exercises), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return root
 }
 
-// The command refuses before it spends anything. A skill with no task set, and a
+// The command refuses before it spends anything. A skill with no exercise set, and a
 // call with no skill named, both stop at the argument check: resolving a model and
 // opening a store first would charge for a run that was never going to happen.
 func TestSkillABRefusesBeforeItSpends(t *testing.T) {
@@ -40,18 +40,18 @@ func TestSkillABRefusesBeforeItSpends(t *testing.T) {
 	if err := runSkillAB(nil, "", t.TempDir(), &out); err == nil {
 		t.Fatal("a call naming no skill was accepted")
 	}
-	root := writeTaskSet(t, "present", "do the thing | exit 0\n")
-	err := runSkillAB([]string{"--tasks", root, "absent"}, "", t.TempDir(), &out)
+	root := writeExerciseSet(t, "present", "do the thing | exit 0\n")
+	err := runSkillAB([]string{"--exercises", root, "absent"}, "", t.TempDir(), &out)
 	if err == nil {
-		t.Fatal("a skill with no task set was accepted")
+		t.Fatal("a skill with no exercise set was accepted")
 	}
-	if !strings.Contains(err.Error(), "no task set") {
-		t.Errorf("err = %v, want it to name the missing task set", err)
+	if !strings.Contains(err.Error(), "no exercise set") {
+		t.Errorf("err = %v, want it to name the missing exercise set", err)
 	}
 }
 
 // A trial is one arm of one pair, and the verifier is the only thing that decides
-// it. The model here says it is done without doing anything, so the task's own
+// it. The model here says it is done without doing anything, so the exercise's own
 // command is what separates the pass from the failure.
 func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -67,8 +67,8 @@ func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			var out bytes.Buffer
 			model := llmtest.NewScripted(llmtest.SayText("done"))
-			task := skillab.Task{Objective: "do the thing", Verify: tc.verify}
-			got, err := runTrial(ctx, &out, model, harness.Plan{}, "any-skill", task, 1, true)
+			exercise := skillab.Exercise{Objective: "do the thing", Verify: tc.verify}
+			got, err := runTrial(ctx, &out, model, harness.Plan{}, "any-skill", exercise, 1, true)
 			if err != nil {
 				t.Fatalf("trial: %v", err)
 			}
@@ -91,9 +91,9 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 	defer cancel()
 	var out bytes.Buffer
 	model := llmtest.NewScripted(llmtest.SayText("done"))
-	task := skillab.Task{Objective: "do the thing", Verify: "exit 0"}
+	exercise := skillab.Exercise{Objective: "do the thing", Verify: "exit 0"}
 
-	_, err := runTrial(ctx, &out, model, harness.Plan{}, "never-shipped", task, 1, false)
+	_, err := runTrial(ctx, &out, model, harness.Plan{}, "never-shipped", exercise, 1, false)
 	if err == nil {
 		t.Fatal("the arm without a skill the library does not hold ran anyway")
 	}
@@ -104,19 +104,19 @@ func TestSkillABRefusesToMeasureTheAbsenceOfAnAbsentSkill(t *testing.T) {
 
 // The report a reader sees carries the verdict, the tallies behind it, and the
 // held-out half on its own line. The last of those is the point: a skill that helps
-// on its author's tasks and does nothing on the tasks someone else wrote has been
+// on its author's exercises and does nothing on the exercises someone else wrote has been
 // fitted to its own eval, and one averaged verdict would hide it.
 func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 	set := skillab.Set{Skill: "systematic-debugging"}
 	for i := range 6 {
-		set.Tasks = append(set.Tasks, skillab.Task{Objective: fmt.Sprintf("open task %d", i), Verify: "exit 0"})
+		set.Exercises = append(set.Exercises, skillab.Exercise{Objective: fmt.Sprintf("open exercise %d", i), Verify: "exit 0"})
 	}
-	set.Tasks = append(set.Tasks, skillab.Task{Objective: "held out", Verify: "exit 0", Holdout: true})
+	set.Exercises = append(set.Exercises, skillab.Exercise{Objective: "held out", Verify: "exit 0", Holdout: true})
 
 	var out bytes.Buffer
-	err := measureSkill(context.Background(), &out, set, 1, func(_ context.Context, tk skillab.Task, _ int, withSkill bool) (bool, error) {
+	err := measureSkill(context.Background(), &out, set, 1, func(_ context.Context, tk skillab.Exercise, _ int, withSkill bool) (bool, error) {
 		if tk.Holdout {
-			return true, nil // the skill changes nothing on the held-out task
+			return true, nil // the skill changes nothing on the held-out exercise
 		}
 		return withSkill, nil
 	})
@@ -125,9 +125,9 @@ func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 	}
 	got := out.String()
 	for _, want := range []string{
-		"measuring systematic-debugging over 7 task(s) x 1 repeat(s), both conditions: 14 runs",
+		"measuring systematic-debugging over 7 exercise(s) x 1 repeat(s), both conditions: 14 runs",
 		"systematic-debugging: helped",
-		"held-out tasks alone: no measurable difference",
+		"held-out exercises alone: no measurable difference",
 	} {
 		if !strings.Contains(got, want) {
 			t.Errorf("the report does not say %q:\n%s", want, got)
@@ -139,9 +139,9 @@ func TestSkillABReportsTheHoldoutSeparately(t *testing.T) {
 // never be printed over a measurement that did not finish: a partial tally reads
 // exactly like a complete one.
 func TestSkillABReportsNothingWhenTheMeasurementFails(t *testing.T) {
-	set := skillab.Set{Skill: "x", Tasks: []skillab.Task{{Objective: "do the thing", Verify: "exit 0"}}}
+	set := skillab.Set{Skill: "x", Exercises: []skillab.Exercise{{Objective: "do the thing", Verify: "exit 0"}}}
 	var out bytes.Buffer
-	err := measureSkill(context.Background(), &out, set, 0, func(context.Context, skillab.Task, int, bool) (bool, error) {
+	err := measureSkill(context.Background(), &out, set, 0, func(context.Context, skillab.Exercise, int, bool) (bool, error) {
 		return false, errors.New("the sandbox would not start")
 	})
 	if err == nil {
@@ -162,17 +162,17 @@ func TestSkillABRefusesAnUnknownFlag(t *testing.T) {
 }
 
 // A set with no holdout is measured and said out loud. Refusing it would stop an
-// author measuring anything until a second person had written tasks; staying quiet
-// would let a skill be reported as helping on the only tasks its author chose.
+// author measuring anything until a second person had written exercises; staying quiet
+// would let a skill be reported as helping on the only exercises its author chose.
 func TestSkillABSaysWhenNothingIsHeldBack(t *testing.T) {
-	root := writeTaskSet(t, "open-only", "do the thing | exit 0\n")
+	root := writeExerciseSet(t, "open-only", "do the thing | exit 0\n")
 	var out bytes.Buffer
-	set, repeats, err := skillABArgs([]string{"--tasks", root, "--repeats", "2", "open-only"}, &out)
+	set, repeats, err := skillABArgs([]string{"--exercises", root, "--repeats", "2", "open-only"}, &out)
 	if err != nil {
 		t.Fatalf("args: %v", err)
 	}
-	if repeats != 2 || len(set.Tasks) != 1 || set.Skill != "open-only" {
-		t.Fatalf("parsed %d repeats over %d tasks for %q", repeats, len(set.Tasks), set.Skill)
+	if repeats != 2 || len(set.Exercises) != 1 || set.Skill != "open-only" {
+		t.Fatalf("parsed %d repeats over %d exercises for %q", repeats, len(set.Exercises), set.Skill)
 	}
 	if !strings.Contains(out.String(), "nothing here is held back") {
 		t.Errorf("a set with no holdout was measured without saying so:\n%s", out.String())
@@ -183,12 +183,12 @@ func TestSkillABSaysWhenNothingIsHeldBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	var quiet bytes.Buffer
-	set, _, err = skillABArgs([]string{"--tasks", root, "open-only"}, &quiet)
+	set, _, err = skillABArgs([]string{"--exercises", root, "open-only"}, &quiet)
 	if err != nil {
 		t.Fatalf("args: %v", err)
 	}
 	if set.Holdout() != 1 {
-		t.Errorf("%d held-out tasks, want 1", set.Holdout())
+		t.Errorf("%d held-out exercises, want 1", set.Holdout())
 	}
 	if strings.Contains(quiet.String(), "held back") {
 		t.Errorf("a set with a holdout was warned about anyway:\n%s", quiet.String())

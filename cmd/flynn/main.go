@@ -312,7 +312,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 
 	case "skill":
 		if len(rest) < 2 || rest[1] != "ab" {
-			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn skill ab <skill> [--repeats n] [--tasks dir]`)
+			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
 			return 2
 		}
 		return inv.exit(runSkillAB(rest[2:], inv.modelSpec, inv.dataDir, inv.stdout))
@@ -442,7 +442,7 @@ func printUsage(w io.Writer) {
   flynn db reset             move an unusable database aside (backed up) so the next run recreates it; also 'db path' and 'db backup'
   flynn notices [--refresh] [--all]  show the signed security advisories and release notices that apply to this build
   flynn regrade              re-grade learned skills against the working directory
-  flynn skill ab <skill>     measure whether a skill helps: its tasks run with it and without it, paired
+  flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version

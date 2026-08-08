@@ -16,7 +16,7 @@ import (
 // by the people who wrote the skills flatter them.
 func TestProp_TheVerdictIsSymmetricUnderSwappingTheArms(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		n := rapid.IntRange(1, 20).Draw(rt, "tasks")
+		n := rapid.IntRange(1, 20).Draw(rt, "exercises")
 		with := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "with")
 		without := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "without")
 
@@ -43,11 +43,11 @@ func TestProp_TheVerdictIsSymmetricUnderSwappingTheArms(t *testing.T) {
 // Pairs the two arms agreed on carry no information about the difference between
 // them, so adding any number of them moves neither the significance nor the verdict.
 // This is the property that makes a small measurement trustworthy: it says the
-// harness cannot be talked into a result by padding the task set with tasks that
-// both arms pass.
+// harness cannot be talked into a result by padding the set with exercises that both
+// arms pass.
 func TestProp_AgreeingPairsDoNotMoveTheVerdict(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		n := rapid.IntRange(1, 12).Draw(rt, "tasks")
+		n := rapid.IntRange(1, 12).Draw(rt, "exercises")
 		with := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "with")
 		without := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "without")
 		padded := rapid.IntRange(0, 10).Draw(rt, "agreeing pairs")
@@ -75,13 +75,13 @@ func TestProp_AgreeingPairsDoNotMoveTheVerdict(t *testing.T) {
 // itself would be read as fact.
 func TestProp_TheReportAgreesWithItsOwnPairs(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
-		n := rapid.IntRange(0, 25).Draw(rt, "tasks")
+		n := rapid.IntRange(0, 25).Draw(rt, "exercises")
 		with := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "with")
 		without := rapid.SliceOfN(rapid.Bool(), n, n).Draw(rt, "without")
 		rep := measureFrom(rt, with, without)
 
 		if len(rep.Pairs) != n {
-			rt.Fatalf("%d pairs from %d tasks", len(rep.Pairs), n)
+			rt.Fatalf("%d pairs from %d exercises", len(rep.Pairs), n)
 		}
 		var wantWith, wantWithout, helped, hurt int
 		for i := range n {
@@ -116,15 +116,15 @@ func TestProp_TheReportAgreesWithItsOwnPairs(t *testing.T) {
 	})
 }
 
-// measureFrom runs a measurement whose outcomes are dictated, one task per element.
+// measureFrom runs a measurement whose outcomes are dictated, one exercise per element.
 func measureFrom(rt *rapid.T, with, without []bool) skillab.Report {
 	rt.Helper()
 	s := skillab.Set{Skill: "under-test"}
 	for i := range with {
-		s.Tasks = append(s.Tasks, skillab.Task{Objective: fmt.Sprintf("task %d", i), Verify: "exit 0", Line: i + 1})
+		s.Exercises = append(s.Exercises, skillab.Exercise{Objective: fmt.Sprintf("exercise %d", i), Verify: "exit 0", Line: i + 1})
 	}
 	i := 0
-	rep, err := skillab.Measure(context.Background(), s, 1, func(_ context.Context, _ skillab.Task, _ int, withSkill bool) (bool, error) {
+	rep, err := skillab.Measure(context.Background(), s, 1, func(_ context.Context, _ skillab.Exercise, _ int, withSkill bool) (bool, error) {
 		defer func() {
 			if !withSkill {
 				i++
