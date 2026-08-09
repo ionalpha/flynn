@@ -130,7 +130,7 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	rstore := store.Resources(reg)
 
 	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", nil, sandbox.ResourceLimits{}, approvalSetup{})
+		rstore, store.Jobs(), store.Log(), nil, "", nil, sandbox.ResourceLimits{}, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble the mission the binary assembles: %v", err)
 	}
