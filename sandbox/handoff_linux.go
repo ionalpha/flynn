@@ -39,18 +39,10 @@ func openHandoff(c *exec.Cmd, kind, envOn, envFD string) (parent *net.UnixConn, 
 	parentFile := os.NewFile(uintptr(pair[0]), "flynn-"+kind+"-handoff")
 	child = os.NewFile(uintptr(pair[1]), "flynn-"+kind+"-handoff-child")
 
-	// FileConn dups, so the original is closed here.
-	conn, err := net.FileConn(parentFile)
-	_ = parentFile.Close()
+	parent, err = unixConnFromFile(parentFile, kind)
 	if err != nil {
 		_ = child.Close()
-		return nil, nil, fmt.Errorf("sandbox: %s handoff conn: %w", kind, err)
-	}
-	parent, ok := conn.(*net.UnixConn)
-	if !ok {
-		_ = conn.Close()
-		_ = child.Close()
-		return nil, nil, fmt.Errorf("sandbox: %s handoff is %T, not a unix socket", kind, conn)
+		return nil, nil, err
 	}
 
 	c.ExtraFiles = append(c.ExtraFiles, child)
@@ -60,4 +52,24 @@ func openHandoff(c *exec.Cmd, kind, envOn, envFD string) (parent *net.UnixConn, 
 		envFD: strconv.Itoa(childFD),
 	})
 	return parent, child, nil
+}
+
+// unixConnFromFile turns one end of the handoff socketpair into the net.UnixConn the
+// serve and release goroutines share, and takes ownership of f either way: FileConn dups
+// the descriptor, so the original is closed here whether it succeeded or not. kind names
+// the handoff in the errors. A descriptor that is not a socket at all, or is a socket of
+// some other family, is reported rather than used, because everything downstream reads
+// SCM_RIGHTS control messages off it and would otherwise fail somewhere less obvious.
+func unixConnFromFile(f *os.File, kind string) (*net.UnixConn, error) {
+	conn, err := net.FileConn(f)
+	_ = f.Close()
+	if err != nil {
+		return nil, fmt.Errorf("sandbox: %s handoff conn: %w", kind, err)
+	}
+	parent, ok := conn.(*net.UnixConn)
+	if !ok {
+		_ = conn.Close()
+		return nil, fmt.Errorf("sandbox: %s handoff is %T, not a unix socket", kind, conn)
+	}
+	return parent, nil
 }
