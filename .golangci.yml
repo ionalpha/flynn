@@ -48,8 +48,11 @@ linters:
       default-signifies-exhaustive: true
     dupl:
       # A ratchet on copy-pasted production code, in tokens. Shipping code is clean
-      # down to 115 today, so 120 is the nearest round ceiling that passes and it can
-      # be lowered as further clone groups are collapsed. The one pair just under it
+      # down to 115 on all three build platforms today, so 120 is the nearest round
+      # ceiling that passes and it can be lowered as further clone groups are
+      # collapsed. Check every platform when lowering it: the linux-only pair this
+      # rule first caught is invisible to a lint pass run on windows. The one pair
+      # just under it
       # is the sqlite memory and skill Delete methods: identical in shape, but the
       # shared part is already the commit combinator they both call, and the four
       # remaining lines are per-type wiring that only a generic indirection could
