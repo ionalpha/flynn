@@ -260,3 +260,78 @@ func TestAMissingRegisterIsAnError(t *testing.T) {
 		t.Fatal("Check with a missing register succeeded")
 	}
 }
+
+// A root that is not there is an error, not an empty seam list. Reporting no
+// interfaces because the tree could not be walked would pass the check by finding
+// nothing to check, which is the failure mode a coverage gate exists to notice.
+func TestAMissingTreeIsAnError(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "no-such-tree")
+	if _, err := portregister.Seams(missing); err == nil {
+		t.Fatal("Seams of a missing tree succeeded")
+	}
+	if _, err := portregister.Check(missing, filepath.Join(missing, "docs", "R.md")); err == nil {
+		t.Fatal("Check over a missing tree succeeded")
+	}
+}
+
+// A file that does not parse is skipped rather than failing the check. The compiler
+// reports it, the build fails on it, and saying so here would only say it twice.
+// A parseable file beside it is still read, so one broken file does not blind the gate.
+func TestAnUnparseableFileIsSkippedAndItsNeighbourIsStillRead(t *testing.T) {
+	findings := check(t, oneRow, map[string]string{
+		"widget/widget.go": "package widget\ntype Spinner interface{ Spin() }\n",
+		"widget/broken.go": "package widget\nthis is not go at all {{{\n",
+	})
+	if len(findings) != 0 {
+		t.Fatalf("findings = %v, want none: the broken file is the compiler's problem", findings)
+	}
+}
+
+// A pipe-bearing line that is not a table row is prose, not a verdict. The register
+// is a document before it is a data structure, and a parser that read every pipe as
+// a row would invent rows out of sentences.
+func TestAPipeInProseIsNotARow(t *testing.T) {
+	register := oneRow + "\nThe spinner is chosen by `widget.Local` | never by the host.\n"
+	root := writeTree(t, map[string]string{
+		"docs/REGISTER.md": register,
+		"widget/widget.go": "package widget\ntype Spinner interface{ Spin() }\n",
+	})
+	reg, err := portregister.ParseRegister(filepath.Join(root, "docs", "REGISTER.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reg.Rows) != 1 {
+		t.Fatalf("rows = %v, want only the real one", reg.Rows)
+	}
+}
+
+// Findings come back in a stable order, seams by position and register entries by
+// subject. A gate whose output reshuffled between runs would make a diff of two
+// failures unreadable, which is most of what somebody does with them.
+func TestFindingsAreOrdered(t *testing.T) {
+	register := oneRow +
+		"| `gizmo.Cranker` | `gizmo.Local` | `cmd/g` | shipped |\n" +
+		"| `doohickey.Twister` | `doohickey.Local` | `cmd/d` | shipped |\n"
+	findings := check(t, register, map[string]string{
+		"widget/a_widget.go": "package widget\ntype Spinner interface{ Spin() }\ntype Wobbler interface{ Wobble() }\n",
+		"widget/z_widget.go": "package widget\ntype Latch interface{ Shut() }\n",
+	})
+	if len(findings) < 4 {
+		t.Fatalf("findings = %v, want the two unaccounted seams and the two vanished packages", findings)
+	}
+	for i := 1; i < len(findings); i++ {
+		if findings[i-1].Where > findings[i].Where {
+			t.Fatalf("findings are not ordered by position: %q then %q", findings[i-1].Where, findings[i].Where)
+		}
+	}
+	// The register's own findings share one Where, so their order is by subject.
+	var subjects []string
+	for _, f := range findings {
+		if !strings.Contains(f.Where, ".go:") {
+			subjects = append(subjects, f.Subject)
+		}
+	}
+	if len(subjects) != 2 || subjects[0] > subjects[1] {
+		t.Fatalf("register findings = %v, want both, sorted by subject", subjects)
+	}
+}

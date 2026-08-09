@@ -104,17 +104,18 @@ func Seams(root string) ([]Seam, error) {
 		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
 			return nil
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
+		// WalkDir only ever hands back paths under root, so the relative form is a
+		// prefix trim. filepath.Rel would be the general answer and would carry an error
+		// branch that cannot be reached from here, which is worse than the trim: dead
+		// code in a gate is code nobody has ever seen run.
+		rel := filepath.ToSlash(strings.TrimPrefix(strings.TrimPrefix(path, root), string(filepath.Separator)))
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
 			// A file that does not parse is the compiler's problem; the build fails on it
 			// either way, and reporting it here would only say so twice.
 			return nil //nolint:nilerr // parse errors are reported by the build
 		}
-		out = append(out, interfacesIn(fset, file, filepath.ToSlash(rel))...)
+		out = append(out, interfacesIn(fset, file, rel)...)
 		return nil
 	})
 	if err != nil {
@@ -224,10 +225,10 @@ func ParseRegister(path string) (Register, error) {
 		if m == nil {
 			continue
 		}
+		// Split never returns an empty slice, so the last cell is always there to read.
+		// A one-celled line reads its only cell as the verdict, finds it is not one, and
+		// falls through with the rest of the prose.
 		cells := strings.Split(m[1], "|")
-		if len(cells) < 2 {
-			continue
-		}
 		verdict := strings.TrimSpace(cells[len(cells)-1])
 		if !knownVerdicts[verdict] {
 			continue
