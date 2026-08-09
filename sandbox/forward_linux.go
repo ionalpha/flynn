@@ -91,32 +91,10 @@ func ForwardBridge(hostURL string) (childURL, forwardTo string) {
 // registered on the forward config, so a launch that dies before it can release is still
 // cleaned up when the sandbox closes.
 func (l *Local) attachLoopbackForward(c *exec.Cmd) (func(), error) {
-	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	parent, child, err := openHandoff(c, "forward", envForward, envForwardFD)
 	if err != nil {
-		return func() {}, fmt.Errorf("sandbox: forward handoff socketpair: %w", err)
+		return func() {}, err
 	}
-	parentFile := os.NewFile(uintptr(pair[0]), "flynn-forward-handoff")
-	child := os.NewFile(uintptr(pair[1]), "flynn-forward-handoff-child")
-
-	conn, err := net.FileConn(parentFile)
-	_ = parentFile.Close()
-	if err != nil {
-		_ = child.Close()
-		return func() {}, fmt.Errorf("sandbox: forward handoff conn: %w", err)
-	}
-	parent, ok := conn.(*net.UnixConn)
-	if !ok {
-		_ = conn.Close()
-		_ = child.Close()
-		return func() {}, fmt.Errorf("sandbox: forward handoff is %T, not a unix socket", conn)
-	}
-
-	c.ExtraFiles = append(c.ExtraFiles, child)
-	childFD := 2 + len(c.ExtraFiles) // ExtraFiles[i] is descriptor 3+i in the child
-	c.Env = mergeEnv(c.Env, map[string]string{
-		envForward:   "1",
-		envForwardFD: strconv.Itoa(childFD),
-	})
 
 	h := &forwardHandoff{parent: parent, child: child, hostAddr: l.forward.hostAddr, owner: l.forward}
 	l.forward.addChild(h, h.release)

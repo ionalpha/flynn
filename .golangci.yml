@@ -9,6 +9,7 @@ linters:
     - bodyclose
     - copyloopvar
     - depguard
+    - dupl
     - errcheck
     - errname
     - errorlint
@@ -45,6 +46,18 @@ linters:
       # the remaining enum values, so code is not forced to enumerate every constant.
       # Switches without a default are still checked, catching real missing cases.
       default-signifies-exhaustive: true
+    dupl:
+      # A ratchet on copy-pasted production code, in tokens. Shipping code is clean
+      # down to 115 on all three build platforms today, so 120 is the nearest round
+      # ceiling that passes and it can be lowered as further clone groups are
+      # collapsed. Check every platform when lowering it: the linux-only pair this
+      # rule first caught is invisible to a lint pass run on windows. The one pair
+      # just under it
+      # is the sqlite memory and skill Delete methods: identical in shape, but the
+      # shared part is already the commit combinator they both call, and the four
+      # remaining lines are per-type wiring that only a generic indirection could
+      # merge. Tests are excluded below.
+      threshold: 120
     gocyclo:
       # A ratchet, lowered as the functions that set it are decomposed. The ceiling is
       # now a single test double (a fake GitHub API whose one handler routes every
@@ -307,6 +320,15 @@ linters:
       # enum exhaustiveness is a production-code concern.
       - linters:
           - exhaustive
+        path: _test\.go
+      # Two test cases that differ only in the fixture they set up and the value they
+      # assert are meant to read that way: each one states its own scenario end to end,
+      # and factoring the shared middle into a helper is what makes a failing test hard
+      # to read. Keeping tests in scope would force the dupl threshold up to 180 and
+      # leave a 60-token band of real production copy-paste unguarded, so the ratchet
+      # is pointed at shipping code instead.
+      - linters:
+          - dupl
         path: _test\.go
 
 formatters:
