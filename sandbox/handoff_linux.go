@@ -12,6 +12,13 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// socketpair is unix.Socketpair, indirected so a test can drive openHandoff's two failure
+// branches. Neither fails in practice: the kernel refuses a socketpair only when the
+// process is out of descriptors, and the pair it returns is always a unix socket. Both
+// branches still promise something a caller relies on, that nothing has been attached to
+// the command and no descriptor leaks, so they are exercised rather than assumed.
+var socketpair = unix.Socketpair
+
 // openHandoff builds the socketpair a launcher hands a listening socket back on, and
 // wires the launcher's end into the command about to be run. Both governed-network
 // features need it: a socket keeps the network namespace it was created in for its whole
@@ -32,7 +39,7 @@ func openHandoff(c *exec.Cmd, kind, envOn, envFD string) (parent *net.UnixConn, 
 	// SOCK_CLOEXEC so an unrelated fork does not inherit the handoff. The descriptor the
 	// launcher gets is not this one: exec.Cmd dups ExtraFiles into the child and clears
 	// close-on-exec on the dup, which is what lets it survive the launcher's own exec.
-	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	pair, err := socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, nil, fmt.Errorf("sandbox: %s handoff socketpair: %w", kind, err)
 	}

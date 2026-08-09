@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // The handoff is what lets a listening socket created inside the child's network
@@ -120,6 +122,78 @@ func TestUnixConnFromFileRefusesASocketOfAnotherFamily(t *testing.T) {
 	if !strings.Contains(err.Error(), "not a unix socket") {
 		t.Fatalf("expected the error to say the socket is the wrong kind, got %v", err)
 	}
+}
+
+// Out of descriptors is the one way the kernel refuses a socketpair. The caller then goes
+// on to build the command without governed networking, so the failure has to leave the
+// command exactly as it found it; an ExtraFiles entry or a control variable left behind
+// would tell the launcher to wait for a handoff that will never come.
+func TestOpenHandoffLeavesTheCommandAloneWhenTheSocketpairFails(t *testing.T) {
+	withSocketpair(t, func(int, int, int) ([2]int, error) { return [2]int{}, unix.EMFILE })
+
+	c := exec.Command("true")
+	c.Env = []string{"PATH=/usr/bin"}
+
+	parent, child, err := openHandoff(c, "egress", envEgress, envEgressFD)
+	if err == nil {
+		_ = parent.Close()
+		_ = child.Close()
+		t.Fatal("expected a refused socketpair to fail the handoff")
+	}
+	if !strings.Contains(err.Error(), "egress handoff socketpair") {
+		t.Fatalf("expected the error to name the egress socketpair, got %v", err)
+	}
+	if len(c.ExtraFiles) != 0 {
+		t.Fatalf("expected no file attached to the command, got %d", len(c.ExtraFiles))
+	}
+	if !slices.Equal(c.Env, []string{"PATH=/usr/bin"}) {
+		t.Fatalf("expected the environment untouched, got %v", c.Env)
+	}
+}
+
+// The other branch: a pair that is not a unix socket. The launcher's end has already been
+// wrapped in an *os.File by this point and is owned by nothing yet, so the handoff has to
+// close it itself or the descriptor leaks on every failed launch.
+func TestOpenHandoffClosesTheLaunchersEndWhenTheConnectionCannotBeBuilt(t *testing.T) {
+	f, err := os.CreateTemp(t.TempDir(), "not-a-socket")
+	if err != nil {
+		t.Fatalf("create the file: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	first, err := unix.Dup(int(f.Fd()))
+	if err != nil {
+		t.Fatalf("dup the file: %v", err)
+	}
+	second, err := unix.Dup(int(f.Fd()))
+	if err != nil {
+		t.Fatalf("dup the file: %v", err)
+	}
+	withSocketpair(t, func(int, int, int) ([2]int, error) { return [2]int{first, second}, nil })
+
+	c := exec.Command("true")
+	parent, child, err := openHandoff(c, "forward", envForward, envForwardFD)
+	if err == nil {
+		_ = parent.Close()
+		_ = child.Close()
+		t.Fatal("expected a pair that is not a unix socket to fail the handoff")
+	}
+	if !strings.Contains(err.Error(), "forward handoff conn") {
+		t.Fatalf("expected the error to name the forward handoff, got %v", err)
+	}
+	if len(c.ExtraFiles) != 0 {
+		t.Fatalf("expected no file attached to the command, got %d", len(c.ExtraFiles))
+	}
+	// Both ends are closed on the way out, so neither descriptor is still open.
+	if err := unix.Close(second); err != unix.EBADF {
+		t.Fatalf("expected the launcher's end to have been closed, got %v", err)
+	}
+}
+
+func withSocketpair(t *testing.T, stub func(int, int, int) ([2]int, error)) {
+	t.Helper()
+	prev := socketpair
+	socketpair = stub
+	t.Cleanup(func() { socketpair = prev })
 }
 
 func assertEnv(t *testing.T, env []string, key, want string) {
