@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"embed"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/trustanchor"
 )
 
 // The trust anchors are compiled into the binary rather than fetched, because a trust
@@ -24,8 +24,10 @@ import (
 // log id that appears in every Sigstore bundle flynn has ever published, and the
 // trustRoot constructor enforces that correspondence at startup.
 //
-//go:embed trust/fulcio.pem trust/rekor.pub
-var trustFiles embed.FS
+// The anchor files live in internal/trustanchor and are embedded there once, because
+// internal/sigstore pins the same Fulcio chain for extension releases. A second copy
+// here would go stale the first time Sigstore rotated.
+var trustFiles fs.FS = trustanchor.Files
 
 // embeddedTrustRoot is the process-wide trust root, built once. A failure here is a
 // broken build, not a runtime condition, so it is fatal at first use rather than an
