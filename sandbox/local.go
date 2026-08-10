@@ -326,12 +326,24 @@ func WithKernelConfinement() LocalOption {
 // is governed per run instead. Explicit options (WithReadOnlyFS, WithSeccomp,
 // WithNetworkDenied) still fail loudly on a platform that cannot honor them; this one
 // does not, because it is the always-on baseline rather than an explicit request.
+//
+// The baseline reads the host, which on Windows means the write-restricted token
+// rather than the AppContainer. The container denies reads unless a directory carries
+// an ACE for the app package, and a great deal of ordinary toolchain does not: an MSI
+// that sets its own DACL replaces the one inherited from C:\Program Files and drops
+// that ACE with it, which is why a contained command cannot see the Node.js that
+// installed itself two directories from a Git it can see (nodejs/node#63590, open
+// since May 2026), and anything installed outside Program Files never had the ACE at
+// all. A baseline that cannot run the project's own interpreter is not a baseline. A
+// caller that does want reads denied asks for it by name, with WithReadOnlyFS or
+// WithKernelConfinement, and gets the container.
 func WithDefaultConfinement() LocalOption {
 	return func(l *Local) {
 		l.confineBestEffort = true
 		if kernelConfinementSupported() {
 			l.readonlyFS = true
 			l.seccomp = true
+			l.hostReadable = true
 		}
 	}
 }

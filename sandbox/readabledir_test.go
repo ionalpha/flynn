@@ -24,7 +24,7 @@ func writeExternalSecret(t *testing.T) (dir, file string) {
 
 func TestReadableDirGrantsConfinedRead(t *testing.T) {
 	ext, secret := writeExternalSecret(t)
-	l := newTestLocal(t, WithDefaultConfinement(), WithReadableDir(ext))
+	l := newTestLocal(t, WithReadOnlyFS(), WithReadableDir(ext))
 	// The confined child can exec only a binary it can read: copy the helper into the
 	// workspace, the one location the confinement grants it outright.
 	bin := copyHelperInto(t, l.Root())
@@ -40,15 +40,39 @@ func TestReadableDirGrantsConfinedRead(t *testing.T) {
 	}
 }
 
+// TestDefaultConfinementReadsTheHost pins what the secure-by-default baseline promises
+// on every platform: a command reads the host and cannot change it. The read half is the
+// one Windows used to break, because the baseline selected the AppContainer and the
+// container denies a directory with no app-package ACE, which is most of the toolchain a
+// project actually builds with. Nothing is granted here on purpose: the read has to work
+// because the baseline permits reads, not because the test asked for that directory.
+func TestDefaultConfinementReadsTheHost(t *testing.T) {
+	_, secret := writeExternalSecret(t)
+	l := newTestLocal(t, WithDefaultConfinement())
+	bin := copyHelperInto(t, l.Root())
+	res, err := l.Capture(context.Background(), CaptureSpec{
+		Argv: []string{bin, "-test.run=TestHelperProcess"},
+		Env:  []string{"SANDBOX_STREAM_HELPER=1", "HELPER_READFILE=" + secret},
+	})
+	if err != nil {
+		t.Fatalf("Capture: %v", err)
+	}
+	if !strings.Contains(res.Output, "read:token123") {
+		t.Fatalf("the default baseline denied an ordinary host read, so a run cannot reach its own toolchain: %q", res.Output)
+	}
+}
+
 func TestReadableDirDeniedWithoutGrant(t *testing.T) {
 	if runtime.GOOS != "windows" {
-		// Only the Windows AppContainer denies reads by default; a read-only host on the
-		// other platforms permits the read even without the grant, so there is nothing to
-		// deny and the negative case does not apply.
+		// Only the Windows AppContainer denies reads; a read-only host on the other
+		// platforms permits the read even without the grant, so there is nothing to deny
+		// and the negative case does not apply.
 		t.Skip("read-deny-by-default confinement is Windows-only")
 	}
 	_, secret := writeExternalSecret(t)
-	l := newTestLocal(t, WithDefaultConfinement()) // no WithReadableDir
+	// WithReadOnlyFS and not the baseline: the baseline read-permits the host, which on
+	// Windows is the write-restricted token, and the denial under test is the container's.
+	l := newTestLocal(t, WithReadOnlyFS()) // no WithReadableDir
 	bin := copyHelperInto(t, l.Root())
 	res, err := l.Capture(context.Background(), CaptureSpec{
 		Argv: []string{bin, "-test.run=TestHelperProcess"},
@@ -75,7 +99,7 @@ func TestReadableDirRevokedOnClose(t *testing.T) {
 	// same directory share one SID. The first grants the external dir and Closes (which
 	// must revoke); the second, rooted identically but granting nothing, must then be
 	// denied. If the grant survived Close, the second would still read the file.
-	l1, err := NewLocal(root, WithDefaultConfinement(), WithReadableDir(ext))
+	l1, err := NewLocal(root, WithReadOnlyFS(), WithReadableDir(ext))
 	if err != nil {
 		t.Fatalf("NewLocal l1: %v", err)
 	}
@@ -91,7 +115,7 @@ func TestReadableDirRevokedOnClose(t *testing.T) {
 		t.Fatalf("Close l1: %v", err)
 	}
 
-	l2, err := NewLocal(root, WithDefaultConfinement())
+	l2, err := NewLocal(root, WithReadOnlyFS())
 	if err != nil {
 		t.Fatalf("NewLocal l2: %v", err)
 	}
