@@ -35,13 +35,13 @@ import (
 	"crypto/ecdsa"
 	"crypto/sha256"
 	"crypto/x509"
-	_ "embed"
 	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/trustanchor"
 )
 
 // fulcioRoots is Sigstore's public-good Fulcio CA chain (root plus intermediate), embedded
@@ -49,8 +49,10 @@ import (
 // Pinning the trust anchor into the binary is the point: a root fetched at run time is a
 // root an attacker can substitute.
 //
-//go:embed fulcio_roots.pem
-var fulcioRoots []byte
+// It comes from internal/trustanchor rather than a copy kept here, because internal/release
+// pins the same chain for flynn's own releases and two copies would drift at the first
+// rotation, leaving one of the two verification paths on a retired CA.
+var fulcioRoots = trustanchor.Fulcio
 
 // Fulcio records the claims from the OIDC token it was given as certificate extensions,
 // under Sigstore's private enterprise OID arc. These are the ones this package pins.
