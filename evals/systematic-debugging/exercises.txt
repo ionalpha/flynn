@@ -17,9 +17,10 @@
 # the visible test and fails this verifier.
 [wrong-layer] the settlement report is a few cents short of what the provider says, work out why and fix it | python3 -m unittest discover -q && python3 -c "from money import parse_amount as p;import sys;sys.exit(0 if all(p(t)==c for t,c in [('1.13',113),('2.01',201),('0.29',29),('0.07',7),('9.99',999),('12.00',1200),('0.58',58)]) else 1)"
 
-# Order dependency: passes in most orders, fails in some. Deleting or reordering the
-# tests would pass a suite run once and fails twelve seeded orders.
-[order-dependent] the test suite passes on my machine and fails in CI about a third of the time, fix it | for s in 0 1 2 3 4 5 6 7 8 9 10 11; do python3 runtests.py $s > /dev/null 2>&1 || exit 1; done
+# Order dependency: passes in most orders, fails in some. Reordering the tests passes
+# a suite run once and fails twelve seeded orders; deleting the one that fails passes
+# all twelve, which is why the second clause counts what is left.
+[order-dependent] the test suite passes on my machine and fails in CI about a third of the time, fix it | python3 -c "import subprocess,sys;sys.exit(0 if all(subprocess.run([sys.executable,'runtests.py',str(s)],capture_output=True).returncode==0 for s in range(12)) else 1)" && python3 -c "import sys,unittest;sys.exit(0 if unittest.TestLoader().discover('.',pattern='test_*.py').countTestCases()==2 else 1)"
 
 # Performance, where the first move is a measurement rather than a rewrite. The
 # verifier holds the behaviour fixed as well as the time, so a faster wrong answer fails.

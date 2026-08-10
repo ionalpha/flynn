@@ -35,6 +35,24 @@ empty one is refused because it seeds nothing while looking like it seeded somet
 A named fixture that is not there fails when the set loads, before the first model
 call.
 
+## Verifiers run on three operating systems
+
+A verifier is handed to the sandbox as one command line, and the sandbox gives it to
+whichever shell the host guarantees: `sh -c` on macOS and Linux, `cmd.exe /s /c` on
+Windows. So the line has to be one both shells read the same way. A loop, a `$VAR`, a
+`[ -f x ]`, or a single-quoted argument is a bashism, and on Windows it either fails to
+parse or silently means something else, which grades a run that was never run.
+
+Put the logic in an interpreter instead, and keep the shell to `&&` and the exit
+status. `python3 -c "..."` with double quotes outside and single quotes inside reads
+identically on all three:
+
+    python3 -c "import sys;sys.exit(0 if open('out.txt').read().strip()=='ok' else 1)"
+
+Anything the verifier invokes has to be on `PATH` on all three, which python3, node, and
+go are and a shell builtin from one family is not. The measurement is only comparable
+across hosts if the same line means the same thing on each.
+
 ## Running it
 
     flynn skill ab <skill-name> --repeats 3
