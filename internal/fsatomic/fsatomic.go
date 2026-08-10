@@ -6,6 +6,7 @@
 package fsatomic
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 )
@@ -33,6 +34,19 @@ var createTemp = func(dir, pattern string) (tempFile, error) { return os.CreateT
 // the final mode never appears with looser intermediate access. On any failure the
 // temp file is removed and the previous contents of path are untouched.
 func WriteFile(path string, data []byte, perm os.FileMode) error {
+	return WriteStream(path, perm, func(w io.Writer) error {
+		_, err := w.Write(data)
+		return err
+	})
+}
+
+// WriteStream is WriteFile for content that is produced rather than held: fn writes
+// the new contents into the temp file, and the same durability sequence commits them.
+// A profile dump or an encoder streams megabytes it should not first assemble in
+// memory, and buffering that up only to hand WriteFile a byte slice is the reason
+// such a caller hand-rolls the sequence instead. An error from fn abandons the write
+// and is returned unwrapped, so the caller's own error vocabulary survives.
+func WriteStream(path string, perm os.FileMode, fn func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	tmp, err := createTemp(dir, filepath.Base(path)+".tmp-*")
 	if err != nil {
@@ -46,7 +60,7 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 		}
 	}()
 
-	if _, err := tmp.Write(data); err != nil {
+	if err := fn(tmp); err != nil {
 		return err
 	}
 	if err := tmp.Chmod(perm); err != nil {

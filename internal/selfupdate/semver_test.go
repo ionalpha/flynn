@@ -139,6 +139,23 @@ func TestSaveStateRefusesADataDirItCannotCreate(t *testing.T) {
 	}
 }
 
+// A data directory that exists but cannot take the state file (something else already
+// occupies the name) is reported with the same code. The upgrade memory is what defeats
+// rollback and freeze, so a write that did not happen must never look like one that did.
+func TestSaveStateRefusesAStateFileItCannotCommit(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, stateFile), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	err := saveState(dir, state{HighestVerified: "v0.5.0"})
+	if err == nil {
+		t.Fatal("the state was written over a directory of the same name")
+	}
+	if codeOf(t, err) != CodeState {
+		t.Fatalf("code = %q, want %q", codeOf(t, err), CodeState)
+	}
+}
+
 // The freeze check only fires when the listing has actually gone backwards. A listing
 // offering the same release, or a newer one, is not evidence of anything.
 func TestStaleListingOnlyFiresOnAListingThatWentBackwards(t *testing.T) {

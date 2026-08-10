@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
 // stateFile is where the upgrade history lives, under the data directory.
@@ -63,31 +64,10 @@ func saveState(dataDir string, s state) error {
 	if err != nil {
 		return fault.Wrap(fault.Terminal, CodeState, err)
 	}
-	dst := filepath.Join(dataDir, stateFile)
-
-	// Written through a temporary file and renamed, so an interrupted write cannot
-	// leave behind a half-parsed record of what this machine has verified.
-	tmp, err := os.CreateTemp(dataDir, "."+stateFile+"-*")
-	if err != nil {
-		return fault.Wrap(fault.Terminal, CodeState, err)
-	}
-	name := tmp.Name()
-	if _, err := tmp.Write(raw); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(name)
-		return fault.Wrap(fault.Terminal, CodeState, err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(name)
-		return fault.Wrap(fault.Terminal, CodeState, err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(name)
-		return fault.Wrap(fault.Terminal, CodeState, err)
-	}
-	if err := os.Rename(name, dst); err != nil {
-		_ = os.Remove(name)
+	// Written through fsatomic, so an interrupted write cannot leave behind a
+	// half-parsed record of what this machine has verified, and a crash right after
+	// the write cannot lose it: the rename is fsynced along with the contents.
+	if err := fsatomic.WriteFile(filepath.Join(dataDir, stateFile), raw, 0o600); err != nil {
 		return fault.Wrap(fault.Terminal, CodeState, err)
 	}
 	return nil

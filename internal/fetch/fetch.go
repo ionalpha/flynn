@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/netguard"
 )
 
@@ -130,47 +131,43 @@ func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
 	if err := os.MkdirAll(filepath.Dir(req.Dest), 0o750); err != nil {
 		return Result{}, fault.Wrap(fault.Terminal, "fetch_mkdir", err)
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(req.Dest), ".fetch-*.part")
-	if err != nil {
-		return Result{}, fault.Wrap(fault.Terminal, "fetch_temp", err)
-	}
-	tmpName := tmp.Name()
-	// Discard the partial file on any failure, so a bad download never installs.
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tmp.Close()
-			_ = os.Remove(tmpName)
+	var (
+		n    int64
+		sum  string
+		want = strings.TrimPrefix(strings.ToLower(req.ExpectSHA256), "sha256:")
+	)
+	// The body streams into a sibling temp file and only reaches Dest once it has
+	// arrived whole and matched its digest, because everything that rejects a
+	// download runs inside the producer: an error from here abandons the temp file
+	// and leaves whatever was at Dest before untouched. A caller that finds Dest
+	// present has a file that was fully verified, never one that is still arriving.
+	err = fsatomic.WriteStream(req.Dest, 0o600, func(w io.Writer) error {
+		h := sha256.New()
+		// Read one byte past the cap so an over-cap body is detected rather than silently
+		// truncated to exactly the cap.
+		var copyErr error
+		n, copyErr = io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxBytes+1))
+		if copyErr != nil {
+			return fault.Wrap(fault.Transient, "fetch_copy", copyErr)
 		}
-	}()
-
-	h := sha256.New()
-	// Read one byte past the cap so an over-cap body is detected rather than silently
-	// truncated to exactly the cap.
-	n, err := io.Copy(io.MultiWriter(tmp, h), io.LimitReader(resp.Body, maxBytes+1))
+		if n > maxBytes {
+			return tooLarge(n, maxBytes)
+		}
+		sum = hex.EncodeToString(h.Sum(nil))
+		if want != "" && !strings.EqualFold(sum, want) {
+			return fault.New(fault.Terminal, "fetch_digest",
+				fmt.Sprintf("fetch: digest mismatch: want %s, got %s (download rejected)", want, sum))
+		}
+		return nil
+	})
 	if err != nil {
-		return Result{}, fault.Wrap(fault.Transient, "fetch_copy", err)
+		// A rejection from the producer already names which rule spoke; only a failure
+		// of the write itself still needs a code.
+		if fault.CodeOf(err) == "" {
+			return Result{}, fault.Wrap(fault.Terminal, "fetch_install", err)
+		}
+		return Result{}, err
 	}
-	if n > maxBytes {
-		return Result{}, tooLarge(n, maxBytes)
-	}
-	if err := tmp.Sync(); err != nil {
-		return Result{}, fault.Wrap(fault.Terminal, "fetch_sync", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return Result{}, fault.Wrap(fault.Terminal, "fetch_close", err)
-	}
-
-	sum := hex.EncodeToString(h.Sum(nil))
-	want := strings.TrimPrefix(strings.ToLower(req.ExpectSHA256), "sha256:")
-	if want != "" && !strings.EqualFold(sum, want) {
-		return Result{}, fault.New(fault.Terminal, "fetch_digest",
-			fmt.Sprintf("fetch: digest mismatch: want %s, got %s (download rejected)", want, sum))
-	}
-	if err := os.Rename(tmpName, req.Dest); err != nil {
-		return Result{}, fault.Wrap(fault.Terminal, "fetch_install", err)
-	}
-	committed = true
 	return Result{Path: req.Dest, Bytes: n, SHA256: sum, Pinned: want != ""}, nil
 }
 

@@ -7,6 +7,7 @@ package diag
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -86,7 +87,7 @@ func TestBundleDumpsEvidenceWhenACounterLeaks(t *testing.T) {
 			t.Errorf("dump member %s missing: %v", name, err)
 		}
 	}
-	if entries, err := filepath.Glob(filepath.Join(dir, "*.partial")); err != nil || len(entries) != 0 {
+	if entries, err := filepath.Glob(filepath.Join(dir, "*.tmp-*")); err != nil || len(entries) != 0 {
 		t.Errorf("a committed dump left temporary files behind: %v", entries)
 	}
 
@@ -244,7 +245,7 @@ func TestWriteAtomicLeavesNoPartialOnFailure(t *testing.T) {
 	b := &Bundle{cfg: Config{Dir: dir}}
 
 	sentinel := errors.New("write failed")
-	if err := b.writeAtomic("member.txt", func(*os.File) error { return sentinel }); !errors.Is(err, sentinel) {
+	if err := b.writeAtomic("member.txt", func(io.Writer) error { return sentinel }); !errors.Is(err, sentinel) {
 		t.Fatalf("writeAtomic error = %v, want it to wrap %v", err, sentinel)
 	}
 	entries, err := os.ReadDir(dir)
@@ -255,7 +256,7 @@ func TestWriteAtomicLeavesNoPartialOnFailure(t *testing.T) {
 		t.Errorf("a failed write left %d files behind", len(entries))
 	}
 
-	if err := b.writeAtomic("member.txt", func(f *os.File) error { _, err := f.WriteString("ok"); return err }); err != nil {
+	if err := b.writeAtomic("member.txt", func(w io.Writer) error { _, err := io.WriteString(w, "ok"); return err }); err != nil {
 		t.Fatalf("writeAtomic: %v", err)
 	}
 	if data, err := os.ReadFile(filepath.Join(dir, "member.txt")); err != nil || string(data) != "ok" {

@@ -14,13 +14,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"math"
-	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/observe"
 )
 
@@ -431,7 +432,7 @@ func (b *Bundle) dumpLeak(f Finding) ([]string, error) {
 		names []string
 		errs  []error
 	)
-	write := func(name string, fn func(*os.File) error) {
+	write := func(name string, fn func(io.Writer) error) {
 		if err := b.writeAtomic(name, fn); err != nil {
 			errs = append(errs, err)
 			return
@@ -442,10 +443,10 @@ func (b *Bundle) dumpLeak(f Finding) ([]string, error) {
 	// debug=1 folds identical stacks into counts and prints each stack's pprof
 	// labels. It is the member that answers "which action left these goroutines
 	// parked", and on a leak that is the only question worth asking first.
-	write(prefix+"goroutine.labels.txt", func(f *os.File) error { return pprof.Lookup("goroutine").WriteTo(f, 1) })
-	write(prefix+"goroutine.txt", func(f *os.File) error { return pprof.Lookup("goroutine").WriteTo(f, 2) })
-	write(prefix+MemberHeap, func(f *os.File) error { return pprof.Lookup("heap").WriteTo(f, 0) })
-	write(prefix+"window.jsonl", func(w *os.File) error { return writeSamples(w, f.Window) })
+	write(prefix+"goroutine.labels.txt", func(w io.Writer) error { return pprof.Lookup("goroutine").WriteTo(w, 1) })
+	write(prefix+"goroutine.txt", func(w io.Writer) error { return pprof.Lookup("goroutine").WriteTo(w, 2) })
+	write(prefix+MemberHeap, func(w io.Writer) error { return pprof.Lookup("heap").WriteTo(w, 0) })
+	write(prefix+"window.jsonl", func(w io.Writer) error { return writeSamples(w, f.Window) })
 
 	return names, errors.Join(errs...)
 }
@@ -460,27 +461,15 @@ func (b *Bundle) leakSeq(counter string) int {
 	return n
 }
 
-// writeAtomic writes a bundle member through a temporary file and renames it into
-// place, so a reader watching the bundle directory (an operator tailing it, a CI
-// step collecting it) never opens a profile that is still being written.
-func (b *Bundle) writeAtomic(name string, fn func(*os.File) error) error {
-	tmp := filepath.Join(b.cfg.Dir, name+".partial")
-	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // G304: a generated member name under an operator-chosen directory
-	if err != nil {
-		return fmt.Errorf("diag: create %s: %w", name, err)
-	}
-	if err := fn(f); err != nil {
-		_ = f.Close()
-		_ = os.Remove(tmp)
+// writeAtomic writes a bundle member through fsatomic, so a reader watching the
+// bundle directory (an operator tailing it, a CI step collecting it) never opens a
+// profile that is still being written, and a bundle collected from a machine that
+// then died is still on disk. Profiles are streamed rather than assembled in memory:
+// a goroutine dump from the process a leak watchdog just fired on is exactly the case
+// where holding the whole member as a byte slice is a bad idea.
+func (b *Bundle) writeAtomic(name string, fn func(io.Writer) error) error {
+	if err := fsatomic.WriteStream(filepath.Join(b.cfg.Dir, name), 0o600, fn); err != nil {
 		return fmt.Errorf("diag: write %s: %w", name, err)
-	}
-	if err := f.Close(); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("diag: close %s: %w", name, err)
-	}
-	if err := os.Rename(tmp, filepath.Join(b.cfg.Dir, name)); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("diag: commit %s: %w", name, err)
 	}
 	return nil
 }
