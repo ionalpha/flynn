@@ -24,7 +24,7 @@ a skill without one is invisible until something has already decided to read it.
 
     The body.
 
-Our own fields ride in `metadata` under the `ionagent.io/` prefix (`title`, `tags`,
+Our own fields ride in `metadata` under the `flynnhq.com/` prefix (`title`, `tags`,
 `check`); see `skill/skillmd/metadata.go` for the convention and `skill/pack.go` for
 what crosses into a stored skill and what does not.
 

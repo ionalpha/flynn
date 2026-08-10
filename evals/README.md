@@ -5,6 +5,7 @@ One directory per skill, named for the skill:
     evals/<skill-name>/
       exercises.txt   required, written with the skill
       holdout.txt     optional to load, needed in practice, written by someone else
+      fixtures/       optional, one directory per starting state
 
 Each line is one exercise: an objective in the words a user would give it, then the
 command that decides whether the run did it.
@@ -15,6 +16,42 @@ command that decides whether the run did it.
 `#` opens a comment and blank lines are ignored. Both columns are required. An
 exercise with no verifier has no outcome, and admitting one would put a run in the
 tally that nothing graded.
+
+## Fixtures: the state an exercise starts from
+
+A trial begins in an empty directory. That suits "write me a parser" and is useless
+for "the tests fail after my change", which has to be given the failing tests. A row
+may open with a fixture in brackets, naming a directory under `fixtures/` that is
+copied into the working directory before the run starts:
+
+    [broken-parser] the tests fail after my change | go test ./... 2>&1 | grep -q ok
+
+Both arms get the same fixture, copied fresh, so nothing one trial does to it reaches
+the next. The fixture goes in front rather than in a third column so the verifier
+stays the last field and can hold as many pipes as a shell command needs. A fixture
+is one directory: no separators in the name, no symbolic links inside it, and an
+empty one is refused because it seeds nothing while looking like it seeded something.
+
+A named fixture that is not there fails when the set loads, before the first model
+call.
+
+## Verifiers run on three operating systems
+
+A verifier is handed to the sandbox as one command line, and the sandbox gives it to
+whichever shell the host guarantees: `sh -c` on macOS and Linux, `cmd.exe /s /c` on
+Windows. So the line has to be one both shells read the same way. A loop, a `$VAR`, a
+`[ -f x ]`, or a single-quoted argument is a bashism, and on Windows it either fails to
+parse or silently means something else, which grades a run that was never run.
+
+Put the logic in an interpreter instead, and keep the shell to `&&` and the exit
+status. `python3 -c "..."` with double quotes outside and single quotes inside reads
+identically on all three:
+
+    python3 -c "import sys;sys.exit(0 if open('out.txt').read().strip()=='ok' else 1)"
+
+Anything the verifier invokes has to be on `PATH` on all three, which python3, node, and
+go are and a shell builtin from one family is not. The measurement is only comparable
+across hosts if the same line means the same thing on each.
 
 ## Running it
 

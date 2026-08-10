@@ -121,7 +121,7 @@ func TestSkillsFromATree(t *testing.T) {
 	tree := fstest.MapFS{
 		"pack/deploy/SKILL.md": &fstest.MapFile{Data: []byte(
 			"---\nname: deploy\ndescription: Ship a reviewed change to production.\n" +
-				"metadata:\n  ionagent.io/title: Deploy a release\n  ionagent.io/tags: '[\"release\",\"ops\"]'\n---\n\nRun the deploy script.\n")},
+				"metadata:\n  flynnhq.com/title: Deploy a release\n  flynnhq.com/tags: '[\"release\",\"ops\"]'\n---\n\nRun the deploy script.\n")},
 		"pack/audit/SKILL.md": &fstest.MapFile{Data: []byte(
 			"---\nname: audit\ndescription: Read a change for the mistakes review misses.\n---\n\nStart with the diff.\n")},
 	}
@@ -158,7 +158,7 @@ func TestSkillsFromATree(t *testing.T) {
 func TestSkillsFromABrokenTreeFails(t *testing.T) {
 	for name, doc := range map[string]string{
 		"unparseable":  "no frontmatter here\n",
-		"bad metadata": "---\nname: deploy\ndescription: Ship a reviewed change.\nmetadata:\n  ionagent.io/tags: release, ops\n---\n\nBody.\n",
+		"bad metadata": "---\nname: deploy\ndescription: Ship a reviewed change.\nmetadata:\n  flynnhq.com/tags: release, ops\n---\n\nBody.\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			tree := fstest.MapFS{"pack/deploy/SKILL.md": &fstest.MapFile{Data: []byte(doc)}}

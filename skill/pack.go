@@ -49,12 +49,14 @@ func FromDoc(d skillmd.Doc, scope state.Scope) (state.Skill, error) {
 		Description: d.Description,
 		Body:        d.Body,
 		Scope:       scope,
-		Check:       d.Metadata[skillmd.MetaCheck],
 	}
-	if title := d.Metadata[skillmd.MetaTitle]; title != "" {
+	// Read through skillmd.Get rather than off the map, so a document written under
+	// the retired namespace still gives up its check, title and tags.
+	sk.Check, _ = skillmd.Get(d.Metadata, skillmd.MetaCheck)
+	if title, _ := skillmd.Get(d.Metadata, skillmd.MetaTitle); title != "" {
 		sk.Name = title
 	}
-	if raw, ok := d.Metadata[skillmd.MetaTags]; ok {
+	if raw, ok := skillmd.Get(d.Metadata, skillmd.MetaTags); ok {
 		tags, err := skillmd.DecodeList(raw)
 		if err != nil {
 			return state.Skill{}, fmt.Errorf("skill: %s: %w", d.Name, err)

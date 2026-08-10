@@ -428,7 +428,7 @@ func TestApplyJobLimitsDefaults(t *testing.T) {
 // its access list rewritten, so it stands in for that class deterministically.
 func TestUngrantableReadableDirFailsClosed(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such-directory")
-	l, err := NewLocal(t.TempDir(), WithDefaultConfinement(), WithReadableDir(missing), WithExecTimeout(30*time.Second))
+	l, err := NewLocal(t.TempDir(), WithDefaultConfinement(), withContainerReads(), WithReadableDir(missing), WithExecTimeout(30*time.Second))
 	if err != nil {
 		t.Fatalf("new local: %v", err)
 	}
