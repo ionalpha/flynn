@@ -125,6 +125,43 @@ func TestToolResultsExpandToToolMessages(t *testing.T) {
 	}
 }
 
+// TestToolResultsPrecedeUserTextInTheSameTurn pins the message order for a turn that
+// carries tool results and text together, which is what a stall nudge riding on the
+// results produces. Chat Completions rejects the whole request with a 400 when
+// anything sits between the assistant's tool_calls and the tool messages answering
+// them, so the text has to follow the results rather than lead them.
+func TestToolResultsPrecedeUserTextInTheSameTurn(t *testing.T) {
+	m := &mockTransport{status: 200, respBody: `{"choices":[{"message":{"content":"done"},"finish_reason":"stop"}],"usage":{}}`}
+	c := clientWith(m)
+
+	_, err := c.Generate(context.Background(), llm.Request{Messages: []llm.Message{
+		llm.Text(llm.RoleUser, "task"),
+		{Role: llm.RoleAssistant, Blocks: []llm.Block{{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: "call_1", Name: "echo", Input: json.RawMessage(`{}`)}}}},
+		{Role: llm.RoleUser, Blocks: []llm.Block{
+			{Kind: llm.KindToolResult, ToolResult: &llm.ToolResult{ToolUseID: "call_1", Content: "echoed"}},
+			{Kind: llm.KindText, Text: "you have made no progress for three turns"},
+		}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent chatRequest
+	if err := json.Unmarshal(m.gotBody, &sent); err != nil {
+		t.Fatal(err)
+	}
+	// Expect: user, assistant(tool_calls), tool(result), user(nudge).
+	if len(sent.Messages) != 4 {
+		t.Fatalf("want 4 messages, got %d: %+v", len(sent.Messages), sent.Messages)
+	}
+	if got := sent.Messages[2]; got.Role != "tool" || got.ToolCallID != "call_1" {
+		t.Fatalf("the message after the tool_calls must answer them, got %+v", got)
+	}
+	nudge, _ := sent.Messages[3].Content.(string)
+	if sent.Messages[3].Role != "user" || nudge != "you have made no progress for three turns" {
+		t.Fatalf("the text should follow as its own user message, got %+v", sent.Messages[3])
+	}
+}
+
 func TestErrorClassification(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

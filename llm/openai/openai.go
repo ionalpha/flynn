@@ -390,10 +390,16 @@ func encodeMessage(m llm.Message) []chatMessage {
 				// no OpenAI mapping.
 			}
 		}
-		// A user turn with no text or image (only tool results) prepends no user
-		// message. With an image present the content must be the array form; without
-		// one it collapses to a plain string, the shape every endpoint accepts and
-		// the callers that never send images keep sending.
+		// A user turn with no text or image (only tool results) adds no user message.
+		// When it does have text, the user message goes after the tool messages and
+		// never before them: Chat Completions requires every tool_call to be answered
+		// by a tool message immediately following the assistant turn that made it, and
+		// a user message in between makes the whole request a 400. A turn carries both
+		// whenever something rides along with the results, a stall nudge for instance.
+		//
+		// With an image present the content must be the array form; without one it
+		// collapses to a plain string, the shape every endpoint accepts and the callers
+		// that never send images keep sending.
 		if len(parts) > 0 {
 			user := chatMessage{Role: "user"}
 			if hasImage {
@@ -406,7 +412,7 @@ func encodeMessage(m llm.Message) []chatMessage {
 				text := b.String()
 				user.Content = &text
 			}
-			out = append([]chatMessage{user}, out...)
+			out = append(out, user)
 		}
 		return out
 	}
