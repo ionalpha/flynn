@@ -22,9 +22,19 @@ func writeExternalSecret(t *testing.T) (dir, file string) {
 	return dir, file
 }
 
+// withContainerReads asks for the read-deny-by-default tier while keeping the baseline's
+// best-effort fallback. The two have to come together for a test of the read grant: the
+// grant is the AppContainer's, which the baseline no longer selects, and an explicit
+// WithReadOnlyFS would select it but also turn confinement into a hard requirement, which
+// fails on a CI runner that denies the /proc/self/exe re-exec. It is a test option rather
+// than an exported one because no caller wants "strict reads, or else nothing".
+func withContainerReads() LocalOption {
+	return func(l *Local) { l.hostReadable = false }
+}
+
 func TestReadableDirGrantsConfinedRead(t *testing.T) {
 	ext, secret := writeExternalSecret(t)
-	l := newTestLocal(t, WithReadOnlyFS(), WithReadableDir(ext))
+	l := newTestLocal(t, WithDefaultConfinement(), withContainerReads(), WithReadableDir(ext))
 	// The confined child can exec only a binary it can read: copy the helper into the
 	// workspace, the one location the confinement grants it outright.
 	bin := copyHelperInto(t, l.Root())
@@ -70,9 +80,9 @@ func TestReadableDirDeniedWithoutGrant(t *testing.T) {
 		t.Skip("read-deny-by-default confinement is Windows-only")
 	}
 	_, secret := writeExternalSecret(t)
-	// WithReadOnlyFS and not the baseline: the baseline read-permits the host, which on
+	// The container and not the baseline: the baseline read-permits the host, which on
 	// Windows is the write-restricted token, and the denial under test is the container's.
-	l := newTestLocal(t, WithReadOnlyFS()) // no WithReadableDir
+	l := newTestLocal(t, WithDefaultConfinement(), withContainerReads()) // no WithReadableDir
 	bin := copyHelperInto(t, l.Root())
 	res, err := l.Capture(context.Background(), CaptureSpec{
 		Argv: []string{bin, "-test.run=TestHelperProcess"},
@@ -99,7 +109,7 @@ func TestReadableDirRevokedOnClose(t *testing.T) {
 	// same directory share one SID. The first grants the external dir and Closes (which
 	// must revoke); the second, rooted identically but granting nothing, must then be
 	// denied. If the grant survived Close, the second would still read the file.
-	l1, err := NewLocal(root, WithReadOnlyFS(), WithReadableDir(ext))
+	l1, err := NewLocal(root, WithDefaultConfinement(), withContainerReads(), WithReadableDir(ext))
 	if err != nil {
 		t.Fatalf("NewLocal l1: %v", err)
 	}
@@ -115,7 +125,7 @@ func TestReadableDirRevokedOnClose(t *testing.T) {
 		t.Fatalf("Close l1: %v", err)
 	}
 
-	l2, err := NewLocal(root, WithReadOnlyFS())
+	l2, err := NewLocal(root, WithDefaultConfinement(), withContainerReads())
 	if err != nil {
 		t.Fatalf("NewLocal l2: %v", err)
 	}
