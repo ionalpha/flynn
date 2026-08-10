@@ -239,12 +239,13 @@ func TestHashMembersSkipsDirectoriesAndTheManifest(t *testing.T) {
 func TestWriteAtomicFailsWhenTheTemporaryCannotBeCreated(t *testing.T) {
 	b := &Bundle{cfg: Config{Dir: t.TempDir()}}
 
-	err := b.writeAtomic(filepath.Join("no-such-dir", "member.txt"), func(*os.File) error { return nil })
+	name := filepath.Join("no-such-dir", "member.txt")
+	err := b.writeAtomic(name, func(io.Writer) error { return nil })
 	if err == nil {
 		t.Fatal("writeAtomic succeeded under a directory that does not exist")
 	}
-	if !strings.Contains(err.Error(), "create") {
-		t.Errorf("error %q does not say the member could not be created", err)
+	if !strings.Contains(err.Error(), name) {
+		t.Errorf("error %q does not name the member that could not be written", err)
 	}
 }
 
@@ -256,18 +257,18 @@ func TestWriteAtomicFailsWhenTheMemberCannotBeCommitted(t *testing.T) {
 	mkdirMember(t, dir, "member.txt") // a directory cannot be replaced by a rename
 	b := &Bundle{cfg: Config{Dir: dir}}
 
-	err := b.writeAtomic("member.txt", func(f *os.File) error {
-		_, werr := f.WriteString("evidence")
+	err := b.writeAtomic("member.txt", func(w io.Writer) error {
+		_, werr := io.WriteString(w, "evidence")
 		return werr
 	})
 	if err == nil {
 		t.Fatal("writeAtomic committed a member over a directory")
 	}
-	if !strings.Contains(err.Error(), "commit") {
-		t.Errorf("error %q does not say the member could not be committed", err)
+	if !strings.Contains(err.Error(), "member.txt") {
+		t.Errorf("error %q does not name the member that could not be committed", err)
 	}
-	if partials, _ := filepath.Glob(filepath.Join(dir, "*.partial")); len(partials) != 0 {
-		t.Errorf("a failed commit left %v behind", partials)
+	if temps, _ := filepath.Glob(filepath.Join(dir, "member.txt.tmp-*")); len(temps) != 0 {
+		t.Errorf("a failed commit left %v behind", temps)
 	}
 }
 

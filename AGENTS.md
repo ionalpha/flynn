@@ -46,6 +46,11 @@ Run `./dev/check` until it is green before opening a PR.
 - **Lint:** `golangci-lint` must pass (see `.golangci.yml`).
 - **Tests:** add tests with behavior changes; prefer table-driven and property-based
   tests. The race detector must stay clean.
+- **Duplication:** the third copy of a sequence becomes a gate rather than a review
+  comment. When a package is extracted to own something (durable file writes are
+  `internal/fsatomic`), the same change adds the lint rule or architecture test that
+  fails the pattern it replaced, so the next author meets the rule instead of
+  re-deriving the copy.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, ...). Sign off
   with DCO (`git commit -s`). Wrap the message body at 72 columns.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by
