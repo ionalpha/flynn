@@ -12,6 +12,8 @@ import (
 	"testing"
 
 	"pgregory.net/rapid"
+
+	"github.com/ionalpha/flynn/fault"
 )
 
 // serve starts an https test server returning body with status 200, and a client
@@ -71,6 +73,29 @@ func TestFetchRejectsDigestMismatch(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 		t.Fatal("a digest-mismatched download must not be installed")
+	}
+}
+
+// A body that arrived intact but cannot be committed (something already occupies the
+// destination name) fails with the install code, not with a code belonging to one of
+// the checks that passed. What the caller does next depends on which step failed.
+func TestFetchReportsAnInstallThatCannotCommit(t *testing.T) {
+	body := []byte("weights")
+	srv, d := serve(t, body)
+	dest := filepath.Join(t.TempDir(), "m.gguf")
+	if err := os.Mkdir(dest, 0o750); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := d.Fetch(context.Background(), Request{URL: srv.URL, Dest: dest, ExpectSHA256: sha(body)})
+	if err == nil {
+		t.Fatal("a download was installed over a directory")
+	}
+	if code := fault.CodeOf(err); code != "fetch_install" {
+		t.Fatalf("code = %q, want fetch_install", code)
+	}
+	if temps, _ := filepath.Glob(filepath.Join(filepath.Dir(dest), "*.tmp-*")); len(temps) != 0 {
+		t.Errorf("a failed install left %v behind", temps)
 	}
 }
 
