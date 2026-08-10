@@ -9,7 +9,6 @@ import (
 	"net"
 	"os"
 	"os/exec"
-	"strconv"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -51,40 +50,10 @@ const (
 // child exits; it is also registered on the egress config, so a launch that dies before
 // it can release is still cleaned up when the sandbox closes.
 func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
-	// SOCK_CLOEXEC so an unrelated fork does not inherit the handoff. The descriptor the
-	// launcher gets is not this one: exec.Cmd dups ExtraFiles into the child and clears
-	// close-on-exec on the dup, which is what lets it survive the launcher's own exec.
-	pair, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	parent, child, err := openHandoff(c, "egress", envEgress, envEgressFD)
 	if err != nil {
-		return func() {}, fmt.Errorf("sandbox: egress handoff socketpair: %w", err)
+		return func() {}, err
 	}
-	parentFile := os.NewFile(uintptr(pair[0]), "flynn-egress-handoff")
-	child := os.NewFile(uintptr(pair[1]), "flynn-egress-handoff-child")
-
-	// This end becomes a net.UnixConn, not a bare descriptor. serve blocks on it while
-	// release may close it (a launcher that dies before sending never unblocks the
-	// receive), and only a poller-managed connection makes that safe: closing a raw
-	// descriptor another goroutine is blocked on is a use-after-close, and the descriptor
-	// number can be reused underneath it. FileConn dups, so the original is closed here.
-	conn, err := net.FileConn(parentFile)
-	_ = parentFile.Close()
-	if err != nil {
-		_ = child.Close()
-		return func() {}, fmt.Errorf("sandbox: egress handoff conn: %w", err)
-	}
-	parent, ok := conn.(*net.UnixConn)
-	if !ok {
-		_ = conn.Close()
-		_ = child.Close()
-		return func() {}, fmt.Errorf("sandbox: egress handoff is %T, not a unix socket", conn)
-	}
-
-	c.ExtraFiles = append(c.ExtraFiles, child)
-	childFD := 2 + len(c.ExtraFiles) // ExtraFiles[i] is descriptor 3+i in the child
-	c.Env = mergeEnv(c.Env, map[string]string{
-		envEgress:   "1",
-		envEgressFD: strconv.Itoa(childFD),
-	})
 
 	h := &egressHandoff{parent: parent, child: child, policy: l.egress.policy, owner: l.egress}
 	// Registered on the Local as well as returned: a caller that forgets to release, or a

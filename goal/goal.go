@@ -120,6 +120,18 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
+    "allowances": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["action"],
+        "properties": {
+          "action": {"type": "string", "minLength": 1},
+          "target": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    },
     "system": {"type": "string"},
     "driver": {"type": "string"},
     "model": {"type": "string"},
@@ -218,6 +230,13 @@ type Spec struct {
 	// Empty on a goal that states no terms, and such a goal behaves exactly as it did
 	// before.
 	Invariants []Invariant `json:"invariants,omitempty"`
+	// Allowances are the irreversible actions outside the workspace this run is
+	// authorized to take (see allowance.go). They are the standing form of a decision
+	// nobody will be present to make: a run that reaches an undeclared one is paused with
+	// the ask rather than refused into a model that would look for another route. Empty
+	// on a goal that declares none, and such a goal can take no such action at all, which
+	// is the default and the point.
+	Allowances []Allowance `json:"allowances,omitempty"`
 }
 
 // SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total
@@ -342,6 +361,41 @@ type Status struct {
 	LastVerdict   string `json:"lastVerdict,omitempty"`
 	VerdictMark   string `json:"verdictMark,omitempty"`
 	VerdictRepeat int    `json:"verdictRepeat,omitempty"`
+	// Unwired marks a stall that describes the loop rather than the run: the goal
+	// needed a producer and the reconciler it met had none (see stall). It is the one
+	// stall a later reconcile re-examines. A spent budget, a run that got nowhere and
+	// a failed step are all facts about the run, true for good however often the goal
+	// is looked at again; a missing producer is a fact about whoever assembled the
+	// loop, and it stops being true the moment they wire it. Without this the goal
+	// would stay settled on the no-op skip and the work would have to be recreated to
+	// pick it up, which would make stalling a refusal wearing a softer word.
+	Unwired bool `json:"unwired,omitempty"`
+}
+
+// unwiredStalls names the stall reasons that mean a producer was missing rather than
+// the run having failed. Adding a reason here is what makes the goal recoverable by
+// wiring the thing it needed, so a new "…Missing" stall belongs in this map on the
+// same commit that introduces it.
+var unwiredStalls = map[string]bool{
+	"InvariantAuditorMissing": true,
+	"UnitSpawnerMissing":      true,
+	"WindowSourceMissing":     true,
+}
+
+// stall settles the status as stopped for reason, carrying message. Every stall in
+// the reconciler goes through here, so the two conditions are always set as a pair
+// and Unwired always reflects the reason rather than whatever the last stall left
+// behind.
+//
+// CondStalled carries the specific reason, which is the account of the halt worth
+// reading. CondReconciling carries "Stalled", because what it reports is that the
+// loop stopped driving this goal and the reason it stopped is already next to it.
+func (s *Status) stall(reason, message string, now time.Time) {
+	s.Phase = PhaseStalled
+	s.Message = message
+	s.Unwired = unwiredStalls[reason]
+	s.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: reason, Message: message}, now)
+	s.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Stalled"}, now)
 }
 
 // Condition is one standard status condition (the shared resource.Condition).
@@ -373,6 +427,15 @@ func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeS
 type statusHead struct {
 	Phase            Phase  `json:"phase,omitempty"`
 	ObservedSpecHash string `json:"observedSpecHash,omitempty"`
+	Unwired          bool   `json:"unwired,omitempty"`
+}
+
+// settled reports whether this goal is done being reconciled while its spec is
+// unchanged. A converged goal is; a stalled one is, unless it stalled because a
+// producer was missing, in which case the next reconcile takes another look: the loop
+// it meets this time may have the thing it needed.
+func (h statusHead) settled() bool {
+	return h.Phase == PhaseConverged || (h.Phase == PhaseStalled && !h.Unwired)
 }
 
 // decodeStatusHead reads only the scalar status fields the no-op skip needs, without

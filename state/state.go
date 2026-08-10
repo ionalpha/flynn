@@ -314,6 +314,49 @@ type Anchor struct {
 // both are rejected at the write rather than stored as a ref that can never match.
 func (a Anchor) Valid() bool { return a.Kind != "" && a.ID != "" }
 
+// AnchorKindSkill is the anchor kind for a skill in this store: a memory anchored
+// with it is about the procedure that skill holds.
+//
+// It is the one anchor kind named in this package, and it is named here because it
+// is the one referent Flynn owns. Every other kind belongs to whoever refers with
+// it (see Anchor), and this file does not enumerate other systems' record types.
+// A skill is not another system's record: it is a row in this store, with an id
+// this package issued, so Flynn can both write the anchor and read it back without
+// a host present. That is the whole reason the ride-along works standalone.
+const AnchorKindSkill = "skill"
+
+// SkillAnchor returns the anchor for the skill with this id, or the zero Anchor for
+// an empty id, so a caller can build anchors from a list of ids without filtering
+// it first (an invalid anchor is refused at the write, by NormalizeAnchors).
+//
+// Ids rather than slugs: a slug is renameable and resolves across scopes, so two
+// skills can answer to one slug and a renamed skill would silently drop every
+// memory anchored to it. The id is issued once and never moves.
+func SkillAnchor(id string) Anchor {
+	if id == "" {
+		return Anchor{}
+	}
+	return Anchor{Kind: AnchorKindSkill, ID: id}
+}
+
+// SkillAnchors returns the anchors for these skill ids, skipping empty ones. Nil in,
+// nil out.
+func SkillAnchors(ids []string) []Anchor {
+	if len(ids) == 0 {
+		return nil
+	}
+	out := make([]Anchor, 0, len(ids))
+	for _, id := range ids {
+		if a := SkillAnchor(id); a.Valid() {
+			out = append(out, a)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // NormalizeAnchors returns the anchors in canonical form - sorted by kind then id,
 // with exact duplicates collapsed - or ErrInvalid if any of them is not Valid.
 // Nil and empty both normalize to nil, so an item with no anchors has one

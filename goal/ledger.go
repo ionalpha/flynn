@@ -231,23 +231,10 @@ func (s Status) ValidateLedger(ledger []LedgerItem) error {
 // refused, and carrying orphan state forward would only let a proof survive the
 // removal of the thing it proved.
 func (s *Status) SyncLedger(ledger []LedgerItem) {
-	if len(ledger) == 0 {
-		s.Ledger = nil
-		return
-	}
-	by := make(map[string]LedgerState, len(s.Ledger))
-	for _, st := range s.Ledger {
-		by[st.ID] = st
-	}
-	out := make([]LedgerState, 0, len(ledger))
-	for _, it := range ledger {
-		if st, ok := by[it.ID]; ok {
-			out = append(out, st)
-			continue
-		}
-		out = append(out, LedgerState{ID: it.ID})
-	}
-	s.Ledger = out
+	s.Ledger = syncStateByID(s.Ledger, ledger,
+		func(st LedgerState) string { return st.ID },
+		func(it LedgerItem) string { return it.ID },
+		func(id string) LedgerState { return LedgerState{ID: id} })
 }
 
 // MarkProven records an item as proven, with the evidence reference and the time it

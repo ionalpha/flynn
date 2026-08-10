@@ -27,12 +27,54 @@ Every row carries exactly one.
   comment, and the absence is visible. `goal.WithInvariantAudit` is the form to
   copy: a goal that states terms with no auditor stalls and says which auditor is
   missing, rather than running unaudited and finishing like a goal whose terms held.
+- **staged**: Flynn ships the implementation, the binary can wire it, and it is off
+  by default while confidence is built. A staged row states two things or it is not a
+  staged row: **the switch** that turns it on, and **the promotion condition** under
+  which it becomes the default, written specifically enough that somebody can later
+  check whether it has been met. "Revisit this" is not a promotion condition. The
+  state must also be visible from the binary, because a capability an operator cannot
+  see is how default-off becomes permanent without anyone deciding it should.
 - **gap**: neither. Every gap row has an open issue describing what to build. A gap
   with no issue is how one becomes permanent without anyone deciding it should.
 
 The test behind a verdict: if the capability cannot be exercised by the `flynn`
 binary plus a temp SQLite file with no host present, it is `justified` with a
 written reason, or it is a `gap`.
+
+A default-off flag is not automatically `staged`. Most of the binary's off-by-default
+flags are the safe end state rather than a waypoint: `--endpoint-local`,
+`--api-expose` and `review --approve` widen something, and off is where they should
+stay. `runtime.Config.AllowAssertedEvidence` is the same shape, one level down: off
+means a check has to have been run, and a closed loop that runs checks is exactly
+what makes requiring execution satisfiable. `--fanout`, `--no-learn` and `--plain`
+select a mode. A row is `staged` only when off-by-default is a temporary position on
+something Flynn otherwise ships and wires, which today is one row.
+
+## What a `justified` seam must do when it is absent
+
+A written reason is half of it. The other half is that the absence is visible, and
+the line is whether a reader of the finished run could tell the difference.
+
+- **Outcome-affecting: stall or refuse, by name.** A seam whose absence changes what
+  a run means never degrades quietly. `WithInvariantAudit` stalls with
+  `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`, a declared
+  plan-window ceiling with no source with `WindowSourceMissing`, and
+  `memory/consolidate` refuses at construction with `ErrNoDistiller` rather than on a
+  nightly job nobody is watching. Each has a test asserting the condition an operator
+  would see, because the name is the sentence worth being able to say about the run
+  afterwards.
+- **Instrumentation: a documented no-op.** `mission.WithGenerationRecorder` falls
+  back to `nopGenerationRecorder`, a nil `goal.Cleaner` has nothing to tear down, and
+  a Hook with no `brakes.AnomalyDetector` still halts on the breakers it was
+  configured with. These change no outcome, they say so in their doc comments, and
+  each has a test that the absence costs nothing.
+
+A missing-producer stall is recoverable, which is what makes stalling the right
+answer rather than a refusal wearing a softer word. `Status.Unwired` marks a stall as
+describing the loop rather than the run, and those are the only stalls a later
+reconcile re-examines: wiring the thing the goal needed and reconciling again picks
+the work back up, where a spent budget or a run that got nowhere stays settled. A new
+`…Missing` stall belongs in `goal.unwiredStalls` on the commit that introduces it.
 
 ## Foundation
 
@@ -53,7 +95,16 @@ tests and a durable one for the binary.
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
+| `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
+
+`allowance.Policy` is wired but marks nothing until the operator names an action, and
+that empty default is the intended answer rather than a gap. Which actions reach
+outside the workspace irreversibly is something the waist cannot derive: it governs an
+action's identity and never its arguments, and one action name covers both a command
+that lists a directory and a command that deletes what was not backed up. So the
+operator says, with `--irreversible`. A binary that guessed would be marking too much
+(stopping runs that were fine) or too little (a gate that reads as present and is not).
 
 ## The goal reconciler
 
@@ -73,16 +124,44 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Cleaner` | none | n/a | justified |
 | `goal.WindowSource` | none | n/a | justified |
 | `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
+| `runtime.Config.RequireLedgerProof` | `goal.EvidenceGate`, built by `runtime.New` | `cmd/flynn/mission.go` behind `--require-proof`; `fanout.go` always, for a unit's child | staged |
+
+`RequireLedgerProof` is the register's one `staged` row, and the two fields it owes:
+
+- **Switch:** `--require-proof` on `flynn goal`. It is already on and not optional for
+  a unit's child, because a unit settles from its child's ledger and a child that
+  converged on the model's say-so fails the unit as unproven every time.
+- **Promotion condition:** it becomes the default when a run of the repository's own
+  acceptance goals, planned and unmodified, proves every ledger item it plans through
+  an executed check, over the platforms CI runs on. That is the claim the refusal
+  makes, so it is the claim that has to hold first. Turning it on ahead of the
+  evidence stalls every goal whose check happens to be unrunnable, which reads to an
+  operator as the loop being broken rather than as the check being wrong.
+
+Verification itself is not staged and is not behind the flag: on every planned goal
+each item's declared check runs in the run's own sandbox and its verdict goes on the
+record. What the flag adds is the refusal that reads those verdicts. A run says which
+of the two it is before it starts (`ledgerLine` in `cmd/flynn/run.go`), so an
+operator can see from the run that proof is available and off rather than having to
+find this file.
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are reaped through owner references, not
-through this.
+through this. Instrumentation-side of the line below: a delete with no cleaner
+completes rather than hanging on a finalizer nobody will clear
+(`TestGoalDeletionCompletesWithNoCleaner`).
 
 `goal.WindowSource`: a plan window is a quota a host meters, and Flynn has no
-equivalent to read. The doc comment says a nil source leaves that one axis
-unbounded. Every other spend bound (step budget, token and cost ceiling) is enforced
-without it. The wording is worth re-checking, since a bound that is declared and not
-enforced is quieter than a stall.
+equivalent to read. Every other spend bound (step budget, token and cost ceiling) is
+enforced without it.
+
+A goal that declares no `WindowFraction` asks nothing of the source and runs with
+none wired, which is the standalone case. A goal that declares one and meets a
+reconciler with no source stalls with `WindowSourceMissing` and names the ceiling
+that went unmeasured. It used to run unbounded, and that was the one declared bound
+in the register that could be passed over in silence: a run that finishes without its
+ceiling having been checked is indistinguishable from one that stayed inside it, and
+the operator who set the ceiling would read the second where the first happened.
 
 `goal.UnitSpawner` was the plain case for this register: the producer existed, the
 refusal when it was absent was honest (`UnitSpawnerMissing`), and the binary never
@@ -106,7 +185,7 @@ because the check the plan author wrote never got a turn to run.
 | `mission.ResultSummarizer` | `tools` bash, glob, grep, read | implicit on the tool | shipped |
 | `mission.Fanout` | `orchestration.Spawner` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `mission.Reporter` | `session.reporter` | `mission.WithObserver` | shipped |
-| `mission.ApprovalPrompter` + `approval.Gate` | `cmd/flynn.approvalPrompter`, `approval` policy, `spinesink.ApprovalSink`, signer, nonce store | `cmd/flynn/approval_gate.go`, wired at every assembly | shipped |
+| `mission.ApprovalPrompter` + `approval.Gate` (with `approval.Policy`, `approval.Signer`, `approval.NonceStore`) | `cmd/flynn.approvalPrompter`, `approval.Requirements`, `spinesink.ApprovalSink`, `approval.Ed25519Signer`, `approval.MemStore` | `cmd/flynn/approval_gate.go`, wired at every assembly | shipped |
 | `mission.GenerationRecorder` | `nopGenerationRecorder` only | n/a | justified |
 | `brakes.Switch` | `brakes.MemSwitch` | `cmd/flynn/fanout.go` `defaultBrakes` | shipped |
 | `brakes.AnomalyDetector` | none | n/a | justified |
@@ -158,7 +237,8 @@ rather than removing the halt.
 | `memory/digest.Pusher` | `memory/ridealong.Surfacer` | `digest.New`'s default, via `newMemoryStack` | shipped |
 | `memory/curate` write policy | `curate.Wrap` | `cmd/flynn/memorystack.go` `newMemoryStack` | shipped |
 | `memory/guard.PromotionReader` | every memory store | via the store | shipped |
-| `memory/ridealong` anchors | n/a, the vocabulary is the host's | n/a | justified |
+| `memory/ridealong.Surfacer` (pull) | `memoryStack.skillNotes` behind `skilltool.Notes` | `cmd/flynn/memorystack.go`, into `skilltool.New` at `learning.go` and `repl.go` | shipped |
+| `memory/ridealong` anchors | `state.SkillAnchor`, written by the curator from `Outcome.SkillsRead` | `learn.Curator.Curate` | shipped |
 
 `learn` is the pattern the other two should follow. The interface stays a port, the
 model-backed implementation ships beside it, the governed wrapper puts its model
@@ -187,12 +267,32 @@ store would push contradictions at every reader unasked.
 memory that reaches a reader unasked is counted and the run's prime scope marked
 in the same step. That is what gives the decay policy a usage signal to read.
 
-The pull side is still open. An anchor is an opaque `{Kind, ID}` pair and nothing
-here resolves one, which is deliberate and documented; what is undecided is which
-of the binary's own reads should surface anchored memory, and what writes those
-anchors in the first place. Flynn holds candidates of its own (a run id, a file
-path, a skill slug) and picking one is a design decision rather than a wiring
-job, so it is tracked separately rather than guessed at here.
+The pull side rides on `skill_read`. A memory lesson is anchored to the skills the
+run that produced it loaded, and loading a skill surfaces what was learned while
+working from it, framed as background and counted as a use. Both ends are Flynn's:
+it issues the skill's id, and `skill_read` is its own tool, so the loop closes with
+no host present. `cmd/flynn/ridealong_wiring_test.go` runs it over two missions and
+one store.
+
+A skill was chosen over the other referents Flynn holds. A file path is cheaper to
+write and higher-traffic, and a memory about a path is worth less than one about a
+procedure: what somebody learned the last time they applied a procedure is exactly
+what the next reader about to apply it wants and has no query to ask for. A run id
+anchors a lesson to the one run that will never read it again. One mechanism
+exercised on a real read beats two half-wired ones, so only this one is wired.
+
+`state.AnchorKindSkill` is the one anchor kind this codebase names, and it does not
+weaken the rule above it. An anchor stays an opaque `{Kind, ID}` pair that nothing
+resolves; the vocabulary is still the host's for every kind a host refers with. A
+skill is not another system's record. It is a row in Flynn's own store, under an id
+Flynn issued, which is the whole test for what belongs on this side of the boundary.
+
+The anchor is written from the skills the run loaded, not the ones it was offered.
+Loading is an act the run chose, which is the best evidence available that it was
+working on that procedure, and the caller already holds the list because
+reinforcement is credited from it. It is a proxy for aboutness rather than a
+judgment about it: a run that loads five procedures anchors its lesson to all five,
+and the surfacing cap is what keeps that from becoming a reader's problem.
 
 ## Channels, extensions, external agents
 
@@ -211,6 +311,76 @@ job, so it is tracked separately rather than guessed at here.
 | `chain.NodeStore` / `CheckpointStore` | `storage/sqlite` merkle store | durable record path | shipped |
 | `harness.ProfileSource` | `harness.StaticProfiles`, `internal/profilestore.Source` | `cmd/flynn/modelrun.go` | shipped |
 
+## Seams the first audit missed
+
+The drift guard was written after the register and found twenty-nine exported
+interfaces in the public band with nothing said about them. That is the finding, not
+a footnote: an audit done by hand once misses roughly a third of a surface this size,
+which is the whole argument for the check.
+
+| Deferral | Shipped producer | Wired at | Verdict |
+|---|---|---|---|
+| `bus.Bus` | `bus.NewMemory` | `runtime.New`, built alongside the store when none is supplied | shipped |
+| `dispatch.EventSink` | `internal/spinesink.Sink`, `dispatch.MemorySink`, `dispatch.DiscardSink` | `cmd/flynn/mission.go` at every assembly | shipped |
+| `dispatch.Hook` | `brakes.Hook`, `budget.Hook`, `approval.Gate`, `capability.ContainmentGate` | `cmd/flynn/fanout.go`, `mission.go` | shipped |
+| `inbox.Worker` | `cmd/flynn.goalWorker` | `cmd/flynn/serve.go` | shipped |
+| `externagent.Recorder` | `cmd/flynn.attestedSink` | `cmd/flynn/externagent.go` | shipped |
+| `extension.Point` | `extension.Registry`'s registered handlers | `cmd/flynn/extensions.go` | shipped |
+| `extension.Conn` | `extension.sessionConn` over a sandbox session | `extension.SandboxLauncher` | shipped |
+| `sandbox.ContainerDriver` | `sandbox.NewContainerDriver` over an `OCIEngine` | `RegisterContainerDriver` at init, for Docker and Podman | shipped |
+| `sandbox.Machine` / `Driver` / `Serving` | `sandbox.commandMachine`, the per-platform drivers registered in `init`, `sandbox.containerServing` | `sandbox.NewMicroVM`, container exec | shipped |
+| `sandbox.Transport` | none | n/a | justified |
+| `memory/hybrid.Embedder` | none yet; build one over the local model serving the binary already carries, wired behind the same staging as ledger proof | n/a | gap |
+
+`sandbox.Transport`: a remote sandbox backend (E2B, Daytona, Modal) is an account
+somebody has and Flynn does not. `Remote` adds a default-deny path check of its own
+on top of whatever the backend enforces, so confinement never depends on the backend
+alone, and with no transport there is simply no remote sandbox: the local and
+container backends are what the binary uses and both ship. Nothing degrades, because
+nothing is asked for.
+
+`memory/hybrid.Embedder` is the register's one `gap`, and it is a gap rather than a
+`justified` row because Flynn could ship it. The binary already provisions and serves
+local models, so an embedder over that path needs no account and no host. Until it
+exists, `hybrid.Store` ranks lexically and says so with `ErrNotFused`, which is the
+same answer the plain store gives, so the absence costs recall quality and never a
+read. The package is not wired into the binary at all today.
+
+## Optional capabilities
+
+An interface a producer may also implement, found by type assertion rather than
+injected. Nothing is deferred through these: not implementing one is a supported
+answer, and what matters is the fallback. They are listed for the same reason a
+verdict is written down, which is that "what happens when this is absent" is the
+question the register exists to answer.
+
+| Capability | Implemented by | Fallback when it is not |
+|---|---|---|
+| `chain.FlushNodeStore` | the durable node store | a checkpoint is signed without forcing buffered nodes first, so a crash can leave proof nodes short of the size the checkpoint claims |
+| `resource.KeyLister` | both bundled backends | the reconcile resync lists records instead of keys, copying every record of the kind to enqueue names |
+| `resource.AnyScopeGetter` | a backend with a name index | the caller falls back to `ListAll` and a name scan |
+| `sandbox.Contained` | `sandbox.Local` with confinement, the container and microVM backends | the sandbox is treated as the weakest tier, so an unknown tier is never assumed to contain more than it proves |
+| `mission.TrustedWork` | the shell tool and every tool that runs model-authored content | the tool is the agent's own trusted code and runs at any tier |
+| `extension.SelfPolicing` | `extension.RoutedSigner` | the host signer signs whatever it is handed, and the decision about what may be signed is nobody's |
+
+## Interfaces that are not deferrals
+
+Neither a seam nor an optional capability. Each is here with its reason, because an
+unexplained exclusion is how the register loses coverage without anyone deciding it
+should.
+
+- `bus.Subscription`, `clock.Timer`, `observe.Span`, `observe.Counter`,
+  `observe.Histogram`: handles a port hands back. Whoever implements `bus.Bus`,
+  `clock.Timing` or `observe.Meter` implements these with it; there is no separate
+  decision and nothing to wire.
+- `reconcile.Reconciler`: the interface Flynn implements and the reconcile loop
+  consumes. It runs the other way, so there is nothing here for a host to supply.
+- `controlplane.Watcher`: a read-model surface Flynn ships an implementation of
+  (`PollWatcher`) and does not itself depend on. The served watch endpoint tails the
+  resource stream directly, so nothing defers through the port; it is there so an
+  embedder gets list, get and watch as one read model, and adding a streaming
+  transport later is a new implementation rather than a new query path.
+
 ## Deferrals that are not interfaces
 
 Places a doc comment hands the work to whoever embeds Flynn, without a port.
@@ -220,6 +390,42 @@ Places a doc comment hands the work to whoever embeds Flynn, without a port.
 | `internal/archetype`: an Agent declares capabilities by name, resolving them to implementations is the host's job | the binary resolves its own toolset against the declared names | justified |
 | `archetypes/review`: an empty model field defers to the host's configured model | the binary's configured model applies | justified |
 | `state.Scope` levels (instance, project, workspace) | defined in Flynn's own terms, not a host's | justified |
+
+## Standalone acceptance
+
+The rows above and the drift guard are static: they say a producer exists and is
+referenced. Neither proves the capability works from the binary, which is the claim
+the register is actually making. `cmd/flynn/standalone_acceptance_test.go` is that
+claim tested, one pass per capability, over a temp data directory with a scripted
+model and no host. The store is SQLite on disk, the sandbox is the local one with its
+confinement, every action crosses the dispatch waist, and the record is the run's own
+spine. Only the model is scripted, because the point is the absence of a host and not
+the absence of a model.
+
+| Capability | Pass |
+|---|---|
+| A goal runs, acts through the sandbox and converges | `TestStandaloneAGoalRunsThroughTheSandboxAndConverges` |
+| A stated term is audited, and a breach stops the run | `TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun` |
+| A goal carrying a unit graph dispatches its units as governed children | `TestFanoutAssemblyRunsAUnitGraph` |
+| A converged run is distilled into a skill and a memory, with the skill's check run in the sandbox | `TestStandaloneAConvergedRunIsDistilledWithItsCheckRun` |
+| A session wakes with a digest, and the push is counted | `TestStandaloneASessionWakesWithADigestAndCountsThePush` |
+| A repeated failure accumulates as a series and consolidates into a lesson | `TestStandaloneASeriesConsolidatesIntoALesson` |
+| A run seals and its record verifies from the store alone | `TestStandaloneARunSealsAndItsRecordVerifies` |
+| The ride-along closes over two runs and one store | `TestRideAlongClosesTheLoopAcrossTwoRuns` |
+
+Writing the suite produced one finding. **A goal's stated terms have no operator
+surface.** `goal.InvariantAuditor` is wired on every assembly and the engine enforces
+the rule (a breach stops the goal before its stop condition is consulted), but nothing
+in `cmd/flynn` sets `goal.Spec.Invariants`, so an operator running `flynn goal` cannot
+state a term for their run. The capability is real and only the surface is missing.
+Its pass therefore drives a shipped assembly directly and says so; a pass that quietly
+tested the engine and called it acceptance would be the exact thing this suite exists
+to catch.
+
+Two passes are driven through a shipped assembly rather than through
+`runLearningMission`, because the single-conversation assembly is driven by the
+session the CLI opens around it: a goal submitted straight to its runtime sits with
+its step in flight. The fan-out assembly drives its own reconcile loop.
 
 ## How this list is derived
 
@@ -237,6 +443,12 @@ or `runtime` passes it in. An implementation that exists and is never handed ove
 a gap, not a shipped default, because the difference is invisible to a reader of the
 package and decisive for an operator.
 
-The derivation is meant to become a check that fails when a deferral has no row, when
-a row names something that no longer exists, or when a gap row has no open issue. A
-register kept by hand decays; this one is written so it does not have to be.
+`internal/portregister` is that check, and it runs in CI. Every exported interface in
+the public band has to be accounted for here, the register may name no package the
+tree has lost, and a `gap` row that says nothing about what to build is refused. Only
+membership and the code references are mechanical; the verdict stays a judgment,
+because a checker that guessed at one would be wrong in the cases that matter.
+
+Being named anywhere in this document counts, not only in a row's first cell. Several
+interfaces are one deferral (the approval stack is four), and demanding a row each
+would push the register into a shape that hides the seam it is about.

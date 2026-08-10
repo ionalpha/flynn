@@ -125,7 +125,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		modelSpec:    modelSpec,
 		// The policy is the session's for its whole life; the prompter that resolves a
 		// pause is installed by whichever interface runs, because only one of them can ask.
-		approval: approvalSetup{actions: reqApproval},
+		gates: gateSetup{approve: reqApproval},
 	}
 
 	// Every turn runs under a prime scope, so a memory the wake digest pushed is
@@ -247,11 +247,11 @@ type replSession struct {
 	// line interface prints it. Nil discards it, so a non-interactive run is quiet.
 	notice func(string)
 
-	// approval carries the session's approval policy and the prompter that resolves a
+	// gates carries the session's approval policy and the prompter that resolves a
 	// pause. The full-screen shell installs its own prompter (the modal overlay) when it
 	// builds the host; the line interface installs none, so a listed action is refused
 	// there rather than silently taken.
-	approval approvalSetup
+	gates gateSetup
 
 	// observer, when set, receives every session event as the turn renders. The
 	// interactive shell installs it to render the typed stream itself (transcript,
@@ -398,7 +398,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	// The turn is reassembled each message; the skill toolset is not, so what the
 	// session has read accumulates across the whole conversation.
 	if s.skillset == nil {
-		s.skillset = skilltool.New(s.store.Skills())
+		s.skillset = skilltool.New(s.store.Skills(), skilltool.WithNotes(s.memory().skillNotes()))
 	}
 	if s.ext != nil {
 		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
@@ -406,7 +406,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		// the CLI's own conversation rather than a step of ours.
 		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{})
 	} else {
-		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{}, false, false, s.approval)
+		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{}, false, false, s.gates)
 	}
 	if err != nil {
 		return "", err
@@ -557,6 +557,7 @@ func (s *replSession) finish(ctx context.Context) error {
 			Transcript: s.transcript,
 			Converged:  true,
 			Source:     s.runID,
+			SkillsRead: s.skillset.Reads(),
 		})
 	}
 	_, _ = fmt.Fprintf(s.out, "\nsession %s ended.\n", s.runID)

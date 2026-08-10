@@ -371,3 +371,52 @@ func TestAChildOfAnUntermedParentCarriesNoTerms(t *testing.T) {
 		t.Fatalf("child invented terms its parent never stated: %+v", got)
 	}
 }
+
+// A child inherits its parent's allowances unchanged. That is neither widening nor
+// inference: the child holds exactly what its parent was declared to hold, and holds it
+// only for the actions its narrowed grant lets it take at all. What a delegation cannot do
+// is mint one, which is why nothing in the spawn request can add to this list.
+func TestAChildInheritsItsParentsAllowancesAndCanMintNone(t *testing.T) {
+	s := newStore(t)
+	sp := orchestration.NewSpawner(s, nil)
+	sp.SetEnqueue((&recordingEnqueue{}).fn)
+	declared := []goal.Allowance{{Action: "deploy", Target: "staging"}, {Action: "secret.release"}}
+	parent := putParent(t, s, "root", goal.Spec{
+		Objective: "lead", StopCondition: "done",
+		Grant: []string{"read", "deploy"}, Allowances: declared,
+	})
+
+	id, err := sp.Spawn(context.Background(), parent, mission.SubGoal{
+		Objective: "a piece of it", Actions: []string{"read", "deploy"},
+	})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+
+	got := childSpec(t, s, id).Allowances
+	if len(got) != len(declared) {
+		t.Fatalf("child carries %d declarations, want its parent's %d", len(got), len(declared))
+	}
+	for i, want := range declared {
+		if got[i] != want {
+			t.Fatalf("child declaration %d = %+v, want %+v unchanged", i, got[i], want)
+		}
+	}
+}
+
+// A parent that was declared nothing hands its child nothing, so a delegation is not a way
+// to acquire an authority the run was never given.
+func TestAChildOfAnUndeclaredParentCarriesNoAllowances(t *testing.T) {
+	s := newStore(t)
+	sp := orchestration.NewSpawner(s, nil)
+	sp.SetEnqueue((&recordingEnqueue{}).fn)
+	parent := putParent(t, s, "root", goal.Spec{Objective: "o", StopCondition: "c", Grant: []string{"read"}})
+
+	id, err := sp.Spawn(context.Background(), parent, mission.SubGoal{Objective: "x", Actions: []string{"read"}})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	if got := childSpec(t, s, id).Allowances; len(got) != 0 {
+		t.Fatalf("child invented an authority its parent never had: %+v", got)
+	}
+}

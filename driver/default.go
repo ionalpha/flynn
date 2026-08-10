@@ -52,6 +52,9 @@ func (defaultDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, error
 		opts = append(opts, mission.WithApproval(s.Approval.Gate))
 		opts = append(opts, mission.WithApprovalPrompter(s.Approval.Prompter, s.Approval.Signer, s.Approval.Host))
 	}
+	if s.Allowance != nil {
+		opts = append(opts, mission.WithAllowance(s.Allowance))
+	}
 	if s.EventSink != nil {
 		opts = append(opts, mission.WithEventSink(s.EventSink))
 	}

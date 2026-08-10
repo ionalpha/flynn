@@ -308,3 +308,32 @@ func mustAllow(t *testing.T, err error) {
 		t.Fatalf("action should have been allowed: %v", err)
 	}
 }
+
+// A Hook with no anomaly detector still halts on the breakers it was configured
+// with. The detector is an additional signal source, not the safety loop: an
+// out-of-band feed that models a run's normal behaviour is something only a host can
+// supply, and its absence narrows what can be noticed rather than removing the halt.
+func TestConfiguredBreakersHaltWithNoDetector(t *testing.T) {
+	h := brakes.NewHook(brakes.Limits{MaxTokens: 100}, nil) // no WithAnomalyDetector
+	d := dispatch.New(dispatch.WithHook(h))
+	c := &counter{}
+
+	mustAllow(t, govern(t, d, "run", "tool", c.work(dispatch.Metering{Tokens: 100}, nil)))
+	assertHalted(t, govern(t, d, "run", "tool", c.work(dispatch.Metering{}, nil)))
+}
+
+// And with no detector and no breakers configured, nothing halts. Said out loud
+// because it is the shape of the absence: a run reaches its own end rather than being
+// stopped by a signal source that was never there, and an operator who wants the
+// out-of-pattern case caught has to wire one.
+func TestNoDetectorMeansNoOutOfPatternHalt(t *testing.T) {
+	h := brakes.NewHook(brakes.Limits{}, nil) // no limits, no detector
+	d := dispatch.New(dispatch.WithHook(h))
+	c := &counter{}
+
+	mustAllow(t, govern(t, d, "run", "drop_table", c.work(dispatch.Metering{}, nil)))
+	mustAllow(t, govern(t, d, "run", "drop_table", c.work(dispatch.Metering{}, nil)))
+	if c.ran != 2 {
+		t.Fatalf("work ran %d times, want 2: with no detector the pattern is nobody's to judge", c.ran)
+	}
+}

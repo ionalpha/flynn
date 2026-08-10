@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/allowance"
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/budget"
@@ -194,6 +195,23 @@ func WithBudget(h *budget.Hook) Option {
 		if h != nil {
 			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(h))
 			e.budgeted = true
+		}
+	}
+}
+
+// WithAllowance wires the pre-declaration gate into the waist, so an action the policy
+// marks as reaching outside the workspace irreversibly is refused unless the goal declares
+// it. It composes above the capability grant the way approval does, and differs from
+// approval in when the authority is given: an approval is signed while the run is going,
+// and an allowance was written before it started, for a run nobody will be watching.
+//
+// The declarations come off the goal spec, so one executor drives goals of differing
+// authority here too. Without the gate nothing is marked and every action is admitted,
+// which keeps the standalone agent zero-config. A nil policy is ignored.
+func WithAllowance(p allowance.Policy) Option {
+	return func(e *Executor) {
+		if p != nil {
+			e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(allowance.NewGate(p)))
 		}
 	}
 }
@@ -380,6 +398,14 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	// unchanged.
 	if g, ok := e.grantFor(spec); ok {
 		ctx = capability.Into(ctx, g)
+	}
+	// Bind the irreversible actions outside the workspace this goal was declared to be
+	// allowed. They travel on the goal for the same reason the grant does, and they are
+	// checked the same way whether or not anyone is watching: a run that reaches one it
+	// was not given is refused here and paused by its reconciler, rather than asked a
+	// question nobody is there to answer.
+	if decls := goal.Declarations(spec.Allowances); len(decls) > 0 {
+		ctx = allowance.Into(ctx, decls...)
 	}
 	// Scope the safety brake to this run, so its breakers track behaviour per run
 	// and the kill-switch halts the right one. The run id is the resource name, the

@@ -63,11 +63,8 @@ func (g *Reconciler) auditInvariants(ctx context.Context, r resource.Resource, s
 	// an unaudited run looks exactly like a run whose terms held. So it stalls, the same
 	// way a goal carrying a unit graph with no spawner does, and for the same reason.
 	if g.auditor == nil {
-		msg := "the goal states terms of the run but no auditor is wired to check them"
-		status.Phase = PhaseStalled
-		status.Message = msg
-		status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "InvariantAuditorMissing", Message: msg}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "InvariantAuditorMissing"}, g.clk.Now())
+		status.stall("InvariantAuditorMissing",
+			"the goal states terms of the run but no auditor is wired to check them", g.clk.Now())
 		res, err := g.terminal(ctx, r, *status, specHash)
 		return res, true, err
 	}
