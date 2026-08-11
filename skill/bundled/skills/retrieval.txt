@@ -43,3 +43,11 @@ how do I keep the database out of the code that holds the rules | structural-bou
 should I put an interface here or call the thing directly | structural-boundaries |
 the import graph has a cycle in it | structural-boundaries |
 should we restructure this into layers with ports and adapters | structural-boundaries |
+
+is this function still used anywhere and can I delete it | deletion |
+remove the dead code from this package | deletion |
+we have the same logic in two places, get rid of one | deletion |
+nobody uses this feature any more, take it out | deletion |
+this test keeps failing, can we just skip it | deletion |
+clean up the leftovers from the last change | deletion |
+how do I retire an endpoint that other people still call | deletion |
