@@ -60,6 +60,14 @@ is this a breaking change | contract-design |
 we need to version this API | contract-design |
 the client crashes when the server sends a field it does not know about | contract-design |
 
+upgrade the dependencies in this project | dependencies |
+should I use a library for this or write it myself | dependencies |
+add a package that does date parsing | dependencies |
+there is a security advisory against something we depend on | dependencies |
+this library has not been updated in three years | dependencies |
+can we use this package with its licence | dependencies |
+should I pin this version or use a range | dependencies |
+
 this function takes eight parameters and I keep adding more | interface-depth |
 every caller of this has to do the same three steps first | interface-depth |
 this class has twelve methods and hardly does anything | interface-depth |
