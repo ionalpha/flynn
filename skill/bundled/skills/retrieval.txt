@@ -32,11 +32,11 @@
 
 the tests are failing after my change and I cannot see why | systematic-debugging |
 production is throwing errors and I cannot reproduce it locally | systematic-debugging |
-this test passes sometimes and fails other times | systematic-debugging |
+this test passes sometimes and fails other times | systematic-debugging | external-integration
 the nightly job has started running past its window | systematic-debugging |
 a customer reported that discounts are being applied at the wrong rate | systematic-debugging |
 
-where should this new code go | structural-boundaries |
+where should this new code go | structural-boundaries | external-integration
 should this be a new package or a change to an existing one | structural-boundaries |
 this package imports something it should not import | structural-boundaries |
 how do I keep the database out of the code that holds the rules | structural-boundaries |
@@ -56,7 +56,7 @@ can I add this field without breaking the clients | contract-design |
 I need to change the signature of an exported function | contract-design |
 design the API for this new service | contract-design |
 what should this endpoint return when it fails | contract-design |
-is this a breaking change | contract-design |
+is this a breaking change | contract-design | external-integration
 we need to version this API | contract-design |
 the client crashes when the server sends a field it does not know about | contract-design |
 
@@ -68,10 +68,18 @@ this library has not been updated in three years | dependencies |
 can we use this package with its licence | dependencies |
 should I pin this version or use a range | dependencies |
 
-this function takes eight parameters and I keep adding more | interface-depth |
+this function takes eight parameters and I keep adding more | interface-depth | external-integration
 every caller of this has to do the same three steps first | interface-depth |
-this class has twelve methods and hardly does anything | interface-depth |
+this class has twelve methods and hardly does anything | interface-depth | external-integration
 make this thing easier to call | interface-depth |
 this wrapper just forwards to the thing underneath it | interface-depth |
 my test only passes if I mock everything the module calls | interface-depth |
 should I add an option for this one caller | interface-depth |
+
+write a client for the payment provider's API | external-integration |
+this call to the vendor fails every so often in production | external-integration |
+should I retry this request when it times out | external-integration |
+the API we call started returning 429 and everything fell over | external-integration |
+handle the webhook this service sends us | external-integration |
+what happens to our checkout if their service is down | external-integration |
+I am not sure this SDK method still exists in the version we use | external-integration |
