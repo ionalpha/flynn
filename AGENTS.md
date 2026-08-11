@@ -60,7 +60,8 @@ Run `./dev/check` until it is green before opening a PR.
   an addition is not automatically safe: adding a field to a struct is compatible,
   adding a method to an interface a host implements is a break for every host that
   implemented it. A break that is worth making goes in `dev/apidiff-accepted.txt`
-  with the reason, verbatim, in the same PR.
+  with the reason, verbatim, in the same PR. `docs/VERSIONING.md` is the same
+  policy written for the person importing the module.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, ...). Sign off
   with DCO (`git commit -s`). Wrap the message body at 72 columns.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by

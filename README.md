@@ -530,6 +530,12 @@ a := agent.New(agent.Config{Model: "anthropic:claude-opus-4-8"})
 result, err := a.Goal(ctx, "audit the repo for TODOs and summarize them")
 ```
 
+The exported packages are tiered: the embedding contract is gated against
+compatibility breaks in CI, the domain packages are importable but unstable while
+pre-1.0, and `internal/` promises nothing. Every release's notes carry the
+exported-API diff against the previous one, so an upgrade is a decision you can
+read before you make it. See [docs/VERSIONING.md](docs/VERSIONING.md).
+
 ## Run it anywhere
 
 - **Locally** as a single binary.

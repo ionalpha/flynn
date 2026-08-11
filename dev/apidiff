@@ -19,6 +19,8 @@
 # struct is compatible, adding a method to an interface a host implements is not.
 #
 # Base defaults to the newest release tag. Override with FLYNN_APIDIFF_BASE.
+# Set FLYNN_APIDIFF_REPORT to a path to also write the markdown the release notes
+# carry: every incompatible change, by tier, whatever the gate's verdict was.
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
@@ -114,9 +116,19 @@ waived=0
 : > "$work/blocking"
 : > "$work/domain"
 : > "$work/waived"
+# The tier lists for the report keep every incompatible change, accepted or not.
+# Acceptance is our argument for making a break; it is not a reason to leave the
+# break out of what an upgrader is told.
+: > "$work/stable.all"
+: > "$work/domain.all"
 
 while IFS= read -r line; do
   [ -n "$line" ] || continue
+  if stable_pkg "$line"; then
+    printf '%s\n' "$line" >> "$work/stable.all"
+  else
+    printf '%s\n' "$line" >> "$work/domain.all"
+  fi
   # -e, because every change line starts with a dash.
   if grep -Fxq -e "$line" "$work/accepted"; then
     waived=$((waived + 1))
@@ -129,6 +141,35 @@ while IFS= read -r line; do
     printf '%s\n' "$line" >> "$work/domain"
   fi
 done < "$work/incompatible"
+
+# The release notes carry this, which is the one moment a pinned importer is
+# actually deciding whether to move (see docs/VERSIONING.md).
+if [ -n "${FLYNN_APIDIFF_REPORT:-}" ]; then
+  {
+    echo "## API compatibility"
+    echo
+    echo "Compared with \`$base\`, using \`golang.org/x/exp/cmd/apidiff\`. A pinned"
+    echo "importer is unaffected until it upgrades; this is what upgrading costs."
+    echo
+    if [ ! -s "$work/incompatible" ]; then
+      echo "No incompatible changes to the exported API."
+    else
+      if [ -s "$work/stable.all" ]; then
+        echo "**Stable surface (the embedding contract):**"
+        echo
+        sed 's/^- /- `/; s/: /`: /' "$work/stable.all"
+        echo
+      fi
+      if [ -s "$work/domain.all" ]; then
+        echo "**Domain surface (unstable while pre-1.0):**"
+        echo
+        sed 's/^- /- `/; s/: /`: /' "$work/domain.all"
+        echo
+      fi
+    fi
+  } > "$FLYNN_APIDIFF_REPORT"
+  echo "==> wrote the compatibility report to $FLYNN_APIDIFF_REPORT"
+fi
 
 total="$(grep -c '^- ' "$work/all" || true)"
 incompatible="$(grep -c '^- ' "$work/incompatible" || true)"

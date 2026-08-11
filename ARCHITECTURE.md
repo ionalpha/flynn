@@ -331,6 +331,9 @@ lives in the repository rather than in a review thread. Direction is what decide
 the verdict, and the tool encodes it: adding a field to a struct a host reads is
 compatible, adding a method to a port a host implements is not.
 
+What this means for someone importing the module, including how a bad version is
+retracted and what a v2 would cost them, is `docs/VERSIONING.md`.
+
 Two things it does not see, stated so nobody reads a green run as more than it
 is. It compares shape, never behaviour. And it says nothing about the formats
 that cross a process boundary rather than a link boundary: envelope records,
