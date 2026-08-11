@@ -117,7 +117,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.StopEvaluator` | `mission.Convergence` | same | shipped |
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
-| `goal.InvariantAuditor` | `evidence.CommandAuditor` | same | shipped |
+| `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; `fanout.go` too | shipped |
 | `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
@@ -419,10 +419,19 @@ operator surface: the engine enforced them and nothing in `cmd/flynn` could set
 operator now states them in a goal spec file (`--goal-spec`, see below), and the
 pass starts from that file rather than from a hand-built spec.
 
-One pass is driven through a shipped assembly rather than through
-`runLearningMission`, because the single-conversation assembly is driven by the
-session the CLI opens around it: a goal submitted straight to its runtime sits with
-its step in flight. The fan-out assembly drives its own reconcile loop.
+Writing the surface produced a second finding, also closed. The fan-out assembly
+wired no invariant auditor, so `flynn goal --fanout` over a spec file stalled at
+admission saying nobody could check the terms. It went unnoticed because the
+acceptance pass asserted only that a stated term stopped the goal, and that stall
+stops the goal: an honest refusal and a passing test that proved nothing. The pass
+now names the breached term, and `fanout.go` wires the auditor the single
+conversation has always had.
+
+The invariant pass assembles and submits the way `flynn goal` does but does not go
+through `drive`, which cancels the run context as soon as the conversation converges.
+An audit runs on the reconcile that settles the step, so which of the two arrives
+first depends on how quickly the auditor's command starts. Only the cancellation is
+the test's; everything else on the path is the shipped one.
 
 ### Stating the terms of a run
 

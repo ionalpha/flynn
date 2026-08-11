@@ -20,6 +20,7 @@ import (
 	"github.com/ionalpha/flynn/memory/consolidate"
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -107,48 +108,56 @@ func TestStandaloneAGoalRunsThroughTheSandboxAndConverges(t *testing.T) {
 //
 // Register rows exercised: goal.InvariantAuditor, evidence.CommandAuditor.
 //
-// It starts where an operator starts: a goal spec file on disk, loaded by the same
-// loader --goal-spec uses, driven by the same drive() every one-shot run goes through.
-// The term is never constructed in the test, so what is exercised is the whole path
-// from the file to the audit, and a surface that stopped carrying terms would fail here
-// rather than in a unit test of a struct nothing reads.
+// The term is never constructed in the test. It is written to a goal spec file, the
+// file an operator writes, and loaded by the same loader --goal-spec uses, so the path
+// from the file to the audit is what the pass covers rather than a struct literal
+// nothing reads. Where the terms meet the command's own wiring is
+// TestGoalSpecTermsReachTheSubmittedGoal.
+//
+// It is assembled and submitted the way `flynn goal` does (the single-conversation
+// assembly, the session that drives it) rather than through drive() itself, for one
+// reason: drive cancels the run context the moment the conversation converges, and the
+// audit runs on the reconcile that settles the step. Which of the two gets there first
+// depends on how fast the auditor's command starts on the machine, and a governance
+// pass that sometimes checks nothing is worse than no pass. Everything under test is
+// the shipped path; only the cancellation is the test's.
 //
 // The breach is the half worth insisting on. A run whose terms were never checked
 // finishes looking exactly like one whose terms held, so the pass states a term whose
-// check fails and asserts the goal stops on it, naming it.
+// check fails and asserts the goal stops on that term, by name. Asserting only that the
+// goal stopped is what let this pass go green for a while on a goal that stalled saying
+// no auditor was wired: stopped for want of a guard reads identically to stopped by one.
 func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	ctx := acceptCtx(t)
 	_, store := dataDir(t)
 	reg := mustRegistry(t)
 	rstore := store.Resources(reg)
 
-	path := filepath.Join(t.TempDir(), "goal.json")
-	if err := os.WriteFile(path, []byte(`{
+	spec := loadWrittenGoalSpec(t, `{
 	  "objective": "do the work",
 	  "stopCondition": "the work is done",
 	  "invariants": [
 	    {"id": "clean-tree", "statement": "the tree stays clean", "check": "exit 1"}
 	  ]
-	}`), 0o600); err != nil {
-		t.Fatalf("write the spec an operator writes: %v", err)
-	}
-	spec, err := loadGoalSpecFile(path)
+	}`)
+
+	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
+		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
 	if err != nil {
-		t.Fatalf("load the spec the command loads: %v", err)
+		t.Fatalf("assemble the mission the binary assembles: %v", err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+	go func() { _ = run.rt.Start(ctx) }()
+
+	if _, err := run.sess.Submit(ctx, run.rt, goal.Spec{
+		Objective:     spec.Objective,
+		StopCondition: stopCondition(spec.StopCondition),
+		Invariants:    spec.Invariants,
+	}); err != nil {
+		t.Fatalf("submit a goal that states its terms: %v", err)
 	}
 
-	var out bytes.Buffer
-	_, runID, _, _ := drive(ctx, &out, alwaysDone{}, harness.Plan{}, t.TempDir(),
-		spec.Objective, defaultSystemPrompt, rstore, store.Jobs(), store.Log(), false, "", nil,
-		withGoalSpec(spec))
-
-	// The run reads its terms back before it starts, so an operator can see that the
-	// file was picked up rather than inferring it from a run that finished quietly.
-	if !strings.Contains(out.String(), "clean-tree") {
-		t.Fatalf("the run never said what it was being held to:\n%s", out.String())
-	}
-
-	status := waitForBreach(ctx, t, rstore, runID)
+	status := waitForBreach(ctx, t, rstore, run.sess.ID())
 	term, breached := status.BreachedInvariant()
 	if !breached || term.ID != "clean-tree" {
 		t.Fatalf("the stated term was not audited: %+v", status)
@@ -156,6 +165,20 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	if status.Phase != goal.PhaseStalled {
 		t.Fatalf("a breached term did not stop the goal: %+v", status)
 	}
+}
+
+// loadWrittenGoalSpec writes a goal spec file and loads it the way the command does.
+func loadWrittenGoalSpec(t *testing.T, body string) goalSpecFile {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "goal.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the spec an operator writes: %v", err)
+	}
+	spec, err := loadGoalSpecFile(path)
+	if err != nil {
+		t.Fatalf("load the spec the command loads: %v", err)
+	}
+	return spec
 }
 
 // waitForBreach polls until the goal records a breached invariant or the context ends.
