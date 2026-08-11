@@ -445,7 +445,7 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userTe
 		if _, err := run.sess.Submit(turnCtx, run.rt, goal.Spec{
 			Objective:     objective,
 			Attachments:   images,
-			StopCondition: "the objective is fully accomplished",
+			StopCondition: defaultStopCondition,
 			// The model the loop drives. Empty for a native session (the session's own model
 			// applies); for an external agent it is the CLI's model string, so `flynn --model
 			// claude:<model>` pins the model the CLI itself runs.

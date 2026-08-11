@@ -174,6 +174,15 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 	// A goal with no ledger, which is every goal on this path that is not a unit's child,
 	// is unaffected.
 	cfg.RequireLedgerProof = true
+	// Rule on the terms of the run, the way the single-conversation assembly does. Without
+	// it a goal that states terms stalls at admission saying no auditor is wired, which is
+	// an honest refusal and a useless one: a fan-out is where terms matter most, since the
+	// run is spending concurrent children on the objective and the parent is the only place
+	// the whole run can be judged. The auditor is the same one, built the same way, and a
+	// term with no check falls back to the model auditor for the same reasons.
+	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log, evidence.NewModelAuditor(model, log),
+		dispatch.WithAdmitter(capability.Admitter{}),
+		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
 	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err

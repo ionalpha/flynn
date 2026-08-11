@@ -80,6 +80,13 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	if line := ledgerLine(cfg.planning || fanout != nil, cfg.proof || fanout != nil); line != "" {
 		_, _ = fmt.Fprintln(w, line)
 	}
+	// Read the run's terms back before it starts. The operator wrote them in a file, and
+	// the two things they cannot see from the file are whether this run actually picked
+	// them up and which of them carries a check it can run rather than a judgement the
+	// auditor model will make.
+	for _, line := range termsLines(cfg.terms) {
+		_, _ = fmt.Fprintln(w, line)
+	}
 
 	// Open the run's spend pool before the goal is submitted, so the ceiling is in
 	// force from the first action rather than after a race. The pool is keyed by the
@@ -117,8 +124,11 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		}
 		run.sess.Resume(runCtx, run.rt, g.Key())
 	} else if _, err := run.sess.Submit(runCtx, run.rt, goal.Spec{
-		Objective:     objective,
-		StopCondition: "the objective is fully accomplished",
+		Objective: objective,
+		// What being finished means. A goal spec file may say it in the operator's own
+		// words, which is the half of the run's terms the stop evaluator reads; with no
+		// file, every run has said this.
+		StopCondition: stopCondition(cfg.stopCondition),
 		// The model the loop drives. Empty for a native run (the host default model
 		// applies); for an external agent it is the CLI's model string, which the episode
 		// driver hands the CLI so `flynn --model codex:<model>` pins that model.
@@ -135,6 +145,10 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 		// that answers a missing one is the reconciler's, and it reads the declarations
 		// off the goal to tell an ask that has been answered from one that has not.
 		Allowances: cfg.allowances,
+		// The terms of the run: what must stay true while it works. They are audited on
+		// every reconcile before the stop condition is consulted, so a breach settles the
+		// goal rather than being weighed against finishing.
+		Invariants: cfg.terms,
 	}); err != nil {
 		return "", "", nil, err
 	}
@@ -167,6 +181,20 @@ func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Pla
 	cancel()
 	<-done
 	return result, run.sess.ID(), transcript, runErr
+}
+
+// defaultStopCondition is what a run means by finished when nobody says otherwise: the
+// objective, judged achieved. It is deliberately the run's own account of its work, which
+// is why a goal's terms are audited separately and first.
+const defaultStopCondition = "the objective is fully accomplished"
+
+// stopCondition returns the operator's stop condition, or the default where they stated
+// none.
+func stopCondition(stated string) string {
+	if s := strings.TrimSpace(stated); s != "" {
+		return s
+	}
+	return defaultStopCondition
 }
 
 // ledgerLine is what a run says about its ledger before it starts: whether each

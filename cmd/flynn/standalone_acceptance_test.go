@@ -19,7 +19,6 @@ import (
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/memory/consolidate"
 	"github.com/ionalpha/flynn/memory/curate"
-	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
@@ -109,47 +108,89 @@ func TestStandaloneAGoalRunsThroughTheSandboxAndConverges(t *testing.T) {
 //
 // Register rows exercised: goal.InvariantAuditor, evidence.CommandAuditor.
 //
-// It is driven through a shipped assembly rather than through runLearningMission,
-// because the command surface has no way to state a term: nothing in cmd/flynn sets
-// goal.Spec.Invariants. The auditor is wired on every assembly and the engine enforces
-// the rule, so the capability is real and only the operator-facing surface is missing.
-// That is a finding, recorded on the register's row, rather than something to paper
-// over by testing the engine and calling it acceptance.
+// The term is never constructed in the test. It is written to a goal spec file, the
+// file an operator writes, and loaded by the same loader --goal-spec uses, so the path
+// from the file to the audit is what the pass covers rather than a struct literal
+// nothing reads. Where the terms meet the command's own wiring is
+// TestGoalSpecTermsReachTheSubmittedGoal.
 //
-// The fan-out assembly, because it drives its own reconcile loop from Start; the
-// single-conversation assembly is driven by the session the CLI opens around it, and
-// a goal submitted straight to its runtime sits with its step in flight.
+// It is assembled and submitted the way `flynn goal` does (the single-conversation
+// assembly, the session that drives it) rather than through drive() itself, for one
+// reason: drive cancels the run context the moment the conversation converges, and the
+// audit runs on the reconcile that settles the step. Which of the two gets there first
+// depends on how fast the auditor's command starts on the machine, and a governance
+// pass that sometimes checks nothing is worse than no pass. Everything under test is
+// the shipped path; only the cancellation is the test's.
 //
 // The breach is the half worth insisting on. A run whose terms were never checked
 // finishes looking exactly like one whose terms held, so the pass states a term whose
-// check fails and asserts the goal stops on it.
+// check fails and asserts the goal stops on that term, by name. Asserting only that the
+// goal stopped is what let this pass go green for a while on a goal that stalled saying
+// no auditor was wired: stopped for want of a guard reads identically to stopped by one.
 func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	ctx := acceptCtx(t)
 	_, store := dataDir(t)
 	reg := mustRegistry(t)
 	rstore := store.Resources(reg)
 
-	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", nil, sandbox.ResourceLimits{}, gateSetup{})
+	spec := loadWrittenGoalSpec(t, `{
+	  "objective": "do the work",
+	  "stopCondition": "the work is done",
+	  "invariants": [
+	    {"id": "clean-tree", "statement": "the tree stays clean", "check": "exit 1"}
+	  ]
+	}`)
+
+	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
+		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble the mission the binary assembles: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 	go func() { _ = run.rt.Start(ctx) }()
 
-	if _, err := run.rt.SubmitGoal(ctx, "termed", goal.Spec{
-		Objective:     "do the work",
-		StopCondition: "the work is done",
-		Grant:         []string{mission.ActionModelGenerate},
-		Invariants:    []goal.Invariant{{ID: "clean-tree", Statement: "the tree stays clean", Check: "exit 1"}},
+	if _, err := run.sess.Submit(ctx, run.rt, goal.Spec{
+		Objective:     spec.Objective,
+		StopCondition: stopCondition(spec.StopCondition),
+		Invariants:    spec.Invariants,
 	}); err != nil {
 		t.Fatalf("submit a goal that states its terms: %v", err)
 	}
 
-	status := waitForBreach(ctx, t, rstore, "termed")
+	status := waitForBreach(ctx, t, rstore, run.sess.ID())
 	if status.Phase != goal.PhaseStalled {
-		t.Fatalf("a breached term did not stop the goal: %+v", status)
+		t.Fatalf("a stated term did not stop the goal: %+v", status)
 	}
+
+	// A term's check is dispatched as semi-trusted work, so a host with only a process
+	// jail refuses to run it. There the capability is the refusal: the run stops saying
+	// the check could not run, rather than finishing as though the term held. Asserting
+	// the breach on such a host would be asserting something the binary cannot do there.
+	if sandbox.ContainmentOf(run.parts.sandbox) < sandbox.Required(sandbox.TrustSemi) {
+		if !strings.Contains(status.Message, "the check could not run") {
+			t.Fatalf("a host that cannot run the check stopped the run for some other reason: %+v", status)
+		}
+		return
+	}
+
+	term, breached := status.BreachedInvariant()
+	if !breached || term.ID != "clean-tree" {
+		t.Fatalf("the stated term was not audited: %+v", status)
+	}
+}
+
+// loadWrittenGoalSpec writes a goal spec file and loads it the way the command does.
+func loadWrittenGoalSpec(t *testing.T, body string) goalSpecFile {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "goal.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write the spec an operator writes: %v", err)
+	}
+	spec, err := loadGoalSpecFile(path)
+	if err != nil {
+		t.Fatalf("load the spec the command loads: %v", err)
+	}
+	return spec
 }
 
 // waitForBreach polls until the goal records a breached invariant or the context ends.
@@ -169,7 +210,11 @@ func waitForBreach(ctx context.Context, t *testing.T, rstore resource.Store, nam
 		case <-ctx.Done():
 			r, _ := rstore.Get(context.Background(), goal.Kind, resource.Scope{}, name)
 			st, _ := goal.DecodeStatus(r)
-			t.Fatalf("the goal never recorded a verdict on its term: %+v", st)
+			// Phase, conditions and the per-term state, spelled out. The whole status
+			// prints the conversation checkpoint as a byte slice, which buries the three
+			// fields that say where the run got stuck under a page of numbers.
+			t.Fatalf("the goal never recorded a verdict on its term:\n  phase: %s\n  steps: %d, step in flight: %t\n  message: %q\n  conditions: %+v\n  terms: %+v",
+				st.Phase, st.Steps, st.InFlight != nil, st.Message, st.Conditions, st.Invariants)
 			return goal.Status{}
 		case <-time.After(20 * time.Millisecond):
 		}

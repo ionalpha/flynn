@@ -154,6 +154,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
 		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: the goal will not report success over a ledger item the record cannot show a passing check for. Needs a host that can contain semi-trusted work, since the check is a model-authored command; where it cannot be run the item stays unproven and the run stops saying so.")
+		goalSpec    = fs.String("goal-spec", "", `a JSON file stating the terms of the run: what must stay true while it works, each with the command that checks it, plus optionally the objective, the stop condition, and the irreversible actions it may take ("-" reads stdin). A term is audited on every step before the goal is asked whether it is done, and a breach stops the run naming the term, so it is the one thing a run under completion pressure cannot trade away. A term's check is run as semi-trusted work, so it needs a host that can contain it; where it cannot be run the run stops saying so rather than carrying on unaudited. See `+"`flynn help`"+` for the shape.`)
 		reqApproval = &stringList{}
 		outside     = &stringList{}
 		allowed     = &stringList{}
@@ -242,6 +243,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		verify:       *verify,
 		fanout:       *fanout,
 		requireProof: *reqProof,
+		goalSpec:     *goalSpec,
 		reqApproval:  reqApproval.values,
 		outside:      outside.values,
 		allowed:      allowed.values,
@@ -265,13 +267,17 @@ type invocation struct {
 	verify         string
 	fanout         bool
 	requireProof   bool
-	reqApproval    []string
-	outside        []string
-	allowed        []string
-	maxCost        float64
-	maxTokens      int64
-	maxMemoryMiB   int
-	maxProcesses   int
+	// goalSpec is the path to the goal spec file, or "" when none was passed. It is the
+	// path rather than the loaded spec because loading it is a fallible step the router
+	// reports as a usage error.
+	goalSpec     string
+	reqApproval  []string
+	outside      []string
+	allowed      []string
+	maxCost      float64
+	maxTokens    int64
+	maxMemoryMiB int
+	maxProcesses int
 }
 
 // exit maps a subcommand's error to a process exit code: 1 with the message on stderr, or 0 on
@@ -289,14 +295,41 @@ func (inv invocation) exit(err error) int {
 // stay small; the exit-code contract lives here: 0 on success, 1 on a command error, 2 on a usage
 // error, and exitChangesRequested for a review that asked for changes.
 func routeCommand(cmd string, rest []string, inv invocation) int {
+	// A goal spec is the terms of one run, and only `flynn goal` submits one. Passing it
+	// to anything else is refused rather than ignored: silently dropping it would leave an
+	// operator believing their run is being held to terms that were never in force, which
+	// is worse than not having stated them.
+	if inv.goalSpec != "" && cmd != "goal" {
+		what := "flynn " + cmd
+		if cmd == "" {
+			what = "an interactive session"
+		}
+		_, _ = fmt.Fprintf(inv.stderr, "usage: --goal-spec states the terms of one run, so it applies to `flynn goal` and not to %s\n", what)
+		return 2
+	}
 	switch cmd {
 	case "goal":
-		objective := strings.TrimSpace(strings.Join(rest[1:], " "))
-		if objective == "" {
-			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn goal "<objective>"`)
+		// The run's terms are read and validated here, before a store is opened or a
+		// credential is resolved: a spec file that will not load is a usage error, and the
+		// operator finds out while they are still looking at the file rather than after
+		// the run has started without the terms they wrote.
+		var spec goalSpecFile
+		if inv.goalSpec != "" {
+			loaded, err := loadGoalSpecFile(inv.goalSpec)
+			if err != nil {
+				_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+				return 2
+			}
+			spec = loaded
+		}
+		// Printed without the error prefix: an objective stated nowhere, or stated twice
+		// and differently, is the command line being wrong rather than the run failing.
+		objective, err := mergeGoalSpec(spec, strings.Join(rest[1:], " "))
+		if err != nil {
+			_, _ = fmt.Fprintln(inv.stderr, err)
 			return 2
 		}
-		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
+		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
 
 	case "inspect", "replay":
 		if len(rest) < 2 {
@@ -430,6 +463,7 @@ func printUsage(w io.Writer) {
 	_, _ = fmt.Fprintln(w, `flynn: an autonomous software agent. Usage:
   flynn                      start an interactive session (chat turn by turn)
   flynn goal "<objective>"   drive a goal to completion in the current directory
+  flynn goal --goal-spec f.json  the same, with the terms of the run stated in a file (see below)
   flynn runs                 list past runs (id, phase, objective)
   flynn get <kind>           list resources of a kind (instances, agents, runs, ...)
   flynn describe <kind> <id> show one resource's fields and recent change history
@@ -470,7 +504,31 @@ func printUsage(w io.Writer) {
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).`)
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).
+
+A goal spec file states the terms of a run: what must stay true while it works. Each
+term is audited after every step, before the goal is asked whether it is done, and a
+breach stops the run naming the term. Pass it with --goal-spec ("-" reads stdin):
+
+  {
+    "objective": "upgrade the http client and keep the suite green",
+    "stopCondition": "the client is upgraded and the suite passes",
+    "invariants": [
+      {"id": "public-api",
+       "statement": "the exported API of ./client does not change",
+       "check": "./dev/apidiff ./client"}
+    ],
+    "allowances": [{"action": "shell", "target": "prod"}]
+  }
+
+Every field is optional as long as the file states either an objective or one term;
+a file of nothing but terms takes its objective from the command line as usual. A
+term whose "check" is omitted is ruled on by the auditor model reading the run's
+record, which is weaker than running a command: write the check where you can. A term
+claiming something is not there needs one, since the record cannot show an absence.
+A check runs as semi-trusted work and needs a host that can contain it (the same
+requirement --require-proof carries); where it cannot be run, the run stops saying so
+rather than carrying on unaudited.`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user
@@ -499,7 +557,7 @@ func dataDirName() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
+func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -581,7 +639,9 @@ func runGoal(modelSpec, objective, verify, dataDir string, learnEnabled, verbose
 		// itself can neither mark an action safe nor declare itself authorized, which is
 		// what makes a declaration something other than the run's own reading of the
 		// objective.
-		withAllowance(outside, allowed),
+		withAllowance(outside, mergeAllowances(spec, allowed)),
+		// The terms the operator stated, and their stop condition where they wrote one.
+		withGoalSpec(spec),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))
