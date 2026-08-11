@@ -35,3 +35,11 @@ production is throwing errors and I cannot reproduce it locally | systematic-deb
 this test passes sometimes and fails other times | systematic-debugging |
 the nightly job has started running past its window | systematic-debugging |
 a customer reported that discounts are being applied at the wrong rate | systematic-debugging |
+
+where should this new code go | structural-boundaries |
+should this be a new package or a change to an existing one | structural-boundaries |
+this package imports something it should not import | structural-boundaries |
+how do I keep the database out of the code that holds the rules | structural-boundaries |
+should I put an interface here or call the thing directly | structural-boundaries |
+the import graph has a cycle in it | structural-boundaries |
+should we restructure this into layers with ports and adapters | structural-boundaries |
