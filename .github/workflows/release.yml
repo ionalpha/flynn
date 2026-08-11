@@ -51,6 +51,30 @@ jobs:
         with:
           # Pin syft so an SBOM tool upgrade cannot change or break the release.
           syft-version: "v1.46.0"
+      # The exported-API diff against the previous release, for the release notes
+      # (.goreleaser.yaml reads it as APIDIFF_NOTES). The gate itself already ran
+      # on main; this is the reporting half, so it must never fail a release:
+      # nothing has gone wrong with the build if the diff cannot be computed.
+      - name: API compatibility report
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes=""
+          prev="$(git tag --list 'v[0-9]*' --sort=-v:refname \
+            | grep -v -- '-' | grep -vx "$TAG" | head -n 1)"
+          if [ -n "$prev" ]; then
+            FLYNN_APIDIFF_BASE="$prev" FLYNN_APIDIFF_REPORT=apidiff-notes.md ./dev/apidiff || true
+            notes="$(cat apidiff-notes.md 2>/dev/null || true)"
+            rm -f apidiff-notes.md
+          else
+            echo "No earlier release tag; nothing to compare $TAG against."
+          fi
+          {
+            echo "APIDIFF_NOTES<<APIDIFF_NOTES_EOF"
+            echo "$notes"
+            echo "APIDIFF_NOTES_EOF"
+          } >> "$GITHUB_ENV"
+
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           # Pin the goreleaser binary to an exact version, not a floating "~> v2",

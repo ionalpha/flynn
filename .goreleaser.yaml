@@ -173,3 +173,9 @@ changelog:
 release:
   draft: false
   prerelease: auto
+  # What upgrading to this tag costs somebody who already imports the module, as
+  # produced by dev/apidiff in the release workflow. An importer pins, so this is
+  # the one moment the question is live for them. `index` rather than .Env.NAME so
+  # a local `goreleaser release --snapshot`, which sets nothing, still templates.
+  footer: |
+    {{ if index .Env "APIDIFF_NOTES" }}{{ .Env.APIDIFF_NOTES }}{{ end }}

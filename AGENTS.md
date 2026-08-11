@@ -35,6 +35,7 @@ to them (`make test` == `./dev/test`); use the scripts directly to pass args.
 ./dev/fmt       # auto-format (gofumpt + goimports)
 ./dev/fix       # dev/fmt plus golangci-lint --fix (applies linter autofixes too)
 ./dev/vuln      # govulncheck
+./dev/apidiff   # API compatibility against the last release tag (needs the tags)
 ./dev/pr        # open a PR against main using the template (needs gh)
 ```
 
@@ -51,6 +52,16 @@ Run `./dev/check` until it is green before opening a PR.
   `internal/fsatomic`), the same change adds the lint rule or architecture test that
   fails the pattern it replaced, so the next author meets the rule instead of
   re-deriving the copy.
+- **API compatibility:** `./dev/apidiff` compares the exported surface against the
+  last release tag and fails on an incompatible change to the stable surface (the
+  embedding contract, listed under Stability tiers in `ARCHITECTURE.md`). Passing
+  tests do not answer this: they prove the callers in this checkout were updated,
+  and a released module has callers outside it. Direction decides the verdict, so
+  an addition is not automatically safe: adding a field to a struct is compatible,
+  adding a method to an interface a host implements is a break for every host that
+  implemented it. A break that is worth making goes in `dev/apidiff-accepted.txt`
+  with the reason, verbatim, in the same PR. `docs/VERSIONING.md` is the same
+  policy written for the person importing the module.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, ...). Sign off
   with DCO (`git commit -s`). Wrap the message body at 72 columns.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by

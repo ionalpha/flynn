@@ -320,6 +320,27 @@ promise. The layout makes the tiers physical:
 - **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
   guards, stores, probes, and adapters the surfaces are built from.
 
+The tiers are checked rather than described. `dev/apidiff` (a CI job, and runnable
+locally) reads the exported API of the newest release tag and of the branch with
+`golang.org/x/exp/cmd/apidiff`, and gives each band its own verdict: an
+incompatible change to the stable surface fails, one to the domain surface is
+reported, and `internal/` is skipped by the tool without being told, which is the
+third tier paying for itself a second time. A deliberate break is recorded in
+`dev/apidiff-accepted.txt` with the reason it was worth making, so the argument
+lives in the repository rather than in a review thread. Direction is what decides
+the verdict, and the tool encodes it: adding a field to a struct a host reads is
+compatible, adding a method to a port a host implements is not.
+
+What this means for someone importing the module, including how a bad version is
+retracted and what a v2 would cost them, is `docs/VERSIONING.md`.
+
+Two things it does not see, stated so nobody reads a green run as more than it
+is. It compares shape, never behaviour. And it says nothing about the formats
+that cross a process boundary rather than a link boundary: envelope records,
+chain records, the sqlite schema. Those carry the same asymmetry (loosen what you
+accept, narrow what you emit) and are covered today only by the `chain/conformance`
+test vectors.
+
 Pre-1.0 Go semver already permits breaking changes, so the domain surface stays
 refactorable while remaining visible. The mechanism band moved under
 `internal/` pre-launch, while the module had no external importers - the

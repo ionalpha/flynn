@@ -1,0 +1,208 @@
+#!/usr/bin/env sh
+# Compare the module's exported API against the last release tag. Mirrors CI.
+#
+# A build that passes proves the callers in this checkout were updated. It says
+# nothing about callers outside it, and a released module has callers outside it
+# by construction. apidiff answers the question from the two artefacts instead of
+# from the intent behind a version bump.
+#
+# The verdict follows the stability tiers in ARCHITECTURE.md:
+#
+#   stable surface   an incompatible change fails, unless the exact line is
+#                    recorded with a reason in dev/apidiff-accepted.txt
+#   domain surface   incompatible changes are reported, not gated (pre-1.0 Go
+#                    semver permits them; the point is that they stop being
+#                    invisible)
+#   internal/        no promise at all, and apidiff skips it without being told
+#
+# apidiff already encodes the rule that direction matters: adding a field to a
+# struct is compatible, adding a method to an interface a host implements is not.
+#
+# Base defaults to the newest release tag. Override with FLYNN_APIDIFF_BASE.
+# Set FLYNN_APIDIFF_REPORT to a path to also write the markdown the release notes
+# carry: every incompatible change, by tier, whatever the gate's verdict was.
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# Pin so local and CI results match.
+EXP_VERSION="v0.0.0-20260810151157-a8b543ca52da"
+MODULE="github.com/ionalpha/flynn"
+ACCEPTED="dev/apidiff-accepted.txt"
+
+# The embedding contract: the root facade and the ports a host implements or
+# consumes. Matched as path prefixes, so `chain` covers `chain/conformance` and
+# `llm` covers its adapters. Keep in step with the Stability tiers section of
+# ARCHITECTURE.md.
+STABLE="capability chain clock fault ids llm observe provider sandbox secret spine state storage/sqlite tools"
+
+base="${FLYNN_APIDIFF_BASE:-}"
+if [ -z "$base" ]; then
+  # Newest release tag, pre-releases excluded (they carry a hyphen).
+  base="$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n 1)"
+fi
+if [ -z "$base" ]; then
+  echo "No release tag found. Nothing to compare against." >&2
+  echo "Fetch tags (git fetch --tags) or set FLYNN_APIDIFF_BASE." >&2
+  exit 1
+fi
+if ! git rev-parse -q --verify "$base^{commit}" >/dev/null; then
+  echo "Base '$base' is not a commit in this repository." >&2
+  exit 1
+fi
+
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT INT TERM
+
+# apidiff names every internal package it skipped, on stderr, on every run. That
+# is a hundred and sixty lines of noise per invocation and the whole point of the
+# internal/ tiering, so drop those and keep anything else it has to say.
+apidiff() {
+  if go run golang.org/x/exp/cmd/apidiff@"$EXP_VERSION" "$@" 2>"$work/err"; then
+    grep -v '^Ignoring internal package' "$work/err" >&2 || true
+  else
+    grep -v '^Ignoring internal package' "$work/err" >&2 || true
+    echo "apidiff failed: $*" >&2
+    exit 1
+  fi
+}
+
+echo "==> apidiff: $base -> working tree"
+
+# Export the base tree rather than checking it out: this leaves the working tree
+# alone, so the script is safe to run mid-edit.
+mkdir -p "$work/base"
+git archive "$base" | tar -x -C "$work/base"
+
+echo "==> reading the API of $base"
+( cd "$work/base" && apidiff -m -w "$work/base.api" "$MODULE" )
+
+echo "==> reading the API of the working tree"
+apidiff -m -w "$work/head.api" "$MODULE"
+
+# apidiff prints one change per line as `- ./pkg.Symbol: what changed`, under a
+# section header. Keep the change lines only.
+apidiff -m -incompatible "$work/base.api" "$work/head.api" | grep '^- ' > "$work/incompatible" || true
+apidiff -m "$work/base.api" "$work/head.api" | grep '^- ' > "$work/all" || true
+
+# The accepted list records changes already released under the current base tag,
+# and deliberate breaks that were argued rather than assumed. A new tag absorbs
+# them, so the file names the base it was captured against and is ignored once
+# that base moves on.
+: > "$work/accepted"
+accepted_base=""
+if [ -f "$ACCEPTED" ]; then
+  accepted_base="$(sed -n 's/^# base: *//p' "$ACCEPTED" | head -n 1)"
+  if [ "$accepted_base" = "$base" ]; then
+    grep '^- ' "$ACCEPTED" > "$work/accepted" || true
+  fi
+fi
+
+stable_pkg() {
+  # Package path of a change line: `- ./memory/guard.Refusal.Source: removed`
+  # -> `memory/guard`. The root package has no path segment before the symbol.
+  pkg="${1#- ./}"
+  pkg="${pkg%%.*}"
+  for want in $STABLE; do
+    case "$pkg" in
+      "$want" | "$want"/*) return 0 ;;
+    esac
+  done
+  return 1
+}
+
+blocking=0
+domain=0
+waived=0
+: > "$work/blocking"
+: > "$work/domain"
+: > "$work/waived"
+# The tier lists for the report keep every incompatible change, accepted or not.
+# Acceptance is our argument for making a break; it is not a reason to leave the
+# break out of what an upgrader is told.
+: > "$work/stable.all"
+: > "$work/domain.all"
+
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  if stable_pkg "$line"; then
+    printf '%s\n' "$line" >> "$work/stable.all"
+  else
+    printf '%s\n' "$line" >> "$work/domain.all"
+  fi
+  # -e, because every change line starts with a dash.
+  if grep -Fxq -e "$line" "$work/accepted"; then
+    waived=$((waived + 1))
+    printf '%s\n' "$line" >> "$work/waived"
+  elif stable_pkg "$line"; then
+    blocking=$((blocking + 1))
+    printf '%s\n' "$line" >> "$work/blocking"
+  else
+    domain=$((domain + 1))
+    printf '%s\n' "$line" >> "$work/domain"
+  fi
+done < "$work/incompatible"
+
+# The release notes carry this, which is the one moment a pinned importer is
+# actually deciding whether to move (see docs/VERSIONING.md).
+if [ -n "${FLYNN_APIDIFF_REPORT:-}" ]; then
+  {
+    echo "## API compatibility"
+    echo
+    echo "Compared with \`$base\`, using \`golang.org/x/exp/cmd/apidiff\`. A pinned"
+    echo "importer is unaffected until it upgrades; this is what upgrading costs."
+    echo
+    if [ ! -s "$work/incompatible" ]; then
+      echo "No incompatible changes to the exported API."
+    else
+      if [ -s "$work/stable.all" ]; then
+        echo "**Stable surface (the embedding contract):**"
+        echo
+        sed 's/^- /- `/; s/: /`: /' "$work/stable.all"
+        echo
+      fi
+      if [ -s "$work/domain.all" ]; then
+        echo "**Domain surface (unstable while pre-1.0):**"
+        echo
+        sed 's/^- /- `/; s/: /`: /' "$work/domain.all"
+        echo
+      fi
+    fi
+  } > "$FLYNN_APIDIFF_REPORT"
+  echo "==> wrote the compatibility report to $FLYNN_APIDIFF_REPORT"
+fi
+
+total="$(grep -c '^- ' "$work/all" || true)"
+incompatible="$(grep -c '^- ' "$work/incompatible" || true)"
+echo
+echo "$total API changes since $base, $incompatible of them incompatible."
+
+if [ -f "$ACCEPTED" ] && [ -n "$accepted_base" ] && [ "$accepted_base" != "$base" ]; then
+  echo
+  echo "Note: $ACCEPTED was captured against $accepted_base and the base is now $base."
+  echo "Those entries shipped in $base, so they no longer apply. Clear the file."
+fi
+
+if [ "$waived" -gt 0 ]; then
+  echo
+  echo "Accepted (recorded in $ACCEPTED with a reason): $waived"
+fi
+
+if [ "$domain" -gt 0 ]; then
+  echo
+  echo "Domain surface, incompatible but not gated (unstable pre-1.0):"
+  sed 's/^/  /' "$work/domain"
+fi
+
+if [ "$blocking" -gt 0 ]; then
+  echo
+  echo "STABLE SURFACE BROKEN. These are the embedding contract:"
+  sed 's/^/  /' "$work/blocking"
+  echo
+  echo "Every host that imports the module has to change to keep compiling."
+  echo "Either restore compatibility, or record each line verbatim in"
+  echo "$ACCEPTED with the reason it is worth the break."
+  exit 1
+fi
+
+echo
+echo "OK: the stable surface is unbroken."
