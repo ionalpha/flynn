@@ -68,6 +68,10 @@ func loadGoalSpecFile(path string) (goalSpecFile, error) {
 	if path == "-" {
 		raw, err = io.ReadAll(os.Stdin)
 	} else {
+		// #nosec G304 -- the path is the one the operator typed after --goal-spec, on
+		// their own machine, and reading it is the whole point of the flag. There is no
+		// confinement to add: a person naming a file for a command they are running is
+		// not a file-inclusion risk.
 		raw, err = os.ReadFile(path)
 	}
 	if err != nil {
