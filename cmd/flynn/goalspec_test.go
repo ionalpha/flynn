@@ -1,0 +1,293 @@
+package main
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/ionalpha/flynn/goal"
+)
+
+// writeGoalSpec writes a spec file and returns its path.
+func writeGoalSpec(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "goal.json")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write spec: %v", err)
+	}
+	return path
+}
+
+func TestLoadGoalSpecFileCarriesTheOperatorsTerms(t *testing.T) {
+	path := writeGoalSpec(t, `{
+	  "objective": "upgrade the http client",
+	  "stopCondition": "the client is upgraded and the suite passes",
+	  "invariants": [
+	    {"id": "public-api", "statement": "  the exported API of ./client is unchanged  ", "check": "./dev/apidiff ./client"},
+	    {"id": "scope", "statement": "only files under ./client are modified"}
+	  ],
+	  "allowances": [{"action": "shell", "target": "prod"}]
+	}`)
+
+	spec, err := loadGoalSpecFile(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if spec.Objective != "upgrade the http client" || spec.StopCondition != "the client is upgraded and the suite passes" {
+		t.Fatalf("objective/stop condition not carried: %+v", spec)
+	}
+	if len(spec.Invariants) != 2 {
+		t.Fatalf("terms not carried: %+v", spec.Invariants)
+	}
+	// Trimmed at load, because the statement is fingerprinted at adoption and a stray
+	// space would make the same term read as a reworded one.
+	if spec.Invariants[0].Statement != "the exported API of ./client is unchanged" {
+		t.Fatalf("statement not trimmed: %q", spec.Invariants[0].Statement)
+	}
+	if spec.Invariants[0].Check != "./dev/apidiff ./client" {
+		t.Fatalf("check not carried: %q", spec.Invariants[0].Check)
+	}
+	if len(spec.Allowances) != 1 || spec.Allowances[0].Target != "prod" {
+		t.Fatalf("the target-narrowed allowance the flag cannot express was lost: %+v", spec.Allowances)
+	}
+}
+
+// A misspelled key in a file that states the terms of a run is the failure this surface
+// exists to prevent: it would load, run, and produce a record of a goal held to nothing
+// that reads exactly like one whose terms held.
+func TestLoadGoalSpecFileRefusesAnUnknownField(t *testing.T) {
+	path := writeGoalSpec(t, `{"objective": "do the work", "invariant": [{"id": "x", "statement": "y"}]}`)
+
+	_, err := loadGoalSpecFile(path)
+	if err == nil {
+		t.Fatal("a misspelled key loaded as a run with no terms")
+	}
+	if !strings.Contains(err.Error(), "invariant") {
+		t.Fatalf("the error does not name the field to fix: %v", err)
+	}
+}
+
+func TestLoadGoalSpecFileRefusesAnUnauditableTerm(t *testing.T) {
+	cases := []struct {
+		name, body, wantIn string
+	}{
+		{
+			name:   "absence claim with no search declared",
+			body:   `{"objective": "tidy up", "invariants": [{"id": "no-secrets", "statement": "no credentials are left in the tree"}]}`,
+			wantIn: `"no-secrets" claims something is not there`,
+		},
+		{
+			name:   "two terms claiming one id",
+			body:   `{"objective": "tidy up", "invariants": [{"id": "dup", "statement": "a", "check": "true"}, {"id": "dup", "statement": "b", "check": "true"}]}`,
+			wantIn: `"dup" is declared twice (invariants 1 and 2)`,
+		},
+		{
+			name:   "a term with nothing written down",
+			body:   `{"objective": "tidy up", "invariants": [{"id": "", "statement": "the tree stays clean"}]}`,
+			wantIn: "invariant 1 needs both an id and a statement",
+		},
+		{
+			name:   "a file stating nothing at all",
+			body:   `{}`,
+			wantIn: "states nothing",
+		},
+		{
+			name:   "an allowance authorizing no action",
+			body:   `{"objective": "ship it", "allowances": [{"target": "prod"}]}`,
+			wantIn: "allowance 1 declares no action",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := loadGoalSpecFile(writeGoalSpec(t, tc.body))
+			if err == nil {
+				t.Fatal("loaded a spec the engine would refuse at admission")
+			}
+			if !strings.Contains(err.Error(), tc.wantIn) {
+				t.Fatalf("the error does not point at what to fix:\nwant substring: %s\ngot: %v", tc.wantIn, err)
+			}
+		})
+	}
+}
+
+// The engine may refuse a set of terms for a reason this surface cannot attribute to one
+// of them. It then adds nothing and the engine's own message stands: a wrong pointer into
+// a file is worse than none.
+func TestOffendingTermsNamesNothingItCannotAttribute(t *testing.T) {
+	if got := offendingTerms([]goal.Invariant{{ID: "a", Statement: "the tree stays clean", Check: "true"}}); got != "" {
+		t.Fatalf("a term with nothing wrong with it was named: %q", got)
+	}
+}
+
+// Malformed JSON is where somebody meets this format for the first time, so the shape is
+// printed with the parse error rather than referred to.
+func TestLoadGoalSpecFileShowsTheShapeOnAParseError(t *testing.T) {
+	_, err := loadGoalSpecFile(writeGoalSpec(t, `{"objective": "do the work",}`))
+	if err == nil {
+		t.Fatal("malformed JSON loaded")
+	}
+	if !strings.Contains(err.Error(), `"invariants"`) {
+		t.Fatalf("the parse error does not show the shape to write: %v", err)
+	}
+}
+
+// "-" reads stdin, so a spec generated by whatever produced the run can be piped in
+// without a file being written anywhere a later run could pick it up by accident.
+func TestLoadGoalSpecFileReadsStdin(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	go func() {
+		defer func() { _ = w.Close() }()
+		_, _ = w.WriteString(`{"objective": "piped in", "invariants": [{"id": "t", "statement": "it holds", "check": "true"}]}`)
+	}()
+	saved := os.Stdin
+	os.Stdin = r
+	t.Cleanup(func() { os.Stdin = saved; _ = r.Close() })
+
+	spec, err := loadGoalSpecFile("-")
+	if err != nil {
+		t.Fatalf("load from stdin: %v", err)
+	}
+	if spec.Objective != "piped in" || len(spec.Invariants) != 1 {
+		t.Fatalf("the piped spec was not carried: %+v", spec)
+	}
+}
+
+func TestLoadGoalSpecFileReportsAMissingFile(t *testing.T) {
+	_, err := loadGoalSpecFile(filepath.Join(t.TempDir(), "absent.json"))
+	if err == nil {
+		t.Fatal("a missing spec file loaded")
+	}
+	if !strings.Contains(err.Error(), "absent.json") {
+		t.Fatalf("the error does not name the path: %v", err)
+	}
+}
+
+func TestMergeGoalSpecResolvesTheObjective(t *testing.T) {
+	fileObjective := goalSpecFile{Objective: "the file's objective"}
+
+	if got, err := mergeGoalSpec(fileObjective, ""); err != nil || got != "the file's objective" {
+		t.Fatalf("the file's objective did not carry a run: %q %v", got, err)
+	}
+	if got, err := mergeGoalSpec(goalSpecFile{}, "  the argument  "); err != nil || got != "the argument" {
+		t.Fatalf("the command line's objective did not carry a run: %q %v", got, err)
+	}
+	// Two objectives that agree are one objective; nothing is ambiguous.
+	if got, err := mergeGoalSpec(fileObjective, "the file's objective"); err != nil || got != "the file's objective" {
+		t.Fatalf("the same objective stated twice was refused: %q %v", got, err)
+	}
+
+	// Two that differ is somebody running a stale command line against an edited file.
+	// Picking a winner runs the other one.
+	_, err := mergeGoalSpec(fileObjective, "a different objective")
+	if err == nil {
+		t.Fatal("two conflicting objectives were silently resolved")
+	}
+	if !strings.Contains(err.Error(), "the file's objective") || !strings.Contains(err.Error(), "a different objective") {
+		t.Fatalf("the conflict does not quote both objectives: %v", err)
+	}
+
+	if _, err := mergeGoalSpec(goalSpecFile{Invariants: []goal.Invariant{{ID: "a", Statement: "b"}}}, ""); err == nil {
+		t.Fatal("a run with terms but no objective was accepted")
+	}
+}
+
+func TestMergeAllowancesKeepsBothForms(t *testing.T) {
+	spec := goalSpecFile{Allowances: []goal.Allowance{
+		{Action: "shell", Target: "prod"},
+		// The same action narrowed to two targets is two authorizations, and the file is
+		// the only place either can be written.
+		{Action: "shell", Target: "backup"},
+		{Action: "publish"},
+		// Declared on the flag as well: one authorization, not two.
+		{Action: "write"},
+	}}
+
+	got := mergeAllowances(spec, []string{"write", "network"})
+	want := []goal.Allowance{
+		{Action: "network"},
+		{Action: "write"},
+		{Action: "publish"},
+		{Action: "shell", Target: "backup"},
+		{Action: "shell", Target: "prod"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("declarations lost or duplicated: %+v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("declaration %d = %+v, want %+v (all: %+v)", i, got[i], want[i], got)
+		}
+	}
+}
+
+// A term with no check is judged by the model auditor rather than by running something,
+// which is a weaker guarantee than the file's optional "check" field admits to. The run
+// says which is which while the operator can still stop and write the check.
+func TestTermsLinesSayHowEachTermIsJudged(t *testing.T) {
+	lines := termsLines([]goal.Invariant{
+		{ID: "clean-tree", Statement: "the tree stays clean", Check: "git diff --quiet"},
+		{ID: "scope", Statement: "only ./client is touched"},
+	})
+	joined := strings.Join(lines, "\n")
+
+	if !strings.Contains(joined, "a breach stops the run") {
+		t.Fatalf("the run does not say what a breach does: %s", joined)
+	}
+	if !strings.Contains(joined, "clean-tree") || !strings.Contains(joined, "checked by: git diff --quiet") {
+		t.Fatalf("a checked term does not show its check: %s", joined)
+	}
+	if !strings.Contains(joined, "scope") || !strings.Contains(joined, "auditor model") {
+		t.Fatalf("an unchecked term does not say it is a judgement call: %s", joined)
+	}
+	if termsLines(nil) != nil {
+		t.Fatal("a run with no stated terms said something about them")
+	}
+}
+
+// The terms of a run are stated for one run, and only `flynn goal` submits one. A
+// command that ignored the flag would leave an operator believing their work was being
+// held to terms that were never in force.
+func TestGoalSpecIsRefusedByACommandThatCannotHonourIt(t *testing.T) {
+	for _, cmd := range []string{"runs", "resume", ""} {
+		t.Run("flynn "+cmd, func(t *testing.T) {
+			var errOut strings.Builder
+			code := routeCommand(cmd, []string{cmd}, invocation{
+				stdout:   &strings.Builder{},
+				stderr:   &errOut,
+				dataDir:  t.TempDir(),
+				goalSpec: writeGoalSpec(t, `{"objective": "do the work"}`),
+			})
+			if code != 2 {
+				t.Fatalf("exit code = %d, want 2 (usage)", code)
+			}
+			if !strings.Contains(errOut.String(), "--goal-spec") {
+				t.Fatalf("the operator is not told the terms were not applied: %s", errOut.String())
+			}
+		})
+	}
+}
+
+// A spec file that will not load is a usage error, and it is reported before the command
+// opens a store or resolves a credential: the operator is still looking at the file.
+func TestGoalCommandRefusesABadSpecBeforeItRunsAnything(t *testing.T) {
+	var out, errOut strings.Builder
+	code := routeCommand("goal", []string{"goal", "do the work"}, invocation{
+		stdout:   &out,
+		stderr:   &errOut,
+		dataDir:  t.TempDir(),
+		goalSpec: writeGoalSpec(t, `{"objective": "do the work", "invariant": []}`),
+	})
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2 (usage)", code)
+	}
+	if !strings.Contains(errOut.String(), "invariant") {
+		t.Fatalf("the operator is not told which key is wrong: %s", errOut.String())
+	}
+	if out.String() != "" {
+		t.Fatalf("a refused spec still wrote to stdout: %s", out.String())
+	}
+}

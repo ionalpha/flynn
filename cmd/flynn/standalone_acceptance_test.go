@@ -19,9 +19,7 @@ import (
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/memory/consolidate"
 	"github.com/ionalpha/flynn/memory/curate"
-	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -109,44 +107,52 @@ func TestStandaloneAGoalRunsThroughTheSandboxAndConverges(t *testing.T) {
 //
 // Register rows exercised: goal.InvariantAuditor, evidence.CommandAuditor.
 //
-// It is driven through a shipped assembly rather than through runLearningMission,
-// because the command surface has no way to state a term: nothing in cmd/flynn sets
-// goal.Spec.Invariants. The auditor is wired on every assembly and the engine enforces
-// the rule, so the capability is real and only the operator-facing surface is missing.
-// That is a finding, recorded on the register's row, rather than something to paper
-// over by testing the engine and calling it acceptance.
-//
-// The fan-out assembly, because it drives its own reconcile loop from Start; the
-// single-conversation assembly is driven by the session the CLI opens around it, and
-// a goal submitted straight to its runtime sits with its step in flight.
+// It starts where an operator starts: a goal spec file on disk, loaded by the same
+// loader --goal-spec uses, driven by the same drive() every one-shot run goes through.
+// The term is never constructed in the test, so what is exercised is the whole path
+// from the file to the audit, and a surface that stopped carrying terms would fail here
+// rather than in a unit test of a struct nothing reads.
 //
 // The breach is the half worth insisting on. A run whose terms were never checked
 // finishes looking exactly like one whose terms held, so the pass states a term whose
-// check fails and asserts the goal stops on it.
+// check fails and asserts the goal stops on it, naming it.
 func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	ctx := acceptCtx(t)
 	_, store := dataDir(t)
 	reg := mustRegistry(t)
 	rstore := store.Resources(reg)
 
-	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", nil, sandbox.ResourceLimits{}, gateSetup{})
+	path := filepath.Join(t.TempDir(), "goal.json")
+	if err := os.WriteFile(path, []byte(`{
+	  "objective": "do the work",
+	  "stopCondition": "the work is done",
+	  "invariants": [
+	    {"id": "clean-tree", "statement": "the tree stays clean", "check": "exit 1"}
+	  ]
+	}`), 0o600); err != nil {
+		t.Fatalf("write the spec an operator writes: %v", err)
+	}
+	spec, err := loadGoalSpecFile(path)
 	if err != nil {
-		t.Fatalf("assemble the mission the binary assembles: %v", err)
-	}
-	t.Cleanup(func() { _ = run.Close() })
-	go func() { _ = run.rt.Start(ctx) }()
-
-	if _, err := run.rt.SubmitGoal(ctx, "termed", goal.Spec{
-		Objective:     "do the work",
-		StopCondition: "the work is done",
-		Grant:         []string{mission.ActionModelGenerate},
-		Invariants:    []goal.Invariant{{ID: "clean-tree", Statement: "the tree stays clean", Check: "exit 1"}},
-	}); err != nil {
-		t.Fatalf("submit a goal that states its terms: %v", err)
+		t.Fatalf("load the spec the command loads: %v", err)
 	}
 
-	status := waitForBreach(ctx, t, rstore, "termed")
+	var out bytes.Buffer
+	_, runID, _, _ := drive(ctx, &out, alwaysDone{}, harness.Plan{}, t.TempDir(),
+		spec.Objective, defaultSystemPrompt, rstore, store.Jobs(), store.Log(), false, "", nil,
+		withGoalSpec(spec))
+
+	// The run reads its terms back before it starts, so an operator can see that the
+	// file was picked up rather than inferring it from a run that finished quietly.
+	if !strings.Contains(out.String(), "clean-tree") {
+		t.Fatalf("the run never said what it was being held to:\n%s", out.String())
+	}
+
+	status := waitForBreach(ctx, t, rstore, runID)
+	term, breached := status.BreachedInvariant()
+	if !breached || term.ID != "clean-tree" {
+		t.Fatalf("the stated term was not audited: %+v", status)
+	}
 	if status.Phase != goal.PhaseStalled {
 		t.Fatalf("a breached term did not stop the goal: %+v", status)
 	}

@@ -413,19 +413,49 @@ the absence of a model.
 | A run seals and its record verifies from the store alone | `TestStandaloneARunSealsAndItsRecordVerifies` |
 | The ride-along closes over two runs and one store | `TestRideAlongClosesTheLoopAcrossTwoRuns` |
 
-Writing the suite produced one finding. **A goal's stated terms have no operator
-surface.** `goal.InvariantAuditor` is wired on every assembly and the engine enforces
-the rule (a breach stops the goal before its stop condition is consulted), but nothing
-in `cmd/flynn` sets `goal.Spec.Invariants`, so an operator running `flynn goal` cannot
-state a term for their run. The capability is real and only the surface is missing.
-Its pass therefore drives a shipped assembly directly and says so; a pass that quietly
-tested the engine and called it acceptance would be the exact thing this suite exists
-to catch.
+Writing the suite produced one finding, since closed. A goal's stated terms had no
+operator surface: the engine enforced them and nothing in `cmd/flynn` could set
+`goal.Spec.Invariants`, so the capability was reachable only by an embedder. An
+operator now states them in a goal spec file (`--goal-spec`, see below), and the
+pass starts from that file rather than from a hand-built spec.
 
-Two passes are driven through a shipped assembly rather than through
+One pass is driven through a shipped assembly rather than through
 `runLearningMission`, because the single-conversation assembly is driven by the
 session the CLI opens around it: a goal submitted straight to its runtime sits with
 its step in flight. The fan-out assembly drives its own reconcile loop.
+
+### Stating the terms of a run
+
+`--goal-spec <file>` takes JSON, and it is the only way to set `goal.Spec.Invariants`
+from the command line:
+
+```json
+{
+  "objective": "upgrade the http client and keep the suite green",
+  "stopCondition": "the client is upgraded and the suite passes",
+  "invariants": [
+    {
+      "id": "public-api",
+      "statement": "the exported API of ./client does not change",
+      "check": "./dev/apidiff ./client"
+    }
+  ],
+  "allowances": [{"action": "shell", "target": "prod"}]
+}
+```
+
+A file rather than a repeatable flag, because a term's check is a shell command and a
+flag puts its author in a delimiter fight on the first check that carries a quote. The
+file decodes into a curated struct, not into `goal.Spec`: the model, the step budget,
+the grant and the unit graph belong to the run or to a flag, and an operator editing
+them by hand would be editing machinery they cannot see the effect of. Unknown fields
+are refused, because `"invariant"` for `"invariants"` would otherwise produce a run
+held to nothing that reads exactly like a run whose terms held.
+
+A term with no `check` is ruled on by the model auditor from the run's record, which is
+the weaker of the two auditors. The run prints which of its terms carry a check and
+which do not before it starts, so the choice is visible at the point where it can still
+be changed.
 
 ## How this list is derived
 

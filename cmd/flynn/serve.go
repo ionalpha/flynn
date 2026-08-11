@@ -385,7 +385,7 @@ type goalWorker struct {
 func (w *goalWorker) Start(ctx context.Context, _, objective string) (string, error) {
 	g, err := w.rt.SubmitGoal(ctx, "", goal.Spec{
 		Objective:     objective,
-		StopCondition: "the objective is fully accomplished",
+		StopCondition: defaultStopCondition,
 	})
 	if err != nil {
 		return "", err

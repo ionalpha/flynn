@@ -152,7 +152,7 @@ func TestOutsideGateIsAbsentWhenNothingIsMarked(t *testing.T) {
 // reaches one, and declaring an action nothing marked authorizes what was never gated.
 func TestWithAllowanceSetsBothHalves(t *testing.T) {
 	var cfg driveConfig
-	withAllowance([]string{"write"}, []string{"write"})(&cfg)
+	withAllowance([]string{"write"}, declaredAllowances([]string{"write"}))(&cfg)
 
 	if len(cfg.gates.outside) != 1 || cfg.gates.outside[0] != "write" {
 		t.Fatalf("marked = %v, want [write]", cfg.gates.outside)

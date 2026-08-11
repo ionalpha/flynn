@@ -27,6 +27,12 @@ type driveConfig struct {
 	// to be allowed, carried onto the goal spec so the waist checks them and the
 	// reconciler can tell an ask that has been answered from one that has not.
 	allowances []goal.Allowance
+	// terms are the invariants the run is held to, and stopCondition is what the operator
+	// says being finished means. Both come off a goal spec file; empty leaves the run with
+	// no stated terms and the default stop condition, which is every run that does not
+	// pass one.
+	terms         []goal.Invariant
+	stopCondition string
 }
 
 // driveOption configures a run driven by drive.
@@ -135,10 +141,30 @@ func withApproval(actions []string, prompter mission.ApprovalPrompter) driveOpti
 // declared is a run that stops the first time it reaches one, and declaring an action
 // nothing marked authorizes what was never gated. Marking nothing is the default and leaves
 // the run exactly as it was.
-func withAllowance(outside, declared []string) driveOption {
+//
+// The declarations are already structured because a goal spec file can narrow one to a
+// target, which --allow cannot express; declaredAllowances turns the flag's action names
+// into the same form.
+func withAllowance(outside []string, declared []goal.Allowance) driveOption {
 	return func(c *driveConfig) {
 		c.gates.outside = outside
-		c.allowances = declaredAllowances(declared)
+		c.allowances = declared
+	}
+}
+
+// withGoalSpec states the run's terms and, where the file gives one, its stop condition.
+// The terms are what the run may not trade away to finish: they are audited before the
+// stop condition is consulted on every reconcile, and a breach settles the goal whatever
+// the run was about to claim.
+//
+// It is one option rather than two because the two halves of a spec file arrive together
+// and a caller that set the terms while dropping the operator's stop condition would run
+// a goal against a definition of done nobody wrote. An allowance from the same file is
+// folded in through withAllowance, which owns that list.
+func withGoalSpec(spec goalSpecFile) driveOption {
+	return func(c *driveConfig) {
+		c.terms = spec.Invariants
+		c.stopCondition = spec.StopCondition
 	}
 }
 
