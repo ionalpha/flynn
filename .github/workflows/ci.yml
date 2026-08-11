@@ -284,6 +284,27 @@ jobs:
           cache: true
       - run: ./dev/vuln
 
+  # API compatibility: what this branch would cost somebody who already imports
+  # the released module. A green build only proves the callers inside this
+  # checkout still compile, and a released module has callers outside it.
+  # fetch-depth: 0 because the base is the newest release tag, and a shallow
+  # clone has no tags to resolve it from.
+  apidiff:
+    name: API compatibility
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: true
+      - run: ./dev/apidiff
+
   # Secret scan: gitleaks over the full commit history, not just the tip, so a
   # secret that was committed and later removed is still caught (it lives on in
   # history, which is what an attacker reads). fetch-depth: 0 pulls every commit.
@@ -575,7 +596,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [setup, test, e2e, lint, vuln, secrets, osv, semgrep, skillsref, bench, fuzz]
+    needs: [setup, test, e2e, lint, vuln, apidiff, secrets, osv, semgrep, skillsref, bench, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Fast tier only (draft)
@@ -599,6 +620,7 @@ jobs:
             e2e=${{ needs.e2e.result }}
             lint=${{ needs.lint.result }}
             vuln=${{ needs.vuln.result }}
+            apidiff=${{ needs.apidiff.result }}
             secrets=${{ needs.secrets.result }}
             osv=${{ needs.osv.result }}
             semgrep=${{ needs.semgrep.result }}

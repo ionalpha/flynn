@@ -1,0 +1,38 @@
+# Stable-surface API changes that dev/apidiff must not fail on.
+#
+# One entry is one line of apidiff output, copied verbatim, under the reason it
+# is worth breaking the embedding contract for. Nothing else belongs here: a
+# change that cannot be argued for in a sentence should be reverted instead.
+#
+# The list is scoped to the base tag it was captured against. A release absorbs
+# every entry, so when `base` moves the whole file is ignored and should be
+# emptied down to this header.
+
+# base: v0.1.3
+
+# The memory port grew a promotion and usage half after v0.1.3: the store now
+# records what was pushed and what was read, so recall can rank on it. Those are
+# methods on an interface a host implements, which is why adding them breaks.
+- ./state.MemoryStore.Promote: added
+- ./state.MemoryStore.Promotions: added
+- ./state.MemoryStore.RecordPush: added
+- ./state.MemoryStore.RecordUse: added
+- ./state.MemoryStore.Usage: added
+
+# Provenance became a list: one distilled fact genuinely has several inputs, and
+# `Source string` could only record one of them or a lossy join. Recall grew
+# subject, anchor and kind filters over the same release. Both structs hold
+# slices now, so neither is a map key or an `==` operand any more.
+- ./state.MemoryItem.Source: removed
+- ./state.MemoryItem: old is comparable, new is not
+- ./state.RecallQuery: old is comparable, new is not
+
+# `Uses` conflated being offered a skill with reading its body, which made every
+# win rate a ratio over the wrong denominator. It split into Offers and Reads,
+# keeping the old wire key on the counter that held the old meaning.
+- ./state.Skill.Uses: removed
+
+# The Provetrail suite left draft. Verifiers compare the string, so the value had
+# to change for the published suite to be identifiable as the published one.
+- ./chain/conformance.CryptoSuiteVersion: value changed from "0.1.0-draft" to "0.1.0"
+- ./chain/conformance.SuiteVersion: value changed from "0.1.0-draft" to "0.1.0"
