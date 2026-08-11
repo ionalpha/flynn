@@ -10,6 +10,7 @@ import (
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/evidence"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -42,13 +43,15 @@ func TestGoalSpecTermsReachTheSubmittedGoal(t *testing.T) {
 	  ]
 	}`)
 
+	// The run's own outcome is not what this asserts, and it differs by host: where the
+	// sandbox cannot contain semi-trusted work the checks are refused and the run stops
+	// saying so, which is the fail-closed answer and is covered by
+	// TestTheAuditorRunsAChecksCommandInTheRealSandbox. What was submitted is the same
+	// either way, and it is settled at admission before any of that.
 	var out bytes.Buffer
-	_, runID, _, err := drive(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
+	_, runID, _, _ := drive(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
 		t.TempDir(), "upgrade the http client", defaultSystemPrompt,
 		rstore, store.Jobs(), store.Log(), false, "", nil, withGoalSpec(spec))
-	if err != nil {
-		t.Fatalf("drive a run stating its terms: %v", err)
-	}
 
 	r, err := rstore.Get(ctx, goal.Kind, resource.Scope{}, runID)
 	if err != nil {
@@ -112,6 +115,24 @@ func TestTheAuditorRunsAChecksCommandInTheRealSandbox(t *testing.T) {
 		dispatch.WithAdmitter(capability.Admitter{}),
 		dispatch.WithHook(capability.NewContainmentGate(run.parts.sandbox)))
 	r := resource.Resource{Kind: goal.Kind, Name: "probe"}
+
+	// A term's check is model-adjacent work run on the operator's machine, so it is
+	// dispatched semi-trusted and the containment gate refuses it where the host has
+	// only a process jail (a GitHub Actions runner, which forbids unprivileged user
+	// namespaces, is exactly that host). That is the honest answer and it is asserted
+	// here rather than skipped: what must not happen is a run carrying on unaudited,
+	// or, as it did, carrying on forever with nobody told.
+	if sandbox.ContainmentOf(run.parts.sandbox) < sandbox.Required(sandbox.TrustSemi) {
+		_, err := auditor.Audit(ctx, r, goal.Spec{}, goal.Status{},
+			[]goal.Invariant{{ID: "held", Statement: "it holds", Check: "exit 0"}})
+		if err == nil {
+			t.Fatal("a host that cannot contain semi-trusted work ran the check anyway")
+		}
+		if fault.Classify(err) != fault.Terminal {
+			t.Fatalf("a refused check does not stop the run: classified %q: %v", fault.Classify(err), err)
+		}
+		return
+	}
 
 	breaches, err := auditor.Audit(ctx, r, goal.Spec{}, goal.Status{},
 		[]goal.Invariant{{ID: "held", Statement: "it holds", Check: "exit 0"}})

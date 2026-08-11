@@ -158,12 +158,24 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	}
 
 	status := waitForBreach(ctx, t, rstore, run.sess.ID())
+	if status.Phase != goal.PhaseStalled {
+		t.Fatalf("a stated term did not stop the goal: %+v", status)
+	}
+
+	// A term's check is dispatched as semi-trusted work, so a host with only a process
+	// jail refuses to run it. There the capability is the refusal: the run stops saying
+	// the check could not run, rather than finishing as though the term held. Asserting
+	// the breach on such a host would be asserting something the binary cannot do there.
+	if sandbox.ContainmentOf(run.parts.sandbox) < sandbox.Required(sandbox.TrustSemi) {
+		if !strings.Contains(status.Message, "the check could not run") {
+			t.Fatalf("a host that cannot run the check stopped the run for some other reason: %+v", status)
+		}
+		return
+	}
+
 	term, breached := status.BreachedInvariant()
 	if !breached || term.ID != "clean-tree" {
 		t.Fatalf("the stated term was not audited: %+v", status)
-	}
-	if status.Phase != goal.PhaseStalled {
-		t.Fatalf("a breached term did not stop the goal: %+v", status)
 	}
 }
 

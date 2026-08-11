@@ -154,7 +154,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
 		verify      = fs.String("verify", "", "a command that independently checks the goal succeeded; run after the agent stops, its result grounds the run's success in the verifiable record")
 		reqProof    = fs.Bool("require-proof", false, "hold the run to its own plan: the goal will not report success over a ledger item the record cannot show a passing check for. Needs a host that can contain semi-trusted work, since the check is a model-authored command; where it cannot be run the item stays unproven and the run stops saying so.")
-		goalSpec    = fs.String("goal-spec", "", `a JSON file stating the terms of the run: what must stay true while it works, each with the command that checks it, plus optionally the objective, the stop condition, and the irreversible actions it may take ("-" reads stdin). A term is audited on every step before the goal is asked whether it is done, and a breach stops the run naming the term, so it is the one thing a run under completion pressure cannot trade away. See `+"`flynn help`"+` for the shape.`)
+		goalSpec    = fs.String("goal-spec", "", `a JSON file stating the terms of the run: what must stay true while it works, each with the command that checks it, plus optionally the objective, the stop condition, and the irreversible actions it may take ("-" reads stdin). A term is audited on every step before the goal is asked whether it is done, and a breach stops the run naming the term, so it is the one thing a run under completion pressure cannot trade away. A term's check is run as semi-trusted work, so it needs a host that can contain it; where it cannot be run the run stops saying so rather than carrying on unaudited. See `+"`flynn help`"+` for the shape.`)
 		reqApproval = &stringList{}
 		outside     = &stringList{}
 		allowed     = &stringList{}
@@ -525,7 +525,10 @@ Every field is optional as long as the file states either an objective or one te
 a file of nothing but terms takes its objective from the command line as usual. A
 term whose "check" is omitted is ruled on by the auditor model reading the run's
 record, which is weaker than running a command: write the check where you can. A term
-claiming something is not there needs one, since the record cannot show an absence.`)
+claiming something is not there needs one, since the record cannot show an absence.
+A check runs as semi-trusted work and needs a host that can contain it (the same
+requirement --require-proof carries); where it cannot be run, the run stops saying so
+rather than carrying on unaudited.`)
 }
 
 // defaultDataDir is where durable state lives unless overridden: a per-user

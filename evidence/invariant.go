@@ -148,10 +148,23 @@ func (a *CommandAuditor) auditOne(ctx context.Context, r resource.Resource, term
 			return false, "", ctx.Err()
 		}
 		// Refused or unable to start: the term is unaudited, which is not the same as
-		// broken and is certainly not the same as held. The class is the refusal's own,
-		// so an admission that will never allow this stops the goal and a momentary
-		// failure retries.
-		return false, "", fault.Wrap(fault.Classify(gerr), "audit_check_unrun",
+		// broken and is certainly not the same as held. A momentary failure keeps its
+		// class and retries; anything else is reported Terminal, so the goal settles
+		// saying the check could not run.
+		//
+		// Terminal rather than the refusal's own class, because a refusal is where this
+		// went wrong before. A gate that will never admit this check (a host whose
+		// sandbox cannot contain semi-trusted work is the one that happens) refuses
+		// Forbidden, and the goal reconciler settles a goal on a Terminal fault only:
+		// every other class is handed back, the controller declines to spin on it, and
+		// the run is left running with a step in flight, no verdict on its terms, and
+		// nobody told. A guard that cannot be applied has to stop the run, and stopping
+		// it is worth nothing if the run never hears about it.
+		if class := fault.Classify(gerr); class == fault.Transient {
+			return false, "", fault.Wrap(class, "audit_check_unrun",
+				fmt.Errorf("audit: invariant %s: the check could not run: %w", term.ID, gerr))
+		}
+		return false, "", fault.Wrap(fault.Terminal, "audit_check_unrun",
 			fmt.Errorf("audit: invariant %s: the check could not run: %w", term.ID, gerr))
 	}
 

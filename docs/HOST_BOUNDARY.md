@@ -466,6 +466,17 @@ the weaker of the two auditors. The run prints which of its terms carry a check 
 which do not before it starts, so the choice is visible at the point where it can still
 be changed.
 
+A check is dispatched as semi-trusted work, so it needs a host whose sandbox can
+contain that: on a host with only a process jail (a GitHub Actions runner, where
+unprivileged user namespaces are forbidden, is one) the containment gate refuses it and
+the run stops saying the check could not run. Writing the surface is what surfaced this:
+the auditor reported that refusal `Forbidden`, the goal reconciler settles a goal on a
+`Terminal` fault only, and the run was left going with a step in flight, no verdict on
+its terms, and nobody told. The auditor now reports it `Terminal`, so the run stops.
+Every test of the auditor supplied a fake sandbox, which is how it stayed invisible;
+`TestTheAuditorRunsAChecksCommandInTheRealSandbox` runs the wired auditor against the
+real one and asserts whichever of the two answers the host can give.
+
 ## How this list is derived
 
 Membership is mechanical. Only the verdict column is a judgment.

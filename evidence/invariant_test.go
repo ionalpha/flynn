@@ -181,11 +181,15 @@ func TestAnAuditThatCannotRunIsAnError(t *testing.T) {
 			code:  "audit_check_unrun",
 		},
 		{
+			// Terminal, not the refusal's own Forbidden: the goal reconciler settles a
+			// goal on a Terminal fault and hands every other class back, so a refused
+			// audit reported Forbidden left the run going with no verdict on its terms
+			// and nobody told. The code still names the refusal underneath.
 			name: "the audit was not admitted",
 			a: NewCommandAuditor(&fakeSandbox{}, spine.NewMemoryLog(),
 				nil, dispatch.WithAdmitter(refusingAdmitter{})),
 			terms: []goal.Invariant{term("a", "true")},
-			class: fault.Forbidden,
+			class: fault.Terminal,
 			code:  "audit_check_unrun",
 		},
 		{
@@ -252,8 +256,13 @@ func TestTheAuditRunsUnderTheGoalsOwnGrant(t *testing.T) {
 	if err == nil {
 		t.Fatal("the audit ran under a grant that does not carry it")
 	}
-	if got := fault.Classify(err); got != fault.Forbidden {
-		t.Fatalf("classified %q, want %q", got, fault.Forbidden)
+	// Terminal, so the goal settles on it; the code and the wrapped error still name the
+	// capability refusal that produced it.
+	if got := fault.Classify(err); got != fault.Terminal {
+		t.Fatalf("classified %q, want %q", got, fault.Terminal)
+	}
+	if !strings.Contains(err.Error(), "capability") {
+		t.Fatalf("the refusal that stopped the audit is not named: %v", err)
 	}
 
 	// A goal with no grant is unconstrained, exactly as it is everywhere else, so an
