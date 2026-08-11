@@ -51,3 +51,11 @@ nobody uses this feature any more, take it out | deletion |
 this test keeps failing, can we just skip it | deletion |
 clean up the leftovers from the last change | deletion |
 how do I retire an endpoint that other people still call | deletion |
+
+can I add this field without breaking the clients | contract-design |
+I need to change the signature of an exported function | contract-design |
+design the API for this new service | contract-design |
+what should this endpoint return when it fails | contract-design |
+is this a breaking change | contract-design |
+we need to version this API | contract-design |
+the client crashes when the server sends a field it does not know about | contract-design |
