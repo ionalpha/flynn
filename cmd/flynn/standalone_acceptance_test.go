@@ -198,7 +198,11 @@ func waitForBreach(ctx context.Context, t *testing.T, rstore resource.Store, nam
 		case <-ctx.Done():
 			r, _ := rstore.Get(context.Background(), goal.Kind, resource.Scope{}, name)
 			st, _ := goal.DecodeStatus(r)
-			t.Fatalf("the goal never recorded a verdict on its term: %+v", st)
+			// Phase, conditions and the per-term state, spelled out. The whole status
+			// prints the conversation checkpoint as a byte slice, which buries the three
+			// fields that say where the run got stuck under a page of numbers.
+			t.Fatalf("the goal never recorded a verdict on its term:\n  phase: %s\n  steps: %d, step in flight: %t\n  message: %q\n  conditions: %+v\n  terms: %+v",
+				st.Phase, st.Steps, st.InFlight != nil, st.Message, st.Conditions, st.Invariants)
 			return goal.Status{}
 		case <-time.After(20 * time.Millisecond):
 		}

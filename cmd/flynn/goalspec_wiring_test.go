@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/evidence"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -81,6 +84,51 @@ func TestGoalSpecTermsReachTheSubmittedGoal(t *testing.T) {
 	// they can check the file was picked up at all.
 	if !strings.Contains(out.String(), "public-api") || !strings.Contains(out.String(), "checked by: exit 0") {
 		t.Fatalf("the run did not read its terms back:\n%s", out.String())
+	}
+}
+
+// The auditor the binary wires, against the sandbox the binary runs commands in, with
+// no reconciler around it. Nothing covered this: every test of CommandAuditor supplies
+// a fake sandbox, so "the check runs" was an assumption on every platform the binary
+// ships to.
+//
+// It is a separate pass from the acceptance one because the two fail differently. This
+// one failing says the check cannot be run here at all; the acceptance pass failing
+// says the engine did not act on what the check found.
+func TestTheAuditorRunsAChecksCommandInTheRealSandbox(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	store := memStore(t)
+	rstore := store.Resources(mustRegistry(t))
+	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
+		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	t.Cleanup(func() { _ = run.Close() })
+
+	auditor := evidence.NewCommandAuditor(run.parts.sandbox, store.Log(), nil,
+		dispatch.WithAdmitter(capability.Admitter{}),
+		dispatch.WithHook(capability.NewContainmentGate(run.parts.sandbox)))
+	r := resource.Resource{Kind: goal.Kind, Name: "probe"}
+
+	breaches, err := auditor.Audit(ctx, r, goal.Spec{}, goal.Status{},
+		[]goal.Invariant{{ID: "held", Statement: "it holds", Check: "exit 0"}})
+	if err != nil {
+		t.Fatalf("a passing check could not be run in the sandbox: %v", err)
+	}
+	if len(breaches) != 0 {
+		t.Fatalf("a check that exited 0 was read as a breach: %+v", breaches)
+	}
+
+	breaches, err = auditor.Audit(ctx, r, goal.Spec{}, goal.Status{},
+		[]goal.Invariant{{ID: "broken", Statement: "it holds", Check: "exit 1"}})
+	if err != nil {
+		t.Fatalf("a failing check could not be run in the sandbox: %v", err)
+	}
+	if len(breaches) != 1 || breaches[0].ID != "broken" {
+		t.Fatalf("a check that exited non-zero produced no breach: %+v", breaches)
 	}
 }
 
