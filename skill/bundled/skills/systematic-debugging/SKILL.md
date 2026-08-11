@@ -1,6 +1,6 @@
 ---
 name: systematic-debugging
-description: Use before changing any code in response to a failure: a failing test, an error in production, an intermittent failure, a performance regression, or a bug someone reported. Get a witness first, a command that fails while the bug is present and passes once it is gone, and if nothing can be made to fail then change nothing and say so. Covers sharpening a witness, raising the rate of an intermittent one, narrowing by input and by history, separating competing accounts with one probe, fixing where the wrong value is born, and proving the fix against the witness that failed.
+description: Use before changing any code in response to a failure: a failing test, an error in production, an intermittent failure, a performance regression, a scheduled job that has started running past the window it used to finish in, or a bug someone reported. Get a witness first, a command that fails while the bug is present and passes once it is gone, and if nothing can be made to fail then change nothing and say so. Covers sharpening a witness, raising the rate of an intermittent one, narrowing by input and by history, separating competing accounts with one probe, fixing where the wrong value is born, and proving the fix against the witness that failed.
 metadata:
   flynnhq.com/title: Systematic debugging
   flynnhq.com/tags: '["debugging","diagnosis","testing","incidents"]'
