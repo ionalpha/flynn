@@ -305,6 +305,32 @@ func TestWithdrawingARedirectMidRunIsRefused(t *testing.T) {
 	}
 }
 
+// TestARedirectSetTheRunCouldNotAnswerIsRefusedAtAdmission: two redirects sharing an id
+// cannot be separately discharged, so one of them would be answered by the other's account.
+// Refusing at admission stops that before the first step, where the alternative is a run
+// that looks steered and is not.
+func TestARedirectSetTheRunCouldNotAnswerIsRefusedAtAdmission(t *testing.T) {
+	h := newSteerHarness(t)
+	ref := h.createGoal(t, "g", steerSpec(
+		Steer{ID: "s1", Instruction: "write to events instead"},
+		Steer{ID: "s1", Instruction: "leave the migration alone"},
+	))
+
+	_, err := h.gr.reconcile(h.ctx, ref)
+	if err == nil {
+		t.Fatal("a goal with duplicate redirect ids was admitted")
+	}
+	if !errors.Is(err, ErrSteerDuplicate) {
+		t.Fatalf("error %v does not carry ErrSteerDuplicate", err)
+	}
+	if got := faultCode(t, err); got != "goal_steers_invalid" {
+		t.Fatalf("fault code %q, want goal_steers_invalid", got)
+	}
+	if st := h.status(t, ref); st.InFlight != nil {
+		t.Fatalf("a step was dispatched under redirects nobody could answer: %+v", st.InFlight)
+	}
+}
+
 // TestARunNobodySteersIsUntouched: no judge call, no delivery, and the goal converges
 // exactly as it did before any of this existed.
 func TestARunNobodySteersIsUntouched(t *testing.T) {

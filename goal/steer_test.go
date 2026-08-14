@@ -190,6 +190,25 @@ func TestAFindingAboutSomethingElseIsIgnored(t *testing.T) {
 	}
 }
 
+// TestARedirectNotYetTakenOnStaysOutstanding: a redirect the status has no entry for has
+// nowhere durable to record the discharge, so accepting the finding would drop it. It is
+// judged again on the pass that has taken it on.
+func TestARedirectNotYetTakenOnStaysOutstanding(t *testing.T) {
+	fresh := Steer{ID: "s3", Instruction: "stop touching the migration"}
+	var st Status
+	st.SyncSteers([]Steer{wrongTable()})
+
+	open := st.RecordAcknowledgements([]Steer{fresh},
+		[]Acknowledgement{{ID: "s3", How: "reverted the migration edit"}}, testNow)
+
+	if len(open) != 1 || open[0].ID != "s3" {
+		t.Fatalf("still open = %+v, want the redirect with nowhere to record it", open)
+	}
+	if len(st.Steers) != 1 {
+		t.Fatalf("the discharge invented an entry: %+v", st.Steers)
+	}
+}
+
 // --- what the run and the operator are told -------------------------------------------
 
 func TestSteerBriefStatesTheRedirectAndTheDischargeRule(t *testing.T) {

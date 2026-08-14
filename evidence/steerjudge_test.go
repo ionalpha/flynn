@@ -2,6 +2,7 @@ package evidence
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -214,6 +215,112 @@ func TestAJudgeWithNothingWiredRefusesRatherThanPasses(t *testing.T) {
 	nolog := NewModelSteerJudge(llmtest.NewScripted(llmtest.SayText(`{"quote":"moved it","addressed":true}`)), nil)
 	if _, err := nolog.Acknowledged(context.Background(), goalRes("run-s7"), steerSpec(), goal.Status{}, steers, "wrote the trail"); err == nil {
 		t.Fatal("a judgement nobody could record was accepted")
+	}
+}
+
+// TestACancelledJudgementIsTheCancellation: shutting the run down is not a finding that the
+// run ignored its operator, and it must not be recorded as one.
+func TestACancelledJudgementIsTheCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	log := spine.NewMemoryLog()
+	j := NewModelSteerJudge(&failingModel{err: errors.New("request cancelled")}, log)
+
+	_, err := j.Acknowledged(ctx, goalRes("run-s9"), steerSpec(), goal.Status{},
+		[]goal.Steer{redirect("steer-1", "write to events instead")}, "wrote the trail")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want the cancellation", err)
+	}
+	if len(judgedEvents(t, log, "run-s9")) != 0 {
+		t.Fatal("a shutdown was recorded as a verdict on the run")
+	}
+}
+
+// TestAVerdictThatCannotBeRecordedFailsTheJudgement: a judgement nobody can show happened is
+// what the record exists to prevent, so the write failing fails the judgement rather than
+// discharging the redirect on the strength of an event that was never written.
+func TestAVerdictThatCannotBeRecordedFailsTheJudgement(t *testing.T) {
+	m := llmtest.NewScripted(llmtest.SayText(`{"quote":"moved the writer onto the events table","addressed":true}`))
+	j := NewModelSteerJudge(m, failingLog{spine.NewMemoryLog()})
+
+	acks, err := j.Acknowledged(context.Background(), goalRes("run-s10"), steerSpec(), goal.Status{},
+		[]goal.Steer{redirect("steer-1", "write to events instead")}, "moved the writer onto the events table")
+	if err == nil {
+		t.Fatalf("a judgement nobody could record discharged the redirect: %+v", acks)
+	}
+	if got := fault.Classify(err); got != fault.Transient {
+		t.Fatalf("classified %q, want Transient so the write is tried again", got)
+	}
+}
+
+// TestAnEmptyAccountThatCannotBeRecordedFails: the same rule on the path that refuses without
+// asking the model. Skipping the call is an economy, not a licence to skip the record.
+func TestAnEmptyAccountThatCannotBeRecordedFails(t *testing.T) {
+	j := NewModelSteerJudge(llmtest.NewScripted(), failingLog{spine.NewMemoryLog()})
+
+	if _, err := j.Acknowledged(context.Background(), goalRes("run-s11"), steerSpec(), goal.Status{},
+		[]goal.Steer{redirect("steer-1", "write to events instead")}, ""); err == nil {
+		t.Fatal("a refusal nobody could record was accepted")
+	}
+}
+
+// TestAReplyThatIsJSONAndNotAVerdictIsNotAVerdict: an object that does not parse into the
+// verdict shape is the judge being broken, the same as no object at all.
+func TestAReplyThatIsJSONAndNotAVerdictIsNotAVerdict(t *testing.T) {
+	log := spine.NewMemoryLog()
+	m := llmtest.NewScripted(llmtest.SayText(`{"quote":["moved it"],"addressed":"yes"}`))
+	j := NewModelSteerJudge(m, log)
+
+	_, err := j.Acknowledged(context.Background(), goalRes("run-s12"), steerSpec(), goal.Status{},
+		[]goal.Steer{redirect("steer-1", "write to events instead")}, "wrote the trail")
+	if err == nil {
+		t.Fatal("a reply of the wrong shape was taken as a verdict")
+	}
+	if got := fault.Classify(err); got != fault.Terminal {
+		t.Fatalf("classified %q, want Terminal: asking a broken judge again buys nothing", got)
+	}
+	if len(judgedEvents(t, log, "run-s12")) != 0 {
+		t.Fatal("a judgement nobody could read was recorded as one")
+	}
+}
+
+// TestNothingOutstandingAsksNobody: a run with no redirect against it has nothing to
+// discharge, and reaching the judge at all would be a call to be told so.
+func TestNothingOutstandingAsksNobody(t *testing.T) {
+	m := llmtest.NewScripted(llmtest.SayText(`{"quote":"anything","addressed":true}`))
+	j := NewModelSteerJudge(m, spine.NewMemoryLog())
+
+	acks, err := j.Acknowledged(context.Background(), goalRes("run-s13"), steerSpec(), goal.Status{}, nil, "wrote the trail")
+	if err != nil || acks != nil {
+		t.Fatalf("Acknowledged(no redirects) = %+v, %v, want nothing", acks, err)
+	}
+	if len(m.Requests()) != 0 {
+		t.Fatalf("the model was asked about nothing (%d calls)", len(m.Requests()))
+	}
+}
+
+// TestTheJudgeCanBeReframedAndCapped: both options exist so a caller can put the judgement on
+// a cheaper tier, and both refuse the value that would silently disable them.
+func TestTheJudgeCanBeReframedAndCapped(t *testing.T) {
+	m := llmtest.NewScripted(llmtest.SayText(`{"quote":"moved it","addressed":true}`))
+	j := NewModelSteerJudge(m, spine.NewMemoryLog(),
+		WithSteerSystem("rule on the redirect"), WithSteerMaxTokens(64))
+
+	if _, err := j.Acknowledged(context.Background(), goalRes("run-s14"), steerSpec(), goal.Status{},
+		[]goal.Steer{redirect("steer-1", "write to events instead")}, "moved it"); err != nil {
+		t.Fatalf("Acknowledged: %v", err)
+	}
+	req := m.Requests()[0]
+	if req.System != "rule on the redirect" || req.MaxTokens != 64 {
+		t.Fatalf("the overrides did not reach the model: system=%q maxTokens=%d", req.System, req.MaxTokens)
+	}
+
+	// An empty framing or a non-positive cap is a caller mistake, and taking it would ship a
+	// judge with no standing instruction or no room to answer.
+	def := NewModelSteerJudge(llmtest.NewScripted(llmtest.SayText(`{"quote":"moved it","addressed":true}`)),
+		spine.NewMemoryLog(), WithSteerSystem("  "), WithSteerMaxTokens(0))
+	if def.system != defaultSteerSystem || def.maxTokens != 512 {
+		t.Fatalf("an empty override replaced the default: system=%q maxTokens=%d", def.system, def.maxTokens)
 	}
 }
 
