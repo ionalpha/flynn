@@ -99,3 +99,11 @@ the API we call started returning 429 and everything fell over | external-integr
 handle the webhook this service sends us | external-integration |
 what happens to our checkout if their service is down | external-integration |
 I am not sure this SDK method still exists in the version we use | external-integration |
+
+I am about to implement this feature, how should I start | test-first |
+write the test for this new endpoint before I build it | test-first |
+implement the business rules for the checkout | test-first |
+should I write the test before the code or after | test-first |
+walk me through red green refactor on this change | test-first |
+the test I just wrote passed the first time I ran it | test-first |
+the test failure output names no assertion and no values | test-first |
