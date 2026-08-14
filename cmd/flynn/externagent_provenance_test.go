@@ -211,6 +211,27 @@ func TestClaudeSeedPathsGatherBothCredentialFiles(t *testing.T) {
 	}
 }
 
+// TestCodexSeedCarriesTheCredentialAndNoOperatorConfig is the host half of the codex
+// adapter's declared host-config posture. The adapter states that an episode's child runs
+// under a per-episode home holding the credential and nothing else; the seed list is where
+// that is either true or quietly false. config.toml is the file that would break it: it is
+// where a codex user keeps their MCP servers, model providers and settings, so seeding it
+// would hand the harness servers this run neither hosts nor governs and let the launching
+// operator's configuration steer the episode.
+func TestCodexSeedCarriesTheCredentialAndNoOperatorConfig(t *testing.T) {
+	if len(codexAuthSeedFiles) != 1 || codexAuthSeedFiles[0] != "auth.json" {
+		t.Fatalf("codexAuthSeedFiles = %v, want only the credential", codexAuthSeedFiles)
+	}
+	for _, f := range codexAuthSeedFiles {
+		if f == "config.toml" {
+			t.Error("the operator's codex config must not be seeded into an episode's home")
+		}
+	}
+	if got := externagent.NewCodex("codex", nil).Lockdown().HostConfig; !got.Stripped() {
+		t.Errorf("codex host-config posture = %v, want a stripped one to match the seed", got)
+	}
+}
+
 // TestResolveExternalAgentReportsAMissingCLI checks the onboarding path for an external
 // backend: with the CLI nowhere on the PATH, resolution surfaces the CLI's own actionable
 // reason (install it) rather than a raw error, and never asks for an API key, since an

@@ -35,6 +35,21 @@ func NewCodex(bin string, spawner Spawner) *Codex {
 // Name identifies the adapter in the model spec and on the run.
 func (*Codex) Name() string { return "codex" }
 
+// Lockdown states what a codex episode leaves the harness holding. codex has no flag that
+// removes its shell or patch tools, so writes and commands are contained rather than
+// denied: the model is still offered them, the read-only sandbox with approvals denied
+// makes them fail, and each attempt lands in the steering metrics as native drift. That is
+// the honest posture to declare, and it is why claude and codex declare different ones
+// from the same contract.
+//
+// The operator's own configuration is contained: the child runs under a per-episode
+// CODEX_HOME holding the credential and nothing else, so the MCP servers, model providers
+// and settings in the operator's own codex config are not on the child's path to find, and
+// the only server it loads is the one this episode configures on the command line.
+func (*Codex) Lockdown() Lockdown {
+	return Lockdown{Writes: StripContained, Commands: StripContained, HostConfig: StripContained}
+}
+
 // codexBridgeName is the MCP server name the bridge is registered under in codex's
 // config. Tool names codex reports are namespaced by it.
 const codexBridgeName = "flynn"

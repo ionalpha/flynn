@@ -38,6 +38,20 @@ func NewClaude(bin string, spawner Spawner) *Claude {
 // Name identifies the adapter in the model spec and on the run.
 func (*Claude) Name() string { return "claude" }
 
+// Lockdown states what a claude episode leaves the harness holding. Writes and commands
+// are denied outright: every native effector is named on --disallowedTools and the
+// permission mode neither prompts nor auto-approves, so the model is not offered them at
+// all. The operator's own configuration is denied too, by --strict-mcp-config (the child
+// loads the run's bridge and no MCP server the host has configured) over a per-episode
+// config home seeded with the credential files and nothing else, so the host's hooks,
+// plugins and settings are not on the child's path to find.
+//
+// The sandbox is still the boundary that enforces any of this. What the flags add is that
+// the model is not offered a tool it would spend a turn discovering it cannot use.
+func (*Claude) Lockdown() Lockdown {
+	return Lockdown{Writes: StripDenied, Commands: StripDenied, HostConfig: StripDenied}
+}
+
 // claudeBridgeName is the MCP server name the bridge is registered under in claude's
 // config. claude namespaces the tools it reports as mcp__<server>__<tool>, so a tool
 // call is recognized as bridged by this prefix.

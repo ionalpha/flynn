@@ -94,6 +94,14 @@ type Result struct {
 // bridge that will not bind); an episode that runs and the CLI reports as failed is a
 // completed Run with Failed set on the Result.
 func (r *Runner) Run(ctx context.Context, ep Episode) (Result, error) {
+	// The lockdown is read before anything is bound or spawned: a provider whose native
+	// surface cannot be taken away is refused, not run and then judged. The refusal is
+	// terminal because it is an integration gap, not a bad moment, and it names what could
+	// not be stripped so the operator can pick another backend or close the gap.
+	if why := r.adapter.Lockdown().Refusal(r.adapter.Name()); why != "" {
+		return Result{}, fault.New(fault.Terminal, "externagent_lockdown", why)
+	}
+
 	// The bridge binds a loopback port through the bind-safe gate, never a raw or
 	// non-loopback listen, so the endpoint an external process reaches stays local.
 	ln, err := bindguard.Listen("tcp", "127.0.0.1:0", bindguard.Loopback())
