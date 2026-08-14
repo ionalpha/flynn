@@ -1,0 +1,7 @@
+can I add this field without breaking the clients | contract-design |
+I need to change the signature of an exported function | contract-design | domain-language
+design the API for this new service | contract-design |
+what should this endpoint return when it fails | contract-design |
+is this a breaking change | contract-design | external-integration
+we need to version this API | contract-design |
+the client crashes when the server sends a field it does not know about | contract-design |

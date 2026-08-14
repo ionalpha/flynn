@@ -54,23 +54,19 @@ func FS() fs.FS { return embedded }
 // conformance test in this package exists to catch before a release does.
 func Packs() ([]skillmd.Pack, error) { return skillmd.LoadAll(embedded, Root) }
 
-// RetrievalPath is the pack's retrieval table, beside the skill directories rather
-// than inside any one of them: what it asserts is which skill an objective reaches,
-// which is a fact about the library and not about a member of it.
-const RetrievalPath = Root + "/retrieval.txt"
+// RetrievalPath is where a skill states the objectives it is reached for: a file in
+// its own directory, so adding a skill to the pack stays an added directory and two
+// people adding one at the same time do not have to merge each other's rows.
+func RetrievalPath(slug string) string { return Root + "/" + slug + "/" + skillrecall.TableFile }
 
 // RetrievalTable returns the objectives the pack claims each of its skills is
 // reached for, and the objectives each must stay out of. The test in this package
 // runs it against the real ranker, so a description that misses its own subject
 // fails a build rather than going quiet in production.
 func RetrievalTable() (skillrecall.Table, error) {
-	b, err := fs.ReadFile(embedded, RetrievalPath)
+	t, err := skillrecall.LoadTable(embedded, Root)
 	if err != nil {
-		return skillrecall.Table{}, fmt.Errorf("bundled: read the retrieval table: %w", err)
-	}
-	t, err := skillrecall.ParseTable(b)
-	if err != nil {
-		return skillrecall.Table{}, fmt.Errorf("bundled: %s: %w", RetrievalPath, err)
+		return skillrecall.Table{}, fmt.Errorf("bundled: %w", err)
 	}
 	return t, nil
 }
