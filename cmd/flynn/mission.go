@@ -254,6 +254,13 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log, evidence.NewModelAuditor(model, log),
 		dispatch.WithAdmitter(capability.Admitter{}),
 		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
+	// Rule on the operator's redirects: when the run reports it is finished, its own
+	// account of what it did is held against every redirect issued since it started, and
+	// one the account does not address refuses the completion. It is wired unconditionally
+	// for the reason the auditor is: a run can be steered at any point by `flynn steer`,
+	// including a run this process started before anyone thought to redirect it, and a
+	// steered run with no judge stalls rather than finishing unanswered.
+	cfg.SteerJudge = evidence.NewModelSteerJudge(model, log)
 	// Stop a run that has stopped getting anywhere. The probe reads the run's own recorded
 	// activity (its stream on the spine) and the git HEAD at the working directory, so a
 	// loop re-running the same tool calls is caught as no-progress rather than left to

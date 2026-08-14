@@ -183,6 +183,11 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 	cfg.Auditor = evidence.NewCommandAuditor(parts.sandbox, log, evidence.NewModelAuditor(model, log),
 		dispatch.WithAdmitter(capability.Admitter{}),
 		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)))
+	// Rule on the operator's redirects, for the same reason and against the same absence: a
+	// fan-out's parent and every child it spawns are goals, and `flynn steer` names any of
+	// them by id. Without a judge here, redirecting one would stop it saying no judge is
+	// wired, which is a true sentence about a run nobody could have redirected any other way.
+	cfg.SteerJudge = evidence.NewModelSteerJudge(model, log)
 	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err

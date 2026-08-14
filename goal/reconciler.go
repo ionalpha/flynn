@@ -65,6 +65,11 @@ type Reconciler struct {
 	// are carried, admitted and protected against being relaxed, but never checked,
 	// which is the honest behaviour for a host that has not supplied an auditor.
 	auditor InvariantAuditor
+	// judge rules on whether the run's account of finishing addresses the redirects an
+	// operator issued it. Optional in the sense that nothing needs it until a run is
+	// steered; a goal that is steered with none wired stops rather than carrying an
+	// obligation it could never discharge.
+	judge SteerJudge
 	// refusals reads the gates that refused this run. Optional: with none wired a run's
 	// refusals are still recorded on the spine, they are just never read as a verdict.
 	refusals RefusalProbe
@@ -311,6 +316,13 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 		status.ObserveVerdict(reason, status.ExecutedFeedback(spec.Ledger, recorded))
 	}
 	if met {
+		// The operator's redirects, held against the run's own account of having finished.
+		// It is the last thing asked before the goal is written converged, because the
+		// account is what the run says it did and that statement is what is being judged.
+		// A redirect it does not address settles the goal un-done from here.
+		if res, handled, err := g.dischargeSteers(ctx, r, spec, &status, specHash, reason); handled {
+			return res, err
+		}
 		status.Phase = PhaseConverged
 		status.Message = reason
 		status.SetCondition(Condition{Type: CondReady, Status: "True", Reason: "StopConditionMet", Message: reason}, g.clk.Now())
