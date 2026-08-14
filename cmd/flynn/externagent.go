@@ -232,11 +232,19 @@ func codexAuthDir() string {
 
 // codexAuthSeedFiles are the only files an episode copies out of the codex home into the
 // per-episode credential home the confined child writes: the OAuth token it authenticates
-// with and the user's CLI config. Everything else in the home (session rollouts, logs,
-// caches) is state the CLI regenerates, so it is left behind rather than handed to an
-// untrusted harness. See externagent.SandboxConfig.AuthSeedFiles for why an episode gets a
-// copy instead of the real directory.
-var codexAuthSeedFiles = []string{"auth.json", "config.toml"}
+// with, and nothing else. Everything else in the home (session rollouts, logs, caches) is
+// state the CLI regenerates, so it is left behind rather than handed to an untrusted
+// harness. See externagent.SandboxConfig.AuthSeedFiles for why an episode gets a copy
+// instead of the real directory.
+//
+// The operator's own config.toml is deliberately not among them, which is the codex half
+// of the HostConfig posture the adapter declares. That file is where a codex user keeps
+// their MCP servers, model providers and settings, so seeding it would let whatever the
+// person who launched the run happens to carry steer the episode, and would give the
+// harness servers this run neither hosts nor governs. Everything an episode needs is
+// passed on the command line instead, so the child's configuration is a function of the
+// run.
+var codexAuthSeedFiles = []string{"auth.json"}
 
 // claudeAllowedHosts are the destination names a claude episode's confined child may
 // reach at the egress waist: the Anthropic API the subscription drives inference over and
@@ -258,8 +266,12 @@ var claudeAllowedHosts = []string{
 // (.claude/.credentials.json), and pointing the CLI at a single CLAUDE_CONFIG_DIR makes it
 // look for both, flat, under that directory. So the two are seeded by base name into one
 // per-episode home the run writes and deletes; nothing else from the home (history, caches,
-// project state) is copied. CLAUDE_CONFIG_DIR overrides where both files live, matching the
-// CLI's own resolution. Empty when no home directory is resolvable, which seeds nothing and
+// project state) is copied, so the operator's hooks, plugins and settings are not on the
+// child's path to find. The config file is seeded because the CLI reads its onboarding and
+// account state from it and reports itself unusable without it; the MCP servers it also
+// carries are neutralized by --strict-mcp-config, which is what lets the adapter declare the
+// operator's configuration denied. CLAUDE_CONFIG_DIR overrides where both files live, matching
+// the CLI's own resolution. Empty when no home directory is resolvable, which seeds nothing and
 // leaves detection to report the CLI as logged out.
 func claudeSeedPaths() []string {
 	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
