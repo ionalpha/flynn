@@ -16,6 +16,7 @@ package skillrecall
 
 import (
 	"context"
+	"math"
 	"sort"
 	"strings"
 
@@ -34,6 +35,14 @@ const DefaultLimit = 5
 // description. It is the length the prompt carried for every skill before
 // descriptions existed, kept so the fallback costs what it always did.
 const fallbackOfferLen = 240
+
+// candidatePool multiplies the offer limit to size each per-term search. A store
+// answers a term with its best matches capped at what it was asked for, so asking
+// for exactly the offer limit hands ranking a set that was already cut by the
+// store's own tie-break. Below that cut sits every skill that shares the term and
+// sorted later, which for a common word is most of a growing library. Gathering
+// wider costs one bounded query per term and gives Rank something to choose from.
+const candidatePool = 4
 
 // Recall returns the skills an objective is offered, best first, capped at limit
 // (limit <= 0 uses DefaultLimit). It is the whole of stage one: the objective's
@@ -60,7 +69,7 @@ func Gather(ctx context.Context, skills state.SkillStore, terms []string, limit 
 	seen := map[string]bool{}
 	var out []state.Skill
 	for _, term := range terms {
-		found, err := skills.Search(ctx, term, limit)
+		found, err := skills.Search(ctx, term, limit*candidatePool)
 		if err != nil {
 			continue
 		}
@@ -74,31 +83,49 @@ func Gather(ctx context.Context, skills state.SkillStore, terms []string, limit 
 	return out
 }
 
-// Rank orders candidate skills by relevance (how many of the objective's keywords
-// each carries), boosted for verified skills and for those with a strong confirmed
-// track record, then caps the result at limit (limit <= 0 uses DefaultLimit).
-// Relevance dominates; verification and confidence break ties between similarly
-// relevant skills.
+// Rank orders candidate skills by relevance, then caps the result at limit
+// (limit <= 0 uses DefaultLimit). Relevance is decided first and on its own;
+// verification and a confirmed track record break ties between candidates the
+// objective's words cannot separate, and never outrank a better match.
+//
+// A term is worth what it discriminates. Counting matched terms equally lets a
+// skill win on a word most of the library carries, which is how one skill takes
+// another's objectives simply by being wordy, so each term is weighted by how few
+// of the candidates carry it.
 func Rank(terms []string, cands []state.Skill, limit int) []state.Skill {
 	if limit <= 0 {
 		limit = DefaultLimit
 	}
 	type scored struct {
-		s     state.Skill
-		score float64
+		s         state.Skill
+		relevance float64
+		evidence  float64
 	}
+	// Scored over the text the offer will carry, not over the body. A skill ranked
+	// on words the model never sees produces an offer that reads as irrelevant to
+	// the objective that surfaced it.
+	hays := make([]string, len(cands))
+	for i, s := range cands {
+		hays[i] = strings.ToLower(s.Slug + " " + s.Name + " " + Offer(s) + " " + strings.Join(s.Tags, " "))
+	}
+	weights := termWeights(terms, hays)
+
 	ss := make([]scored, len(cands))
 	for i, s := range cands {
-		// Scored over the text the offer will carry, not over the body. A skill ranked
-		// on words the model never sees produces an offer that reads as irrelevant to
-		// the objective that surfaced it.
-		hay := strings.ToLower(s.Slug + " " + s.Name + " " + Offer(s) + " " + strings.Join(s.Tags, " "))
-		score := float64(MatchScore(terms, hay)+verifiedBoost(s.Tags)) + learn.Confidence(s.Reads, s.Wins)
-		ss[i] = scored{s, score}
+		relevance := 0.0
+		for _, t := range terms {
+			if strings.Contains(hays[i], t) {
+				relevance += weights[t]
+			}
+		}
+		ss[i] = scored{s, relevance, float64(verifiedBoost(s.Tags)) + learn.Confidence(s.Reads, s.Wins)}
 	}
 	sort.SliceStable(ss, func(i, j int) bool {
-		if ss[i].score != ss[j].score {
-			return ss[i].score > ss[j].score
+		if ss[i].relevance != ss[j].relevance {
+			return ss[i].relevance > ss[j].relevance
+		}
+		if ss[i].evidence != ss[j].evidence {
+			return ss[i].evidence > ss[j].evidence
 		}
 		return ss[i].s.Slug < ss[j].s.Slug
 	})
@@ -125,6 +152,33 @@ func Offer(s state.Skill) string {
 		return text.Clip(d, skillmd.MaxDescriptionLen)
 	}
 	return text.Clip(strings.TrimSpace(s.Body), fallbackOfferLen)
+}
+
+// termWeights gives each term what a match on it is worth: the fewer candidates
+// carry it, the more it says about the ones that do. A term every candidate has
+// separates nobody and is worth least; a term one candidate has is why that
+// candidate is here at all. Every weight stays above zero, so a skill matching
+// more of the objective still beats one matching less of it.
+//
+// The document frequency is counted over the gathered candidates rather than the
+// whole library, because those are the skills being chosen between and it needs no
+// second pass over the store.
+func termWeights(terms []string, hays []string) map[string]float64 {
+	weights := make(map[string]float64, len(terms))
+	for _, t := range terms {
+		df := 0
+		for _, h := range hays {
+			if strings.Contains(h, t) {
+				df++
+			}
+		}
+		if df == 0 {
+			weights[t] = 0
+			continue
+		}
+		weights[t] = math.Log(1 + float64(len(hays))/float64(df))
+	}
+	return weights
 }
 
 // MatchScore counts how many distinct terms appear in text, the lexical relevance

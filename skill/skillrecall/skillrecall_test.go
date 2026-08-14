@@ -81,6 +81,63 @@ func TestRankBreaksTiesOnEvidenceAndNeverOverRelevance(t *testing.T) {
 	}
 }
 
+// The best answer is offered however its name sorts. A store answers a term with
+// its best matches capped at what it was asked for, so recall asking for exactly
+// the offer limit used to hand ranking a set the store had already cut, and for a
+// word much of a library shares that cut is alphabetical: the skill that is
+// actually about the objective was never a candidate, and nothing reported it.
+func TestRecallOffersTheBestMatchWhateverItsSlugSortsAs(t *testing.T) {
+	var seeds []state.Skill
+	for _, slug := range []string{"a-one", "b-two", "c-three", "d-four", "e-five", "f-six", "g-seven"} {
+		seeds = append(seeds, state.Skill{
+			Slug: slug, Name: slug,
+			Description: "Something about the database.",
+			// Mentions the word in passing, so it matches the term and is a worse
+			// answer than the skill whose subject it is.
+			Body: "A migration is mentioned here once.",
+		})
+	}
+	best := state.Skill{
+		Slug: "z-migrations", Name: "z-migrations",
+		Description: "How to run a database migration safely.",
+	}
+	store := library(t, append(seeds, best)...)
+
+	got := skillrecall.Recall(context.Background(), store, "run a database migration", 0)
+	if len(got) == 0 || got[0].Slug != "z-migrations" {
+		t.Errorf("Recall offered %v, want z-migrations first: it is the only skill that mentions migration", slugs(got))
+	}
+}
+
+// A term most candidates carry cannot decide between them, and one that only a few
+// carry is why those few are here at all. Weighting every matched term the same is
+// how a skill takes another's objectives by being wordy rather than by being right.
+func TestRankWeighsARareTermAboveACommonOne(t *testing.T) {
+	var cands []state.Skill
+	for _, slug := range []string{"a-common", "b-common", "c-common", "d-common"} {
+		cands = append(cands, state.Skill{
+			Slug: slug, Name: slug,
+			Description: "Everything about the service and the database.",
+		})
+	}
+	// Carries one term the others do not, and one fewer of the terms they share.
+	rare := state.Skill{Slug: "e-rare", Name: "e-rare", Description: "Sharding the database."}
+	cands = append(cands, rare)
+
+	terms := skillrecall.Keywords("sharding the database service")
+	if got := skillrecall.Rank(terms, cands, 0); got[0].Slug != "e-rare" {
+		t.Errorf("ranked %v; want e-rare first, since sharding separates it and database does not", slugs(got))
+	}
+}
+
+func slugs(skills []state.Skill) []string {
+	out := make([]string, len(skills))
+	for i, s := range skills {
+		out[i] = s.Slug
+	}
+	return out
+}
+
 // A skill with no description falls back to the head of its body, which is how a
 // skill the distiller minted stays reachable. It is a fallback and not a policy: the
 // head of a procedure is a poor account of when to reach for it.
