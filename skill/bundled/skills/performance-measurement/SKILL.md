@@ -181,7 +181,8 @@ months later without rerunning anything.
 
 The guard step is already enforced rather than recommended. Packages on the declared
 hot-path list must carry a Go benchmark function or `go test ./...` fails, so a path
-that has once been measured cannot quietly lose its measurement in a later refactor.
+that has once been measured cannot lose its measurement to a later refactor without
+the build saying so.
 Add the package to that list in the same change that optimises it.
 
 Where the work runs under the isolation tier, the vCPU count, memory ceiling, process
