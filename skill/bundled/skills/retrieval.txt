@@ -83,3 +83,11 @@ make this thing easier to call | interface-depth |
 this wrapper just forwards to the thing underneath it | interface-depth |
 my test only passes if I mock everything the module calls | interface-depth |
 should I add an option for this one caller | interface-depth |
+
+why is the list page slow | performance-measurement |
+make this function faster before we ship | performance-measurement |
+this endpoint takes two seconds and it should take two hundred milliseconds | performance-measurement |
+profile this service and tell me where the time goes | performance-measurement |
+write a benchmark for this change so we can see if it helped | performance-measurement |
+I rewrote the query and I think it is faster now | performance-measurement |
+our bundle has grown and I need to bring the size down | performance-measurement |
