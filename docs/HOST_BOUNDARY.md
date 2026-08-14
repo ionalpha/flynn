@@ -57,7 +57,8 @@ the line is whether a reader of the finished run could tell the difference.
 
 - **Outcome-affecting: stall or refuse, by name.** A seam whose absence changes what
   a run means never degrades quietly. `WithInvariantAudit` stalls with
-  `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`, a declared
+  `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`,
+  `WithSteerJudge` with `SteerJudgeMissing`, a declared
   plan-window ceiling with no source with `WindowSourceMissing`, and
   `memory/consolidate` refuses at construction with `ErrNoDistiller` rather than on a
   nightly job nobody is watching. Each has a test asserting the condition an operator
@@ -118,6 +119,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; `fanout.go` too | shipped |
+| `goal.SteerJudge` | `evidence.ModelSteerJudge` | same; `fanout.go` too | shipped |
 | `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
