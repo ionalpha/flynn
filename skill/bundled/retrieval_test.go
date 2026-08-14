@@ -2,6 +2,7 @@ package bundled
 
 import (
 	"context"
+	"io/fs"
 	"testing"
 
 	"github.com/ionalpha/flynn/skill/skillrecall"
@@ -33,6 +34,22 @@ func TestPackIsRetrievable(t *testing.T) {
 	failures := table.Check(context.Background(), seedPack(t), skillrecall.DefaultLimit)
 	if len(failures) > 0 {
 		t.Errorf("the pack does not retrieve the way it says it does:\n%s", skillrecall.Report(failures))
+	}
+}
+
+// TestEverySkillKeepsItsRowsInItsOwnDirectory checks the path the pack's messages
+// tell an author to open. The rows are loaded by walking the tree, so a skill whose
+// file sat somewhere else would still be read and the instruction to edit
+// skills/<slug>/retrieval.txt would send them to a file that is not there.
+func TestEverySkillKeepsItsRowsInItsOwnDirectory(t *testing.T) {
+	packed, err := Skills()
+	if err != nil {
+		t.Fatalf("load the pack: %v", err)
+	}
+	for _, sk := range packed {
+		if _, err := fs.ReadFile(FS(), RetrievalPath(sk.Slug)); err != nil {
+			t.Errorf("%s: %v", sk.Slug, err)
+		}
 	}
 }
 

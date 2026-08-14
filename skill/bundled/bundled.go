@@ -60,16 +60,15 @@ func Packs() ([]skillmd.Pack, error) { return skillmd.LoadAll(embedded, Root) }
 func RetrievalPath(slug string) string { return Root + "/" + slug + "/" + skillrecall.TableFile }
 
 // RetrievalTable returns the objectives the pack claims each of its skills is
-// reached for, and the objectives each must stay out of. The test in this package
-// runs it against the real ranker, so a description that misses its own subject
-// fails a build rather than going quiet in production.
-func RetrievalTable() (skillrecall.Table, error) {
-	t, err := skillrecall.LoadTable(embedded, Root)
-	if err != nil {
-		return skillrecall.Table{}, fmt.Errorf("bundled: %w", err)
-	}
-	return t, nil
-}
+// reached for, and the objectives each must stay out of, assembled from the rows each
+// skill directory carries. The test in this package runs it against the real ranker,
+// so a description that misses its own subject fails a build rather than going quiet
+// in production.
+//
+// Its error is skillrecall's, unwrapped: that error already names the file and line
+// to open, and a prefix saying which pack it came from would be the only pack there
+// is.
+func RetrievalTable() (skillrecall.Table, error) { return skillrecall.LoadTable(embedded, Root) }
 
 // Skills returns the pack mapped into state.BundledScope, ordered by slug.
 func Skills() ([]state.Skill, error) { return skillsFrom(embedded, Root) }

@@ -2,6 +2,7 @@ package skillrecall_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -222,5 +223,32 @@ func TestLoadTableRefusesAMalformedRowByAddress(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "skills/undocumented/retrieval.txt") {
 		t.Errorf("error = %q, want it to name the file", err)
+	}
+}
+
+// unreadable is a pack whose one file cannot be read, which is the difference between
+// a skill that has not written its rows and a skill whose rows are there and lost.
+type unreadable struct {
+	fstest.MapFS
+	path string
+}
+
+func (u unreadable) ReadFile(name string) ([]byte, error) {
+	if name == u.path {
+		return nil, fmt.Errorf("read %s: device is on fire", name)
+	}
+	return u.MapFS.ReadFile(name)
+}
+
+// A file that exists and will not open is an error, where a file that is absent is
+// not. Skipping both would turn a broken checkout into a pack that quietly asserts
+// less than it used to.
+func TestLoadTableRefusesRowsItCannotRead(t *testing.T) {
+	fsys := unreadable{MapFS: pack(), path: "skills/schema-migration/retrieval.txt"}
+	if _, err := skillrecall.LoadTable(fsys, "skills"); err == nil {
+		t.Fatal("an unreadable file was treated as a skill with no rows")
+	}
+	if _, err := skillrecall.LoadTable(pack(), "no-such-pack"); err == nil {
+		t.Fatal("a root that does not exist was loaded as an empty table")
 	}
 }
