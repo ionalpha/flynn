@@ -83,14 +83,3 @@ make this thing easier to call | interface-depth |
 this wrapper just forwards to the thing underneath it | interface-depth |
 my test only passes if I mock everything the module calls | interface-depth |
 should I add an option for this one caller | interface-depth |
-
-is it safe to pass this request parameter straight to the query | untrusted-input |
-where should I validate the fields on this request body | untrusted-input |
-this endpoint takes a filename from the user and opens it | untrusted-input |
-I need to store an api key for this integration | untrusted-input |
-a user supplied url gets fetched by the server here | untrusted-input |
-can this page be tricked into running someone else's script | untrusted-input |
-where does the permission check for this handler go | untrusted-input |
-the agent read a file that told it to run a command | untrusted-input |
-harden this endpoint before we expose it publicly | untrusted-input |
-should this webhook payload be trusted | untrusted-input |
