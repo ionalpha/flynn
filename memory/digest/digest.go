@@ -33,6 +33,13 @@
 // waits until the usage counters carry real data; ranking on a signal the push
 // itself produces is rich-get-richer with extra steps.
 //
+// The one thing the counters already say without being asked to predict anything is
+// which items the push is wrong about. An item pushed at every wake and never once
+// used is the digest spending budget on itself, and it is demoted: ranked behind
+// everything else, and passed over by the exploration reserve. Demotion is a ranking
+// and not an exclusion, so the item keeps whatever budget is left and one use ends it
+// (Builder.WithDemoteAfter).
+//
 // Host neutrality. Nothing here names a host concept. A digest is built from a
 // state.RecallQuery and returns lines of text; where those lines go, and what frames
 // them in a prompt, is the host's to decide.
@@ -71,6 +78,12 @@ type Line struct {
 	// Tokens is the estimated cost of this line as rendered, including its newline.
 	// It is set by the builder and is what the budget is spent against.
 	Tokens int
+	// Demoted reports that this item has been pushed repeatedly and never used, so it
+	// was ranked behind everything still earning its place
+	// (Builder.WithDemoteAfter). It is carried out to the caller because it is the
+	// only place the selection says which items the fleet is ignoring, and that is a
+	// curator's question; a demoted line still reads to a session as any other line.
+	Demoted bool
 }
 
 // Text renders the line as it appears in the digest: the id first, because that is

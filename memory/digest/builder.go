@@ -31,6 +31,12 @@ const (
 	// A digest of a dozen lines has no use for a thousand candidates, and an uncapped
 	// read would make the cost of building it grow with the corpus forever.
 	defaultCandidateLimit = 200
+	// defaultDemoteAfter is how many pushes an item may go unused for before it loses
+	// the standing order. It is a small number because the evidence is one-sided: a
+	// session that did not use a line it was shown may simply not have needed it that
+	// wake, but five wakes in front of five readers with nothing acted on is the item
+	// saying what it is. Below about three the threshold reads noise as a verdict.
+	defaultDemoteAfter = 5
 )
 
 // ErrPushNotRecorded reports that a digest was built but the push could not be
@@ -58,6 +64,7 @@ type Builder struct {
 	quota      float64
 	summary    int
 	candidates int
+	demote     int
 }
 
 // Option configures a Builder.
@@ -121,6 +128,27 @@ func WithCandidateLimit(n int) Option {
 	}
 }
 
+// WithDemoteAfter sets how many pushes an item may go unused for before it is
+// demoted: ranked behind everything still earning its place, and passed over by the
+// exploration reserve. A non-positive n turns demotion off, which leaves push_count
+// measured and unread and the standing order deciding alone.
+//
+// Demotion is a ranking, never an exclusion. A demoted item still takes whatever
+// budget the standing order leaves, so it keeps reaching readers and can still be
+// used, and one use ends the demotion (state.MemoryUsage.Ignored). Dropping it from
+// the digest instead would be one-way: an item nobody is shown is an item nobody can
+// use, so its own demotion would be the reason it never earns its way back. The same
+// reasoning is why nothing here deletes: what to do about an item the fleet has
+// ignored for months is the curator's call, and this is a selection policy.
+func WithDemoteAfter(n int) Option {
+	return func(b *Builder) {
+		if n < 0 {
+			n = 0
+		}
+		b.demote = n
+	}
+}
+
 // WithPusher sets what records a delivered digest. The default counts the push in
 // the store and marks the run's prime scope; a host that has already wired its own
 // equivalent passes it here rather than getting both.
@@ -141,6 +169,7 @@ func New(store state.MemoryStore, opts ...Option) *Builder {
 		quota:      defaultExplorationQuota,
 		summary:    defaultSummaryChars,
 		candidates: defaultCandidateLimit,
+		demote:     defaultDemoteAfter,
 	}
 	for _, o := range opts {
 		o(b)
@@ -190,11 +219,13 @@ func (b *Builder) Build(ctx context.Context, q state.RecallQuery) (Digest, error
 //
 //  1. Recall q, capped at the candidate limit, and drop everything
 //     guard.Pushable does not admit. Nothing reaches a line without passing that gate.
-//  2. Fill the budget less the exploration reserve, in recall order: most-specific
-//     scope first, most recent within a level (state.SortRecall).
-//  3. Fill the reserve from the items at the most specific scope that step 2 did
-//     not take, rarely-pushed first and most recent within that.
-//  4. Give whatever either pass left over back to the recall order, so an
+//  2. Rank into the standing order: recall order (most-specific scope first, most
+//     recent within a level, state.SortRecall), with everything demoted moved behind
+//     everything else (WithDemoteAfter).
+//  3. Fill the budget less the exploration reserve, in the standing order.
+//  4. Fill the reserve from the undemoted items at the most specific scope that step
+//     3 did not take, rarely-pushed first and most recent within that.
+//  5. Give whatever either pass left over back to the standing order, so an
 //     under-spent reserve shortens nobody's digest.
 //
 // A line that does not fit is skipped and the pass continues, rather than ending the
@@ -202,8 +233,9 @@ func (b *Builder) Build(ctx context.Context, q state.RecallQuery) (Digest, error
 // it has been offered the budget and refused it, so what follows can only be smaller.
 // Everything still unselected at the end is reported in Digest.Dropped.
 //
-// The returned lines are in recall order whichever pass chose them, so the digest
-// reads as one ranked list and not as two concatenated ones.
+// The returned lines are in the standing order whichever pass chose them, so the
+// digest reads as one ranked list and not as two concatenated ones, and the order a
+// reader sees is the order the selection actually ranked on.
 func (b *Builder) Select(ctx context.Context, q state.RecallQuery) (Digest, error) {
 	if q.Limit <= 0 || q.Limit > b.candidates {
 		q.Limit = b.candidates
@@ -218,29 +250,100 @@ func (b *Builder) Select(ctx context.Context, q state.RecallQuery) (Digest, erro
 		return Digest{}, err
 	}
 	lines := b.render(items)
+	usage, err := b.usage(ctx, lines)
+	if err != nil {
+		return Digest{}, err
+	}
+	b.markDemoted(lines, usage)
+	ranked := standing(lines)
 
 	d := Digest{Budget: b.budget, Considered: len(lines), Capped: capped}
 	reserve := int(float64(b.budget) * b.quota)
 	taken := make([]bool, len(lines))
 	left := b.budget - reserve
 
-	left = fill(lines, taken, left, order(lines))
-	explore, err := b.exploration(ctx, items, lines, taken)
-	if err != nil {
-		return Digest{}, err
-	}
-	spare := fill(lines, taken, reserve, explore)
-	fill(lines, taken, left+spare, order(lines))
+	left = fill(lines, taken, left, ranked)
+	spare := fill(lines, taken, reserve, b.exploration(items, lines, taken, usage))
+	fill(lines, taken, left+spare, ranked)
 
-	for i, l := range lines {
+	for _, i := range ranked {
 		if taken[i] {
-			d.Lines = append(d.Lines, l)
-			d.Tokens += l.Tokens
+			d.Lines = append(d.Lines, lines[i])
+			d.Tokens += lines[i].Tokens
 			continue
 		}
-		d.Dropped = append(d.Dropped, l)
+		d.Dropped = append(d.Dropped, lines[i])
 	}
 	return d, nil
+}
+
+// usage reads the fleet-wide usage total for every candidate line, in one call, for
+// both policies that ask about it: demotion and the exploration reserve. The rows
+// are summed across instances (state.TotalUsage) rather than read per instance,
+// because an item this instance has never pushed but the rest of the fleet pushes
+// constantly is not unexplored, and an item this instance has never seen used may
+// have been used everywhere else.
+//
+// A builder with both policies off reads nothing. That keeps the wake off a store
+// call whose answer it would discard, and off failing a digest on a question the
+// selection is not asking.
+func (b *Builder) usage(ctx context.Context, lines []Line) (map[string]state.MemoryUsage, error) {
+	if len(lines) == 0 || (b.quota == 0 && b.demote == 0) {
+		return nil, nil
+	}
+	ids := make([]string, 0, len(lines))
+	for _, l := range lines {
+		ids = append(ids, l.MemoryID)
+	}
+	rows, err := b.store.Usage(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string][]state.MemoryUsage, len(ids))
+	for _, r := range rows {
+		byID[r.MemoryID] = append(byID[r.MemoryID], r)
+	}
+	// An item with no row has never been pushed or used, which is the zero total a
+	// missing key already reports.
+	out := make(map[string]state.MemoryUsage, len(byID))
+	for id, rs := range byID {
+		out[id] = state.TotalUsage(rs)
+	}
+	return out, nil
+}
+
+// markDemoted flags the lines pushed at least the threshold and never used, of
+// either origin. The test is state.MemoryUsage.Ignored plus the threshold: one use,
+// even a primed one, clears the flag, because a primed use still says a reader read
+// the line and did something with it. What a primed use cannot do is earn an item a
+// place it did not already hold, and it does not: this only ever lifts a demotion,
+// never awards a promotion.
+func (b *Builder) markDemoted(lines []Line, usage map[string]state.MemoryUsage) {
+	if b.demote == 0 {
+		return
+	}
+	for i := range lines {
+		u := usage[lines[i].MemoryID]
+		lines[i].Demoted = u.Ignored() && u.PushCount >= int64(b.demote)
+	}
+}
+
+// standing is the indices of lines in the standing order: recall order, with the
+// demoted lines after all of it and in recall order among themselves. A demotion
+// costs an item every place it held, and no more than that.
+func standing(lines []Line) []int {
+	out := make([]int, 0, len(lines))
+	for i := range lines {
+		if !lines[i].Demoted {
+			out = append(out, i)
+		}
+	}
+	for i := range lines {
+		if lines[i].Demoted {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // render turns admitted items into candidate lines, in the order the recall
@@ -255,16 +358,6 @@ func (b *Builder) render(items []state.MemoryItem) []Line {
 		l := Line{MemoryID: it.ID, Kind: it.Kind, Scope: it.Scope, Summary: summary}
 		l.Tokens = estimateTokens(l.Text())
 		out = append(out, l)
-	}
-	return out
-}
-
-// order is the indices of lines in recall order, which is the order they are
-// already in.
-func order(lines []Line) []int {
-	out := make([]int, len(lines))
-	for i := range lines {
-		out[i] = i
 	}
 	return out
 }
@@ -284,8 +377,8 @@ func fill(lines []Line, taken []bool, budget int, idx []int) int {
 }
 
 // exploration returns the indices the exploration reserve may spend on: the
-// still-unselected lines at the most specific scope present, rarely-pushed first,
-// then most recent, then by id so the order is total.
+// still-unselected, undemoted lines at the most specific scope present, rarely-pushed
+// first, then most recent, then by id so the order is total.
 //
 // It is confined to the most specific scope because that is where new memory lands
 // and where the standing order has the least to say: an inherited fact from a wider
@@ -293,9 +386,13 @@ func fill(lines []Line, taken []bool, budget int, idx []int) int {
 // has no history at all and would never place against one. Ranking on push count
 // rather than on use is the whole point - an item nobody has put in front of anybody
 // has not failed, it has not been tried.
-func (b *Builder) exploration(ctx context.Context, items []state.MemoryItem, lines []Line, taken []bool) ([]int, error) {
+//
+// A demoted item has been tried, repeatedly, which is why the reserve skips it. It is
+// still offered the leftover budget in the standing order afterwards, so the reserve
+// declining to spend on it costs it nothing it had not already lost.
+func (b *Builder) exploration(items []state.MemoryItem, lines []Line, taken []bool, usage map[string]state.MemoryUsage) []int {
 	if b.quota == 0 {
-		return nil, nil
+		return nil
 	}
 	deepest := -1
 	for i := range lines {
@@ -305,16 +402,12 @@ func (b *Builder) exploration(ctx context.Context, items []state.MemoryItem, lin
 	}
 	var cand []int
 	for i := range lines {
-		if !taken[i] && lines[i].Scope.Depth() == deepest {
+		if !taken[i] && !lines[i].Demoted && lines[i].Scope.Depth() == deepest {
 			cand = append(cand, i)
 		}
 	}
 	if len(cand) == 0 {
-		return nil, nil
-	}
-	pushes, err := b.pushCounts(ctx, lines, cand)
-	if err != nil {
-		return nil, err
+		return nil
 	}
 	// created is read off the recalled items rather than the lines, which carry no
 	// timestamp: a line is what a reader sees, and a rendering does not need one.
@@ -324,8 +417,9 @@ func (b *Builder) exploration(ctx context.Context, items []state.MemoryItem, lin
 	}
 	sort.SliceStable(cand, func(x, y int) bool {
 		a, c := lines[cand[x]], lines[cand[y]]
-		if pushes[a.MemoryID] != pushes[c.MemoryID] {
-			return pushes[a.MemoryID] < pushes[c.MemoryID]
+		pa, pc := usage[a.MemoryID].PushCount, usage[c.MemoryID].PushCount
+		if pa != pc {
+			return pa < pc
 		}
 		ta, tc := created[a.MemoryID].CreatedAt, created[c.MemoryID].CreatedAt
 		if !ta.Equal(tc) {
@@ -333,28 +427,5 @@ func (b *Builder) exploration(ctx context.Context, items []state.MemoryItem, lin
 		}
 		return a.MemoryID < c.MemoryID
 	})
-	return cand, nil
-}
-
-// pushCounts reads the fleet-wide push count for the candidate lines. The count is
-// summed across instances (state.TotalUsage) rather than read per instance, because
-// an item this instance has never pushed but the rest of the fleet pushes constantly
-// is not unexplored, and treating it as such would hand the exploration reserve to
-// whatever is already everywhere.
-func (b *Builder) pushCounts(ctx context.Context, lines []Line, cand []int) (map[string]int64, error) {
-	ids := make([]string, 0, len(cand))
-	for _, i := range cand {
-		ids = append(ids, lines[i].MemoryID)
-	}
-	rows, err := b.store.Usage(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	// An item with no row has never been pushed or used, which is zero and is what a
-	// missing key already reports.
-	out := make(map[string]int64, len(ids))
-	for _, r := range rows {
-		out[r.MemoryID] += r.PushCount
-	}
-	return out, nil
+	return cand
 }
