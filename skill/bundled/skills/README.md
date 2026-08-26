@@ -54,18 +54,38 @@ gets switched off the first week it is wrong.
 
 ## What retrieval.txt is for
 
-`retrieval.txt` beside this file is the pack's retrieval table: one row per
-objective, naming the skills that objective must be offered and the skills it must
-not be. `TestPackIsRetrievable` runs the runtime's own ranker over the real pack
-against every row, with no model and no tokens.
+Every skill directory carries a `retrieval.txt`: one row per objective, in the words
+someone would actually type, naming the skills that objective must be offered and the
+skills it must not be.
 
-It exists because a description is the only text loaded at discovery, so getting one
-wrong does not fail anything. The skill is simply never offered, the run proceeds
-without it, and the only other signal is a counter someone has to think to read.
+    objective | must be offered | must not be offered
 
-Adding a skill means adding a row. `TestEveryPackSkillStatesItsTriggers` refuses a
+Both skill columns are comma-separated and either may be empty, `#` opens a comment,
+and blank lines are ignored. A row must name its own directory's skill in one of the
+two columns, which is what keeps the file the whole of what the pack claims about that
+skill. `TestPackIsRetrievable` runs the runtime's own ranker over the real pack against
+every row of every file, with no model and no tokens, so a row is checked on each build.
+
+The file exists because a description is the only text loaded at discovery, so getting
+one wrong does not fail anything. The skill is simply never offered, the run proceeds
+without it, and the only other signal is a counter someone has to think to read weeks
+later.
+
+The second skill column catches the harder fault. A description that misses its own
+subject hides one skill. A description that reaches into another skill's subject
+outranks the better match on every objective it takes, which degrades the pack around
+it and is not something the author of that skill would think to look for. Writing a
+negative row means reading the neighbouring skill's claims, so the two files are worth
+opening together.
+
+Adding a skill means adding its rows. `TestEveryPackSkillStatesItsTriggers` refuses a
 skill that no row expects to be offered, because the objectives a skill is reached
 for are part of its design and are worth writing before its body: a skill whose
 trigger set cannot be stated does not yet have a scope.
 
-Neither file is a skill. `LoadAll` reads directories and ignores the rest.
+The rows sit inside each skill rather than in one table beside the pack so that adding
+a skill is an added file. A single table gives every branch the same last line to
+append to, so two skills authored in the same week conflict on text no reviewer reads.
+
+Neither this file nor `retrieval.txt` is a skill. `LoadAll` reads directories and
+ignores the rest.

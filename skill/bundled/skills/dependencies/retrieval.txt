@@ -1,0 +1,7 @@
+upgrade the dependencies in this project | dependencies |
+should I use a library for this or write it myself | dependencies |
+add a package that does date parsing | dependencies |
+there is a security advisory against something we depend on | dependencies |
+this library has not been updated in three years | dependencies |
+can we use this package with its licence | dependencies |
+should I pin this version or use a range | dependencies |

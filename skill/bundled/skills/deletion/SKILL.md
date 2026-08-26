@@ -1,6 +1,6 @@
 ---
 name: deletion
-description: Use when removing anything that already exists: dead code, an unused function or package, a duplicate, a feature nobody calls, an option, a flag, a dependency, or scaffolding left from earlier work. Covers how much evidence a removal needs, which grows with how far the thing reaches, why a search of the tree is not proof that nothing runs it, which of two copies should die and what stops the next one, retiring a surface other people call, and what to leave alone. Carries one refusal above all others: a test, an assertion, an error path, or a check may never be removed, weakened or skipped as a way of getting a run to green.
+description: Use when removing anything that already exists: dead code, an unused function or package, a duplicate, a feature nobody calls, an option, a flag, a dependency, or the leftovers an earlier change left behind and nobody has cleaned up. Covers how much evidence a removal needs, which grows with how far the thing reaches, why a search of the tree is not proof that nothing runs it, which of two copies should die and what stops the next one, retiring a surface other people call, and what to leave alone. Carries one refusal above all others: a test, an assertion, an error path, or a check may never be removed, weakened or skipped as a way of getting a run to green.
 metadata:
   flynnhq.com/title: Deletion
   flynnhq.com/tags: '["deletion","refactoring","dead-code","duplication","maintenance"]'

@@ -134,13 +134,19 @@ func (s *Store) List(ctx context.Context, scope state.Scope) ([]state.Skill, err
 }
 
 // Search returns live skills whose name, description, body, or tags contain query
-// (case insensitive), across every scope, ordered by slug and capped at limit
-// (limit <= 0 means no cap). An empty query matches every live skill.
+// (case insensitive), across every scope, best match first and capped at limit
+// (limit <= 0 means no cap). An empty query matches every live skill, in slug
+// order, since with nothing to match on there is nothing to be better at.
 //
 // The description is searched because it is what a skill says about itself at
 // discovery: the specification asks an author to put the words that identify a
 // relevant task there, so a search that skipped it would refuse to find a skill by
 // the one text written to be found by.
+//
+// Ordering by match rather than by slug is what makes the limit a top-k. Cut an
+// alphabetical list and the skills that survive are the ones whose names sort
+// early, which for a term much of the library shares excludes the best answer
+// without reporting anything.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]state.Skill, error) {
 	rs, err := s.rs.ListAll(ctx, Kind, nil)
 	if err != nil {
@@ -157,7 +163,20 @@ func (s *Store) Search(ctx context.Context, query string, limit int) ([]state.Sk
 			out = append(out, sk)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return lessBySlug(out[i], out[j]) })
+	if q == "" {
+		sort.Slice(out, func(i, j int) bool { return lessBySlug(out[i], out[j]) })
+	} else {
+		score := make(map[string]float64, len(out))
+		for _, sk := range out {
+			score[sk.ID] = matchScore(sk, q)
+		}
+		sort.Slice(out, func(i, j int) bool {
+			if score[out[i].ID] != score[out[j].ID] {
+				return score[out[i].ID] > score[out[j].ID]
+			}
+			return lessBySlug(out[i], out[j])
+		})
+	}
 	if limit > 0 && len(out) > limit {
 		out = out[:limit]
 	}
@@ -281,6 +300,27 @@ func matches(sk state.Skill, lowerQuery string) bool {
 		strings.Contains(strings.ToLower(sk.Body), lowerQuery) ||
 		strings.Contains(strings.ToLower(strings.Join(sk.Tags, " ")), lowerQuery)
 }
+
+// matchScore says how well a skill answers a query, so a capped search returns the
+// best matches rather than the first ones alphabetically. A hit counts for what the
+// field it landed in is worth: the description is written to be searched, the name
+// is the handle someone types, tags are deliberate, and the body is long enough
+// that a passing mention there says little. Repeats count, and the body's are
+// capped, so a long document cannot outscore a description that is about the query.
+func matchScore(sk state.Skill, lowerQuery string) float64 {
+	count := func(field string) int { return strings.Count(strings.ToLower(field), lowerQuery) }
+	body := count(sk.Body)
+	if body > maxBodyHitsScored {
+		body = maxBodyHitsScored
+	}
+	return 10*float64(count(sk.Description)) +
+		5*float64(count(sk.Name)) +
+		3*float64(count(strings.Join(sk.Tags, " "))) +
+		float64(body)
+}
+
+// maxBodyHitsScored bounds how far repeating a word in a body can lift a skill.
+const maxBodyHitsScored = 3
 
 // translateErr maps the resource foundation's errors onto the state boundary's, so a
 // SkillStore caller sees state.ErrConflict / state.ErrNotFound regardless of the

@@ -1,0 +1,7 @@
+this function takes eight parameters and I keep adding more | interface-depth | external-integration
+every caller of this has to do the same three steps first | interface-depth |
+this class has twelve methods and hardly does anything | interface-depth | external-integration
+make this thing easier to call | interface-depth |
+this wrapper just forwards to the thing underneath it | interface-depth |
+my test only passes if I mock everything the module calls | interface-depth |
+should I add an option for this one caller | interface-depth |
