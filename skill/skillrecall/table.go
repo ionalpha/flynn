@@ -2,7 +2,10 @@ package skillrecall
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"path"
 	"sort"
 	"strings"
 
@@ -10,9 +13,9 @@ import (
 )
 
 // Table is a pack's retrieval table: the objectives its authors claim each skill is
-// reached for, and the objectives it must stay out of. A pack carries one as a text
-// file beside its skill directories, and its test runs the real ranker over the real
-// pack against it.
+// reached for, and the objectives it must stay out of. Each skill carries its own
+// rows in its own directory and LoadTable assembles them, so the pack's test runs the
+// real ranker over the real pack against every row.
 //
 // The negative column is the one that earns the file. A description that does not
 // reach its own subject makes one skill invisible; a description that reaches into
@@ -23,13 +26,24 @@ type Table struct {
 }
 
 // Case is one row: an objective, the slugs that must appear in what it is offered,
-// and the slugs that must not. Line is where the row was written, so a failure names
-// a place to edit rather than a string to search for.
+// and the slugs that must not. File and Line are where the row was written, so a
+// failure names a place to edit rather than a string to search for.
 type Case struct {
 	Objective string
 	Offered   []string
 	Absent    []string
+	File      string
 	Line      int
+}
+
+// Where is the row's address, for a message someone has to act on. A table read from
+// a file names it, because a pack has one file per skill and the line number alone
+// would say which of eleven to open only by accident.
+func (c Case) Where() string {
+	if c.File == "" {
+		return fmt.Sprintf("line %d", c.Line)
+	}
+	return fmt.Sprintf("%s:%d", c.File, c.Line)
 }
 
 // tableSep separates a row's three columns. A pipe, because an objective is written
@@ -43,7 +57,11 @@ const tableSep = "|"
 // The format is this plain because its rows are written while a skill is being
 // authored, by whoever is authoring it, and a form that needs a schema in front of it
 // is a form that gets skipped. Everything it refuses is refused by name and line.
-func ParseTable(data []byte) (Table, error) {
+func ParseTable(data []byte) (Table, error) { return parseTable("", data) }
+
+// parseTable is ParseTable with the file the rows came from, which every row carries
+// so a failure can be read as an address.
+func parseTable(file string, data []byte) (Table, error) {
 	var t Table
 	for i, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
 		line := raw
@@ -57,7 +75,7 @@ func ParseTable(data []byte) (Table, error) {
 		if len(cols) > 3 {
 			return Table{}, fmt.Errorf("line %d: %d columns, want objective%soffered%sabsent", i+1, len(cols), tableSep, tableSep)
 		}
-		c := Case{Objective: strings.TrimSpace(cols[0]), Line: i + 1}
+		c := Case{Objective: strings.TrimSpace(cols[0]), File: file, Line: i + 1}
 		if c.Objective == "" {
 			return Table{}, fmt.Errorf("line %d: no objective", i+1)
 		}
@@ -73,6 +91,58 @@ func ParseTable(data []byte) (Table, error) {
 		t.Cases = append(t.Cases, c)
 	}
 	return t, nil
+}
+
+// TableFile is the name a skill directory gives its own retrieval rows.
+const TableFile = "retrieval.txt"
+
+// LoadTable reads the retrieval rows of every skill under root and returns them as
+// one table, in directory order. A skill without the file contributes nothing and is
+// not an error here: what refuses a skill that states no objective is the pack's own
+// coverage test, which can say so in one message instead of one per missing file.
+//
+// The rows live with the skill rather than in a table beside the pack because of what
+// the two shapes do to the people writing them. One file gives every branch that adds
+// a skill the same last line to append to, so every such branch conflicts with every
+// other one and the resolution is by hand, on text no reviewer reads. Rows in the
+// skill's own directory make adding a skill an added file, which nothing else touches.
+//
+// The cost of splitting is that the rows no longer sit next to each other, and reading
+// one skill's claims beside another's is how a negative column gets written. That is
+// paid back by the rule this enforces: a row in a skill's directory must name that
+// skill in one of its columns, so the file is the whole of what the pack asserts about
+// it, and a row that wandered is refused by address.
+func LoadTable(fsys fs.FS, root string) (Table, error) {
+	entries, err := fs.ReadDir(fsys, root)
+	if err != nil {
+		return Table{}, fmt.Errorf("skillrecall: read %s: %w", root, err)
+	}
+	var out Table
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		slug := entry.Name()
+		file := path.Join(root, slug, TableFile)
+		data, err := fs.ReadFile(fsys, file)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return Table{}, fmt.Errorf("skillrecall: read %s: %w", file, err)
+		}
+		t, err := parseTable(file, data)
+		if err != nil {
+			return Table{}, fmt.Errorf("skillrecall: %s: %w", file, err)
+		}
+		for _, c := range t.Cases {
+			if !contains(c.Offered, slug) && !contains(c.Absent, slug) {
+				return Table{}, fmt.Errorf("skillrecall: %s: %q says nothing about %s; a row belongs to the skill it asserts about", c.Where(), c.Objective, slug)
+			}
+		}
+		out.Cases = append(out.Cases, t.Cases...)
+	}
+	return out, nil
 }
 
 // slugs splits and trims a comma-separated slug column.
@@ -135,7 +205,7 @@ func (f Failure) String() string {
 	if len(f.Offered) > 0 {
 		offered = strings.Join(f.Offered, ", ")
 	}
-	return fmt.Sprintf("line %d: %q: %s %s (offered: %s)", f.Case.Line, f.Case.Objective, f.Slug, f.Reason, offered)
+	return fmt.Sprintf("%s: %q: %s %s (offered: %s)", f.Case.Where(), f.Case.Objective, f.Slug, f.Reason, offered)
 }
 
 // Report renders failures as one line each, for a test that has to say what to fix.

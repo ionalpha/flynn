@@ -1,0 +1,7 @@
+I have to edit unfamiliar code I did not write | reading-unfamiliar-code |
+help me understand this codebase before I touch anything | reading-unfamiliar-code |
+where in this repository does this behaviour happen | reading-unfamiliar-code |
+trace one request through this code from entry to effect | reading-unfamiliar-code |
+I am new to this codebase and need to make my first edit | reading-unfamiliar-code |
+which callers of this function would notice an edit | reading-unfamiliar-code |
+read this package before I edit it | reading-unfamiliar-code |

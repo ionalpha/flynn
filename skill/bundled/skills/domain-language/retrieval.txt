@@ -1,0 +1,7 @@
+what should I call this thing | domain-language |
+we have three different words for the same concept | domain-language |
+this field means two different things depending on who set it | domain-language |
+write down the terms this project uses before I start building | domain-language |
+the code calls it a client and the invoice calls it a customer | domain-language |
+rename this function, it does not do what it says | domain-language |
+what are the entities in this domain and how do they relate | domain-language |
