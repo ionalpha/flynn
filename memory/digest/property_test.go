@@ -2,6 +2,7 @@ package digest_test
 
 import (
 	"context"
+	"maps"
 	"testing"
 	"time"
 
@@ -66,9 +67,18 @@ func propCorpus(rt *rapid.T) (state.MemoryStore, []state.MemoryItem) {
 				rt.Fatalf("promote: %v", err)
 			}
 		}
-		for range rapid.IntRange(0, 3).Draw(rt, "prior pushes") {
+		// The push range crosses the demotion threshold in both directions, and the
+		// use is what decides which side of it an often-pushed item lands on, so every
+		// property below is drawn against corpora with and without demoted items in
+		// them.
+		for range rapid.IntRange(0, 6).Draw(rt, "prior pushes") {
 			if err := st.RecordPush(context.Background(), []string{it.ID}); err != nil {
 				rt.Fatalf("record push: %v", err)
+			}
+		}
+		if rapid.Bool().Draw(rt, "used") {
+			if err := st.RecordUse(context.Background(), it.ID, state.UsagePrimed); err != nil {
+				rt.Fatalf("record use: %v", err)
 			}
 		}
 		out = append(out, it)
@@ -82,6 +92,7 @@ func propBuilder(rt *rapid.T, st state.MemoryStore) *digest.Builder {
 		digest.WithExplorationQuota(rapid.Float64Range(0, 1).Draw(rt, "quota")),
 		digest.WithSummaryChars(rapid.IntRange(4, 200).Draw(rt, "summary chars")),
 		digest.WithCandidateLimit(rapid.IntRange(1, 20).Draw(rt, "candidate limit")),
+		digest.WithDemoteAfter(rapid.IntRange(0, 6).Draw(rt, "demote after")),
 	)
 }
 
@@ -163,8 +174,8 @@ func TestDigestAccountsForEveryCandidate(t *testing.T) {
 }
 
 // TestDigestKeepsScopeOrder: the lines are ordered most-specific scope first,
-// whichever pass chose each of them. Recency within a level is the store's
-// (state.SortRecall) and is not restated here.
+// whichever pass chose each of them, with the demoted ones after all of the rest.
+// Recency within a level is the store's (state.SortRecall) and is not restated here.
 func TestDigestKeepsScopeOrder(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		st, _ := propCorpus(rt)
@@ -173,12 +184,57 @@ func TestDigestKeepsScopeOrder(t *testing.T) {
 			rt.Fatalf("select: %v", err)
 		}
 		for i := 1; i < len(d.Lines); i++ {
-			if d.Lines[i-1].Scope.Depth() < d.Lines[i].Scope.Depth() {
+			prev, cur := d.Lines[i-1], d.Lines[i]
+			if prev.Demoted && !cur.Demoted {
+				rt.Fatalf("line %d is demoted and line %d, which follows it, is not", i-1, i)
+			}
+			if prev.Demoted != cur.Demoted {
+				continue
+			}
+			if prev.Scope.Depth() < cur.Scope.Depth() {
 				rt.Fatalf("line %d (%v) outranks line %d (%v)",
-					i, d.Lines[i].Scope, i-1, d.Lines[i-1].Scope)
+					i, cur.Scope, i-1, prev.Scope)
 			}
 		}
 	})
+}
+
+// TestDemotionOnlyRanks is the guarantee that makes a demotion recoverable: under
+// any draw, demotion changes which items the budget reaches and never which items
+// the selection was willing to reach. An item a policy stops offering is an item
+// nobody can use, and its own demotion would then be the reason it never earns its
+// way back.
+func TestDemotionOnlyRanks(t *testing.T) {
+	rapid.Check(t, func(rt *rapid.T) {
+		st, _ := propCorpus(rt)
+		budget := rapid.IntRange(1, 400).Draw(rt, "budget")
+		q := digest.Query(propScope)
+
+		on, err := digest.New(st, digest.WithBudget(budget)).Select(context.Background(), q)
+		if err != nil {
+			rt.Fatalf("select with demotion: %v", err)
+		}
+		off, err := digest.New(st, digest.WithBudget(budget), digest.WithDemoteAfter(0)).Select(context.Background(), q)
+		if err != nil {
+			rt.Fatalf("select without demotion: %v", err)
+		}
+		if a, b := candidateSet(on), candidateSet(off); !maps.Equal(a, b) {
+			rt.Fatalf("demotion changed the candidate set: %v vs %v", a, b)
+		}
+		if on.Considered != off.Considered {
+			rt.Fatalf("Considered = %d with demotion, %d without", on.Considered, off.Considered)
+		}
+	})
+}
+
+// candidateSet is every item the selection was willing to spend budget on: what it
+// took and what it only ran out of room for.
+func candidateSet(d digest.Digest) map[string]bool {
+	out := make(map[string]bool, d.Considered)
+	for _, l := range append(append([]digest.Line{}, d.Lines...), d.Dropped...) {
+		out[l.MemoryID] = true
+	}
+	return out
 }
 
 // TestDigestStaysInTheQueriedScopeChain: nothing from a sibling scope is ever
