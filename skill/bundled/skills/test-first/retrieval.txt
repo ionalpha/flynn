@@ -1,0 +1,7 @@
+I am about to implement this feature, how should I start | test-first |
+write the test for this new endpoint before I build it | test-first |
+implement the business rules for the checkout | test-first |
+should I write the test before the code or after | test-first |
+walk me through red green refactor on this change | test-first |
+the test I just wrote passed the first time I ran it | test-first |
+the test failure output names no assertion and no values | test-first |

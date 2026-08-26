@@ -57,7 +57,8 @@ the line is whether a reader of the finished run could tell the difference.
 
 - **Outcome-affecting: stall or refuse, by name.** A seam whose absence changes what
   a run means never degrades quietly. `WithInvariantAudit` stalls with
-  `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`, a declared
+  `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`,
+  `WithSteerJudge` with `SteerJudgeMissing`, a declared
   plan-window ceiling with no source with `WindowSourceMissing`, and
   `memory/consolidate` refuses at construction with `ErrNoDistiller` rather than on a
   nightly job nobody is watching. Each has a test asserting the condition an operator
@@ -118,6 +119,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; `fanout.go` too | shipped |
+| `goal.SteerJudge` | `evidence.ModelSteerJudge` | same; `fanout.go` too | shipped |
 | `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
@@ -131,12 +133,39 @@ run can do, so this is the group where an unwired producer costs the most.
 - **Switch:** `--require-proof` on `flynn goal`. It is already on and not optional for
   a unit's child, because a unit settles from its child's ledger and a child that
   converged on the model's say-so fails the unit as unproven every time.
-- **Promotion condition:** it becomes the default when a run of the repository's own
-  acceptance goals, planned and unmodified, proves every ledger item it plans through
-  an executed check, over the platforms CI runs on. That is the claim the refusal
-  makes, so it is the claim that has to hold first. Turning it on ahead of the
-  evidence stalls every goal whose check happens to be unrunnable, which reads to an
-  operator as the loop being broken rather than as the check being wrong.
+- **Promotion condition:** it becomes the default on a host whose sandbox can contain
+  semi-trusted work, when a planned run proves every ledger item it plans through an
+  executed check. Turning it on where a check cannot run stalls every planned goal for
+  a reason that says nothing about the goal, which reads to an operator as the loop
+  being broken rather than as the check being wrong.
+
+The condition was measured on 2026-08-11 by
+`TestThePromotionConditionForLedgerProof`, which plans a goal whose item carries a
+check that exits 0, drives it through the assembly the binary uses, and reads the
+verdict off the goal the run leaves behind:
+
+| Platform | Sandbox containment | The planned item |
+|---|---|---|
+| `windows-latest` | kernel-confined | proven by its executed check |
+| `macos-latest` | kernel-confined | proven by its executed check |
+| `ubuntu-latest` | process-jail | unproven: `containment_gate: containment_insufficient` |
+
+The obstacle is named and it is not the loop. An item's check is model-authored, so it
+is dispatched as semi-trusted work, and GitHub's Ubuntu runner image forbids
+unprivileged user namespaces, so the sandbox falls back to a process jail and the
+containment gate refuses the check before it runs. No item can be proven on that host
+at all. Where the host can contain the work, the producer proved what it planned, which
+is the half of the original condition that was about this repository.
+
+That is why the condition above is a rewrite. The original asked for every platform CI
+runs on, which conflates two questions: whether the producer proves what it plans, and
+whether the host can run a model-authored command. The first is met. The second is not
+a property of the loop, and no amount of waiting changes it.
+
+What is left is a decision rather than more evidence: either the default is conditioned
+on the host's containment, which is visible because a run already says which mode it is
+in, or it stays off and `--require-proof` stays the operator's switch. The measurement
+runs on every platform on every CI run, so the row cannot go stale without a red check.
 
 Verification itself is not staged and is not behind the flag: on every planned goal
 each item's declared check runs in the run's own sandbox and its verdict goes on the

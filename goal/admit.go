@@ -12,8 +12,9 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// admit checks the desired-state records a reconcile reads (the ledger, the unit graph
-// and the run's terms) and brings the status's observation of each into line with it.
+// admit checks the desired-state records a reconcile reads (the ledger, the unit graph,
+// the run's terms and the redirects it has been given) and brings the status's observation
+// of each into line with it.
 // Everything it
 // refuses is a terminal spec fault, because all of it means the same thing: the
 // definition the run is being judged against changed underneath the run.
@@ -33,8 +34,12 @@ import (
 // is always allowed: the rule is one-directional because tightening the terms mid-run is
 // its author's to do and loosening them is nobody's.
 //
+// A steer dropped or reworded after the run was given it is the same move made against a
+// different record, and it is refused the same way. The asymmetry is the same too: another
+// redirect may always be issued, which is how an operator corrects one that was wrong.
+//
 // A goal that carries none of these records passes straight through, so this changes
-// nothing for a goal that neither plans, fans out, nor states any terms.
+// nothing for a goal that neither plans, fans out, states any terms, nor gets steered.
 func admit(spec Spec, status *Status) error {
 	if err := status.ValidateLedger(spec.Ledger); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
@@ -67,6 +72,17 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, code, err)
 	}
 	status.SyncInvariants(spec.Invariants)
+	// A redirect withdrawn or reworded after the run was handed it, checked before the
+	// validity of the set for the same reason the invariant's is: the withdrawal names
+	// what just happened, where the validity fault would send its author off to fix
+	// wording they were not the one to change.
+	if err := status.ValidateSteersGiven(spec.Steers); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_steer_withdrawn", err)
+	}
+	if err := ValidateSteers(spec.Steers); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_steers_invalid", err)
+	}
+	status.SyncSteers(spec.Steers)
 	return nil
 }
 

@@ -221,6 +221,35 @@ func TestSearchOrdersSameSlugAcrossScopes(t *testing.T) {
 	}
 }
 
+// TestSearchCapsToTheBestMatches proves the limit selects on how well a skill
+// answers the query, not on how its slug sorts. Recall asks for a bounded number of
+// candidates per term, so a cut that ran alphabetically would hide the skill the
+// query is about behind any number of skills that merely mention the word, and
+// nothing would report it.
+func TestSearchCapsToTheBestMatches(t *testing.T) {
+	ctx := context.Background()
+	s := skill.NewStore(backing(t))
+	for _, slug := range []string{"alpha", "beta", "gamma"} {
+		if _, err := s.Upsert(ctx, state.Skill{Slug: slug, Body: "a deploy is mentioned here"}); err != nil {
+			t.Fatalf("upsert %s: %v", slug, err)
+		}
+	}
+	if _, err := s.Upsert(ctx, state.Skill{
+		Slug:        "zeta",
+		Description: "How to deploy the service.",
+	}); err != nil {
+		t.Fatalf("upsert zeta: %v", err)
+	}
+
+	got, err := s.Search(ctx, "deploy", 1)
+	if err != nil {
+		t.Fatalf("search: %v", err)
+	}
+	if len(got) != 1 || got[0].Slug != "zeta" {
+		t.Fatalf("search with limit 1 = %+v, want zeta: the description is where a skill states its subject", got)
+	}
+}
+
 // TestSearchLimitCaps proves a positive limit caps the result while a limit <= 0 returns
 // everything matched.
 func TestSearchLimitCaps(t *testing.T) {

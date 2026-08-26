@@ -1,6 +1,6 @@
 ---
 name: domain-language
-description: Use when choosing the name for something, when the same concept is going by several words, or when working out what the things in this domain are and what each term means. Covers finding the word the project already uses before inventing another one, where a term comes from when no domain expert is available to ask, splitting a word that is doing two jobs, why an implementation word names nothing about this business, why a name that no longer describes the behaviour is a defect and has to be renamed, where the glossary lives so it stays true, and an audit that fails the build when the code and the agreed vocabulary drift apart.
+description: Use when deciding what to call something, when the same concept is going by several words, or when working out what the things in this domain are and what each term means. Covers finding the word the project already uses before inventing another one, where a term comes from when no domain expert is available to ask, splitting a word that is doing two jobs, why an implementation word names nothing about this business, why a name that no longer describes the behaviour is a defect and has to be renamed, where the glossary lives so it stays true, and an audit that fails the build when the code and the agreed vocabulary drift apart.
 metadata:
   flynnhq.com/title: Domain language
   flynnhq.com/tags: '["naming","domain-model","glossary","vocabulary","readability"]'
