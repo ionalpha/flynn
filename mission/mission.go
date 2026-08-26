@@ -474,6 +474,16 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Messages = appendNudge(cp.Messages, "The last run of this item's check did not pass: "+status.ItemFeedback)
 	}
 
+	// The redirects the operator has issued this run and the run has not yet answered.
+	// They ride every turn while they are outstanding rather than being delivered once,
+	// because a message folded into the transcript when it arrived is one the pruner, the
+	// compactor and a reseed are all free to drop before the turn that claims completion.
+	// Rendering from the durable record instead is what makes the obligation survive that,
+	// and it costs a few lines on a turn nobody has redirected: the brief is empty there.
+	if brief := goal.SteerBrief(spec, status); brief != "" {
+		cp.Messages = appendNudge(cp.Messages, brief)
+	}
+
 	// A stalling nudge the reconciler stamped onto the status: tell the agent, a step
 	// before the run would be stopped, that it is not making progress — a goal told it is
 	// stalling sometimes changes course. It rides into this turn as user-visible text so

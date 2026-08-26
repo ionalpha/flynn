@@ -1,0 +1,7 @@
+where should this new code go | structural-boundaries | external-integration
+should this be a new package or a change to an existing one | structural-boundaries | domain-language
+this package imports something it should not import | structural-boundaries |
+how do I keep the database out of the code that holds the rules | structural-boundaries |
+should I put an interface here or call the thing directly | structural-boundaries |
+the import graph has a cycle in it | structural-boundaries |
+should we restructure this into layers with ports and adapters | structural-boundaries |

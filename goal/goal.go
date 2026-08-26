@@ -120,6 +120,18 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
+    "steers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "instruction"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "instruction": {"type": "string", "minLength": 1}
+        },
+        "additionalProperties": false
+      }
+    },
     "allowances": {
       "type": "array",
       "items": {
@@ -230,6 +242,14 @@ type Spec struct {
 	// Empty on a goal that states no terms, and such a goal behaves exactly as it did
 	// before.
 	Invariants []Invariant `json:"invariants,omitempty"`
+	// Steers are the redirects an operator has issued to this run since it started: how
+	// to get there, corrected, with the objective and the stop condition left alone (see
+	// steer.go). They are desired state that arrives late by design, which is what
+	// separates them from everything else here: a steer is the one field written while
+	// the work is in flight, and the run is refused its completion until it has said what
+	// it did about each one. Empty on a run nobody has redirected, and such a run is
+	// unaffected.
+	Steers []Steer `json:"steers,omitempty"`
 	// Allowances are the irreversible actions outside the workspace this run is
 	// authorized to take (see allowance.go). They are the standing form of a decision
 	// nobody will be present to make: a run that reaches an undeclared one is paused with
@@ -322,6 +342,12 @@ type Status struct {
 	// against, and a recorded breach is what stops the goal converging on a pass that
 	// runs no audit of its own.
 	Invariants []InvariantState `json:"invariants,omitempty"`
+	// Steers is the observed state of Spec.Steers: which redirects the run has been given,
+	// what each said when it was given, and the account that discharged it. It is durable
+	// because both halves outlive a reconcile: the wording is what a later spec's rewording
+	// is caught against, and the account is the record of whether the operator was answered
+	// at all.
+	Steers []SteerState `json:"steers,omitempty"`
 	// VerifyPending marks that a build step has completed and the current ledger item's
 	// declared check has not been run since. It is what alternates the run between
 	// building and verifying: the reconciler sets it when it observes a build step and
@@ -378,6 +404,7 @@ type Status struct {
 // same commit that introduces it.
 var unwiredStalls = map[string]bool{
 	"InvariantAuditorMissing": true,
+	"SteerJudgeMissing":       true,
 	"UnitSpawnerMissing":      true,
 	"WindowSourceMissing":     true,
 }

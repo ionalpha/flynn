@@ -24,6 +24,14 @@
 // One Adapter describes one external CLI; the codex adapter is the first. The runner,
 // the bridge, and the governance are shared, so a second CLI is a new Adapter, not a
 // new subsystem.
+//
+// How a CLI's native surface is taken away differs per provider and is stated per
+// provider, as a Lockdown rather than as the flags that express it. The runner reads it
+// before it spawns anything: a provider whose writes or commands cannot be taken away, or
+// that would run on the operator's own configuration, is refused with a stated reason
+// instead of run. That keeps the rule from being a property of whoever wrote the adapter,
+// and it means a harness that cannot be constrained shows up as a missing integration
+// rather than as a run that looks governed in the record.
 package externagent
 
 import (
@@ -322,6 +330,12 @@ type Adapter interface {
 	// its MCP client at the bridge, plus how the turn and the final message are
 	// carried. It does not run anything.
 	Command(ep Episode) (Invocation, error)
+	// Lockdown states what the invocation Command builds leaves the harness holding:
+	// how its native writes and commands are taken away, and whether it runs on the
+	// operator's own configuration. The runner reads it before spawning and refuses a
+	// provider it does not strip, so an adapter that cannot lock its CLI down is a
+	// stated refusal rather than an episode that runs with live native effects.
+	Lockdown() Lockdown
 	// Parse turns one line of the CLI's stdout into zero or more typed events. A line
 	// it does not recognize yields an attested progress event rather than an error, so
 	// an unfamiliar line is recorded, not dropped.

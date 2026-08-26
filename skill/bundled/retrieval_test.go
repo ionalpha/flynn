@@ -2,6 +2,7 @@ package bundled
 
 import (
 	"context"
+	"io/fs"
 	"testing"
 
 	"github.com/ionalpha/flynn/skill/skillrecall"
@@ -36,6 +37,22 @@ func TestPackIsRetrievable(t *testing.T) {
 	}
 }
 
+// TestEverySkillKeepsItsRowsInItsOwnDirectory checks the path the pack's messages
+// tell an author to open. The rows are loaded by walking the tree, so a skill whose
+// file sat somewhere else would still be read and the instruction to edit
+// skills/<slug>/retrieval.txt would send them to a file that is not there.
+func TestEverySkillKeepsItsRowsInItsOwnDirectory(t *testing.T) {
+	packed, err := Skills()
+	if err != nil {
+		t.Fatalf("load the pack: %v", err)
+	}
+	for _, sk := range packed {
+		if _, err := fs.ReadFile(FS(), RetrievalPath(sk.Slug)); err != nil {
+			t.Errorf("%s: %v", sk.Slug, err)
+		}
+	}
+}
+
 // TestEveryPackSkillStatesItsTriggers refuses a skill nobody said an objective for.
 // A skill with no row is one whose author never had to answer what it is reached
 // for, and the answer is worth writing down before the body is: a skill whose
@@ -61,12 +78,33 @@ func TestEveryPackSkillStatesItsTriggers(t *testing.T) {
 	}
 	for _, sk := range packed {
 		if !claimed[sk.Slug] {
-			t.Errorf("%s ships with no objective it must be offered for; add a row to %s", sk.Slug, RetrievalPath)
+			t.Errorf("%s ships with no objective it must be offered for; add a row to %s", sk.Slug, RetrievalPath(sk.Slug))
 		}
 	}
 	for _, slug := range table.Covers() {
 		if !shipped[slug] {
-			t.Errorf("%s names %s, which the pack does not ship; the row asserts nothing", RetrievalPath, slug)
+			t.Errorf("%s names %s, which the pack does not ship; the row asserts nothing", where(table, slug), slug)
 		}
 	}
+}
+
+// where is the first row naming slug, so the message about a skill the pack no longer
+// ships points at the file to edit. A rename leaves such a row in some other skill's
+// negative column, which is the one place nobody thinks to look for it.
+func where(table skillrecall.Table, slug string) string {
+	for _, c := range table.Cases {
+		if contains(c.Offered, slug) || contains(c.Absent, slug) {
+			return c.Where()
+		}
+	}
+	return "the pack's retrieval rows"
+}
+
+func contains(hay []string, needle string) bool {
+	for _, h := range hay {
+		if h == needle {
+			return true
+		}
+	}
+	return false
 }

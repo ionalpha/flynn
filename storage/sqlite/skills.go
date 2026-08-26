@@ -131,9 +131,17 @@ func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.S
 			rows, err = s.p.reads().QueryContext(ctx, sqlStr)
 		}
 	} else {
+		// Ordered by how well the row matches, then by slug for a stable answer.
+		// A limit cuts this list, so ordering it by slug would make the cap select
+		// alphabetically: for a term many skills share, everything sorted after the
+		// first few is unreachable however well it matches. The bm25 weights follow
+		// the columns of skills_fts and say where a hit counts most: the description
+		// is what a skill publishes about when to reach for it, the name is the
+		// handle, and the body is the long text a stray word lands in.
 		sqlStr := `SELECT ` + skillColsQualified + `
 			FROM skills s JOIN skills_fts f ON f.skill_id = s.id
-			WHERE f.skills_fts MATCH ? AND s.deleted = 0 ORDER BY s.slug`
+			WHERE f.skills_fts MATCH ? AND s.deleted = 0
+			ORDER BY bm25(skills_fts, 0.0, 5.0, 10.0, 1.0, 3.0), s.slug`
 		if limit > 0 {
 			sqlStr += ` LIMIT ?`
 			rows, err = s.p.reads().QueryContext(ctx, sqlStr, ftsPhrase(q), limit)

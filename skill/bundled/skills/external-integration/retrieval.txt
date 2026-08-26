@@ -1,0 +1,7 @@
+write a client for the payment provider's API | external-integration |
+this call to the vendor fails every so often in production | external-integration |
+should I retry this request when it times out | external-integration |
+the API we call started returning 429 and everything fell over | external-integration |
+handle the webhook this service sends us | external-integration |
+what happens to our checkout if their service is down | external-integration |
+I am not sure this SDK method still exists in the version we use | external-integration |

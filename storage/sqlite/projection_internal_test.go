@@ -333,6 +333,32 @@ func TestRecallScopedWithNoQuery(t *testing.T) {
 	}
 }
 
+// TestSkillSearchRanksTheDescriptionAboveThePassingMention covers what the limit
+// selects on. The FTS branch is ordered by bm25 with the description weighted
+// highest, so a capped search answers with the skill the query is about rather than
+// the one whose slug sorts first, which is what recall depends on when it asks each
+// keyword for a bounded set of candidates.
+func TestSkillSearchRanksTheDescriptionAboveThePassingMention(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t)
+	for _, slug := range []string{"a", "b", "c"} {
+		if _, err := s.Skills().Upsert(ctx, state.Skill{Slug: slug, Body: "a deploy is mentioned here once"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Skills().Upsert(ctx, state.Skill{Slug: "z", Description: "How to deploy the service."}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.Skills().Search(ctx, "deploy", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Slug != "z" {
+		t.Fatalf("search with limit 1 = %+v, want z: its description is about the query", got)
+	}
+}
+
 // TestSkillSearchAppliesTheLimit covers the FTS branch's capped shape: a text search with a
 // limit matches the same rows an uncapped one does, cut to the limit, so a caller asking
 // for the top k does not silently get everything.

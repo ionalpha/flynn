@@ -80,6 +80,15 @@ type Config struct {
 	// while a run that was never audited finishes looking exactly like one whose terms
 	// held. A goal that states no terms is unaffected either way.
 	Auditor goal.InvariantAuditor
+	// SteerJudge rules on whether a run's account of finishing addresses the redirects an
+	// operator issued it while it worked. A redirect it does not address refuses the
+	// completion and stops the goal.
+	//
+	// Leaving it nil is not a way to run redirects unchecked either: a goal that is
+	// steered with no judge wired stalls saying so, which is the same rule Auditor
+	// follows. A goal nobody steers is unaffected, and that is every goal on a host that
+	// has not wired the operator surface.
+	SteerJudge goal.SteerJudge
 	// Refusals reads the gates that refused this run, so a run that kept pushing on one
 	// is stopped naming what refused it rather than being judged on whether it finished.
 	//
@@ -284,6 +293,13 @@ func New(cfg Config) (*Runtime, error) {
 	// the audit is a judgement about the record the steps left, made between them.
 	if cfg.Auditor != nil {
 		ropts = append(ropts, goal.WithInvariantAudit(cfg.Auditor))
+	}
+
+	// Judging an acknowledgement belongs on the reconcile path for a further reason: the
+	// account it rules on is what the run gave for having finished, and the run is not the
+	// party to decide whether its own answer to the operator was good enough.
+	if cfg.SteerJudge != nil {
+		ropts = append(ropts, goal.WithSteerJudge(cfg.SteerJudge))
 	}
 
 	// Reading the refusals is single-sided as well: the waist writes them from wherever a
