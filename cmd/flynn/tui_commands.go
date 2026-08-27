@@ -145,6 +145,7 @@ func (h *sessionHost) doTokens(_ context.Context) {
 func (h *sessionHost) doMemory(ctx context.Context) {
 	h.echoPrompt("/memory")
 	var buf bytes.Buffer
+	h.s.memory().describeRecall(&buf)
 	renderMemory(ctx, &buf, h.s.memory().store)
 	h.appendReport(buf.String())
 }
