@@ -500,6 +500,7 @@ func printUsage(w io.Writer) {
   flynn notices [--refresh] [--all]  show the signed security advisories and release notices that apply to this build
   flynn regrade              re-grade learned skills against the working directory
   flynn memory consolidate   distil each subject's accumulated episodes into one lesson and retire them (--max-calls n caps the model spend)
+  flynn memory usage         show what memory was pushed at readers, what they used, and how alike the instances' pushed sets are
   flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded

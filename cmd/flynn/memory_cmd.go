@@ -24,14 +24,24 @@ import (
 const consolidateMinInterval = 2 * time.Second
 
 // errMemoryUsage is the usage line for `flynn memory`.
-var errMemoryUsage = errors.New("usage: flynn memory consolidate [--max-calls n]")
+var errMemoryUsage = errors.New("usage: flynn memory consolidate [--max-calls n] | flynn memory usage")
 
 // dispatchMemory routes `flynn memory <sub>`.
 func dispatchMemory(args []string, modelSpec, dataDir string, out io.Writer) error {
-	if len(args) == 0 || args[0] != "consolidate" {
+	if len(args) == 0 {
 		return errMemoryUsage
 	}
-	return consolidateMemory(args[1:], modelSpec, dataDir, out)
+	switch args[0] {
+	case "consolidate":
+		return consolidateMemory(args[1:], modelSpec, dataDir, out)
+	case "usage":
+		// No model spec: reading back what was pushed and used is a report over rows
+		// this install already wrote, and a subcommand that resolved a model to print
+		// them would fail on a machine with no provider configured for no reason.
+		return memoryUsageReport(args[1:], dataDir, out)
+	default:
+		return errMemoryUsage
+	}
 }
 
 // consolidateMemory runs the consolidation pass over this install's memory: every

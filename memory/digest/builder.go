@@ -31,13 +31,19 @@ const (
 	// A digest of a dozen lines has no use for a thousand candidates, and an uncapped
 	// read would make the cost of building it grow with the corpus forever.
 	defaultCandidateLimit = 200
-	// defaultDemoteAfter is how many pushes an item may go unused for before it loses
-	// the standing order. It is a small number because the evidence is one-sided: a
-	// session that did not use a line it was shown may simply not have needed it that
-	// wake, but five wakes in front of five readers with nothing acted on is the item
-	// saying what it is. Below about three the threshold reads noise as a verdict.
-	defaultDemoteAfter = 5
 )
+
+// DefaultDemoteAfter is how many pushes an item may go unused for before it loses
+// the standing order. It is a small number because the evidence is one-sided: a
+// session that did not use a line it was shown may simply not have needed it that
+// wake, but five wakes in front of five readers with nothing acted on is the item
+// saying what it is. Below about three the threshold reads noise as a verdict.
+//
+// It is the one default here that is exported, because it is the one another
+// surface has to agree with: a report telling a curator which items are demoted has
+// to reach the same verdict as the selection that demoted them, and it can only do
+// that by reading the threshold rather than restating it.
+const DefaultDemoteAfter = 5
 
 // ErrPushNotRecorded reports that a digest was built but the push could not be
 // counted. It is returned alongside the digest, never instead of it: the lines are
@@ -169,7 +175,7 @@ func New(store state.MemoryStore, opts ...Option) *Builder {
 		quota:      defaultExplorationQuota,
 		summary:    defaultSummaryChars,
 		candidates: defaultCandidateLimit,
-		demote:     defaultDemoteAfter,
+		demote:     DefaultDemoteAfter,
 	}
 	for _, o := range opts {
 		o(b)
