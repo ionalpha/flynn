@@ -13,8 +13,8 @@ import (
 )
 
 // admit checks the desired-state records a reconcile reads (the ledger, the unit graph,
-// the run's terms and the redirects it has been given) and brings the status's observation
-// of each into line with it.
+// the run's terms, the redirects it has been given and the order to stop) and brings the
+// status's observation of each into line with it.
 // Everything it
 // refuses is a terminal spec fault, because all of it means the same thing: the
 // definition the run is being judged against changed underneath the run.
@@ -39,7 +39,8 @@ import (
 // redirect may always be issued, which is how an operator corrects one that was wrong.
 //
 // A goal that carries none of these records passes straight through, so this changes
-// nothing for a goal that neither plans, fans out, states any terms, nor gets steered.
+// nothing for a goal that neither plans, fans out, states any terms, nor is steered or
+// stopped by anyone.
 func admit(spec Spec, status *Status) error {
 	if err := status.ValidateLedger(spec.Ledger); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
@@ -83,6 +84,13 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, "goal_steers_invalid", err)
 	}
 	status.SyncSteers(spec.Steers)
+	// A kill taken off the spec after the run was stopped under it. This is the same move
+	// again and it is refused for a reason of its own: the only account of a run nobody
+	// watched is its record, and a record that reads as a run stopping on its own when a
+	// person stopped it is wrong about the one moment somebody intervened.
+	if err := status.ValidateKillGiven(spec.Kill); err != nil {
+		return fault.Wrap(fault.Terminal, "goal_kill_withdrawn", err)
+	}
 	return nil
 }
 

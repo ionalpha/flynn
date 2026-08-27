@@ -89,6 +89,21 @@ type Config struct {
 	// follows. A goal nobody steers is unaffected, and that is every goal on a host that
 	// has not wired the operator surface.
 	SteerJudge goal.SteerJudge
+	// Halt is the run-level halt an operator's kill engages, so a kill reaches the
+	// dispatch waist inside the step that is running rather than at its boundary. Give it
+	// the same brake the executor dispatches under: a halt bound to a second brake that
+	// no waist consults is a kill that records itself and stops nothing.
+	//
+	// It is proved before it is wired. New asks it to demonstrate, against its own
+	// enforcement path, that a run it has halted is refused, and refuses to build a
+	// runtime over one that cannot. That is the evidence gate's rule applied to the other
+	// gate that fails silently, and it is here because this is where a broken one can
+	// still stop a process from starting.
+	//
+	// Leaving it nil is a supported composition and not a way to run unkillable goals: a
+	// kill still settles the goal and no further step is dispatched. What is lost is the
+	// promptness, which is the reason an operator reached for a kill instead of waiting.
+	Halt goal.Halter
 	// Refusals reads the gates that refused this run, so a run that kept pushing on one
 	// is stopped naming what refused it rather than being judged on whether it finished.
 	//
@@ -300,6 +315,19 @@ func New(cfg Config) (*Runtime, error) {
 	// party to decide whether its own answer to the operator was good enough.
 	if cfg.SteerJudge != nil {
 		ropts = append(ropts, goal.WithSteerJudge(cfg.SteerJudge))
+	}
+
+	// The operator's kill, wired only once the halt has proved it halts. Constructing the
+	// evidence gate here IS its check; this is the same move for the same failure, and the
+	// failure is the more insidious of the two: a gate that certifies every claim at least
+	// produces a run whose record can be read afterwards and found wrong, while a kill
+	// switch that engages nothing produces a run that keeps going with an operator
+	// watching it and believing they stopped it.
+	if cfg.Halt != nil {
+		if err := cfg.Halt.ProveHalts(); err != nil {
+			return nil, fmt.Errorf("runtime: kill switch: %w", err)
+		}
+		ropts = append(ropts, goal.WithHalt(cfg.Halt))
 	}
 
 	// Reading the refusals is single-sided as well: the waist writes them from wherever a
