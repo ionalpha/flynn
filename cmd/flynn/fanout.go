@@ -188,6 +188,13 @@ func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system s
 	// them by id. Without a judge here, redirecting one would stop it saying no judge is
 	// wired, which is a true sentence about a run nobody could have redirected any other way.
 	cfg.SteerJudge = evidence.NewModelSteerJudge(model, log)
+	// Stop a run an operator kills, through the shared brake, so the halt reaches whichever
+	// loop the Router built for it. A kill stops the goal it names and no other: the brake
+	// tracks each run separately, and a fan-out's parent and children are separate goals,
+	// so stopping a whole graph means killing the parent and each child that is still
+	// going. Cascading a parent's kill down its children needs the ownership graph walked
+	// from the parent, which is its own change.
+	cfg.Halt = brk
 	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err

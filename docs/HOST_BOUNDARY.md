@@ -69,6 +69,11 @@ the line is whether a reader of the finished run could tell the difference.
   a Hook with no `brakes.AnomalyDetector` still halts on the breakers it was
   configured with. These change no outcome, they say so in their doc comments, and
   each has a test that the absence costs nothing.
+- **Timing only: say what is lost, and prove the outcome is not.** `goal.WithHalt` is
+  the one seam in this shape. With none wired an operator's kill still settles the goal
+  and no further step is dispatched; what is lost is that the stop reaches the dispatch
+  waist inside the running step. The doc comment says so and a test asserts the run is
+  stopped either way, so the seam buys promptness and never the decision.
 
 A missing-producer stall is recoverable, which is what makes stalling the right
 answer rather than a refusal wearing a softer word. `Status.Unwired` marks a stall as
@@ -120,6 +125,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; `fanout.go` too | shipped |
 | `goal.SteerJudge` | `evidence.ModelSteerJudge` | same; `fanout.go` too | shipped |
+| `goal.Halter` | `brakes.Hook` | same brake the executor dispatches under; `fanout.go` too | shipped |
 | `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |

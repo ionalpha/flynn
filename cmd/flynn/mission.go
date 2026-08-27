@@ -167,6 +167,12 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 		return nil, err
 	}
 
+	// The brake is held rather than built inline because two things are wired from it: the
+	// waist the run dispatches through, and the halt an operator's kill engages. They have
+	// to be the same brake, so there is deliberately one name for it here; a kill bound to
+	// a second brake would engage a halt that nothing on the run's path ever consults.
+	brk := defaultBrakes()
+
 	opts := []mission.Option{
 		mission.WithTools(parts.toolset...),
 		mission.WithSystem(system),
@@ -182,7 +188,7 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 		// fan-out runs under, so a single conversation cannot spin unbounded (a jailbroken
 		// or looping model hammering a tool) any more than a delegating one can. The rate
 		// is a generous backstop that never trips on legitimate use.
-		mission.WithBrakes(defaultBrakes()),
+		mission.WithBrakes(brk),
 		// Record every governed action's lifecycle (admitted, completed, or rejected)
 		// onto the run's own stream, so the admission decisions are part of the run's
 		// recorded and sealed history rather than only the live trace. The stream is the
@@ -261,6 +267,11 @@ func assembleMission(model llm.Model, plan harness.Plan, workdir, system string,
 	// including a run this process started before anyone thought to redirect it, and a
 	// steered run with no judge stalls rather than finishing unanswered.
 	cfg.SteerJudge = evidence.NewModelSteerJudge(model, log)
+	// Stop the run outright when an operator kills it, through the same brake its actions
+	// are dispatched under, so `flynn kill` takes effect inside the step that is running
+	// rather than after it. Wired unconditionally for the reason the judge is: any run can be
+	// killed, including one this process started long before anyone wanted it stopped.
+	cfg.Halt = brk
 	// Stop a run that has stopped getting anywhere. The probe reads the run's own recorded
 	// activity (its stream on the spine) and the git HEAD at the working directory, so a
 	// loop re-running the same tool calls is caught as no-progress rather than left to
@@ -298,13 +309,14 @@ func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset
 		sink:    spinesink.New(log, sess.ID()),
 	}
 
+	brk := defaultBrakes()
 	opts := []mission.Option{
 		mission.WithTools(parts.toolset...),
 		mission.WithSystem(system),
 		mission.WithObserver(parts.sess.Reporter()),
 		mission.WithGrant(parts.grant),
 		mission.WithBudget(budgetpkg.NewHook(rstore)),
-		mission.WithBrakes(defaultBrakes()),
+		mission.WithBrakes(brk),
 		mission.WithEventSink(parts.sink),
 		mission.WithCompactionBudget(defaultCompactionBudget),
 	}
@@ -321,6 +333,9 @@ func assembleToolsetMission(model llm.Model, plan harness.Plan, ts *boundToolset
 	opts = append(opts, mission.PlanOptions(plan)...)
 	exec := mission.NewExecutor(model, opts...)
 	cfg := parts.runtimeConfig(exec, mission.Convergence{}, rstore, jq)
+	// A specialised run is not an unkillable run either: the same brake, so the operator's
+	// kill halts it at the waist exactly as it halts a sandboxed one.
+	cfg.Halt = brk
 	if planning {
 		cfg.Planner = mission.NewPlanner(model)
 	}
@@ -368,6 +383,7 @@ func assembleExternalMission(ea *externAgent, workdir, system string, rstore res
 	// unset (an llm.Model), since the external CLI drives its own model, selected by the
 	// goal's model string; the compaction budget and scaffolding plan are native-loop
 	// concerns the external CLI manages itself, so they are left unset.
+	brk := defaultBrakes()
 	exec, stop, err := ea.driver.Build(driver.Spec{
 		Tools:     parts.toolset,
 		System:    system,
@@ -376,13 +392,19 @@ func assembleExternalMission(ea *externAgent, workdir, system string, rstore res
 		Sandbox:   parts.sandbox,
 		Reporter:  parts.sess.Reporter(),
 		EventSink: parts.sink,
-		Brakes:    defaultBrakes(),
+		Brakes:    brk,
 		Budget:    budgetpkg.NewHook(rstore),
 	})
 	if err != nil {
 		return nil, err
 	}
-	rt, err := runtime.New(parts.runtimeConfig(exec, stop, rstore, jq))
+	cfg := parts.runtimeConfig(exec, stop, rstore, jq)
+	// An external harness is killable on the same terms as a native loop: every tool call
+	// the CLI makes is routed back through this brake, so halting it stops the episode at
+	// its next call rather than leaving somebody else's process running until it decides
+	// for itself that it is finished.
+	cfg.Halt = brk
+	rt, err := runtime.New(cfg)
 	if err != nil {
 		return nil, err
 	}
