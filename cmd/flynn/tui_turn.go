@@ -93,59 +93,12 @@ func (h *sessionHost) start(t queuedTurn) {
 		h.startShell(strings.TrimSpace(cmd))
 		return
 	}
-	// The model and memory commands take arguments (/model provider:model,
-	// /remember <fact>), so they dispatch on the first field rather than the whole
-	// line the exact-match commands below use.
-	if fields := strings.Fields(t.text); len(fields) > 0 {
-		switch fields[0] {
-		case "/models":
-			h.startRecord(h.doModels)
-			return
-		case "/model":
-			args := append([]string(nil), fields[1:]...)
-			h.startRecord(func(ctx context.Context) { h.doModel(ctx, args) })
-			return
-		case "/remember":
-			// The fact keeps its interior spacing, so it is taken from the raw line
-			// rather than rejoined from the split fields.
-			fact := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(t.text), fields[0]))
-			h.startRecord(func(ctx context.Context) { h.doRemember(ctx, fact) })
-			return
-		}
-	}
-	switch t.text {
-	case "/help", "?":
-		h.startRecord(h.doHelp)
-		return
-	case "/seal":
-		h.startRecord(h.doSeal)
-		return
-	case "/verify":
-		h.startRecord(h.doVerify)
-		return
-	case "/export":
-		h.startRecord(h.doExport)
-		return
-	case "/fork":
-		h.startRecord(h.doFork)
-		return
-	case "/replay":
-		h.startRecord(h.doReplay)
-		return
-	case "/tokens":
-		h.startRecord(h.doTokens)
-		return
-	case "/memory":
-		h.startRecord(h.doMemory)
-		return
-	case "/skills":
-		h.startRecord(h.doSkills)
-		return
-	case "/clear":
-		h.startRecord(h.doClear)
-		return
-	case "/compact":
-		h.startRecord(h.doCompact)
+	// A slash command runs as a recorded command rather than a model turn. Which lines
+	// are commands is sessionCommands, the same table the line interface dispatches
+	// through and the same one /help lists, so the two interfaces cannot come to
+	// understand different sets of commands.
+	if cmd, arg, ok := lookupCommand(t.text); ok {
+		h.startRecord(func(ctx context.Context) { cmd.tui(h, ctx, arg) })
 		return
 	}
 	turnCtx, cancel := context.WithCancel(h.ctx)
