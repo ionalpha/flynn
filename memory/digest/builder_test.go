@@ -89,6 +89,23 @@ func (f *fixture) recordPush(ids ...string) {
 	}
 }
 
+func (f *fixture) recordUse(id string, origin state.UsageOrigin) {
+	f.t.Helper()
+	if err := f.store.RecordUse(context.Background(), id, origin); err != nil {
+		f.t.Fatalf("record use %s: %v", id, err)
+	}
+}
+
+// ignored pushes an item n times with nothing acted on, which is the shape a
+// demotion is decided from (state.MemoryUsage.Ignored).
+func (f *fixture) ignored(it state.MemoryItem, n int) state.MemoryItem {
+	f.t.Helper()
+	for range n {
+		f.recordPush(it.ID)
+	}
+	return it
+}
+
 func mustSelect(t *testing.T, b *digest.Builder, q state.RecallQuery) digest.Digest {
 	t.Helper()
 	d, err := b.Select(context.Background(), q)
@@ -258,7 +275,8 @@ func TestExplorationQuotaReachesARarelyPushedItem(t *testing.T) {
 	f := newFixture(t)
 	workspace := state.Scope{Instance: "i", Project: "p", Workspace: "w"}
 	// Four items at the workspace scope. The three newest have been pushed many
-	// times; the oldest never has, so only the exploration reserve can reach it.
+	// times and used, so they hold the standing order on merit rather than being
+	// demoted; the oldest has never been pushed, so only the reserve can reach it.
 	fresh := f.write(state.MemoryItem{Content: "never pushed: the fixture db is ephemeral", Scope: workspace})
 	var pushed []state.MemoryItem
 	for i := range 3 {
@@ -267,6 +285,9 @@ func TestExplorationQuotaReachesARarelyPushedItem(t *testing.T) {
 	}
 	for range 5 {
 		f.recordPush(pushed[0].ID, pushed[1].ID, pushed[2].ID)
+	}
+	for _, it := range pushed {
+		f.recordUse(it.ID, state.UsagePrimed)
 	}
 
 	full := mustSelect(t, digest.New(f.store, digest.WithBudget(10_000)), digest.Query(workspace))
@@ -287,8 +308,116 @@ func TestExplorationQuotaReachesARarelyPushedItem(t *testing.T) {
 	if d.Tokens > budget {
 		t.Fatalf("spent %d tokens against a budget of %d", d.Tokens, budget)
 	}
-	// Whichever pass chose them, the lines read in recall order.
-	wantRecallOrder(t, d, full)
+	// Whichever pass chose them, the lines read in the standing order.
+	wantStandingOrder(t, d, full)
+}
+
+// demotionFixture writes two items at one scope: an older one nobody has pushed,
+// and a newer one pushed five times with nothing ever acted on. Recency alone ranks
+// the newer one first, so the order the selection returns says which policy decided
+// it.
+func demotionFixture(t *testing.T) (*fixture, state.MemoryItem, state.MemoryItem) {
+	t.Helper()
+	f := newFixture(t)
+	old := f.write(state.MemoryItem{Content: "the operator reviews every migration before it runs"})
+	noisy := f.ignored(f.write(state.MemoryItem{Content: "the build cache lives under .cache in the repo root"}), 5)
+	return f, old, noisy
+}
+
+func TestIgnoredItemLosesTheStandingOrder(t *testing.T) {
+	f, old, noisy := demotionFixture(t)
+	q := digest.Query(state.Scope{})
+
+	d := mustSelect(t, digest.New(f.store, digest.WithBudget(10_000)), q)
+
+	// Ranked behind, and still there: the budget stretched to both, so demotion cost
+	// the item its place and not its line.
+	wantIDs(t, "lines", lineIDs(d.Lines), old, noisy)
+	if d.Lines[0].Demoted || !d.Lines[1].Demoted {
+		t.Fatalf("Demoted = %v, %v, want only the ignored item flagged", d.Lines[0].Demoted, d.Lines[1].Demoted)
+	}
+
+	off := mustSelect(t, digest.New(f.store, digest.WithBudget(10_000), digest.WithDemoteAfter(0)), q)
+	wantIDs(t, "lines", lineIDs(off.Lines), noisy, old)
+	for _, l := range off.Lines {
+		if l.Demoted {
+			t.Fatalf("line %s is flagged demoted with demotion turned off", l.MemoryID)
+		}
+	}
+}
+
+func TestDemotedItemLosesTheBudgetToWhatIsEarningIt(t *testing.T) {
+	f, old, noisy := demotionFixture(t)
+	q := digest.Query(state.Scope{})
+	// A budget that fits one of the two lines, so the ranking has to choose.
+	full := mustSelect(t, digest.New(f.store, digest.WithBudget(10_000)), q)
+	budget := full.Lines[0].Tokens
+
+	d := mustSelect(t, digest.New(f.store, digest.WithBudget(budget), digest.WithExplorationQuota(0)), q)
+
+	wantIDs(t, "lines", lineIDs(d.Lines), old)
+	wantIDs(t, "dropped", lineIDs(d.Dropped), noisy)
+}
+
+func TestOneUseLiftsTheDemotion(t *testing.T) {
+	f, old, noisy := demotionFixture(t)
+	q := digest.Query(state.Scope{})
+
+	// A primed use is still a use: the reader was shown the line and acted on it,
+	// which is the whole question a demotion answers.
+	f.recordUse(noisy.ID, state.UsagePrimed)
+	d := mustSelect(t, digest.New(f.store, digest.WithBudget(10_000)), q)
+
+	wantIDs(t, "lines", lineIDs(d.Lines), noisy, old)
+	if d.Lines[0].Demoted {
+		t.Fatal("the item is still demoted after a use")
+	}
+}
+
+func TestDemoteAfterSetsTheThreshold(t *testing.T) {
+	f := newFixture(t)
+	old := f.write(state.MemoryItem{Content: "the operator reviews every migration before it runs"})
+	// Four pushes and no use: short of the default threshold, past a threshold of
+	// three.
+	noisy := f.ignored(f.write(state.MemoryItem{Content: "the build cache lives under .cache in the repo root"}), 4)
+	q := digest.Query(state.Scope{})
+
+	tests := map[string]struct {
+		opts []digest.Option
+		want []state.MemoryItem
+	}{
+		"under the default":     {nil, []state.MemoryItem{noisy, old}},
+		"over a lower setting":  {[]digest.Option{digest.WithDemoteAfter(3)}, []state.MemoryItem{old, noisy}},
+		"turned off":            {[]digest.Option{digest.WithDemoteAfter(0)}, []state.MemoryItem{noisy, old}},
+		"turned off by a minus": {[]digest.Option{digest.WithDemoteAfter(-4)}, []state.MemoryItem{noisy, old}},
+	}
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			opts := append([]digest.Option{digest.WithBudget(10_000)}, tc.opts...)
+			d := mustSelect(t, digest.New(f.store, opts...), q)
+			wantIDs(t, "lines", lineIDs(d.Lines), tc.want...)
+		})
+	}
+}
+
+func TestExplorationPassesOverADemotedItem(t *testing.T) {
+	f := newFixture(t)
+	workspace := state.Scope{Instance: "i", Project: "p", Workspace: "w"}
+	// The only item at the most specific scope is one the fleet has ignored, so the
+	// reserve either spends on it or hands its budget back.
+	outer := f.write(state.MemoryItem{Content: "the release notes are written before a friday", Scope: state.Scope{Instance: "i", Project: "p"}})
+	noisy := f.ignored(f.write(state.MemoryItem{Content: "the release branch is cut from main on friday", Scope: workspace}), 5)
+
+	// A budget that fits the demoted line, so what it does not reach is a decision
+	// and not a shortfall, and a reserve that is the entire budget: without the skip
+	// it would reach the deepest scope first and hand the digest to exactly the item
+	// just demoted.
+	full := mustSelect(t, digest.New(f.store, digest.WithBudget(10_000)), digest.Query(workspace))
+	budget := lineFor(t, full, noisy.ID).Tokens
+	d := mustSelect(t, digest.New(f.store, digest.WithBudget(budget), digest.WithExplorationQuota(1)), digest.Query(workspace))
+
+	wantIDs(t, "lines", lineIDs(d.Lines), outer)
+	wantIDs(t, "dropped", lineIDs(d.Dropped), noisy)
 }
 
 func TestExplorationStaysAtTheMostSpecificScope(t *testing.T) {
@@ -322,7 +451,7 @@ func TestUnspentReserveGoesBackToTheStandingOrder(t *testing.T) {
 	if len(reserved.Lines) != len(full.Lines) {
 		t.Fatalf("a half-reserved budget produced %d lines, want the full %d", len(reserved.Lines), len(full.Lines))
 	}
-	wantRecallOrder(t, reserved, full)
+	wantStandingOrder(t, reserved, full)
 }
 
 func TestSelectSkipsContentWithNothingReadable(t *testing.T) {
@@ -487,15 +616,15 @@ func TestBuildReturnsTheDigestWhenThePushCannotBeRecorded(t *testing.T) {
 func TestSelectPropagatesAStoreFailure(t *testing.T) {
 	boom := errors.New("store unavailable")
 	// Each read only happens on a selection that needs it: promotions when an item's
-	// eligibility turns on a review, usage when the exploration reserve has to rank
-	// candidates the standing order left behind.
+	// eligibility turns on a review, usage when either demotion or the exploration
+	// reserve is on to ask about it.
 	tests := map[string]struct {
 		store  func(inner state.MemoryStore) state.MemoryStore
 		budget int
 	}{
 		"recall":     {func(in state.MemoryStore) state.MemoryStore { return stubStore{MemoryStore: in, recall: boom} }, 10_000},
 		"promotions": {func(in state.MemoryStore) state.MemoryStore { return stubStore{MemoryStore: in, promotions: boom} }, 10_000},
-		"usage":      {func(in state.MemoryStore) state.MemoryStore { return stubStore{MemoryStore: in, usage: boom} }, 30},
+		"usage":      {func(in state.MemoryStore) state.MemoryStore { return stubStore{MemoryStore: in, usage: boom} }, 10_000},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -509,6 +638,18 @@ func TestSelectPropagatesAStoreFailure(t *testing.T) {
 				t.Fatalf("err = %v, want the store's failure", err)
 			}
 		})
+	}
+}
+
+func TestSelectWithBothUsagePoliciesOffNeverReadsUsage(t *testing.T) {
+	f := newFixture(t)
+	f.write(state.MemoryItem{Content: "the operator reviews every migration before it runs"})
+	st := stubStore{MemoryStore: f.store, usage: errors.New("store unavailable")}
+
+	b := digest.New(st, digest.WithExplorationQuota(0), digest.WithDemoteAfter(0))
+
+	if _, err := b.Select(context.Background(), digest.Query(state.Scope{})); err != nil {
+		t.Fatalf("select: %v, want a wake that never asked the question", err)
 	}
 }
 
@@ -627,9 +768,9 @@ func TestLinesCarryTheItemsKindAndScope(t *testing.T) {
 	}
 }
 
-// wantRecallOrder asserts that d's lines appear in the same relative order as the
+// wantStandingOrder asserts that d's lines appear in the same relative order as the
 // unbudgeted selection full, whichever pass chose each of them.
-func wantRecallOrder(t *testing.T, d, full digest.Digest) {
+func wantStandingOrder(t *testing.T, d, full digest.Digest) {
 	t.Helper()
 	rank := make(map[string]int, len(full.Lines))
 	for i, l := range full.Lines {
@@ -642,10 +783,23 @@ func wantRecallOrder(t *testing.T, d, full digest.Digest) {
 			t.Fatalf("line %s is not in the unbudgeted selection", l.MemoryID)
 		}
 		if r <= prev {
-			t.Fatalf("lines are out of recall order: %v", lineIDs(d.Lines))
+			t.Fatalf("lines are out of the standing order: %v", lineIDs(d.Lines))
 		}
 		prev = r
 	}
+}
+
+// lineFor finds one item's line in a selection, taken or dropped, so a test can
+// size a budget against the line it is about rather than against a position.
+func lineFor(t *testing.T, d digest.Digest, id string) digest.Line {
+	t.Helper()
+	for _, l := range append(append([]digest.Line{}, d.Lines...), d.Dropped...) {
+		if l.MemoryID == id {
+			return l
+		}
+	}
+	t.Fatalf("no line for %s in %v", id, lineIDs(d.Lines))
+	return digest.Line{}
 }
 
 func contains(ids []string, want string) bool {
