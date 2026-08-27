@@ -9,26 +9,10 @@ import (
 // helpEntry is one row of the /help listing: an invocation and what it does.
 type helpEntry struct{ key, desc string }
 
-// sessionCommands and sessionShortcuts back the /help listing. Keeping them in
-// one place means /help, the line-based session, and the footer hint never drift
-// from what the dispatch actually handles.
-var sessionCommands = []helpEntry{
-	{"/model [provider:model]", "show the current model, or switch to one and save it as the default"},
-	{"/models", "list the model catalog"},
-	{"/seal", "seal the run into a verifiable record"},
-	{"/verify", "verify the sealed record, tier by tier"},
-	{"/export", "write the sealed record to a portable file"},
-	{"/fork", "branch the run into a new one, leaving this one untouched"},
-	{"/replay", "re-render the run from its record"},
-	{"/tokens", "break down this run's token usage"},
-	{"/memory", "show what the agent remembers across runs"},
-	{"/remember <fact>", "pin a fact into memory, so it is recalled in later runs"},
-	{"/skills", "show the skills the agent has learned"},
-	{"/compact", "summarize the conversation to continue with less context"},
-	{"/clear", "start a fresh conversation"},
-	{"/help, ?", "show this list"},
-}
-
+// The commands half of the listing is read from sessionCommands, the one table both
+// interfaces dispatch through, so /help cannot describe a command the session does not
+// run or omit one it does. The shortcuts are keys the composer binds rather than
+// commands, so they have no entry there and are listed here.
 var sessionShortcuts = []helpEntry{
 	{"enter", "send the message"},
 	{"alt+enter, ctrl+j", "start a newline in the composer"},
@@ -49,8 +33,8 @@ var sessionShortcuts = []helpEntry{
 func renderHelp(w io.Writer) {
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "commands:")
-	for _, e := range sessionCommands {
-		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", e.key, e.desc)
+	for _, c := range sessionCommands() {
+		_, _ = fmt.Fprintf(tw, "  %s\t%s\n", c.helpKey(), c.desc)
 	}
 	_, _ = fmt.Fprintln(tw, "\nshortcuts:")
 	for _, e := range sessionShortcuts {

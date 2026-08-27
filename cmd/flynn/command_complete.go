@@ -8,30 +8,6 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/fuzzy"
 )
 
-// completableCommand is a session command the composer can complete, and whether it
-// takes an argument (so accepting it leaves a trailing space to type the argument).
-type completableCommand struct {
-	name string
-	arg  bool
-}
-
-var completableCommands = []completableCommand{
-	{"/model", true},
-	{"/models", false},
-	{"/tokens", false},
-	{"/memory", false},
-	{"/remember", true},
-	{"/skills", false},
-	{"/seal", false},
-	{"/verify", false},
-	{"/export", false},
-	{"/fork", false},
-	{"/replay", false},
-	{"/compact", false},
-	{"/clear", false},
-	{"/help", false},
-}
-
 // commandCompleter completes a slash-command line: the command name while it is being
 // typed, and for /model the model id from the catalog, so a user can pick a model
 // without typing it in full.
@@ -62,10 +38,12 @@ func (c *commandCompleter) Suggest(line string) []app.CommandCandidate {
 
 // commandNames completes the command word. A word that already names a command needs no
 // completion (Enter should submit it, and "/model " falls through to argument
-// completion), so an exact match returns nothing.
+// completion), so an exact match returns nothing. The candidates are the same table both
+// interfaces dispatch through, so the menu cannot offer a command the session will not
+// run. An alias is not offered: "?" is shorter than any completion of it.
 func commandNames(partial string) []app.CommandCandidate {
-	names := make([]string, 0, len(completableCommands))
-	for _, cmd := range completableCommands {
+	names := make([]string, 0, len(sessionCommands()))
+	for _, cmd := range sessionCommands() {
 		if cmd.name == partial {
 			return nil
 		}
@@ -97,11 +75,12 @@ func (c *commandCompleter) modelArgs(partial string) []app.CommandCandidate {
 	return out
 }
 
-// commandTakesArg reports whether a command name takes an argument.
+// commandTakesArg reports whether a command name takes an argument, which is the same
+// question as whether /help shows it with a placeholder.
 func commandTakesArg(name string) bool {
-	for _, cmd := range completableCommands {
+	for _, cmd := range sessionCommands() {
 		if cmd.name == name {
-			return cmd.arg
+			return cmd.arg != ""
 		}
 	}
 	return false
