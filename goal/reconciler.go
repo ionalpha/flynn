@@ -70,6 +70,11 @@ type Reconciler struct {
 	// steered; a goal that is steered with none wired stops rather than carrying an
 	// obligation it could never discharge.
 	judge SteerJudge
+	// halt is the run-level halt an operator's kill engages, so the stop reaches the
+	// dispatch waist inside the step that is running. Optional: with none wired a kill
+	// still settles the goal and stops the next step, it just waits for the current one
+	// to finish first.
+	halt Halter
 	// refusals reads the gates that refused this run. Optional: with none wired a run's
 	// refusals are still recorded on the spine, they are just never read as a verdict.
 	refusals RefusalProbe
@@ -220,6 +225,13 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// has been edited under the run.
 	if err := admit(spec, &status); err != nil {
 		return reconcile.Result{}, err
+	}
+
+	// The operator's order to stop, read before anything is observed or decided. It is
+	// first because it is the one input that is not about the work: everything below asks
+	// how the run is doing and what it should do next, and a killed run has no next.
+	if res, handled, err := g.applyKill(ctx, r, spec, &status, specHash); handled {
+		return res, err
 	}
 
 	// Observe an in-flight step.

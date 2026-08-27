@@ -56,6 +56,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"status":       dispatchStatus,
 	"spine":        dispatchSpine,
 	"steer":        dispatchSteer,
+	"kill":         dispatchKill,
 	"db":           runDB,
 	"version":      runVersion,
 	"upgrade":      runUpgrade,
@@ -473,6 +474,7 @@ func printUsage(w io.Writer) {
   flynn status [<run>]       show the live overview, or one run's phase and progress
   flynn resume <run-id>      continue a parked or interrupted run by id
   flynn steer <run-id> "..."  redirect a run that is still going; it keeps its objective and cannot report success until it says what it did about the redirect
+  flynn kill <run-id> ["..."] stop a run that is still going; it halts at its next model or tool call, and the stop cannot be taken back
   flynn watch                watch the working tree for ai!/ai? comment markers and run each as a governed turn
   flynn review <pr>          review a pull request and submit a formal verdict (APPROVE gated behind --approve --as); exits 3 on changes requested
   flynn inspect <run-id>     replay a past run's recorded events (alias: replay)
