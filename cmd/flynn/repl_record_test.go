@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/resource"
 )
 
 // TestExportReportsARunWithNoRecord proves exporting a run that was never sealed fails
@@ -155,5 +158,44 @@ func TestReplayReportsARecordItCannotRead(t *testing.T) {
 	}
 	if err == nil {
 		t.Fatal("/replay reported nothing when it could not read the record")
+	}
+}
+
+// TestTurnReportsAnUnreadableCheckpoint proves a run whose recorded state cannot be
+// decoded stops the turn with that reason. Continuing would reopen the conversation from
+// a checkpoint nobody read, so the model would answer without the exchange it is in.
+func TestTurnReportsAnUnreadableCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	s, buf := newSlashSession(t, llmtest.NewScripted(llmtest.SayText("done")))
+	spec, err := json.Marshal(goal.Spec{Objective: "do the thing", StopCondition: defaultStopCondition})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.store.Resources(s.reg).Put(ctx, resource.Resource{
+		APIVersion: goal.GroupVersion, Kind: goal.Kind, Name: "damaged-run",
+		Spec: spec, Status: []byte(`{"phase":404}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.started, s.runID = true, "damaged-run"
+
+	if _, err := s.runTurn(ctx, "carry on", nil, nil); err == nil {
+		t.Fatalf("a turn continued from a checkpoint nothing could read:\n%s", buf.String())
+	}
+}
+
+// TestExternalTurnReportsAHarnessThatBuildsNoLoop proves the external half of assembling a
+// turn surfaces a harness that cannot produce one. The two halves are assembled from the
+// same pieces and differ only in who drives the loop, so the failure has to arrive the
+// same way: as the turn's error, with the session left where it was.
+func TestExternalTurnReportsAHarnessThatBuildsNoLoop(t *testing.T) {
+	s, buf := newSlashSession(t, llmtest.NewScripted())
+	s.ext = &externAgent{model: "sonnet", driver: &plainDriver{stubHarnessDriver{name: "claude"}}}
+
+	if _, err := s.runTurn(context.Background(), "do the thing", nil, nil); err == nil {
+		t.Fatalf("an episode ran on a harness that builds no loop:\n%s", buf.String())
+	}
+	if s.started {
+		t.Fatal("a turn that never ran left the session marked as started")
 	}
 }
