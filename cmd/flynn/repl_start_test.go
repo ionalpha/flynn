@@ -57,11 +57,11 @@ func TestRunInteractiveReportsABrokenTheme(t *testing.T) {
 // opened under is reported rather than started around. A session that ran anyway would
 // take turns it could not record, which is the one thing it must not do quietly.
 func TestRunInteractiveReportsAnUnusableDataDir(t *testing.T) {
-	startingSession(t)
-	// A regular file where the data directory should be: nothing can be created under it
-	// on any platform, so the failure is the same everywhere.
-	dataDir := filepath.Join(t.TempDir(), "data")
-	if err := os.WriteFile(dataDir, []byte("not a directory"), 0o600); err != nil {
+	dataDir := startingSession(t)
+	// A directory where the database file belongs. Everything else under the data
+	// directory still works, so the failure is the store's alone, and a directory cannot
+	// be opened as a database file on any platform.
+	if err := os.MkdirAll(dataStoreFile(dataDir), 0o750); err != nil {
 		t.Fatal(err)
 	}
 

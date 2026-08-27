@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,12 +44,12 @@ func TestSwitchModelHoldsWhenTheDefaultCannotBeSaved(t *testing.T) {
 	noProviderKeys(t)
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	s, buf := newSlashSession(t, llmtest.NewScripted())
-	// A regular file where the data directory should be, so nothing can be written under it.
-	blocked := filepath.Join(t.TempDir(), "data")
-	if err := os.WriteFile(blocked, []byte("not a directory"), 0o600); err != nil {
+	// A directory where the recorded default belongs. The data directory itself stays
+	// usable, so the model still resolves and only the saving fails, which is the state
+	// this is about; on every platform a directory cannot be written to as a file.
+	if err := os.MkdirAll(activeModelPath(s.dataDir), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	s.dataDir = blocked
 
 	if err := s.switchModel(context.Background(), []string{"openai:gpt-5-mini"}, s.out); err != nil {
 		t.Fatalf("switchModel: %v\n%s", err, buf.String())
