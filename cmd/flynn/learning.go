@@ -34,7 +34,15 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// Every write in this run goes through the curated store, so a fact supersedes
 	// the standing answer on its subject and an episode joins the series the
 	// consolidation pass later reads.
-	mem := newMemoryStack(store.Memory(), noticeWriter(out))
+	// The options are read here for the one that shapes memory rather than the drive:
+	// which embedding model recall ranks by. The run's memory is assembled before its
+	// conversation is, so the option is applied twice, to a config read here and to
+	// the one drive builds; both are plain setters and the second is the drive's own.
+	var cfg driveConfig
+	for _, o := range opts {
+		o(&cfg)
+	}
+	mem := newMemoryStack(store.Memory(), noticeWriter(out), withEmbedder(cfg.emb))
 	memories := mem.store
 
 	// The run carries a prime scope from here on, so a memory the digest pushed is

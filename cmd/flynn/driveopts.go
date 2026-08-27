@@ -4,6 +4,7 @@ import (
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/memory/hybrid"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
@@ -33,6 +34,11 @@ type driveConfig struct {
 	// pass one.
 	terms         []goal.Invariant
 	stopCondition string
+	// emb is the embedding model recall ranks by, nil for the lexical order alone. It
+	// is read by runLearningMission, which builds the run's memory, and not by drive:
+	// the run's memory is assembled before the conversation is, and this is the option
+	// set the entry points already thread through to it.
+	emb hybrid.Embedder
 }
 
 // driveOption configures a run driven by drive.
@@ -44,6 +50,13 @@ type driveOption func(*driveConfig)
 // passing it leaves the run uncapped.
 func withBudget(l budgetpkg.Limits) driveOption {
 	return func(c *driveConfig) { c.budget = l }
+}
+
+// withMemoryEmbedder ranks the run's memory recall by meaning as well as words. A
+// nil embedder is the default and leaves the durable store's own lexical order, so
+// an install with no embedding model configured runs exactly as it did.
+func withMemoryEmbedder(e hybrid.Embedder) driveOption {
+	return func(c *driveConfig) { c.emb = e }
 }
 
 // withResourceLimits caps the host memory and process count of the commands a run's
