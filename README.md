@@ -278,7 +278,10 @@ layers in view rather than hidden behind it.
 - **Skills from experience.** After complex work, the agent writes reusable skills
   and improves them as it reuses them.
 - **Memory.** Durable facts about you and your work, prefetched into context and
-  synced after each turn.
+  synced after each turn. Recall is ranked by words out of the box; set
+  `FLYNN_EMBED_MODEL` to a provider:model spec (`openai:text-embedding-3-small`, or
+  `llamacpp:<model>` against a local server) and it is ranked by meaning as well.
+  With none set, and with an endpoint that fails, recall is exactly what it was.
 - **A curator.** An outcome-driven pass decays and archives skills that stop working,
   so the library stays sharp instead of sprawling. Nothing is ever silently deleted.
 - **Reinforced by outcomes.** Skills and memory are strengthened or decayed by real
@@ -702,7 +705,8 @@ above is filling in on top of that foundation. Follow
 - A cost-aware model router in front of the registry.
 - Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
 - Time-travel on top of replay: fork-from-event and run diff.
-- A pluggable embeddings port for stronger local semantic recall.
+- An embedding model Flynn provisions and serves itself, so recall ranks by meaning
+  with no account and no endpoint to configure.
 
 **On the roadmap**
 

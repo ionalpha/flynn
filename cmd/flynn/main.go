@@ -645,6 +645,9 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		withAllowance(outside, mergeAllowances(spec, allowed)),
 		// The terms the operator stated, and their stop condition where they wrote one.
 		withGoalSpec(spec),
+		// What recall ranks by. Nil unless this install names an embedding model, which
+		// leaves the lexical order every run has had until now.
+		withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(os.Stdout))),
 	}
 	if extAgent != nil {
 		opts = append(opts, withExternalAgent(extAgent))

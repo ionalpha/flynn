@@ -591,6 +591,7 @@ func (s *replSession) replCommand(ctx context.Context, line string) (handled boo
 		_, _ = fmt.Fprintf(s.out, "  compacted %d messages into a summary; continuing with less context\n", n)
 		return true, nil
 	case "/memory":
+		s.memory().describeRecall(s.out)
 		renderMemory(ctx, s.out, s.memory().store)
 		return true, nil
 	case "/remember":
