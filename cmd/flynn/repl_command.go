@@ -8,97 +8,23 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 
 	"github.com/ionalpha/flynn/harness"
-	"github.com/ionalpha/flynn/session"
 )
 
-// replCommand handles the session's slash commands that are not model turns: sealing
-// the run into a verifiable record, verifying that record, exporting the record to a
-// portable file, forking the run onto a new branch, and replaying its recorded history.
-// It reports whether it claimed the line and
-// any error to surface, so each interface renders the outcome its own way. A line that is
-// not a command is left for the model.
+// replCommand runs the line as one of the session's slash commands, when it names one.
+// It reports whether it claimed the line and any error to surface, so each interface
+// renders the outcome its own way. A line that is not a command is left for the model.
+//
+// What each command does is the line handler on its row of sessionCommands, beside the
+// handler the full-screen interface runs for the same command; this is only the half
+// that turns a typed line into one of them.
 func (s *replSession) replCommand(ctx context.Context, line string) (handled bool, err error) {
-	fields := strings.Fields(strings.TrimSpace(line))
-	if len(fields) == 0 {
+	cmd, arg, ok := lookupCommand(line)
+	if !ok {
 		return false, nil
 	}
-	switch strings.ToLower(fields[0]) {
-	case "/help", "?":
-		renderHelp(s.out)
-		return true, nil
-	case "/clear":
-		s.clear()
-		_, _ = fmt.Fprintln(s.out, "  context cleared; starting a fresh conversation")
-		return true, nil
-	case "/compact":
-		n, err := s.compact(ctx)
-		if err != nil {
-			return true, err
-		}
-		_, _ = fmt.Fprintf(s.out, "  compacted %d messages into a summary; continuing with less context\n", n)
-		return true, nil
-	case "/memory":
-		s.memory().describeRecall(s.out)
-		renderMemory(ctx, s.out, s.memory().store)
-		return true, nil
-	case "/remember":
-		rememberFact(ctx, s.out, s.memory().store, strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), fields[0])))
-		return true, nil
-	case "/skills":
-		renderSkills(ctx, s.out, s.store.Skills())
-		return true, nil
-	case "/tokens":
-		u, turns := session.Usage{}, 0
-		if s.runID != "" {
-			if events, herr := session.History(ctx, s.store.Log(), s.runID); herr == nil {
-				p := session.Project(events)
-				u, turns = p.Usage, p.Turns
-			}
-		}
-		renderTokens(s.out, u, turns)
-		return true, nil
-	case "/models":
-		return true, s.showCatalog(s.out)
-	case "/model":
-		return true, s.switchModel(ctx, fields[1:], s.out)
-	case "/seal":
-		if err := s.seal(ctx); err != nil {
-			return true, err
-		}
-		_, _ = fmt.Fprintln(s.out, "  run sealed; /verify to check it")
-		return true, nil
-	case "/verify":
-		return true, s.verify(ctx, s.out)
-	case "/export":
-		path, err := s.export(ctx, "")
-		if err != nil {
-			return true, err
-		}
-		_, _ = fmt.Fprintf(s.out, "  record exported to %s; verify anywhere with: flynn spine verify --file %s\n", path, path)
-		return true, nil
-	case "/fork":
-		forkID, err := s.fork(ctx)
-		if err != nil {
-			return true, err
-		}
-		_, _ = fmt.Fprintf(s.out, "  forked to run %s; the original is untouched\n", forkID)
-		return true, nil
-	case "/replay":
-		hist, _, err := renderHistory(ctx, s.store, s.runID, s.verbose)
-		if err != nil {
-			return true, err
-		}
-		if strings.TrimSpace(hist) == "" {
-			_, _ = fmt.Fprintln(s.out, "  nothing recorded to replay yet")
-			return true, nil
-		}
-		_, _ = fmt.Fprint(s.out, hist)
-		return true, nil
-	}
-	return false, nil
+	return true, cmd.line(s, ctx, arg)
 }
 
 // showCatalog prints the model catalog into the session, the same view as `flynn models`,
