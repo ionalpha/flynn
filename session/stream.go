@@ -92,61 +92,77 @@ func (s *Stream) Subscribe(ctx context.Context, afterSeq int64) (<-chan Event, e
 		defer close(out)
 		defer func() { _ = sub.Unsubscribe() }()
 
-		cursor := afterSeq
-		drain := func() bool {
-			for {
-				evs, err := s.log.Read(ctx, spine.Query{Stream: s.stream, AfterSeq: cursor})
-				if err != nil || len(evs) == 0 {
-					return err == nil
-				}
-				for _, se := range evs {
-					select {
-					case out <- fromSpine(se):
-					case <-ctx.Done():
-						return false
-					}
-					cursor = se.Seq
-				}
-			}
-		}
-
+		t := &tail{s: s, out: out, cursor: afterSeq}
 		// The bus subscription is live before this first drain, so any event
 		// appended after the read snapshot still wakes us and is not missed.
-		if !drain() {
+		if !t.drain(ctx) {
 			return
 		}
-		for {
-			// The poll floor guarantees progress even if no wake ever arrives; the
-			// bus only makes delivery prompt. A non-positive poll disables the floor
-			// (used in tests that prove the bus path alone). The timer is re-armed
-			// each iteration and stopped when a wake or cancellation wins the select,
-			// so a Manual clock accumulates no stale timers.
-			var tick <-chan time.Time
-			var timer clock.Timer
-			if s.poll > 0 {
-				timer = s.clk.NewTimer(s.poll)
-				tick = timer.C()
-			}
-			select {
-			case <-ctx.Done():
-				if timer != nil {
-					timer.Stop()
-				}
+		for s.await(ctx, wake) {
+			if !t.drain(ctx) {
 				return
-			case <-wake:
-				if timer != nil {
-					timer.Stop()
-				}
-				if !drain() {
-					return
-				}
-			case <-tick:
-				if !drain() {
-					return
-				}
 			}
 		}
 	}()
 
 	return out, nil
+}
+
+// tail is one subscriber's position in the stream. Its cursor is the single advancing
+// mark that gives the subscriber ordered, exactly-once delivery.
+type tail struct {
+	s      *Stream
+	out    chan<- Event
+	cursor int64
+}
+
+// drain sends every event past the cursor, advancing it past each one sent, until the
+// spine has nothing newer. It reports false when the subscriber should stop: the read
+// failed or ctx was cancelled mid-send.
+func (t *tail) drain(ctx context.Context) bool {
+	for {
+		evs, err := t.s.log.Read(ctx, spine.Query{Stream: t.s.stream, AfterSeq: t.cursor})
+		if err != nil || len(evs) == 0 {
+			return err == nil
+		}
+		for _, se := range evs {
+			select {
+			case t.out <- fromSpine(se):
+			case <-ctx.Done():
+				return false
+			}
+			t.cursor = se.Seq
+		}
+	}
+}
+
+// await blocks until there may be something to drain, a wake or the poll floor, and
+// reports false once ctx is cancelled.
+//
+// The poll floor guarantees progress even if no wake ever arrives; the bus only makes
+// delivery prompt. A non-positive poll disables the floor (used in tests that prove
+// the bus path alone). The timer is armed per wait and stopped when a wake or
+// cancellation wins the select, so a Manual clock accumulates no stale timers.
+func (s *Stream) await(ctx context.Context, wake <-chan struct{}) bool {
+	var tick <-chan time.Time
+	var timer clock.Timer
+	if s.poll > 0 {
+		timer = s.clk.NewTimer(s.poll)
+		tick = timer.C()
+	}
+	stop := func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}
+	select {
+	case <-ctx.Done():
+		stop()
+		return false
+	case <-wake:
+		stop()
+		return true
+	case <-tick:
+		return true
+	}
 }
