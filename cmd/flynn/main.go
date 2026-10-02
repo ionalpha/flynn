@@ -367,11 +367,15 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 		return 0
 
 	case "skill":
-		if len(rest) < 2 || rest[1] != "ab" {
-			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
-			return 2
+		if err := dispatchSkill(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
+			if errors.Is(err, errSkillUsage) {
+				_, _ = fmt.Fprintln(inv.stderr, err)
+				return 2
+			}
+			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+			return 1
 		}
-		return inv.exit(runSkillAB(rest[2:], inv.modelSpec, inv.dataDir, inv.stdout))
+		return 0
 
 	case "serve":
 		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir))
@@ -503,6 +507,8 @@ func printUsage(w io.Writer) {
   flynn regrade              re-grade learned skills against the working directory
   flynn memory consolidate   distil each subject's accumulated episodes into one lesson and retire them (--max-calls n caps the model spend)
   flynn memory usage         show what memory was pushed at readers, what they used, and how alike the instances' pushed sets are
+  flynn skill ls             list the skills a run can be offered: the pack shipped in the binary and the ones this install learned
+  flynn skill show <skill>   print one skill: what it is for, how runs have taken it up, and its body
   flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
   flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
