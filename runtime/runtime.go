@@ -241,28 +241,71 @@ func New(cfg Config) (*Runtime, error) {
 	if clk == nil {
 		clk = clock.System{}
 	}
-
-	store, q := cfg.Store, cfg.Jobs
-	if store == nil {
-		reg := resource.NewRegistry()
-		if err := resource.RegisterCoreKinds(reg); err != nil {
-			return nil, err
-		}
-		if err := goal.RegisterKind(reg); err != nil {
-			return nil, err
-		}
-		store = resource.NewMemory(reg, resource.WithClock(clk))
-		q = jobs.NewMemory(jobs.WithClock(clk))
+	store, q, err := foundation(cfg, clk)
+	if err != nil {
+		return nil, err
 	}
-	if q == nil {
-		return nil, errors.New("runtime: Jobs is required when Store is provided")
-	}
-
 	b := cfg.Bus
 	if b == nil {
 		b = bus.NewMemory()
 	}
 
+	ropts, err := reconcilerOptions(cfg, b)
+	if err != nil {
+		return nil, err
+	}
+	wopts := workerOptions(cfg, b)
+	ropts, wopts, err = pairedOptions(cfg, ropts, wopts)
+	if err != nil {
+		return nil, err
+	}
+
+	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)
+	worker := goal.NewWorker(store, q, clk, cfg.Executor, wopts...)
+
+	driven := &drivenSet{}
+	mgr := reconcile.NewManager(store, managerOptions(cfg, clk, driven)...)
+	mgr.Register(goal.Kind, rec)
+
+	workerPoll := cfg.WorkerPoll
+	if workerPoll <= 0 {
+		workerPoll = DefaultWorkerPoll
+	}
+
+	return &Runtime{
+		store:      store,
+		jobs:       q,
+		bus:        b,
+		manager:    mgr,
+		worker:     worker,
+		clk:        clk,
+		workerPoll: workerPoll,
+		driven:     driven,
+	}, nil
+}
+
+// foundation returns the store and job queue the runtime drives: the configured pair,
+// or an in-memory pair with the core kinds and Goal registered when no store is set.
+// A configured store must come with its queue.
+func foundation(cfg Config, clk clock.Timing) (resource.Store, jobs.Queue, error) {
+	store, q := cfg.Store, cfg.Jobs
+	if store == nil {
+		reg := resource.NewRegistry()
+		if err := errors.Join(resource.RegisterCoreKinds(reg), goal.RegisterKind(reg)); err != nil {
+			return nil, nil, err
+		}
+		store = resource.NewMemory(reg, resource.WithClock(clk))
+		q = jobs.NewMemory(jobs.WithClock(clk))
+	}
+	if q == nil {
+		return nil, nil, errors.New("runtime: Jobs is required when Store is provided")
+	}
+	return store, q, nil
+}
+
+// reconcilerOptions wires the reconciler's tuning and every port that lives on the
+// reconcile path alone.
+func reconcilerOptions(cfg Config, b bus.Bus) ([]goal.Option, error) {
 	// The wake bus lets a settling child re-check its parked fan-out parent
 	// promptly; the parent's recheck fallback covers a lost wake.
 	ropts := []goal.Option{goal.WithWakeBus(b)}
@@ -271,23 +314,6 @@ func New(cfg Config) (*Runtime, error) {
 	}
 	if cfg.StepMaxAttempts > 0 {
 		ropts = append(ropts, goal.WithStepMaxAttempts(cfg.StepMaxAttempts))
-	}
-
-	wopts := []goal.WorkerOption{goal.WithBus(b)}
-	if cfg.WorkerLease > 0 {
-		wopts = append(wopts, goal.WithLease(cfg.WorkerLease))
-	}
-	if cfg.WorkerRetryBase > 0 || cfg.WorkerRetryCeiling > 0 {
-		wopts = append(wopts, goal.WithBackoff(cfg.WorkerRetryBase, cfg.WorkerRetryCeiling))
-	}
-
-	// Turning planning on is a single decision applied to both halves at once: the
-	// reconciler gates a goal on planning before it builds, and the worker is given the
-	// planner that runs that phase. Pairing them here means the two can never drift into
-	// the state where a goal is gated on a planner that was never wired.
-	if cfg.Planner != nil {
-		ropts = append(ropts, goal.WithPlanning())
-		wopts = append(wopts, goal.WithPlanner(cfg.Planner))
 	}
 
 	// No-progress detection lives entirely on the reconciler (it folds each step's
@@ -317,11 +343,8 @@ func New(cfg Config) (*Runtime, error) {
 		ropts = append(ropts, goal.WithSteerJudge(cfg.SteerJudge))
 	}
 
-	// The operator's kill, wired only once the halt has proved it halts. Constructing the
-	// evidence gate here IS its check; this is the same move for the same failure, and the
-	// failure is the more insidious of the two: a gate that certifies every claim at least
-	// produces a run whose record can be read afterwards and found wrong, while a kill
-	// switch that engages nothing produces a run that keeps going with an operator
+	// The operator's kill, wired only once the halt has proved it halts. A kill switch
+	// that engages nothing is worse than none: the run keeps going with an operator
 	// watching it and believing they stopped it.
 	if cfg.Halt != nil {
 		if err := cfg.Halt.ProveHalts(); err != nil {
@@ -337,22 +360,49 @@ func New(cfg Config) (*Runtime, error) {
 	if cfg.Refusals != nil {
 		ropts = append(ropts, goal.WithRefusalProbe(cfg.Refusals))
 	}
+	return ropts, nil
+}
 
-	// Close the ledger loop, both sides at once. The gate is constructed here rather
-	// than injected because constructing it IS the check: NewEvidenceGate refuses to
-	// return a gate that cannot demonstrate, against its own code, that it refuses a
-	// claim with no evidence and admits one with fresh evidence. A broken gate therefore
-	// fails composition, loudly, instead of being wired in and silently certifying every
-	// claim at runtime, which is the failure the self-test was written for, finally
-	// placed where it can stop a process from starting.
+// workerOptions wires the worker's lease and retry tuning.
+func workerOptions(cfg Config, b bus.Bus) []goal.WorkerOption {
+	wopts := []goal.WorkerOption{goal.WithBus(b)}
+	if cfg.WorkerLease > 0 {
+		wopts = append(wopts, goal.WithLease(cfg.WorkerLease))
+	}
+	if cfg.WorkerRetryBase > 0 || cfg.WorkerRetryCeiling > 0 {
+		wopts = append(wopts, goal.WithBackoff(cfg.WorkerRetryBase, cfg.WorkerRetryCeiling))
+	}
+	return wopts
+}
+
+// newEvidenceGate builds the ledger's evidence gate. It is a variable so a test can
+// stand in a gate that fails its self-test and see composition refuse it.
+var newEvidenceGate = goal.NewEvidenceGate
+
+// pairedOptions wires the two features that need both halves at once, so neither can
+// be left in the state where the reconciler gates on something the worker was never
+// given.
+func pairedOptions(cfg Config, ropts []goal.Option, wopts []goal.WorkerOption) ([]goal.Option, []goal.WorkerOption, error) {
+	// Planning: the reconciler gates a goal on planning before it builds, and the worker
+	// is given the planner that runs that phase.
+	if cfg.Planner != nil {
+		ropts = append(ropts, goal.WithPlanning())
+		wopts = append(wopts, goal.WithPlanner(cfg.Planner))
+	}
+
+	// The ledger loop. The gate is constructed here rather than injected because
+	// constructing it IS the check: NewEvidenceGate refuses to return a gate that cannot
+	// demonstrate, against its own code, that it refuses a claim with no evidence and
+	// admits one with fresh evidence. A broken gate therefore fails composition, loudly,
+	// instead of being wired in and silently certifying every claim at runtime.
 	if cfg.Verifier != nil && cfg.Evidence != nil {
 		var gopts []goal.GateOption
 		if !cfg.AllowAssertedEvidence {
 			gopts = append(gopts, goal.RequireExecuted())
 		}
-		gate, err := goal.NewEvidenceGate(gopts...)
+		gate, err := newEvidenceGate(gopts...)
 		if err != nil {
-			return nil, fmt.Errorf("runtime: evidence gate: %w", err)
+			return nil, nil, fmt.Errorf("runtime: evidence gate: %w", err)
 		}
 		ropts = append(ropts, goal.WithLedgerGate(cfg.Evidence, gate))
 		if cfg.RequireLedgerProof {
@@ -360,11 +410,11 @@ func New(cfg Config) (*Runtime, error) {
 		}
 		wopts = append(wopts, goal.WithItemVerification(cfg.Verifier, cfg.Evidence))
 	}
+	return ropts, wopts, nil
+}
 
-	rec := goal.NewReconciler(store, q, clk, cfg.Stop, ropts...)
-	worker := goal.NewWorker(store, q, clk, cfg.Executor, wopts...)
-
-	driven := &drivenSet{}
+// managerOptions configures the reconcile manager's clock and resync safety net.
+func managerOptions(cfg Config, clk clock.Timing, driven *drivenSet) []reconcile.ManagerOption {
 	mopts := []reconcile.ManagerOption{reconcile.WithClock(clk)}
 	if cfg.Resync > 0 {
 		mopts = append(mopts, reconcile.WithResync(cfg.Resync))
@@ -375,24 +425,7 @@ func New(cfg Config) (*Runtime, error) {
 		// run submitted is still recovered on the next resync tick.
 		mopts = append(mopts, reconcile.WithResyncScope(driven.list))
 	}
-	mgr := reconcile.NewManager(store, mopts...)
-	mgr.Register(goal.Kind, rec)
-
-	workerPoll := cfg.WorkerPoll
-	if workerPoll <= 0 {
-		workerPoll = DefaultWorkerPoll
-	}
-
-	return &Runtime{
-		store:      store,
-		jobs:       q,
-		bus:        b,
-		manager:    mgr,
-		worker:     worker,
-		clk:        clk,
-		workerPoll: workerPoll,
-		driven:     driven,
-	}, nil
+	return mopts
 }
 
 // Store returns the resource store the runtime drives, so callers can read goal
