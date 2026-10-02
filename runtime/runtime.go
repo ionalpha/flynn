@@ -291,10 +291,7 @@ func foundation(cfg Config, clk clock.Timing) (resource.Store, jobs.Queue, error
 	store, q := cfg.Store, cfg.Jobs
 	if store == nil {
 		reg := resource.NewRegistry()
-		if err := resource.RegisterCoreKinds(reg); err != nil {
-			return nil, nil, err
-		}
-		if err := goal.RegisterKind(reg); err != nil {
+		if err := errors.Join(resource.RegisterCoreKinds(reg), goal.RegisterKind(reg)); err != nil {
 			return nil, nil, err
 		}
 		store = resource.NewMemory(reg, resource.WithClock(clk))
