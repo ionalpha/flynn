@@ -26,10 +26,12 @@ import (
 	"time"
 )
 
-// stampedVersion is the version the suite links into its own build of the binary, so a
-// test can assert the --version round-trip: the release stamps this same variable via
-// -ldflags, and a build that fails to stamp would report the source default instead.
-const stampedVersion = "v0.0.0-e2e"
+// stampedVersion is the version the binary under test reports, so a test can assert
+// the --version round-trip. When the suite builds its own binary it links this value
+// with the -ldflags -X the release uses, and a build that fails to stamp would report
+// the source default instead. When FLYNN_E2E_BIN names a prebuilt binary (a release
+// artifact), FLYNN_E2E_VERSION states what that binary was stamped with.
+var stampedVersion = "v0.0.0-e2e"
 
 // flynnBin is the path to the binary built once in TestMain and shared by every test.
 var flynnBin string
@@ -41,6 +43,23 @@ func TestMain(m *testing.M) {
 // runMain builds the binary and runs the suite, returning the process exit code. It is
 // split from TestMain so a build failure can be reported without leaking a temp dir.
 func runMain(m *testing.M) int {
+	if bin := os.Getenv("FLYNN_E2E_BIN"); bin != "" {
+		// Run against an artifact somebody else built, so the suite checks the bytes a
+		// release ships rather than a fresh compile of the same source.
+		want := os.Getenv("FLYNN_E2E_VERSION")
+		if want == "" {
+			println("e2e: FLYNN_E2E_BIN is set; FLYNN_E2E_VERSION must state the version that binary was stamped with")
+			return 1
+		}
+		// go test runs the suite from inside e2e/, not from where it was invoked, so a
+		// relative path would silently resolve against the wrong directory.
+		if !filepath.IsAbs(bin) {
+			println("e2e: FLYNN_E2E_BIN must be an absolute path, got", bin)
+			return 1
+		}
+		flynnBin, stampedVersion = bin, want
+		return m.Run()
+	}
 	bin, cleanup, err := buildFlynn()
 	if err != nil {
 		// A build failure is a suite failure, not a skip: the shipped artifact must

@@ -207,6 +207,106 @@ jobs:
       #       path: ${{ runner.temp }}/e2e-artifacts
       #       if-no-files-found: ignore
 
+  # Release rehearsal: the release pipeline otherwise runs only when a v* tag is pushed,
+  # so a break in it (a target that does not cross-compile, a goreleaser config error, a
+  # container image that does not build) would surface after the tag, in public. This
+  # runs the same goreleaser, at the same pinned version and config, as a snapshot: every
+  # target, the archives, the native packages, the SBOMs and the container images, with
+  # publishing and signing skipped. Signing needs a tag's OIDC identity, so a
+  # signing-config regression is the one release break this cannot catch.
+  release:
+    name: Release snapshot
+    needs: setup
+    if: needs.setup.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true
+          cache: true
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          syft-version: "v1.46.0"
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
+        with:
+          version: "v2.17.0"
+          args: release --snapshot --clean --skip=publish,sign
+      - id: meta
+        run: echo "version=$(jq -r .version dist/metadata.json)" >> "$GITHUB_OUTPUT"
+      # The image a user pulls must start and report the version it was built as.
+      - name: Container image runs
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          got="$(docker run --rm "ghcr.io/ionalpha/flynn:${VERSION}-amd64" --version)"
+          echo "image reports: $got"
+          [ "$got" = "$VERSION" ]
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-binaries
+          path: |
+            dist/flynn_linux_amd64_v1/flynn
+            dist/flynn_darwin_arm64_v8.0/flynn
+            dist/flynn_windows_amd64_v1/flynn.exe
+          retention-days: 1
+          if-no-files-found: error
+
+  # The e2e suite again, against the binaries the release snapshot built rather than a
+  # fresh compile: the same bytes, stripped and stamped as a release ships them, on the
+  # OS each one is for.
+  release-e2e:
+    name: E2E on release artifact (${{ matrix.os }})
+    needs: [setup, release]
+    if: needs.setup.outputs.full == 'true'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            bin: flynn_linux_amd64_v1/flynn
+          - os: macos-latest
+            bin: flynn_darwin_arm64_v8.0/flynn
+          - os: windows-latest
+            bin: flynn_windows_amd64_v1/flynn.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: Exclude Go paths from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          try {
+            Add-MpPreference -ExclusionPath "${{ github.workspace }}", "$(go env GOCACHE)", "$(go env GOMODCACHE)", "$env:RUNNER_TEMP" -ErrorAction Stop
+          } catch {
+            Write-Host "Could not set Defender exclusions (continuing): $_"
+          }
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-binaries
+          path: ${{ runner.temp }}/dist
+      # An artifact upload does not keep the executable bit, and FLYNN_E2E_BIN must be
+      # absolute because go test runs the suite from inside e2e/.
+      - name: E2E
+        env:
+          FLYNN_E2E_VERSION: ${{ needs.release.outputs.version }}
+          FLYNN_E2E_ARTIFACTS: ${{ runner.temp }}/e2e-artifacts
+          BIN: ${{ runner.temp }}/dist/${{ matrix.bin }}
+        run: |
+          chmod +x "$BIN"
+          FLYNN_E2E_BIN="$BIN" go test ./e2e/ -count=1
+
   lint:
     name: Lint & format
     runs-on: ubuntu-latest
@@ -596,7 +696,7 @@ jobs:
   ci-success:
     name: CI success
     if: always()
-    needs: [setup, test, e2e, lint, vuln, apidiff, secrets, osv, semgrep, skillsref, bench, fuzz]
+    needs: [setup, test, e2e, release, release-e2e, lint, vuln, apidiff, secrets, osv, semgrep, skillsref, bench, fuzz]
     runs-on: ubuntu-latest
     steps:
       - name: Fast tier only (draft)
@@ -618,6 +718,8 @@ jobs:
           RESULTS: >-
             test=${{ needs.test.result }}
             e2e=${{ needs.e2e.result }}
+            release=${{ needs.release.result }}
+            release-e2e=${{ needs.release-e2e.result }}
             lint=${{ needs.lint.result }}
             vuln=${{ needs.vuln.result }}
             apidiff=${{ needs.apidiff.result }}
