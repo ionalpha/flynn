@@ -53,7 +53,7 @@ Run `./dev/check` until it is green before opening a PR.
   the code does, and do not tell the history of how it came to be; that goes in the
   commit message. Say a thing once, beside what it describes, and update it in the same
   commit as the code. Refer to identifiers as doc links (`[Event]`, `[mission.Tool]`):
-  `internal/docref` fails CI on a reference to a name the package does not declare. A
+  `internal/rigor` fails CI on a reference to a name the package does not declare. A
   comment that states a guarantee ("every stall goes through here") needs a test that
   fails when the guarantee stops holding.
 - **Duplication:** the third copy of a sequence becomes a gate rather than a review

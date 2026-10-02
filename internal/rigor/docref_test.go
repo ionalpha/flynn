@@ -1,4 +1,4 @@
-package docref_test
+package rigor_test
 
 import (
 	"bufio"
@@ -32,8 +32,14 @@ type pkgInfo struct {
 }
 
 // TestCommentsNameDeclaredIdentifiers fails on a comment in shipped code that refers
-// to pkg.Name where pkg is a package of this module that declares no Name. See the
-// package doc for what is checked and what is deliberately left alone.
+// to pkg.Name, or links [pkg.Name] or [Name], where pkg is a package of this module
+// that declares no Name. A rename the comment did not follow is the commonest way a
+// comment goes stale, and the only one a parser can see.
+//
+// The check is deliberately narrow. A reference is checked only when its package
+// resolves unambiguously: an import of the file, the file's own package, or the one
+// package in the module with that name when no standard-library package shares it.
+// Anything else is left alone, so the gate stays quiet enough to block on.
 func TestCommentsNameDeclaredIdentifiers(t *testing.T) {
 	root, err := filepath.Abs(filepath.Join("..", ".."))
 	if err != nil {
