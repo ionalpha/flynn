@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/ionalpha/flynn/goal"
@@ -53,5 +55,20 @@ func TestNewRefusesAStoreWithoutItsQueue(t *testing.T) {
 	store := resource.NewMemory(resource.NewRegistry())
 	if _, err := New(Config{Executor: stubExec{}, Stop: stubStop{}, Store: store}); err == nil {
 		t.Fatal("New accepted a store with no job queue")
+	}
+}
+
+// TestNewRefusesAGateThatFailsItsSelfTest: a gate that cannot show it refuses a claim
+// with no evidence must stop the runtime from being built, rather than be wired in to
+// certify every claim.
+func TestNewRefusesAGateThatFailsItsSelfTest(t *testing.T) {
+	prior := newEvidenceGate
+	t.Cleanup(func() { newEvidenceGate = prior })
+	newEvidenceGate = func(...goal.GateOption) (*goal.EvidenceGate, error) {
+		return nil, errors.New("self-test: admitted a claim with no evidence")
+	}
+	_, err := New(Config{Executor: stubExec{}, Stop: stubStop{}, Verifier: stubVerifier{}, Evidence: stubEvidence{}})
+	if err == nil || !strings.Contains(err.Error(), "evidence gate") {
+		t.Fatalf("New with a failing gate = %v, want an evidence gate error", err)
 	}
 }

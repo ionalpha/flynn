@@ -375,6 +375,10 @@ func workerOptions(cfg Config, b bus.Bus) []goal.WorkerOption {
 	return wopts
 }
 
+// newEvidenceGate builds the ledger's evidence gate. It is a variable so a test can
+// stand in a gate that fails its self-test and see composition refuse it.
+var newEvidenceGate = goal.NewEvidenceGate
+
 // pairedOptions wires the two features that need both halves at once, so neither can
 // be left in the state where the reconciler gates on something the worker was never
 // given.
@@ -396,7 +400,7 @@ func pairedOptions(cfg Config, ropts []goal.Option, wopts []goal.WorkerOption) (
 		if !cfg.AllowAssertedEvidence {
 			gopts = append(gopts, goal.RequireExecuted())
 		}
-		gate, err := goal.NewEvidenceGate(gopts...)
+		gate, err := newEvidenceGate(gopts...)
 		if err != nil {
 			return nil, nil, fmt.Errorf("runtime: evidence gate: %w", err)
 		}
