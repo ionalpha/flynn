@@ -98,6 +98,9 @@ func TestRunUsageErrorsExitTwo(t *testing.T) {
 		{"inspect with no run id", []string{"inspect"}, "usage: flynn inspect"},
 		{"replay with no run id", []string{"replay"}, "usage: flynn inspect"},
 		{"resume with no run id", []string{"resume"}, "usage: flynn resume"},
+		{"skill with no subcommand", []string{"skill"}, "usage: flynn skill ab"},
+		{"skill with an unknown subcommand", []string{"skill", "nope"}, "usage: flynn skill ab"},
+		{"goal with a goal spec that does not exist", []string{"--goal-spec", "no-such-spec.json", "goal"}, "error:"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -421,4 +424,16 @@ func TestSweepsAreHousekeeping(t *testing.T) {
 	// and forget on every start.
 	sweepStaleSandboxProfiles()
 	sweepSupersededBinaries()
+}
+
+// TestRunSkillABNamesAMissingSkill: the skill branch dispatches past its usage check,
+// and an A/B run over a skill the store does not hold fails as a command error.
+func TestRunSkillABNamesAMissingSkill(t *testing.T) {
+	got := runCLI(t, "skill", "ab", "no-such-skill")
+	if got.code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr: %s)", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "error:") {
+		t.Fatalf("stderr = %q, want a command error", got.stderr)
+	}
 }
