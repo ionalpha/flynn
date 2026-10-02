@@ -98,8 +98,8 @@ func TestRunUsageErrorsExitTwo(t *testing.T) {
 		{"inspect with no run id", []string{"inspect"}, "usage: flynn inspect"},
 		{"replay with no run id", []string{"replay"}, "usage: flynn inspect"},
 		{"resume with no run id", []string{"resume"}, "usage: flynn resume"},
-		{"skill with no subcommand", []string{"skill"}, "usage: flynn skill ab"},
-		{"skill with an unknown subcommand", []string{"skill", "nope"}, "usage: flynn skill ab"},
+		{"skill with no subcommand", []string{"skill"}, "usage: flynn skill ls | flynn skill show"},
+		{"skill with an unknown subcommand", []string{"skill", "nope"}, "usage: flynn skill ls | flynn skill show"},
 		{"goal with a goal spec that does not exist", []string{"--goal-spec", "no-such-spec.json", "goal"}, "error:"},
 	}
 	for _, tc := range cases {
