@@ -16,6 +16,7 @@ import (
 
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/anthropic"
+	"github.com/ionalpha/flynn/llm/embed"
 	"github.com/ionalpha/flynn/llm/openai"
 	"github.com/ionalpha/flynn/secret"
 )
@@ -32,6 +33,9 @@ var ErrCredentialNotSet = errors.New("provider: credential not set")
 const (
 	deepseekDefaultModel = "deepseek-chat"
 	geminiDefaultModel   = "gemini-2.5-flash"
+	// localLlamaCPPBaseURL is where a local model server listens unless the operator
+	// moved it. The same default the chat path uses, stated once.
+	localLlamaCPPBaseURL = "http://localhost:8080/v1"
 )
 
 // Resolve turns a "provider:model" string (e.g. "anthropic:claude-opus-4-8",
@@ -78,7 +82,7 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 		// server's usual address. Tool calls are grammar-constrained at decode time, so
 		// even a small local model can only emit a structurally valid call; the
 		// constraint is local-only because it rides the server's grammar request field.
-		return localOpenAI(ctx, src, model, "LLAMACPP_BASE_URL", "LLAMACPP_VISION", "http://localhost:8080/v1")
+		return localOpenAI(ctx, src, model, "LLAMACPP_BASE_URL", "LLAMACPP_VISION", localLlamaCPPBaseURL)
 	case "":
 		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
 	default:
@@ -229,4 +233,47 @@ func KeyRef(name string) (string, bool) {
 // of the sandbox already withholding the parent environment from commands.
 func CredentialEnvVars() []string {
 	return []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_API_KEY"}
+}
+
+// EmbedProviders lists the provider names that resolve to an embedding client. It
+// is shorter than Providers because embeddings are a separate API, not a mode of
+// the chat one: Anthropic publishes none, and DeepSeek's endpoint serves chat
+// only. Naming the two that work beats resolving five and letting three fail at
+// the first recall, which is a wrong ranking discovered a session later.
+func EmbedProviders() []string { return []string{"openai", "llamacpp"} }
+
+// ResolveEmbedderWith turns a "provider:model" spec into an embedding client,
+// resolving the provider's key through src exactly as ResolveWith does, so an
+// operator who has already stored a key does not store a second one for recall.
+// A bare provider name uses that provider's default embedding model.
+//
+// It is a separate call rather than a method on the resolved model because the two
+// are separately chosen: the model that reasons and the model that embeds a corpus
+// have different costs, and re-embedding a corpus every time somebody switches
+// chat model would make the choice of one hostage to the other.
+func ResolveEmbedderWith(ctx context.Context, spec string, src secret.Source) (*embed.Client, error) {
+	name, model, _ := strings.Cut(spec, ":")
+	switch name {
+	case "openai":
+		key, baseURL, err := credentials(ctx, src, "OPENAI_API_KEY", "OPENAI_BASE_URL")
+		if err != nil {
+			return nil, err
+		}
+		return embed.New(key, embed.WithModel(model), embed.WithBaseURL(baseURL)), nil
+	case "llamacpp":
+		// A local model server, keyless because it is on the loopback host. The model
+		// id is whatever the operator loaded; a server serving one model ignores it.
+		baseURL := localLlamaCPPBaseURL
+		if u, err := src.Lookup(ctx, "LLAMACPP_BASE_URL"); err == nil && u.Expose() != "" {
+			baseURL = u.Expose()
+		}
+		if !llm.SafeBaseURL(baseURL) {
+			return nil, errors.New("provider: LLAMACPP_BASE_URL must be https or http to localhost")
+		}
+		return embed.New(secret.Text{}, embed.WithModel(model), embed.WithBaseURL(baseURL)), nil
+	case "":
+		return nil, errors.New("provider: empty embedding spec; want provider:model (e.g. openai:text-embedding-3-small)")
+	default:
+		return nil, fmt.Errorf("provider: %q serves no embeddings API (want one of %s)", name, strings.Join(EmbedProviders(), ", "))
+	}
 }

@@ -55,9 +55,7 @@ func (g *Reconciler) dischargeSteers(ctx context.Context, r resource.Resource, s
 		return reconcile.Result{}, false, nil
 	}
 	if g.judge == nil {
-		status.stall("SteerJudgeMissing", "the run was redirected but no judge is wired to rule on whether it addressed the redirect", g.clk.Now())
-		res, err := g.terminal(ctx, r, *status, specHash)
-		return res, true, err
+		return g.stalled(ctx, r, status, specHash, "SteerJudgeMissing", "the run was redirected but no judge is wired to rule on whether it addressed the redirect")
 	}
 	acks, err := g.judge.Acknowledged(ctx, r, spec, *status, outstanding, account)
 	if err != nil {
@@ -71,7 +69,5 @@ func (g *Reconciler) dischargeSteers(ctx context.Context, r resource.Resource, s
 	if len(open) == 0 {
 		return reconcile.Result{}, false, nil
 	}
-	status.stall("SteerUnaddressed", UnacknowledgedReason(open, account), g.clk.Now())
-	res, err := g.terminal(ctx, r, *status, specHash)
-	return res, true, err
+	return g.stalled(ctx, r, status, specHash, "SteerUnaddressed", UnacknowledgedReason(open, account))
 }

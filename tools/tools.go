@@ -25,7 +25,7 @@ func New(sb sandbox.Sandbox) *Set {
 	return &Set{sb: sb}
 }
 
-// Tools returns the full default toolset as mission.Tools, ready to register with
+// Tools returns the full default toolset as [mission.Tool] values, ready to register with
 // an executor.
 func (s *Set) Tools() []mission.Tool {
 	return []mission.Tool{

@@ -63,7 +63,8 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
 	handle := func(m watch.Marker) error {
 		_, _ = fmt.Fprintf(out, "\n  marker %s\n  %s\n", m.Provenance(), m.Text)
 		objective := watchObjective(m)
-		if _, err := runLearningMission(ctx, out, model, plan, distiller, cwd, objective, "", store, signer, verbose, nil); err != nil {
+		if _, err := runLearningMission(ctx, out, model, plan, distiller, cwd, objective, "", store, signer, verbose, nil,
+			withMemoryEmbedder(configuredEmbedder(ctx, dataDir, noticeLine(out)))); err != nil {
 			// Surface the failure and leave the marker in place (unretried until edited),
 			// so a transient run error does not silently swallow the request.
 			_, _ = fmt.Fprintf(out, "  marker run failed: %v\n", err)

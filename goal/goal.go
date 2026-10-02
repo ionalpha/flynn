@@ -132,6 +132,13 @@ var specSchema = json.RawMessage(`{
         "additionalProperties": false
       }
     },
+    "kill": {
+      "type": "object",
+      "properties": {
+        "reason": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
     "allowances": {
       "type": "array",
       "items": {
@@ -250,6 +257,14 @@ type Spec struct {
 	// it did about each one. Empty on a run nobody has redirected, and such a run is
 	// unaffected.
 	Steers []Steer `json:"steers,omitempty"`
+	// Kill is an operator's order to stop this run (see kill.go). It is the other thing
+	// written to the spec while the work is in flight, and it is the one field here that
+	// asks for less rather than more: everything else on the spec states what the run is
+	// to achieve, and this states that it is to stop trying. A reconcile that reads it
+	// engages the run's halt, so the stop reaches the waist inside the running step, and
+	// settles the goal as killed. Nil on a run nobody stopped, which is every run that
+	// was left to finish.
+	Kill *Kill `json:"kill,omitempty"`
 	// Allowances are the irreversible actions outside the workspace this run is
 	// authorized to take (see allowance.go). They are the standing form of a decision
 	// nobody will be present to make: a run that reaches an undeclared one is paused with
@@ -348,6 +363,11 @@ type Status struct {
 	// is caught against, and the account is the record of whether the operator was answered
 	// at all.
 	Steers []SteerState `json:"steers,omitempty"`
+	// Killed is when the reconciler stopped this run under Spec.Kill. It is durable
+	// because it is what makes the kill unwithdrawable: a spec that later drops the
+	// order is caught against this, so a run a person stopped cannot be edited into a
+	// run that stopped on its own. Nil on every run nobody killed.
+	Killed *time.Time `json:"killed,omitempty"`
 	// VerifyPending marks that a build step has completed and the current ledger item's
 	// declared check has not been run since. It is what alternates the run between
 	// building and verifying: the reconciler sets it when it observes a build step and

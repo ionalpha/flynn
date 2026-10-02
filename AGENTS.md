@@ -47,6 +47,15 @@ Run `./dev/check` until it is green before opening a PR.
 - **Lint:** `golangci-lint` must pass (see `.golangci.yml`).
 - **Tests:** add tests with behavior changes; prefer table-driven and property-based
   tests. The race detector must stay clean.
+- **Comments:** doc comments are the published API reference (`go doc`, pkg.go.dev),
+  so write them for a reader of that page. Say why the code is the way it is: the
+  invariant, the failure it guards against, why steps run in the order they do. Do not restate what
+  the code does, and do not tell the history of how it came to be; that goes in the
+  commit message. Say a thing once, beside what it describes, and update it in the same
+  commit as the code. Refer to identifiers as doc links (`[Event]`, `[mission.Tool]`):
+  `internal/rigor` fails CI on a reference to a name the package does not declare. A
+  comment that states a guarantee ("every stall goes through here") needs a test that
+  fails when the guarantee stops holding.
 - **Duplication:** the third copy of a sequence becomes a gate rather than a review
   comment. When a package is extracted to own something (durable file writes are
   `internal/fsatomic`), the same change adds the lint rule or architecture test that

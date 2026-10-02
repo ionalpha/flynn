@@ -9,6 +9,7 @@ import (
 
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/memory/digest"
+	"github.com/ionalpha/flynn/memory/hybrid"
 	"github.com/ionalpha/flynn/memory/ridealong"
 	"github.com/ionalpha/flynn/state"
 )
@@ -34,22 +35,75 @@ type memoryStack struct {
 	// one of Flynn's own surfaces with the memories anchored to what was read, and
 	// counts the use while doing it.
 	reads *ridealong.Surfacer
+	// recall says how this stack ranks a read, in the words an operator would use:
+	// "words" for the store's own lexical order, and the embedding model's id when
+	// meaning is fused in. It is carried rather than derived because the whole point
+	// of naming it is that somebody can be shown which one they are running on.
+	recall string
+}
+
+// lexicalRecall is what a stack without an embedder ranks by, and the answer
+// `/memory` gives when nobody has turned embeddings on.
+const lexicalRecall = "words"
+
+// memoryConfig is what a caller may vary about the stack.
+type memoryConfig struct{ emb hybrid.Embedder }
+
+// memoryOption configures the stack.
+type memoryOption func(*memoryConfig)
+
+// withEmbedder ranks recall by meaning as well as words. A nil embedder is the
+// default and leaves the durable store's own lexical order, which is the honest
+// answer for an install with no embedding model rather than a half-ranking from a
+// substitute.
+func withEmbedder(e hybrid.Embedder) memoryOption {
+	return func(c *memoryConfig) { c.emb = e }
 }
 
 // newMemoryStack wraps a durable memory store in the write policy and builds the
 // digest over it. Conflict notices go to notify; a nil notify drops them, which
 // is only right for a caller that has nowhere to put them.
-func newMemoryStack(inner state.MemoryStore, notify func(context.Context, curate.Notice)) *memoryStack {
-	var opts []curate.Option
-	if notify != nil {
-		opts = append(opts, curate.WithNotify(notify))
+func newMemoryStack(inner state.MemoryStore, notify func(context.Context, curate.Notice), opts ...memoryOption) *memoryStack {
+	var cfg memoryConfig
+	for _, o := range opts {
+		o(&cfg)
 	}
-	store := curate.Wrap(inner, opts...)
+	// Ranking goes underneath the write policy, not over it. Hybrid changes the order
+	// a read comes back in and nothing else, so it belongs against the durable store,
+	// where every reader gets it: putting it outside the curated store would leave the
+	// digest and the ride-along, which read through that store, on the lexical order
+	// while a single command saw the fused one.
+	recall := lexicalRecall
+	if cfg.emb != nil {
+		inner = hybrid.Wrap(inner, hybrid.WithEmbedder(cfg.emb))
+		recall = lexicalRecall + " and meaning"
+		if named, ok := cfg.emb.(interface{ Model() string }); ok && named.Model() != "" {
+			recall = lexicalRecall + " and meaning (" + named.Model() + ")"
+		}
+	}
+
+	var copts []curate.Option
+	if notify != nil {
+		copts = append(copts, curate.WithNotify(notify))
+	}
+	store := curate.Wrap(inner, copts...)
 	// The digest's default pusher is a ridealong.Surfacer over the same store, so
 	// a pushed item is counted and the run's prime scope is marked in one step.
 	// Nothing here replaces it: the counting is what later tells a memory that
 	// earns its place from one that is merely offered every time.
-	return &memoryStack{store: store, wake: digest.New(store), reads: ridealong.New(store)}
+	return &memoryStack{store: store, wake: digest.New(store), reads: ridealong.New(store), recall: recall}
+}
+
+// describeRecall writes how this stack ranks a read. It is one line on `/memory`
+// because ranking by meaning is off unless an operator turned it on, and a
+// capability nobody can see is how off-by-default becomes permanent without anyone
+// deciding it should.
+func (m *memoryStack) describeRecall(w io.Writer) {
+	recall := lexicalRecall
+	if m != nil && m.recall != "" {
+		recall = m.recall
+	}
+	_, _ = fmt.Fprintf(w, "ranked by %s\n", recall)
 }
 
 // skillNoteChars caps one surfaced memory's sentence. Wider than the digest's own

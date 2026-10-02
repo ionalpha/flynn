@@ -102,8 +102,8 @@ func loadGoalSpecFile(path string) (goalSpecFile, error) {
 }
 
 // validate refuses a spec the engine would refuse later, and refuses it here, where the
-// operator is still reading their own file. The rules are the engine's: goal.Validate
-// Invariants is the one that decides admission, so it is called rather than restated, and
+// operator is still reading their own file. The rules are the engine's:
+// [goal.ValidateInvariants] decides admission, so it is called rather than restated, and
 // this adds only what the file surface can get wrong on its own.
 func (s goalSpecFile) validate() error {
 	if s.Objective == "" && len(s.Invariants) == 0 {

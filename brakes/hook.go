@@ -26,6 +26,10 @@ type Hook struct {
 	sw       Switch
 	detector AnomalyDetector
 	clk      clock.Clock
+	// refuse builds the error a halted run's action is refused with. It is a field only
+	// so ProveHalts can be shown to catch a refusal of the wrong class, which is the one
+	// break in the halt that no wrong halt state can produce. Nil is the shipped refusal.
+	refuse func(reason string) error
 
 	mu    sync.Mutex
 	state map[string]*runState
@@ -173,6 +177,9 @@ func (h *Hook) trip(run, reason string) error {
 // policy denial that must not be retried: the fix is to reset the kill-switch, not
 // to try again.
 func (h *Hook) halt(reason string) error {
+	if h.refuse != nil {
+		return h.refuse(reason)
+	}
 	return fault.New(fault.Forbidden, "run_halted", "run halted by safety brake: "+reason)
 }
 

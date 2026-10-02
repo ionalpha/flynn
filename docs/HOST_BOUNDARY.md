@@ -48,7 +48,7 @@ stay. `runtime.Config.AllowAssertedEvidence` is the same shape, one level down: 
 means a check has to have been run, and a closed loop that runs checks is exactly
 what makes requiring execution satisfiable. `--fanout`, `--no-learn` and `--plain`
 select a mode. A row is `staged` only when off-by-default is a temporary position on
-something Flynn otherwise ships and wires, which today is one row.
+something Flynn otherwise ships and wires, which today is two rows.
 
 ## What a `justified` seam must do when it is absent
 
@@ -69,6 +69,11 @@ the line is whether a reader of the finished run could tell the difference.
   a Hook with no `brakes.AnomalyDetector` still halts on the breakers it was
   configured with. These change no outcome, they say so in their doc comments, and
   each has a test that the absence costs nothing.
+- **Timing only: say what is lost, and prove the outcome is not.** `goal.WithHalt` is
+  the one seam in this shape. With none wired an operator's kill still settles the goal
+  and no further step is dispatched; what is lost is that the stop reaches the dispatch
+  waist inside the running step. The doc comment says so and a test asserts the run is
+  stopped either way, so the seam buys promptness and never the decision.
 
 A missing-producer stall is recoverable, which is what makes stalling the right
 answer rather than a refusal wearing a softer word. `Status.Unwired` marks a stall as
@@ -120,6 +125,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
 | `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; `fanout.go` too | shipped |
 | `goal.SteerJudge` | `evidence.ModelSteerJudge` | same; `fanout.go` too | shipped |
+| `goal.Halter` | `brakes.Hook` | same brake the executor dispatches under; `fanout.go` too | shipped |
 | `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
 | `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
 | `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
@@ -128,7 +134,7 @@ run can do, so this is the group where an unwired producer costs the most.
 | `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
 | `runtime.Config.RequireLedgerProof` | `goal.EvidenceGate`, built by `runtime.New` | `cmd/flynn/mission.go` behind `--require-proof`; `fanout.go` always, for a unit's child | staged |
 
-`RequireLedgerProof` is the register's one `staged` row, and the two fields it owes:
+`RequireLedgerProof` is a `staged` row, and the two fields it owes:
 
 - **Switch:** `--require-proof` on `flynn goal`. It is already on and not optional for
   a unit's child, because a unit settles from its child's ledger and a child that
@@ -359,7 +365,7 @@ which is the whole argument for the check.
 | `sandbox.ContainerDriver` | `sandbox.NewContainerDriver` over an `OCIEngine` | `RegisterContainerDriver` at init, for Docker and Podman | shipped |
 | `sandbox.Machine` / `Driver` / `Serving` | `sandbox.commandMachine`, the per-platform drivers registered in `init`, `sandbox.containerServing` | `sandbox.NewMicroVM`, container exec | shipped |
 | `sandbox.Transport` | none | n/a | justified |
-| `memory/hybrid.Embedder` | none yet; build one over the local model serving the binary already carries, wired behind the same staging as ledger proof | n/a | gap |
+| `memory/hybrid.Embedder` | `llm/embed.Client` over any OpenAI-compatible embeddings endpoint | `cmd/flynn/embedder.go`, behind `FLYNN_EMBED_MODEL` | staged |
 
 `sandbox.Transport`: a remote sandbox backend (E2B, Daytona, Modal) is an account
 somebody has and Flynn does not. `Remote` adds a default-deny path check of its own
@@ -368,12 +374,27 @@ alone, and with no transport there is simply no remote sandbox: the local and
 container backends are what the binary uses and both ship. Nothing degrades, because
 nothing is asked for.
 
-`memory/hybrid.Embedder` is the register's one `gap`, and it is a gap rather than a
-`justified` row because Flynn could ship it. The binary already provisions and serves
-local models, so an embedder over that path needs no account and no host. Until it
-exists, `hybrid.Store` ranks lexically and says so with `ErrNotFused`, which is the
-same answer the plain store gives, so the absence costs recall quality and never a
-read. The package is not wired into the binary at all today.
+`memory/hybrid.Embedder` was the register's one `gap` and is now `staged`. Flynn
+ships `llm/embed.Client`, which speaks the one embedding wire format every hosted
+provider and every local server speaks, and `newMemoryStack` wraps the durable store
+in `hybrid` when an embedding model is named. The two fields a staged row owes:
+
+- **Switch:** `FLYNN_EMBED_MODEL`, a provider:model spec resolved through the same
+  credential chain as the chat model. Unset is the default and leaves recall ranked
+  by words. It is an install-level variable rather than a per-run flag because a
+  corpus is embedded under one model, and switching per invocation would rank half a
+  corpus against vectors from another one.
+- **Promotion condition:** it becomes the default when the catalog carries an
+  embedding model Flynn provisions and serves itself, so ranking by meaning costs an
+  operator no account and no configured endpoint. Turning it on before that would
+  make every install without an API key print a notice about a capability it cannot
+  have, which is how a default becomes noise.
+
+The state is visible from the binary: `/memory` opens with what recall is ranked by,
+naming the embedding model when there is one. A spec that does not resolve is
+reported once and dropped, so the run keeps its memory and loses only the ranking:
+`hybrid.Store` then ranks lexically and says so with `ErrNotFused`, which is the same
+answer the plain store gives.
 
 ## Optional capabilities
 
