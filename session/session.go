@@ -6,7 +6,7 @@
 // A Session exposes the mission event spine as a live, replayable event stream.
 // Submit a goal and the session opens, then every model turn, the model's text,
 // each tool call and its result, and the terminal outcome are emitted as ordered
-// session.Events. The events are durable on a spine stream and fanned out over the
+// [Event] values. The events are durable on a spine stream and fanned out over the
 // bus, so a subscriber that joins late replays the conversation from the start and
 // then tails it live. This is the reusable, embeddable generalization of the
 // terminal-first goal runner: the same run, surfaced as a stream a panel renders.

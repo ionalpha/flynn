@@ -130,7 +130,7 @@ func WithNotes(n Notes) Option {
 	return func(s *Set) { s.notes = n }
 }
 
-// Tools returns the skill toolset as mission.Tools, ready to register with an
+// Tools returns the skill toolset as [mission.Tool] values, ready to register with an
 // executor. It is empty when there is no store behind it, so a run assembled without
 // durable skills offers no tool it cannot answer.
 func (s *Set) Tools() []mission.Tool {

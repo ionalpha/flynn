@@ -35,7 +35,7 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Server exposes a fixed set of mission.Tools to one MCP client connection and
+// Server exposes a fixed set of [mission.Tool] values to one MCP client connection and
 // governs every call through a dispatch waist. Construct it with NewServer and run
 // it with Serve. It is safe to reuse across sequential connections, but a single
 // Serve call drives one connection.
