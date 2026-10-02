@@ -29,6 +29,9 @@ func TestCommandSurface(t *testing.T) {
 		{"mcp-usage", []string{"mcp"}, 1, "usage: flynn mcp"},
 		{"deploy-usage", []string{"deploy"}, 1, "usage: flynn deploy"},
 		{"unknown-run", []string{"inspect", "no-such-run"}, 1, ""},
+		{"skill-ls", []string{"skill", "ls"}, 0, "systematic-debugging"},
+		{"skill-show-unknown", []string{"skill", "show", "no-such-skill"}, 1, "flynn skill ls"},
+		{"skill-usage", []string{"skill"}, 2, "usage: flynn skill"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
