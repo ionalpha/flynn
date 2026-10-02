@@ -15,6 +15,7 @@ linters:
     - errorlint
     - exhaustive
     - forbidigo
+    - gocognit
     - gocyclo
     - godot
     - gosec
@@ -58,11 +59,17 @@ linters:
       # remaining lines are per-type wiring that only a generic indirection could
       # merge. Tests are excluded below.
       threshold: 120
+    # Both complexity caps are ratchets set at the most complex shipping function, so
+    # any function that grows past today's worst fails lint. Lower them as the
+    # functions that set them are decomposed. Tests are excluded below: a test double
+    # that routes every endpoint through one handler would otherwise set the ceiling
+    # for production code.
     gocyclo:
-      # A ratchet, lowered as the functions that set it are decomposed. The ceiling is
-      # now a single test double (a fake GitHub API whose one handler routes every
-      # endpoint the tests use); every shipping function is well under it.
-      min-complexity: 40
+      # Set by (*goal.Reconciler).reconcile.
+      min-complexity: 36
+    gocognit:
+      # Set by rigor.Check.
+      min-complexity: 53
     # Doc comments are the rendered docs: `go doc` and pkg.go.dev serve them straight
     # from the source, so an undocumented exported symbol is a hole in the public API
     # reference, not a style slip. Both rules pass tree-wide today (every exported
@@ -329,6 +336,11 @@ linters:
       # is pointed at shipping code instead.
       - linters:
           - dupl
+        path: _test\.go
+      # The complexity caps are a ratchet on shipping code; see their settings.
+      - linters:
+          - gocognit
+          - gocyclo
         path: _test\.go
 
 formatters:
