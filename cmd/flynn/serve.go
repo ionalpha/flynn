@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"time"
 
 	"github.com/ionalpha/flynn/capability"
@@ -99,6 +100,19 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	}
 	rstore := store.Resources(reg)
 
+	// The background loops below write to the store, so they must be stopped before it
+	// closes, on every return path and not only on shutdown. A refusal further down (an
+	// unsafe bind, nothing configured) would otherwise close the store under a running
+	// heartbeat and leave both loops running against it after serve has returned: an
+	// open database file Windows will not let anyone remove, and goroutines an embedding
+	// host never gets back. Deferred after the close, so it runs before it.
+	loopCtx, stopLoops := context.WithCancel(ctx)
+	var loops sync.WaitGroup
+	defer func() {
+		stopLoops()
+		loops.Wait()
+	}()
+
 	// Keep this process's Instance record live for the read surface. The heartbeat
 	// registers the process on start and rewrites its state and active runs on an
 	// interval, so flynn ps/status, the API, and the dashboard show a real,
@@ -111,7 +125,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		instance.Spec{Host: hostname, Version: version.String()},
 		instanceReporter(rstore, store.InstanceID()), clock.System{},
 		instance.WithErrorHandler(func(err error) { fmt.Fprintln(os.Stderr, "serve: heartbeat:", err) }))
-	go func() { _ = hb.Run(ctx) }()
+	loops.Go(func() { _ = hb.Run(loopCtx) })
 
 	// Supervise deployed workloads. A Service registered by `flynn deploy` is held in
 	// its desired state by a level-triggered loop: a running service is re-observed
@@ -125,7 +139,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	supervisor := service.NewSupervisor(service.NewStore(rstore), ops.NewDriver(rstore, opsLoader))
 	svcMgr := reconcile.NewManager(rstore)
 	svcMgr.Register(service.Kind, supervisor)
-	go func() { svcMgr.Start(ctx) }()
+	loops.Go(func() { svcMgr.Start(loopCtx) })
 
 	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source

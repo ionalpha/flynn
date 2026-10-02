@@ -9,39 +9,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// A kill is the operator deciding this run should stop now. It is the other half of the
-// operator's surface on a run in flight: a steer says keep going and do it differently, a
-// kill says stop.
-//
-// Two words are in play here and they name different things. A kill is the operator's
-// order, recorded on the goal's desired state. A halt is the enforcement state at the
-// dispatch waist, which a safety breaker trips on its own when a run goes runaway and
-// which an operator's kill engages deliberately. Keeping them apart is what lets the
-// record say who stopped the run and why, when the mechanism that stopped it is the same
-// one a rate breaker uses.
-//
-// What separates a kill from a request is where it takes effect. A stop that only acts between steps
-// leaves a run that has just started a long turn working for as long as that turn takes,
-// which on a real step is minutes of tool calls after the operator decided it should
-// stop. So the kill is not a request the run gets to finish its step before honoring: the
-// reconciler engages the halt the moment it reads the order, and from there the waist
-// refuses every model call and every tool call that step attempts. The step ends at its
-// next action rather than at its own conclusion.
-//
-// What it does not do is reach into an action already running. A command in the sandbox
-// when the halt engages runs to its own end, bounded by the resource limits it was
-// launched under. Interrupting mid-action would need a cancellation path from the
-// reconciler into whichever process holds the step's lease, and refusing at dispatch is
-// what is buildable from the record alone.
-//
-// A kill cannot be taken back. Once the reconciler has stopped a run under one, removing
-// it from the spec is refused as a terminal fault, the way a withdrawn steer and a
-// reworded invariant are, and for a reason narrower than either: the record of a run
-// nobody can see is all anybody has afterwards, and a run that reads as having stopped on
-// its own when an operator stopped it is a record that lies about the one moment a person
-// intervened. Restarting the work is a new goal, which is a different operation with a
-// different name.
-
 // ErrKillWithdrawn reports a kill removed from the spec after the reconciler stopped the
 // run under it.
 var ErrKillWithdrawn = errors.New("goal: the kill was withdrawn after the run was stopped by it")
@@ -54,7 +21,19 @@ var ErrKillWithdrawn = errors.New("goal: the kill was withdrawn after the run wa
 const KilledReason = "Killed"
 
 // Kill is an operator's order to stop a run, carried on the goal's desired state so it
-// reaches a run this process is not driving.
+// reaches a run this process is not driving. A steer says keep going differently; a kill
+// says stop.
+//
+// A kill is the order; a halt ([Halter]) is the enforcement at the dispatch waist, the
+// same one a safety breaker trips on its own. Keeping the two apart lets the record say
+// who stopped the run. The reconciler engages the halt the moment it reads the order,
+// so the step in flight ends at its next model or tool call rather than at its own
+// conclusion. A command already running in the sandbox runs to its end, bounded by its
+// resource limits.
+//
+// A kill cannot be taken back: removing it after the run stopped under it is a terminal
+// fault ([ErrKillWithdrawn]), so the record cannot come to read as a run that stopped on
+// its own. Restarting the work is a new goal.
 //
 // Reason is optional and it is the only field. What the operator was thinking is worth
 // recording and nothing downstream branches on it, so it is left as prose; who issued it

@@ -1,0 +1,8 @@
+two goroutines are writing to the same map | shared-state |
+do I need a mutex around this counter | shared-state |
+is it safe to retry this request after a timeout | shared-state |
+the handler can be given the same message twice | shared-state |
+two users editing the same record overwrite each other | shared-state |
+how do I order events coming from different machines | shared-state |
+add a background worker that processes the queue | shared-state |
+this update sometimes gets lost when the job runs | shared-state |

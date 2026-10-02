@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -90,6 +91,50 @@ func TestServeRefusesAnUnsafeAPIBind(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestServeRefusalStopsItsLoops: a serve refused after its background loops have
+// started (here an unsafe bind, and nothing configured) returns only once they have
+// stopped. A loop that outlived serve kept writing to a closed store, and on Windows
+// held the database file open so nothing could remove the data directory.
+func TestServeRefusalStopsItsLoops(t *testing.T) {
+	cases := map[string][]string{
+		"unsafe bind":        {"--api-addr", "0.0.0.0:0"},
+		"nothing configured": nil,
+	}
+	for name, args := range cases {
+		t.Run(name, func(t *testing.T) {
+			dataDir, spec := serveEnv(t)
+			before := serveLoopGoroutines()
+			if err := runServeContext(context.Background(), args, spec, dataDir); err == nil {
+				t.Fatal("expected serve to be refused")
+			}
+			if after := serveLoopGoroutines(); after > before {
+				t.Fatalf("%d serve loop goroutines still running after serve returned (%d before)", after, before)
+			}
+		})
+	}
+}
+
+// serveLoopGoroutines counts the goroutines running serve's background loops, the
+// heartbeat and the service supervisor, by the functions on their stacks.
+func serveLoopGoroutines() int {
+	buf := make([]byte, 1<<20)
+	for {
+		n := runtime.Stack(buf, true)
+		if n < len(buf) {
+			buf = buf[:n]
+			break
+		}
+		buf = make([]byte, 2*len(buf))
+	}
+	count := 0
+	for _, g := range strings.Split(string(buf), "\n\n") {
+		if strings.Contains(g, "instance.(*Heartbeat).Run") || strings.Contains(g, "reconcile.(*Manager).Start") {
+			count++
+		}
+	}
+	return count
 }
 
 // TestServeMonitorOnlyServesAndStops is the monitor-only daemon end to end: it binds the

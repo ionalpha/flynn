@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -154,5 +156,46 @@ func TestClipLine(t *testing.T) {
 		if n := utf8.RuneCountInString(got); n > c.width {
 			t.Errorf("clipLine(%q, %d) is %d runes wide", c.in, c.width, n)
 		}
+	}
+}
+
+// failingSkills is a skill store whose reads fail, for the paths where the listing or
+// the lookup cannot be read: that is an error, not an empty answer.
+type failingSkills struct {
+	state.SkillStore
+	err error
+}
+
+func (f failingSkills) List(context.Context, state.Scope) ([]state.Skill, error) { return nil, f.err }
+func (f failingSkills) Get(context.Context, string) (state.Skill, error)         { return state.Skill{}, f.err }
+
+func TestSkillReadFailuresAreErrors(t *testing.T) {
+	broken := failingSkills{err: errors.New("disk on fire")}
+	var out bytes.Buffer
+	if err := writeSkillList(context.Background(), broken, &out); err == nil || !strings.Contains(err.Error(), "disk on fire") {
+		t.Errorf("writeSkillList over a failing store = %v, want its error", err)
+	}
+	if err := writeSkill(context.Background(), broken, "deletion", &out); err == nil || !strings.Contains(err.Error(), "disk on fire") {
+		t.Errorf("writeSkill over a failing store = %v, want its error rather than not-found", err)
+	}
+}
+
+// TestSkillLsWithNothingToList: with the pack switched off and nothing learned, the
+// listing says so rather than printing a header over nothing.
+func TestSkillLsWithNothingToList(t *testing.T) {
+	prior := bundledSkillsDisabled
+	t.Cleanup(func() { bundledSkillsDisabled = prior })
+	got := runCLIIn(t, t.TempDir(), "--no-bundled-skills", "skill", "ls")
+	if got.code != 0 || strings.TrimSpace(got.stdout) != "no skills yet" {
+		t.Fatalf("exit %d, stdout %q, want 0 and \"no skills yet\"", got.code, got.stdout)
+	}
+}
+
+// TestSkillABIsRoutedThroughTheSkillCommand: ab keeps its own usage and its own errors
+// under the new router.
+func TestSkillABIsRoutedThroughTheSkillCommand(t *testing.T) {
+	got := runCLIIn(t, t.TempDir(), "skill", "ab")
+	if got.code != 1 || !strings.Contains(got.stderr, "usage: flynn skill ab") {
+		t.Fatalf("exit %d, stderr %q, want 1 and the ab usage", got.code, got.stderr)
 	}
 }

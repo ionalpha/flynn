@@ -30,7 +30,14 @@ Run it:
 go test ./e2e/                 # offline, deterministic
 FLYNN_E2E_REAL=1 go test ./e2e/ -run TestRealModelSmoke   # opt-in real model
 FLYNN_E2E_ARTIFACTS=/tmp/e2e go test ./e2e/               # dump logs + data dir on failure
+
+# against a prebuilt binary (an absolute path) instead of a fresh compile
+FLYNN_E2E_BIN=$PWD/dist/flynn_linux_amd64_v1/flynn FLYNN_E2E_VERSION=0.2.0 go test ./e2e/
 ```
+
+CI runs the suite twice: once over its own compile on every OS (`E2E`), and once over
+the binaries the release snapshot built (`E2E on release artifact`), which are the bytes
+a release ships: stripped, stamped, and cross-compiled by goreleaser.
 
 ## Coverage
 
