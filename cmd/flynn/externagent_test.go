@@ -134,8 +134,11 @@ func TestExternalModel(t *testing.T) {
 }
 
 // TestNewExternalAgent builds a driver for a known backend and refuses an unknown one,
-// so a misnamed backend fails at assembly rather than running the wrong loop.
+// so a misnamed backend fails at assembly rather than running the wrong loop. The CLIs
+// are taken off the PATH: assembly must not depend on what this machine has installed,
+// and a broken install (a launcher whose native binary is gone) is refused by design.
 func TestNewExternalAgent(t *testing.T) {
+	withNoExecutables(t)
 	for _, name := range []string{"codex", "claude"} {
 		ea, err := newExternalAgent(name, t.TempDir())
 		if err != nil {
