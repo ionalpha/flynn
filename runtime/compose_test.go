@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/resource"
 )
 
 // everyPort stands in for every optional port at once. Its embedded interfaces are nil,
@@ -43,5 +44,14 @@ func TestNewComposesEveryOptionalPortTogether(t *testing.T) {
 	}
 	if rt == nil {
 		t.Fatal("New returned no runtime and no error")
+	}
+}
+
+// TestNewRefusesAStoreWithoutItsQueue: a host that supplies a store must supply the
+// job queue that goes with it, rather than having an in-memory one paired with it.
+func TestNewRefusesAStoreWithoutItsQueue(t *testing.T) {
+	store := resource.NewMemory(resource.NewRegistry())
+	if _, err := New(Config{Executor: stubExec{}, Stop: stubStop{}, Store: store}); err == nil {
+		t.Fatal("New accepted a store with no job queue")
 	}
 }
