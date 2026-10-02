@@ -52,30 +52,36 @@ func listSkills(dataDir string, out io.Writer) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	return writeSkillList(ctx, store.Skills(), out)
+}
 
-	local, err := store.Skills().List(ctx, state.Scope{})
-	if err != nil {
-		return err
-	}
-	bundled, err := store.Skills().List(ctx, state.BundledScope)
-	if err != nil {
-		return err
-	}
-	if len(local)+len(bundled) == 0 {
-		_, _ = fmt.Fprintln(out, "no skills yet")
-		return nil
-	}
+// skillSources are the scopes `flynn skill ls` reads, in the order it prints them: what
+// this install holds first, then the pack, so a learned skill is not lost below twelve
+// shipped ones.
+var skillSources = []struct {
+	name  string
+	scope state.Scope
+}{{"local", state.Scope{}}, {"bundled", state.BundledScope}}
 
+// writeSkillList renders the listing from skills.
+func writeSkillList(ctx context.Context, skills state.SkillStore, out io.Writer) error {
 	tw := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	_, _ = fmt.Fprintln(tw, "SKILL\tSOURCE\tREADS\tWINS\tDESCRIPTION")
-	for _, group := range []struct {
-		source string
-		skills []state.Skill
-	}{{"local", local}, {"bundled", bundled}} {
-		for _, sk := range group.skills {
-			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n",
-				sk.Slug, group.source, sk.Reads, sk.Wins, clipLine(sk.Description, skillListDescriptionWidth))
+	n := 0
+	for _, src := range skillSources {
+		list, err := skills.List(ctx, src.scope)
+		if err != nil {
+			return err
 		}
+		for _, sk := range list {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%d\t%d\t%s\n",
+				sk.Slug, src.name, sk.Reads, sk.Wins, clipLine(sk.Description, skillListDescriptionWidth))
+			n++
+		}
+	}
+	if n == 0 {
+		_, _ = fmt.Fprintln(out, "no skills yet")
+		return nil
 	}
 	return tw.Flush()
 }
@@ -89,8 +95,12 @@ func showSkill(dataDir, slug string, out io.Writer) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
+	return writeSkill(ctx, store.Skills(), slug, out)
+}
 
-	sk, err := store.Skills().Get(ctx, slug)
+// writeSkill renders one skill from skills.
+func writeSkill(ctx context.Context, skills state.SkillStore, slug string, out io.Writer) error {
+	sk, err := skills.Get(ctx, slug)
 	if errors.Is(err, state.ErrNotFound) {
 		return fmt.Errorf("no skill %q; `flynn skill ls` lists them", slug)
 	}
