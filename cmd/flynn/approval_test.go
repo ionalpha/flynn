@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,31 @@ func awaitCapture(t *testing.T, ui *fakeUI) func(input.Event) bool {
 			t.Fatal("host never installed the approval capture")
 		case <-time.After(2 * time.Millisecond):
 		}
+	}
+}
+
+// expiringContext is a context whose deadline the test passes by hand, so a
+// grace-period expiry happens at a chosen point rather than on the wall clock.
+type expiringContext struct {
+	context.Context
+	deadline time.Time
+	done     chan struct{}
+}
+
+func newExpiringContext(deadline time.Time) *expiringContext {
+	return &expiringContext{Context: context.Background(), deadline: deadline, done: make(chan struct{})}
+}
+
+func (c *expiringContext) Deadline() (time.Time, bool) { return c.deadline, true }
+func (c *expiringContext) Done() <-chan struct{}       { return c.done }
+func (c *expiringContext) expire()                     { close(c.done) }
+
+func (c *expiringContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
 	}
 }
 
@@ -119,23 +145,27 @@ func TestApprovalPromptDenyWithFeedback(t *testing.T) {
 // returns the context error, which the waist treats as a decline.
 func TestApprovalPromptGraceExpiryDeclines(t *testing.T) {
 	host, ui := newHostForTest(t, llmtest.NewScripted())
-	req := mission.ApprovalRequest{Action: "write_file", Host: "inst-7", Grace: 30 * time.Millisecond}
+	req := mission.ApprovalRequest{Action: "write_file", Host: "inst-7", Grace: time.Minute}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
+	start := time.Unix(1_700_000_000, 0)
+	host.timing = clock.NewManual(start)
+	ctx := newExpiringContext(start.Add(req.Grace))
 	res := make(chan approvalResult, 1)
 	go func() {
 		dec, err := host.promptApproval(ctx, req)
 		res <- approvalResult{dec, err}
 	}()
 
-	// The prompt opened before the deadline fires.
+	// The deadline expires only once the prompt is open. A wall-clock timeout
+	// here raced the goroutine: on a slow runner it fired before the capture
+	// was installed, and the prompt opened and closed between two polls.
 	awaitCapture(t, ui)
+	ctx.expire()
 
 	select {
 	case got := <-res:
-		if got.err == nil {
-			t.Fatal("grace expiry returned no error; a paused action must decline fail-closed")
+		if !errors.Is(got.err, context.DeadlineExceeded) {
+			t.Fatalf("grace expiry returned %v, want context.DeadlineExceeded so the waist declines fail-closed", got.err)
 		}
 		if got.dec.Allow {
 			t.Fatal("grace expiry produced an allow")
