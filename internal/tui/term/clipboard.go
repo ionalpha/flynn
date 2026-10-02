@@ -1,7 +1,9 @@
 package term
 
 import (
+	"context"
 	"sync"
+	"time"
 
 	"golang.design/x/clipboard"
 )
@@ -28,6 +30,12 @@ type osClipboard struct {
 	ready bool
 }
 
+// clipboardReadTimeout bounds one paste read. On X11 a read asks the selection
+// owner for the data, and the library's own ceiling for an owner that never
+// answers is five seconds, which is a long time for the composer to sit frozen
+// on the keystroke that asked for it.
+const clipboardReadTimeout = 2 * time.Second
+
 // NewClipboard returns the OS clipboard port. It does not touch the clipboard
 // or probe availability until the first read, so constructing it is free and
 // safe on a host that has no display.
@@ -42,8 +50,10 @@ func (c *osClipboard) Image() ([]byte, bool) {
 	if !c.ready {
 		return nil, false
 	}
-	data := clipboard.Read(clipboard.FmtImage)
-	if len(data) == 0 {
+	ctx, cancel := context.WithTimeout(context.Background(), clipboardReadTimeout)
+	defer cancel()
+	data, err := clipboard.Read(ctx, clipboard.FmtImage)
+	if err != nil || len(data) == 0 {
 		return nil, false
 	}
 	return data, true
