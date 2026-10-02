@@ -9,38 +9,6 @@ import (
 	"time"
 )
 
-// A goal's unit graph is its fan-out written down in advance: a set of units, each
-// carrying its own objective and its own declared way to prove it, and edges saying
-// which units may not start until which others have been proven.
-//
-// This is the plan-driven half of fan-out, and it sits beside the model-driven half
-// rather than replacing it. Model-driven fan-out (the spawn tool in mission) is a
-// running agent deciding mid-conversation to delegate, which is the right shape for
-// work whose decomposition is discovered as it goes. A unit graph is the right shape
-// for the opposite case: the decomposition is already known and already agreed, and
-// asking a model to rediscover it is the long way round and a chance to get it
-// wrong. A goal carrying no units behaves exactly as it did before, so the two
-// coexist and neither is a downgrade of the other.
-//
-// Three rules make the graph a record rather than a suggestion.
-//
-// Refused whole, at admission. A graph with a cycle, an edge naming a unit that does
-// not exist, or two units claiming the same id is rejected before a single child is
-// created. The alternative is discovering it halfway through a fan-out, with
-// children already running against a plan that was never runnable.
-//
-// A unit unblocks its dependents by being proven, not by finishing. A child that
-// exited, failed, or produced nothing leaves its dependents blocked. Were settling
-// the edge condition, dependsOn would quietly mean "the child exited", which is the
-// prose completion the ledger exists to foreclose wearing a graph for a hat.
-//
-// A unit in flight cannot be rewritten. Unit ids are author-assigned, because an
-// edge has to name its target and a content address is unwritable by hand, so the
-// ledger's content-addressing trick is not available here. Instead a unit's content
-// is fingerprinted onto its state when it is first dispatched, and a later graph
-// that alters that unit is refused. The graph may still grow: a unit nothing has
-// been spent on is not yet a commitment, so appending units is how a plan extends.
-
 // unitMarkLen is how many hex characters of a unit's content hash form its
 // fingerprint. Sixteen (64 bits) is far past collision range for the handful of
 // units one goal carries, and short enough to stay readable in a status dump.
@@ -82,6 +50,19 @@ var (
 // whose prompt and capabilities configure the child. Either way the result is
 // intersected with the parent's grant, so a unit cannot hand a child authority the
 // goal running the graph does not itself hold.
+//
+// A unit graph is plan-driven fan-out: the decomposition is known in advance, where the
+// spawn tool in mission is for one discovered as the run goes. A goal with no units
+// behaves as it always did. Three rules make the graph a record rather than a
+// suggestion:
+//
+//   - It is refused whole at admission: a cycle, an edge to a unit that does not
+//     exist, or a duplicate id is rejected before any child is created.
+//   - A unit unblocks its dependents by being proven, not by finishing. A child that
+//     exited, failed or produced nothing leaves them blocked.
+//   - A unit in flight cannot be rewritten. Its content is fingerprinted onto its state
+//     when first dispatched and a later graph that alters it is refused. Appending
+//     units is allowed, because nothing has been spent on them yet.
 type Unit struct {
 	// ID names the unit so an edge can point at it. It is the author's, not a content
 	// address: a hash would be unwritable by hand, and the whole point of this shape is
