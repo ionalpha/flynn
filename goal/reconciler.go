@@ -151,7 +151,9 @@ func (g *Reconciler) stall(ctx context.Context, ref reconcile.Ref, cause error) 
 	return err
 }
 
-// reconcile is the reconcile proper; Reconcile wraps it to settle terminal faults.
+// reconcile is the reconcile proper; Reconcile wraps it to settle terminal faults. It
+// loads the goal, keeps its ownership in order, skips a settled goal whose spec has not
+// changed, and otherwise admits the full status and hands it to advance.
 func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcile.Result, error) {
 	r, err := g.store.Get(ctx, ref.Kind, ref.Scope, ref.Name)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -178,32 +180,9 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	if r.DeletionTimestamp != nil {
 		return g.finalize(ctx, r)
 	}
-
-	// Garbage-collect an orphan: if a controller owner is gone or terminating, this
-	// goal belongs to a subtree being torn down, so request its own deletion. Its
-	// finalizer then runs cleanup and the reap cascades down the tree. Owner liveness
-	// is resolved by id; the resync re-checks it if an owner vanishes between
-	// reconciles. A root goal (no controller owner) is never orphaned.
-	if gone, err := resource.OwnerGone(ctx, g.store, r); err != nil {
+	r, done, err := g.ensureOwned(ctx, r)
+	if done || err != nil {
 		return reconcile.Result{}, err
-	} else if gone {
-		if err := g.store.Delete(ctx, r.Kind, r.Scope, r.Name); err != nil {
-			return reconcile.Result{}, putErr(err)
-		}
-		return reconcile.Result{}, nil
-	}
-
-	// Ensure our finalizer is present before doing anything that creates state we
-	// must later clean up, then continue in the same pass using the freshly stamped
-	// record. Returning here instead would leave the goal idle until the next
-	// resync, because a self-write does not re-trigger a reconcile on its own.
-	if !hasFinalizer(r.Finalizers, Finalizer) {
-		r.Finalizers = append(r.Finalizers, Finalizer)
-		updated, err := g.store.Put(ctx, r)
-		if err != nil {
-			return reconcile.Result{}, putErr(err)
-		}
-		r = updated
 	}
 
 	// The Stamper stamps SpecHash on every write, so the record carries it and the
@@ -226,16 +205,55 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	if err := admit(spec, &status); err != nil {
 		return reconcile.Result{}, err
 	}
+	return g.advance(ctx, r, spec, &status, specHash)
+}
 
+// ensureOwned keeps the goal's place in its owner tree before the reconcile acts. An
+// orphan is deleted, which reports done; otherwise the goal comes back carrying our
+// finalizer.
+func (g *Reconciler) ensureOwned(ctx context.Context, r resource.Resource) (resource.Resource, bool, error) {
+	// Garbage-collect an orphan: if a controller owner is gone or terminating, this
+	// goal belongs to a subtree being torn down, so request its own deletion. Its
+	// finalizer then runs cleanup and the reap cascades down the tree. Owner liveness
+	// is resolved by id; the resync re-checks it if an owner vanishes between
+	// reconciles. A root goal (no controller owner) is never orphaned.
+	if gone, err := resource.OwnerGone(ctx, g.store, r); err != nil {
+		return r, true, err
+	} else if gone {
+		if err := g.store.Delete(ctx, r.Kind, r.Scope, r.Name); err != nil {
+			return r, true, putErr(err)
+		}
+		return r, true, nil
+	}
+
+	// Ensure our finalizer is present before doing anything that creates state we
+	// must later clean up, then continue in the same pass using the freshly stamped
+	// record. Returning here instead would leave the goal idle until the next
+	// resync, because a self-write does not re-trigger a reconcile on its own.
+	if !hasFinalizer(r.Finalizers, Finalizer) {
+		r.Finalizers = append(r.Finalizers, Finalizer)
+		updated, err := g.store.Put(ctx, r)
+		if err != nil {
+			return r, true, putErr(err)
+		}
+		r = updated
+	}
+	return r, false, nil
+}
+
+// advance runs the gates in their policy order, then judges or steps the goal. Each gate
+// may settle, park or requeue the goal, and the first that does ends the pass, so the
+// order below is the order in which a run is held to account.
+func (g *Reconciler) advance(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash string) (reconcile.Result, error) {
 	// The operator's order to stop, read before anything is observed or decided. It is
 	// first because it is the one input that is not about the work: everything below asks
 	// how the run is doing and what it should do next, and a killed run has no next.
-	if res, handled, err := g.applyKill(ctx, r, spec, &status, specHash); handled {
+	if res, handled, err := g.applyKill(ctx, r, spec, status, specHash); handled {
 		return res, err
 	}
 
 	// Observe an in-flight step.
-	obs, res, handled, err := g.observeInFlight(ctx, r, &status, specHash)
+	obs, res, handled, err := g.observeInFlight(ctx, r, status, specHash)
 	if handled {
 		return res, err
 	}
@@ -244,7 +262,7 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// goal parks, plans more work, fans out, settles its ledger or is judged done. A
 	// broken term settles the goal from here, so nothing below it can be traded against
 	// it: not the stop evaluator's verdict, and not a wait on children either.
-	if res, handled, err := g.auditInvariants(ctx, r, spec, &status, specHash, obs.completed); handled {
+	if res, handled, err := g.auditInvariants(ctx, r, spec, status, specHash, obs.completed); handled {
 		return res, err
 	}
 
@@ -252,31 +270,16 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// and above everything else for the same reason: a run that kept pushing on one gate
 	// is not a run to judge on whether it finished, and the case this exists for is
 	// exactly the run that finished by the route it was refused.
-	if res, handled, err := g.checkRefusals(ctx, r, spec, &status, specHash, obs.completed); handled {
+	if res, handled, err := g.checkRefusals(ctx, r, spec, status, specHash, obs.completed); handled {
 		return res, err
 	}
 
-	// A parked goal: its last step reported it is waiting on external state (a
-	// fan-out's children). Do not dispatch a re-check, evaluate the stop condition,
-	// or touch the budget; a settling child clears the park and signals (prompt),
-	// and the recheck fallback below makes the re-check certain if that wake is
-	// lost. This is what keeps a wait O(child state-changes) instead of a full
-	// durable step per poll cycle.
-	if status.WaitingSince != nil {
-		if wait := status.WaitingSince.Add(g.recheckAfter()).Sub(g.clk.Now()); wait > 0 {
-			if obs.completed {
-				status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "AwaitingChildren", Message: "waiting on child goals"}, g.clk.Now())
-				if err := g.persistStatus(ctx, r, status, specHash); err != nil {
-					return reconcile.Result{}, err
-				}
-			}
-			return reconcile.Result{RequeueAfter: wait}, nil
-		}
-		status.WaitingSince = nil // fallback elapsed with no wake: re-check now
+	if res, handled, err := g.awaitChildren(ctx, r, status, specHash, obs.completed); handled {
+		return res, err
 	}
 
 	// Planning gate: a goal that plans has to have a ledger before it builds anything.
-	if res, handled, err := g.planGate(ctx, r, spec, status, specHash); handled {
+	if res, handled, err := g.planGate(ctx, r, spec, *status, specHash); handled {
 		return res, err
 	}
 
@@ -284,22 +287,51 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// than builds, and it returns from here. Everything below (the ledger settle, the
 	// stop evaluator, the step dispatch) is what a goal does once its graph is settled,
 	// so a goal cannot be judged done over a graph that is not.
-	if res, handled, err := g.advanceUnits(ctx, r, spec, &status, specHash); handled {
+	if res, handled, err := g.advanceUnits(ctx, r, spec, status, specHash); handled {
 		return res, err
 	}
+	return g.judgeOrStep(ctx, r, spec, status, specHash, obs)
+}
 
+// awaitChildren holds a parked goal: its last step reported it is waiting on external
+// state (a fan-out's children). It does not dispatch a re-check, evaluate the stop
+// condition, or touch the budget; a settling child clears the park and signals
+// (prompt), and the recheck fallback makes the re-check certain if that wake is lost.
+// This is what keeps a wait O(child state-changes) instead of a full durable step per
+// poll cycle.
+func (g *Reconciler) awaitChildren(ctx context.Context, r resource.Resource, status *Status, specHash string, completed bool) (reconcile.Result, bool, error) {
+	if status.WaitingSince == nil {
+		return reconcile.Result{}, false, nil
+	}
+	if wait := status.WaitingSince.Add(g.recheckAfter()).Sub(g.clk.Now()); wait > 0 {
+		if completed {
+			status.SetCondition(Condition{Type: CondReconciling, Status: "True", Reason: "AwaitingChildren", Message: "waiting on child goals"}, g.clk.Now())
+			if err := g.persistStatus(ctx, r, *status, specHash); err != nil {
+				return reconcile.Result{}, true, err
+			}
+		}
+		return reconcile.Result{RequeueAfter: wait}, true, nil
+	}
+	status.WaitingSince = nil // fallback elapsed with no wake: re-check now
+	return reconcile.Result{}, false, nil
+}
+
+// judgeOrStep is what a goal does once nothing has stopped or parked it: settle the
+// ledger, ask whether the stop condition is met, converge or stall it if so, and
+// otherwise dispatch the next step.
+func (g *Reconciler) judgeOrStep(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash string, obs observation) (reconcile.Result, error) {
 	// Settle the ledger against the run's own record: every unproven item the evidence
 	// gate admits flips to proven here, consuming the verification that proved it. This
 	// is the only path to a proven item on the run path, and it reads the durable record
 	// rather than trusting a claim, so the per-item state is a projection of the spine
 	// instead of a second opinion about it.
-	recorded, err := g.settleLedger(ctx, r, &status)
+	recorded, err := g.settleLedger(ctx, r, status)
 	if err != nil {
 		return reconcile.Result{}, err // classified by the record; a transient read retries
 	}
 
 	// Converged?
-	met, reason, err := g.stop.Met(ctx, spec, status)
+	met, reason, err := g.stop.Met(ctx, spec, *status)
 	if err != nil {
 		return reconcile.Result{}, err // classified by the evaluator; transient retries
 	}
@@ -312,52 +344,57 @@ func (g *Reconciler) reconcile(ctx context.Context, ref reconcile.Ref) (reconcil
 	// An unplanned goal, or one whose ledger is empty, is untouched by all of this:
 	// LedgerSettled is false for an empty ledger, so without this guard a goal that never
 	// planned anything could never converge.
-	if met && g.holdsClaimAgainstLedger(spec, status) {
+	if met && g.holdsClaimAgainstLedger(spec, *status) {
 		if status.VerifyPending {
 			met = false // the claim has not been tested yet; verify below, then judge it
 		} else {
-			g.refuseCompletion(&status, recorded)
-			return g.terminal(ctx, r, status, specHash)
+			g.refuseCompletion(status, recorded)
+			return g.terminal(ctx, r, *status, specHash)
 		}
 	}
 	// Fold this cycle's refusal into the non-convergence count. It sits here because this
 	// is the first point where both halves of the refusal are current: the evaluator has
 	// just spoken, and under the ledger gate the item's check has just been settled, so
 	// the feedback describes the cycle that ended rather than the one before it.
-	if !met && g.countsAsCycle(obs.completed, obs.kind, status) {
+	if !met && g.countsAsCycle(obs.completed, obs.kind, *status) {
 		status.ObserveVerdict(reason, status.ExecutedFeedback(spec.Ledger, recorded))
 	}
 	if met {
-		// The operator's redirects, held against the run's own account of having finished.
-		// It is the last thing asked before the goal is written converged, because the
-		// account is what the run says it did and that statement is what is being judged.
-		// A redirect it does not address settles the goal un-done from here.
-		if res, handled, err := g.dischargeSteers(ctx, r, spec, &status, specHash, reason); handled {
-			return res, err
-		}
-		status.Phase = PhaseConverged
-		status.Message = reason
-		status.SetCondition(Condition{Type: CondReady, Status: "True", Reason: "StopConditionMet", Message: reason}, g.clk.Now())
-		status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Converged"}, g.clk.Now())
-		return g.terminal(ctx, r, status, specHash)
+		return g.converge(ctx, r, spec, status, specHash, reason)
 	}
 
 	// The goal has not converged. Ask whether it must stop anyway, and settle it under the
 	// first reason that says so.
-	stallReason, stallMessage, err := g.stopGuard(ctx, r, spec, status)
+	stallReason, stallMessage, err := g.stopGuard(ctx, r, spec, *status)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
 	if stallReason != "" {
 		status.stall(stallReason, stallMessage, g.clk.Now())
-		return g.terminal(ctx, r, status, specHash)
+		return g.terminal(ctx, r, *status, specHash)
 	}
 
 	// Dispatch the next step and record it in flight. Under the ledger gate a build step
 	// is followed by the current item's declared check, so exactly one verification runs
 	// per build step rather than one per reconcile tick.
-	kind, reason := g.nextJobKind(spec, &status)
-	return g.dispatch(ctx, r, status, specHash, kind, PhaseRunning, reason)
+	kind, reason := g.nextJobKind(spec, status)
+	return g.dispatch(ctx, r, *status, specHash, kind, PhaseRunning, reason)
+}
+
+// converge writes a goal whose stop condition is met as converged, once the operator's
+// redirects have been held against the run's own account of having finished. That is
+// the last thing asked, because the account is what the run says it did and that
+// statement is what is being judged. A redirect it does not address settles the goal
+// un-done instead.
+func (g *Reconciler) converge(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash, reason string) (reconcile.Result, error) {
+	if res, handled, err := g.dischargeSteers(ctx, r, spec, status, specHash, reason); handled {
+		return res, err
+	}
+	status.Phase = PhaseConverged
+	status.Message = reason
+	status.SetCondition(Condition{Type: CondReady, Status: "True", Reason: "StopConditionMet", Message: reason}, g.clk.Now())
+	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "Converged"}, g.clk.Now())
+	return g.terminal(ctx, r, *status, specHash)
 }
 
 // finalize runs cleanup once and then removes our finalizer, letting the store

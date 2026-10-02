@@ -119,6 +119,14 @@ func (g *Reconciler) persistStatus(ctx context.Context, r resource.Resource, sta
 // terminal persists a settled status (converged or stalled) and requests no
 // requeue: the goal has reached a steady state, so it is only revisited when its
 // spec changes or at the next resync, not on a timer.
+// stalled settles the goal as stopped for reason and writes it terminally, reporting the
+// reconcile handled. It is the tail every gate that stops a run ends on.
+func (g *Reconciler) stalled(ctx context.Context, r resource.Resource, status *Status, specHash, reason, message string) (reconcile.Result, bool, error) {
+	status.stall(reason, message, g.clk.Now())
+	res, err := g.terminal(ctx, r, *status, specHash)
+	return res, true, err
+}
+
 func (g *Reconciler) terminal(ctx context.Context, r resource.Resource, status Status, specHash string) (reconcile.Result, error) {
 	if err := g.persistStatus(ctx, r, status, specHash); err != nil {
 		return reconcile.Result{}, err

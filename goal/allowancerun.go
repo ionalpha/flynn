@@ -47,13 +47,7 @@ func (g *Reconciler) pauseForAllowance(ctx context.Context, r resource.Resource,
 		}
 		return reconcile.Result{}, false, nil
 	}
-	msg := ask.AskReason()
-	status.Phase = PhaseStalled
-	status.Message = msg
-	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: AllowanceStallReason, Message: msg}, g.clk.Now())
-	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: AllowanceStallReason}, g.clk.Now())
-	res, err := g.terminal(ctx, r, *status, specHash)
-	return res, true, err
+	return g.stalled(ctx, r, status, specHash, AllowanceStallReason, ask.AskReason())
 }
 
 // pausedForAllowance reports whether the status this pass decoded is one a previous pass

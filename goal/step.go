@@ -41,9 +41,8 @@ func (g *Reconciler) observeInFlight(ctx context.Context, r resource.Resource, s
 		return obs, reconcile.Result{RequeueAfter: g.poll}, true, nil // still working
 	case job.State == jobs.StateDead:
 		status.InFlight = nil
-		status.stall("StepFailed", "step failed: "+job.LastError, g.clk.Now())
-		res, err := g.terminal(ctx, r, *status, specHash)
-		return obs, res, true, err
+		res, handled, err := g.stalled(ctx, r, status, specHash, "StepFailed", "step failed: "+job.LastError)
+		return obs, res, handled, err
 	default: // StateDone: a step completed.
 		status.InFlight = nil
 		obs.completed = true
