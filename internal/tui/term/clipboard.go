@@ -26,6 +26,11 @@ type Clipboard interface {
 // Windows, pure-Go X11 and Wayland on Linux), so it preserves flynn's
 // single-static-binary property. Read(FmtImage) always returns canonical PNG.
 type osClipboard struct {
+	// init and read are the library's Init and Read, held as fields so a test
+	// can stand in for a host's clipboard without one being present.
+	init func() error
+	read func(context.Context, clipboard.Format, ...clipboard.Option) ([]byte, error)
+
 	once  sync.Once
 	ready bool
 }
@@ -39,20 +44,22 @@ const clipboardReadTimeout = 2 * time.Second
 // NewClipboard returns the OS clipboard port. It does not touch the clipboard
 // or probe availability until the first read, so constructing it is free and
 // safe on a host that has no display.
-func NewClipboard() Clipboard { return &osClipboard{} }
+func NewClipboard() Clipboard {
+	return &osClipboard{init: clipboard.Init, read: clipboard.Read}
+}
 
 // Image reads a PNG image off the clipboard. The first call initializes the
 // backend once and caches whether it is usable; a host without a clipboard
 // (Init failed) reports no image forever after rather than retrying on every
 // keystroke.
 func (c *osClipboard) Image() ([]byte, bool) {
-	c.once.Do(func() { c.ready = clipboard.Init() == nil })
+	c.once.Do(func() { c.ready = c.init() == nil })
 	if !c.ready {
 		return nil, false
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), clipboardReadTimeout)
 	defer cancel()
-	data, err := clipboard.Read(ctx, clipboard.FmtImage)
+	data, err := c.read(ctx, clipboard.FmtImage)
 	if err != nil || len(data) == 0 {
 		return nil, false
 	}
