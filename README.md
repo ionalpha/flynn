@@ -239,15 +239,24 @@ its parent's authority. By default Flynn runs a general-purpose agent.
 
 ### Goals, missions, and orchestration
 
-- **Goals and missions.** A *goal* is one objective with a verifiable end-state.
-  A *mission* is long-horizon work that owns a tree of sub-goals and outlives any
-  single session.
-- **A goal tree.** A goal owns its sub-goals, and a mission tracks that tree as it
-  fans out and converges, so long-horizon work is structured, not a flat list.
-- **Plan and dispatch.** An instruction becomes a plan; the dispatcher fans it out
-  into concurrent governed runs, each bounded by the shared budget.
-- **A governor.** Every run is bounded by a shared budget pool (tokens and cost),
-  an autonomy level, and an approval policy.
+- **Goals.** A *goal* is one objective with a verifiable end-state. It plans before
+  it builds: the objective becomes an append-only ledger of items, each with a check
+  that runs and is recorded, and `--require-proof` holds the run to it.
+- **Terms of a run.** `flynn goal --goal-spec terms.json` states what must stay true
+  while the run works, each with the command that checks it. Terms are checked after
+  every step, and a breach stops the run naming the term.
+- **Plan and dispatch.** With `--fanout` the goal delegates sub-goals to concurrent,
+  governed child agents under the shared budget, folded into one sealed record. A
+  goal's spec can also carry a declarative unit graph (Go API), run as child goals in
+  dependency order.
+- **A governor.** Every run is bounded by a shared budget pool (tokens and cost), a
+  rate brake, and the approvals and allowances its operator set:
+  `--require-approval <action>` pauses an action for a person, and an action marked
+  `--irreversible` runs only where `--allow` declared it.
+- **Stop and redirect.** `flynn kill <run>` stops a running goal from another
+  terminal; `flynn steer <run> "..."` redirects it, and the run cannot report success
+  until it says what it did about the redirect. A run whose steps stop changing
+  anything is stopped rather than left to burn its budget.
 - **A mission event spine.** Every decision, tool call, message, approval, and
   checkpoint is an ordered, immutable event that replays for a full audit trail
   and rolls up into live progress.
@@ -275,13 +284,21 @@ layers in view rather than hidden behind it.
 
 ### The learning loop
 
-- **Skills from experience.** After complex work, the agent writes reusable skills
-  and improves them as it reuses them.
-- **Memory.** Durable facts about you and your work, prefetched into context and
-  synced after each turn. Recall is ranked by words out of the box; set
+- **Skills from experience.** After a run converges, the agent distils reusable
+  skills from it; a skill's own check runs in the sandbox before it is kept.
+- **A bundled pack.** Twelve engineering skills ship in the binary (systematic
+  debugging, test-first, untrusted input, dependencies, and more). A run is offered
+  skills by name and description and reads one with `skill_read`, and a skill is
+  graded on the runs that read it. `flynn skill ls` lists them, `flynn skill show`
+  prints one, and `flynn skill ab <skill>` measures whether it helps.
+- **Memory.** Durable facts about you and your work. A memory has a subject, and a
+  new fact supersedes the old one on it. A run wakes with a digest of what you wrote
+  down or reviewed, and recalls what its objective matches. Recall is ranked by words out of the box; set
   `FLYNN_EMBED_MODEL` to a provider:model spec (`openai:text-embedding-3-small`, or
   `llamacpp:<model>` against a local server) and it is ranked by meaning as well.
   With none set, and with an endpoint that fails, recall is exactly what it was.
+  `flynn memory usage` shows what was pushed and what was used, and
+  `flynn memory consolidate` distils a subject's episodes into one lesson.
 - **A curator.** An outcome-driven pass decays and archives skills that stop working,
   so the library stays sharp instead of sprawling. Nothing is ever silently deleted.
 - **Reinforced by outcomes.** Skills and memory are strengthened or decayed by real
@@ -304,8 +321,9 @@ The agent treats its own capabilities as data it can author.
   client is strictly one-directional: an extension answers calls, it cannot drive the
   agent. `flynn extensions dev <name> <binary>` links a locally built one for authoring,
   and `flynn extensions call` runs a single tool confined.
-- **Portable.** Every skill is a versioned, attributable resource you can export and
-  move between machines.
+- **Portable.** Every skill is a versioned, attributable resource, and Flynn reads
+  and writes the open Agent Skills (`SKILL.md`) format. An export command is on the
+  [roadmap](#status-and-roadmap).
 
 ### Code review
 
@@ -407,10 +425,9 @@ Flynn is built to be handed real authority over untrusted input and real tools.
   gate that blocks private, loopback, and cloud-metadata destinations; inbound listeners
   bind loopback-only by default and refuse a wildcard bind. Both are enforced by lint
   rules, so no code can dial or listen around them.
-- **Governed autonomy.** Budgets, autonomy levels, and approval policies mean risky
-  actions pause for a human instead of proceeding silently.
-- **Reversible by default.** Actions are recorded so they can be undone, and
-  destructive steps can be rehearsed in a dry run before they execute.
+- **Governed autonomy.** Budgets, required approvals and declared allowances mean a
+  risky action pauses for a human, or stops the run with the ask, instead of
+  proceeding silently.
 - **Secrets stay out of context.** Credentials live in a vault and are applied at
   call time, never placed in prompts or logs.
 - **Verifiable execution.** Each run is sealed into a signed, tamper-evident record:
@@ -456,8 +473,9 @@ methods used for systems people depend on.
 - **Deterministic replay harness.** Golden missions replay in CI so behavior changes
   are caught as diffs.
 - **Fuzzing.** Tool inputs, manifests, and protocol messages are fuzzed for safety.
-- **Simulation and dry-run.** High-impact actions can be rehearsed before they touch
-  anything real.
+- **Tested as shipped.** Every pull request builds the release in snapshot form and
+  runs the end-to-end suite against the release's own binaries on Linux, macOS, and
+  Windows.
 - **Enforced invariants.** Budgets are never exceeded, no action runs without a
   capability, and the concurrent orchestrator is checked under the race detector.
 
@@ -472,7 +490,10 @@ full flag list.
 | --- | --- |
 | `flynn` | Start an interactive session |
 | `flynn goal "<objective>"` | Drive a goal to completion in the current directory |
+| `flynn goal --goal-spec <file>` | The same, held to the terms the file states; `flynn help` shows its shape |
 | `flynn resume <run>` | Continue a parked or interrupted run |
+| `flynn steer <run> "..."` | Redirect a run that is still going |
+| `flynn kill <run> ["reason"]` | Stop a run that is still going, at its next model or tool call once it reads the order |
 | `flynn watch` | Watch the working tree for `ai!` / `ai?` markers and run each as a governed turn |
 | `flynn review <pr>` | Review a pull request and submit a formal verdict |
 | `flynn playbook` | List the playbooks, or `playbook run <name>` to run one |
@@ -509,17 +530,32 @@ full flag list.
 | `flynn models probe <id>` | Measure a local model's agentic reliability and record its profile |
 | `flynn models check` | Report installed local runtimes and any known parser advisories |
 
+**Skills and memory**
+
+| Command | What it does |
+| --- | --- |
+| `flynn skill ls` | List the skills a run can be offered: the bundled pack and what this install learned |
+| `flynn skill show <skill>` | Print one skill: what it is for, how runs have taken it up, and its body |
+| `flynn skill ab <skill>` | Measure whether a skill helps: its exercises run with it and without it, paired |
+| `flynn memory usage` | Show what memory was pushed at readers and what they used |
+| `flynn memory consolidate` | Distil each subject's accumulated episodes into one lesson |
+| `flynn regrade` | Re-grade learned skills against the working directory |
+
 **Maintenance**
 
 | Command | What it does |
 | --- | --- |
-| `flynn regrade` | Re-grade learned skills against the working directory |
 | `flynn db reset` | Move an unusable database aside (backed up) so the next run recreates it |
+| `flynn notices` | Show the signed security advisories and release notices that apply to this build |
+| `flynn version list` | List the releases that exist |
+| `flynn upgrade` | Replace this binary with a newer, signature-verified release |
 | `flynn --version` | Print the version |
 
-Key flags: `--model`, `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`,
-`--max-memory`, `--max-processes`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
-`--profile <dir>`.
+Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
+`--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
+`--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`, `--max-memory`,
+`--max-processes`, `--no-learn`, `--no-bundled-skills`, `--data-dir`, `--profile <dir>`.
+Run flags go before the objective: `flynn goal --require-approval shell "deploy it"`.
 
 ## Use it as a library
 
@@ -618,15 +654,17 @@ repository ever depending on the host.
 
 ## Own your agent
 
-Your skills, memory, and the model of how you work belong to you. Export them as a
-portable artifact and move them between machines, and run the agent fully local
-with a local model and no external calls when you need sovereignty.
+Your skills, memory, and the model of how you work belong to you. They live in one
+SQLite file in your data directory, and you can run the agent fully local with a
+local model and no external calls when you need sovereignty. A portable export is on
+the [roadmap](#status-and-roadmap).
 
 ## Configuration
 
-Configuration lives in a single file plus environment variables for secrets. Set
-your model and provider, choose which tools and channels are enabled, and set
-budgets and autonomy defaults. See the documentation for the full reference.
+Flynn is configured by command-line flags (`flynn --help` lists them) and
+environment variables, with API keys kept in the encrypted vault (`flynn auth set`).
+The model you choose with `flynn models use` or `/model` is remembered, so you need
+not repeat `--model`. A configuration file is on the [roadmap](#status-and-roadmap).
 
 ## Optional: Ion Alpha, the first host to embed Flynn
 
@@ -682,6 +720,9 @@ above is filling in on top of that foundation. Follow
 - Signed, tamper-evident run records: each run's events are committed to an append-only Merkle log under a COSE signature, checkable by a standalone verifier (`flynn spine verify`), with a public conformance vector suite for the record format.
 - An interactive TUI that renders the typed session spine live: in-session `/seal` and `/verify` with a record badge, a governance overlay (Ctrl+O), `/replay`, and cross-emulator input handling with an alternate-screen fallback.
 - A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
+- Governed goals: a planned ledger whose checks run and are recorded, terms of a run checked after every step (`--goal-spec`), required approvals, declared allowances for irreversible actions, `flynn kill` and `flynn steer`, and no-progress detection.
+- A bundled pack of twelve skills in the Agent Skills format, read on request and graded on the runs that read them, with `flynn skill ls`, `show` and `ab`.
+- Memory with subjects and supersession, a gated wake digest, a recorded push and use per instance (`flynn memory usage`), and offline consolidation (`flynn memory consolidate`).
 - Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
 - The learning loop: skills and memory captured from work, reinforced by outcomes, with skills that stop working decayed and archived.
@@ -701,7 +742,8 @@ above is filling in on top of that foundation. Follow
 
 **In progress**
 
-- Multi-agent goal-graph orchestration: fan-out across a dependency graph and missions that outlive a single session.
+- Missions that outlive a single session, and declaring a goal's unit graph from the CLI (today it is the Go API).
+- A memory review command, so the agent's own memories can be promoted into the wake digest without a host.
 - A cost-aware model router in front of the registry.
 - Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
 - Time-travel on top of replay: fork-from-event and run diff.
@@ -717,6 +759,8 @@ above is filling in on top of that foundation. Follow
 - A cross-machine control plane and Kubernetes pod fan-out.
 - OpenTelemetry export to agent-eval tools and Grafana dashboards.
 - A Postgres backend and federated, fleet-wide learning.
+- A configuration file, and a portable export of skills and memory.
+- Rehearsing a destructive step in a dry run, and undoing a recorded action.
 - Stronger isolation tiers (gVisor, Firecracker/Kata microVM).
 
 ## License
