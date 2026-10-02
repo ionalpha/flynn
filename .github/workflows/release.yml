@@ -75,13 +75,28 @@ jobs:
             echo "APIDIFF_NOTES_EOF"
           } >> "$GITHUB_ENV"
 
+      # The written notes for this version go above the generated changelog, which is a
+      # list of commit subjects and not something a reader can take in. A tag with no
+      # notes file fails here, before anything is built or published, so a release
+      # cannot go out as a bare commit list. A candidate (v0.2.0-rc.1) uses the notes of
+      # the version it is a candidate for.
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          notes="docs/releases/${TAG%%-*}.md"
+          if [ ! -s "$notes" ]; then
+            echo "::error::$TAG has no release notes: write $notes and tag again."
+            exit 1
+          fi
+          echo "RELEASE_HEADER=$notes" >> "$GITHUB_ENV"
       - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7
         with:
           # Pin the goreleaser binary to an exact version, not a floating "~> v2",
           # so the release is byte-for-byte reproducible and a new v2.x cannot change
           # its behavior underneath a tag. Bump this deliberately, never automatically.
           version: "v2.17.0"
-          args: release --clean
+          args: release --clean --release-header ${{ env.RELEASE_HEADER }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - name: Attest build provenance
