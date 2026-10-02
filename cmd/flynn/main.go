@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -179,6 +180,11 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		// flag set that was asked to hand parse errors back: a bad flag is a usage error.
 		return 2
 	}
+	rest, usageErr := goalArgs(fs, fs.Args())
+	if usageErr != "" {
+		_, _ = fmt.Fprintln(stderr, usageErr)
+		return 2
+	}
 	vrb := *verbose || *verboseLong
 
 	// Whether the binary's own skills apply is settled here, before anything opens a
@@ -228,7 +234,6 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 
 	// The subcommand, or "" when none was given. No subcommand is named "", so every
 	// branch below can compare against it directly.
-	rest := fs.Args()
 	cmd := ""
 	if len(rest) >= 1 {
 		cmd = rest[0]
@@ -254,6 +259,51 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		maxMemoryMiB: *maxMemory,
 		maxProcesses: *maxProcs,
 	})
+}
+
+// goalArgs reads the run flags written after `flynn goal`, the place the usage text
+// shows them, and returns the command line with only the objective left after "goal".
+// Any other command line is returned as it came.
+//
+// The flag package stops at the first argument that is not a flag, so without this
+// `flynn goal --goal-spec terms.json` parses no flag at all: the spec is never loaded
+// and the objective becomes the text "--goal-spec terms.json". The same happens to
+// --require-approval, --irreversible and every other flag that governs a run, so the
+// run goes ahead without the controls the operator typed. A flag after the objective
+// cannot be read the same way, because an objective is free text; one that names a
+// flag is refused as a usage error instead, naming it, rather than becoming words of
+// the objective. A "--" ends the flags as it does everywhere else, so an objective
+// that has to start with a dash can still be written.
+func goalArgs(fs *flag.FlagSet, rest []string) ([]string, string) {
+	if len(rest) == 0 || rest[0] != "goal" {
+		return rest, ""
+	}
+	literal := slices.Contains(rest[1:], "--")
+	if err := fs.Parse(rest[1:]); err != nil {
+		return nil, fmt.Sprintf("usage: %v", err)
+	}
+	objective := fs.Args()
+	if !literal {
+		for _, arg := range objective {
+			if name, ok := flagName(arg); ok && fs.Lookup(name) != nil {
+				return nil, fmt.Sprintf("usage: %s is a flag, and it came after the objective, where it would have been read as part of it; put it before: flynn goal %s ... \"<objective>\"", arg, arg)
+			}
+		}
+	}
+	return append([]string{"goal"}, objective...), ""
+}
+
+// flagName returns the flag name an argument spells ("-v", "--goal-spec",
+// "--max-cost=2"), and false for anything that is not written as a flag.
+func flagName(arg string) (string, bool) {
+	if len(arg) < 2 || arg[0] != '-' {
+		return "", false
+	}
+	name := strings.TrimLeft(arg, "-")
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	return name, name != ""
 }
 
 // invocation carries the resolved command-line state routeCommand needs to run a subcommand: the
