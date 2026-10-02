@@ -151,7 +151,5 @@ func (g *Reconciler) applyKill(ctx context.Context, r resource.Resource, spec Sp
 	// goal that went on recording it as in flight would read as still working.
 	status.InFlight = nil
 	status.WaitingSince = nil
-	status.stall(KilledReason, msg, g.clk.Now())
-	res, err := g.terminal(ctx, r, *status, specHash)
-	return res, true, err
+	return g.stalled(ctx, r, status, specHash, KilledReason, msg)
 }

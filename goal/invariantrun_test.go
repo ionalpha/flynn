@@ -474,3 +474,41 @@ func TestAGoalWithTermsAndNoAuditorStalls(t *testing.T) {
 		t.Fatalf("with no auditor wired, dropping a term = %v, want ErrInvariantRelaxed", err)
 	}
 }
+
+// TestABreachAfterAnUnwiredStallIsSettledForGood: a goal first stalls for want of an
+// auditor, which is the one kind of stall a later reconcile re-examines. Once an auditor
+// is wired and finds a broken term, the goal is stopped by a fact about the run, so it
+// must stop being re-examined: a breach that kept the unwired mark would be reconciled
+// again on every resync.
+func TestABreachAfterAnUnwiredStallIsSettledForGood(t *testing.T) {
+	h := newHarness(t, &shippedStop{})
+	ref := h.createGoal(t, "g", termSpec(noForcePush()))
+	h.reconcile(t, ref)
+	if st := h.status(t, ref); st.Phase != PhaseStalled || !st.Unwired {
+		t.Fatalf("with no auditor the goal did not stall unwired: %+v", st)
+	}
+
+	au := newFakeAuditor()
+	au.breach["no-force-push"] = "force-pushed origin/main"
+	wired := NewReconciler(h.store, h.jobs, h.clk, &shippedStop{}, WithInvariantAudit(au))
+	reconcileWired := func() {
+		t.Helper()
+		if _, err := wired.Reconcile(h.ctx, ref); err != nil {
+			t.Fatalf("reconcile with an auditor wired: %v", err)
+		}
+	}
+	reconcileWired() // released by the wiring: dispatches a step
+	h.completeStep(t)
+	reconcileWired() // observes it, audits the term, finds the breach
+
+	st := h.status(t, ref)
+	if st.Phase != PhaseStalled {
+		t.Fatalf("phase = %q, want Stalled: %+v", st.Phase, st)
+	}
+	if _, breached := st.BreachedInvariant(); !breached {
+		t.Fatalf("the breach was not recorded: %+v", st.Invariants)
+	}
+	if st.Unwired {
+		t.Fatal("a breached goal kept the unwired mark from the stall before it, so it is never settled")
+	}
+}

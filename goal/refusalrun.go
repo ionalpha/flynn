@@ -70,11 +70,5 @@ func (g *Reconciler) checkRefusals(ctx context.Context, r resource.Resource, spe
 	if !stop {
 		return g.pauseForAllowance(ctx, r, spec, status, specHash, refusals)
 	}
-	msg := verdict.RefusalReason()
-	status.Phase = PhaseStalled
-	status.Message = msg
-	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "RefusedRouteAround", Message: msg}, g.clk.Now())
-	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "RefusedRouteAround"}, g.clk.Now())
-	res, err := g.terminal(ctx, r, *status, specHash)
-	return res, true, err
+	return g.stalled(ctx, r, status, specHash, "RefusedRouteAround", verdict.RefusalReason())
 }

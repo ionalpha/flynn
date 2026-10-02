@@ -63,10 +63,8 @@ func (g *Reconciler) auditInvariants(ctx context.Context, r resource.Resource, s
 	// an unaudited run looks exactly like a run whose terms held. So it stalls, the same
 	// way a goal carrying a unit graph with no spawner does, and for the same reason.
 	if g.auditor == nil {
-		status.stall("InvariantAuditorMissing",
-			"the goal states terms of the run but no auditor is wired to check them", g.clk.Now())
-		res, err := g.terminal(ctx, r, *status, specHash)
-		return res, true, err
+		return g.stalled(ctx, r, status, specHash, "InvariantAuditorMissing",
+			"the goal states terms of the run but no auditor is wired to check them")
 	}
 	if !observed {
 		return reconcile.Result{}, false, nil
@@ -97,11 +95,5 @@ func (g *Reconciler) auditInvariants(ctx context.Context, r resource.Resource, s
 // the reason names what actually happened so the outcome is not mistaken for a budget
 // running out.
 func (g *Reconciler) breach(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash string, st InvariantState) (reconcile.Result, bool, error) {
-	msg := BreachReason(spec.Invariants, st)
-	status.Phase = PhaseStalled
-	status.Message = msg
-	status.SetCondition(Condition{Type: CondStalled, Status: "True", Reason: "InvariantBreached", Message: msg}, g.clk.Now())
-	status.SetCondition(Condition{Type: CondReconciling, Status: "False", Reason: "InvariantBreached"}, g.clk.Now())
-	res, err := g.terminal(ctx, r, *status, specHash)
-	return res, true, err
+	return g.stalled(ctx, r, status, specHash, "InvariantBreached", BreachReason(spec.Invariants, st))
 }
