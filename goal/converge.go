@@ -7,39 +7,18 @@ import (
 	"unicode"
 )
 
-// Non-convergence is the third way a run can be going nowhere, and the one a reconciler
-// that knows only "budget exhausted / condition met / keep going" cannot see. The budget
-// guard catches a run that has spent its allowance. The no-progress guard (progress.go)
-// catches a run that has stopped doing anything. Neither catches the run that is busy,
-// spending, producing steps, and being told the same thing every single time, because a
-// goal that became unsatisfiable at step 4 looks exactly like a goal that is working.
+// Non-convergence is the third way a run can be going nowhere. The budget guard catches
+// a run that has spent its allowance and the no-progress guard (progress.go) a run that
+// has stopped doing anything. Neither catches a run that is busy, spending, and told the
+// same thing every cycle, because a goal that became unsatisfiable looks exactly like
+// one that is working. Repeated pressure that has stopped being informative is also a
+// safety risk, so the goal stops instead of applying it again.
 //
-// The recorded cost of not having this: one goal run whose condition had quietly become
-// impossible spent 200+ evaluations over five hours and roughly half a weekly token
-// budget, re-injecting identical "not satisfied" feedback every turn while the run
-// produced nothing. It was not idle, so no idle-streak check would have saved it. It was
-// under budget until it was not. The only signal available the whole time was that the
-// refusal never changed.
-//
-// It is also a safety signal and not only a spend one. The subjective-condition version of
-// the same incident applied the same pressure nine turns running against explicit user
-// instructions to the contrary. A gate that keeps telling a run it has not done enough is
-// a gate that will eventually push a less well-behaved run into doing something it was
-// told not to, so the point at which the pressure stops being informative is the point at
-// which it should stop being applied.
-//
-// What repetition is keyed on is the whole design. The recorded failure to avoid: a
-// stale-loop detector fired on three consecutive task.complete events and killed a
-// legitimate workflow that was correctly emitting one per task, because it keyed on the
-// name of what happened rather than on whether the substance differed. So the key here is
-// the substance of the refusal, normalized, paired with how much of the ledger stood
-// proven when it was given. An item flipping to proven is the run advancing against its
-// own definition of done, and it resets the count no matter how the refusal is worded.
-// That is what keeps N legitimately similar cycles that are each real work from tripping
-// it, and it is deliberately not keyed on the progress fingerprint: a run thrashing
-// through new files every step has a fingerprint that changes every step, which is the
-// exact run this guard exists to catch.
-
+// Repetition is keyed on the substance of the refusal, normalized, paired with how much
+// of the ledger stood proven when it was given. An item flipping to proven resets the
+// count however the refusal is worded, so cycles that each make progress do not trip
+// it. It is deliberately not keyed on the progress fingerprint: a run thrashing through
+// new files has a fingerprint that changes every step, and that is the run this catches.
 const (
 	// VerdictRepeatLimit is how many consecutive build-and-check cycles may end in the
 	// same refusal before the goal stops. Two is the whole point rather than a cautious

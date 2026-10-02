@@ -12,48 +12,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// A steer is what an operator says to a run that is already going: use the other table,
-// stop touching the migration, this is the wrong branch. It leaves the objective and the
-// stop condition exactly as they were, and the run is held to it separately.
-//
-// Steering that is only injected as text is steering that gets ignored. The clearest
-// record of that is a timeline rather than an argument: a human sent five messages in
-// thirty minutes, each folded into the prompt as advisory prose, and the loop finished the
-// build, passed its own review ten seconds after being asked to read the guidance, and
-// committed thirty-eight seconds later. Nothing in that run was broken. Every message
-// arrived, and none of them changed a decision, because nothing downstream of the prompt
-// ever asked whether they had been addressed.
-//
-// So the primitive is not "deliver the text". It is that the run cannot report success
-// while an obligation is outstanding.
-//
-// Three rules are what make it an obligation rather than a suggestion.
-//
-// It is delivered on every turn it survives, not once. A steer folded into the transcript
-// at the moment it arrived is one message in a history that gets pruned, compacted and
-// reseeded, and the turn that finally claims completion may no longer be able to see it.
-// Redelivery from the durable record is what makes surviving a reseed a property of the
-// steer rather than a property of how the transcript happened to be trimmed.
-//
-// It is discharged by an account, and the account is judged. A run says how it addressed
-// the redirect, and something other than the run rules on whether that answer addresses it.
-// A steer nobody rules on could only be discharged by the run asserting it had complied,
-// which is the same standard the whole ledger exists to replace. Where no judge is wired
-// the goal stops and names the missing judge, rather than carrying an obligation it has no
-// way to ever discharge (see steerrun.go).
-//
-// It cannot be withdrawn by the run. Once a reconcile has adopted a steer, dropping it or
-// rewording it is refused as a terminal spec fault, exactly as for an invariant and for the
-// same reason: the one party who must not be able to edit an obligation is the party under
-// it, and the spec is not a surface only the operator can reach. Issuing another steer is
-// always allowed, which is the route to correcting one that was wrong.
-//
-// A steer is not an amendment, and the difference is what it is judged against. Amending
-// the objective rewrites what done means, so the grader then rules on the amended text and
-// the redirect disappears into the definition of success. A steer leaves the definition of
-// success alone and is checked on its own, which is why "you are using the wrong table,
-// keep going" belongs here and not in the objective.
-
 // steerMarkLen is how many hex characters of a steer's content hash form its fingerprint.
 // Sixteen (64 bits) is far past collision range for the handful of redirects one run
 // takes, and short enough to stay readable in a status dump.
@@ -74,7 +32,23 @@ var (
 	ErrSteerWithdrawn = errors.New("goal: steer was withdrawn after the run was given it")
 )
 
-// Steer is one redirect issued to a running goal, in the operator's words.
+// Steer is one redirect issued to a running goal, in the operator's words: use the
+// other table, stop touching the migration, this is the wrong branch. It leaves the
+// objective and the stop condition as they were and is held to separately, so the run
+// cannot report success while a steer is outstanding. Three rules make it an
+// obligation rather than advice:
+//
+//   - It is redelivered from the durable record on every turn it survives, so it
+//     outlives the transcript being pruned, compacted or reseeded.
+//   - It is discharged by the run's account of how it addressed the redirect, and a
+//     [SteerJudge] rules on that account, never the run itself. A steered goal with
+//     no judge wired stops and names the missing judge.
+//   - The run cannot withdraw it. Dropping or rewording an adopted steer is a terminal
+//     spec fault ([ErrSteerWithdrawn]); issuing another steer is always allowed.
+//
+// A steer is not an amendment to the objective. An amendment changes what done means,
+// so the grader rules on the new text and the redirect disappears into it. A steer
+// leaves done alone and is checked on its own.
 type Steer struct {
 	// ID names the redirect so an acknowledgement can answer this one and a status entry
 	// can track it across reconciles. It is the operator's, like an invariant's, because a
