@@ -286,7 +286,7 @@ layers in view rather than hidden behind it.
 
 - **Skills from experience.** After a run converges, the agent distils reusable
   skills from it; a skill's own check runs in the sandbox before it is kept.
-- **A bundled pack.** Twelve engineering skills ship in the binary (systematic
+- **A bundled pack.** Thirteen engineering skills ship in the binary (systematic
   debugging, test-first, untrusted input, dependencies, and more). A run is offered
   skills by name and description and reads one with `skill_read`, and a skill is
   graded on the runs that read it. `flynn skill ls` lists them, `flynn skill show`
@@ -721,7 +721,7 @@ above is filling in on top of that foundation. Follow
 - An interactive TUI that renders the typed session spine live: in-session `/seal` and `/verify` with a record badge, a governance overlay (Ctrl+O), `/replay`, and cross-emulator input handling with an alternate-screen fallback.
 - A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
 - Governed goals: a planned ledger whose checks run and are recorded, terms of a run checked after every step (`--goal-spec`), required approvals, declared allowances for irreversible actions, `flynn kill` and `flynn steer`, and no-progress detection.
-- A bundled pack of twelve skills in the Agent Skills format, read on request and graded on the runs that read them, with `flynn skill ls`, `show` and `ab`.
+- A bundled pack of thirteen skills in the Agent Skills format, read on request and graded on the runs that read them, with `flynn skill ls`, `show` and `ab`.
 - Memory with subjects and supersession, a gated wake digest, a recorded push and use per instance (`flynn memory usage`), and offline consolidation (`flynn memory consolidate`).
 - Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
