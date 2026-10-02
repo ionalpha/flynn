@@ -239,3 +239,53 @@ func F(r *http.Response) string { return r.Status }
 		})
 	}
 }
+
+// TestBenchmarkFloor: a package on the benchmark list fails without a benchmark and
+// passes with one.
+func TestBenchmarkFloor(t *testing.T) {
+	const mod = "example.com/m"
+	for _, c := range []struct {
+		name, test string
+		wantViolation bool
+	}{
+		{"missing", fmt.Sprintf(propTest, "p"), true},
+		{"present", "package p\n\nimport (\n\t\"testing\"\n\t_ \"pgregory.net/rapid\"\n)\n\nfunc BenchmarkThing(b *testing.B) { _ = b }\n", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			writePkg(t, root, "p", "p", map[string]string{"p_test.go": c.test})
+			vs, err := Check(root, mod, Policy{BenchRequired: map[string]bool{"p": true}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(vs) == 1; got != c.wantViolation {
+				t.Fatalf("violations = %#v, want a benchmark violation: %v", vs, c.wantViolation)
+			}
+		})
+	}
+}
+
+// TestCheckReportsUnparseableSource: a file the checker cannot parse is an error, not
+// a pass. Each floor that reads a file has its own path to that error.
+func TestCheckReportsUnparseableSource(t *testing.T) {
+	const mod = "example.com/m"
+	const broken = "package p\n\nfunc {\n"
+	for _, c := range []struct {
+		name     string
+		src      string
+		testFile string
+		pol      Policy
+	}{
+		{"production file", "package p\n\nimport \"net\"\n\nvar _ = net.IPv4len\n\nfunc {\n", fmt.Sprintf(propTest, "p"), Policy{}},
+		{"fuzz-required test file", "package p\n", broken, Policy{FuzzRequired: map[string]bool{"p": true}}},
+		{"bench-required test file", "package p\n", broken, Policy{BenchRequired: map[string]bool{"p": true}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			writePkgSrc(t, root, "p", c.src, map[string]string{"p_test.go": c.testFile})
+			if _, err := Check(root, mod, c.pol); err == nil {
+				t.Fatal("Check passed a tree it could not parse")
+			}
+		})
+	}
+}
