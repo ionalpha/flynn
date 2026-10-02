@@ -28,6 +28,7 @@ func RunSuite(t *testing.T, newLog func() spine.Log) {
 	t.Run("SchemaVersion", func(t *testing.T) { testSchemaVersion(t, newLog()) })
 	t.Run("EmptyStream", func(t *testing.T) { testEmpty(t, newLog()) })
 	t.Run("Concurrency", func(t *testing.T) { testConcurrency(t, newLog()) })
+	t.Run("Snapshots", func(t *testing.T) { testSnapshots(t, newLog()) })
 }
 
 // testSchemaVersion checks that an unset SchemaVersion defaults to
@@ -264,6 +265,77 @@ func testConcurrency(t *testing.T, log spine.Log) {
 				t.Fatalf("stream %d not dense: event[%d].Seq = %d", s, i, e.Seq)
 			}
 		}
+	}
+}
+
+// testSnapshots checks the snapshot half of the contract: LatestSnapshot finds the
+// newest snapshot at or below upToSeq (any Seq when upToSeq is not positive),
+// SaveSnapshot replaces at the same (Stream, Seq), streams do not see each other's
+// snapshots, and stored payloads are decoupled from the caller's slices.
+func testSnapshots(t *testing.T, log spine.Log) {
+	ctx := context.Background()
+	if _, found, err := log.LatestSnapshot(ctx, "s", 0); err != nil || found {
+		t.Fatalf("LatestSnapshot on an empty log = found %v, err %v; want none", found, err)
+	}
+	// Saved out of Seq order, so a backend that returns the last one written fails.
+	for _, s := range []spine.Snapshot{
+		{Stream: "s", Seq: 5, Payload: []byte("five")},
+		{Stream: "s", Seq: 10, Payload: []byte("ten")},
+		{Stream: "s", Seq: 3, Payload: []byte("three")},
+	} {
+		if err := log.SaveSnapshot(ctx, s); err != nil {
+			t.Fatalf("SaveSnapshot(%d): %v", s.Seq, err)
+		}
+	}
+	latest := func(stream string, upTo int64) (string, int64, bool) {
+		t.Helper()
+		s, found, err := log.LatestSnapshot(ctx, stream, upTo)
+		if err != nil {
+			t.Fatalf("LatestSnapshot(%q, %d): %v", stream, upTo, err)
+		}
+		if found && s.Stream != stream {
+			t.Fatalf("LatestSnapshot(%q, %d) returned stream %q", stream, upTo, s.Stream)
+		}
+		return string(s.Payload), s.Seq, found
+	}
+	for _, c := range []struct {
+		upTo    int64
+		payload string
+		seq     int64
+		found   bool
+	}{
+		{0, "ten", 10, true},
+		{-1, "ten", 10, true},
+		{100, "ten", 10, true},
+		{10, "ten", 10, true},
+		{9, "five", 5, true},
+		{5, "five", 5, true},
+		{4, "three", 3, true},
+		{2, "", 0, false},
+	} {
+		payload, seq, found := latest("s", c.upTo)
+		if found != c.found || (found && (seq != c.seq || payload != c.payload)) {
+			t.Errorf("LatestSnapshot(upTo %d) = (%q, %d, %v), want (%q, %d, %v)", c.upTo, payload, seq, found, c.payload, c.seq, c.found)
+		}
+	}
+
+	replacement := []byte("five again")
+	if err := log.SaveSnapshot(ctx, spine.Snapshot{Stream: "s", Seq: 5, Payload: replacement}); err != nil {
+		t.Fatalf("SaveSnapshot replace: %v", err)
+	}
+	replacement[0] = 'X'
+	if payload, _, _ := latest("s", 9); payload != "five again" {
+		t.Errorf("after replacing at Seq 5 (and mutating the saved slice), payload = %q, want %q", payload, "five again")
+	}
+
+	got, _, _ := log.LatestSnapshot(ctx, "s", 0)
+	got.Payload[0] = 'X'
+	if payload, _, _ := latest("s", 0); payload != "ten" {
+		t.Errorf("mutating a returned payload changed the stored one: %q", payload)
+	}
+
+	if _, _, found := latest("other", 0); found {
+		t.Error("a stream with no snapshots of its own found one from another stream")
 	}
 }
 
