@@ -55,7 +55,13 @@ end against the built binary.
 | Spine / record | a clean run verifies; a one-byte tamper of the exported record fails verification | covered |
 | Spine / record | reorder / drop / insert single-event tamper variants | partial (integrity covered by the byte-level tamper) |
 | Replay / determinism | rendering a past run twice is byte-identical | covered |
-| Learning loop | skill capture and recall across runs | not covered (runs use `-no-learn`) |
+| Learning loop | the bundled pack is in a fresh install's store; a run reads a bundled skill through `skill_read` and the read and the win are credited to it | covered |
+| Learning loop | a converged run is distilled; the skill passes its check and is kept, and the next run is handed the skill and the memory | covered |
+| Learning loop | an operator-written memory (`/remember`) is pushed at the next run's wake and counted by `memory usage` | not covered (interactive only; see gaps) |
+| Run terms | `goal --goal-spec` with a term whose check fails stops the run naming the term; one whose check passes lets it finish | covered |
+| Approval | `--require-approval` with nobody to ask refuses the action, takes nothing, and tells the model | covered |
+| Allowances | an action marked `--irreversible` and not declared stops the run with the ask; declared with `--allow`, it is taken | covered |
+| Kill | `flynn kill` from a second invocation stops a running goal before its next action, and the goal exits with the operator's reason | covered |
 | Local models | catalog browse and filters; fetch refuses an off-catalog source; runtime inventory | covered (offline) |
 | Local models | digest-pinned fetch and run of a real model | not covered (network + runtime; opt-in) |
 | Providers | a permanent failure (bad key, exhausted quota) fails fast with a typed error, one call, no retry | covered |
@@ -65,7 +71,8 @@ end against the built binary.
 | Honesty | an ungrounded success claim is rejected by the record; a grounded one is accepted | covered |
 | Honesty | prompt-injection governance corpus run end to end | not covered |
 | Cold start | a fresh install runs with only a key and is safe by default (bind refused, escape denied) | covered |
-| Install paths | `go install`, a prebuilt binary, and the container each run a trivial goal | not covered (needs a published release) |
+| Install paths | the release's own binaries on each OS, and its container image reporting its version | covered (CI release snapshot) |
+| Install paths | the previous release upgrades itself to a new one with `flynn upgrade` | covered after publishing (`dev/upgrade-check`, run by the release workflow) |
 
 ## Known gaps
 
@@ -88,9 +95,12 @@ exercise, with the reason and, where relevant, a suggested fix.
    `FLYNN_NO_KEYCHAIN`) switch that forces the passphrase-sealed file backend, useful in
    containers and headless environments as well as here.
 
-3. **Learning loop is not exercised.** Every run uses `-no-learn` for determinism. Skill
-   capture, cross-run recall, curation, and reinforcement need their own scenarios with a
-   controlled learning store.
+3. **The memory push path needs a terminal.** A distilled memory is the agent's own
+   note, which waits for a reviewed promotion before the wake digest pushes it, and the
+   binary has no command to promote one; only an operator-written memory is pushed, and
+   `/remember` is reachable only from the interactive session, which needs a TTY. The
+   in-process `TestStandaloneASessionWakesWithADigestAndCountsThePush` covers the push;
+   a memory review command would make it reachable here.
 
 4. **Fan-out is not exercised.** Delegation grant-subset enforcement, a shared budget
    ceiling across a delegated tree, and the runaway circuit breaker on the fan-out path
