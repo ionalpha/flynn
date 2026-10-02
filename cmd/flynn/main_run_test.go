@@ -381,14 +381,30 @@ func TestDefaultDataDirIsNamedForTheBuild(t *testing.T) {
 }
 
 // TestPrintUsageListsEverySubcommand: the summary is the only discovery surface for the
-// command set, so a subcommand that dispatches must appear in it.
+// command set, so a subcommand that dispatches must appear in it. The subcommands are
+// read from the two dispatch tables, so a new entry is checked without being listed here.
 func TestPrintUsageListsEverySubcommand(t *testing.T) {
 	var buf bytes.Buffer
 	printUsage(&buf)
 	out := buf.String()
-	for _, want := range []string{"goal", "runs", "resume", "serve", "review", "extensions", "auth", "models", "spine"} {
-		if !strings.Contains(out, "flynn "+want) {
-			t.Errorf("the usage summary does not mention `flynn %s`", want)
+	var names []string
+	for name := range invocationCommands {
+		names = append(names, name)
+	}
+	for name := range dataDirCommands {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		if name == "help" {
+			continue // the summary is what help prints
+		}
+		if !strings.Contains(out, "flynn "+name) {
+			t.Errorf("the usage summary does not mention `flynn %s`", name)
+		}
+	}
+	for alias, target := range commandAliases {
+		if invocationCommands[target] == nil && dataDirCommands[target] == nil {
+			t.Errorf("alias %q names %q, which nothing dispatches", alias, target)
 		}
 	}
 }
