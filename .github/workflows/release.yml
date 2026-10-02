@@ -110,3 +110,28 @@ jobs:
         run: |
           cp "$BUNDLE" flynn.intoto.jsonl
           gh release upload "$TAG" flynn.intoto.jsonl --clobber
+
+  # Everyone already installed reaches this release through the verifier compiled into
+  # the release they have, so the last step of a release is to be reached that way: the
+  # previous release's published binary, on each OS, upgrades itself to this tag and
+  # must then report it and open the data directory it wrote. The release is already
+  # public by now, which is why a candidate (vX.Y.Z-rc.N) is cut first: this is the
+  # check that says whether the full release can follow it.
+  upgrade-check:
+    name: Upgrade from the previous release (${{ matrix.os }})
+    needs: goreleaser
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Upgrade
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+        run: ./dev/upgrade-check "$TAG"

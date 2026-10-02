@@ -134,9 +134,7 @@ type Violation struct {
 // every rigor violation under pol. It reads source only; it does not build or run
 // packages.
 func Check(root, modulePath string, pol Policy) ([]Violation, error) {
-	testkitImport := modulePath + "/internal/testkit"
 	var vs []Violation
-
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -147,84 +145,110 @@ func Check(root, modulePath string, pol Policy) ([]Violation, error) {
 		if p != root && skipDir(d.Name()) {
 			return filepath.SkipDir
 		}
-
-		pkg, err := build.ImportDir(p, 0)
-		if err != nil {
-			var noGo *build.NoGoError
-			if errors.As(err, &noGo) {
-				return nil // no Go files for this build context: not a package
-			}
-			return fmt.Errorf("rigor: import %s: %w", p, err)
-		}
-		if len(pkg.GoFiles) == 0 {
-			return nil // no production code to hold to the floor
-		}
-
-		rel := relPath(root, p)
-		if exempt(rel, pkg.Name) {
-			return nil
-		}
-		label := modulePath
-		if rel != "" {
-			label = modulePath + "/" + rel
-		}
-
-		hasProperty := importsAny(pkg.TestImports, rapidImport, testkitImport) ||
-			importsAny(pkg.XTestImports, rapidImport, testkitImport)
-		gf := pol.Grandfathered[rel]
-
-		switch {
-		case !hasProperty && !gf:
-			vs = append(vs, Violation{label, "missing a property test: a _test.go must import " + rapidImport + " or the testkit harness"})
-		case hasProperty && gf:
-			vs = append(vs, Violation{label, "now has a property test: remove it from the rigor grandfather allowlist (the list only shrinks)"})
-		}
-
-		testFiles := append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...)
-		if pol.FuzzRequired[rel] {
-			ok, ferr := hasFuncPrefix(p, testFiles, "Fuzz")
-			if ferr != nil {
-				return ferr
-			}
-			if !ok {
-				vs = append(vs, Violation{label, "missing a fuzz target: declare a func FuzzXxx(*testing.F)"})
-			}
-		}
-		// The declared FuzzRequired list is a hand-maintained allowlist, so a new
-		// parser can be added without anyone remembering to list it. Infer the
-		// requirement instead: a package that reaches a network or host boundary and
-		// decodes what comes back is parsing input it does not control.
-		exemptFuzz := pol.BoundaryFuzzExempt[rel]
-		boundary, derr := decodesAtBoundary(p, pkg.GoFiles)
-		if derr != nil {
-			return derr
-		}
-		if boundary || exemptFuzz {
-			hasFuzz, ferr := hasFuncPrefix(p, testFiles, "Fuzz")
-			if ferr != nil {
-				return ferr
-			}
-			switch {
-			case boundary && !hasFuzz && !exemptFuzz:
-				vs = append(vs, Violation{label, "decodes foreign bytes at a network or host boundary but declares no fuzz target: declare a func FuzzXxx(*testing.F)"})
-			case exemptFuzz && hasFuzz:
-				vs = append(vs, Violation{label, "now has a fuzz target: remove it from the rigor boundary-fuzz exemption list (the list only shrinks)"})
-			case exemptFuzz && !boundary:
-				vs = append(vs, Violation{label, "no longer decodes at a network or host boundary: remove it from the rigor boundary-fuzz exemption list (the list only shrinks)"})
-			}
-		}
-		if pol.BenchRequired[rel] {
-			ok, berr := hasFuncPrefix(p, testFiles, "Benchmark")
-			if berr != nil {
-				return berr
-			}
-			if !ok {
-				vs = append(vs, Violation{label, "missing a benchmark: declare a func BenchmarkXxx(*testing.B)"})
-			}
-		}
-		return nil
+		found, err := checkDir(root, p, modulePath, pol)
+		vs = append(vs, found...)
+		return err
 	})
 	return vs, err
+}
+
+// checkDir holds the package in dir to the floor, if dir is a package with
+// production code that is not exempt from it.
+func checkDir(root, dir, modulePath string, pol Policy) ([]Violation, error) {
+	pkg, err := build.ImportDir(dir, 0)
+	if err != nil {
+		var noGo *build.NoGoError
+		if errors.As(err, &noGo) {
+			return nil, nil // no Go files for this build context: not a package
+		}
+		return nil, fmt.Errorf("rigor: import %s: %w", dir, err)
+	}
+	if len(pkg.GoFiles) == 0 {
+		return nil, nil // no production code to hold to the floor
+	}
+	rel := relPath(root, dir)
+	if exempt(rel, pkg.Name) {
+		return nil, nil
+	}
+	label := modulePath
+	if rel != "" {
+		label = modulePath + "/" + rel
+	}
+
+	var reasons []string
+	if r := propertyViolation(pkg, modulePath, pol.Grandfathered[rel]); r != "" {
+		reasons = append(reasons, r)
+	}
+	testFiles := append(append([]string{}, pkg.TestGoFiles...), pkg.XTestGoFiles...)
+	fuzz, err := fuzzViolations(dir, pkg.GoFiles, testFiles, pol.FuzzRequired[rel], pol.BoundaryFuzzExempt[rel])
+	if err != nil {
+		return nil, err
+	}
+	reasons = append(reasons, fuzz...)
+	if pol.BenchRequired[rel] {
+		ok, err := hasFuncPrefix(dir, testFiles, "Benchmark")
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			reasons = append(reasons, "missing a benchmark: declare a func BenchmarkXxx(*testing.B)")
+		}
+	}
+
+	vs := make([]Violation, 0, len(reasons))
+	for _, r := range reasons {
+		vs = append(vs, Violation{label, r})
+	}
+	return vs, nil
+}
+
+// propertyViolation is the property-test floor for one package: missing a property
+// test, or carrying one while still on the grandfather list. It returns "" when the
+// package complies.
+func propertyViolation(pkg *build.Package, modulePath string, grandfathered bool) string {
+	testkitImport := modulePath + "/internal/testkit"
+	hasProperty := importsAny(pkg.TestImports, rapidImport, testkitImport) ||
+		importsAny(pkg.XTestImports, rapidImport, testkitImport)
+	switch {
+	case !hasProperty && !grandfathered:
+		return "missing a property test: a _test.go must import " + rapidImport + " or the testkit harness"
+	case hasProperty && grandfathered:
+		return "now has a property test: remove it from the rigor grandfather allowlist (the list only shrinks)"
+	}
+	return ""
+}
+
+// fuzzViolations is the fuzz floor for one package, both declared and inferred.
+//
+// The declared FuzzRequired list is a hand-maintained allowlist, so a new parser can
+// be added without anyone remembering to list it. The requirement is also inferred:
+// a package that reaches a network or host boundary and decodes what comes back is
+// parsing input it does not control.
+func fuzzViolations(dir string, goFiles, testFiles []string, required, exemptFuzz bool) ([]string, error) {
+	boundary, err := decodesAtBoundary(dir, goFiles)
+	if err != nil {
+		return nil, err
+	}
+	if !required && !boundary && !exemptFuzz {
+		return nil, nil
+	}
+	hasFuzz, err := hasFuncPrefix(dir, testFiles, "Fuzz")
+	if err != nil {
+		return nil, err
+	}
+	var reasons []string
+	if required && !hasFuzz {
+		reasons = append(reasons, "missing a fuzz target: declare a func FuzzXxx(*testing.F)")
+	}
+	switch {
+	case boundary && !hasFuzz && !exemptFuzz:
+		reasons = append(reasons, "decodes foreign bytes at a network or host boundary but declares no fuzz target: declare a func FuzzXxx(*testing.F)")
+	case exemptFuzz && hasFuzz:
+		reasons = append(reasons, "now has a fuzz target: remove it from the rigor boundary-fuzz exemption list (the list only shrinks)")
+	case exemptFuzz && !boundary:
+		reasons = append(reasons, "no longer decodes at a network or host boundary: remove it from the rigor boundary-fuzz exemption list (the list only shrinks)")
+	}
+	return reasons, nil
 }
 
 func skipDir(name string) bool {
@@ -314,51 +338,68 @@ func decodesAtBoundary(dir string, goFiles []string) (bool, error) {
 		if err != nil {
 			return false, fmt.Errorf("rigor: parse %s: %w", name, err)
 		}
-		decoders := make(map[string]string) // local name -> import path
-		for _, imp := range f.Imports {
-			p, err := strconv.Unquote(imp.Path.Value)
-			if err != nil {
-				continue
-			}
-			if boundaryImports[p] {
-				boundary = true
-			}
-			if _, ok := decodeFuncs[p]; !ok {
-				continue
-			}
-			// A named import rebinds the selector; a blank or dot import cannot
-			// produce one to match against.
-			local := path.Base(p)
-			if imp.Name != nil {
-				if imp.Name.Name == "_" || imp.Name.Name == "." {
-					continue
-				}
-				local = imp.Name.Name
-			}
-			decoders[local] = p
+		reaches, decoders := fileImports(f)
+		boundary = boundary || reaches
+		if !decodes && len(decoders) > 0 {
+			decodes = callsDecoder(f, decoders)
 		}
-		if decodes || len(decoders) == 0 {
-			continue
-		}
-		ast.Inspect(f, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok {
-				return true
-			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok {
-				return true
-			}
-			id, ok := sel.X.(*ast.Ident)
-			if !ok {
-				return true
-			}
-			if imp, ok := decoders[id.Name]; ok && decodeFuncs[imp][sel.Sel.Name] {
-				decodes = true
-				return false
-			}
-			return true
-		})
 	}
 	return boundary && decodes, nil
+}
+
+// fileImports reports whether f imports a boundary package, and maps the local name
+// of each decoder package it imports to that package's path.
+func fileImports(f *ast.File) (boundary bool, decoders map[string]string) {
+	decoders = make(map[string]string)
+	for _, imp := range f.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil {
+			continue
+		}
+		if boundaryImports[p] {
+			boundary = true
+		}
+		if _, ok := decodeFuncs[p]; !ok {
+			continue
+		}
+		// A named import rebinds the selector; a blank or dot import cannot
+		// produce one to match against.
+		local := path.Base(p)
+		if imp.Name != nil {
+			if imp.Name.Name == "_" || imp.Name.Name == "." {
+				continue
+			}
+			local = imp.Name.Name
+		}
+		decoders[local] = p
+	}
+	return boundary, decoders
+}
+
+// callsDecoder reports whether f calls one of decodeFuncs through the local names in
+// decoders.
+func callsDecoder(f *ast.File, decoders map[string]string) bool {
+	found := false
+	ast.Inspect(f, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		id, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if imp, ok := decoders[id.Name]; ok && decodeFuncs[imp][sel.Sel.Name] {
+			found = true
+		}
+		return !found
+	})
+	return found
 }

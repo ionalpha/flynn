@@ -98,6 +98,9 @@ func TestRunUsageErrorsExitTwo(t *testing.T) {
 		{"inspect with no run id", []string{"inspect"}, "usage: flynn inspect"},
 		{"replay with no run id", []string{"replay"}, "usage: flynn inspect"},
 		{"resume with no run id", []string{"resume"}, "usage: flynn resume"},
+		{"skill with no subcommand", []string{"skill"}, "usage: flynn skill ab"},
+		{"skill with an unknown subcommand", []string{"skill", "nope"}, "usage: flynn skill ab"},
+		{"goal with a goal spec that does not exist", []string{"--goal-spec", "no-such-spec.json", "goal"}, "error:"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -381,14 +384,30 @@ func TestDefaultDataDirIsNamedForTheBuild(t *testing.T) {
 }
 
 // TestPrintUsageListsEverySubcommand: the summary is the only discovery surface for the
-// command set, so a subcommand that dispatches must appear in it.
+// command set, so a subcommand that dispatches must appear in it. The subcommands are
+// read from the two dispatch tables, so a new entry is checked without being listed here.
 func TestPrintUsageListsEverySubcommand(t *testing.T) {
 	var buf bytes.Buffer
 	printUsage(&buf)
 	out := buf.String()
-	for _, want := range []string{"goal", "runs", "resume", "serve", "review", "extensions", "auth", "models", "spine"} {
-		if !strings.Contains(out, "flynn "+want) {
-			t.Errorf("the usage summary does not mention `flynn %s`", want)
+	var names []string
+	for name := range invocationCommands {
+		names = append(names, name)
+	}
+	for name := range dataDirCommands {
+		names = append(names, name)
+	}
+	for _, name := range names {
+		if name == "help" {
+			continue // the summary is what help prints
+		}
+		if !strings.Contains(out, "flynn "+name) {
+			t.Errorf("the usage summary does not mention `flynn %s`", name)
+		}
+	}
+	for alias, target := range commandAliases {
+		if invocationCommands[target] == nil && dataDirCommands[target] == nil {
+			t.Errorf("alias %q names %q, which nothing dispatches", alias, target)
 		}
 	}
 }
@@ -405,4 +424,16 @@ func TestSweepsAreHousekeeping(t *testing.T) {
 	// and forget on every start.
 	sweepStaleSandboxProfiles()
 	sweepSupersededBinaries()
+}
+
+// TestRunSkillABNamesAMissingSkill: the skill branch dispatches past its usage check,
+// and an A/B run over a skill the store does not hold fails as a command error.
+func TestRunSkillABNamesAMissingSkill(t *testing.T) {
+	got := runCLI(t, "skill", "ab", "no-such-skill")
+	if got.code != 1 {
+		t.Fatalf("exit = %d, want 1 (stderr: %s)", got.code, got.stderr)
+	}
+	if !strings.Contains(got.stderr, "error:") {
+		t.Fatalf("stderr = %q, want a command error", got.stderr)
+	}
 }

@@ -7,25 +7,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Where the refusal verdict sits in a reconcile is the same argument as the invariant
-// audit's, and it lands beside it: after a completed step is observed, before the goal
-// parks, plans, fans out, settles its ledger or is asked whether it is done.
-//
-// It has to be there rather than among the other stall guards at the bottom of the pass.
-// Those run only once the stop evaluator has said the goal is not finished, which makes
-// every one of them a reason a run that did not converge stopped. A route-around is a
-// verdict on a run that did converge: the whole shape is a run that got where it was going
-// by a route it was refused, and reporting that run as converged and separately noting the
-// refusals would be reporting the workaround as a success. So the refusals are read first
-// and settle the goal from there, and the stop evaluator is never asked.
-//
-// The verdict is derived from the whole record every pass rather than banked on the
-// status. A count kept on the status would be a number a status write could lose and a
-// resumed run would restart from zero; the record cannot be spent, so re-reading it is
-// both simpler and the stronger guarantee. The cost is one probe read per pass that
-// observed a step, which is the same pacing as the audit and for the same reason: only a
-// completed step can have added a refusal.
-
 // WithRefusalProbe turns on refused-gate detection: after each completed step the goal's
 // recorded refusals are read through p, and a run that kept pushing on one gate stops
 // naming what refused it.
@@ -46,6 +27,12 @@ func WithRefusalProbe(p RefusalProbe) Option { return func(g *Reconciler) { g.re
 // way around a gate can leave overlapping records, and where both readings fire the verdict
 // is the truer account: the ask would have the author widen the authority of a run that was
 // looking for a way through, which is the opposite of what either shape needs.
+//
+// It runs beside the audit, before the stop evaluator, rather than among the stall
+// guards that follow it: those explain why a run that did not converge stopped, and a
+// route-around is a verdict on a run that did. The verdict is derived from the whole
+// record each pass rather than a count banked on the status, which a status write could
+// lose.
 //
 // observed paces the read the way it paces the audit: a poll tick, a resync and a wake see
 // the record the last pass already ruled on. There is no already-seen state to carry,

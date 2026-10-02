@@ -299,38 +299,61 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	now := m.p.clk.Now()
 	liveAt := now.UnixNano()
 
-	// The single-scope, no-FTS shape is the agent-startup read; it runs on the
-	// prepared statement (a non-positive Limit becomes SQLite's LIMIT -1, no
-	// limit, so both limit shapes share it). A widened read cannot: the prepared
-	// statement binds exactly one scope triple, so it falls through to the built
-	// query below, which is the only shape that can express a variable-length
-	// resolution chain.
 	// Anything the query language cannot answer correctly is applied after the
 	// rows come back, and forces the cap to be applied there too - a SQL LIMIT
 	// would otherwise truncate rows that the Go stage was going to drop anyway,
 	// returning fewer results than asked for.
 	postFilter := !q.Since.IsZero() || !q.Until.IsZero() || q.MinScore > 0
 
+	// The single-scope, no-FTS shape is the agent-startup read; it runs on the
+	// prepared statement. A widened read cannot: the prepared statement binds
+	// exactly one scope triple, so it falls through to the built query, which is
+	// the only shape that can express a variable-length resolution chain.
 	if query == "" && len(chain) == 1 && len(q.Kinds) == 0 && len(q.Subjects) == 0 && len(q.Anchors) == 0 && !postFilter {
-		limit := q.Limit
-		if limit <= 0 {
-			limit = -1
-		}
-		rows, err := m.p.stmts.memoryRecall.QueryContext(ctx, liveAt, q.Scope.Instance, q.Scope.Project, q.Scope.Workspace, limit)
-		if err != nil {
-			return nil, err
-		}
-		items, err := collectMemory(rows)
-		if err != nil {
-			return nil, err
-		}
-		// No query, so nothing was graded and every row is an equally good match.
-		for i := range items {
-			items[i].Score = 1
-		}
-		return items, nil
+		return m.recallPrepared(ctx, q, liveAt)
 	}
 
+	sqlText, args := buildRecallQuery(q, query, chain, liveAt, postFilter)
+	rows, err := m.p.reads().QueryContext(ctx, sqlText, args...)
+	if err != nil {
+		return nil, err
+	}
+	items, err := collectScoredMemory(rows)
+	if err != nil {
+		return nil, err
+	}
+	if !postFilter {
+		return items, nil
+	}
+	return postFilterRecall(items, q, now), nil
+}
+
+// recallPrepared answers the agent-startup read on the prepared statement. A
+// non-positive Limit becomes SQLite's LIMIT -1, no limit, so both limit shapes share
+// the statement.
+func (m *memory) recallPrepared(ctx context.Context, q state.RecallQuery, liveAt int64) ([]state.MemoryItem, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = -1
+	}
+	rows, err := m.p.stmts.memoryRecall.QueryContext(ctx, liveAt, q.Scope.Instance, q.Scope.Project, q.Scope.Workspace, limit)
+	if err != nil {
+		return nil, err
+	}
+	items, err := collectMemory(rows)
+	if err != nil {
+		return nil, err
+	}
+	// No query, so nothing was graded and every row is an equally good match.
+	for i := range items {
+		items[i].Score = 1
+	}
+	return items, nil
+}
+
+// buildRecallQuery builds the recall SQL for every shape the prepared statement
+// cannot answer, and the arguments it binds.
+func buildRecallQuery(q state.RecallQuery, query string, chain []state.Scope, liveAt int64, postFilter bool) (string, []any) {
 	var sb strings.Builder
 	args := make([]any, 0, 8)
 	if query == "" {
@@ -353,48 +376,72 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 	// query rather than in a post-filter: they cut the rows the sort has to order.
 	args = writeInClause(&sb, args, "m.kind", q.Kinds)
 	args = writeInClause(&sb, args, "m.subject", q.Subjects)
-	// Anchors are an indexed lookup through the projection table, expressed as an
-	// EXISTS rather than a join so an item anchored to two of the refs asked for
-	// comes back once. It belongs in SQL for the same reason kind does: it is the
-	// selector that cuts the row set hardest, and a ride-along read supplies it with
-	// no lexical query at all, so filtering afterwards would mean pulling the whole
-	// scope back to keep a handful of rows.
-	for i, a := range q.Anchors {
-		if i == 0 {
-			sb.WriteString(` AND EXISTS (SELECT 1 FROM memory_anchors ma WHERE ma.item_id = m.id AND (`)
-		} else {
+	args = writeAnchorClause(&sb, args, q.Anchors)
+	args = writeScopeClause(&sb, args, chain)
+	writeRecallOrder(&sb, q)
+	if q.Limit > 0 && !postFilter {
+		sb.WriteString(` LIMIT ?`)
+		args = append(args, q.Limit)
+	}
+	return sb.String(), args
+}
+
+// writeAnchorClause restricts the recall to items anchored to any of anchors.
+//
+// Anchors are an indexed lookup through the projection table, expressed as an
+// EXISTS rather than a join so an item anchored to two of the refs asked for comes
+// back once. It belongs in SQL for the same reason kind does: it is the selector
+// that cuts the row set hardest, and a ride-along read supplies it with no lexical
+// query at all, so filtering afterwards would mean pulling the whole scope back to
+// keep a handful of rows.
+func writeAnchorClause(sb *strings.Builder, args []any, anchors []state.Anchor) []any {
+	if len(anchors) == 0 {
+		return args
+	}
+	sb.WriteString(` AND EXISTS (SELECT 1 FROM memory_anchors ma WHERE ma.item_id = m.id AND (`)
+	for i, a := range anchors {
+		if i > 0 {
 			sb.WriteString(` OR `)
 		}
 		sb.WriteString(`(ma.kind = ? AND ma.ref_id = ?)`)
 		args = append(args, a.Kind, a.ID)
 	}
-	if len(q.Anchors) > 0 {
-		sb.WriteString(`))`)
+	sb.WriteString(`))`)
+	return args
+}
+
+// writeScopeClause restricts the recall to the scope chain: one scope, or that
+// scope's ancestors when the read widened, so the predicate is an OR over its
+// triples. Nil means unfiltered, no predicate.
+func writeScopeClause(sb *strings.Builder, args []any, chain []state.Scope) []any {
+	if len(chain) == 0 {
+		return args
 	}
-	// The chain is one scope, or that scope's ancestors when the read widened, so
-	// the predicate is an OR over its triples. Nil means unfiltered, no predicate.
+	sb.WriteString(` AND (`)
 	for i, sc := range chain {
-		if i == 0 {
-			sb.WriteString(` AND (`)
-		} else {
+		if i > 0 {
 			sb.WriteString(` OR `)
 		}
 		sb.WriteString(`(m.scope_instance = ? AND m.scope_project = ? AND m.scope_workspace = ?)`)
 		args = append(args, sc.Instance, sc.Project, sc.Workspace)
 	}
-	if len(chain) > 0 {
-		sb.WriteString(`)`)
-	}
-	// A widened recall ranks most-specific scope first, matching state.Scope.Depth
-	// and state.SortRecall, so a workspace's own memory outranks the project
-	// memory it inherits. The CASE takes no arguments because it reads the
-	// innermost set column rather than comparing against the chain: within one
-	// ancestor chain every level has a distinct innermost column, which is exactly
-	// what Depth reports. It has to be ordered in SQL rather than after collection,
-	// because LIMIT would otherwise truncate the wrong rows.
+	sb.WriteString(`)`)
+	return args
+}
+
+// writeRecallOrder orders the recall.
+//
+// A widened recall ranks most-specific scope first, matching state.Scope.Depth and
+// state.SortRecall, so a workspace's own memory outranks the project memory it
+// inherits. The CASE takes no arguments because it reads the innermost set column
+// rather than comparing against the chain: within one ancestor chain every level has
+// a distinct innermost column, which is exactly what Depth reports. It has to be
+// ordered in SQL rather than after collection, because LIMIT would otherwise
+// truncate the wrong rows.
+func writeRecallOrder(sb *strings.Builder, q state.RecallQuery) {
 	sb.WriteString(` ORDER BY`)
 	if q.Order == state.OrderRelevance {
-		fmt.Fprintf(&sb, ` %d DESC,`, memoryScoreCol)
+		fmt.Fprintf(sb, ` %d DESC,`, memoryScoreCol)
 	}
 	if q.RanksByScope() {
 		sb.WriteString(` CASE
@@ -404,27 +451,16 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 			ELSE 3 END,`)
 	}
 	sb.WriteString(` m.created_at DESC, m.id DESC`)
-	if q.Limit > 0 && !postFilter {
-		sb.WriteString(` LIMIT ?`)
-		args = append(args, q.Limit)
-	}
+}
 
-	rows, err := m.p.reads().QueryContext(ctx, sb.String(), args...)
-	if err != nil {
-		return nil, err
-	}
-	items, err := collectScoredMemory(rows)
-	if err != nil {
-		return nil, err
-	}
-	if !postFilter {
-		return items, nil
-	}
-	// The CreatedAt window is applied here rather than as a SQL range. Since
-	// migration 0029 created_at is fixed-width and does compare lexicographically,
-	// so a SQL range is now correct and would let the index serve the window; it
-	// is a separate change because MinScore also lands in this stage and only the
-	// window can move, so the post-filter and its deferred LIMIT stay either way.
+// postFilterRecall applies what the SQL could not, and the cap with it.
+//
+// The CreatedAt window is applied here rather than as a SQL range. Since migration
+// 0029 created_at is fixed-width and does compare lexicographically, so a SQL range
+// is now correct and would let the index serve the window; it is a separate change
+// because MinScore also lands in this stage and only the window can move, so the
+// post-filter and its deferred LIMIT stay either way.
+func postFilterRecall(items []state.MemoryItem, q state.RecallQuery, now time.Time) []state.MemoryItem {
 	out := items[:0]
 	for _, it := range items {
 		if !q.Selects(it, now) || it.Score < q.MinScore {
@@ -435,7 +471,7 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 			break
 		}
 	}
-	return out, nil
+	return out
 }
 
 // writeInClause appends ` AND <col> IN (?, ?, ...)` to sb and the values to args,

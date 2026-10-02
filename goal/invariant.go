@@ -12,45 +12,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// A goal's invariants are the terms of the run: things that must stay true while the
-// work happens, as opposed to the stop condition, which is the one thing that must
-// become true for the work to be over.
-//
-// The distinction is the whole point. A stop condition creates completion pressure by
-// design: a run is given a statement of done, an independent grader that refuses, a
-// step budget counting down, and hours with nobody watching. Under that pressure
-// anything else stated in prose reads as an obstacle on the path to the only outcome
-// being measured, and the observed failure is an agent that works around a guard while
-// looking locally compliant at every step. An invariant is the counterweight, and it is
-// only a counterweight if the run cannot spend it.
-//
-// Four rules are what make it unspendable.
-//
-// It is not the goal's to declare satisfied. The stop condition is judged by asking
-// whether the objective has been achieved, which is a question the run's own account of
-// its work answers. An invariant is judged by an auditor that reads the record of what
-// the run did, and the reconciler asks it before it asks whether the goal is done. A
-// breach settles the goal whatever the stop evaluator was about to say, so there is no
-// ordering on which finishing the task outranks the terms it was given.
-//
-// It cannot be relaxed by the run. Once a reconcile has adopted an invariant onto the
-// status, dropping it or rewording it is refused as a terminal spec fault. Adding one is
-// always allowed: tightening the terms mid-run is legitimate, and loosening them is the
-// exact move this exists to foreclose. That asymmetry is deliberate, and it is why the
-// rule is not the unit graph's (a unit nothing was spent on is not yet a commitment; an
-// invariant is a commitment from the moment it is stated).
-//
-// A breach outlives the reconcile that found it. It is recorded on the status, and a
-// goal carrying a recorded breach can never converge, so editing the spec to re-run a
-// breached goal does not launder the breach out of the record.
-//
-// A term nobody can check is not a term. A goal that states terms with no auditor wired
-// stalls before its first step, because the alternative is a run that reads as governed,
-// is never checked, and finishes indistinguishable from one whose terms held. A term that
-// asserts an absence is refused outright unless it declares the search that would find a
-// counterexample, since nothing in a run's record is the absence and "I could not find
-// any" is worth what the search behind it was worth (absence.go).
-
 // invariantMarkLen is how many hex characters of an invariant's content hash form its
 // fingerprint. Sixteen (64 bits) is far past collision range for the handful of terms
 // one goal carries, and short enough to stay readable in a status dump.
@@ -73,7 +34,21 @@ var (
 )
 
 // Invariant is one term of the run: something that must hold throughout, stated in the
-// author's words, with an optional declared way to observe it.
+// author's words, with an optional declared way to observe it. The stop condition is
+// what must become true for the work to be over; an invariant is what must stay true
+// while it happens, and it is the counterweight to the completion pressure the stop
+// condition creates. Four rules keep a run from spending it:
+//
+//   - An [InvariantAuditor] judges it from the record of what the run did, and the
+//     reconciler asks before it asks whether the goal is done. A breach settles the
+//     goal whatever the stop evaluator would have said.
+//   - The run cannot relax it. Dropping or rewording an adopted invariant is a terminal
+//     spec fault ([ErrInvariantRelaxed]); adding one is always allowed.
+//   - A breach is recorded on the status and outlives the reconcile that found it, so
+//     editing the spec does not launder it out.
+//   - A term nobody can check is not a term. A goal that states terms with no auditor
+//     wired stalls before its first step, and a term asserting an absence is refused
+//     unless it declares the search that would find a counterexample (absence.go).
 type Invariant struct {
 	// ID names the term so a breach can point at it and a status entry can track it
 	// across reconciles. It is the author's, like a unit id, because the statement is
