@@ -68,6 +68,8 @@ func TestRunReportsAStoreItCannotOpen(t *testing.T) {
 		{"integrations", "call", "httpbin", "get"},
 		{"services", "rm", "svc"},
 		{"playbook", "run", "fly-app"},
+		{"skill", "ls"},
+		{"skill", "show", "deletion"},
 	} {
 		t.Run(strings.Join(cmd, " "), func(t *testing.T) {
 			got := runCLIIn(t, unopenableDataDir(t), cmd...)
