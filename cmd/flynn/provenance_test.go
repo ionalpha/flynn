@@ -188,6 +188,7 @@ func TestAttestedDeclarationMatchesRecordedEvents(t *testing.T) {
 	defer func() { _ = store.Close() }()
 
 	const stream = "run/invariant"
+	withNoExecutables(t)
 	ea, err := newExternalAgent("codex", t.TempDir())
 	if err != nil {
 		t.Fatalf("newExternalAgent: %v", err)
