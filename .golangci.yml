@@ -65,11 +65,11 @@ linters:
     # that routes every endpoint through one handler would otherwise set the ceiling
     # for production code.
     gocyclo:
-      # Set by (*goal.Reconciler).reconcile.
-      min-complexity: 36
+      # Set by flow.lex.
+      min-complexity: 28
     gocognit:
-      # Set by rigor.Check.
-      min-complexity: 53
+      # Set by (*input.Reader).pump.
+      min-complexity: 38
     # Doc comments are the rendered docs: `go doc` and pkg.go.dev serve them straight
     # from the source, so an undocumented exported symbol is a hole in the public API
     # reference, not a style slip. Both rules pass tree-wide today (every exported
@@ -337,11 +337,17 @@ linters:
       - linters:
           - dupl
         path: _test\.go
-      # The complexity caps are a ratchet on shipping code; see their settings.
+      # The complexity caps are a ratchet on shipping code; see their settings. The
+      # *test packages are the conformance suites every backend runs: test code that
+      # has to be importable, excluded from coverage in codecov.yml for the same reason.
       - linters:
           - gocognit
           - gocyclo
         path: _test\.go
+      - linters:
+          - gocognit
+          - gocyclo
+        path: '(^|/)(bus|jobs|llm|memory|resource|skill|spine|state)test/'
 
 formatters:
   enable:
