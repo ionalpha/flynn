@@ -147,9 +147,11 @@ func TestExternalBackendAssemblyRefusesAnUnknownName(t *testing.T) {
 }
 
 // TestExternalAdapterIsBuiltForEveryBackend checks each known backend assembles an adapter
-// and a spawner, whether or not the CLI is installed on this machine: detection reports a
-// missing install as onboarding, so assembly must not fail on it.
+// and a spawner with the CLI absent: detection reports a missing install as onboarding, so
+// assembly must not fail on it. The PATH is emptied so the result does not depend on what
+// this machine has installed.
 func TestExternalAdapterIsBuiltForEveryBackend(t *testing.T) {
+	withNoExecutables(t)
 	for _, name := range externalAgentNames() {
 		spawner, err := externalSpawner(name)
 		if err != nil {

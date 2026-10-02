@@ -7,24 +7,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Auditing the terms of a run is the reconciler's third gate, and where it sits in the
-// pass is the whole design. It runs after a completed step has been observed and before
-// the goal plans, fans out, settles its ledger or is asked whether it is done. A goal
-// whose terms have been broken returns from there, so the stop evaluator is not
-// consulted, the ledger is not settled, and no further work is dispatched.
-//
-// That ordering is the guarantee, in the same way the unit graph's is: there is no path
-// on which a model's account of having finished the task can outrank a term of the run
-// it broke getting there. A check placed after the stop evaluator would be a different
-// and much weaker thing, because the interesting case is exactly the run that has done
-// the work and broken the terms doing it.
-//
-// An audit is spent once per step, not once per reconcile. A poll tick, a resync and a
-// wake see the same durable record the last audit already ruled on, so re-auditing them
-// would buy nothing and cost an auditor call each; a completed step is the only event
-// that puts new work into the record. The result is one audit per step the run takes,
-// which is also the sentence worth being able to say about a stopped goal.
-
 // WithInvariantAudit checks a goal's invariants through a, once per completed step and
 // before the stop condition is evaluated. A breach settles the goal terminally, naming
 // the term and what the audit found.
@@ -42,6 +24,10 @@ func WithInvariantAudit(a InvariantAuditor) Option {
 // auditInvariants runs one pass of the goal's terms and reports whether it handled the
 // reconcile. It handles it when a term is broken, which settles the goal; otherwise it
 // hands back and the goal carries on.
+//
+// It runs after a completed step is observed and before the goal parks, plans, fans
+// out, settles its ledger or is asked whether it is done, so no path lets the run's
+// account of finishing outrank a term it broke getting there.
 //
 // observed says whether this pass saw a step complete, and it is what paces the audit:
 // only a completed step has added anything for an auditor to rule on. The recorded-breach

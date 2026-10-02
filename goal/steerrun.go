@@ -7,26 +7,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Where the steer gate sits in a reconcile is the opposite of where the invariant audit
-// sits, and the two placements come from the same argument. A term of the run is checked
-// before the stop evaluator is asked anything, because a run that broke its terms getting
-// the task done must not be able to trade the breach against having finished. A redirect
-// is checked at the completion claim itself, because the claim is where the run states
-// what it did, and that statement is the thing being judged. Asking earlier would be
-// asking about work the run has not finished describing.
-//
-// So this runs after the stop evaluator has said yes and after the ledger has held the
-// claim up against the record, and before the goal is written converged. Everything it can
-// do from there is refuse: a discharged redirect changes nothing about the verdict, and an
-// outstanding one settles the goal un-done with the redirect and the account quoted.
-//
-// A goal that reported completion and was steered afterwards is judged by this same rule,
-// against the account it already gave. That is intended and it is not a way to make a
-// finished run do more work: the account was written before the redirect existed, so it
-// will not address it, and the goal settles saying so. Getting more work out of a settled
-// run is a new turn on the conversation, which is a different operation with a different
-// name.
-
 // WithSteerJudge rules on a run's account of how it addressed the operator's redirects,
 // through j. Without one, a goal that is steered stops rather than running under an
 // obligation it has no way to discharge.
@@ -44,6 +24,11 @@ func WithSteerJudge(j SteerJudge) Option { return func(g *Reconciler) { g.judge 
 // under, and reports whether it handled the reconcile. It handles it when the goal must
 // stop: with no judge wired, or with a redirect the account did not address. Otherwise it
 // records the acknowledgements on the status and hands back, and the goal converges.
+//
+// It runs at the completion claim, after the stop evaluator and the ledger have accepted
+// it and before the goal is written converged, because the claim is where the run states
+// what it did. A goal steered after it already reported completion is judged against
+// that earlier account, which will not address the redirect, so it settles saying so.
 //
 // account is what the stop evaluator gave as its reason, which is the run's own statement
 // of what it did. It is judged rather than searched: a run that names the redirect and

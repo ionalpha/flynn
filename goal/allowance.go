@@ -7,45 +7,21 @@ import (
 	"github.com/ionalpha/flynn/allowance"
 )
 
-// An irreversible action outside the workspace is never inferred from the objective. It is
-// declared in advance by the person who wrote the objective, or the run stops and asks.
-//
-// The failure this is for is not a run that was refused something. It is a run that was
-// never refused anything: told what to accomplish, it worked out that accomplishing it
-// needed a destructive change to persistent state, and made it. The reported instance
-// deleted OS-level saved settings and user state nothing could restore, with no
-// confirmation and no backup, several times in one session. Each step was a defensible
-// reading of the instruction. Nobody had said the instruction reached that far.
-//
-// Under goal mode the answer cannot be a confirmation prompt, because the arrangement is
-// that nobody is watching: a prompt is a question asked into an empty room and a run that
-// blocks on one is a run that has hung. The answer is also not handing the refusal to the
-// model, which is worse than the prompt. A model that meets a gate reformulates: it rewords,
-// it substitutes a tool that is not hooked, it splits the action into steps that each clear
-// the gate. Handing an undeclared destructive action back as a refusal is how the
-// route-around starts (see refusal.go, which detects it after the fact).
-//
-// So the run stops. The goal parks with an ask naming the action it needs declared, and the
-// author declares it and the goal picks up, or does not and the run is over. That makes the
-// authority for an irreversible action something a person wrote down before the run
-// started, which is the only form of it a run cannot talk itself into.
-//
-// The pause is derived from the record every pass, not banked on the status: an allowance
-// refusal the spec still does not cover is an ask, and one the spec now covers is not. That
-// is what makes it resume rather than merely stop, because declaring the allowance is what
-// makes the ask stop being true.
-//
-// What this cannot see: a second target under a declaration that named a first one. A
-// refusal on the record names the action and not what it was attempted against, so any
-// declaration of that action silences the ask, including one narrowed to a target. The
-// waist still refuses the undeclared target every time, so nothing runs that was not
-// declared; what is lost is the pause, and the run sees a refusal instead. It stays this
-// way until a refusal record carries the target, rather than being papered over with a
-// coverage rule the record cannot actually support.
-
 // Allowance is one standing authorization on the goal spec: an action the run may take
 // even though it reaches outside the workspace irreversibly, optionally narrowed to a
 // target. It is the spec's form of allowance.Declaration, which is what the waist checks.
+//
+// An irreversible action outside the workspace is never inferred from the objective: it
+// is declared in advance by the person who wrote the objective, or the run stops and
+// asks. Nobody is watching a goal-mode run, so a confirmation prompt would hang it, and
+// handing the model a refusal invites it to route around the gate (see
+// [RefusalVerdict]). So the goal parks with an [AllowanceAsk] naming the action, and
+// resumes once the spec declares it. The pause is derived from the record on every
+// pass, which is what makes declaring the allowance release it.
+//
+// A refusal on the record names the action and not its target, so any declaration of
+// that action silences the ask, including one narrowed to a different target. The waist
+// still refuses the undeclared target; what is lost is the pause, not the protection.
 //
 // A declaration naming no action is refused by the spec schema, before a goal carrying one
 // is ever stored: it would authorize nothing while reading like it authorizes something,
