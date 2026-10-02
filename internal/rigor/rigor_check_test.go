@@ -245,7 +245,7 @@ func F(r *http.Response) string { return r.Status }
 func TestBenchmarkFloor(t *testing.T) {
 	const mod = "example.com/m"
 	for _, c := range []struct {
-		name, test string
+		name, test    string
 		wantViolation bool
 	}{
 		{"missing", fmt.Sprintf(propTest, "p"), true},
