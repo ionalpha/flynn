@@ -206,7 +206,7 @@ func New(cfg Config) (*Set, error) {
 	}, nil
 }
 
-// Tools returns the review toolset as mission.Tools, ready to register with an
+// Tools returns the review toolset as [mission.Tool] values, ready to register with an
 // executor. The names match the capability names an Agent archetype grants:
 // github_pr_fetch, github_comment, and github_submit_review. A tool the archetype
 // does not list is refused at the dispatch waist, so a reviewer granted only
