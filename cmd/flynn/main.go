@@ -342,6 +342,34 @@ func (inv invocation) exit(err error) int {
 	return 0
 }
 
+// invocationCommands are the subcommands that need more of the invocation than the
+// data directory: the model spec, the output streams, or the run-shaping flags. Each
+// returns its own exit code, because several have an outcome other than ok-or-error.
+var invocationCommands = map[string]func(inv invocation, rest []string) int{
+	"goal":    routeGoal,
+	"inspect": routeInspect,
+	"runs":    func(inv invocation, _ []string) int { return inv.exit(listRuns(inv.stdout, inv.dataDir)) },
+	"resume":  routeResume,
+	"regrade": func(inv invocation, _ []string) int { return inv.exit(regradeSkills(inv.stdout, inv.dataDir)) },
+	"memory":  routeMemory,
+	"skill":   routeSkill,
+	"serve": func(inv invocation, rest []string) int {
+		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir))
+	},
+	"watch": func(inv invocation, _ []string) int {
+		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
+	},
+	"review": routeReview,
+	"help":   func(inv invocation, _ []string) int { printUsage(inv.stdout); return 0 },
+}
+
+// commandAliases maps a second name to the subcommand it runs. The usage summary
+// names the subcommand, so an alias is not required to appear in it.
+var commandAliases = map[string]string{
+	"replay":   "inspect",
+	"sessions": "runs",
+}
+
 // routeCommand routes a parsed command line to its subcommand and returns the process exit code.
 // It is the command table split out of run so parsing/profiling setup and command routing each
 // stay small; the exit-code contract lives here: 0 on success, 1 on a command error, 2 on a usage
@@ -359,96 +387,17 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 		_, _ = fmt.Fprintf(inv.stderr, "usage: --goal-spec states the terms of one run, so it applies to `flynn goal` and not to %s\n", what)
 		return 2
 	}
-	switch cmd {
-	case "goal":
-		// The run's terms are read and validated here, before a store is opened or a
-		// credential is resolved: a spec file that will not load is a usage error, and the
-		// operator finds out while they are still looking at the file rather than after
-		// the run has started without the terms they wrote.
-		var spec goalSpecFile
-		if inv.goalSpec != "" {
-			loaded, err := loadGoalSpecFile(inv.goalSpec)
-			if err != nil {
-				_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-				return 2
-			}
-			spec = loaded
-		}
-		// Printed without the error prefix: an objective stated nowhere, or stated twice
-		// and differently, is the command line being wrong rather than the run failing.
-		objective, err := mergeGoalSpec(spec, strings.Join(rest[1:], " "))
-		if err != nil {
-			_, _ = fmt.Fprintln(inv.stderr, err)
-			return 2
-		}
-		return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
-
-	case "inspect", "replay":
-		if len(rest) < 2 {
-			_, _ = fmt.Fprintln(inv.stderr, "usage: flynn inspect <run-id>")
-			return 2
-		}
-		return inv.exit(inspectRun(inv.stdout, inv.dataDir, rest[1], inv.verbose))
-
-	case "runs", "sessions":
-		return inv.exit(listRuns(inv.stdout, inv.dataDir))
-
-	case "resume":
-		if len(rest) < 2 {
-			_, _ = fmt.Fprintln(inv.stderr, "usage: flynn resume <run-id>")
-			return 2
-		}
-		return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose))
-
-	case "regrade":
-		return inv.exit(regradeSkills(inv.stdout, inv.dataDir))
-
-	case "memory":
-		// Not a dataDirCommands entry: consolidation distils a series through a model,
-		// so this one needs the run's model spec as well as the data directory.
-		if err := dispatchMemory(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
-			if errors.Is(err, errMemoryUsage) {
-				_, _ = fmt.Fprintln(inv.stderr, err)
-				return 2
-			}
-			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-			return 1
-		}
-		return 0
-
-	case "skill":
-		if len(rest) < 2 || rest[1] != "ab" {
-			_, _ = fmt.Fprintln(inv.stderr, `usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
-			return 2
-		}
-		return inv.exit(runSkillAB(rest[2:], inv.modelSpec, inv.dataDir, inv.stdout))
-
-	case "serve":
-		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir))
-
-	case "watch":
-		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
-
-	case "review":
-		// review is the one command whose non-error outcome is not simply success: a run that
-		// requested changes exits with its own code rather than 0 or 1.
-		switch err := runReview(rest[1:], inv.modelSpec, inv.dataDir, inv.verbose); {
-		case errors.Is(err, errChangesRequested):
-			return exitChangesRequested
-		case err != nil:
-			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
-			return 1
-		}
-		return 0
-
-	case "help":
-		printUsage(inv.stdout)
-		return 0
+	name := cmd
+	if target, ok := commandAliases[cmd]; ok {
+		name = target
+	}
+	if fn, ok := invocationCommands[name]; ok {
+		return fn(inv, rest)
 	}
 
 	// Subcommands that take only the data directory share one dispatch path, so adding one is a
 	// table entry rather than another case here.
-	if fn, ok := dataDirCommands[cmd]; ok {
+	if fn, ok := dataDirCommands[name]; ok {
 		if err := fn(rest[1:], inv.dataDir); err != nil {
 			// An error with no message is a command reporting an outcome through its exit code
 			// rather than a failure: `flynn version check` exits non-zero when an upgrade is
@@ -470,6 +419,83 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 
 	printUsage(inv.stderr)
 	return 2
+}
+
+// routeGoal runs `flynn goal`. The run's terms are read and validated here, before a
+// store is opened or a credential is resolved: a spec file that will not load is a
+// usage error, and the operator finds out while they are still looking at the file
+// rather than after the run has started without the terms they wrote.
+func routeGoal(inv invocation, rest []string) int {
+	var spec goalSpecFile
+	if inv.goalSpec != "" {
+		loaded, err := loadGoalSpecFile(inv.goalSpec)
+		if err != nil {
+			_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+			return 2
+		}
+		spec = loaded
+	}
+	// Printed without the error prefix: an objective stated nowhere, or stated twice
+	// and differently, is the command line being wrong rather than the run failing.
+	objective, err := mergeGoalSpec(spec, strings.Join(rest[1:], " "))
+	if err != nil {
+		_, _ = fmt.Fprintln(inv.stderr, err)
+		return 2
+	}
+	return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
+}
+
+func routeInspect(inv invocation, rest []string) int {
+	if len(rest) < 2 {
+		_, _ = fmt.Fprintln(inv.stderr, "usage: flynn inspect <run-id>")
+		return 2
+	}
+	return inv.exit(inspectRun(inv.stdout, inv.dataDir, rest[1], inv.verbose))
+}
+
+func routeResume(inv invocation, rest []string) int {
+	if len(rest) < 2 {
+		_, _ = fmt.Fprintln(inv.stderr, "usage: flynn resume <run-id>")
+		return 2
+	}
+	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose))
+}
+
+// routeMemory runs `flynn memory`. It is not a dataDirCommands entry: consolidation
+// distils a series through a model, so it needs the run's model spec as well as the
+// data directory.
+func routeMemory(inv invocation, rest []string) int {
+	if err := dispatchMemory(rest[1:], inv.modelSpec, inv.dataDir, inv.stdout); err != nil {
+		if errors.Is(err, errMemoryUsage) {
+			_, _ = fmt.Fprintln(inv.stderr, err)
+			return 2
+		}
+		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+		return 1
+	}
+	return 0
+}
+
+func routeSkill(inv invocation, rest []string) int {
+	if len(rest) < 2 || rest[1] != "ab" {
+		_, _ = fmt.Fprintln(inv.stderr, `usage: flynn skill ab <skill> [--repeats n] [--exercises dir]`)
+		return 2
+	}
+	return inv.exit(runSkillAB(rest[2:], inv.modelSpec, inv.dataDir, inv.stdout))
+}
+
+// routeReview runs `flynn review`, the one command whose non-error outcome is not
+// simply success: a run that requested changes exits with its own code rather than
+// 0 or 1.
+func routeReview(inv invocation, rest []string) int {
+	switch err := runReview(rest[1:], inv.modelSpec, inv.dataDir, inv.verbose); {
+	case errors.Is(err, errChangesRequested):
+		return exitChangesRequested
+	case err != nil:
+		_, _ = fmt.Fprintln(inv.stderr, "error:", err)
+		return 1
+	}
+	return 0
 }
 
 // effectiveModelSpec resolves which model to drive: the explicit --model value when the
