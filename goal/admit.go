@@ -12,35 +12,19 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// admit checks the desired-state records a reconcile reads (the ledger, the unit graph,
-// the run's terms, the redirects it has been given and the order to stop) and brings the
-// status's observation of each into line with it.
-// Everything it
-// refuses is a terminal spec fault, because all of it means the same thing: the
-// definition the run is being judged against changed underneath the run.
+// admit checks the desired-state records a reconcile reads (ledger, unit graph, terms,
+// steers, kill order) and brings the status's observation of each into line. Everything
+// it refuses is a terminal spec fault: each means the definition the run is judged
+// against changed underneath it.
 //
-// A ledger that lost or rewrote an item is the definition of done being edited
-// mid-run. A unit graph with a cycle, an edge to a unit that does not exist, or a unit
-// with no way to prove it is a spec that could never run, and it is refused whole
-// before anything is dispatched, because discovering it halfway through a fan-out
-// means children are already running against it. A unit altered or dropped after its
-// child was created is the meaning of work already in flight being rewritten; units
-// nothing has been spent on are not a commitment and may still be added, removed and
-// reordered.
+// A unit graph with a cycle, a dangling edge or an unprovable unit is refused whole
+// before dispatch, since finding it mid fan-out leaves children running against it. A
+// unit altered or dropped after its child was created is work in flight being
+// rewritten; units nothing has been spent on may still change.
 //
-// An invariant dropped or reworded after the run adopted it is the terms of the run
-// being renegotiated by the run, which is the move invariants exist to foreclose, so it
-// is refused here whether or not an auditor is wired to check those terms. Adding a term
-// is always allowed: the rule is one-directional because tightening the terms mid-run is
-// its author's to do and loosening them is nobody's.
-//
-// A steer dropped or reworded after the run was given it is the same move made against a
-// different record, and it is refused the same way. The asymmetry is the same too: another
-// redirect may always be issued, which is how an operator corrects one that was wrong.
-//
-// A goal that carries none of these records passes straight through, so this changes
-// nothing for a goal that neither plans, fans out, states any terms, nor is steered or
-// stopped by anyone.
+// An invariant or steer dropped or reworded after adoption is refused whether or not an
+// auditor is wired. Adding one is always allowed: tightening is the author's, loosening
+// is nobody's, and a further steer is how an operator corrects a wrong one.
 func admit(spec Spec, status *Status) error {
 	if err := status.ValidateLedger(spec.Ledger); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_ledger_regressed", err)
@@ -53,19 +37,16 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, "goal_unit_rewritten", err)
 	}
 	status.SyncUnits(spec.Units)
-	// The relaxation check runs before the validity check, which is the reverse of the
-	// ledger and the unit graph above. A term that was reworded is usually also worse in
-	// some other way (a check dropped, a statement softened past what any auditor could
-	// settle), and both diagnoses are true at once. The relaxation is the one worth
-	// saying: it names what the run just did, where the validity fault would send the
-	// author off to fix the wording of a term they were not allowed to touch.
+	// Relaxation is checked before validity, the reverse of the ledger and unit graph
+	// above. A reworded term is usually also invalid, and both diagnoses are true, but
+	// the relaxation names what the run just did where the validity fault would send
+	// the author to fix wording they were not allowed to touch.
 	if err := status.ValidateInvariantsAdopted(spec.Invariants); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_invariant_relaxed", err)
 	}
 	if err := ValidateInvariants(spec.Invariants); err != nil {
-		// An unsearchable term gets its own code because it is the one an author can
-		// fix in a line, and a generic "invalid" would bury the instruction to write
-		// the search under a class of faults that mostly mean something else.
+		// An unsearchable term gets its own code: an author can fix it in a line, and
+		// a generic "invalid" would bury that instruction.
 		code := "goal_invariants_invalid"
 		if errors.Is(err, ErrInvariantUnsearchable) {
 			code = "goal_invariant_unsearchable"
@@ -73,10 +54,7 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, code, err)
 	}
 	status.SyncInvariants(spec.Invariants)
-	// A redirect withdrawn or reworded after the run was handed it, checked before the
-	// validity of the set for the same reason the invariant's is: the withdrawal names
-	// what just happened, where the validity fault would send its author off to fix
-	// wording they were not the one to change.
+	// Withdrawal is checked before validity, as for invariants.
 	if err := status.ValidateSteersGiven(spec.Steers); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_steer_withdrawn", err)
 	}
@@ -84,36 +62,32 @@ func admit(spec Spec, status *Status) error {
 		return fault.Wrap(fault.Terminal, "goal_steers_invalid", err)
 	}
 	status.SyncSteers(spec.Steers)
-	// A kill taken off the spec after the run was stopped under it. This is the same move
-	// again and it is refused for a reason of its own: the only account of a run nobody
-	// watched is its record, and a record that reads as a run stopping on its own when a
-	// person stopped it is wrong about the one moment somebody intervened.
+	// A kill taken off the spec after the run stopped under it is refused so the
+	// record never reads as a run stopping on its own when a person stopped it.
 	if err := status.ValidateKillGiven(spec.Kill); err != nil {
 		return fault.Wrap(fault.Terminal, "goal_kill_withdrawn", err)
 	}
 	return nil
 }
 
-// stopGuard reports the reason a goal that has not converged must stop anyway, with the
-// message that reason carries, or "" to keep going. A guard that cannot answer returns an
-// error for the caller to classify rather than reading as a stall.
+// stopGuard reports the reason a goal that has not converged must stop anyway, with
+// the message that reason carries, or "" to keep going. A guard that cannot answer
+// returns an error for the caller to classify rather than reading as a stall.
 //
-// The order is the ranking: the reasons run from the most specific account of the halt to
-// the least, and the first to fire is the one the run settles under. Budget and spend come
-// first because a run that has used up what it was given has stopped for that reason
-// whatever else was also true. No progress comes next, since a run that did nothing at all
-// is better described that way than by what it was told. Non-convergence is last: it is
-// what remains when a run was busy, was within its allowance, and still got nowhere, and it
-// is the only one of the four that would otherwise have spent the whole budget to be
-// reached as a budget reason.
+// The order is the ranking, from the most specific account of the halt to the least,
+// and the first to fire is the one the run settles under. Budget and spend come first
+// because a run that used up what it was given stopped for that reason whatever else
+// was true. No progress is next: a run that did nothing is better described that way
+// than by what it was told. Non-convergence is last, what remains when a run was busy,
+// within its allowance, and still got nowhere; it is the one that would otherwise
+// have spent the whole budget to be reached as a budget reason.
 func (g *Reconciler) stopGuard(ctx context.Context, r resource.Resource, spec Spec, status Status) (reason, message string, err error) {
 	if status.Steps >= maxSteps(spec) {
 		return "BudgetExhausted", "step budget exhausted before the stop condition was met", nil
 	}
-	// Our own ceiling on tokens, cost and share of the plan window, checked alongside the
-	// step budget because a step is the wrong unit for cost. Crossing it names what the run
-	// spent against what it was allowed, distinct from the step-budget reason and from a
-	// provider pause or a transient retry, which this never touches.
+	// Our own ceiling on tokens, cost and share of the plan window, checked beside
+	// the step budget because a step is the wrong unit for cost. It never touches a
+	// provider pause or a transient retry.
 	if !spec.Budget.IsZero() {
 		reason, message, err := g.spendGuard(ctx, r, spec)
 		if err != nil || reason != "" {

@@ -13,69 +13,59 @@ import (
 )
 
 // invariantMarkLen is how many hex characters of an invariant's content hash form its
-// fingerprint. Sixteen (64 bits) is far past collision range for the handful of terms
-// one goal carries, and short enough to stay readable in a status dump.
+// fingerprint: 64 bits, past collision range for the terms one goal carries.
 const invariantMarkLen = 16
 
-// Invariant errors. They separate a term that could never be checked from a term the
-// run tried to get out from under, because the two say different things: the first is
-// an authoring mistake, the second is the failure mode invariants exist for.
+// Invariant errors are distinct because they say different things: an authoring
+// mistake (a term that could never be checked) and the failure invariants exist for (a
+// run getting out from under a term).
 var (
-	// ErrInvariantIncomplete reports an invariant missing its id or its statement. A
-	// term with nothing written down cannot be audited, and an auditor handed one
-	// would have to invent what it means.
+	// ErrInvariantIncomplete reports an invariant missing its id or statement. An auditor
+	// handed a term with nothing written down would have to invent what it means.
 	ErrInvariantIncomplete = errors.New("goal: invariant needs an id and a statement")
-	// ErrInvariantDuplicate reports two invariants claiming the same id, which would
-	// make a breach ambiguous about which term was broken.
+	// ErrInvariantDuplicate reports two invariants with one id, which would make a breach
+	// ambiguous about which term was broken.
 	ErrInvariantDuplicate = errors.New("goal: duplicate invariant id")
-	// ErrInvariantRelaxed reports an invariant dropped or reworded after the run
-	// adopted it: the terms of the run being renegotiated by the run.
+	// ErrInvariantRelaxed reports an invariant dropped or reworded after the run adopted
+	// it: the run renegotiating its own terms.
 	ErrInvariantRelaxed = errors.New("goal: invariant was relaxed after the run adopted it")
 )
 
-// Invariant is one term of the run: something that must hold throughout, stated in the
-// author's words, with an optional declared way to observe it. The stop condition is
-// what must become true for the work to be over; an invariant is what must stay true
-// while it happens, and it is the counterweight to the completion pressure the stop
-// condition creates. Four rules keep a run from spending it:
+// Invariant is one term of the run: something that must stay true throughout, stated in
+// the author's words, with an optional declared way to observe it. The stop condition is
+// what must become true; an invariant is the counterweight to the completion pressure it
+// creates. Four rules:
 //
-//   - An [InvariantAuditor] judges it from the record of what the run did, and the
-//     reconciler asks before it asks whether the goal is done. A breach settles the
-//     goal whatever the stop evaluator would have said.
-//   - The run cannot relax it. Dropping or rewording an adopted invariant is a terminal
-//     spec fault ([ErrInvariantRelaxed]); adding one is always allowed.
-//   - A breach is recorded on the status and outlives the reconcile that found it, so
-//     editing the spec does not launder it out.
-//   - A term nobody can check is not a term. A goal that states terms with no auditor
-//     wired stalls before its first step, and a term asserting an absence is refused
-//     unless it declares the search that would find a counterexample (absence.go).
+//   - An [InvariantAuditor] judges it from the record, and the reconciler asks before it
+//     asks whether the goal is done. A breach settles the goal whatever the stop
+//     evaluator would say.
+//   - The run cannot relax it: dropping or rewording an adopted invariant is a terminal
+//     spec fault ([ErrInvariantRelaxed]); adding one is allowed.
+//   - A breach is recorded on the status, so editing the spec does not launder it out.
+//   - A term nobody can check is not a term. Terms with no auditor wired stall the goal
+//     before its first step, and a term asserting an absence is refused unless it
+//     declares the search that would find a counterexample ([AssertsAbsence]).
 type Invariant struct {
-	// ID names the term so a breach can point at it and a status entry can track it
-	// across reconciles. It is the author's, like a unit id, because the statement is
-	// meant to be legible and a content address is unwritable by hand.
+	// ID names the term so a breach can point at it. It is the author's, like a unit id,
+	// because a content address is unwritable by hand.
 	ID string `json:"id"`
-	// Statement is what must stay true, in the author's words. It is what the auditor
-	// rules against and what a breach quotes back, so it is written to be read by
-	// whoever is handed the stopped goal.
+	// Statement is what must stay true. It is what the auditor rules against and what a
+	// breach quotes back to whoever is handed the stopped goal.
 	Statement string `json:"statement"`
-	// Check is the declared way to observe the statement: the command to run, the
-	// search to make, the place to look. A zero exit says the term holds.
+	// Check is the declared way to observe the statement: the command to run, the search
+	// to make. A zero exit says the term holds.
 	//
-	// It is optional for a term that claims something about what the run did, since an
-	// auditor handed one with no check can rule on the run's record. It is required for
-	// a term that claims something is not there, because the record cannot settle that:
-	// admission refuses an absence claim with no search (see AssertsAbsence). Where a
-	// check can be written, writing it is what turns the term from a judgement call
-	// into an observation.
+	// It is optional for a term about what the run did, which an auditor can rule on from
+	// the record. It is required for a term claiming something is not there, which the
+	// record cannot settle: admission refuses an absence claim with no search.
 	Check string `json:"check,omitempty"`
 }
 
 // InvariantMark returns the fingerprint of an invariant's content: the first
 // invariantMarkLen hex characters of a SHA-256 over its id, statement and check,
-// NUL-separated so no two different invariants can be re-split into the same byte
-// string. It is what makes the no-relax rule enforceable: the status remembers what the
-// term said when it was adopted, so a later spec that softens the wording is caught
-// rather than accepted as the same term.
+// NUL-separated so no two different invariants re-split into the same bytes. The status
+// remembers it from adoption, so a later spec that softens the wording is caught and not
+// accepted as the same term.
 func InvariantMark(inv Invariant) string {
 	var b strings.Builder
 	b.WriteString(inv.ID)
@@ -92,61 +82,53 @@ func InvariantMark(inv Invariant) string {
 type InvariantState struct {
 	// ID is the invariant this entry observes.
 	ID string `json:"id"`
-	// Mark is InvariantMark of the invariant as it read when the run adopted it. A
-	// later spec whose invariant of the same id marks differently has reworded a term
-	// the run is already being held to, and admission refuses it.
+	// Mark is [InvariantMark] of the invariant as adopted. A later spec whose invariant of
+	// the same id marks differently has reworded a term the run is held to, and admission
+	// refuses it.
 	Mark string `json:"mark"`
-	// LastAudited is when an auditor last ruled on this term. Nil means the term is
-	// carried but has not been checked yet, which is every term on a goal whose first
-	// step has not completed.
+	// LastAudited is when an auditor last ruled on this term; nil means carried but not
+	// yet checked.
 	LastAudited *time.Time `json:"lastAudited,omitempty"`
-	// Audits counts how many times this term has been ruled on, so a stopped goal can
-	// show that a term was actually checked rather than merely carried.
+	// Audits counts how many times the term has been ruled on, so a stopped goal can show
+	// a term was checked and not merely carried.
 	Audits int `json:"audits,omitempty"`
 	// Breached records that the term was found broken, and Detail is what the auditor
-	// found. It is never cleared: a breach is a fact about what the run did, not a
-	// state the run can work its way back out of.
+	// found. It is never cleared: a breach is a fact about what the run did, and the run
+	// cannot work its way back out of it.
 	Breached bool   `json:"breached,omitempty"`
 	Detail   string `json:"detail,omitempty"`
 }
 
-// Breach is an auditor's finding that one term of the run has been broken, naming the
-// term and what was observed. Detail is what gets quoted to whoever is handed the
-// stopped goal, so it says what happened, not that something happened.
+// Breach is an auditor's finding that one term has been broken. Detail is quoted to
+// whoever is handed the stopped goal, so it says what happened.
 type Breach struct {
 	ID     string `json:"id"`
 	Detail string `json:"detail"`
 }
 
-// InvariantAuditor rules on whether a run has broken any of its terms. It is handed the
-// goal's record, its spec and the status this reconcile is working on, and the terms it
-// carries, and returns a finding per broken term. Every term is offered every time: a
-// term is a standing obligation, so one that held at step 3 says nothing about step 4.
+// InvariantAuditor rules on whether a run has broken any of its terms, returning a
+// finding per broken term. Every term is offered every time: a term is a standing
+// obligation, so one that held at step 3 says nothing about step 4.
 //
 // The status is passed separately from r because it is the one this pass has built and
-// not yet written: an auditor reading r.Status would be ruling on the run as it stood
-// before the step it is being asked about.
+// not yet written; an auditor reading r.Status would rule on the run as it stood before
+// the step it is asked about.
 //
-// It is a port, not a policy: the production auditor runs each term's declared check
-// against the run's own workspace, and a test supplies a deterministic one. An auditor
-// that cannot answer returns an error rather than an empty finding, because "I could not
+// An auditor that cannot answer returns an error and not an empty finding: "I could not
 // check" and "I checked and it holds" are the difference between a guard and a
-// formality, and only the auditor can say whether its failure is transient.
+// formality, and only the auditor can say whether its failure is transient. The
+// production auditor runs each term's declared check against the run's workspace.
 type InvariantAuditor interface {
 	Audit(ctx context.Context, r resource.Resource, spec Spec, status Status, terms []Invariant) ([]Breach, error)
 }
 
 // ValidateInvariants refuses a set of terms that could never be audited: one missing its
 // id or statement, two claiming the same id, or one asserting an absence with no search
-// declared to find a counterexample. It runs at admission, before anything is dispatched,
-// so a goal is never part-way through work it is being held to terms it cannot be judged
-// against.
+// declared to find a counterexample. It runs at admission, before anything is dispatched.
 //
-// The absence rule is the one with teeth, because the term it refuses is the one that
-// would otherwise pass. A term saying no credentials remain, audited by reading the run's
-// account of itself, is settled by a sentence the run writes about a search it may never
-// have made, and it settles that way most easily for exactly the run that did not look.
-// See absence.go for why a search is the only thing that can settle it.
+// The absence rule is the one that matters, because it refuses the term that would
+// otherwise pass: a claim that no credentials remain, audited from the run's account of
+// itself, is settled most easily for the run that did not look. See absence.go.
 func ValidateInvariants(invs []Invariant) error {
 	seen := make(map[string]bool, len(invs))
 	for i, inv := range invs {
@@ -165,13 +147,9 @@ func ValidateInvariants(invs []Invariant) error {
 }
 
 // ValidateInvariantsAdopted checks the terms on the spec against the terms the status
-// has adopted: every adopted term must still be present, and must still fingerprint to
-// the mark it was adopted under. A term that is gone, or that now reads differently, is
-// the run renegotiating what it agreed to, and it is refused.
-//
-// New terms pass: the check is one-directional on purpose. Tightening the terms of a run
-// that is already going is a legitimate thing for its author to do, and there is no
-// version of "the run got out of an obligation" that involves acquiring another one.
+// has adopted: each adopted term must still be present and still fingerprint to its
+// mark. New terms pass, because tightening a run in flight is legitimate and acquiring
+// another obligation is never a way out of one.
 func (s Status) ValidateInvariantsAdopted(invs []Invariant) error {
 	if len(s.Invariants) == 0 {
 		return nil
@@ -192,14 +170,11 @@ func (s Status) ValidateInvariantsAdopted(invs []Invariant) error {
 	return nil
 }
 
-// SyncInvariants brings the status's observation of the terms into line with the spec,
-// adopting any term it has not seen before and preserving what is already recorded
-// about the rest. Adoption is what commits a term: from here ValidateInvariantsAdopted
-// will refuse to let it be dropped or reworded.
-//
-// A term already adopted is kept even if the spec no longer carries it, because losing
-// it is exactly what admission refuses, and this runs after that check: the entry
-// surviving here is what a later admission catches the drop against.
+// SyncInvariants adopts any term the status has not seen and preserves what is recorded
+// about the rest. Adoption commits a term: [Status.ValidateInvariantsAdopted] then refuses
+// to let it be dropped or reworded. An adopted term is kept even when the spec no longer
+// carries it, since this runs after that check and the surviving entry is what a later
+// admission catches the drop against.
 func (s *Status) SyncInvariants(invs []Invariant) {
 	if len(invs) == 0 {
 		return
@@ -216,14 +191,12 @@ func (s *Status) SyncInvariants(invs []Invariant) {
 	}
 }
 
-// RecordAudit folds an audit into the status: every term that was checked has its audit
-// counted and stamped, and every finding is recorded against its term. It reports
-// whether any term is now breached.
+// RecordAudit folds an audit into the status: each checked term has its audit counted
+// and stamped, and each finding is recorded against its term. It reports whether any
+// term is now breached.
 //
-// A finding naming a term the goal does not carry is ignored rather than trusted. The
-// auditor is handed the terms and rules on those; a finding about something else is a
-// breach of a term nobody agreed to, and recording it would let an auditor stop a run
-// for a reason its author never wrote down.
+// A finding naming a term the goal does not carry is ignored: recording it would let an
+// auditor stop a run for a reason its author never wrote down.
 func (s *Status) RecordAudit(checked []Invariant, breaches []Breach, now time.Time) bool {
 	found := make(map[string]string, len(breaches))
 	for _, b := range breaches {
@@ -252,10 +225,9 @@ func (s *Status) RecordAudit(checked []Invariant, breaches []Breach, now time.Ti
 	return broke
 }
 
-// BreachedInvariant returns the first term recorded as broken, and whether there is one.
-// It is what makes a breach outlive the reconcile that found it: the reconciler asks
-// this before it asks the stop evaluator anything, so a goal carrying a breach cannot be
-// judged done on a later pass, whatever its spec has been edited to say since.
+// BreachedInvariant returns the first term recorded as broken. The reconciler asks it
+// before the stop evaluator, so a goal carrying a breach cannot be judged done on a
+// later pass, whatever its spec has been edited to say since.
 func (s Status) BreachedInvariant() (InvariantState, bool) {
 	for _, st := range s.Invariants {
 		if st.Breached {
@@ -265,10 +237,9 @@ func (s Status) BreachedInvariant() (InvariantState, bool) {
 	return InvariantState{}, false
 }
 
-// BreachReason is the message a breached goal settles under: the term that was broken,
-// quoted, and what the audit found. The statement is looked up from the spec so the
-// message reads as the term rather than as its id, and falls back to the id for a term
-// the spec no longer carries.
+// BreachReason is the message a breached goal settles under: the broken term, quoted,
+// and what the audit found. It falls back to the id for a term the spec no longer
+// carries.
 func BreachReason(invs []Invariant, st InvariantState) string {
 	statement := st.ID
 	for _, inv := range invs {

@@ -9,19 +9,18 @@ import (
 	"time"
 )
 
-// unitMarkLen is how many hex characters of a unit's content hash form its
-// fingerprint. Sixteen (64 bits) is far past collision range for the handful of
-// units one goal carries, and short enough to stay readable in a status dump.
+// unitMarkLen is how many hex characters of a unit's content hash form its fingerprint:
+// 64 bits, past collision range for the units one goal carries and short enough to read
+// in a status dump.
 const unitMarkLen = 16
 
-// Unit-graph errors. They are distinct because they say different things about the
-// author of the graph: a malformed unit is a plan entry that could never run, a
-// cycle is a decomposition that does not terminate, and a rewrite is the definition
-// of a committed unit being edited while a child is already running it.
+// Unit-graph errors are distinct because they say different things about the graph's
+// author: a malformed unit could never run, a cycle does not terminate, and a rewrite
+// edits a committed unit while a child is running it.
 var (
-	// ErrUnitIncomplete reports a unit missing its id, its objective or its verify
-	// clause. A unit with no declared check can never be proven, so it would block
-	// every dependent forever rather than failing.
+	// ErrUnitIncomplete reports a unit missing its id, objective or verify clause. A unit
+	// with no declared check can never be proven, so it would block every dependent
+	// forever.
 	ErrUnitIncomplete = errors.New("goal: unit needs an id, an objective and a verify")
 	// ErrUnitDuplicate reports two units claiming the same id, which would make an
 	// edge to that id ambiguous.
@@ -41,42 +40,31 @@ var (
 	ErrUnitNotDispatched = errors.New("goal: unit has not been dispatched")
 )
 
-// Unit is one node of a goal's fan-out graph: a child's objective, the way that
-// child's work is to be proven, and the units that must be proven before it may
-// start.
+// Unit is one node of a goal's fan-out graph: a child's objective, the way that child's
+// work is to be proven, and the units that must be proven before it may start. Actions
+// and Agent are the child's authority, intersected with the parent's grant, so a unit
+// cannot hand a child authority the running goal does not hold.
 //
-// Actions and Agent are the child's authority, and they carry the same meaning here
-// as they do on a model-driven spawn: an ad-hoc action set, or a named archetype
-// whose prompt and capabilities configure the child. Either way the result is
-// intersected with the parent's grant, so a unit cannot hand a child authority the
-// goal running the graph does not itself hold.
+// A unit graph is plan-driven fan-out, known in advance (mission's spawn tool is for
+// fan-out discovered as the run goes). Three rules make it a record, not a suggestion:
 //
-// A unit graph is plan-driven fan-out: the decomposition is known in advance, where the
-// spawn tool in mission is for one discovered as the run goes. A goal with no units
-// behaves as it always did. Three rules make the graph a record rather than a
-// suggestion:
-//
-//   - It is refused whole at admission: a cycle, an edge to a unit that does not
-//     exist, or a duplicate id is rejected before any child is created.
+//   - It is refused whole at admission: a cycle, a dangling edge or a duplicate id is
+//     rejected before any child is created.
 //   - A unit unblocks its dependents by being proven, not by finishing. A child that
 //     exited, failed or produced nothing leaves them blocked.
-//   - A unit in flight cannot be rewritten. Its content is fingerprinted onto its state
-//     when first dispatched and a later graph that alters it is refused. Appending
-//     units is allowed, because nothing has been spent on them yet.
+//   - A unit in flight cannot be rewritten: it is fingerprinted when first dispatched
+//     and a later graph that alters it is refused. Appending units is allowed.
 type Unit struct {
 	// ID names the unit so an edge can point at it. It is the author's, not a content
-	// address: a hash would be unwritable by hand, and the whole point of this shape is
-	// that a decomposition already agreed can be written down. What content addressing
-	// buys the ledger is bought here by Mark (see UnitMark).
+	// address, which is unwritable by hand; Mark supplies that (see [UnitMark]).
 	ID string `json:"id"`
 	// Objective is what the child is asked to achieve, in the plan author's words.
 	Objective string `json:"objective"`
-	// Verify is the declared way to prove this unit: the command to run, the check to
-	// make, the observation that would settle it. It is required, because an unprovable
-	// unit does not fail, it blocks every unit downstream of it forever.
+	// Verify is the declared way to prove this unit. It is required: an unprovable unit
+	// does not fail, it blocks every unit downstream of it forever.
 	Verify string `json:"verify"`
-	// DependsOn names the units that must be proven before this one may be dispatched.
-	// Empty makes the unit a root, and a graph with no roots is a graph with a cycle.
+	// DependsOn names the units that must be proven before this one is dispatched. Empty
+	// makes the unit a root.
 	DependsOn []string `json:"dependsOn,omitempty"`
 	// Actions is the ad-hoc set of tool actions the child may take, narrowed against
 	// the parent's grant.
@@ -93,38 +81,34 @@ type UnitPhase string
 
 // The phases a unit moves through.
 const (
-	// UnitPending is a unit nothing has been spent on yet. It is the zero value, so a
-	// state entry created by a sync starts here without being written.
+	// UnitPending is a unit nothing has been spent on yet. It is the zero value, so a new
+	// state entry starts here.
 	UnitPending UnitPhase = ""
-	// UnitBlocked is a pending unit at least one of whose dependencies is not proven.
-	// It is derived, not recorded: storing it would be a second representation of the
-	// edges that could drift from them.
+	// UnitBlocked is a pending unit with a dependency not yet proven. It is derived and
+	// never stored, so it cannot drift from the edges.
 	UnitBlocked UnitPhase = "Blocked"
 	// UnitDispatched is a unit whose child goal has been created and is running.
 	UnitDispatched UnitPhase = "Dispatched"
-	// UnitSettled is a unit whose child finished. Whether it finished having proven
-	// anything is Proven, and only a proven unit unblocks its dependents.
+	// UnitSettled is a unit whose child finished. Only a proven one unblocks its
+	// dependents.
 	UnitSettled UnitPhase = "Settled"
 )
 
-// UnitState is the observed state of one unit, keyed to it by id. It is what makes a
-// fan-out resumable: a run that crashes with three units dispatched comes back
-// knowing those three children exist, and spawns neither twice nor never.
+// UnitState is the observed state of one unit, keyed to it by id. It makes a fan-out
+// resumable: a run that crashes with three units dispatched resumes knowing those
+// children exist, and spawns neither twice nor never.
 type UnitState struct {
 	ID    string    `json:"id"`
 	Phase UnitPhase `json:"phase,omitempty"`
-	// ChildID is the goal the unit was dispatched as, recorded at dispatch so a
-	// resumed run can find the child it already created rather than making a second
-	// one.
+	// ChildID is the goal the unit was dispatched as, recorded so a resumed run finds the
+	// child it already created.
 	ChildID string `json:"childID,omitempty"`
-	// Mark is the fingerprint of the unit's content at the moment it was dispatched
-	// (see UnitMark). It is what makes the no-rewrite rule enforceable for
-	// author-assigned ids: a later graph whose unit of the same id fingerprints
-	// differently is a rewrite of work already in flight, and is refused.
+	// Mark is the unit's content fingerprint at dispatch (see [UnitMark]). A later graph
+	// whose unit of the same id fingerprints differently is a rewrite of work in flight,
+	// and is refused.
 	Mark string `json:"mark,omitempty"`
-	// Proven records that the unit's declared check passed and the evidence gate
-	// admitted it, and Evidence is the reference to the verification that proved it.
-	// This, not Phase, is what an edge waits on.
+	// Proven records that the unit's declared check passed and the evidence gate admitted
+	// it; Evidence references the verification. An edge waits on this, not on Phase.
 	Proven   bool   `json:"proven,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
 	// SettledAt is when the child finished, and Failure is why it finished without
@@ -165,19 +149,12 @@ func UnitMark(u Unit) string {
 
 // ValidateUnits refuses a unit graph that could never run: a unit missing its id,
 // objective or verify clause; two units claiming one id; an edge to a unit that does
-// not exist; or a cycle. It is the admission check, and it runs before anything is
-// dispatched, so a bad graph is a terminal spec fault rather than a fan-out
-// abandoned halfway with children already running.
+// not exist; or a cycle. It runs before anything is dispatched, so a bad graph is a
+// terminal spec fault and not a fan-out abandoned halfway with children running.
 //
-// There is no separate reachability check, and that is not an omission. In a finite
-// graph with no dangling edges, every unit either has no dependencies (making it a
-// root) or reaches one by following its edges down, so every unit is reachable from
-// some root. A unit unreachable from every root is precisely a unit on or downstream
-// of a cycle, which is what the cycle check reports. A check that can never fire on
-// its own would only be a claim of rigour, and Kahn's algorithm below already names
-// the whole unreachable set as the cycle's fallout.
-//
-// An empty graph is valid and means the goal does not fan out.
+// There is no separate reachability check: with no dangling edges, a unit unreachable
+// from every root is exactly a unit on or downstream of a cycle, which the cycle check
+// already reports. An empty graph is valid and means the goal does not fan out.
 func ValidateUnits(units []Unit) error {
 	if len(units) == 0 {
 		return nil
@@ -205,12 +182,10 @@ func ValidateUnits(units []Unit) error {
 	return nil
 }
 
-// unreachable returns the ids of the units no dependency order can ever admit, in
-// graph order. It is Kahn's algorithm run to exhaustion: whatever it cannot emit is
-// on a cycle or downstream of one, and naming the whole set is more use to whoever
-// has to fix the graph than naming one edge of it. It assumes edges have already
-// been checked for dangling targets, so an unresolved edge here is a real
-// dependency, never a typo.
+// unreachable returns the ids of the units no dependency order can ever admit, in graph
+// order. It is Kahn's algorithm run to exhaustion: whatever it cannot emit is on a cycle
+// or downstream of one, and naming the whole set serves the author better than naming
+// one edge. Edges must already be checked for dangling targets.
 func unreachable(units []Unit) []string {
 	remaining := make(map[string]int, len(units))
 	for _, u := range units {
@@ -228,10 +203,8 @@ func unreachable(units []Unit) []string {
 			queue = append(queue, u.ID)
 		}
 	}
-	// A unit reaches the queue exactly once: a root is queued in the pass above, and
-	// every other unit is queued on the single decrement that takes its outstanding
-	// dependency count to zero. So there is no need to guard against emitting one
-	// twice, and a guard here would be a branch nothing could ever take.
+	// A unit is queued exactly once (a root above, or on the one decrement that takes its
+	// count to zero), so no guard against emitting twice is needed.
 	emitted := make(map[string]bool, len(units))
 	for len(queue) > 0 {
 		id := queue[0]
@@ -254,15 +227,12 @@ func unreachable(units []Unit) []string {
 }
 
 // SyncUnits brings the status's per-unit state into line with the graph on the spec:
-// every unit gains a pending entry, in graph order, and existing state is carried
-// across untouched. It is called before the state is read or written, so a graph
-// that grew mid-run has state for its new units without any of them arriving
+// every unit gains a pending entry, in graph order, and existing state is carried across
+// untouched. A graph that grew mid-run thus has state for its new units, none arriving
 // dispatched or proven.
 //
 // State for a unit no longer in the graph is dropped. That cannot lose a dispatch:
-// ValidateDispatched refuses a graph that dropped a unit anything was spent on, so
-// reaching this case at all means the unit was still pending, and carrying orphan
-// state forward would only let a phase survive the unit it described.
+// [Status.ValidateDispatched] refuses a graph that dropped a unit anything was spent on.
 func (s *Status) SyncUnits(units []Unit) {
 	s.Units = syncStateByID(s.Units, units,
 		func(st UnitState) string { return st.ID },
@@ -270,13 +240,10 @@ func (s *Status) SyncUnits(units []Unit) {
 		func(id string) UnitState { return UnitState{ID: id} })
 }
 
-// syncStateByID rebuilds per-item state to line up with items: state for an item still
-// listed is carried across untouched, an item with no state yet gets a fresh one, and
-// state for an item that is gone is dropped. An empty item list clears the state.
-//
-// Both SyncLedger and SyncUnits are this, and both depend on the same property: nothing
-// is created here except a zero state, so the sync can never fabricate a proof or a
-// dispatch for an item that did not already carry one.
+// syncStateByID rebuilds per-item state to line up with items: state for a listed item
+// is carried across, a new item gets a fresh one, state for a gone item is dropped, and
+// an empty list clears the state. SyncLedger and SyncUnits are both this, and nothing is
+// created but a zero state, so a sync can never fabricate a proof or a dispatch.
 func syncStateByID[S, I any](have []S, items []I, stateID func(S) string, itemID func(I) string, fresh func(string) S) []S {
 	if len(items) == 0 {
 		return nil
@@ -296,19 +263,16 @@ func syncStateByID[S, I any](have []S, items []I, stateID func(S) string, itemID
 	return out
 }
 
-// ValidateDispatched checks the graph on the spec against the units the status
-// records work against: a unit that has been dispatched must still be present, and
-// must still fingerprint to the mark it carried when its child was created. Anything
-// else is the definition of a committed unit being edited while a child is running
-// it, and this is the check that makes the no-rewrite rule enforceable rather than
-// requested.
+// ValidateDispatched checks the graph on the spec against the units the status records
+// work against: a dispatched unit must still be present and still fingerprint to the
+// mark it carried when its child was created. That makes the no-rewrite rule enforced
+// and not merely requested.
 //
-// It is deliberately narrower than the ledger's prefix rule. The ledger is
-// append-and-mark-only in full because it is what completion is judged against, so
-// even reordering it is an edit of the definition of done. A unit graph is a
-// dispatch plan: a unit nothing has been spent on is not yet a commitment, so a
-// graph may still gain units, lose pending ones, and reorder freely. What it may not
-// do is change the meaning of work already in flight.
+// It is narrower than the ledger's prefix rule on purpose. The ledger is what completion
+// is judged against, so even reordering it edits the definition of done. A unit graph is
+// a dispatch plan: a unit nothing has been spent on is not a commitment, so a graph may
+// gain units, lose pending ones and reorder. It may not change the meaning of work in
+// flight.
 func (s Status) ValidateDispatched(units []Unit) error {
 	if len(s.Units) == 0 {
 		return nil
@@ -332,11 +296,9 @@ func (s Status) ValidateDispatched(units []Unit) error {
 	return nil
 }
 
-// UnitPhaseOf reports where a unit stands, resolving the one derived phase: a
-// pending unit with an unproven dependency is Blocked. The derivation is computed
-// from the edges and the recorded state on every read rather than stored, for the
-// same reason the current ledger item is: two representations of where the run is
-// can disagree, and one of them would then be wrong.
+// UnitPhaseOf reports where a unit stands, resolving the one derived phase: a pending
+// unit with an unproven dependency is Blocked. It is computed on every read and never
+// stored, because two representations of where the run is can disagree.
 func (s Status) UnitPhaseOf(units []Unit, id string) UnitPhase {
 	st, ok := s.unitState(id)
 	if !ok {
@@ -379,9 +341,8 @@ func (s Status) UnmetDependencies(units []Unit, id string) []string {
 }
 
 // ReadyUnits returns the units that may be dispatched now: pending, with every
-// dependency proven, in graph order. It is the whole of the admission rule, and
-// keeping it a pure function of the graph and the recorded state is what lets a
-// resumed run compute the same answer as the run that crashed.
+// dependency proven, in graph order. It is a pure function of the graph and the
+// recorded state, so a resumed run computes the same answer as the run that crashed.
 func (s Status) ReadyUnits(units []Unit) []Unit {
 	proven := make(map[string]bool, len(s.Units))
 	phase := make(map[string]UnitPhase, len(s.Units))
@@ -420,11 +381,10 @@ func (s Status) DispatchedUnits() []string {
 }
 
 // MarkUnitDispatched records that a child goal was created for a unit, stamping the
-// unit's fingerprint so a later rewrite of it is refused. It reports
-// ErrUnitUnknown for a unit the status carries no state for. Re-dispatching a unit
-// that is already dispatched or settled is refused rather than ignored: unlike a
-// proof, which only ever goes from unset to set, a second dispatch means a second
-// child, and silently accepting it is how a resumed run doubles a fan-out.
+// unit's fingerprint so a later rewrite of it is refused. It reports [ErrUnitUnknown]
+// for a unit the status has no state for. Re-dispatching a dispatched or settled unit is
+// refused and not ignored: a second dispatch means a second child, and accepting it
+// silently is how a resumed run doubles a fan-out.
 func (s *Status) MarkUnitDispatched(u Unit, childID string) error {
 	for i := range s.Units {
 		if s.Units[i].ID != u.ID {
@@ -441,35 +401,31 @@ func (s *Status) MarkUnitDispatched(u Unit, childID string) error {
 	return fmt.Errorf("%w: %q", ErrUnitUnknown, u.ID)
 }
 
-// MarkUnitProven settles a unit as proven, with the evidence reference and the time
-// its child finished. Only a dispatched unit may settle: a proof for a unit no child
-// was ever created for is a claim about work that never ran, not a shortcut.
-// Settling a unit that has already settled is a no-op that keeps the first outcome,
-// so the record says when the unit was settled rather than when it was last
-// re-asserted.
+// MarkUnitProven settles a unit as proven, with the evidence reference and the time its
+// child finished. Only a dispatched unit may settle: a proof for a unit no child was
+// created for is a claim about work that never ran. Settling a settled unit is a no-op
+// that keeps the first outcome, so the record says when the unit settled and not when
+// it was last re-asserted.
 func (s *Status) MarkUnitProven(id, evidence string, now time.Time) error {
 	return s.settleUnit(id, now, func(st *UnitState) {
 		st.Proven, st.Evidence, st.Failure = true, evidence, ""
 	})
 }
 
-// MarkUnitFailed settles a unit that finished without proving anything, recording
-// why. A failed unit stays settled and unproven forever, so every unit downstream of
-// it stays blocked: a failure does not propagate into its dependents wearing a
-// success, and it does not stall them with a phase that reads as still running.
+// MarkUnitFailed settles a unit that finished without proving anything, recording why.
+// A failed unit stays settled and unproven, so every unit downstream of it stays
+// blocked: a failure does not propagate into its dependents wearing a success.
 func (s *Status) MarkUnitFailed(id, failure string, now time.Time) error {
 	return s.settleUnit(id, now, func(st *UnitState) {
 		st.Proven, st.Evidence, st.Failure = false, "", failure
 	})
 }
 
-// RefuseUnit settles a unit whose child could never be created, recording the
-// refusal. It is the one way a unit settles without having been dispatched, and it
-// exists because a spawn refused for good (past the delegation depth, outside the
-// grant, out of budget) is that unit's outcome rather than an error to keep retrying:
-// without it the reconciler would either drop the refusal on the floor or spawn
-// against it forever. A unit that has since been dispatched or settled is left alone,
-// so a refusal arriving late cannot unseat a child that exists.
+// RefuseUnit settles a unit whose child could never be created, recording the refusal.
+// It is the one way a unit settles without having been dispatched: a spawn refused for
+// good (past the delegation depth, outside the grant, out of budget) is that unit's
+// outcome and not an error to retry forever. A unit since dispatched or settled is left
+// alone, so a late refusal cannot unseat a child that exists.
 func (s *Status) RefuseUnit(id, reason string, now time.Time) error {
 	for i := range s.Units {
 		if s.Units[i].ID != id {
@@ -499,9 +455,8 @@ func (s *Status) settleUnit(id string, now time.Time, outcome func(*UnitState)) 
 		case UnitSettled:
 			return nil
 		case UnitPending, UnitBlocked:
-			// Blocked is derived and never recorded, so it cannot actually be read back
-			// here. It is listed with Pending because it means the same thing to this
-			// question: no child was created, so there is no outcome to report.
+			// Blocked is never recorded, so it cannot be read back here; it is listed with
+			// Pending because no child was created, so there is no outcome to report.
 			return fmt.Errorf("%w: %q", ErrUnitNotDispatched, id)
 		case UnitDispatched: // the only phase a settlement may arrive for
 		}

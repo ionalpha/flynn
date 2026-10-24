@@ -108,19 +108,14 @@ func TotalUsage(rows []MemoryUsage) MemoryUsage {
 // instances have pushed the same item, 1 when every instance pushes exactly the
 // same set.
 //
-// It is the check on the selection policy rather than on the memory. A policy that
-// homogenizes a fleet gives every instance the same handful of facts, and the
-// fleet then converges on one way of seeing its work while looking, from inside
-// each instance, like memory is doing its job. A number that climbs toward 1 over
-// a corpus that is not itself shrinking is the policy's problem, not the corpus's.
+// It checks the selection policy, not the memory: a policy that homogenizes a
+// fleet gives every instance the same handful of facts, and a number climbing
+// toward 1 over a corpus that is not shrinking is the policy's problem.
 //
-// Fewer than two instances with pushes returns 0: there is no overlap to measure,
-// and reporting a fabricated 1 for the single-instance case would read as maximum
-// monoculture on exactly the setup where the metric means nothing.
-//
-// It measures instances, which is the identity this store records. A host that
-// runs several agents inside one instance sees them here as one, and the metric
-// under-reports for it.
+// Fewer than two instances with pushes returns 0, not 1: there is no overlap to
+// measure, and 1 would read as maximum monoculture where the metric means
+// nothing. It measures instances, the identity this store records, so several
+// agents inside one instance count as one and the metric under-reports for it.
 func Monoculture(rows []MemoryUsage) float64 {
 	sets := map[string]map[string]bool{}
 	for _, r := range rows {

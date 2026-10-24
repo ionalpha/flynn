@@ -15,8 +15,7 @@ import (
 // and the sync envelope, enforces optimistic concurrency (CAS), and builds the
 // spine event to append. Every backend routes its writes through one Stamper, so
 // the envelope/version/tombstone rules are defined exactly once and the in-memory
-// and durable backends cannot drift (the duplication that previously lived in both
-// state/memory.go and the SQLite adapter as Go and as SQL).
+// and durable backends cannot drift.
 //
 // A Stamper does no persistence and reads no store: the caller supplies the
 // existing record (looked up under its own lock or transaction) and persists the
