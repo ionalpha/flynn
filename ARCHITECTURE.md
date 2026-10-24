@@ -73,9 +73,11 @@ the only nesting is adapter families that are alternative implementations of
 one port (`llm/*`, `storage/*`).
 
 The mechanical criterion for what stays public: a package is top-level iff
-(a) it appears in the exported signatures of a public package (checked with a
-`go/types` audit over the declared public set - an internal type leaking
-through a public signature compiles but is broken API), or (b) it is a port
+(a) it appears in the exported signatures of a public package (checked by
+`TestPublicAPINamesNoInternalType` in `internal/rigor`, a `go/types` audit over
+every non-`internal/` package - an internal type leaking through a public
+signature compiles but is broken API, and the known leaks sit in an allowlist
+that the test shrinks but never grows), or (b) it is a port
 third parties implement (`sandbox` backends, `state` stores, `llm` adapters,
 `driver` loops, `inbox` sources), or (c) it is a standard's reference
 implementation (`chain`, for Provetrail). Everything else is a mechanism and
