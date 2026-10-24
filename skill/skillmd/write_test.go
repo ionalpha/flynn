@@ -70,6 +70,18 @@ func TestWriteReplacesOnlyItsOwnFile(t *testing.T) {
 	if _, err := os.Stat(keep); err != nil {
 		t.Errorf("a file we did not write was removed: %v", err)
 	}
+	// The rewrite is staged in a sibling temp file; none may outlive it.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	if diff := cmp.Diff([]string{"NOTES.md", "SKILL.md"}, names); diff != "" {
+		t.Errorf("skill directory after a rewrite (-want +got):\n%s", diff)
+	}
 }
 
 func TestWriteRejects(t *testing.T) {

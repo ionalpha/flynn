@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/acquire"
 	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/sigstore"
 )
 
@@ -265,12 +266,14 @@ func (r ReleaseResolver) reuse(targetDir, archive, binName, wantArchive string) 
 	return bin, true, nil
 }
 
+// writeReceipt records what was verified for an install. The write is atomic because a
+// torn receipt would read as a failed verification of an install that did pass.
 func (r ReleaseResolver) writeReceipt(dir string, v verified) error {
 	raw, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
 		return fault.Wrap(fault.Terminal, "extension_release_receipt", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, verifiedFile), append(raw, '\n'), 0o600); err != nil {
+	if err := fsatomic.WriteFile(filepath.Join(dir, verifiedFile), append(raw, '\n'), 0o600); err != nil {
 		return fault.Wrap(fault.Terminal, "extension_release_receipt", err)
 	}
 	return nil

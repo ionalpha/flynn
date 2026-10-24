@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/netguard"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -306,7 +307,7 @@ func copyIfPresent(src, dst string) error {
 		return err
 	}
 	//nolint:gosec // dst is the per-episode home joined with that same constrained name
-	return os.WriteFile(dst, data, 0o600)
+	return fsatomic.WriteFile(dst, data, 0o600)
 }
 
 // Probe runs path with args to completion under best-effort confinement and returns its

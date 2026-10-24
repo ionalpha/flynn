@@ -13,6 +13,7 @@ import (
 
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/internal/profilestore"
@@ -414,12 +415,13 @@ func activeModelPath(dataDir string) string {
 	return filepath.Join(dataDir, "active-model")
 }
 
-// writeActiveModel records the default model id.
+// writeActiveModel records the default model id. The write is atomic so a crash
+// cannot leave an empty file, which [readActiveModel] would report as no selection.
 func writeActiveModel(dataDir, id string) error {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return err
 	}
-	return os.WriteFile(activeModelPath(dataDir), []byte(id+"\n"), 0o600)
+	return fsatomic.WriteFile(activeModelPath(dataDir), []byte(id+"\n"), 0o600)
 }
 
 // readActiveModel returns the recorded default model id, and whether one is set.
