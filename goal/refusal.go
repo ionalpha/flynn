@@ -10,35 +10,33 @@ import (
 )
 
 const (
-	// RefusalRetryLimit is how many times one action may be refused by one rule before
-	// the run stops. Being told no and asking again unchanged is worth one retry (a
-	// gate's answer can legitimately change when a budget window rolls or an approval
-	// lands), and no more: a third identical refusal is a run that is not listening.
+	// RefusalRetryLimit is how many times one action may be refused by one rule before the
+	// run stops. One retry is worth allowing (a gate's answer can change when a budget
+	// window rolls or an approval lands); a third identical refusal is a run that is not
+	// listening.
 	RefusalRetryLimit = 3
 	// RefusalRouteLimit is how many distinct actions one rule may refuse before the run
-	// stops. Three, not two, because two is where an honestly-scoped run bumping into a
-	// grant it was not given is still the likelier reading. By the third door the run
-	// should be asking for authority rather than looking for a way around the answer.
+	// stops. Two is still likelier an honestly-scoped run meeting a grant it was not given;
+	// by the third the run should be asking for authority and not looking for a way around.
 	RefusalRouteLimit = 3
 )
 
 // Refusal is one action the waist refused, as read back off the run's record. Rule names
 // what refused it (the fault code: capability_denied, containment_unavailable) and Action
-// names what was refused. The class is deliberately not here: several rules share one
-// class, and a count keyed on the class would fold unrelated gates together and read a run
-// that met three different walls as a run that worked around one.
+// what was refused. The class is left out because several rules share one, and a count
+// keyed on it would fold unrelated gates together and read a run that met three walls as
+// one that worked around one.
 type Refusal struct {
 	Rule   string
 	Action string
 }
 
 // RefusalProbe reads the refusals recorded for a goal on the run's durable record, in the
-// order the waist refused them. It reads what happened rather than what the run says
-// happened, which is the whole point: a run that routes around a gate reports each step as
-// fine, and the refusals are the part of the history it does not get to narrate.
+// order the waist refused them. It reads what happened and not what the run says
+// happened: a run that routes around a gate reports each step as fine.
 //
-// A probe returns every refusal for the goal, including ones already seen: the reconciler
-// derives its verdict from the whole record each pass rather than banking a count, so a
+// A probe returns every refusal for the goal, including ones already seen. The
+// reconciler derives its verdict from the whole record each pass and banks no count, so a
 // tally cannot be lost to a crash or spent by a status write. A probe error is the
 // reconciler's to classify; a read that failed for a moment must not read as a clean run.
 type RefusalProbe interface {
@@ -46,25 +44,19 @@ type RefusalProbe interface {
 }
 
 // RefusalVerdict is a run stopped by its own refusals: which rule kept refusing it, and
-// the actions it was refused for, in the order they were first refused.
+// the actions it was refused for, in first-refusal order.
 //
-// A refused gate is a verdict about the run, not an obstacle on the way to finishing
-// it. The failure it catches is a run that reformulates instead of stopping: it rewords
-// to clear a classifier, substitutes an unhooked tool, or splits a disallowed action
-// into allowed steps. Each step defends itself and the trajectory does not, so it is
-// read from the whole run's refusals, which the dispatch waist puts on one stream.
-// Two shapes count, per rule, because the rule is what is telling the run no:
+// A refused gate is a verdict about the run. It catches a run that reformulates instead
+// of stopping (rewording to clear a classifier, substituting an unhooked tool, splitting
+// a disallowed action into allowed steps); each step defends itself and the trajectory
+// does not, so the whole run's refusals are read. Two shapes count, per rule:
 //
 //   - Persistence: one action refused by one rule [RefusalRetryLimit] times. The run
 //     asked again unchanged.
 //   - Substitution: [RefusalRouteLimit] distinct actions refused by one rule. The run
-//     came back by another door, or its grant is too narrow; either way it should stop
-//     and say so.
+//     came back by another door, or its grant is too narrow; it should stop and say so.
 //
-// A substitution that succeeds is invisible here: an unhooked second route is recorded
-// as ordinary work. Closing that is a matter of gate coverage. This is also not the
-// non-convergence detector, which stops a run getting nowhere; this stops a run
-// getting somewhere by a route it was refused.
+// A substitution that succeeds is invisible here; closing that is gate coverage.
 type RefusalVerdict struct {
 	// Rule is the gate that refused.
 	Rule string
@@ -72,14 +64,12 @@ type RefusalVerdict struct {
 	Actions []string
 	// Count is how many refusals that rule issued in total.
 	Count int
-	// Routed reports which shape fired: true when distinct actions reached
-	// RefusalRouteLimit (the run came back by another door), false when one action
-	// reached RefusalRetryLimit (the run asked again unchanged).
+	// Routed reports which shape fired: true for distinct actions reaching
+	// RefusalRouteLimit, false for one action reaching RefusalRetryLimit.
 	Routed bool
 	// Repeated is the action that reached the retry limit, and Repeats how many times it
-	// was refused. Both are set only on a retry verdict: the message has to name the one
-	// action that was asked again rather than every action the rule ever refused, which
-	// would describe a different run.
+	// was refused. Both are set only on a retry verdict, whose message must name the one
+	// action asked again and not every action the rule ever refused.
 	Repeated string
 	Repeats  int
 }
@@ -87,11 +77,9 @@ type RefusalVerdict struct {
 // ReadRefusals returns the verdict a run's recorded refusals amount to, and whether there
 // is one at all.
 //
-// The rules are ranked, and the ranking is stable rather than arbitrary: a substitution is
-// reported ahead of a persistent retry, because it is the more serious account of the same
-// history and a run doing both is better described by it. Within a shape, the rule that
-// refused most is taken, and a tie is broken by rule name so the same record always yields
-// the same verdict.
+// A substitution is reported ahead of a persistent retry, as the more serious account of
+// the same history. Within a shape the rule that refused most is taken, and a tie breaks
+// by rule name so the same record always yields the same verdict.
 func ReadRefusals(refusals []Refusal) (RefusalVerdict, bool) {
 	type tally struct {
 		actions []string        // distinct, first-refusal order
@@ -103,9 +91,8 @@ func ReadRefusals(refusals []Refusal) (RefusalVerdict, bool) {
 	for _, ref := range refusals {
 		rule := strings.TrimSpace(ref.Rule)
 		if rule == "" {
-			// A refusal that names no rule cannot be attributed to a gate, and folding
-			// every such refusal into one bucket would invent a rule that refused
-			// everything. It is counted by nobody rather than counted wrongly.
+			// A refusal naming no rule cannot be attributed to a gate, and one bucket for all
+			// of them would invent a rule that refused everything.
 			continue
 		}
 		t := rules[rule]
@@ -134,7 +121,7 @@ func ReadRefusals(refusals []Refusal) (RefusalVerdict, bool) {
 		t := rules[name]
 		routed := len(t.actions) >= RefusalRouteLimit
 		// The most-refused action decides the retry shape, walked in first-refusal order
-		// so the same record always names the same one.
+		// so the same record names the same one.
 		repeated, repeats := "", 0
 		for _, act := range t.actions {
 			if t.perAct[act] > repeats {
@@ -156,8 +143,8 @@ func ReadRefusals(refusals []Refusal) (RefusalVerdict, bool) {
 }
 
 // outranks reports whether a is the better account of a run than b: a substitution ahead
-// of a retry, then the rule that refused most. Names are already in sorted order at the
-// call site, so an exact tie keeps the earlier one and the verdict is deterministic.
+// of a retry, then the rule that refused most. The caller visits names in sorted order, so
+// an exact tie keeps the earlier one.
 func outranks(a, b RefusalVerdict) bool {
 	if a.Routed != b.Routed {
 		return a.Routed
@@ -166,9 +153,8 @@ func outranks(a, b RefusalVerdict) bool {
 }
 
 // RefusalReason is the stall message a refusal verdict carries. It says what was refused
-// and by what, because the run is being handed back to a person who has to decide between
-// widening the authority and abandoning the objective, and neither decision can be made
-// from "blocked".
+// and by what, because the person it is handed back to must choose between widening the
+// authority and abandoning the objective, and cannot from "blocked".
 func (v RefusalVerdict) RefusalReason() string {
 	if v.Routed {
 		return fmt.Sprintf("stopped by %s: refused %d times across %d different actions (%s); "+

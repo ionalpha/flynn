@@ -12,61 +12,51 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// steerMarkLen is how many hex characters of a steer's content hash form its fingerprint.
-// Sixteen (64 bits) is far past collision range for the handful of redirects one run
-// takes, and short enough to stay readable in a status dump.
+// steerMarkLen is how many hex characters of a steer's content hash form its
+// fingerprint: 64 bits, past collision range for the redirects one run takes.
 const steerMarkLen = 16
 
-// Steer errors. They separate a redirect that could never be delivered from one the run
-// got out from under, because the two say different things: the first is an operator
-// typing something incomplete, the second is the failure mode this exists for.
+// Steer errors are distinct because they say different things: an operator typing
+// something incomplete, and the run getting out from under a redirect.
 var (
-	// ErrSteerIncomplete reports a steer missing its id or its instruction. A redirect
-	// with nothing written in it cannot be delivered to the run or ruled on afterwards.
+	// ErrSteerIncomplete reports a steer missing its id or instruction. A redirect with
+	// nothing in it cannot be delivered or ruled on.
 	ErrSteerIncomplete = errors.New("goal: steer needs an id and an instruction")
-	// ErrSteerDuplicate reports two steers claiming the same id, which would make an
-	// acknowledgement ambiguous about which redirect it answered.
+	// ErrSteerDuplicate reports two steers with one id, which would make an acknowledgement
+	// ambiguous about which redirect it answered.
 	ErrSteerDuplicate = errors.New("goal: duplicate steer id")
-	// ErrSteerWithdrawn reports a steer dropped or reworded after the run was handed it:
-	// the obligation being edited by the party under it.
+	// ErrSteerWithdrawn reports a steer dropped or reworded after the run was handed it.
 	ErrSteerWithdrawn = errors.New("goal: steer was withdrawn after the run was given it")
 )
 
-// Steer is one redirect issued to a running goal, in the operator's words: use the
-// other table, stop touching the migration, this is the wrong branch. It leaves the
-// objective and the stop condition as they were and is held to separately, so the run
-// cannot report success while a steer is outstanding. Three rules make it an
-// obligation rather than advice:
+// Steer is one redirect issued to a running goal, in the operator's words: use the other
+// table, stop touching the migration. It leaves the objective and stop condition alone
+// and is held to separately, so the run cannot report success while a steer is
+// outstanding. An amendment would change what done means, and the grader would rule on
+// the new text and lose the redirect. Three rules make a steer an obligation and not
+// advice:
 //
-//   - It is redelivered from the durable record on every turn it survives, so it
-//     outlives the transcript being pruned, compacted or reseeded.
-//   - It is discharged by the run's account of how it addressed the redirect, and a
-//     [SteerJudge] rules on that account, never the run itself. A steered goal with
-//     no judge wired stops and names the missing judge.
+//   - It is redelivered from the durable record on every turn it survives, so pruning,
+//     compacting or reseeding the transcript cannot drop it.
+//   - The run's account of how it addressed the redirect discharges it, and a
+//     [SteerJudge] rules on that account, never the run. A steered goal with no judge
+//     wired stops and names the missing judge.
 //   - The run cannot withdraw it. Dropping or rewording an adopted steer is a terminal
-//     spec fault ([ErrSteerWithdrawn]); issuing another steer is always allowed.
-//
-// A steer is not an amendment to the objective. An amendment changes what done means,
-// so the grader rules on the new text and the redirect disappears into it. A steer
-// leaves done alone and is checked on its own.
+//     spec fault ([ErrSteerWithdrawn]); issuing another steer is allowed.
 type Steer struct {
-	// ID names the redirect so an acknowledgement can answer this one and a status entry
-	// can track it across reconciles. It is the operator's, like an invariant's, because a
-	// content address is unwritable by hand and this is written by hand under time
-	// pressure.
+	// ID names the redirect so an acknowledgement can answer this one. It is the
+	// operator's, like an invariant's, because a content address is unwritable by hand.
 	ID string `json:"id"`
-	// Instruction is what to do differently, in the operator's words. It is delivered to
-	// the run verbatim and quoted back in a refusal, so it is read by both the model that
-	// has to act on it and the person handed the stopped goal.
+	// Instruction is what to do differently. It is delivered to the run verbatim and
+	// quoted back in a refusal.
 	Instruction string `json:"instruction"`
 }
 
 // SteerMark returns the fingerprint of a steer's content: the first steerMarkLen hex
 // characters of a SHA-256 over its id and instruction, NUL-separated so no two different
-// steers can be re-split into the same byte string. It is what makes the no-withdrawal
-// rule enforceable: the status remembers what the redirect said when the run was given it,
-// so a later spec that softens the wording is caught rather than accepted as the same
-// redirect.
+// steers re-split into the same bytes. The status remembers it from the moment the run
+// was given the redirect, so a later spec that softens the wording is caught and not
+// accepted as the same redirect.
 func SteerMark(st Steer) string {
 	var b strings.Builder
 	b.WriteString(st.ID)
@@ -76,62 +66,50 @@ func SteerMark(st Steer) string {
 	return hex.EncodeToString(sum[:])[:steerMarkLen]
 }
 
-// SteerState is the observed state of one redirect: the content it was adopted under, and
-// the acknowledgement that discharged it if one has been accepted.
+// SteerState is the observed state of one redirect: the content it was adopted under and
+// the acknowledgement that discharged it, if one has been accepted.
 type SteerState struct {
 	// ID is the steer this entry observes.
 	ID string `json:"id"`
-	// Mark is SteerMark of the steer as it read when the run was given it. A later spec
-	// whose steer of the same id marks differently has reworded an obligation the run is
-	// already under, and admission refuses it.
+	// Mark is [SteerMark] of the steer as the run was given it. A later spec whose steer of
+	// the same id marks differently has reworded an obligation, and admission refuses it.
 	Mark string `json:"mark"`
 	// Acknowledged records that a judge accepted the run's account of how this redirect
-	// was addressed. Until it is set the redirect is outstanding: it is redelivered every
-	// turn and it refuses a completion claim.
+	// was addressed. Until it is set the redirect is redelivered every turn and refuses a
+	// completion claim.
 	Acknowledged bool `json:"acknowledged,omitempty"`
-	// Account is what the run said it did about the redirect, kept verbatim. It is the
-	// part of the record worth reading later: whether a steer was honored is a question
-	// about this sentence, and a bare acknowledged flag would answer it with "yes"
+	// Account is what the run said it did about the redirect, verbatim. Whether a steer
+	// was honored is a question about this sentence; a bare flag would answer "yes"
 	// forever.
 	Account string `json:"account,omitempty"`
-	// AcknowledgedAt is when the acknowledgement was accepted. Nil while the redirect is
-	// outstanding.
+	// AcknowledgedAt is when the acknowledgement was accepted; nil while outstanding.
 	AcknowledgedAt *time.Time `json:"acknowledgedAt,omitempty"`
 }
 
 // Acknowledgement is a judge's finding that a run's account addresses one outstanding
-// redirect, naming the redirect and how it was addressed. How is what gets recorded on the
-// status and quoted in the run's record, so it says what the run did, not that it did
-// something.
+// redirect. How is recorded on the status and quoted in the run's record, so it says what
+// the run did.
 type Acknowledgement struct {
 	ID  string `json:"id"`
 	How string `json:"how"`
 }
 
 // SteerJudge rules on whether a run's account of its work addresses the redirects it is
-// still under. It is handed the goal's record, its spec, the status this reconcile has
-// built, the outstanding redirects and the run's own account, and returns one finding per
-// redirect the account addresses.
+// still under, returning one finding per redirect addressed.
 //
-// Silence is a refusal. A redirect the judge does not name stays outstanding, so a judge
-// that answers half the question leaves the other half unpaid, and a judge that answers
-// nothing discharges nothing. That direction is deliberate: the expensive error here is
-// accepting an account that says nothing about the redirect, and the cheap one is asking a
-// run to say again what it did.
+// Silence is a refusal: a redirect the judge does not name stays outstanding. Accepting
+// an account that says nothing about the redirect is the expensive error; asking a run
+// to say again what it did is the cheap one.
 //
-// It is a port, not a policy. "Did this answer address that instruction" is a small
-// classification and a good candidate for a cheap model tier, where a cheap model saying
-// no keeps the obligation open, which is the safe direction. A judge that cannot answer
-// returns an error rather than an empty finding, because "I could not tell" and "it does
-// not address it" are different, and only the judge knows whether its failure is
-// transient.
+// A judge that cannot answer returns an error and not an empty finding, because "I could
+// not tell" and "it does not address it" differ, and only the judge knows whether its
+// failure is transient.
 type SteerJudge interface {
 	Acknowledged(ctx context.Context, r resource.Resource, spec Spec, status Status, outstanding []Steer, account string) ([]Acknowledgement, error)
 }
 
-// ValidateSteers refuses a set of redirects that could never be delivered or answered: one
-// missing its id or instruction, or two claiming the same id. It runs at admission, before
-// anything is dispatched.
+// ValidateSteers refuses a set of redirects that could never be delivered or answered:
+// one missing its id or instruction, or two claiming the same id. It runs at admission.
 func ValidateSteers(steers []Steer) error {
 	seen := make(map[string]bool, len(steers))
 	for i, st := range steers {
@@ -146,14 +124,11 @@ func ValidateSteers(steers []Steer) error {
 	return nil
 }
 
-// ValidateSteersGiven checks the redirects on the spec against the ones the status records
-// the run as having been given: every one must still be present, and must still fingerprint
-// to the mark it was given under. One that is gone, or that now reads differently, is the
-// obligation being renegotiated, and it is refused.
-//
-// New redirects pass, and an acknowledged one is held to the same rule as an outstanding
-// one. Deleting a discharged redirect would erase the account that discharged it, and the
-// account is the only durable evidence that the operator was answered at all.
+// ValidateSteersGiven checks the redirects on the spec against the ones the status
+// records the run as given: each must still be present and still fingerprint to its mark.
+// New redirects pass. An acknowledged redirect is held to the same rule as an outstanding
+// one, because deleting it would erase the account that discharged it, the only durable
+// evidence the operator was answered.
 func (s Status) ValidateSteersGiven(steers []Steer) error {
 	if len(s.Steers) == 0 {
 		return nil
@@ -174,17 +149,13 @@ func (s Status) ValidateSteersGiven(steers []Steer) error {
 	return nil
 }
 
-// SyncSteers brings the status's record of the redirects into line with the spec, taking
-// on any it has not seen before and preserving what is recorded about the rest. Taking one
-// on is what commits it: from here ValidateSteersGiven will refuse to let it be dropped or
-// reworded.
+// SyncSteers takes on any redirect the status has not seen and preserves what is recorded
+// about the rest. Taking one on commits it: [Status.ValidateSteersGiven] then refuses to
+// let it be dropped or reworded.
 //
-// A new redirect also clears the non-convergence count. That count is how many cycles in a
-// row ended in the same refusal with nothing proven in between, and it stops a run that is
-// being told nothing new (converge.go). An operator issuing a redirect is the run being
-// told something new by the one party whose input the count was standing in for, so
-// carrying the old count forward would stop the run for the absence of exactly what just
-// arrived.
+// A new redirect also clears the non-convergence count (converge.go). The count stops a
+// run being told nothing new, and a redirect is the operator telling it something new, so
+// carrying the old count forward would stop the run for the absence of what just arrived.
 func (s *Status) SyncSteers(steers []Steer) {
 	have := make(map[string]bool, len(s.Steers))
 	for _, given := range s.Steers {
@@ -199,13 +170,11 @@ func (s *Status) SyncSteers(steers []Steer) {
 	}
 }
 
-// OutstandingSteers returns the redirects the run is still under, in spec order: every one
-// whose status entry does not carry an accepted acknowledgement.
+// OutstandingSteers returns the redirects the run is still under, in spec order: each one
+// whose status entry carries no accepted acknowledgement.
 //
-// A redirect with no status entry counts as outstanding. Being taken on is what the run
-// records about a redirect, never what discharges it, so a redirect the status has not
-// caught up with is one nobody has answered, and reading it any other way would make a
-// status write that has not landed yet into a way to skip an obligation.
+// A redirect with no status entry counts as outstanding. Being taken on never discharges
+// it, so a status write that has not landed must not become a way to skip an obligation.
 func (s Status) OutstandingSteers(steers []Steer) []Steer {
 	if len(steers) == 0 {
 		return nil
@@ -226,12 +195,11 @@ func (s Status) OutstandingSteers(steers []Steer) []Steer {
 }
 
 // RecordAcknowledgements folds a judge's findings into the status and returns the
-// redirects still outstanding afterwards, in the order they were offered.
+// redirects still outstanding afterwards, in the order offered.
 //
-// A finding naming a redirect that was not offered is ignored rather than trusted. The
-// judge is handed the outstanding redirects and rules on those; a finding about anything
-// else would discharge an obligation the judge was never asked about, including one
-// already discharged, whose recorded account it would overwrite.
+// A finding naming a redirect that was not offered is ignored: it would discharge an
+// obligation the judge was never asked about, or overwrite the recorded account of one
+// already discharged.
 func (s *Status) RecordAcknowledgements(outstanding []Steer, acks []Acknowledgement, now time.Time) []Steer {
 	addressed := make(map[string]string, len(acks))
 	for _, a := range acks {
@@ -250,8 +218,8 @@ func (s *Status) RecordAcknowledgements(outstanding []Steer, acks []Acknowledgem
 		}
 		i, tracked := by[st.ID]
 		if !tracked {
-			// Not taken on yet, so there is nowhere durable to record the discharge. It
-			// stays outstanding and is judged again on the pass that has its entry.
+			// Not taken on yet, so there is nowhere durable to record the discharge: it
+			// stays outstanding and is judged again once it has an entry.
 			open = append(open, st)
 			continue
 		}
@@ -264,10 +232,9 @@ func (s *Status) RecordAcknowledgements(outstanding []Steer, acks []Acknowledgem
 }
 
 // SteerBrief renders the redirects a run is still under as the turn's standing
-// instruction, or "" when it is under none. It is what the executor folds into every turn
-// so the obligation is in front of the model each time it decides what to do, and it
-// states the discharge rule alongside the redirect, because a run that is told the rule
-// can answer it and a run that is not will be refused for failing a test nobody described.
+// instruction, or "" when it is under none. It states the discharge rule alongside the
+// redirect, because a run that is told the rule can answer it and a run that is not is
+// refused for failing a test nobody described.
 func SteerBrief(spec Spec, status Status) string {
 	outstanding := status.OutstandingSteers(spec.Steers)
 	if len(outstanding) == 0 {
@@ -284,9 +251,8 @@ func SteerBrief(spec Spec, status Status) string {
 }
 
 // UnacknowledgedReason is the message a goal settles under when it reported completion
-// with redirects still outstanding: what the operator asked for, and what the run said
-// instead. Both halves are quoted, because the useful question afterwards is which of the
-// two happened, and the account is the only place that can be read from.
+// with redirects outstanding. It quotes what the operator asked for and what the run said
+// instead, because the useful question afterwards is which of the two happened.
 func UnacknowledgedReason(outstanding []Steer, account string) string {
 	quoted := make([]string, 0, len(outstanding))
 	for _, st := range outstanding {

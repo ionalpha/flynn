@@ -25,15 +25,12 @@ const (
 	Finalizer = "goal.ionagent.io/cleanup"
 	// StepJobKind is the job kind a dispatched goal step is enqueued under.
 	StepJobKind = "goal.step"
-	// PlanJobKind is the job kind a goal's planning step is enqueued under. It rides
-	// the same queue and worker as a build step and is distinguished by kind, so
-	// planning inherits the lease, crash-resume and retry ladder a step already has
-	// rather than growing a second execution path.
+	// PlanJobKind is the job kind a goal's planning step is enqueued under. It shares the
+	// build step's queue and worker, so planning inherits its lease, crash-resume and
+	// retry ladder.
 	PlanJobKind = "goal.plan"
-	// VerifyJobKind is the job kind a goal's item-verification step is enqueued under.
-	// Like planning it rides the same queue and worker as a build step, so a
-	// verification inherits the lease, crash-resume and retry ladder rather than
-	// growing a third execution path, and is distinguished only by kind.
+	// VerifyJobKind is the job kind a goal's item-verification step is enqueued under,
+	// sharing the build step's queue and worker like planning.
 	VerifyJobKind = "goal.verify"
 )
 
@@ -177,118 +174,80 @@ type Spec struct {
 	Objective     string `json:"objective"`
 	StopCondition string `json:"stopCondition"`
 	MaxSteps      int    `json:"maxSteps,omitempty"`
-	// Grant is the exact set of action names this goal may take, carried on the goal
-	// itself so authority travels with the work rather than being fixed at the
-	// executor. One executor can then drive goals of differing authority (a parent at
-	// full grant, a delegated child narrowed to a subset), and a child's grant is set
-	// to a subset of its parent's so a delegation can never widen authority. Empty
-	// defers to the executor's default grant, so an ungoverned standalone run is
-	// unchanged.
+	// Grant is the exact set of action names this goal may take. It travels with the
+	// goal, so one executor can drive goals of differing authority, and a child's grant
+	// is a subset of its parent's: a delegation never widens authority. Empty defers to
+	// the executor's default grant.
 	Grant []string `json:"grant,omitempty"`
-	// Depth is how many delegation hops separate this goal from a root goal: a root
-	// is 0 and a spawned child is its parent's depth plus one. A fan-out spawner
-	// refuses to create a child past a maximum depth, so a chain of agents spawning
-	// agents cannot recurse without bound.
+	// Depth is how many delegation hops separate this goal from a root goal (0). A
+	// fan-out spawner refuses a child past a maximum depth, so agents spawning agents
+	// cannot recurse without bound.
 	Depth int `json:"depth,omitempty"`
-	// BudgetPool is the run id whose budget this goal charges and reserves against.
-	// A fan-out shares one pool: every descendant inherits the root's pool, so the
-	// whole graph is bounded by a single ceiling rather than a budget per goal. Empty
-	// means the goal is its own pool (a standalone root).
+	// BudgetPool is the run id whose budget this goal charges and reserves against. Every
+	// descendant inherits the root's pool, so a fan-out is bounded by one ceiling. Empty
+	// means the goal is its own pool.
 	BudgetPool string `json:"budgetPool,omitempty"`
-	// Budget bounds the goal by what it spends, alongside MaxSteps' bound on how many
-	// steps it takes: a ceiling on total tokens, cost, and share of the plan window,
-	// checked at the same reconcile point as MaxSteps and enforced against the spend
-	// recorded on BudgetPool. A step is the wrong unit for cost (a step that reads a
-	// file and a step that runs a full-codebase gather differ by an order of
-	// magnitude), so this bounds the thing that actually varies. The zero value bounds
-	// nothing, so a goal that sets no budget is governed by MaxSteps exactly as before.
+	// Budget bounds the goal by what it spends, beside MaxSteps' bound on how many steps
+	// it takes: a ceiling on tokens, cost and share of the plan window, checked at the
+	// same reconcile point as MaxSteps against the spend recorded on BudgetPool. A step
+	// is the wrong unit for cost, which varies by an order of magnitude between steps.
+	// The zero value bounds nothing.
 	Budget SpendBudget `json:"budget,omitempty"`
-	// System is the standing system prompt this goal runs under, carried on the goal
-	// so a delegated child can run as a different agent than its parent (its prompt
-	// baked in by the spawner from the bound Agent). Empty defers to the executor's
-	// default prompt, so a standalone run is unchanged.
+	// System is the standing system prompt this goal runs under, so a delegated child can
+	// run as a different agent than its parent. Empty defers to the executor's default.
 	System string `json:"system,omitempty"`
 	// Driver names the run loop this goal uses (resolved from the driver registry), and
-	// Model names the model it runs on. They are carried on the goal so a delegated
-	// child can run a different loop and model than its parent (set by the spawner from
-	// the bound Agent). Empty defers to the host default loop and model, so a standalone
-	// run is unchanged.
+	// Model the model it runs on, so a delegated child can differ from its parent. Empty
+	// defers to the host default.
 	Driver string `json:"driver,omitempty"`
 	Model  string `json:"model,omitempty"`
-	// Attachments are images seeded onto the goal's opening user turn. The
-	// objective is the opening turn's text; the attachments are its images, so
-	// a goal can open on a picture the way a composer prompt can. They are the
-	// model port's own image type (bytes inline, like the rest of a
-	// conversation in the checkpoint), so no translation is needed to open the
-	// turn. Empty on every text-only goal, so the text path serializes
-	// identically and is unchanged.
+	// Attachments are images seeded onto the goal's opening user turn, whose text is the
+	// objective. They are the model port's own image type (bytes inline, like the rest
+	// of a conversation in the checkpoint), so no translation is needed.
 	Attachments []llm.Image `json:"attachments,omitempty"`
-	// Ledger is the goal's objective expanded into the units of work it implies,
-	// each carrying its own declared way to verify it. It is desired state, which is
-	// why it lives here and not in status: it is what the goal is committed to
-	// doing, and the per-item proven/unproven observation of it is Status.Ledger.
-	// The planner phase writes it before any building starts, and it is
-	// append-and-mark-only from then on (see ledger.go). Empty on a goal that runs
-	// without a planner, which is every goal composed before planning is wired.
+	// Ledger is the objective expanded into the units of work it implies, each with its
+	// own declared way to verify it. It is desired state, so it lives here and not in
+	// status; the per-item observation is Status.Ledger. The planner writes it before any
+	// building starts and it is append-and-mark-only from then on (see ledger.go).
 	Ledger []LedgerItem `json:"ledger,omitempty"`
 	// Units is the goal's fan-out written down in advance: a graph of child units with
-	// dependency edges, admitted in dependency order as governed children (see
-	// units.go). It is desired state for the same reason the ledger is, and it is the
-	// plan-driven counterpart to the model deciding to spawn mid-conversation: the
-	// decomposition is already agreed, so it arrives written rather than rediscovered.
-	// A malformed graph (a cycle, an edge to a unit that does not exist) is refused at
-	// admission, before a child is created. Empty on every goal that does not fan out
-	// from a plan, and such a goal behaves exactly as it did before.
+	// dependency edges, admitted in dependency order as governed children (see units.go).
+	// It is the plan-driven counterpart to the model deciding to spawn mid-conversation.
+	// A malformed graph is refused at admission, before a child is created.
 	Units []Unit `json:"units,omitempty"`
-	// Invariants are the terms of the run: what must stay true while the goal works,
-	// as against the stop condition's one thing that must become true (see
-	// invariant.go). They are desired state, and they are the one part of it the run
-	// may never trade against progress: an auditor rules on them before the stop
-	// evaluator is asked anything, a breach settles the goal whatever the evaluator
-	// was about to say, and a term already adopted cannot be dropped or reworded.
-	// Empty on a goal that states no terms, and such a goal behaves exactly as it did
-	// before.
+	// Invariants are the terms of the run: what must stay true while the goal works (see
+	// invariant.go). An auditor rules on them before the stop evaluator is asked anything,
+	// a breach settles the goal whatever the evaluator was about to say, and an adopted
+	// term cannot be dropped or reworded.
 	Invariants []Invariant `json:"invariants,omitempty"`
-	// Steers are the redirects an operator has issued to this run since it started: how
-	// to get there, corrected, with the objective and the stop condition left alone (see
-	// steer.go). They are desired state that arrives late by design, which is what
-	// separates them from everything else here: a steer is the one field written while
-	// the work is in flight, and the run is refused its completion until it has said what
-	// it did about each one. Empty on a run nobody has redirected, and such a run is
-	// unaffected.
+	// Steers are the redirects an operator has issued since the run started, with the
+	// objective and stop condition left alone (see steer.go). They are the one desired
+	// state written while the work is in flight, and the run is refused its completion
+	// until it has said what it did about each.
 	Steers []Steer `json:"steers,omitempty"`
-	// Kill is an operator's order to stop this run (see kill.go). It is the other thing
-	// written to the spec while the work is in flight, and it is the one field here that
-	// asks for less rather than more: everything else on the spec states what the run is
-	// to achieve, and this states that it is to stop trying. A reconcile that reads it
-	// engages the run's halt, so the stop reaches the waist inside the running step, and
-	// settles the goal as killed. Nil on a run nobody stopped, which is every run that
-	// was left to finish.
+	// Kill is an operator's order to stop this run (see kill.go). Unlike the rest of the
+	// spec it asks for less: a reconcile that reads it engages the run's halt, so the stop
+	// reaches the waist inside the running step, and settles the goal as killed.
 	Kill *Kill `json:"kill,omitempty"`
 	// Allowances are the irreversible actions outside the workspace this run is
-	// authorized to take (see allowance.go). They are the standing form of a decision
-	// nobody will be present to make: a run that reaches an undeclared one is paused with
-	// the ask rather than refused into a model that would look for another route. Empty
-	// on a goal that declares none, and such a goal can take no such action at all, which
-	// is the default and the point.
+	// authorized to take (see allowance.go). A run that reaches an undeclared one is
+	// paused with the ask, not refused into a model that would look for another route.
+	// With none declared the run can take no such action.
 	Allowances []Allowance `json:"allowances,omitempty"`
 }
 
 // SpendBudget is a goal's spend ceiling on three axes. Tokens and Cost cap the total
 // the goal may spend on its budget pool; WindowFraction caps the share of the plan
-// window the run may consume, in [0,1] (0.5 is half the window). A zero field is no
-// bound on that axis, so the zero SpendBudget bounds nothing.
+// window the run may consume, in [0,1]. A zero field is no bound on that axis.
 //
-// Window share matters where the scarce resource is not money but a subscription's
-// plan window: there the argument is to stop at a percentage of the weekly window
-// rather than at a dollar figure. Flynn enforces the fraction but does not source the
-// window data; an app supplies that through the reconciler's WindowSource, and the
-// bound has no effect until one is wired.
+// Window share suits a subscription's plan window, where the scarce resource is not
+// money. Flynn enforces the fraction but does not source the window data; an app
+// supplies that through the reconciler's WindowSource, and the bound has no effect
+// until one is wired.
 //
-// These ceilings are the agent's own, so crossing one stops the goal with a named
-// reason. That is a different outcome from hitting a provider's own limit (a pause
-// that resumes when the provider resets) or a transient error (retried with backoff),
-// and it deliberately does not share their code path: see the reconciler's spendGuard.
+// Crossing a ceiling stops the goal with a named reason. That is deliberately not the
+// code path of a provider's own limit (a pause that resumes on reset) or a transient
+// error (retried with backoff): see the reconciler's spendGuard.
 type SpendBudget struct {
 	Tokens         int64   `json:"tokens,omitempty"`
 	Cost           float64 `json:"cost,omitempty"`
@@ -306,11 +265,9 @@ func (b SpendBudget) IsZero() bool {
 type InFlight struct {
 	JobID     string    `json:"jobID"`
 	StartedAt time.Time `json:"startedAt"`
-	// Kind is the job kind dispatched (StepJobKind or PlanJobKind), so the observing
-	// pass knows what it is observing. A planning step is not building, so it does
-	// not spend the build budget; without this the reconciler cannot tell the two
-	// apart once the job is done and the reservation is being cleared. Empty on a
-	// reservation written before planning existed, which reads as a build step.
+	// Kind is the job kind dispatched (StepJobKind or PlanJobKind), so the observing pass
+	// can tell a planning step, which spends no build budget, from a build step when the
+	// reservation is cleared. Empty reads as a build step.
 	Kind string `json:"kind,omitempty"`
 }
 
@@ -340,88 +297,67 @@ type Status struct {
 	// that ran and produced nothing is a planned goal with an empty ledger, which is
 	// a stall, not an invitation to plan again on the next pass.
 	Planned bool `json:"planned,omitempty"`
-	// Ledger is the observed state of Spec.Ledger, one entry per planned item and in
-	// the same order. Every entry starts unproven, so a goal begins from a record
-	// that says nothing is done. Completion is a transition here.
+	// Ledger is the observed state of Spec.Ledger, one entry per planned item in the same
+	// order. Every entry starts unproven, so completion is a transition here.
 	Ledger []LedgerState `json:"ledger,omitempty"`
-	// Units is the observed state of Spec.Units, one entry per unit and in the same
-	// order: which units have had a child goal created for them, which of those
-	// children have finished, and which finished having proven their unit. It is what
-	// makes a fan-out resumable, so a run that crashes with children in flight comes
-	// back knowing they exist rather than creating them a second time.
+	// Units is the observed state of Spec.Units, one entry per unit in the same order:
+	// which have had a child created, which children have finished, and which finished
+	// having proven their unit. A run that crashes with children in flight resumes
+	// knowing they exist and does not create them a second time.
 	Units []UnitState `json:"units,omitempty"`
-	// Invariants is the observed state of Spec.Invariants: which terms the run has
-	// adopted, what each said when it was adopted, how often it has been audited, and
-	// any breach found. It is durable because both halves of the rule need to outlive
-	// a reconcile: the adopted wording is what a later spec's rewording is caught
-	// against, and a recorded breach is what stops the goal converging on a pass that
-	// runs no audit of its own.
+	// Invariants is the observed state of Spec.Invariants: which terms the run adopted,
+	// their wording at adoption, how often each was audited, and any breach. It is durable
+	// because the adopted wording is what a later rewording is caught against, and a
+	// recorded breach stops the goal converging on a pass that runs no audit of its own.
 	Invariants []InvariantState `json:"invariants,omitempty"`
-	// Steers is the observed state of Spec.Steers: which redirects the run has been given,
-	// what each said when it was given, and the account that discharged it. It is durable
-	// because both halves outlive a reconcile: the wording is what a later spec's rewording
-	// is caught against, and the account is the record of whether the operator was answered
-	// at all.
+	// Steers is the observed state of Spec.Steers: which redirects the run was given, their
+	// wording at the time, and the account that discharged each. The wording is what a
+	// later rewording is caught against; the account records whether the operator was
+	// answered.
 	Steers []SteerState `json:"steers,omitempty"`
-	// Killed is when the reconciler stopped this run under Spec.Kill. It is durable
-	// because it is what makes the kill unwithdrawable: a spec that later drops the
-	// order is caught against this, so a run a person stopped cannot be edited into a
-	// run that stopped on its own. Nil on every run nobody killed.
+	// Killed is when the reconciler stopped this run under Spec.Kill. A spec that later
+	// drops the order is caught against it, so a run a person stopped cannot be edited
+	// into one that stopped on its own.
 	Killed *time.Time `json:"killed,omitempty"`
 	// VerifyPending marks that a build step has completed and the current ledger item's
-	// declared check has not been run since. It is what alternates the run between
-	// building and verifying: the reconciler sets it when it observes a build step and
-	// clears it when it observes the verification, so exactly one check runs per build
-	// step rather than one per reconcile tick. It is durable because the alternation has
-	// to survive a crash: a run that restarted here would otherwise build twice and
-	// verify once, and the item's state would lag the work by a step.
+	// declared check has not run since. It alternates the run between building and
+	// verifying, so one check runs per build step and not one per reconcile tick. It is
+	// durable so a restart does not build twice and verify once.
 	VerifyPending bool `json:"verifyPending,omitempty"`
-	// ItemFeedback is the detail of the last verification that ran and did not pass, so
-	// the next build step is told what its own declared check reported rather than being
-	// asked to guess why the item is still open. The executor surfaces it and the
-	// reconciler clears it once the item is proven. Empty when the current item has no
-	// failed check behind it.
+	// ItemFeedback is the detail of the last verification that did not pass, so the next
+	// build step is told what the item's declared check reported. The reconciler clears it
+	// once the item is proven.
 	ItemFeedback string `json:"itemFeedback,omitempty"`
-	// IdleStreak, ProgressMark and LastActivity drive no-progress detection
-	// (progress.go). ProgressMark is the fingerprint of substantive work observed after
-	// the last step that made any, LastActivity is a short description of what the most
-	// recent step did (so a no-progress stall can name it), and IdleStreak counts the
-	// consecutive steps since ProgressMark last changed. They are the observed state of
-	// "is this run still getting anywhere", computed over the durable record rather than
-	// the working tree.
+	// IdleStreak, ProgressMark and LastActivity drive no-progress detection (progress.go).
+	// ProgressMark is the fingerprint of substantive work after the last step that made
+	// any, LastActivity describes the most recent step so a stall can name it, and
+	// IdleStreak counts the consecutive steps since ProgressMark last changed.
 	IdleStreak   int    `json:"idleStreak,omitempty"`
 	ProgressMark string `json:"progressMark,omitempty"`
 	LastActivity string `json:"lastActivity,omitempty"`
-	// ProgressNudge is the warning the reconciler wants the next step handed when the
-	// goal is stalling but not yet stopped (see ProgressWarning). The executor surfaces
-	// it to the agent — a goal told it is stalling sometimes un-stalls — and clears it
-	// once delivered. Empty when the goal is making progress.
+	// ProgressNudge is the warning the next step is handed when the goal is stalling but
+	// not yet stopped (see ProgressWarning). The executor surfaces it to the agent and
+	// clears it once delivered.
 	ProgressNudge string `json:"progressNudge,omitempty"`
 	// LastVerdict, VerdictMark and VerdictRepeat drive non-convergence detection
-	// (converge.go). LastVerdict is the refusal the run was last given verbatim, kept so
-	// the stall can quote it; VerdictMark is the normalized form that refusal was compared
-	// on, together with how much of the ledger stood proven at the time; and VerdictRepeat
-	// counts the consecutive build-and-check cycles that have ended in that same refusal.
-	// They are the observed state of "is this run still being told something new", which is
-	// a different question from whether it is busy.
+	// (converge.go). LastVerdict is the refusal the run was last given verbatim, so the
+	// stall can quote it; VerdictMark is the normalized form it was compared on, with how
+	// much of the ledger stood proven; VerdictRepeat counts the consecutive build-and-check
+	// cycles that ended in that same refusal.
 	LastVerdict   string `json:"lastVerdict,omitempty"`
 	VerdictMark   string `json:"verdictMark,omitempty"`
 	VerdictRepeat int    `json:"verdictRepeat,omitempty"`
-	// Unwired marks a stall that describes the loop rather than the run: the goal
-	// needed a producer and the reconciler it met had none (see stall). It is the one
-	// stall a later reconcile re-examines. A spent budget, a run that got nowhere and
-	// a failed step are all facts about the run, true for good however often the goal
-	// is looked at again; a missing producer is a fact about whoever assembled the
-	// loop, and it stops being true the moment they wire it. Without this the goal
-	// would stay settled on the no-op skip and the work would have to be recreated to
-	// pick it up, which would make stalling a refusal wearing a softer word.
+	// Unwired marks a stall that describes the loop and not the run: the goal needed a
+	// producer and the reconciler it met had none (see stall). It is the one stall a later
+	// reconcile re-examines. A spent budget or a failed step stays true however often it
+	// is looked at; a missing producer stops being true the moment it is wired. Without
+	// this the goal would stay settled on the no-op skip until recreated.
 	Unwired bool `json:"unwired,omitempty"`
 }
 
-// unwiredStalls names the stall reasons that mean a producer was missing rather than
-// the run having failed. Adding a reason here is what makes the goal recoverable by
-// wiring the thing it needed, so a new "…Missing" stall belongs in this map on the
-// same commit that introduces it.
+// unwiredStalls names the stall reasons that mean a producer was missing and not that
+// the run failed. A reason listed here is recoverable by wiring the producer, so a new
+// "...Missing" stall belongs in this map in the same commit that introduces it.
 var unwiredStalls = map[string]bool{
 	"InvariantAuditorMissing": true,
 	"SteerJudgeMissing":       true,
@@ -429,14 +365,12 @@ var unwiredStalls = map[string]bool{
 	"WindowSourceMissing":     true,
 }
 
-// stall settles the status as stopped for reason, carrying message. Every stall in
-// the reconciler goes through here, so the two conditions are always set as a pair
-// and Unwired always reflects the reason rather than whatever the last stall left
-// behind.
+// stall settles the status as stopped for reason, carrying message. Every stall goes
+// through here, so the two conditions are always set as a pair and Unwired reflects the
+// reason and not whatever the last stall left behind.
 //
-// CondStalled carries the specific reason, which is the account of the halt worth
-// reading. CondReconciling carries "Stalled", because what it reports is that the
-// loop stopped driving this goal and the reason it stopped is already next to it.
+// CondStalled carries the specific reason; CondReconciling carries "Stalled" because
+// all it reports is that the loop stopped driving this goal.
 func (s *Status) stall(reason, message string, now time.Time) {
 	s.Phase = PhaseStalled
 	s.Message = message

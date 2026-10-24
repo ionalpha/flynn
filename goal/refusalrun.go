@@ -20,24 +20,18 @@ func WithRefusalProbe(p RefusalProbe) Option { return func(g *Reconciler) { g.re
 
 // checkRefusals reads the run's recorded refusals and reports whether it handled the
 // reconcile. One read answers two questions: whether the refusals amount to a verdict,
-// which settles the goal, and whether one of them is a run asking for authority nobody gave
-// it, which pauses the goal (allowance.go). Otherwise it hands back and the goal carries on.
+// which settles the goal, and whether one is a run asking for authority nobody gave it,
+// which pauses the goal (allowance.go). Otherwise it hands back.
 //
-// The verdict is asked first. A run refused for want of an allowance and a run working its
-// way around a gate can leave overlapping records, and where both readings fire the verdict
-// is the truer account: the ask would have the author widen the authority of a run that was
-// looking for a way through, which is the opposite of what either shape needs.
+// The verdict is asked first. Where both readings fire the verdict is the truer one:
+// the ask would have the author widen the authority of a run that was looking for a way
+// through, the opposite of what either shape needs.
 //
-// It runs beside the audit, before the stop evaluator, rather than among the stall
-// guards that follow it: those explain why a run that did not converge stopped, and a
-// route-around is a verdict on a run that did. The verdict is derived from the whole
-// record each pass rather than a count banked on the status, which a status write could
-// lose.
-//
-// observed paces the read the way it paces the audit: a poll tick, a resync and a wake see
-// the record the last pass already ruled on. There is no already-seen state to carry,
-// because both readings are functions of the record rather than of what previous passes
-// made of it.
+// It runs beside the audit, before the stop evaluator, and not among the stall guards:
+// those explain why a run that did not converge stopped, and a route-around is a verdict
+// on a run that did. Both readings are functions of the whole record, so a poll tick,
+// a resync or a wake sees what the last pass already ruled on and no already-seen state
+// is carried; a count banked on the status could be lost by a status write.
 func (g *Reconciler) checkRefusals(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash string, observed bool) (reconcile.Result, bool, error) {
 	// A paused goal reads too, on the one pass an edit to its spec brings it back: it has
 	// no step in flight, so the record is the only place the answer to the ask can be, and

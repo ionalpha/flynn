@@ -7,42 +7,34 @@ import (
 	"unicode"
 )
 
-// Non-convergence is the third way a run can be going nowhere. The budget guard catches
-// a run that has spent its allowance and the no-progress guard (progress.go) a run that
-// has stopped doing anything. Neither catches a run that is busy, spending, and told the
-// same thing every cycle, because a goal that became unsatisfiable looks exactly like
-// one that is working. Repeated pressure that has stopped being informative is also a
-// safety risk, so the goal stops instead of applying it again.
+// Non-convergence is the third way a run can go nowhere. The budget guard catches a run
+// that spent its allowance and the no-progress guard (progress.go) one that stopped doing
+// anything. Neither catches a run that is busy, spending, and told the same thing every
+// cycle, which looks exactly like one that is working. Repeated pressure that has stopped
+// being informative is also a safety risk, so the goal stops instead of applying it again.
 //
-// Repetition is keyed on the substance of the refusal, normalized, paired with how much
-// of the ledger stood proven when it was given. An item flipping to proven resets the
-// count however the refusal is worded, so cycles that each make progress do not trip
-// it. It is deliberately not keyed on the progress fingerprint: a run thrashing through
-// new files has a fingerprint that changes every step, and that is the run this catches.
+// Repetition is keyed on the normalized substance of the refusal, paired with how much of
+// the ledger stood proven when it was given, so an item flipping to proven resets the
+// count however the refusal is worded. It is not keyed on the progress fingerprint: a run
+// thrashing through new files changes that every step, and is the run this catches.
 const (
 	// VerdictRepeatLimit is how many consecutive build-and-check cycles may end in the
-	// same refusal before the goal stops. Two is the whole point rather than a cautious
-	// default: the first refusal is information, and the second says the cycle in between
-	// did not change it, so the third would cost a step to learn nothing. Anything larger
-	// is paying to confirm what two already established.
+	// same refusal before the goal stops. The first refusal is information and the second
+	// says the cycle in between did not change it, so a third would cost a step to learn
+	// nothing.
 	VerdictRepeatLimit = 2
 )
 
 // ObserveVerdict folds one refusal into the repetition count and returns the count after
 // it. stopReason is what the stop evaluator said when it declined to call the goal done,
-// and itemDetail is what the current ledger item's own check last reported; either may be
-// empty, and they are compared together because a change in either is the run being told
+// and itemDetail is what the current item's own check last reported. Either may be
+// empty; they are compared together because a change in either is the run being told
 // something new.
 //
-// A refusal with no substance at all is not observed. An evaluator that declines without
-// saying why has given nothing to compare, and counting silence as repetition would stop
-// every goal driven by an evaluator that returns a bare false. Flynn's own shipped
-// evaluators do exactly that, so this is the common case and not an edge one: the signal
-// costs nothing where no reason is stated and does nothing there either.
-//
-// The count starts at one on a refusal whose substance is new, so the limit reads as the
-// number of cycles that ended the same way rather than the number of repeats after the
-// first.
+// A refusal with no substance is not observed: counting silence as repetition would stop
+// every goal driven by an evaluator that returns a bare false, as Flynn's shipped
+// evaluators do. The count starts at one on a refusal whose substance is new, so the
+// limit reads as the number of cycles that ended the same way.
 func (s *Status) ObserveVerdict(stopReason, itemDetail string) int {
 	mark := verdictMark(stopReason, itemDetail, s.provenCount())
 	if mark == "" {
@@ -59,18 +51,15 @@ func (s *Status) ObserveVerdict(stopReason, itemDetail string) int {
 }
 
 // ExecutedFeedback is the current item's failed-check detail when that check actually
-// ran, and "" when it did not. It is what non-convergence may count; the raw feedback is
-// not.
+// ran, and "" when it did not. Only that is counted for non-convergence.
 //
 // The two look identical on the status and mean opposite things. A check that ran and
-// reported a failure is the run being told its work is not done, and repeating it is the
-// signal this file is about. A check that could not be run at all reports on the host, not
-// on the work: on a machine that cannot contain a model-authored command every check comes
-// back unrunnable with the same wording forever, and counting that would stop every goal on
-// such a host for the one reason that has nothing to do with whether it was converging.
-//
-// The distinction is the recorded verdict's provenance rather than anything re-derived
-// here, so it is the same evidence the gate refuses a claim on.
+// failed is the run being told its work is not done, and repeating it is the signal this
+// file is about. A check that could not be run reports on the host: on a machine that
+// cannot contain a model-authored command every check comes back unrunnable with the same
+// wording forever, and counting that would stop every goal on such a host whether or not
+// it was converging. The distinction is the recorded verdict's provenance, the evidence
+// the gate refuses a claim on.
 func (s Status) ExecutedFeedback(ledger []LedgerItem, recorded []Verification) string {
 	if s.ItemFeedback == "" {
 		return ""
@@ -99,9 +88,9 @@ func (s Status) StalledForNonConvergence() bool {
 }
 
 // NonConvergenceReason is the stall message. It quotes what the run was told, says how
-// many cycles it was told it, and asks the question an operator is the only one who can
-// answer, because a goal that has stopped converging is the exact case where a human
-// would help and dying quietly wastes the one thing the run did establish.
+// many cycles it was told it, and asks the question only an operator can answer: a goal
+// that stopped converging is where a human helps, and dying silently wastes what the run
+// did establish.
 func (s Status) NonConvergenceReason() string {
 	return fmt.Sprintf(
 		"not converging: %d consecutive cycles ended in the same refusal, %q, with no ledger item proven in between. "+
@@ -110,11 +99,10 @@ func (s Status) NonConvergenceReason() string {
 		s.VerdictRepeat, s.LastVerdict)
 }
 
-// provenCount is how many ledger items currently stand proven. It is the advance the
-// refusal is keyed against: unlike a progress fingerprint, which moves whenever the run
-// touches anything, this moves only when the run has satisfied part of its own definition
-// of done. A goal with no ledger holds this at zero, which leaves the refusal's own
-// wording as the only signal, correctly: there is nothing else to go on.
+// provenCount is how many ledger items currently stand proven. Unlike a progress
+// fingerprint, which moves whenever the run touches anything, it moves only when the run
+// has satisfied part of its own definition of done. With no ledger it stays zero and the
+// refusal's wording is the only signal, as it should be.
 func (s Status) provenCount() int {
 	n := 0
 	for _, st := range s.Ledger {
@@ -126,7 +114,7 @@ func (s Status) provenCount() int {
 }
 
 // verdictMark builds the comparison key: the normalized refusal paired with the proven
-// count. Returns "" when nothing was stated, which is the signal to observe nothing.
+// count, or "" when nothing was stated.
 func verdictMark(stopReason, itemDetail string, proven int) string {
 	norm := normalizeVerdict(stopReason) + "\x00" + normalizeVerdict(itemDetail)
 	if norm == "\x00" {
@@ -147,14 +135,12 @@ func verdictText(stopReason, itemDetail string) string {
 	}
 }
 
-// normalizeVerdict reduces a refusal to the substance two of them are compared on: case
-// and punctuation and spacing carry no meaning here, so a model that rephrases the same
-// complaint is still repeating it.
+// normalizeVerdict reduces a refusal to the substance two of them are compared on: case,
+// punctuation and spacing carry no meaning, so a rephrased complaint is still repeated.
 //
-// Digits are deliberately kept. "3 tests still failing" followed by "2 tests still
-// failing" is a run being told something new, and stripping the numbers would turn the
-// clearest evidence of progress there is into a repetition and stop a run that was
-// converging.
+// Digits are kept. "3 tests still failing" then "2 tests still failing" is a run being
+// told something new, and stripping the numbers would turn the clearest evidence of
+// progress into a repetition.
 func normalizeVerdict(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))

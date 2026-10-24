@@ -7,34 +7,11 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// No-progress detection is the signal a reconciler otherwise lacks: not "budget
-// exhausted" or "stop condition met", but this step accomplished nothing. Without it a
-// goal that loops re-reading the same files spends its whole step budget and lands in a
-// budget stall, which reads as bad luck rather than as the loop noticing it was stuck.
-//
-// The shape is an idle streak: increment when a step changed nothing, reset on any
-// progress, stop at a limit. What counts as progress is deliberately multi-signal
-// (a tool run, a file touched, a ledger item proven, a commit) so a step that legitimately
-// advances the work in any of those ways is not read as idle.
-//
-// The one rule every recorded failure of this idea broke: do not key progress on the
-// working tree. A circuit breaker fired on a productive agent because it had committed
-// its work and left a clean tree; a git-rev-parse gate in a non-git workspace root
-// disabled the file-change check entirely, so nothing ever read as progress; a checkbox
-// regex counted a date like [2026-01-29] as unfinished work; a stale-loop check killed a
-// real workflow after three task.complete events because it keyed on the event name, not
-// on whether anything different had happened. The fix is to compare a fingerprint of the
-// substantive signals the run actually recorded — including commits — and to reset on any
-// of them changing. That is what a ProgressProbe returns; this file is the streak logic
-// over it, kept in the goal package so it is pure and testable without a runtime.
-
 const (
 	// NoProgressLimit is how many consecutive steps a goal may make no substantive
 	// change before it is stopped for lack of progress. It is small on purpose: a run
-	// that has changed nothing for three straight steps is looping, not thinking, and
-	// every additional idle step is spend with nothing to show for it. It sits well below
-	// DefaultMaxSteps so a stuck goal is caught by the loop noticing rather than by the
-	// budget running out.
+	// idle for three straight steps is looping, and it sits well below DefaultMaxSteps
+	// so a stuck goal is caught by the loop and not by the budget running out.
 	NoProgressLimit = 3
 	// progressWarnAt is the streak at which the goal is first told it is stalling: one
 	// step before the limit, because a goal told it is stalling sometimes changes course
@@ -49,12 +26,9 @@ const (
 // identical fingerprint is an idle step: the streak increments. Either way the step's
 // summary is recorded as what the goal was last doing, so a stall can name it.
 //
-// The first observed step is always progress: there is no prior mark to be idle against,
-// so a goal is never charged an idle step for the one that established the baseline. This
-// relies on the probe returning a non-empty fingerprint even when nothing substantive
-// happened (a stable encoding of "no signals"); an empty fingerprint would read as the
-// baseline step forever and the goal would never stall. That contract is stated on
-// ProgressProbe.
+// The first observed step is always progress: there is no prior mark to be idle
+// against, so the step that established the baseline is never charged as idle. This
+// relies on the non-empty fingerprint contract stated on [ProgressProbe].
 func (s *Status) ObserveProgress(fingerprint, summary string) int {
 	s.LastActivity = summary
 	if s.ProgressMark == "" || fingerprint != s.ProgressMark {
@@ -95,18 +69,19 @@ func ProgressWarning(streak int) string {
 }
 
 // ProgressProbe computes a fingerprint of the substantive work observable for a goal as
-// of now, over the durable record the runtime keeps — steps and tool calls recorded on
-// the spine, files touched, ledger items advanced, and git commits — and never the
-// working tree alone, the single choice every recorded failure of no-progress detection
-// shares. The reconciler compares successive fingerprints: an unchanged one is an idle
-// step, a changed one is progress on some signal. Summary is a short description of the
-// last thing the goal did, recorded so a no-progress stall can name it.
+// of now, over the durable record the runtime keeps (steps and tool calls on the spine,
+// files touched, ledger items advanced, git commits). The reconciler compares successive
+// fingerprints: an unchanged one is an idle step, a changed one is progress. Summary
+// describes the last thing the goal did, so a stall can name it.
 //
-// A probe must return a non-empty fingerprint even when nothing substantive happened —
-// a stable encoding of the empty signal set — so two do-nothing steps compare equal and
-// the streak advances. Returning "" reads as the baseline-establishing first step every
-// time (see ObserveProgress) and the goal would never stall. A probe error is the
-// reconciler's to classify: a transient read failure should not be a terminal stall.
+// A probe must not key on the working tree alone: a clean tree after a commit would read
+// as no progress, and a non-git workspace root would disable the check.
+//
+// A probe must return a non-empty fingerprint even when nothing substantive happened (a
+// stable encoding of the empty signal set), so two do-nothing steps compare equal and
+// the streak advances; "" reads as the baseline step every time (see
+// [Status.ObserveProgress]) and the goal never stalls. A probe error is the
+// reconciler's to classify: a transient read failure is not a terminal stall.
 type ProgressProbe interface {
 	Progress(ctx context.Context, r resource.Resource) (fingerprint, summary string, err error)
 }
