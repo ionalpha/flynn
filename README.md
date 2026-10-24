@@ -36,9 +36,10 @@ Four ideas run through everything it does:
    skills and memory, reinforced by whether the work actually succeeded.
 2. **It scales past one task.** A goals-and-missions engine plans, fans out, and
    governs many agent runs toward a single objective.
-3. **It owns its cost.** Per-run token and cost budgets with hard ceilings, plus
-   native support for local open-weight models, keep continuous operation affordable
-   and a runaway spend structurally impossible.
+3. **It owns its cost.** Per-run token and cost budgets (`--max-cost`, `--max-tokens`)
+   are hard ceilings once you set them, and they are opt-in: both default to 0, which is
+   unlimited. Native support for local open-weight models keeps continuous operation
+   affordable.
 4. **You can trust it with autonomy.** Every action is governed, contained, and sealed
    into a verifiable, tamper-evident record, so giving it real authority is a decision
    you can audit, not a gamble.
@@ -74,7 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | sh
 irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 ```
 
-Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.1.0`) or change the
+Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0`) or change the
 install directory with `FLYNN_INSTALL_DIR`.
 
 That is the last time you need the script. From then on the binary maintains itself:
@@ -108,7 +109,7 @@ docker run -v flynn-data:/data \
 ```
 
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
-(`:0.1.0`) instead of `latest`. The API binds loopback inside the container on purpose;
+(`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;
 add a channel (for example `-e TELEGRAM_BOT_TOKEN=...`) to reach the agent, or see
 [`deploy/README.md`](deploy/README.md) for remote access and hardening.
 
@@ -392,8 +393,9 @@ Autonomy that forms its own goals from monitored signals is on the
 ### Cost control
 
 - **Hard budgets.** The governor enforces spend ceilings per goal and per mission,
-  in tokens and in real money, with full per-run accounting. A run cannot exceed its
-  budget; it stops.
+  in tokens and in real money, with full per-run accounting. Once a ceiling is set
+  (`--max-cost`, `--max-tokens`; both default to 0, unlimited) a run cannot exceed it;
+  it stops.
 
 ### Tools and standards
 
@@ -419,8 +421,11 @@ Flynn is built to be handed real authority over untrusted input and real tools.
 - **Capability-scoped tools.** An agent only ever has the tools its capabilities grant.
 - **Sandboxed runs.** Commands execute in a kernel-confined sandbox (read-only host,
   syscall filter) with per-platform adapters, proven by a red-team containment matrix
-  in CI; plugins run read-only by default. Stronger container and microVM tiers, and
-  remote sandbox backends (E2B, Daytona, Modal) behind the same port, are on the roadmap.
+  in CI; plugins run read-only by default. Container (Docker, Podman) and
+  hardware-isolation tiers sit above it; the hardware tier boots a guest with its own
+  kernel through a microVM runtime the host provides (`FLYNN_MICROVM_RUNTIME`), and
+  without one untrusted work is refused. Remote sandbox backends (E2B, Daytona, Modal) behind the
+  same port are on the roadmap.
 - **Contained network.** The agent's outbound requests go through a default-deny egress
   gate that blocks private, loopback, and cloud-metadata destinations; inbound listeners
   bind loopback-only by default and refuse a wildcard bind. Both are enforced by lint
@@ -666,37 +671,39 @@ environment variables, with API keys kept in the encrypted vault (`flynn auth se
 The model you choose with `flynn models use` or `/model` is remembered, so you need
 not repeat `--model`. A configuration file is on the [roadmap](#status-and-roadmap).
 
-## Optional: Ion Alpha, the first host to embed Flynn
+## Optional: Ion Alpha, the first consumer of embedded Flynn
 
-None of this section is required. Flynn builds, runs, and stores its state
-locally in SQLite with no host at all, and it is gaining graph-backed memory and
-federated, fleet-wide learning in its own right (see the roadmap).
+None of this section is required. Flynn builds, runs, and stores its state locally in
+SQLite with no host at all.
 
-[Ion Alpha](https://ionalpha.io) is the first product to embed Flynn, and the
-clearest demonstration of what embedding buys you. Ion Alpha runs a company end
-to end: projects and areas, tasks and sprints, notes and documents, a typed
-knowledge graph, source control and pull requests, structured data, code
-intelligence, skills, and long-lived goals dispatched across a fleet of
-instances. Flynn is the engine underneath all of it. Every agent in Ion Alpha is
-a Flynn run: the same dispatch waist admitting each model and tool call against a
-capability grant, the same event-sourced spine, the same signed run records. Ion
-Alpha supplies the surfaces and the domain; Flynn decides, calls, remembers, and
-leaves the audit trail. What the agents in it can do is a working answer to what
-this repository can power.
+[Ion Alpha](https://ionalpha.io) is the first consumer of Flynn as an embedded library,
+and it shows what Flynn can do when it powers a product's agent behaviour and
+capabilities. Ion Alpha runs a company end to end: projects and areas, tasks and
+sprints, notes and documents, a typed knowledge graph, source control and pull requests,
+structured data, code intelligence, skills, and long-lived goals dispatched across a
+fleet of instances. Every agent in it is a Flynn run.
 
-Run against an Ion Alpha instance and Flynn keeps the same commands and
-configuration, with the local ports pointed at hosted implementations:
+What a host gets from embedding Flynn, as Ion Alpha uses it:
 
-- One permissioned, compounding pool of skills and knowledge shared across people
-  and projects, so every agent can build on every other agent's verified
-  experience.
-- A typed knowledge graph as memory, able to connect facts and surface
-  contradictions, instead of flat recall.
+- **Governed actions.** Each model and tool call is admitted at the dispatch waist
+  against a capability grant, so the host decides what every agent may do.
+- **A verifiable record.** Each run's events go to the same event-sourced spine and can
+  be sealed into a signed run record, so what an agent did can be checked afterwards.
+- **The agent behaviour as shipped.** Goals, missions, skills, memory, and the learning
+  loop run inside the host's agents as they do in the standalone binary. The host adds
+  its own domain tools and screens.
+
+What Ion Alpha adds by implementing the interfaces in `state/` and `observe/`:
+
+- One permissioned, compounding pool of skills and knowledge shared across people and
+  projects, so every agent can build on every other agent's verified experience.
+- A typed knowledge graph as memory, able to connect facts and flag contradictions,
+  instead of flat recall.
 - Team workspaces, cross-project context, SSO, and full audit and backup.
 
-The boundary is clean, and it is the reason the optionality is real: the agent
-depends only on the interfaces in `state/` and `observe/`, a host implements
-them, and nothing in this repository depends on a host.
+The agent depends only on those interfaces, a host implements them, and nothing in this
+repository depends on a host. To embed Flynn yourself, start with
+[Use it as a library](#use-it-as-a-library) and [docs/HOST_BOUNDARY.md](docs/HOST_BOUNDARY.md).
 
 ## Contributing
 
@@ -715,7 +722,7 @@ above is filling in on top of that foundation. Follow
 - A single static Go binary, cross-compiled for Windows, macOS, Linux, and ARM.
 - An event-sourced spine with materialized resources and a self-healing reconcile loop.
 - The dispatch waist: every model and tool call admitted against a capability grant, traced, and bracketed by spine events.
-- Per-run token and cost budgets with hard ceilings.
+- Per-run token and cost budgets: hard ceilings once set, unlimited by default.
 - Deterministic replay, with golden missions guarding behavior in CI.
 - Signed, tamper-evident run records: each run's events are committed to an append-only Merkle log under a COSE signature, checkable by a standalone verifier (`flynn spine verify`), with a public conformance vector suite for the record format.
 - An interactive TUI that renders the typed session spine live: in-session `/seal` and `/verify` with a record badge, a governance overlay (Ctrl+O), `/replay`, and cross-emulator input handling with an alternate-screen fallback.
@@ -761,7 +768,7 @@ above is filling in on top of that foundation. Follow
 - A Postgres backend and federated, fleet-wide learning.
 - A configuration file, and a portable export of skills and memory.
 - Rehearsing a destructive step in a dry run, and undoing a recorded action.
-- Stronger isolation tiers (gVisor, Firecracker/Kata microVM).
+- A user-space-kernel tier (gVisor).
 
 ## License
 
