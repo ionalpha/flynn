@@ -138,91 +138,151 @@ func extensionsList(ctx context.Context, dataDir string) error {
 // the mounted "<name>.<tool>". Authority to call a tool is enforced separately at the
 // dispatch waist in a real run; this command invokes it directly to test the round trip.
 func extensionsCall(ctx context.Context, dataDir string, args []string) error {
-	fs := newFlagSet("extensions call")
-	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
-	signer := fs.String("signer", "", "name of a SIGNER EXTENSION to route this tool's signing to; the signer holds the key and the transaction parser, and the host holds neither (the passphrase that unlocks it comes from the vault: flynn auth set signer/<name>)")
-	endpoint := fs.String("endpoint", "", "an http(s) endpoint the called tool may reach THROUGH THE HOST; the tool stays network-denied and only hands out request bytes, so it can never reach anywhere else")
-	localEndpoint := fs.Bool("endpoint-local", false, "permit --endpoint to be a loopback or private literal address (a local test node); off by default, because a grant must not silently aim the host at its own network")
-	// name, tool, and an optional JSON input are leading positionals; flags follow. Pull
-	// the positionals out first so `call <name> <tool> <json> --egress ...` parses.
-	if len(args) < 2 {
-		return errUsageCall
-	}
-	name, toolName := args[0], args[1]
-	input := json.RawMessage(`{}`)
-	rest := args[2:]
-	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
-		if rest[0] != "" {
-			input = json.RawMessage(rest[0])
-		}
-		rest = rest[1:]
-	}
-	if err := fs.Parse(rest); err != nil {
+	req, err := parseCallArgs(args)
+	if err != nil {
 		return err
 	}
-	if fs.NArg() != 0 {
-		return errUsageCall
-	}
 
-	runtimeOpts := []extRuntimeOption{withEgressGrant(splitList(*egress))}
-	bareTool := strings.TrimPrefix(toolName, name+".")
-
-	// routed is filled in once the signer extension is mounted, below. The grant closure is
-	// built here because the runtime needs it at open time, but it is only ever CALLED when the
-	// worker mounts, which happens after the signer is up.
+	// routed is filled in once the signer extension is mounted, below. The runtime needs
+	// the grant closure at open time, but only calls it when the worker mounts, which is
+	// after the signer is up.
 	var routed extension.HostSigner
-	if *signer != "" {
-		if *signer == name {
-			return errors.New("extensions: an extension cannot be its own signer: the component that builds " +
-				"a transaction must not be the one that decides to sign it, or it is vouching for its own work")
-		}
-		runtimeOpts = append(runtimeOpts, withHostSigner(func(ext, tool string) extension.HostSigner {
-			if ext == name && tool == bareTool {
-				return routed
-			}
-			return nil
-		}))
-		// No policy is configured, and none exists to configure. The signer holds the key AND
-		// the parser, so it judges the payload itself; a policy here would mean this process
-		// understood the transaction format, which is exactly what routing the key away removes.
+	runtimeOpts, err := req.runtimeOptions(&routed)
+	if err != nil {
+		return err
 	}
-
-	if *endpoint != "" {
-		var fopts []extension.FetcherOption
-		if *localEndpoint {
-			fopts = append(fopts, extension.WithPrivateEndpoint())
-		}
-		fetcher, err := extension.NewHTTPHostFetcher(*endpoint, fopts...)
-		if err != nil {
-			return err
-		}
-		// The grant is for THIS tool only. Every other mounted tool gets nil, so it borrows no
-		// network at all: default-deny, one authority, one destination.
-		runtimeOpts = append(runtimeOpts, withHostFetcher(func(ext, tool string) extension.HostFetcher {
-			if ext == name && tool == bareTool {
-				return fetcher
-			}
-			return nil
-		}))
-	}
-
 	rt, err := openExtensionRuntime(ctx, dataDir, runtimeOpts...)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = rt.close() }()
 
-	// The signer comes up FIRST, and is unlocked before the worker is mounted at all. The
-	// worker's mount is what asks for its signer, so by then there has to be one; and a signer
-	// that will not unlock should stop the run before the worker has done anything, not halfway
-	// through a transaction it can no longer finish.
-	if *signer != "" {
-		routed, err = mountSigner(ctx, rt, dataDir, *signer)
+	// The signer comes up first and is unlocked before the worker is mounted: the worker's
+	// mount asks for its signer, and a signer that will not unlock should stop the run
+	// before the worker has done anything, not halfway through a transaction.
+	if req.signer != "" {
+		routed, err = mountSigner(ctx, rt, dataDir, req.signer)
 		if err != nil {
 			return err
 		}
 	}
+	return invokeExtensionTool(ctx, rt, req.name, req.tool, req.input)
+}
 
+// callRequest is a parsed `flynn extensions call`.
+type callRequest struct {
+	name, tool string
+	input      json.RawMessage
+	egress     []string
+	// signer names the extension that signs for the called tool.
+	signer string
+	// endpoint is the one destination the called tool may reach through the host.
+	endpoint      string
+	localEndpoint bool
+}
+
+// parseCallArgs splits the leading positionals (name, tool and an optional JSON input)
+// from the flags that follow them, so `call <name> <tool> <json> --egress ...` parses;
+// the flag package would otherwise stop at the first positional.
+func parseCallArgs(args []string) (callRequest, error) {
+	fs := newFlagSet("extensions call")
+	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
+	signer := fs.String("signer", "", "name of a SIGNER EXTENSION to route this tool's signing to; the signer holds the key and the transaction parser, and the host holds neither (the passphrase that unlocks it comes from the vault: flynn auth set signer/<name>)")
+	endpoint := fs.String("endpoint", "", "an http(s) endpoint the called tool may reach THROUGH THE HOST; the tool stays network-denied and only hands out request bytes, so it can never reach anywhere else")
+	localEndpoint := fs.Bool("endpoint-local", false, "permit --endpoint to be a loopback or private literal address (a local test node); off by default, because a grant must not silently aim the host at its own network")
+	if len(args) < 2 {
+		return callRequest{}, errUsageCall
+	}
+	req := callRequest{name: args[0], tool: args[1], input: json.RawMessage(`{}`)}
+	rest := args[2:]
+	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+		if rest[0] != "" {
+			req.input = json.RawMessage(rest[0])
+		}
+		rest = rest[1:]
+	}
+	if err := fs.Parse(rest); err != nil {
+		return callRequest{}, err
+	}
+	if fs.NArg() != 0 {
+		return callRequest{}, errUsageCall
+	}
+	req.egress = splitList(*egress)
+	req.signer = *signer
+	req.endpoint = *endpoint
+	req.localEndpoint = *localEndpoint
+	return req, nil
+}
+
+// runtimeOptions builds the runtime grants the request asks for. The signer grant reads
+// *routed when the worker mounts, not now, so the caller assigns it after mounting the
+// signer.
+func (r callRequest) runtimeOptions(routed *extension.HostSigner) ([]extRuntimeOption, error) {
+	opts := []extRuntimeOption{withEgressGrant(r.egress)}
+	if r.signer != "" {
+		o, err := r.signerOption(routed)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, o)
+	}
+	if r.endpoint != "" {
+		o, err := r.fetcherOption()
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, o)
+	}
+	return opts, nil
+}
+
+// signerOption routes the called tool's signing to the signer extension.
+//
+// No policy is configured, and none exists to configure. The signer holds the key AND
+// the parser, so it judges the payload itself; a policy here would mean this process
+// understood the transaction format, which is exactly what routing the key away removes.
+func (r callRequest) signerOption(routed *extension.HostSigner) (extRuntimeOption, error) {
+	if r.signer == r.name {
+		return nil, errors.New("extensions: an extension cannot be its own signer: the component that builds " +
+			"a transaction must not be the one that decides to sign it, or it is vouching for its own work")
+	}
+	return withHostSigner(func(ext, tool string) extension.HostSigner {
+		if r.isCalledTool(ext, tool) {
+			return *routed
+		}
+		return nil
+	}), nil
+}
+
+// fetcherOption lends the called tool the host's network access to the one endpoint. The
+// grant is for THIS tool only. Every other mounted tool gets nil, so it borrows no network
+// at all: default-deny, one authority, one destination.
+func (r callRequest) fetcherOption() (extRuntimeOption, error) {
+	var fopts []extension.FetcherOption
+	if r.localEndpoint {
+		fopts = append(fopts, extension.WithPrivateEndpoint())
+	}
+	fetcher, err := extension.NewHTTPHostFetcher(r.endpoint, fopts...)
+	if err != nil {
+		return nil, err
+	}
+	return withHostFetcher(func(ext, tool string) extension.HostFetcher {
+		if r.isCalledTool(ext, tool) {
+			return fetcher
+		}
+		return nil
+	}), nil
+}
+
+// isCalledTool reports whether a mount of tool (bare name) on extension ext is the tool
+// this request calls. The request may name the tool bare or as "<name>.<tool>".
+func (r callRequest) isCalledTool(ext, tool string) bool {
+	return ext == r.name && tool == strings.TrimPrefix(r.tool, r.name+".")
+}
+
+// invokeExtensionTool loads the named extension, calls one of its mounted tools with
+// input, prints the result and unloads the extension.
+func invokeExtensionTool(ctx context.Context, rt *extensionRuntime, name, toolName string, input json.RawMessage) error {
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
 		return fmt.Errorf("extensions: unknown extension %q (see flynn extensions ls)", name)
