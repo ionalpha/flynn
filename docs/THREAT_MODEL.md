@@ -30,7 +30,8 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   Not hostile by construction, but not vetted. Requires the kernel-confined tier.
 - **Untrusted**: code or data from outside that we cannot vouch for: a downloaded model
   file parsed by a runtime with a history of memory-safety flaws, or an unsigned plugin.
-  Requires the hardware-isolation tier (not yet built; see Coverage).
+  Requires the hardware-isolation tier, which needs a microVM runtime the host provides
+  (see Coverage); without one the work is refused.
 - **External harness**: an installed agent CLI driven as a backend for a run, instead of a
   single model call. Its own code is outside our control and its own sandbox is bypassed, so
   it is treated as untrusted: it runs only inside the kernel-confined tier with its egress
@@ -321,10 +322,17 @@ Enforced and tested today:
 
 Planned, not yet enforced (a control in this list is not something to rely on today):
 
-- The container, user-space-kernel, and hardware-isolation (microVM) tiers. Until the
-  hardware-isolation tier exists, untrusted work (an arbitrary downloaded model, an
-  unsigned plugin) is refused rather than run, which is the safe failure, not a silent
-  downgrade.
+- A user-space-kernel tier (gVisor), and a microVM runtime shipped with Flynn. The
+  container tier (Docker, Podman) and the hardware-isolation tier are built on Flynn's
+  side: `sandbox/microvm_command.go` writes a manifest (guest image, resource caps,
+  read-only mounts, no network device) and drives a runtime the host provides, with
+  drivers for KVM on Linux, HVF on macOS and Hyper-V on Windows. That tier is available
+  only where the host exposes the hardware boundary and `FLYNN_MICROVM_RUNTIME`,
+  `FLYNN_MICROVM_KERNEL` and `FLYNN_MICROVM_ROOTFS` name a runtime and a guest image.
+  Without them untrusted work (an arbitrary downloaded model, an unsigned plugin) is
+  refused rather than run, which is the safe failure, not a silent downgrade. The
+  runtime's own half of the contract (a jailed monitor, a unique uid per guest) is the
+  host's to provide.
 - Host CPU, memory, and process-count caps at the always-present tier on Linux and macOS.
   Windows enforces memory and process caps through a job object today and the spend, token,
   and runaway breakers are cross-platform; the Linux and macOS floors record the memory and

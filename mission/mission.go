@@ -115,11 +115,9 @@ func WithAdmitter(a dispatch.Admitter) Option {
 
 // WithGrant binds a default capability grant for goals that do not carry their own
 // (see goal.Spec.Grant), so each tool call is admitted only if the grant permits
-// its action. Without a grant the default capability admitter is permissive, so the
-// agent runs unconstrained; with one the posture is default-deny. The grant is
-// carried on the step's context, so it also reaches the sandbox layer below the
-// waist. A goal that carries its own grant is governed by that grant instead, so a
-// single executor can drive goals of differing authority.
+// its action. Without a grant the default capability admitter is permissive; with
+// one the posture is default-deny. A goal that carries its own grant is governed by
+// that grant instead.
 func WithGrant(g capability.Grant) Option {
 	return func(e *Executor) { e.grant, e.hasGrant = g, true }
 }
@@ -151,8 +149,7 @@ func (e *Executor) grantFor(spec goal.Spec) (capability.Grant, bool) {
 // WithSandbox wires the run's sandbox into the waist so every action is gated on
 // containment sufficiency, alongside the capability grant: a work kind whose trust needs
 // stronger isolation than the sandbox provides is refused before it runs, rather than
-// downgraded. Without it the containment gate is absent and only the grant governs, which
-// keeps the zero-config default permissive.
+// downgraded. Without it only the grant governs.
 func WithSandbox(sb sandbox.Sandbox) Option {
 	return func(e *Executor) {
 		e.dispatchOpts = append(e.dispatchOpts, dispatch.WithHook(capability.NewContainmentGate(sb)))
@@ -169,10 +166,8 @@ func WithEventSink(s dispatch.EventSink) Option {
 // the model loop when its observed behaviour trips a breaker or the kill-switch is
 // engaged. The brake hook observes every action the run dispatches and refuses
 // further work once halted; the caller keeps the hook so it can engage the
-// kill-switch (h.Switch()) out of band. The run id is bound on the step context so
-// the brake tracks behaviour per run, the same identity the conversation cache and
-// budget key on. Without it no brake is applied, which keeps the standalone agent
-// zero-config. A nil hook is ignored.
+// kill-switch (h.Switch()) out of band. Without it no brake is applied. A nil hook
+// is ignored.
 func WithBrakes(h *brakes.Hook) Option {
 	return func(e *Executor) {
 		if h != nil {
@@ -184,12 +179,9 @@ func WithBrakes(h *brakes.Hook) Option {
 
 // WithBudget wires a run's spend ceiling into the waist so every model and tool
 // call is charged against the run's pool and refused once the ceiling is reached.
-// The run id (its budget pool) is bound on the step context, so the budget tracks
-// the right run; a fan-out shares one pool, since every descendant inherits the
-// root's pool, so a single ceiling bounds the whole graph rather than a budget per
-// goal. Without it no budget is applied, which keeps the standalone agent
-// zero-config, and a run whose pool has no budget resource is unlimited. A nil hook
-// is ignored.
+// A fan-out shares one pool, so a single ceiling bounds the whole graph rather than
+// a budget per goal. Without it no budget is applied, and a run whose pool has no
+// budget resource is unlimited. A nil hook is ignored.
 func WithBudget(h *budget.Hook) Option {
 	return func(e *Executor) {
 		if h != nil {
@@ -204,10 +196,8 @@ func WithBudget(h *budget.Hook) Option {
 // it. It composes above the capability grant the way approval does, and differs from
 // approval in when the authority is given: an approval is signed while the run is going,
 // and an allowance was written before it started, for a run nobody will be watching.
-//
-// The declarations come off the goal spec, so one executor drives goals of differing
-// authority here too. Without the gate nothing is marked and every action is admitted,
-// which keeps the standalone agent zero-config. A nil policy is ignored.
+// The declarations come off the goal spec. Without the gate every action is admitted.
+// A nil policy is ignored.
 func WithAllowance(p allowance.Policy) Option {
 	return func(e *Executor) {
 		if p != nil {
@@ -251,9 +241,7 @@ func WithSystem(system string) Option {
 }
 
 // WithObserver streams the mission's conversational events (turns, the model's
-// text, tool calls and results) to r as the loop runs. The default is a no-op, so
-// standalone behaviour is unchanged until an observer is supplied. It is the attachment point
-// the session/stream front door wires a live event stream onto.
+// text, tool calls and results) to r as the loop runs. The default is a no-op.
 func WithObserver(r Reporter) Option {
 	return func(e *Executor) {
 		if r != nil {
@@ -273,11 +261,9 @@ func WithMaxTokens(n int) Option {
 
 // WithCompactionBudget sets the input-token budget above which the oldest middle
 // turns are elided from the transcript sent to the model (the objective and the
-// recent tail are always kept). Zero, the default, disables compaction, so an
-// embedder that wants the full transcript every turn is unaffected. The elision is a
-// view over the durable checkpoint, never an overwrite, so nothing is lost. Set this
-// to roughly half the model's context window so a long session stays well clear of
-// the limit.
+// recent tail are always kept). Zero, the default, disables compaction. The elision
+// is a view over the durable checkpoint, so nothing is lost. Roughly half the model's
+// context window keeps a long session clear of the limit.
 func WithCompactionBudget(tokens int) Option {
 	return func(e *Executor) {
 		if tokens > 0 {
@@ -290,9 +276,8 @@ func WithCompactionBudget(tokens int) Option {
 // When the model signals it is finished, it is instead asked to re-examine its work against
 // the objective and fix anything incomplete; only after the passes are spent (or the model
 // keeps the conversation going of its own accord) does the run conclude. Zero, the default,
-// trusts the model's first claim of completion, which suits a reliable model; a weaker model
-// gets the extra scrutiny. Each pass is a normal turn, so it stays bounded by the reconciler's
-// step budget and survives a crash-resume like any other.
+// trusts the model's first claim of completion. Each pass is a normal turn, so the
+// reconciler's step budget bounds it.
 func WithVerifyPasses(n int) Option {
 	return func(e *Executor) {
 		if n > 0 {
@@ -304,24 +289,22 @@ func WithVerifyPasses(n int) Option {
 // WithSimplifiedSchemas trims each tool definition before it is offered to the model: prose
 // descriptions are shortened and per-field documentation and examples are dropped from the
 // input schema, while the callable surface (every property and which are required) is left
-// intact. A weaker, instruction-following-limited model is given a smaller surface to reason
-// over without changing what it can call. The default leaves the full schemas in place.
+// intact, so a weaker model reasons over a smaller surface without changing what it can
+// call. The default leaves the full schemas in place.
 func WithSimplifiedSchemas() Option {
 	return func(e *Executor) { e.simplifySchemas = true }
 }
 
 // WithSampling pins the decoding parameters for every model call, so a run can be made
-// reproducible. The default is nil, which leaves each call free-running on the server's
-// defaults; setting it sends a fixed seed and sampler on every turn.
+// reproducible. The default is nil, which leaves each call on the server's defaults.
 func WithSampling(s *llm.Sampling) Option {
 	return func(e *Executor) { e.sampling = s }
 }
 
 // WithGenerationRecorder records the decoding envelope of every model call, so a run's
-// reproducibility parameters become part of its durable history. The default discards them,
-// and a Flynn run leaves it there on purpose: nothing here pins its sampling, so the
-// envelope is the same zero value on every call. See GenerationRecorder for what would have
-// to change first. A host that pins its own sampling wires this to its event spine.
+// reproducibility parameters become part of its durable history. The default discards them:
+// nothing here pins sampling, so the envelope is the same zero value on every call. See
+// [GenerationRecorder] for what would have to change first.
 func WithGenerationRecorder(r GenerationRecorder) Option {
 	return func(e *Executor) {
 		if r != nil {
@@ -335,15 +318,13 @@ func WithGenerationRecorder(r GenerationRecorder) Option {
 // are applied once at the chokepoint rather than scattered across the loop.
 func NewExecutor(model llm.Model, opts ...Option) *Executor {
 	e := &Executor{model: model, tools: map[string]Tool{}, reporter: nopReporter{}, recorder: nopGenerationRecorder{}}
-	// Seed the capability admitter as the base governance gate; it is permissive
-	// until a grant is bound, and a caller's WithAdmitter (applied later) overrides
-	// it. Seeding first means a bound grant is enforced with zero extra wiring.
+	// Seeded first so a bound grant is enforced with no extra wiring and a caller's
+	// WithAdmitter overrides it.
 	e.dispatchOpts = append(e.dispatchOpts, dispatch.WithAdmitter(capability.Admitter{}))
 	for _, o := range opts {
 		o(e)
 	}
-	// Offer the spawn tool when fan-out is enabled, so the model can delegate sub-goals. It is a
-	// normal tool definition, governed by the run's grant like any other action.
+	// A normal tool definition, governed by the run's grant like any other action.
 	if e.fanout != nil {
 		e.defs = append(e.defs, spawnToolDef)
 	}
@@ -361,23 +342,19 @@ var _ goal.StepExecutor = (*Executor)(nil)
 // Dispatcher returns the waist this executor governs every action through: the
 // admitter, the hooks, the metering and the event sink a composition configured.
 //
-// It is exported for the one caller that has to govern the same actions from outside
-// the conversation loop: plan-driven fan-out, where the reconciler rather than a model
-// turn decides to spawn. That path has to be admitted, metered and recorded the same
-// way, and the only way for it to be the same way rather than a lookalike is to be the
-// same dispatcher.
+// It is exported for plan-driven fan-out, where the reconciler rather than a model turn
+// decides to spawn. That path has to be admitted, metered and recorded the same way as a
+// model-driven spawn, which only the same dispatcher guarantees.
 func (e *Executor) Dispatcher() *dispatch.Dispatcher { return e.dispatcher }
 
 // ActionModelGenerate is the dispatch action name a model call runs under, so the
 // model call is admitted, traced, metered, and recorded on the spine like any tool
-// call. It is a normal action, not implicitly allowed: a least-privilege grant must
-// list it for the agent to call the model, which keeps the grant the complete record
-// of what a run may do. A run that should not call the model omits it.
+// call. It is not implicitly allowed: a least-privilege grant must list it, which keeps
+// the grant the complete record of what a run may do.
 const ActionModelGenerate = "model.generate"
 
-// verifyPrompt is the self-check a verify pass injects when the model claims completion. It
-// asks the model to re-examine its work with the tools and repair anything incomplete before
-// concluding (see WithVerifyPasses).
+// verifyPrompt is the self-check a verify pass injects when the model claims completion
+// (see [WithVerifyPasses]).
 const verifyPrompt = "Before finishing, re-check that the objective is fully accomplished. " +
 	"Inspect your work with the tools rather than assuming. If anything is incomplete or " +
 	"incorrect, fix it now. If everything is correct and complete, briefly confirm and stop."
@@ -391,47 +368,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "mission_spec_decode", err)
 	}
-	// Bind the capability grant the waist enforces (and the sandbox below reads). The
-	// grant carried on the goal authorizes that goal specifically, so one executor
-	// drives goals of differing authority; it falls back to the executor's default
-	// grant for a goal that carries none, leaving an ungoverned standalone run
-	// unchanged.
-	if g, ok := e.grantFor(spec); ok {
-		ctx = capability.Into(ctx, g)
-	}
-	// Bind the irreversible actions outside the workspace this goal was declared to be
-	// allowed. They travel on the goal for the same reason the grant does, and they are
-	// checked the same way whether or not anyone is watching: a run that reaches one it
-	// was not given is refused here and paused by its reconciler, rather than asked a
-	// question nobody is there to answer.
-	if decls := goal.Declarations(spec.Allowances); len(decls) > 0 {
-		ctx = allowance.Into(ctx, decls...)
-	}
-	// Scope the safety brake to this run, so its breakers track behaviour per run
-	// and the kill-switch halts the right one. The run id is the resource name, the
-	// same identity the conversation cache and budget key on.
-	if e.brakes {
-		ctx = brakes.Into(ctx, r.Name)
-	}
-	// Charge this run against its budget pool. A fan-out shares one pool: every
-	// descendant inherits the root's pool (goal.Spec.BudgetPool), so binding the pool
-	// rather than the goal's own name bounds the whole graph by one ceiling. A root
-	// carries no pool of its own, so it is the pool. An unbudgeted run binds a pool
-	// with no budget resource, which the waist treats as unlimited.
-	if e.budgeted {
-		pool := spec.BudgetPool
-		if pool == "" {
-			pool = r.Name
-		}
-		ctx = budget.Into(ctx, pool)
-		// Attribute this run's spend to the tier it runs on (its model), so the shared
-		// pool's per-tier ledger shows where the tokens and cost went rather than only a
-		// total. A goal that carries no model defers to the host default and reads as
-		// untiered, so a standalone run is unchanged.
-		if spec.Model != "" {
-			ctx = budget.TierInto(ctx, spec.Model)
-		}
-	}
+	ctx = e.bindRunContext(ctx, r, spec)
 	status, err := goal.DecodeStatus(r)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "mission_status_decode", err)
@@ -443,81 +380,110 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	if cp.Done {
 		return status.Checkpoint, nil // already complete; nothing to advance
 	}
-
-	// A goal waiting on a fan-out folds its children in before it does anything else: poll them,
-	// and either fold their results into the conversation (all finished) or report goal.ErrWaiting
-	// (some still running), which parks the parent until a child settles. No model call happens on
-	// a waiting check, and a parked parent runs no steps at all between child completions.
+	// A goal waiting on a fan-out folds its children in before anything else, and makes no
+	// model call on that check.
 	if len(cp.Pending) > 0 {
 		return e.advanceFanout(ctx, r, cp)
 	}
-
 	if len(cp.Messages) == 0 {
 		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
 	}
+	briefTurn(&cp, spec, status)
 
-	// Scope the turn to one ledger item. A planned goal is a list of units of work, each
-	// with its own declared check, and a run that is handed the whole objective every turn
-	// has nothing to attribute a verification to, which is why the evidence gate had no
-	// producer to read from. Naming the current item, its check, and where it sits in the
-	// ledger is what makes "you are on item 3 of 7" a fact the run acts on rather than a
-	// shape only the reconciler can see. The full ledger rides along so the item is read in
-	// the context of the work it belongs to, not as an isolated instruction.
+	// The count is carried on the checkpoint, so the index stays correct across a
+	// crash-resumed step without rescanning the history.
+	turn := cp.Turns + 1
+	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Goal: r.Name, Turn: turn})
+
+	resp, err := e.generate(ctx, r, spec, cp.Messages)
+	if err != nil {
+		return nil, err // the model classifies its own errors; the worker retries transient ones
+	}
+	cp.Messages = append(cp.Messages, resp.Message)
+	cp.Turns++ // one assistant message per model turn; keep the carried count in step
+	e.reportResponse(ctx, r.Name, turn, resp.Message)
+
+	if err := e.settleTurn(ctx, r, turn, &cp, resp); err != nil {
+		return nil, err
+	}
+	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Goal: r.Name, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
+	return encodeCheckpoint(cp)
+}
+
+// bindRunContext binds onto ctx what the waist and the sandbox below it read to govern
+// this goal. Each binding is per goal rather than per executor, so one executor drives
+// goals of differing authority and a standalone run with nothing to bind is unchanged.
+func (e *Executor) bindRunContext(ctx context.Context, r resource.Resource, spec goal.Spec) context.Context {
+	if g, ok := e.grantFor(spec); ok {
+		ctx = capability.Into(ctx, g)
+	}
+	// Checked whether or not anyone is watching: a run that reaches an irreversible action
+	// it was not given is refused and paused by its reconciler, not asked a question nobody
+	// is there to answer.
+	if decls := goal.Declarations(spec.Allowances); len(decls) > 0 {
+		ctx = allowance.Into(ctx, decls...)
+	}
+	// The run id is the resource name, the identity the conversation cache and budget key
+	// on, so breakers track behaviour per run and the kill-switch halts the right one.
+	if e.brakes {
+		ctx = brakes.Into(ctx, r.Name)
+	}
+	if e.budgeted {
+		// A fan-out shares one pool: descendants inherit the root's (goal.Spec.BudgetPool),
+		// so one ceiling bounds the whole graph. A root carries none and is the pool.
+		pool := spec.BudgetPool
+		if pool == "" {
+			pool = r.Name
+		}
+		ctx = budget.Into(ctx, pool)
+		// A goal with no model defers to the host default and reads as untiered.
+		if spec.Model != "" {
+			ctx = budget.TierInto(ctx, spec.Model)
+		}
+	}
+	return ctx
+}
+
+// briefTurn appends to the transcript what the run must be told this turn. Each item is
+// rendered from the durable record, because a message folded into the transcript when it
+// arrived is one the pruner, the compactor and a reseed may drop before the turn that
+// claims completion.
+func briefTurn(cp *checkpoint, spec goal.Spec, status goal.Status) {
+	// Only at an item boundary: re-stating the same item each step would copy it into the
+	// transcript once per turn for no new information.
 	if item, ok := status.CurrentItem(spec.Ledger); ok && item.ID != cp.Item {
 		cp.Messages = appendNudge(cp.Messages, itemBrief(spec, status, item))
 		cp.Item = item.ID
 	}
-	// What the item's own declared check reported when it last ran and did not pass. It
-	// rides every turn the failure survives, not just the boundary: the item has not
-	// moved, and the failing output is the most useful thing the run can be told.
+	// Every turn the failure survives: the item has not moved, and the failing output is
+	// the most useful thing the run can be told.
 	if status.ItemFeedback != "" {
 		cp.Messages = appendNudge(cp.Messages, "The last run of this item's check did not pass: "+status.ItemFeedback)
 	}
-
-	// The redirects the operator has issued this run and the run has not yet answered.
-	// They ride every turn while they are outstanding rather than being delivered once,
-	// because a message folded into the transcript when it arrived is one the pruner, the
-	// compactor and a reseed are all free to drop before the turn that claims completion.
-	// Rendering from the durable record instead is what makes the obligation survive that,
-	// and it costs a few lines on a turn nobody has redirected: the brief is empty there.
+	// Empty on a turn nobody has redirected.
 	if brief := goal.SteerBrief(spec, status); brief != "" {
 		cp.Messages = appendNudge(cp.Messages, brief)
 	}
-
-	// A stalling nudge the reconciler stamped onto the status: tell the agent, a step
-	// before the run would be stopped, that it is not making progress — a goal told it is
-	// stalling sometimes changes course. It rides into this turn as user-visible text so
-	// the model sees it inline with the work.
 	if status.ProgressNudge != "" {
 		cp.Messages = appendNudge(cp.Messages, status.ProgressNudge)
 	}
+}
 
-	// The turn index is the count of model turns taken so far plus this one. The
-	// count is carried on the checkpoint, so it stays correct across a crash-resumed
-	// step without rescanning the history.
-	turn := cp.Turns + 1
-	e.reporter.Report(ctx, Event{Kind: EventTurnStarted, Goal: r.Name, Turn: turn})
-
-	// Send a token-lean view of the transcript: older and duplicate large tool
-	// outputs are replaced by one-line summaries before the call, while the durable
-	// checkpoint (cp.Messages) keeps every result in full. Pruning is deterministic
-	// and preserves the message count, so it does not disturb the cacheable prefix.
-	// Compaction is the coarse fallback beneath it: if even the pruned transcript
-	// would overflow the context budget, the oldest middle turns are elided too. Both
-	// are views over the lossless checkpoint, so nothing is overwritten.
-	reqMessages := pruneTranscript(cp.Messages, e.summarizerFor)
-	reqMessages = compactView(reqMessages, e.compactBudget)
-
-	// The model call goes through the same waist as tool calls: admitted against
-	// the run grant, metered for tokens, and bracketed with lifecycle events on the
-	// spine. The typed request and response stay here; dispatch sees only the action
-	// name, scope, and token cost.
+// generate runs one model call through the same waist as tool calls, so it is admitted
+// against the run grant, metered for tokens and bracketed with lifecycle events. The typed
+// request and response stay here; dispatch sees only the action name, scope and token cost.
+//
+// The model is sent a token-lean view of msgs: pruning replaces older and duplicate large
+// tool outputs with one-line summaries (preserving the message count, so the cacheable
+// prefix is undisturbed), and compaction elides the oldest middle turns if the pruned
+// transcript would still overflow. Both are views; the checkpoint keeps every result.
+func (e *Executor) generate(ctx context.Context, r resource.Resource, spec goal.Spec, msgs []llm.Message) (llm.Response, error) {
+	reqMessages := compactView(pruneTranscript(msgs, e.summarizerFor), e.compactBudget)
 	var resp llm.Response
-	err = e.governWithApproval(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted, Goal: r.Name},
+	err := e.governWithApproval(ctx, dispatch.Action{Name: ActionModelGenerate, Scope: state.Scope(r.Scope), Trust: sandbox.TrustTrusted, Goal: r.Name},
 		func(ctx context.Context) (dispatch.Metering, error) {
-			// Record the decoding identity of this generation on the durable history, within the
-			// dispatch span, so a run's reproducibility parameters are kept alongside its
-			// lifecycle without putting typed model input on the payload-agnostic waist.
+			// Inside the dispatch span, so the decoding identity is kept beside the run's
+			// lifecycle without typed model input reaching the payload-agnostic waist.
 			e.recorder.RecordGeneration(ctx, envelopeOf(e.sampling))
 			var gerr error
 			resp, gerr = e.model.Generate(ctx, llm.Request{
@@ -525,61 +491,51 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 				Messages:  reqMessages,
 				Tools:     e.defs,
 				MaxTokens: e.maxTokens,
-				// The conversation only ever grows: the system prompt and tools are
-				// fixed, and an earlier turn is never edited. So the whole prefix is
-				// stable and worth caching. Declaring that lets a provider reuse the
-				// work of reading it back on the next turn instead of reprocessing the
-				// entire transcript every call, which is the dominant cost of a long
-				// tool-using loop. The run id keys the cache to this conversation, so a
-				// provider that routes by cache affinity keeps its turns together. The
-				// hint is advisory: a backend without caching ignores it and the result
-				// is identical.
+				// The conversation only grows (system prompt and tools are fixed, an earlier
+				// turn is never edited), so the whole prefix is cacheable. The run id keys the
+				// cache to this conversation. Advisory: a backend without caching ignores it.
 				Cache: llm.CacheHint{Prefix: true, StableMessages: len(reqMessages), Key: r.Name},
-				// Pin decoding when the run asks for it, so a deterministic run sends the same
-				// seed and sampler on every turn; nil leaves the call free-running.
+				// nil leaves the call free-running.
 				Sampling: e.sampling,
 			})
 			return dispatch.Metering{Tokens: resp.Usage.InputTokens + resp.Usage.OutputTokens}, gerr
 		})
-	if err != nil {
-		return nil, err // the model classifies its own errors; the worker retries transient ones
-	}
-	cp.Messages = append(cp.Messages, resp.Message)
-	cp.Turns++ // one assistant message per model turn; keep the carried count in step
+	return resp, err
+}
 
-	if text := resp.Message.TextContent(); text != "" {
-		e.reporter.Report(ctx, Event{Kind: EventAssistantText, Goal: r.Name, Turn: turn, Text: text})
+// reportResponse reports the model's text and each tool call it asked for.
+func (e *Executor) reportResponse(ctx context.Context, goalID string, turn int, msg llm.Message) {
+	if text := msg.TextContent(); text != "" {
+		e.reporter.Report(ctx, Event{Kind: EventAssistantText, Goal: goalID, Turn: turn, Text: text})
 	}
-	for _, tu := range resp.Message.ToolUses() {
-		e.reporter.Report(ctx, Event{Kind: EventToolCall, Goal: r.Name, Turn: turn, Tool: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
+	for _, tu := range msg.ToolUses() {
+		e.reporter.Report(ctx, Event{Kind: EventToolCall, Goal: goalID, Turn: turn, Tool: tu.Name, ToolUseID: tu.ID, Input: tu.Input})
 	}
+}
 
+// settleTurn acts on why the model stopped, extending cp so the next step continues, or
+// marking it done.
+func (e *Executor) settleTurn(ctx context.Context, r resource.Resource, turn int, cp *checkpoint, resp llm.Response) error {
 	switch resp.StopReason {
 	case llm.StopToolUse:
-		// Run the calls and feed their results back for the next turn. A spawn call does not
-		// return immediately: it launches a child goal whose result is folded in once the child
-		// finishes, so a turn that spawns children leaves the goal waiting rather than appending
-		// results now.
 		blocks, pending, err := e.dispatchToolUses(ctx, r, turn, resp.Message.ToolUses())
 		if err != nil {
-			return nil, err
+			return err
 		}
+		// A spawn launches a child goal whose result is folded in once it finishes, so a
+		// turn that spawns leaves the goal waiting rather than appending results now.
 		if len(pending) > 0 {
 			cp.Pending = pending
-			break // wait for the children; advanceFanout folds them in on a later step
+			return nil
 		}
 		cp.Messages = append(cp.Messages, llm.Message{Role: llm.RoleUser, Blocks: blocks})
 	case llm.StopMaxTokens:
-		// The turn was cut off, not finished: ask the model to continue rather than
-		// converge on a truncated answer. The reconciler's step budget bounds how
-		// long a turn that keeps truncating may run before the goal stalls.
+		// Cut off, not finished. The reconciler's step budget bounds how long a turn that
+		// keeps truncating may run before the goal stalls.
 		cp.Messages = append(cp.Messages, llm.Text(llm.RoleUser, "Continue."))
 	default:
-		// EndTurn (or any provider-specific terminal reason): the model claims it is done.
-		// With verify passes remaining, do not take that claim at face value: ask the model
-		// to re-examine its work against the objective and repair anything incomplete, and
-		// let the next turn run. Only once the passes are spent does the run converge. The
-		// count lives on the checkpoint so the budget survives a crash-resume.
+		// EndTurn or a provider-specific terminal reason: the model claims it is done. The
+		// verify count lives on the checkpoint so the budget survives a crash-resume.
 		if cp.VerifyUsed < e.verifyPasses {
 			cp.VerifyUsed++
 			cp.Messages = append(cp.Messages, llm.Text(llm.RoleUser, verifyPrompt))
@@ -588,9 +544,7 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 			cp.Result = resp.Message.TextContent()
 		}
 	}
-
-	e.reporter.Report(ctx, Event{Kind: EventTurnCompleted, Goal: r.Name, Turn: turn, StopReason: string(resp.StopReason), Usage: resp.Usage})
-	return encodeCheckpoint(cp)
+	return nil
 }
 
 // itemBrief renders the run's current ledger item as the immediate objective: which item
@@ -753,12 +707,10 @@ func (Convergence) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool
 // the prior turn's convergence. The returned status must be persisted onto the goal
 // and the goal re-enqueued (runtime.Resume) for the turn to run.
 //
-// This is the mechanism behind a multi-turn session: each user line after the first
-// continues one durable goal, so the model is handed the whole history and the run
-// stays addressable, replayable, and auditable by a single id. The phase is reset
-// off its settled value so the reconciler re-evaluates rather than no-op-skipping a
-// converged goal, and the step counter is cleared so the new turn runs with a fresh
-// step budget rather than inheriting the prior turn's spend.
+// Each user line after the first continues one durable goal, so a session stays
+// addressable and replayable by a single id. The phase is reset off its settled value so
+// the reconciler re-evaluates rather than skipping a converged goal, and the step counter
+// is cleared so the new turn gets a fresh step budget.
 func ContinueConversation(status goal.Status, text string, images ...llm.Image) (goal.Status, error) {
 	cp, err := decodeCheckpoint(status.Checkpoint)
 	if err != nil {
@@ -775,19 +727,15 @@ func ContinueConversation(status goal.Status, text string, images ...llm.Image) 
 	status.Phase = goal.PhasePending
 	status.Message = ""
 	status.Steps = 0
-	// A new user turn is progress by definition: the human advanced the conversation, so
-	// the prior turn's idle streak is irrelevant and the next turn starts from a fresh
-	// progress baseline. Without this an interactive session of text-only replies — each a
-	// real answer but touching no file, tool, or ledger item — accumulates an idle streak
-	// across turns and false-stalls a healthy chat. No-progress detection is for a goal
-	// that is looping on its own, not for a conversation waiting on its user.
+	// A new user turn is progress by definition. Without the reset, a session of text-only
+	// replies (each a real answer, touching no file, tool or ledger item) accumulates an
+	// idle streak across turns and false-stalls a healthy chat.
 	status.IdleStreak = 0
 	status.ProgressMark = ""
 	status.LastActivity = ""
 	status.ProgressNudge = ""
-	// Drop any record of an in-flight step: the prior turn has ended (converged, or
-	// cancelled mid-step), so a fresh turn must dispatch a new step rather than wait
-	// on a job that belongs to a runtime that is gone.
+	// The prior turn has ended (converged, or cancelled mid-step); waiting on its job
+	// would wait on a runtime that is gone.
 	status.InFlight = nil
 	return status, nil
 }
@@ -800,25 +748,19 @@ type checkpoint struct {
 	Messages []llm.Message
 	Done     bool
 	Result   string
-	// VerifyUsed counts the self-check passes already taken on this run (see
-	// WithVerifyPasses). It is carried on the durable checkpoint so the budget is
-	// honored across a crash-resume rather than reset.
+	// VerifyUsed counts the self-check passes taken (see [WithVerifyPasses]); carried so
+	// a crash-resume does not reset the budget.
 	VerifyUsed int
 	// Pending holds the tool-result slots a fan-out turn owes the model while its spawned
-	// children run. Non-empty means the goal is waiting on children: the next step folds their
-	// results in once they finish rather than calling the model. It lives on the durable
-	// checkpoint so a crash mid-fan-out resumes waiting instead of re-spawning.
+	// children run. Non-empty means the next step folds their results in rather than
+	// calling the model; carried so a crash mid-fan-out resumes waiting instead of
+	// re-spawning.
 	Pending []resultSlot
-	// Turns counts the model turns taken so far, one per assistant message. Carrying
-	// it means the turn index and its telemetry survive a crash-resume without
-	// rescanning the history each step.
+	// Turns counts the model turns taken, one per assistant message, so the turn index
+	// survives a crash-resume without rescanning the history.
 	Turns int
-	// Item is the ledger item id this conversation was last briefed on. It is what makes
-	// the brief land at an item boundary instead of on every turn: re-stating the same
-	// item each step would copy it into the durable transcript once per turn for no new
-	// information, while a changed id is exactly the moment the run has moved on and
-	// needs telling. It rides the checkpoint so a crash-resumed step does not re-brief an
-	// item the conversation was already given.
+	// Item is the ledger item id the conversation was last briefed on. A changed id is
+	// the moment to brief again; carried so a crash-resumed step does not re-brief.
 	Item string
 
 	// encoded holds the marshaled JSON of each message in Messages, in order, and is

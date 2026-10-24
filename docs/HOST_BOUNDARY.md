@@ -97,7 +97,7 @@ tests and a durable one for the binary.
 | `resource.SchemaCompiler` / `Validator` | `resource.builtinCompiler`, `resource.Registry` | `resource` kind registration | shipped |
 | `jobs.Queue` / `Waker` | `jobs.MemoryQueue`, `storage/sqlite` job queue | `store.Jobs()`, `agent.go` | shipped |
 | `llm.Model` | `llm/anthropic`, `llm/openai`, local serving | `provider.Resolve` | shipped |
-| `sandbox.Sandbox` | `sandbox.Local`, `MicroVM`, `Remote` | `sandbox.NewLocal` at each assembly | shipped |
+| `sandbox.Sandbox` | `sandbox.Local`, `sandbox.MicroVM` (`BootMicroVM`); `sandbox.Remote` (`NewRemote`) is the adapter for a host-supplied `sandbox.Transport` and is unused until one exists | `sandbox.NewLocal` at each assembly | shipped |
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
@@ -363,16 +363,17 @@ which is the whole argument for the check.
 | `extension.Point` | `extension.Registry`'s registered handlers | `cmd/flynn/extensions.go` | shipped |
 | `extension.Conn` | `extension.sessionConn` over a sandbox session | `extension.SandboxLauncher` | shipped |
 | `sandbox.ContainerDriver` | `sandbox.NewContainerDriver` over an `OCIEngine` | `RegisterContainerDriver` at init, for Docker and Podman | shipped |
-| `sandbox.Machine` / `Driver` / `Serving` | `sandbox.commandMachine`, the per-platform drivers registered in `init`, `sandbox.containerServing` | `sandbox.NewMicroVM`, container exec | shipped |
-| `sandbox.Transport` | none | n/a | justified |
+| `sandbox.Machine` / `Driver` / `Serving` | `sandbox.commandMachine`, the per-platform drivers registered in `init`, `sandbox.containerServing` | `sandbox.BootMicroVM`, container exec | shipped |
+| `sandbox.Transport` | none (only the test fake in `sandbox/remote_test.go`) | `sandbox.NewRemote` | justified |
 | `memory/hybrid.Embedder` | `llm/embed.Client` over any OpenAI-compatible embeddings endpoint | `cmd/flynn/embedder.go`, behind `FLYNN_EMBED_MODEL` | staged |
 
 `sandbox.Transport`: a remote sandbox backend (E2B, Daytona, Modal) is an account
-somebody has and Flynn does not. `Remote` adds a default-deny path check of its own
-on top of whatever the backend enforces, so confinement never depends on the backend
-alone, and with no transport there is simply no remote sandbox: the local and
-container backends are what the binary uses and both ship. Nothing degrades, because
-nothing is asked for.
+somebody has and Flynn does not, so no transport ships and the binary never builds a
+`Remote`. `Remote` is the adapter a host's transport plugs into; it adds a
+default-deny path check of its own on top of whatever the backend enforces, so
+confinement never depends on the backend alone, and with no transport there is simply
+no remote sandbox: the local and container backends are what the binary uses and both
+ship. Nothing degrades, because nothing is asked for.
 
 `memory/hybrid.Embedder` was the register's one `gap` and is now `staged`. Flynn
 ships `llm/embed.Client`, which speaks the one embedding wire format every hosted

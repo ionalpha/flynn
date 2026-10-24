@@ -95,12 +95,11 @@ exercise, with the reason and, where relevant, a suggested fix.
    replays) and leaves this case unasserted so it cannot hang. It should be fixed in the
    run/session layer and then covered here.
 
-2. **At-rest credential encryption is not black-box testable.** `auth set` requires a
-   terminal (it refuses a piped secret, which is the correct security default), and there
-   is no way to point the vault at an isolated file backend, so writing a key through the
-   CLI would hit the machine keychain. Suggested fix: a `FLYNN_VAULT_FILE` (or
-   `FLYNN_NO_KEYCHAIN`) switch that forces the passphrase-sealed file backend, useful in
-   containers and headless environments as well as here.
+2. **At-rest credential encryption is not black-box testable.** `FLYNN_VAULT_FILE=1`
+   forces the passphrase-sealed file backend and the harness sets it, so the suite never
+   touches the machine keychain. But `auth set` requires a terminal (it refuses a piped
+   secret, which is the correct security default), so a key cannot be written through
+   the CLI and the sealed file inspected without a pseudo-terminal in the harness.
 
 3. **The memory push path needs a terminal.** A distilled memory is the agent's own
    note, which waits for a reviewed promotion before the wake digest pushes it, and the
@@ -122,9 +121,10 @@ exercise, with the reason and, where relevant, a suggested fix.
    cover ground-truth grounding; running the governance benchmark corpus through the
    binary is future work.
 
-7. **Install-path smoke is pending a release.** `go install ...@latest`, a prebuilt
-   release binary, and the container one-liner can only be smoke-tested once a version is
-   tagged and published.
+7. **The one-line installers are not smoke-tested.** The release's own binaries, its
+   container image and the upgrade from the previous release are covered (see the table).
+   `install.sh`, `install.ps1` and `go install ...@latest` are not run against a published
+   tag.
 
 ## CI
 
