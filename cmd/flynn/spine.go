@@ -18,6 +18,7 @@ import (
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/storage/sqlite"
@@ -275,7 +276,7 @@ func exportRecord(ctx context.Context, store *sqlite.Store, runID, path string) 
 	if err != nil {
 		return fmt.Errorf("run %q %w", runID, err)
 	}
-	return os.WriteFile(path, record, 0o600)
+	return fsatomic.WriteFile(path, record, 0o600)
 }
 
 // verifyRun reads a run's stored signed record and reports every tier it satisfies:

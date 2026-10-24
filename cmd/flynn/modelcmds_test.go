@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"strings"
 	"testing"
 
@@ -66,6 +67,27 @@ func TestRunModelStatusReportsTheDefault(t *testing.T) {
 	}
 	if !strings.Contains(withDefault.String(), "default model: openai:gpt-5.5") {
 		t.Errorf("the recorded default must be reported, got %q", withDefault.String())
+	}
+}
+
+// TestWriteActiveModelReplacesTheSelectionWithoutLeavingStaging proves a second selection
+// replaces the first and the atomic write leaves nothing but the selection file behind.
+func TestWriteActiveModelReplacesTheSelectionWithoutLeavingStaging(t *testing.T) {
+	dataDir := t.TempDir()
+	for _, id := range []string{"openai:gpt-5.5", "anthropic:claude-opus-5-5"} {
+		if err := writeActiveModel(dataDir, id); err != nil {
+			t.Fatalf("writeActiveModel(%q): %v", id, err)
+		}
+	}
+	if got, ok := readActiveModel(dataDir); !ok || got != "anthropic:claude-opus-5-5" {
+		t.Errorf("readActiveModel = %q, %v; want the second selection", got, ok)
+	}
+	entries, err := os.ReadDir(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "active-model" {
+		t.Errorf("data dir holds %d entries, want only active-model", len(entries))
 	}
 }
 

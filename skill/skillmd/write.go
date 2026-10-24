@@ -8,6 +8,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+
+	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
 // The writing half of the directory layer.
@@ -54,7 +56,7 @@ func Write(root string, doc Doc) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), src, 0o600); err != nil {
+	if err := fsatomic.WriteFile(filepath.Join(dir, "SKILL.md"), src, 0o600); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -124,7 +126,7 @@ func copyResource(dir string, src fs.FS, packDir, rel string) error {
 	if err := os.MkdirAll(filepath.Join(dir, parent), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(dir, parent, name), data, 0o600)
+	return fsatomic.WriteFile(filepath.Join(dir, parent, name), data, 0o600)
 }
 
 // readCappedAt reads a file, refusing one above limit without reading it whole.
