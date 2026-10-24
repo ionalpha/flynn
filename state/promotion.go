@@ -10,36 +10,27 @@ import (
 // gate in front of the wake digest, and the only way an item the agent wrote for
 // itself gets in.
 //
-// It is a record beside the item rather than a field on it. A memory item is
-// append-only and its row is what the writer asserted; a promotion is somebody
-// else's decision about it, made later, revised later still, and folding one into
-// the item would rewrite the fact every time a reviewer changed their mind.
-//
-// One row per item, holding the current decision, with every decision on the event
-// stream behind it. That is the audit trail the design asks for: the row answers
-// "may this be pushed today", the stream answers "who decided that, when, and what
-// did they say", and neither question is served well by the other's shape.
+// It is a record beside the item, not a field on it: an item is append-only, so
+// folding in a later, revisable decision would rewrite the fact each time a
+// reviewer changed their mind. The row holds the current decision and the event
+// stream holds every decision behind it (who decided, when, and what they said).
 //
 // Promotion is not trust. It cannot make a tainted or untrusted-origin item
-// pushable (see the memory/guard package): those are denied by construction,
-// because a reviewer reads the finished sentence and the finished sentence is what
-// an attacker gets to write. What a promotion decides is the middle case, the
-// agent's own untainted notes, which is the only place a human judgment call
-// belongs.
+// pushable (see the memory/guard package): a reviewer reads the finished
+// sentence, and that is what an attacker writes. A promotion decides only the
+// middle case, the agent's own untainted notes.
 type MemoryPromotion struct {
 	// MemoryID is the item this decision is about. It is a plain id, not a foreign
 	// key: like usage, a promotion outlives its item's tombstone so a reviewer can
 	// still see what was approved before it was retired.
 	MemoryID string
-	// Promoted is the current decision. False is a revocation when a row exists,
-	// and the default everywhere else: an item nobody has reviewed is not promoted,
-	// and the absence of a row and an explicit "no" mean the same thing to the
-	// digest. They differ in the audit trail, where one is silence and the other is
-	// a reviewer's answer.
+	// Promoted is the current decision. False is a revocation when a row exists and
+	// the default everywhere else: the digest treats a missing row and an explicit
+	// "no" alike. They differ only in the audit trail, where one is silence and the
+	// other a reviewer's answer.
 	Promoted bool
 	// By identifies the reviewer: the operator, or the curator acting under the
-	// operator's policy. It is required, because a promotion nobody is named on is
-	// an audit trail that cannot be followed back to a decision anybody made.
+	// operator's policy. It is required, so every promotion traces to a decision.
 	By string
 	// Reason is the reviewer's note, optional, carried for the audit rather than
 	// read by anything.
