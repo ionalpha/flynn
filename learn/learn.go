@@ -191,84 +191,107 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 		}
 		switch l.Kind {
 		case LessonSkill:
-			slug := slugify(l.Title)
-			// Look the slug up once: it tells us both whether an authored skill owns
-			// this name and, if a learned skill owns it, what evidence to carry over.
-			prev, prevErr := c.skills.Get(ctx, slug)
-			existsInScope := prevErr == nil && prev.Scope == o.Scope
-
-			// The learning loop never overwrites a human-authored skill. A skill that
-			// exists in the scope without the learned-provenance tag is curated
-			// content (authored, or shipped in a pack), and a distilled lesson must
-			// not silently replace its body, check or tags. Skip it before the check
-			// runs, so a capture we will not store costs no sandbox time.
-			if existsInScope && !isLearned(prev.Tags) {
-				captured.Skipped = append(captured.Skipped, l)
-				continue
-			}
-
-			// A bundled skill owns its slug everywhere, not only in its own scope.
-			// Writing a learned skill under a bundled slug would store a record that
-			// no read can reach: Get resolves a slug across scopes by earliest
-			// created row, and a bundled skill is seeded before any run distils
-			// anything. Skipping it reports the collision instead.
-			if bundled[slug] {
-				captured.Skipped = append(captured.Skipped, l)
-				continue
-			}
-
-			tags := withProvenance(l.Tags)
-			if c.verifier != nil {
-				v, err := c.verifier.Verify(ctx, l, o.Scope)
-				if err != nil {
-					return captured, err // verification infrastructure failed (e.g. cancelled)
-				}
-				switch {
-				case v.Verified:
-					tags = append(tags, verifiedTag)
-				case v.Ran:
-					// The check ran and failed: the skill is proven broken, so it is
-					// dropped rather than crystallized.
-					captured.Dropped = append(captured.Dropped, l)
-					continue
-				default:
-					tags = append(tags, unverifiedTag) // no check, or it could not be run
-				}
-			}
-			skill := state.Skill{
-				Slug:  slug,
-				Name:  strings.TrimSpace(l.Title),
-				Body:  l.Body,
-				Tags:  tags,
-				Check: l.Check,
-				Scope: o.Scope,
-			}
-			// Re-capturing a learned skill keeps the outcome evidence it has already
-			// earned, so reinforcement is not reset every time the same lesson is
-			// learned again.
-			if existsInScope {
-				skill.Offers, skill.Reads, skill.Wins = prev.Offers, prev.Reads, prev.Wins
-			}
-			sk, err := c.skills.Upsert(ctx, skill)
-			if err != nil {
-				return captured, err
-			}
-			captured.Skills = append(captured.Skills, sk)
+			err = c.captureSkill(ctx, o, l, bundled, &captured)
 		case LessonMemory:
-			mi, err := c.memories.Write(ctx, state.MemoryItem{
-				Kind:    memoryKind,
-				Content: l.Body,
-				Sources: sourcesOf(o.Source),
-				Scope:   o.Scope,
-				Anchors: state.SkillAnchors(o.SkillsRead),
-			})
-			if err != nil {
-				return captured, err
-			}
-			captured.Memories = append(captured.Memories, mi)
+			err = c.captureMemory(ctx, o, l, &captured)
+		}
+		if err != nil {
+			return captured, err
 		}
 	}
 	return captured, nil
+}
+
+// captureSkill stores a skill lesson into captured, or records in captured why it
+// was not stored.
+//
+// The learning loop never overwrites a human-authored skill. A skill that exists in
+// the scope without the learned-provenance tag is curated content (authored, or
+// shipped in a pack), and a distilled lesson must not silently replace its body,
+// check or tags. That, and a bundled slug, are decided before the check runs, so a
+// capture that will not be stored costs no sandbox time.
+//
+// A bundled skill owns its slug everywhere, not only in its own scope. Writing a
+// learned skill under a bundled slug would store a record that no read can reach:
+// Get resolves a slug across scopes by earliest created row, and a bundled skill is
+// seeded before any run distils anything. Skipping it reports the collision instead.
+func (c *Curator) captureSkill(ctx context.Context, o Outcome, l Lesson, bundled map[string]bool, captured *Captured) error {
+	slug := slugify(l.Title)
+	// One lookup answers both questions: whether an authored skill owns this name and,
+	// if a learned skill does, what evidence to carry over.
+	prev, prevErr := c.skills.Get(ctx, slug)
+	existsInScope := prevErr == nil && prev.Scope == o.Scope
+	if (existsInScope && !isLearned(prev.Tags)) || bundled[slug] {
+		captured.Skipped = append(captured.Skipped, l)
+		return nil
+	}
+
+	tags, keep, err := c.verifiedTags(ctx, l, o.Scope)
+	if err != nil {
+		return err
+	}
+	if !keep {
+		captured.Dropped = append(captured.Dropped, l)
+		return nil
+	}
+
+	skill := state.Skill{
+		Slug:  slug,
+		Name:  strings.TrimSpace(l.Title),
+		Body:  l.Body,
+		Tags:  tags,
+		Check: l.Check,
+		Scope: o.Scope,
+	}
+	// Re-capturing a learned skill keeps the outcome evidence it has already earned,
+	// so reinforcement is not reset every time the same lesson is learned again.
+	if existsInScope {
+		skill.Offers, skill.Reads, skill.Wins = prev.Offers, prev.Reads, prev.Wins
+	}
+	sk, err := c.skills.Upsert(ctx, skill)
+	if err != nil {
+		return err
+	}
+	captured.Skills = append(captured.Skills, sk)
+	return nil
+}
+
+// verifiedTags returns the tags a skill lesson is stored with, and false when its
+// check ran and failed: the skill is proven broken, so it is dropped rather than
+// crystallized. An error means the verification infrastructure failed (a cancelled
+// context, say), which says nothing about the skill.
+func (c *Curator) verifiedTags(ctx context.Context, l Lesson, scope state.Scope) (tags []string, keep bool, err error) {
+	tags = withProvenance(l.Tags)
+	if c.verifier == nil {
+		return tags, true, nil
+	}
+	v, err := c.verifier.Verify(ctx, l, scope)
+	switch {
+	case err != nil:
+		return nil, false, err
+	case v.Verified:
+		return append(tags, verifiedTag), true, nil
+	case v.Ran:
+		return nil, false, nil
+	default:
+		return append(tags, unverifiedTag), true, nil // no check, or it could not be run
+	}
+}
+
+// captureMemory stores a memory lesson into captured.
+func (c *Curator) captureMemory(ctx context.Context, o Outcome, l Lesson, captured *Captured) error {
+	mi, err := c.memories.Write(ctx, state.MemoryItem{
+		Kind:    memoryKind,
+		Content: l.Body,
+		Sources: sourcesOf(o.Source),
+		Scope:   o.Scope,
+		Anchors: state.SkillAnchors(o.SkillsRead),
+	})
+	if err != nil {
+		return err
+	}
+	captured.Memories = append(captured.Memories, mi)
+	return nil
 }
 
 // bundledSlugs is the set of slugs owned by the skills shipped in the binary. It
