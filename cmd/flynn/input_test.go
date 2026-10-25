@@ -254,6 +254,9 @@ func TestReadMessageDoesNotHangOnBinary(t *testing.T) {
 		"invalid_utf8": strings.Repeat("\xff", 4096) + "\r",
 		"escape_run":   strings.Repeat("\x1b", 4096) + "\r",
 		"escape_csi":   strings.Repeat("\x1b[", 2048) + "\r",
+		// Fills x/term's buffer to within two bytes, then offers a three-byte rune
+		// that can never fit what is left (the issue #538 crasher, reduced).
+		"rune_no_fit": strings.Repeat("\x1b", 254) + "€\r",
 	}
 	for name, junk := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -268,5 +271,29 @@ func TestReadMessageDoesNotHangOnBinary(t *testing.T) {
 				t.Fatal("readMessage hung on a long run of unparseable input (the x/term spin)")
 			}
 		})
+	}
+}
+
+// TestUTF8ReaderRuneWiderThanBuffer: a read into a buffer narrower than the valid
+// rune at the head of the input must return rather than read the source again and
+// again, because no amount of further input makes the rune fit.
+func TestUTF8ReaderRuneWiderThanBuffer(t *testing.T) {
+	r := &utf8Reader{src: strings.NewReader("€")}
+	done := make(chan struct{})
+	var (
+		n   int
+		err error
+	)
+	go func() {
+		defer close(done)
+		n, err = r.Read(make([]byte, 2))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Read spun on a rune wider than its buffer")
+	}
+	if n != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("Read = (%d, %v), want (0, io.EOF)", n, err)
 	}
 }

@@ -199,13 +199,17 @@ func TestRunConsolidationReportsItsOwnFailures(t *testing.T) {
 }
 
 // TestRunMemoryCommandRouting proves `flynn memory` reaches the sweep and that a
-// subcommand nobody has written is a usage error rather than a crash.
+// subcommand nobody has written, or one missing its argument, is a usage error
+// rather than a crash.
 func TestRunMemoryCommandRouting(t *testing.T) {
-	if got := runCLI(t, "memory"); got.code != 2 || !strings.Contains(got.stderr, "flynn memory consolidate") {
+	if got := runCLI(t, "memory"); got.code != 2 || !strings.Contains(got.stderr, "consolidate [--max-calls n]") {
 		t.Errorf("flynn memory = %+v, want the usage line and exit 2", got)
 	}
 	if got := runCLI(t, "memory", "forget"); got.code != 2 {
 		t.Errorf("flynn memory forget = %+v, want exit 2", got)
+	}
+	if got := runCLI(t, "memory", "bogus"); got.code != 2 {
+		t.Errorf("flynn memory bogus = %+v, want exit 2", got)
 	}
 	// With no credential configured the sweep cannot resolve a model, which is a
 	// command failure and not a usage error.
