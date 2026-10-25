@@ -310,17 +310,35 @@ promise. The layout makes the tiers physical:
 
 - **Stable surface** (the embedding contract): the root `agent` facade and the
   ports a host implements or consumes, `state`, `observe`, `llm`, `capability`,
-  `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`,
-  `storage/sqlite`, and `chain` (the Provetrail reference implementation, which
-  external verifiers must be able to import). Keep these small and guarded;
-  breaking them is a major-version event.
-- **Domain surface** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`,
-  `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`,
-  `controlplane`, `orchestration`, ...): importable and visible, but **unstable
+  `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `dispatch`, `jobs`,
+  `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, and `chain`
+  (the Provetrail reference implementation, which external verifiers must be able
+  to import). Keep these small and guarded; breaking them is a major-version
+  event.
+- **Domain surface** (`goal`, `mission`, `reconcile`, `session`, `runtime`,
+  `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
+  `orchestration`, `approval`, ...): importable and visible, but **unstable
   while pre-1.0**. These churn as the orchestration graph and router land.
   Power users may import them with that understanding.
 - **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
   guards, stores, probes, and adapters the surfaces are built from.
+
+A port is stable together with the suite that certifies it. `resource.Store`
+(with its optional `KeyLister` and `AnyScopeGetter`), `spine.Log`, `jobs.Queue`
+(with `Waker`), the `dispatch.Hook` and `dispatch.Admitter` pair, and
+`state.MemoryStore` are the ports an embedding host implements or plugs into,
+and `resourcetest`, `spinetest`, `jobstest`, `statetest` and `memory/memorytest`
+are the suites a backend of them must pass. The suites sit under the stable
+package they check, except `memory/memorytest`: the package named `memory` is a
+concrete facade a host calls and does not implement, its constructor and kinds
+are still moving, and the port it serves is already stable in `state`. `approval`
+stays in the domain band because the one port in it that holds state across a
+restart, the nonce store, has no conformance suite, and a port is promised once a
+suite can say what a correct backend is. A method a backend must honour for
+safety is never added to a stable interface, because that breaks every
+implementation; it arrives as a separate optional interface found by type
+assertion, the way `KeyLister` and `Waker` extend their ports, and a caller
+that does not find it refuses.
 
 The tiers are checked rather than described. `dev/apidiff` (a CI job, and runnable
 locally) reads the exported API of the newest release tag and of the branch with
@@ -331,13 +349,19 @@ third tier paying for itself a second time. A deliberate break is recorded in
 `dev/apidiff-accepted.txt` with the reason it was worth making, so the argument
 lives in the repository rather than in a review thread. Direction is what decides
 the verdict, and the tool encodes it: adding a field to a struct a host reads is
-compatible, adding a method to a port a host implements is not.
+compatible, adding a method to a port a host implements is not. The root facade
+is checked like any other stable package, and `internal/rigor` fails when the
+stable list here, the one in `docs/VERSIONING.md` and the one in `dev/apidiff`
+disagree.
 
 What this means for someone importing the module, including how a bad version is
 retracted and what a v2 would cost them, is `docs/VERSIONING.md`.
 
 Two things it does not see, stated so nobody reads a green run as more than it
-is. It compares shape, never behaviour. And it says nothing about the formats
+is. It compares shape, never behaviour; for the one behaviour that is a promise,
+what a conformance suite accepts, it lists every suite file that changed since
+the release, and the pull request says whether a backend that passed can fail.
+And it says nothing about the formats
 that cross a process boundary rather than a link boundary: envelope records,
 chain records, the sqlite schema. Those carry the same asymmetry (loosen what you
 accept, narrow what you emit) and are covered today only by the `chain/conformance`

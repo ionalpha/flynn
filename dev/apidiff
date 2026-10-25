@@ -31,9 +31,20 @@ ACCEPTED="dev/apidiff-accepted.txt"
 
 # The embedding contract: the root facade and the ports a host implements or
 # consumes. Matched as path prefixes, so `chain` covers `chain/conformance` and
-# `llm` covers its adapters. Keep in step with the Stability tiers section of
-# ARCHITECTURE.md.
-STABLE="capability chain clock fault ids llm observe provider sandbox secret spine state storage/sqlite tools"
+# `llm` covers its adapters. `.` is the module root, the `agent` facade: apidiff
+# prints its symbols with no path before them (`- Config.Objective: removed`), so
+# it is the one entry that cannot be matched by name. Keep in step with the
+# Stability tiers section of ARCHITECTURE.md and the table in docs/VERSIONING.md;
+# internal/rigor fails when the three disagree.
+STABLE=". capability chain clock dispatch fault ids jobs llm memory/memorytest observe provider resource sandbox secret spine state storage/sqlite tools"
+
+# Conformance suites. Each one is the executable half of a port in STABLE, and a
+# change that makes an implementation which passed fail is a break of that port
+# even when every signature survives. apidiff compares shape and cannot see that,
+# so a change to a suite is listed in the run output and the release notes for a
+# reviewer to judge. Each is a directory; its `_test.go` files are the suite's own
+# tests and are not listed. docs/VERSIONING.md names the same set.
+SUITES="chain/conformance jobs/jobstest memory/memorytest resource/resourcetest spine/spinetest state/statetest"
 
 base="${FLYNN_APIDIFF_BASE:-}"
 if [ -z "$base" ]; then
@@ -99,9 +110,16 @@ fi
 
 stable_pkg() {
   # Package path of a change line: `- ./memory/guard.Refusal.Source: removed`
-  # -> `memory/guard`. The root package has no path segment before the symbol.
-  pkg="${1#- ./}"
-  pkg="${pkg%%.*}"
+  # -> `memory/guard`. The root package has no path segment before the symbol
+  # (`- Config.Objective: removed`), so a line without the `./` prefix is the root.
+  # Treating it as a package named `Config` is how the root facade went unchecked.
+  case "$1" in
+    "- ./"*)
+      pkg="${1#- ./}"
+      pkg="${pkg%%.*}"
+      ;;
+    *) pkg="." ;;
+  esac
   for want in $STABLE; do
     case "$pkg" in
       "$want" | "$want"/*) return 0 ;;
@@ -142,6 +160,16 @@ while IFS= read -r line; do
   fi
 done < "$work/incompatible"
 
+# A suite file that changed since the base. The tool above cannot judge it, a
+# person can: if an implementation that passed at the base would fail now, that is
+# a break of the port the suite checks, and the PR description says so. The
+# pathspec leaves out the suites' own tests and keeps a vector set's manifest, which
+# stands for the vectors it indexes.
+: > "$work/suites"
+for dir in $SUITES; do
+  git diff --name-only "$base" -- "$dir/*.go" "$dir/*manifest.json" ':(exclude)*_test.go' >> "$work/suites"
+done
+
 # The release notes carry this, which is the one moment a pinned importer is
 # actually deciding whether to move (see docs/VERSIONING.md).
 if [ -n "${FLYNN_APIDIFF_REPORT:-}" ]; then
@@ -167,6 +195,12 @@ if [ -n "${FLYNN_APIDIFF_REPORT:-}" ]; then
         echo
       fi
     fi
+    if [ -s "$work/suites" ]; then
+      echo "**Conformance suites changed (an implementation that passed \`$base\` may fail now):**"
+      echo
+      sed 's/^/- `/; s/$/`/' "$work/suites"
+      echo
+    fi
   } > "$FLYNN_APIDIFF_REPORT"
   echo "==> wrote the compatibility report to $FLYNN_APIDIFF_REPORT"
 fi
@@ -185,6 +219,14 @@ fi
 if [ "$waived" -gt 0 ]; then
   echo
   echo "Accepted (recorded in $ACCEPTED with a reason): $waived"
+fi
+
+if [ -s "$work/suites" ]; then
+  echo
+  echo "Conformance suites changed since $base. A change that makes an implementation"
+  echo "which passed fail is a break of the port, though no signature moved. Not gated,"
+  echo "because shape is all this tool compares; say in the PR whether any can fail:"
+  sed 's/^/  /' "$work/suites"
 fi
 
 if [ "$domain" -gt 0 ]; then

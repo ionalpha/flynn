@@ -28,8 +28,8 @@ none of them can reach you on a day you did not choose.
 
 | Tier | Packages | What you can expect |
 | --- | --- | --- |
-| Stable surface | the root facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`, `storage/sqlite`, `chain` | The embedding contract. Breaks are gated in CI, and any break that ships was argued for in writing. |
-| Domain surface | `goal`, `mission`, `reconcile`, `resource`, `dispatch`, `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
+| Stable surface | the root `agent` facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `dispatch`, `jobs`, `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, `chain` | The embedding contract. Breaks are gated in CI, and any break that ships was argued for in writing. |
+| Domain surface | `goal`, `mission`, `reconcile`, `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, `approval`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
 | `internal/` | everything under it | Not importable. No promise at all. |
 
 The gate is `dev/apidiff`, which compares the exported API of the branch against
@@ -40,6 +40,41 @@ upgrade you can read exactly what moved.
 We are pre-1.0, where Go's own rule is that `v0.2.0` need not be compatible with
 `v0.1.0`. Gating the stable surface is a stricter promise than the version number
 makes, deliberately, because that surface is what a host builds against.
+
+## The ports you implement, and the suites that certify them
+
+If you write a backend for one of the ports below, the promise covers what a
+correct backend is, and that is defined by the conformance suite, not by the
+interface alone. A signature can survive unchanged while the contract moves.
+
+| Port | Suite you run against your backend |
+| --- | --- |
+| `resource.Store`, with the optional `KeyLister` and `AnyScopeGetter` | `resource/resourcetest` |
+| `spine.Log` | `spine/spinetest` |
+| `jobs.Queue`, with the optional `Waker` | `jobs/jobstest` |
+| `state.MemoryStore`, and the other `state` ports | `memory/memorytest`, `state/statetest` |
+| `dispatch.Hook` and `dispatch.Admitter` | none: they hold no state of their own, so there is no backend to certify |
+| the Provetrail record format | `chain/conformance` |
+
+A change to a suite that makes an implementation which passed fail is a break of
+the port, in the same way as a removed method, even though no signature moved.
+So a suite tightens only with the same written argument a signature break needs.
+Loosening a suite, or adding a case for behaviour the port already documented, is
+how a bug in the suite gets fixed, and it is called out in the release notes as
+well. The suites' own exported entry points (`RunSuite` and the harness types)
+are in the stable surface and are gated like any other signature.
+
+`dev/apidiff` cannot judge behaviour, so it does the part a tool can: every run
+lists the suite files that changed since the last release, and the release notes
+carry the same list under "Conformance suites changed". A reviewer reads that
+list and the pull request says whether any backend that passed can now fail.
+
+Two ports are deliberately not in the stable surface. `memory` is a concrete
+facade you call, not a port you implement, and the port it serves is
+`state.MemoryStore`. `approval` holds the nonce store, which must keep a spent
+nonce spent across a restart; until a suite can state that, a backend written
+against it has no definition of correct to be held to. Neither is hidden: both
+are importable, and both are listed in the release notes when they change.
 
 ## What counts as a break
 
