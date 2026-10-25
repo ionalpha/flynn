@@ -38,23 +38,20 @@ func Confidence(reads, wins int) float64 {
 	return lb
 }
 
-// Reinforce records one run's outcome against the skills the run read: each is read
-// once more, and once more a win if the run succeeded. The evidence accrues on the
-// skill so it can be ranked and retired by how it actually performs. A duplicate or
-// empty reference, or one with no live skill, is skipped; the first store error is
-// returned. It is a read-modify-write per skill, which is safe under the agent's
+// Reinforce records one run's outcome against the skills the run read: each is read once
+// more, and once more a win if the run succeeded, so a skill is ranked and retired by how
+// it performs. A duplicate or empty reference, or one with no live skill, is skipped; the
+// first store error is returned. Each skill is a read-modify-write, safe under the agent's
 // single-writer local store.
 //
-// Pass the skills the run actually loaded, from the skill toolset's record of what
-// it served, not the ones recall offered. An offer is a keyword match on an
-// objective; it establishes nothing about whether the model took the skill up, and
-// crediting a run's outcome to every skill in its prompt makes the win rate a
-// property of the run rather than of the skill. Offer records that half.
+// Pass the skills the run actually loaded, from the skill toolset's record of what it
+// served, not the ones recall offered. An offer is a keyword match and shows nothing about
+// whether the model took the skill up; crediting the outcome to every skill in the prompt
+// makes the win rate a property of the run, not of the skill. Offer records that half.
 //
-// Pass ids, not slugs. Recall is scope-blind, so what it returns can be a bundled
-// skill or a learned one, and two scopes may hold the same slug; Get resolves a slug
-// by earliest created row, which would credit the run to whichever record happens to
-// be older. An id names the record that was actually put in front of the model.
+// Pass ids, not slugs. Recall is scope-blind, so two scopes may hold the same slug, and
+// Get resolves a slug by earliest created row, crediting whichever record is older. An id
+// names the record that was actually put in front of the model.
 func Reinforce(ctx context.Context, skills state.SkillStore, ids []string, success bool) error {
 	return accrue(ctx, skills, ids, func(sk *state.Skill) {
 		sk.Reads++

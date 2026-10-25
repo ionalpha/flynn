@@ -309,23 +309,20 @@ func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 	return argv
 }
 
-// buildVLLMArgv builds the vLLM serve command for cfg. The common safety invariants are
-// already enforced by BuildPlan; this only translates the configuration into vLLM's flag
-// vocabulary. The server is the same loopback-bound, optionally API-key-gated endpoint the
-// llama.cpp path produces, so a client reaches it the same way; only the engine differs.
+// buildVLLMArgv builds the vLLM serve command for cfg. BuildPlan already enforces the
+// safety invariants; this only translates the configuration into vLLM's flags. The server is
+// the same loopback-bound, optionally API-key-gated endpoint the llama.cpp path produces, so
+// a client reaches it the same way.
 //
-// The model is served under its catalog id rather than its on-disk path, the on-disk
-// quantization scheme is passed through (an NVFP4 checkpoint loads via "modelopt_fp4"),
-// and the GPU-resident levers vLLM exposes (memory utilization, max model length, KV-cache
-// dtype) are set when requested. The first element is the runtime command: an absolute
-// path for a host process, or the in-image command when this argv is run as a container's
-// command through the container tier.
+// The model is served under its catalog id rather than its on-disk path, the quantization
+// scheme is passed through (an NVFP4 checkpoint loads via "modelopt_fp4"), and the GPU
+// levers (memory utilization, max model length, KV-cache dtype) are set when requested. The
+// first element is the runtime command: an absolute path for a host process, or the in-image
+// command for a container.
 //
-// It does not emit a chat-template flag. vLLM applies the model's own tokenizer template,
-// whose vocabulary differs from llama.cpp's named templates; forcing a trusted template on
-// the vLLM path needs a shipped template file and is tracked separately. The catalog entry
-// is still required to name a recognized trusted template (BuildPlan checks it), so an
-// entry with no vetted prompt contract is refused on either engine.
+// It emits no chat-template flag because vLLM applies the model's own tokenizer template.
+// The catalog entry must still name a trusted template (BuildPlan checks it), so an entry
+// with no vetted prompt contract is refused on either engine.
 func buildVLLMArgv(cfg Config) []string {
 	// Inside a container the server must bind all interfaces in its isolated namespace for
 	// the engine's host-loopback-published port to reach it; the off-host exposure is closed

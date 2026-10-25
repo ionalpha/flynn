@@ -27,24 +27,18 @@ const OffEnv = "FLYNN_NO_NOTICES"
 
 // publicKeys is the compiled-in keyring: the Ed25519 public keys allowed to sign a notice
 // feed, keyed by the key id that appears in a feed's protected header. Hex-encoded, in
-// source, so that the set of people who can say something to every installed Flynn is a
-// thing anyone can read out of the repository and verify against what they are running.
+// source, so anyone can read from the repository who may speak to every installed Flynn.
 //
-// A rotation adds a key here and ships a build. A compromise removes one and ships a
-// build. Neither is a config change, and neither can be done to a user by writing a file
-// on their machine.
+// A rotation or a compromise ships a build; neither is a config change, so neither can be
+// done to a user by writing a file on their machine.
 //
-// An empty ring makes the channel inert: Verify refuses every document, so a build that
-// somehow shipped without a key shows nothing at all rather than trusting anything. That
-// is the correct direction to fail, but it does mean a release must not be tagged with
-// this map empty, because the resulting binaries could never be reached afterwards.
+// An empty ring makes the channel inert: Verify refuses every document, so nothing is
+// trusted. A release must not be tagged with this map empty, since those binaries could
+// never be reached afterwards.
 //
-// There are two keys, and the second one is the reason the first is replaceable. A binary
-// trusts only the keys it was built with, so if a release shipped one key and that key
-// were later lost, every install from that release would be unreachable forever, which is
-// exactly the failure this whole channel exists to prevent. The backup key is held offline
-// and signs nothing until it is needed, so losing the operational key costs a rotation
-// rather than the install base.
+// There are two keys because a binary trusts only the keys it was built with, so a single
+// lost key would leave a release unreachable forever. The backup key is held offline, so
+// losing the operational key costs a rotation and not the install base.
 var publicKeys = map[string]string{
 	// Signs the feed day to day.
 	"flynn-notices-1": "746468756841a18523a1d10c87ac3402b7dec3706654904ec588115bf87ab2b4",

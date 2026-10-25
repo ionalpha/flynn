@@ -20,15 +20,13 @@ type RegradeResult struct {
 // retired (archived, recoverable). Skills with no check, or whose check could not
 // run, are left untouched.
 //
-// This is what a write-once skill file cannot do: knowledge captured earlier is
-// re-graded as the environment changes, so a procedure that has quietly stopped
-// working is caught and removed rather than recalled forever. A nil verifier is a
-// no-op; the first store or verifier error aborts and is returned.
+// A procedure that has stopped working is caught and removed rather than recalled
+// forever. A nil verifier is a no-op; the first store or verifier error aborts and is
+// returned.
 //
-// The bundled scope is refused with ErrBundledScope. Skills shipped in the binary
-// are versioned with it, so a regrade there would rewrite authored tags and could
-// archive an authored skill on a check that fails for reasons of the machine it
-// ran on; the next upgrade would then have to resurrect it.
+// The bundled scope is refused with ErrBundledScope. Skills shipped in the binary are
+// versioned with it, so a regrade there would rewrite authored tags and could archive an
+// authored skill on a check that fails because of the machine it ran on.
 func Regrade(ctx context.Context, skills state.SkillStore, scope state.Scope, v Verifier) (RegradeResult, error) {
 	var res RegradeResult
 	if scope == state.BundledScope {

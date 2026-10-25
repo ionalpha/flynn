@@ -25,30 +25,20 @@ const (
 	envEgressFD = "FLYNN_SANDBOX_EGRESS_FD"
 )
 
-// attachEgress governs a Linux child's outbound network. The child runs in its own
-// network namespace, which has no interfaces and no routes, so it cannot reach the
-// internet directly and cannot reach a proxy listening on the host's loopback either:
-// that loopback is a different interface in a different namespace. The listening socket
-// therefore has to be created inside the child's namespace, and only the launcher (which
-// runs in there, after the clone and before the command) can create it.
+// attachEgress governs a Linux child's outbound network. The child runs in its own network
+// namespace, with no interfaces and no routes, so it can reach neither the internet nor a
+// proxy on the host's loopback (a different interface in a different namespace). The
+// listening socket must be created inside the child's namespace, which only the launcher can.
 //
-// So the launcher creates it and hands it back. This end of the handoff passes the
-// launcher one end of a unix socketpair, and reads the listening socket off it as an
-// SCM_RIGHTS descriptor. A socket keeps the namespace it was created in for its whole
-// life, so accepting on that descriptor here, in the host namespace, still accepts the
-// connections the child makes to its own loopback. The proxy then serves those
-// connections from this process, where its own outbound dials use the host's namespace
-// and reach the network. The one netguard policy decides what they are allowed to reach.
+// So the launcher creates it and hands it back over a unix socketpair as an SCM_RIGHTS
+// descriptor. A socket keeps the namespace it was created in, so accepting on it here, in the
+// host namespace, takes the child's connections to its own loopback, and the proxy's outbound
+// dials use the host namespace under the one netguard policy.
 //
-// What makes this unbypassable is not the proxy variables in the child's environment,
-// which the child is free to ignore. It is that the namespace gives the child no other
-// route: a direct dial has no interface to leave through and fails with ENETUNREACH.
-// The proxy is not the preferred way out, it is the only one.
-//
-// One proxy serves one child, because one namespace's loopback is reachable only from
-// inside that namespace. The returned release ends that proxy and is called when the
-// child exits; it is also registered on the egress config, so a launch that dies before
-// it can release is still cleaned up when the sandbox closes.
+// What makes this unbypassable is the missing route (a direct dial fails with ENETUNREACH),
+// not the proxy variables the child may ignore. One proxy serves one child, since one
+// namespace's loopback is reachable only from inside it; the returned release ends it when
+// the child exits and is also registered on the egress config for a launch that dies first.
 func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
 	parent, child, err := openHandoff(c, "egress", envEgress, envEgressFD)
 	if err != nil {

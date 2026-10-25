@@ -53,17 +53,15 @@ func (s Strip) Stripped() bool { return s == StripDenied || s == StripContained 
 // how its native writes and commands are taken away, and whether it runs on the
 // operator's own configuration.
 //
-// It exists because the alternative is authorship. Both bundled adapters lock their CLI
-// down correctly today, and both do it inside the argv their Command builds, where
-// nothing outside the adapter can read the posture and nothing checks that it is still
-// there. A third adapter that simply omits the lockdown produces episodes that look
-// exactly like governed ones in the record. Stating the posture per provider makes the
-// omission a refusal at the point the episode would start.
+// Both bundled adapters lock their CLI down inside the argv their Command builds, where
+// nothing outside the adapter can read the posture or check it is still there. A third
+// adapter that omits the lockdown would produce episodes that look like governed ones in
+// the record. Stating the posture per provider makes the omission a refusal where the
+// episode would start.
 //
-// The config half is not a smaller concern than the tool half. A CLI started under the
-// operator's own home reads their MCP servers, hooks and plugins, so the harness is
-// steerable by whatever configuration the person who launched the run happens to carry,
-// and an episode's behavior stops being a function of the run. The contract therefore
+// The config half is as necessary as the tool half: a CLI started under the operator's
+// own home reads their MCP servers, hooks and plugins, so an episode's behavior would
+// depend on whatever configuration the launcher carries and not on the run. The contract
 // covers the environment as well as the toolset.
 type Lockdown struct {
 	// Writes is how the CLI's native file writes are taken away.

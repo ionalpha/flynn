@@ -14,24 +14,19 @@ import (
 )
 
 // serveEgressFromNetns is the launcher's half of governed egress, and it runs in the one
-// place that can do this work: inside the child's fresh network namespace, after the
-// clone and before the command is executed.
+// place that can do this work: inside the child's fresh network namespace, after the clone
+// and before the command is executed.
 //
-// It brings the namespace's loopback interface up (a fresh namespace has it down, so
-// nothing can be reached on it, not even 127.0.0.1), creates the listening socket the
-// proxy will serve, and hands that socket out to the parent over the inherited handoff
-// descriptor. The parent accepts on it from the host namespace and does the policy
-// enforcement and the real dialling, so no networking code beyond a bare listen runs in
-// here, and nothing outside the namespace is reachable from in here.
+// It brings the namespace's loopback up (a fresh namespace has it down, so not even
+// 127.0.0.1 is reachable), creates the listening socket the proxy will serve, and hands it
+// to the parent over the inherited handoff descriptor. The parent accepts from the host
+// namespace and does the policy enforcement and the outbound dialling, so no networking code
+// beyond a bare listen runs in here.
 //
-// It returns the proxy variables to add to the command's environment. The command has no
-// other route out: its namespace has no interface but loopback and no route at all, so a
-// direct dial fails with ENETUNREACH. Pointing it at the proxy is a convenience for a
-// command that reads these variables; the containment does not depend on it doing so.
-//
-// Bringing loopback up needs CAP_NET_ADMIN in the namespace's owning user namespace, and
-// the launcher has it: confine maps the caller to root in a new user namespace, and the
-// network namespace is created inside it. No host privilege is involved.
+// It returns the proxy variables for the command's environment. The command has no other
+// route out (its namespace has only loopback, so a direct dial fails with ENETUNREACH);
+// containment does not depend on it honouring them. Bringing loopback up needs CAP_NET_ADMIN,
+// which confine's new user namespace grants; no host privilege is involved.
 func serveEgressFromNetns() (map[string]string, error) {
 	handoff, err := egressHandoffFile()
 	if err != nil {

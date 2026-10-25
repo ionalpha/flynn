@@ -134,19 +134,14 @@ func New(store state.MemoryStore, opts ...Option) *Surfacer {
 // admitted by the Surfacer's policy, and counts a use of each one it returns.
 //
 // The query must carry at least one anchor. An anchorless surfacing is refused with
-// state.ErrInvalid rather than widened into an unfiltered recall: a ride-along with
-// no cue behind it would attach an arbitrary slice of the corpus to a read nobody
-// aimed at memory, and count every row of it as used.
+// state.ErrInvalid rather than widened into an unfiltered recall, which would attach an
+// arbitrary slice of the corpus to a read nobody aimed at memory and count every row as
+// used. The rest of the query is honoured as-is; one with no Limit gets the Surfacer's cap.
 //
-// Everything else on the query is honoured as-is, so a host can narrow a surfacing
-// by scope, kind or time window the same way it narrows any other recall. A query
-// with no Limit gets the Surfacer's cap.
-//
-// The cap bounds the read and the admission policy then drops from what came back,
-// so a surfacing can return fewer items than the cap while further anchored items
-// exist. Reading past the cap to refill it would let the presence of inadmissible
-// items decide how much of the corpus a single read touches, which is a lever an
-// attacker holds and the reader does not.
+// The cap bounds the read and the admission policy then drops from what came back, so a
+// surfacing can return fewer items than the cap while further anchored items exist.
+// Reading past the cap to refill it would let inadmissible items decide how much of the
+// corpus a read touches, a lever an attacker holds and the reader does not.
 func (s *Surfacer) Surface(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	anchors, err := state.NormalizeAnchors(q.Anchors)
 	if err != nil {
@@ -162,21 +157,19 @@ func (s *Surfacer) Surface(ctx context.Context, q state.RecallQuery) ([]state.Me
 	return s.read(ctx, q, s.admit)
 }
 
-// Recall runs an explicit recall and counts a use of everything it returns. It is
-// the pull half of the same measurement: a session that goes looking for a fact and
-// finds it has used that fact, and the decay policy needs that recorded as surely as
-// it needs the push.
+// Recall runs an explicit recall and counts a use of everything it returns, the pull half
+// of the measurement: a session that looks for a fact and finds it has used it, and the
+// decay policy needs that recorded as surely as the push.
 //
-// The admission policy does not apply here, and no recall path anywhere applies
-// one. A reader that asks a question gets the whole answer, tainted and
-// untrusted-origin items included, carrying the provenance that says what they are.
-// Filtering a search would hide from a curator exactly the records that most need
-// looking at, and the gate exists for content nobody asked for.
+// The admission policy does not apply here, and no recall path applies one. A reader that
+// asks a question gets the whole answer, tainted and untrusted-origin items included,
+// carrying the provenance that says what they are. Filtering a search would hide from a
+// curator the records that most need looking at; the gate exists for content nobody asked
+// for.
 //
-// One use is counted per returned item, which is one write per item. A caller that
-// wants a read with no measurement behind it (a curator listing the corpus, a
-// backup, a report) reads the store directly; going through here would file the
-// tooling's reads as though a session had acted on them.
+// One use is counted per returned item, one write each. A caller that wants a read with no
+// measurement (a curator listing the corpus, a backup, a report) reads the store directly,
+// or tooling reads would be filed as though a session had acted on them.
 func (s *Surfacer) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	anchors, err := state.NormalizeAnchors(q.Anchors)
 	if err != nil {

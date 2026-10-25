@@ -2,22 +2,18 @@ package inference
 
 import "sync"
 
-// The advisory floor a runtime is held to is a compiled-in value (Runtime.MinSupported),
-// which means a parser flaw disclosed after a release cannot reach an installed Flynn
-// until the user upgrades it. The signed notice feed can carry a newer floor, and this is
-// where one lands.
+// The advisory floor a runtime is held to is compiled in (Runtime.MinSupported), so a
+// parser flaw disclosed after a release cannot reach an installed Flynn until the user
+// upgrades. The signed notice feed can carry a newer floor, and this is where one lands.
 //
-// The rule the whole design rests on: a floor learned at runtime may only ever RAISE the
-// gate. Raise takes the maximum of what is compiled in and what arrives, and there is no
-// function anywhere that lowers a floor, marks a refused runtime safe, or clears the
-// overlay. That is not a convention, it is the entire API.
+// A floor learned at runtime may only ever RAISE the gate. Raise takes the maximum of what
+// is compiled in and what arrives, and no function lowers a floor, marks a refused runtime
+// safe, or clears the overlay.
 //
-// The consequence is worth stating plainly, because it is the reason a network-delivered
-// security policy is safe to have at all: an attacker who compromises the feed origin AND
-// steals the signing key can only make Flynn refuse to run a runtime. They can never make
-// it run a vulnerable one. The worst case is a denial of service, which is loud and
-// visible and locally recoverable, rather than a remote path to code execution. A channel
-// that could relax a gate would have handed them the opposite.
+// That is why a network-delivered security policy is safe: an attacker who compromises the
+// feed origin AND steals the signing key can only make Flynn refuse to run a runtime,
+// never run a vulnerable one. The worst case is a loud, locally recoverable denial of
+// service, where a channel that could relax a gate would be a path to code execution.
 var (
 	overlayMu sync.RWMutex
 	overlay   = map[string]overlayFloor{}

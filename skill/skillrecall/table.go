@@ -97,21 +97,19 @@ func parseTable(file string, data []byte) (Table, error) {
 const TableFile = "retrieval.txt"
 
 // LoadTable reads the retrieval rows of every skill under root and returns them as
-// one table, in directory order. A skill without the file contributes nothing and is
-// not an error here: what refuses a skill that states no objective is the pack's own
-// coverage test, which can say so in one message instead of one per missing file.
+// one table, in directory order. A skill without the file contributes nothing and is not
+// an error here: the pack's own coverage test refuses a skill that states no objective, and
+// can say so in one message instead of one per missing file.
 //
-// The rows live with the skill rather than in a table beside the pack because of what
-// the two shapes do to the people writing them. One file gives every branch that adds
-// a skill the same last line to append to, so every such branch conflicts with every
-// other one and the resolution is by hand, on text no reviewer reads. Rows in the
-// skill's own directory make adding a skill an added file, which nothing else touches.
+// The rows live with the skill rather than in one table beside the pack because a single
+// file gives every branch that adds a skill the same last line to append to, so each
+// conflicts with every other, resolved by hand on text no reviewer reads. Rows in the
+// skill's own directory make adding a skill an added file nothing else touches.
 //
-// The cost of splitting is that the rows no longer sit next to each other, and reading
-// one skill's claims beside another's is how a negative column gets written. That is
-// paid back by the rule this enforces: a row in a skill's directory must name that
-// skill in one of its columns, so the file is the whole of what the pack asserts about
-// it, and a row that wandered is refused by address.
+// Splitting separates the rows, and reading one skill's claims beside another's is how a
+// negative column gets written. The rule enforced here covers that: a row in a skill's
+// directory must name that skill in one of its columns, so the file is the whole of what the
+// pack asserts about it, and a row that wandered is refused by address.
 func LoadTable(fsys fs.FS, root string) (Table, error) {
 	entries, err := fs.ReadDir(fsys, root)
 	if err != nil {

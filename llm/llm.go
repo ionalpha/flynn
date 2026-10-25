@@ -134,20 +134,16 @@ type Request struct {
 
 // CacheHint tells a backend which parts of a request are stable across turns, so a
 // provider that supports prompt caching can reuse the work of processing them
-// instead of re-reading the whole prompt on every call. It is advisory and fully
-// provider-neutral: the caller declares stability, which only it can know from how
-// it assembles the conversation, and each adapter realizes the hint in its own
-// terms. A provider with explicit cache markers places one at each declared
-// boundary; a provider with automatic prefix caching, or one with no caching at
-// all, ignores the hint and loses nothing, because the caller has kept the prefix
-// byte-identical regardless. The hint can only ever save cost: it never changes
-// what the model is asked or what it returns.
+// instead of re-reading the whole prompt on every call. It is advisory and provider-neutral:
+// the caller declares stability, which only it knows from how it assembles the
+// conversation, and each adapter realizes the hint in its own terms. A provider with
+// explicit cache markers places one at each declared boundary; one with automatic prefix
+// caching, or none, ignores the hint and loses nothing, because the caller keeps the prefix
+// byte-identical regardless. The hint never changes what the model is asked or returns.
 //
-// The boundaries run from most to least stable. The static prefix (the system
-// prompt and tool schemas, identical every turn) is the cheapest large win;
-// marking a count of leading messages adds the append-only conversation prefix on
-// top of it. The zero value caches nothing, so a caller that does not opt in is
-// unaffected.
+// The boundaries run from most to least stable: the static prefix (system prompt and tool
+// schemas, identical every turn), then a count of leading messages for the append-only
+// conversation prefix. The zero value caches nothing.
 type CacheHint struct {
 	// Prefix marks the system prompt and tool schemas as one cacheable boundary.
 	// These are the largest reliably-stable region of a tool-using request.

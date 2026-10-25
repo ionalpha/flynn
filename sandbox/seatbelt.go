@@ -5,33 +5,20 @@ import (
 	"strings"
 )
 
-// seatbeltProfile builds the sandbox profile (SBPL) that the macOS adapter applies
-// to a command, from the same confinement options the Linux adapter reads. The
-// profile is the macOS counterpart of the network namespace, read-only mount view,
-// and syscall filter the Linux adapter installs: it denies the network, makes the
-// host read-only except the working directory and a scratch area, and refuses the
-// privileged file operations a command working in its own tree never needs.
+// seatbeltProfile builds the sandbox profile (SBPL) the macOS adapter applies to a command,
+// the counterpart of the network namespace, read-only mount view, and syscall filter on
+// Linux: it denies the network, makes the host read-only except the working directory and a
+// scratch area, and refuses privileged file operations a command in its own tree never needs.
 //
-// The profile starts from allow-default and removes capabilities, rather than
-// starting from deny-default and re-granting them. A deny-default profile on macOS
-// has to enumerate every operation an ordinary shell and its tools legitimately make
-// (process spawn, dynamic linking, sysctl reads, mach lookups, and more), and the
-// exact set shifts between OS releases; missing one turns a benign command into a
-// confinement failure. Removing the specific capabilities that matter for isolation -
-// the network, writes outside the working tree, and privilege escalation - keeps the
-// critical denials exact while leaving ordinary work running.
+// The profile starts from allow-default and removes capabilities. A deny-default profile
+// would have to enumerate every operation an ordinary shell and its tools make (process
+// spawn, dynamic linking, sysctl reads, mach lookups), that set shifts between OS releases,
+// and missing one turns a benign command into a confinement failure. Rules are
+// last-match-wins, so the blanket write denial comes first and the re-grants follow it.
 //
-// Profile rules are last-match-wins, so a later rule overrides an earlier one: the
-// blanket write denial comes first and the working-directory and scratch re-grants
-// follow it.
-// When proxyAddr is non-empty, the profile governs egress instead of denying it
-// outright: all network is denied except an outbound connection to the loopback proxy at
-// proxyAddr, so the command can reach only the policy-enforcing proxy and nothing else.
-// This is the macOS leg of governed child egress: the kernel, not the cooperation of the
-// child, makes the proxy the single way out.
-// The trailing writable paths are the directories named by WithWritableDir: each becomes
-// a writable subpath alongside the working tree, and nothing else about the profile
-// changes. They are variadic because the common case names none.
+// When proxyAddr is non-empty all network is denied except an outbound connection to the
+// loopback proxy at proxyAddr: the macOS leg of governed egress. The trailing writable paths
+// are the WithWritableDir directories, each writable alongside the working tree.
 func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, proxyAddr string, writable ...string) string {
 	var b strings.Builder
 	b.WriteString("(version 1)\n")

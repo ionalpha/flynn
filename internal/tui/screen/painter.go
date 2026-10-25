@@ -7,23 +7,18 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Painter owns the live region: the last few rows of the terminal, repainted
-// in place as the session streams. It tracks only the lines it last painted
-// and the terminal size; it never queries the terminal. The cursor contract
-// is simple and holds across every operation: the cursor rests at column one
-// of the last live row (or at column one of the row where the live region
-// will begin, while the region is empty).
+// Painter owns the live region: the last few rows of the terminal, repainted in place as
+// the session streams. It tracks only the lines it last painted and the terminal size;
+// it never queries the terminal. After every operation the cursor rests at column one of
+// the last live row (or of the row where the region will begin, while it is empty).
 //
-// All movement is relative (cursor up and down from that resting row), never
-// absolute. Relative movement stays correct when the terminal scrolls,
-// because the cursor and the live rows scroll together; absolute addressing
-// would not.
+// All movement is relative to that resting row, never absolute: relative movement stays
+// correct when the terminal scrolls, because the cursor and the live rows scroll together.
 //
-// Each operation is accumulated into one buffer and flushed as a single
-// write wrapped in synchronized output, so the terminal applies it as one
-// atomic frame. Write errors are sticky: after the first failure every later
-// operation is a no-op and Err reports the cause, so a torn-down terminal
-// does not produce a cascade of secondary failures mid-exit.
+// Each operation is accumulated into one buffer and flushed as a single write wrapped in
+// synchronized output, so the terminal applies it as one atomic frame. Write errors are
+// sticky: after the first failure every later operation is a no-op and Err reports the
+// cause, so a torn-down terminal does not cascade secondary failures mid-exit.
 type Painter struct {
 	w      io.Writer
 	width  int

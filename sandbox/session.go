@@ -21,21 +21,17 @@ var errSessionConfineUnsupported = fault.New(fault.Forbidden, "sandbox_session_c
 	"sandbox: kernel confinement cannot be applied to a duplex background process on this platform; refusing rather than running the extension unconfined")
 
 // SessionSpec describes a long-lived process to run inside the sandbox with BOTH its
-// standard input and output held open as live pipes, for a caller that carries on a
-// request/response conversation with the process over its own stdio. It is the duplex
-// counterpart of Stream (stdin written once then closed, stdout streamed) and Serve
-// (backgrounded, reached over a loopback port): the out-of-process extension host speaks
-// MCP JSON-RPC to a subprocess and must both write requests to it and read replies from
-// it for the life of the process.
+// standard input and output held open as live pipes, for a request/response conversation
+// over its own stdio. It is the duplex counterpart of Stream (stdin written once then
+// closed) and Serve (backgrounded, reached over a loopback port): the out-of-process
+// extension host speaks MCP JSON-RPC to a subprocess for the life of the process.
 //
-// The channel is deliberately the process's own anonymous stdio pipes and nothing else:
-// a pipe fd is private to this parent and its child, where a loopback port any co-located
-// process could bind or capture is not, so an extension cannot be snooped or injected on
-// its channel. The program is run directly from Argv, never through a shell, so nothing
-// in the arguments can be reinterpreted as shell syntax, and the deny-by-default
-// environment applies exactly as for Exec, Stream, and Serve: the host environment is
-// never inherited, so no secret the agent holds reaches the process unless Env grants it
-// by name.
+// The channel is the process's own anonymous stdio pipes and nothing else: a pipe fd is
+// private to this parent and its child, where a loopback port any co-located process could
+// bind or capture is not, so an extension cannot be snooped or injected on. The program runs
+// directly from Argv, never through a shell, so no argument is reinterpreted as shell
+// syntax, and the deny-by-default environment applies as for Exec, Stream, and Serve: no
+// secret the agent holds reaches the process unless Env grants it by name.
 type SessionSpec struct {
 	// Argv is the program and its arguments, executed directly without a shell. Argv[0] is
 	// the binary to run; the rest are passed verbatim. For an extension it is a fixed,

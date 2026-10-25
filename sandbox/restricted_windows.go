@@ -50,22 +50,18 @@ var (
 // restricting SID: the fixed service-account identifier plus four hash words.
 const restrictSIDSubAuthorities = 5
 
-// workspaceRestrictSID derives the restricting identity for a workspace root: a SID
-// unique to that root, held by no principal on the host, that names "code confined to
-// this workspace". It is the write gate's whole basis, so it has to be both unique per
-// workspace (or one sandbox's child could write another's directory, since a workspace
-// grants write to its own restricting SID) and stable across the launches of one
-// sandbox (the grant is applied once and every launch must match it). Both come from
-// hashing the root, exactly as the AppContainer moniker does.
+// workspaceRestrictSID derives the restricting identity for a workspace root: a SID unique
+// to that root, held by no principal on the host, that names "code confined to this
+// workspace". It is the write gate's whole basis, so it must be unique per workspace (or one
+// sandbox's child could write another's directory) and stable across the launches of one
+// sandbox (the grant is applied once and every launch must match it). Hashing the root, as
+// the AppContainer moniker does, gives both.
 //
-// The SID is built under the NT-authority service-account identifier (S-1-5-80-*) with
-// hash-derived sub-authorities, the same shape Windows itself uses for per-service
-// identities. That namespace is used because a restricting SID may not be a package or
-// capability SID (S-1-15-*): CreateRestrictedToken rejects those outright, so the
-// AppContainer identity this workspace already has cannot serve as the restricting one.
-// The value is never registered with the host and never grants anything by itself; it
-// only ever appears as this token's restricting SID and as the trustee of the grant on
-// the workspace directory.
+// The SID is built under the service-account identifier (S-1-5-80-*) with hash-derived
+// sub-authorities. A restricting SID may not be a package or capability SID (S-1-15-*):
+// CreateRestrictedToken rejects those, so the workspace's AppContainer identity cannot serve.
+// The value is never registered with the host and grants nothing by itself; it appears only
+// as this token's restricting SID and as the trustee of the grant on the workspace directory.
 func workspaceRestrictSID(root string) (*windows.SID, error) {
 	sum := sha256.Sum256([]byte("flynn.sbx.restrict." + root))
 	subs := [restrictSIDSubAuthorities]uint32{80} // SECURITY_SERVICE_ID_BASE_RID

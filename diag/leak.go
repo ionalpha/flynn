@@ -274,23 +274,16 @@ func (w *watchdog) report(f Finding) {
 //
 // Three conditions must hold, and each rejects a shape the others admit:
 //
-//   - Staircase: the window splits into three blocks, and each block sits entirely
-//     above the one before it. This is what "sustained" means here. It rejects a
-//     sawtooth, a single spike, a fan-out that returns to baseline, and a step that
-//     rises once and settles (a slope alone accepts every one of them, and two
-//     blocks accept the step). Unlike strict monotonicity it survives the ordinary
-//     rise and fall of a live heap between collections, because a sample is only
-//     ever compared against a different block, never against its neighbour.
-//   - Slope: the least-squares fit over the window is at least MinSlope, so growth
-//     too slow to matter over the life of a process is not called a leak.
-//   - Delta: the window's last sample is at least MinDelta above its first, so growth
-//     too small to matter at all is not called a leak.
+//   - Staircase: the window splits into three blocks, each entirely above the one before.
+//     It rejects a sawtooth, a spike, a fan-out that returns to baseline, and a step that
+//     rises once and settles (a slope alone accepts all of them, two blocks accept the
+//     step), yet survives the rise and fall of a live heap between collections.
+//   - Slope: the least-squares fit is at least MinSlope, so growth too slow to matter over
+//     a process's life is not called a leak.
+//   - Delta: the last sample is at least MinDelta above the first.
 //
-// Growth that pauses inside the window is not reported, and that is the intended
-// trade: the next window catches it if it is real, and one deferred window is a far
-// smaller cost than the false positive that gets --leak-watch turned off.
-//
-// The returned Finding carries no counter name and no window; push fills those in.
+// Growth that pauses inside the window is left to the next one: a deferred report costs
+// less than the false positive that gets --leak-watch turned off. push fills in the name.
 func detect(vs []float64, t Threshold) (Finding, bool) {
 	if len(vs) < 4 {
 		return Finding{}, false

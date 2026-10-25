@@ -34,20 +34,17 @@ type approvalStack struct {
 // newApprovalStack builds the approval path for a run whose policy lists actions, or
 // returns nil when it lists none. Decisions are recorded onto stream on log.
 //
-// The pieces fit together the way the packages intend and are worth naming, because each
-// one is what makes the next mean anything. The policy decides which actions pause. The
-// verifier checks a presented approval against a keyring, a nonce store and a clock, so
-// an approval is single-use, in-date and for this host. The signer mints one when the
-// operator allows, over exactly the action, scope, principal and target the gate will
-// rebuild, so the signature covers what is being authorized rather than a summary of it.
+// The policy decides which actions pause. The verifier checks a presented approval
+// against a keyring, a nonce store and a clock, so an approval is single-use, in-date and
+// for this host. The signer signs exactly the action, scope, principal and target the
+// gate will rebuild, so the signature covers what is authorized and not a summary of it.
 // The sink writes the decision to the run's own stream, so the record of who allowed what
-// is sealed with everything else the run did.
+// is sealed with the rest of the run.
 //
-// The keyring holds exactly one public key: the run's own. That is the honest shape of a
-// standalone install, where the approver and the operator are the same person and the
-// signature's job is binding the decision to the action rather than proving who made it.
-// A deployment with real separation of duties supplies approvers out of band, which is
-// what the keyring is for, and this is the n=1 case of it rather than a different design.
+// The keyring holds one public key: the run's own. A standalone install has the approver
+// and the operator as one person, so the signature binds the decision to the action
+// rather than proving who made it. A deployment with separation of duties supplies
+// approvers out of band; this is the n=1 case of that, not a different design.
 func newApprovalStack(actions []string, log spine.Log, stream string) (*approvalStack, error) {
 	policy := approvalPolicy(actions)
 	if len(policy) == 0 {
@@ -156,21 +153,19 @@ func (s *approvalStack) spec(prompter mission.ApprovalPrompter) *driver.Approval
 	return &driver.Approval{Gate: s.gate, Prompter: prompter, Signer: s.signer, Host: s.host}
 }
 
-// gateSetup is what an entry point asks for from the two gates that sit above the run's
-// capability grant: the actions that need a person to authorize them and the prompter that
-// asks them, and the actions whose effects leave the workspace and cannot be undone. It
-// travels as one value so an assembly signature grows by one parameter rather than by
-// several that must always agree.
+// gateSetup is what an entry point asks for from the two gates above the run's capability
+// grant: the actions that need a person to authorize them and the prompter that asks, and
+// the actions whose effects leave the workspace and cannot be undone. It travels as one
+// value so an assembly signature grows by one parameter rather than several that must
+// agree.
 //
-// A zero value is a run with neither gate, which is the default. The approval fields are
-// meaningfully independent of each other: actions with no prompter is the non-interactive
-// run that refuses rather than proceeds, and a prompter with no actions is an interactive
-// session where nothing has been asked to pause.
+// A zero value is a run with neither gate. The approval fields are independent: actions
+// with no prompter is the non-interactive run that refuses rather than proceeds, and a
+// prompter with no actions is an interactive session where nothing is asked to pause.
 //
-// The two gates ask different questions and are deliberately not folded together. Approval
-// asks a person now, which needs someone reachable; an allowance was written down before
-// the run started, for a run nobody will be watching, and is answered by editing the goal
-// rather than by replying to a prompt.
+// The gates are not folded together because they ask different questions. Approval asks
+// a person now, which needs someone reachable; an allowance was written down before the
+// run, for a run nobody watches, and is answered by editing the goal.
 type gateSetup struct {
 	approve  []string
 	prompter mission.ApprovalPrompter

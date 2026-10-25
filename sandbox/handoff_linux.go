@@ -19,22 +19,20 @@ import (
 // the command and no descriptor leaks, so they are exercised rather than assumed.
 var socketpair = unix.Socketpair
 
-// openHandoff builds the socketpair a launcher hands a listening socket back on, and
-// wires the launcher's end into the command about to be run. Both governed-network
-// features need it: a socket keeps the network namespace it was created in for its whole
-// life, so the only way this process can accept connections made inside the child's
-// namespace is for the launcher to create the listener in there and send the descriptor
-// out. kind names the handoff in errors and descriptor names ("egress", "forward"); envOn
-// and envFD are the control variables telling the launcher to build the endpoint and
-// which inherited descriptor to send it back on.
+// openHandoff builds the socketpair a launcher hands a listening socket back on, and wires
+// the launcher's end into the command about to be run. A socket keeps the network namespace
+// it was created in, so the only way this process can accept connections made inside the
+// child's namespace is for the launcher to create the listener there and send the descriptor
+// out. kind names the handoff in errors and descriptor names ("egress", "forward"); envOn and
+// envFD are the control variables telling the launcher to build the endpoint and which
+// inherited descriptor to send it back on.
 //
 // The returned parent is this end of the pair. It is a net.UnixConn rather than a bare
-// descriptor because a serve goroutine blocks on it while release may close it (a
-// launcher that dies before sending never unblocks the receive), and only a
-// poller-managed connection makes that safe: closing a raw descriptor another goroutine
-// is blocked on is a use-after-close, and the descriptor number can be reused underneath
-// it. child is the launcher's end, owned by the exec.Cmd from here on and closed only by
-// the caller's release. On error both ends are closed and nothing has been attached to c.
+// descriptor because a serve goroutine blocks on it while release may close it (a launcher
+// that dies before sending never unblocks the receive), and only a poller-managed connection
+// makes that safe; closing a raw descriptor mid-read is a use-after-close. child is the
+// launcher's end, owned by the exec.Cmd from here on and closed only by the caller's
+// release. On error both ends are closed and nothing has been attached to c.
 func openHandoff(c *exec.Cmd, kind, envOn, envFD string) (parent *net.UnixConn, child *os.File, err error) {
 	// SOCK_CLOEXEC so an unrelated fork does not inherit the handoff. The descriptor the
 	// launcher gets is not this one: exec.Cmd dups ExtraFiles into the child and clears

@@ -18,24 +18,15 @@ import (
 // its operator issued. It is the discharge half of the gated obligation: a redirect is
 // delivered to the run every turn, and this decides whether what came back answers it.
 //
-// The question is small on purpose. It is not "did the run do a good job" and not "is the
-// objective met"; both of those are asked elsewhere and the answers do not transfer. It is
-// "does this sentence say what was done about that instruction", which is a classification
-// a cheap model can make, and one where the cheap model's mistakes fall the safe way: a
-// judge that says no keeps the obligation open and the run is asked again, where a judge
-// that says yes has spent the operator's only guarantee.
+// The question is small on purpose: "does this sentence say what was done about that
+// instruction", not "did the run do a good job". A cheap model can classify it, and its
+// mistakes fall the safe way: a no keeps the obligation open and the run is asked again,
+// where a yes spends the operator's only guarantee.
 //
-// Two rules keep it from becoming a formality.
-//
-// It must quote the account. A verdict of addressed with nothing quoted is the sentence a
-// model produces most easily when it has not read carefully, so an unquoted acceptance is
-// treated as no judgement at all and the redirect stays outstanding. What was quoted is
-// recorded beside the verdict, so a reader can go back to the run's own words.
-//
-// Naming the redirect is not addressing it. "As requested, I have handled the table issue"
-// says nothing about which table anything was written to, and a run under completion
-// pressure produces exactly that. The instruction says so, and the quote requirement is
-// what makes it checkable: an acceptance has to point at words that describe an action.
+// Two rules keep it from becoming a formality. It must quote the account: an unquoted
+// acceptance leaves the redirect outstanding, and the quote is recorded beside the verdict.
+// And naming the redirect is not addressing it ("As requested, I have handled the table
+// issue" says nothing about what was done), so the quote must describe an action.
 type ModelSteerJudge struct {
 	model     llm.Model
 	log       spine.Log

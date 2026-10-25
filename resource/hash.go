@@ -6,22 +6,18 @@ import (
 	"encoding/json"
 )
 
-// Hash returns the stable content hash of r: a hex SHA-256 over its canonical
-// content (identity, scope, labels and annotations, spec, status, valid-time, and
-// the tombstone flag), excluding the volatile envelope fields (versions, clocks,
-// timestamps, and the hash itself). Equal content yields an equal hash on any
-// machine, so resource history forms a Merkle DAG: dedup, provenance ("which
-// version produced this"), tamper-evidence, and efficient diff-based sync.
+// Hash returns the stable content hash of r: a hex SHA-256 over its canonical content
+// (identity, scope, labels and annotations, spec, status, valid-time, and the tombstone
+// flag), excluding the volatile envelope fields (versions, clocks, timestamps, and the hash
+// itself). Equal content yields an equal hash on any machine, so resource history forms a
+// Merkle DAG: dedup, provenance, tamper-evidence, and diff-based sync.
 //
-// Spec is canonicalized (re-encoded with sorted keys) so two semantically equal
-// specs that differ only in key order or whitespace hash the same. Status is folded
-// in as a fixed-size digest of its bytes rather than canonicalized: status is
-// self-produced by one owning controller through a stable Go encoder (so byte
-// identity already equals semantic identity), and Merge decides conflicts by
-// envelope while carrying the origin's hash verbatim, so it never re-hashes a remote
-// status. Digesting it keeps a write allocation-flat no matter how large the status
-// grows (a goal embeds its whole transcript in status), instead of materializing the
-// entire status as a generic tree on every write.
+// Spec is canonicalized (re-encoded with sorted keys) so specs that differ only in key
+// order or whitespace hash the same. Status is folded in as a fixed-size digest of its
+// bytes instead: one owning controller writes it through a stable Go encoder, so byte
+// identity already equals semantic identity, and Merge carries the origin's hash verbatim
+// and never re-hashes a remote status. Digesting keeps a write allocation-flat however
+// large the status grows (a goal embeds its whole transcript in it).
 func Hash(r Resource) (string, error) {
 	return contentHash(r, canonicalJSON(r.Spec))
 }

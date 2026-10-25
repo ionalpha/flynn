@@ -27,23 +27,19 @@ const charsPerToken = 4
 const imageTokens = 1500
 
 // compactView returns a view of a transcript that fits within a token budget by
-// eliding the oldest middle turns, when it would otherwise overflow. The objective
-// (the first message) is always kept as the head, the most recent turns are kept as
-// the tail, and the gap between them is replaced by a short note folded into the
-// head. It is the coarse fallback beneath result pruning: pruning trims large
-// outputs turn by turn, and this caps the total when even a pruned transcript grows
-// past the budget.
+// eliding the oldest middle turns, when it would otherwise overflow. The objective (the
+// first message) is kept as the head, the most recent turns as the tail, and the gap is
+// replaced by a short note folded into the head. It is the coarse fallback beneath result
+// pruning: this caps the total when even a pruned transcript passes the budget.
 //
-// Like pruning, it never mutates msgs: the durable checkpoint keeps every turn, and
-// this is a transient view, so nothing is lost (the README's guarantee that
-// compaction is a view over the log, not an overwrite). A budget of zero disables
-// it. It is deterministic (a pure function of the transcript and the budget), so a
-// replay reproduces the same view.
+// It never mutates msgs: the durable checkpoint keeps every turn and this is a transient
+// view (the README's guarantee that compaction is a view over the log, not an overwrite).
+// A budget of zero disables it. It is a pure function of the transcript and the budget, so
+// a replay reproduces the same view.
 //
-// The cut is chosen so the kept tail begins at an assistant turn. The mission loop
-// builds a strictly alternating user, assistant, user transcript, so cutting there
-// keeps roles alternating and keeps every tool call together with the result that
-// answers it, never orphaning one across the elision.
+// The kept tail begins at an assistant turn. The mission loop builds a strictly
+// alternating user, assistant, user transcript, so cutting there keeps roles alternating
+// and every tool call together with the result that answers it.
 func compactView(msgs []llm.Message, budgetTokens int) []llm.Message {
 	if budgetTokens <= 0 || len(msgs) < minCompactMessages {
 		return msgs

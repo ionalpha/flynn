@@ -21,11 +21,17 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
+// Usage errors for the subcommands whose flags follow positional arguments, so the
+// message is identical whether the positionals are missing or an extra one is given.
+var (
+	errUsageDev  = errors.New("usage: flynn extensions dev <name> <binary> [--cap ...] [--tool ...] [--egress ...] [--arg ...]")
+	errUsageCall = errors.New("usage: flynn extensions call <name> <tool> [json-input] [--egress ...]")
+)
+
 // runExtensions implements `flynn extensions <subcommand>`: the surface for both kinds
 // of extension. A bundled one is an official extension this binary ships knowledge of;
 // calling it downloads the signed release, proves its origin, and runs it. A dev one is
-// a locally-built binary linked by path, which is what makes the authoring loop fast:
-// build the binary, point flynn at it, call a tool, rebuild, call again.
+// a locally-built binary linked by path, which keeps the authoring loop fast.
 //
 //	flynn extensions dev <name> <binary> [flags]   link a locally-built binary as a dev extension
 //	flynn extensions ls                            list installed extensions and their source
@@ -36,13 +42,6 @@ import (
 // explicitly dev-enabled path (and a served run with dev mode turned on); a normal run
 // refuses it. It is marked DEV wherever it is listed so it is never mistaken for a
 // verified, signed extension.
-// Usage errors for the subcommands whose flags follow positional arguments, so the
-// message is identical whether the positionals are missing or an extra one is given.
-var (
-	errUsageDev  = errors.New("usage: flynn extensions dev <name> <binary> [--cap ...] [--tool ...] [--egress ...] [--arg ...]")
-	errUsageCall = errors.New("usage: flynn extensions call <name> <tool> [json-input] [--egress ...]")
-)
-
 func runExtensions(args []string, dataDir string) error {
 	if len(args) == 0 {
 		return errors.New("usage: flynn extensions <dev|ls|call|rm>")

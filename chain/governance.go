@@ -41,16 +41,14 @@ const (
 // already authentic and in order (verify the run record first), and checks what the
 // signed bytes then mean:
 //
-//   - No action completed without a preceding admission. Every completion (end) names
-//     a call that was admitted (a start) earlier in the stream. A record carrying a
-//     completion with no admission is rejected: it claims an action ran that was never
-//     authorized.
-//   - No denied action also completed. No call appears as both refused (rejected) and
-//     completed (end). A record carrying both for one call is rejected: it claims an
-//     action that was denied admission nonetheless executed.
+//   - No action completed without a preceding admission: every completion (end) names a
+//     call admitted (a start) earlier in the stream, else it claims an action ran that
+//     was never authorized.
+//   - No denied action also completed: no call is both refused (rejected) and completed
+//     (end), else it claims an action denied admission nonetheless executed.
 //
-// Passing it means the recorded actions are consistent with having been admitted
-// through the governance gate: the record is not just untampered, it is governed.
+// Passing means the recorded actions are consistent with having been admitted through
+// the governance gate.
 func VerifyGovernance(events []spine.Event) error {
 	admitted := map[int64]bool{}
 	completed := map[int64]bool{}

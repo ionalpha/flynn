@@ -216,32 +216,20 @@ func (b *Builder) Build(ctx context.Context, q state.RecallQuery) (Digest, error
 	return d, nil
 }
 
-// Select chooses the digest for q without recording anything. It is the half a
-// preview, a test or an operator's "what would we push" tool wants; a host handing
-// the result to a session calls Build instead, or the numbers under-count from the
-// first wake.
+// Select chooses the digest for q without recording anything, for a preview, a test or an
+// operator's "what would we push" tool. A host handing the result to a session calls Build,
+// or the usage numbers under-count from the first wake.
 //
-// Selection, in order:
-//
-//  1. Recall q, capped at the candidate limit, and drop everything
-//     guard.Pushable does not admit. Nothing reaches a line without passing that gate.
-//  2. Rank into the standing order: recall order (most-specific scope first, most
-//     recent within a level, state.SortRecall), with everything demoted moved behind
-//     everything else (WithDemoteAfter).
+//  1. Recall q, capped at the candidate limit, and drop what guard.Pushable does not admit.
+//  2. Rank into the standing order: state.SortRecall, demoted items behind (WithDemoteAfter).
 //  3. Fill the budget less the exploration reserve, in the standing order.
-//  4. Fill the reserve from the undemoted items at the most specific scope that step
-//     3 did not take, rarely-pushed first and most recent within that.
-//  5. Give whatever either pass left over back to the standing order, so an
-//     under-spent reserve shortens nobody's digest.
+//  4. Fill the reserve from undemoted items at the most specific scope step 3 did not take,
+//     rarely-pushed first, most recent within that.
+//  5. Give what either pass left over back to the standing order, so an under-spent reserve
+//     shortens nobody's digest.
 //
-// A line that does not fit is skipped and the pass continues, rather than ending the
-// digest there. It is backfill, not displacement: an item is only passed over after
-// it has been offered the budget and refused it, so what follows can only be smaller.
-// Everything still unselected at the end is reported in Digest.Dropped.
-//
-// The returned lines are in the standing order whichever pass chose them, so the
-// digest reads as one ranked list and not as two concatenated ones, and the order a
-// reader sees is the order the selection actually ranked on.
+// A line that does not fit is skipped and the pass continues. What stays unselected is in
+// Digest.Dropped. Lines come back in the standing order whichever pass chose them.
 func (b *Builder) Select(ctx context.Context, q state.RecallQuery) (Digest, error) {
 	if q.Limit <= 0 || q.Limit > b.candidates {
 		q.Limit = b.candidates

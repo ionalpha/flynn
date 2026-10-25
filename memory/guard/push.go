@@ -46,29 +46,20 @@ func (e Eligibility) String() string {
 	}
 }
 
-// PushEligibility classifies an item for the wake digest. It is a pure function of
-// the stored record, so the digest builder, an operator's review queue, and a
-// backend that wants to pre-filter its own rows cannot drift apart on what is
-// pushable.
+// PushEligibility classifies an item for the wake digest. It is a pure function of the
+// stored record, so the digest builder, a review queue and a backend pre-filtering its own
+// rows cannot drift apart on what is pushable. The rules, in the order they apply:
 //
-// The rules, in the order they apply:
+//   - A tainted item is denied outright: untrusted input was in the context that produced
+//     the fact (state.MemoryItem.Tainted), and a reviewer reading the finished sentence
+//     reads what the attacker wanted written.
+//   - An untrusted-provenance item (tool output, an inbound message, a fetched page) is
+//     denied: it is attacker-influenceable by construction.
+//   - An operator-authored item is allowed; everything else (the agent's own notes, no
+//     recorded provenance) waits for promotion.
 //
-//   - A tainted item is denied outright. Taint says untrusted input was in the
-//     context that produced the fact (state.MemoryItem.Tainted), which is exactly the
-//     laundering path a channel label cannot see, and no amount of review can
-//     un-know it: a reviewer reading the finished sentence is reading what the
-//     attacker wanted written.
-//   - An untrusted-provenance item is denied. Content out of a tool, an inbound
-//     message or a fetched page is attacker-influenceable by construction.
-//   - An operator-authored item is allowed.
-//   - Everything else - the agent's own notes, and anything whose provenance was
-//     never recorded - waits for promotion.
-//
-// Denied is deliberately terminal rather than promotable. A promotion is one
-// reviewer reading one item, and if that reviewer is an LLM the review is itself
-// attack surface (the promotion prompt is a place the payload can aim at); letting
-// it clear the two categories that are attacker-influenced by construction would
-// put the whole gate inside the blast radius. Promotion moves the middle case only.
+// Denied is terminal: an LLM promotion reviewer is itself attack surface, so letting it
+// clear the attacker-influenced categories would put the whole gate inside the blast radius.
 func PushEligibility(it state.MemoryItem) Eligibility {
 	if it.Tainted {
 		return PushDenied

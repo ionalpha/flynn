@@ -108,28 +108,19 @@ func proxyEnvVars(addr string) map[string]string {
 }
 
 // startEgress prepares c to run with its outbound traffic governed by the proxy. The
-// OS-level denial of the child's direct egress is applied by the platform's confine, so
-// egress and confinement compose into one enforcement action (one seatbelt profile, one
-// network namespace) rather than two independent wrappings. A nil egress config is a
-// no-op.
+// platform's confine applies the OS-level denial of direct egress, so the two are one
+// enforcement action (one seatbelt profile, one network namespace). A nil config is a no-op.
 //
-// How the child reaches the proxy is the platform's business, because where the proxy
-// can live differs: on macOS the child shares the host's network stack, so the proxy
-// listens on the host's loopback and the seatbelt profile allows only that address. On
-// Linux the child gets its own network namespace with its own loopback, which the host's
-// proxy cannot reach, so the listening socket is created inside the namespace and handed
-// back out. attachEgress carries that difference; everything above it is shared.
+// Where the proxy can live differs by platform and attachEgress carries that: on macOS the
+// child shares the host's network stack, so the proxy listens on the host loopback; on
+// Linux the namespace loopback is unreachable from the host, so the socket is made inside.
 //
-// The caller gates this on egressEnforceable: a launch with egress requested on a
-// platform whose enforcement leg is not present refuses (errEgressUnsupported) before
-// reaching here, so the proxy env is never injected without the OS-level denial behind
-// it (which would be cooperative-only, i.e. bypassable).
+// The caller gates this on egressEnforceable: a launch with egress on a platform without the
+// enforcement leg refuses (errEgressUnsupported) first, so the proxy env is never injected
+// without the OS-level denial behind it, which would be bypassable.
 //
-// The returned release frees whatever this launch holds, and must be called when the
-// child is done: after the command exits for a run-to-completion launch, and when the
-// process is reaped for a backgrounded one. On a platform that gives each child its own
-// proxy, a Local that launched many children would otherwise hold one proxy per launch
-// until it closed. It is idempotent, and Close calls it for any launch that did not.
+// The returned release must be called when the child is done, or a Local that launched many
+// children holds one proxy per launch until it closes. It is idempotent; Close calls it.
 func (l *Local) startEgress(c *exec.Cmd) (release func(), err error) {
 	var releases []func()
 	runReleases := func() {

@@ -167,19 +167,15 @@ func WithReadOnlyFS() LocalOption {
 // read posture would break. Writes are still kernel-enforced: outside the workspace the
 // child cannot create, modify, or delete anything.
 //
-// It is a deliberate, recorded weakening of the read posture, so a caller names it only
-// for a child that needs it. Linux and macOS already read-permit under WithReadOnlyFS,
-// so there the option only makes that explicit and changes no behavior. On Windows it
-// replaces the AppContainer with a write-restricted token, because the container's read
-// posture is not merely strict but incomplete: a contained token cannot query the
-// drive-letter objects that map an NT path back to a DOS path, so canonicalizing any
-// path fails inside it. Programs that canonicalize on startup (every Rust program calling
-// std::fs::canonicalize, external agent CLIs among them) cannot run under the container
-// at all, and no filesystem grant can fix it, because the object denied is not a file.
+// It is a deliberate, recorded weakening of the read posture, so a caller names it only for
+// a child that needs it. Linux and macOS already read-permit under WithReadOnlyFS, so there
+// it changes no behavior. On Windows it replaces the AppContainer with a write-restricted
+// token: a contained token cannot query the drive-letter objects that map an NT path back
+// to a DOS path, so canonicalizing any path fails inside it, and no filesystem grant can fix
+// that because the object denied is not a file.
 //
-// Callers that gate on containment should record which tier ran (see ConfinementTier):
-// both are kernel-enforced over a shared kernel and report ContainmentKernel, but this
-// one does not confine reads.
+// Callers that gate on containment should record which tier ran (see ConfinementTier): both
+// report ContainmentKernel, but this one does not confine reads.
 func WithHostReadable() LocalOption {
 	return func(l *Local) { l.hostReadable = true }
 }
@@ -315,28 +311,19 @@ func WithKernelConfinement() LocalOption {
 }
 
 // WithDefaultConfinement is the secure-by-default baseline: it enables the kernel
-// confinements the current platform can enforce, and nothing where it cannot, so it
-// is safe to apply unconditionally. A command is confined where the OS supports it and
-// runs at the process-jail floor elsewhere, never refused merely for the default
-// asking. It enables the read-only host and the syscall filter, the two confinements
-// that hold for ordinary commands without breaking them: a command still reads the
-// host and works in its directory, it just cannot change the host or make a dangerous
-// syscall. Network denial is deliberately not part of the default, since a blanket
-// no-network policy would break commands a run is legitimately allowed to make; that
-// is governed per run instead. Explicit options (WithReadOnlyFS, WithSeccomp,
-// WithNetworkDenied) still fail loudly on a platform that cannot honor them; this one
-// does not, because it is the always-on baseline rather than an explicit request.
+// confinements the current platform can enforce, and nothing where it cannot, so it is safe
+// to apply unconditionally. A command runs at the process-jail floor where the OS cannot
+// confine it, never refused for the default asking. It enables the read-only host and the
+// syscall filter, so a command still reads the host and works in its directory but cannot
+// change the host or make a dangerous syscall. Network denial is left to the per-run policy,
+// since a blanket default would break commands a run may legitimately make. Explicit options
+// (WithReadOnlyFS, WithSeccomp, WithNetworkDenied) still fail loudly where unsupported.
 //
-// The baseline reads the host, which on Windows means the write-restricted token
-// rather than the AppContainer. The container denies reads unless a directory carries
-// an ACE for the app package, and a great deal of ordinary toolchain does not: an MSI
-// that sets its own DACL replaces the one inherited from C:\Program Files and drops
-// that ACE with it, which is why a contained command cannot see the Node.js that
-// installed itself two directories from a Git it can see (nodejs/node#63590, open
-// since May 2026), and anything installed outside Program Files never had the ACE at
-// all. A baseline that cannot run the project's own interpreter is not a baseline. A
-// caller that does want reads denied asks for it by name, with WithReadOnlyFS or
-// WithKernelConfinement, and gets the container.
+// On Windows the baseline reads the host, so it uses the write-restricted token rather than
+// the AppContainer. The container denies reads unless a directory carries an ACE for the app
+// package, and ordinary toolchain often lacks it (an MSI that sets its own DACL drops it;
+// see nodejs/node#63590). A caller that wants reads denied asks by name, with
+// WithReadOnlyFS or WithKernelConfinement, and gets the container.
 func WithDefaultConfinement() LocalOption {
 	return func(l *Local) {
 		l.confineBestEffort = true
@@ -385,24 +372,18 @@ func (l *Local) Close() error {
 	return l.closePlatform()
 }
 
-// Containment reports how strongly this Local confines the commands it runs. The
-// ordered level measures the critical axis: the kernel-enforced filesystem and
-// syscall confinement that bounds a code-execution exploit, which is what separates a
-// bare process jail from a kernel-confined tier. By default it is a process jail
-// (ContainmentNone): it confines paths and scrubs the environment but shares the host
-// kernel and syscalls, so it is for trusted code only. When the read-only host and the
-// syscall filter are both enabled and the platform enforces them, it rises to
-// ContainmentKernel: the command cannot change the host filesystem or make a dangerous
-// syscall, the boundary for semi-trusted, model-authored code over a shared kernel.
+// Containment reports how strongly this Local confines the commands it runs. The level
+// measures the kernel-enforced filesystem and syscall confinement that bounds a
+// code-execution exploit. By default it is a process jail (ContainmentNone): it confines
+// paths and scrubs the environment but shares the host kernel, so it is for trusted code
+// only. When the read-only host and the syscall filter are both enabled and the platform
+// enforces them, it rises to ContainmentKernel, the boundary for semi-trusted,
+// model-authored code over a shared kernel.
 //
-// Network egress is deliberately not part of the level. It is a separate axis governed
-// by the egress policy (a child network namespace, or the outbound gate the agent's own
-// requests pass through), so a kernel-confined tier that legitimately allows a command
-// to use the network still reports kernel. Folding network into the level would mean the
-// secure default, which leaves egress to the per-run policy rather than denying it
-// wholesale, could never report the tier it actually provides. The level never claims
-// ContainmentKernel where the platform cannot enforce the confinement, so it never
-// outruns what actually holds.
+// Network egress is a separate axis, governed by the egress policy, and is not part of the
+// level: folding it in would stop the secure default, which leaves egress to the per-run
+// policy, from reporting the tier it provides. The level never claims ContainmentKernel
+// where the platform cannot enforce the confinement.
 func (l *Local) Containment() Containment {
 	if l.kernelConfinementEnforceable() {
 		return ContainmentKernel

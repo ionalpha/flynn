@@ -198,25 +198,17 @@ func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 
 // Recall returns memory ranked by the two measures fused, capped at q.Limit.
 //
-// It reads the inner store twice, because fusion needs a list the lexical read
-// cannot produce. The first read is the query as asked, ranked by the store's own
-// relevance. The second drops the query text and keeps every other selector,
-// which is the candidate pool: the items that are live, in scope, and of the kinds
-// and anchors asked for, whether or not they share a word with the question. The
-// reworded fact is in the second list and absent from the first, which is the
-// entire case this package exists for; taking the pool from the lexical hits
-// instead would only re-rank what the lexical measure already found. Being in the
-// pool is not a match, though, so only its closest items to the query count as
-// matched by meaning: see rankByMeaning and WithDepth.
+// It reads the inner store twice, because fusion needs a list the lexical read cannot
+// produce. The first read is the query as asked. The second drops the query text and keeps
+// every other selector: the pool of live, in-scope items of the kinds and anchors asked
+// for, whether or not they share a word with the question. The reworded fact appears only
+// there, the case this package exists for. Being in the pool is not a match: only its
+// closest items count as matched by meaning (see rankByMeaning and WithDepth).
 //
-// Both reads drop q.MinScore and take q.Limit up to the candidate cap. A floor is
-// a floor on the fused score, and the two inner scales are not it; a limit applied
-// before fusion would cut the rows fusion was about to promote. Both are applied
-// here, to the fused ranking.
-//
-// A recall with no query text, or one on a Store with no embedder, delegates
-// unchanged: there is nothing to fuse. An embedder that fails returns the lexical
-// results with ErrNotFused.
+// Both reads drop q.MinScore and take q.Limit up to the candidate cap: the inner scales are
+// not the fused score, and a limit before fusion would cut rows fusion would promote. Both
+// apply to the fused ranking. With no query text or no embedder, Recall delegates unchanged;
+// an embedder that fails returns the lexical results with ErrNotFused.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	query := strings.TrimSpace(q.Query)
 	if query == "" || s.emb == nil {

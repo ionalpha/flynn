@@ -48,26 +48,19 @@ type SelfPolicing interface {
 }
 
 // The host-call handshake lets a mounted tool borrow two host authorities it must not hold
-// itself: a signing key, and the network. Both are generic capabilities; the host carries no
-// chain-, protocol-, or format-specific knowledge, and reads only opaque bytes.
+// itself: a signing key, and the network. The host reads only opaque bytes. A tool returns
+// a host-call message instead of a final result: a session token plus exactly one request.
 //
-// A handshake-enabled tool, instead of returning a final result, may return a host-call
-// message: a session token plus exactly one request.
-//
-//	sign  a base64 payload to sign. The host signs it with the tool's granted HostSigner and
+//	sign  a base64 payload. The host signs it with the tool's granted HostSigner and
 //	      resumes the tool with the detached signature.
-//	fetch a base64 request body to send. The host sends it with the tool's granted HostFetcher,
-//	      which holds the destination, and resumes the tool with the response body.
+//	fetch a base64 request body. The host sends it with the tool's granted HostFetcher
+//	      and resumes the tool with the response body.
 //
-// The host resumes the tool with the same session token and the result, and this repeats
-// until the tool returns a result carrying no host-call message. That result is terminal and
-// is handed back to the caller unchanged. On the first call the host injects the granted key's
-// public bytes under hostKeyField so the tool can build against the key it does not hold.
-//
-// The tool names no destination. The endpoint lives in the host's HostFetcher grant, so a
-// hostile extension cannot choose where its bytes go: the network authority it borrows is
-// "reach the one place the operator granted", never "reach an address of my choosing". This is
-// what lets an extension run with its own egress fully denied on every platform.
+// The host resumes the tool with the same session token until a result carries no host-call
+// message; that result is terminal. The first call carries the granted key's public bytes
+// under hostKeyField, so the tool can build against a key it does not hold. The tool names
+// no destination: the endpoint lives in the HostFetcher grant, so a hostile extension cannot
+// choose where its bytes go and can run with its own egress fully denied.
 const (
 	// hostKeyField is injected into the first call: base64 of the granted key's public bytes.
 	hostKeyField = "_hostKey"

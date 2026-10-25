@@ -54,21 +54,19 @@ func WithResync(d time.Duration) ManagerOption {
 	return func(m *Manager) { m.resync = d }
 }
 
-// WithResyncScope narrows resync to the keys scope returns, instead of every live
-// resource in the store. The manager then never lists the store and so never adopts
-// a resource it did not already know about, but the safety net still covers what is
-// in scope: a lost change hint for a scoped resource is recovered on the next tick.
+// WithResyncScope narrows resync to the keys scope returns, instead of every live resource
+// in the store. The manager then never lists the store and never adopts a resource it did
+// not already know, but a lost change hint for a scoped resource is still recovered on the
+// next tick.
 //
-// A one-shot run scopes resync to the goals it submitted or resumed itself. That
-// keeps each run's event stream its own, and makes resuming a goal an earlier run
-// left non-terminal an explicit act rather than a side effect of starting any run,
-// without giving up the convergence guarantee for the run's own work. Convergence
-// is the manager's contract, so there is deliberately no option to switch resync
-// off outright: the choice is what it sweeps, never whether it sweeps.
+// A one-shot run scopes resync to the goals it submitted or resumed itself. That keeps each
+// run's event stream its own and makes resuming an earlier run's non-terminal goal an
+// explicit act, without giving up convergence for the run's own work. Convergence is the
+// manager's contract, so no option switches resync off: the choice is what it sweeps, never
+// whether it sweeps.
 //
-// A nil scope is ignored (the manager keeps sweeping the whole store); a scope that
-// returns no keys is a manager with nothing to recover, which is the correct state
-// before the first submission.
+// A nil scope is ignored (the whole store is swept); a scope returning no keys is a manager
+// with nothing to recover, the correct state before the first submission.
 func WithResyncScope(scope func() []Ref) ManagerOption {
 	return func(m *Manager) {
 		if scope != nil {

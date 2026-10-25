@@ -570,15 +570,13 @@ func feedStdinOnce(w windows.Handle, b []byte) {
 	}()
 }
 
-// spawnConfined creates and starts a confined command and returns a handle to the
-// running process. The confinement identity comes from exactly one of two mechanisms:
-// a non-nil sc launches the child inside that AppContainer (the security-capabilities
-// attribute builds the container token at creation), while a non-zero token launches
-// the child with that token as its primary token (the write-restricted tier). Only the
-// single output-pipe write handle (and the stdin read handle when present) is inherited
-// by the child; the child is created suspended and placed in its job before it runs a
-// single instruction, and the mitigation policies are applied at creation. When
-// resLimits sets a memory or process cap, the job object that contains the child
+// spawnConfined creates and starts a confined command and returns a handle to the running
+// process. The confinement identity comes from exactly one of two mechanisms: a non-nil sc
+// launches the child inside that AppContainer, while a non-zero token launches it with that
+// token as its primary token (the write-restricted tier). Only the single output-pipe write
+// handle (and the stdin read handle when present) is inherited; the child is created
+// suspended and placed in its job before it runs a single instruction, and the mitigation
+// policies are applied at creation. When resLimits sets a memory or process cap, the job
 // enforces it. The caller reads p.read and, when done, calls p.closeProcess and closes
 // p.read. A failure to launch is an error and leaves no handles for the caller.
 //

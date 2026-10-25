@@ -10,24 +10,17 @@ import (
 // RoutedSigner is a HostSigner whose key lives in ANOTHER extension: a signer extension,
 // holding one chain's key and that chain's transaction parser.
 //
-// This is the shape that lets the host stay ignorant. A host that holds a key cannot sign
-// safely without understanding what it signs, so a host that holds a key must carry a parser
-// for every format it might be asked to sign, and it stops being a general engine the moment
-// it does. Move the key out and the parser goes with it: the host is left routing opaque
-// bytes between two processes and reading none of them.
+// A host holding a key cannot sign safely without understanding what it signs, and would
+// need a parser per format. Moving the key out moves the parser with it: the host only
+// routes opaque bytes between two processes.
 //
-// The separation is also what makes the check honest. The worker extension BUILDS the
-// transaction; the signer HOLDS the key and independently decides whether to sign it. They
-// are different artifacts, published and pinned separately. A worker compromised upstream
-// gets no signature: it would have to compromise the signer too, and the signer is small
-// enough to audit line by line and does nothing but parse, decide, and sign.
+// It also keeps the check independent. The worker BUILDS the transaction; the signer HOLDS
+// the key and decides alone whether to sign. They are pinned separately, so a compromised
+// worker gets no signature unless the signer is too; a self-vouching worker checks nothing.
 //
-// What must never happen is a worker that carries its own parser and vouches for its own
-// payload. That is self-policing, and it buys exactly nothing.
-//
-// The signer is reached over a SignerChannel, which is the host's private line to it, NOT the
-// agent's tool surface. Its tools are never mounted, so the model can neither unlock the key
-// nor ask for a signature behind the worker's back.
+// The signer is reached over a SignerChannel, the host's private line, not the agent's
+// tool surface. Its tools are never mounted, so the model can neither unlock the key nor
+// ask for a signature behind the worker's back.
 type RoutedSigner struct {
 	ch  SignerChannel
 	pub []byte

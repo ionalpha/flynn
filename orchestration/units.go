@@ -51,21 +51,19 @@ func Units(sp *Spawner, gov Governor) *UnitFanout { return &UnitFanout{sp: sp, g
 
 var _ goal.UnitSpawner = (*UnitFanout)(nil)
 
-// UnitGovernor builds the waist a plan-driven spawn is admitted through when the run's
-// own executor is not one object to borrow a dispatcher from. A Router builds a loop per
-// (driver, model) pair on demand, so there is no single executor at assembly time, and
-// the alternative to this is leaving the fan-out ungoverned.
+// UnitGovernor builds the waist a plan-driven spawn is admitted through when the run's own
+// executor is not one object to borrow a dispatcher from. A Router builds a loop per
+// (driver, model) pair on demand, so no single executor exists at assembly time, and the
+// alternative is an ungoverned fan-out.
 //
-// It is configured to match the model path rather than to be a second policy: the same
-// capability admitter, the same containment gate over the run's sandbox, and the run's
-// own brake and budget hooks passed in, so a ceiling or a halt that stops the model from
-// delegating stops a plan from delegating too.
+// It matches the model path instead of being a second policy: the same capability admitter,
+// the same containment gate over the run's sandbox, and the run's own brake and budget
+// hooks, so a ceiling or halt that stops the model delegating stops a plan too.
 //
-// It deliberately takes no event sink. A dispatcher's correlation ids are monotonic
-// within that dispatcher, so two dispatchers writing lifecycle events to one stream emit
-// colliding call ids and the record then reads as one call both refused and completed.
-// The unit spawn is on the record either way: the child goal is a resource, and the
-// child's own run records onto the same stream.
+// It takes no event sink. Correlation ids are monotonic within a dispatcher, so two
+// dispatchers writing lifecycle events to one stream emit colliding call ids and the record
+// reads as one call both refused and completed. The spawn is on the record regardless: the
+// child goal is a resource, and the child's own run records onto the same stream.
 func UnitGovernor(sb sandbox.Sandbox, hooks ...dispatch.Hook) *dispatch.Dispatcher {
 	opts := []dispatch.Option{
 		dispatch.WithAdmitter(capability.Admitter{}),
@@ -81,26 +79,17 @@ func UnitGovernor(sb sandbox.Sandbox, hooks ...dispatch.Hook) *dispatch.Dispatch
 
 // Spawn creates the child that runs one unit, through the same dispatch waist a model's
 // spawn goes through: admitted under ActionSpawn against the parent's own grant, metered,
-// and recorded on the spine. A goal that was never granted the right to fan out cannot
-// fan out by writing a plan instead of calling a tool, and that is the whole reason the
-// grant is bound onto the context here rather than being left to whoever holds it: the
-// reconciler drives this loop, and a reconcile carries no run's authority.
+// and recorded on the spine. A goal never granted the right to fan out cannot do so by
+// writing a plan; the grant is bound onto the context here because a reconcile carries no
+// run's authority.
 //
-// Three further things make the child a unit's rather than a generic delegation.
-//
-// Its name is derived from the parent and the unit, so the spawn is idempotent: the
-// reconciler records the child after the create returns, and a crash in that window
-// re-enters here and is handed the same child back instead of creating a second one.
-//
-// It carries the unit's verify clause as a ledger of its own, so the child is judged
-// against the check the plan author wrote rather than against its own account of how it
-// went. That is what makes a dependency edge wait on proof: the unit is settled from
-// the child's ledger, and a child that converged without proving it settles the unit
-// failed.
-//
-// Its stop condition is the unit's, never the parent's. A child that inherits its
-// parent's completion condition is the failure that leaves a fork running after the
-// work it was forked for is finished.
+//   - Its name is derived from the parent and the unit, so the spawn is idempotent: a crash
+//     between the create and the reconciler recording the child gets the same child back.
+//   - It carries the unit's verify clause as its own ledger, so it is judged against the
+//     check the plan author wrote, not its own account. A child that converged without
+//     proving settles the unit failed, so a dependency edge waits on proof.
+//   - Its stop condition is the unit's, never the parent's; inheriting the parent's would
+//     leave a fork running after the work it was forked for is finished.
 func (f *UnitFanout) Spawn(ctx context.Context, parent resource.Resource, u goal.Unit) (string, error) {
 	if f.gov == nil {
 		return "", fault.New(fault.Terminal, "spawn_unit_ungoverned",

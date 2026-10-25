@@ -158,20 +158,17 @@ var _ goal.ItemVerifier = (*CommandVerifier)(nil)
 
 // VerifyItem runs the item's declared check and reports the verdict.
 //
-// Every way of not running the check lands on the same honest outcome: a verdict that did
-// not pass, marked unexecuted, saying why. An item with no clause, a sandbox that could
-// not start it, an admission that refused it: none of these is evidence the item is done,
-// and none is a failure that should stall the goal, because a clause no mechanism can run
-// is a real and common outcome and the gate is the right place to rule on it. Only a
-// cancelled context is a hard error.
+// Every way of not running the check yields a verdict that did not pass, marked
+// unexecuted, saying why. An item with no clause, a sandbox that could not start it, an
+// admission that refused it: none is evidence the item is done, and none should stall the
+// goal, because a clause no mechanism can run is a common outcome the gate rules on. Only
+// a cancelled context is a hard error.
 //
-// The command is run as the model wrote it, which is why it runs inside the sandbox and
-// under the waist. It is classified semi-trusted, the same level the shell tool declares:
-// the text is model-authored, but it executes inside the agent's own confined sandbox
-// rather than as arbitrary foreign code. Classifying it any stronger would be a refusal
-// dressed as caution. The containment gate would decline every check on every host that
-// runs the shell tool happily, and every item would read as unproven for a reason that has
-// nothing to do with the items.
+// The command runs as the model wrote it, inside the sandbox and under the waist. It is
+// classified semi-trusted, the level the shell tool declares: model-authored text that
+// executes in the agent's own confined sandbox. Classifying it stronger would make the
+// containment gate decline every check on every host that runs the shell tool, and every
+// item would read as unproven for a reason unrelated to the items.
 func (v *CommandVerifier) VerifyItem(ctx context.Context, r resource.Resource, item goal.LedgerItem) (goal.ItemVerdict, error) {
 	check := strings.TrimSpace(item.Verify)
 	if check == "" {
