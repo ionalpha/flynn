@@ -24,8 +24,6 @@ import (
 // entry is a debt with an owner: its value says which task retires it, and the
 // test fails on an entry that no longer leaks, so the list only shrinks.
 var leakAllowlist = map[string]string{
-	"agent.Config.Agent -> internal/archetype.Spec":                     "task 446269ed: a host can pass review.Archetype() but cannot construct its own Spec",
-	"review.Archetype -> internal/archetype.Spec":                       "task 446269ed: the same type as agent.Config.Agent",
 	"extension.Origin.Identity -> internal/sigstore.Identity":           "task 446269ed: a host cannot pin its own release origin",
 	"extension.ReleaseResolver.Downloader -> internal/fetch.Downloader": "task 446269ed: only fetch.New, which a host cannot call, builds one",
 }
