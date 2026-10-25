@@ -72,20 +72,18 @@ type Policy struct {
 
 // DefaultPolicy is the live policy.
 //
-// The denied list is deliberately short. Every word on it is a record type in
-// somebody's tracker and is not something Flynn has, so a match is a leak rather
-// than a coincidence. Words that would read as leaks but collide with ordinary
-// English are left off on purpose, because a gate with false positives gets an
-// exemption list and an exemption list is how the rule stops being enforced:
+// The denied list is short on purpose: every word on it is a record type in a host's
+// tracker that Flynn does not have, so a match is a leak. Words that collide with ordinary
+// English are left off, because false positives force an exemption list and that is how the
+// rule stops being enforced:
 //
-//   - "note" is a plain noun for a line of text (govbench.Case.Note is one) as
-//     often as it is a host's document type.
+//   - "note" is a plain noun for a line of text (govbench.Case.Note) as often as a host's
+//     document type.
 //   - "issue" is the verb in every credential package that mints something
 //     (controlplane.Issue, Issuer).
-//   - "area" and "project" are ordinary partitioning words, and project is one of
-//     Flynn's own scope levels, defined in state.Scope in Flynn's own terms.
+//   - "area" and "project" are ordinary partitioning words; project is a Flynn scope level.
 //
-// Those are covered by the sweep a reviewer does over prose, not by this.
+// A reviewer's sweep over prose covers those, not this.
 func DefaultPolicy() Policy {
 	return Policy{
 		DeniedNouns: map[string]bool{

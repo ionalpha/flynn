@@ -2,23 +2,19 @@ package gbnf
 
 import "slices"
 
-// Accepts reports whether the grammar matches the whole of input. It is the
-// in-process meaning of the grammar: the same answer a runtime's token mask would
-// converge to if it only ever sampled grammar-permitted tokens and the result were
-// checked against the rules. Tests use it to prove a compiled grammar accepts
-// exactly the JSON values its source schema admits.
+// Accepts reports whether the grammar matches the whole of input: the in-process meaning
+// of the grammar, the answer a runtime's token mask converges to if it only samples
+// grammar-permitted tokens. Tests use it to prove a compiled grammar accepts exactly the
+// JSON values its source schema admits.
 //
-// The recognizer is a backtracking matcher over the rule AST. A node maps an input
-// position to the set of positions it can advance to (more than one, because
-// alternation and repetition branch), and the input is accepted when the root rule
-// can advance from the start to the very end. Positions reached are memoized per
-// (node, position) so shared subgrammars are not re-explored, which keeps the JSON
-// grammars this package emits well within a fixed work budget. The budget counts
-// matches attempted, including one per start position when advancing a set, so it
-// bounds total work rather than node visits: an input that widens the position set
-// pays for the width. It is a guard against a pathological grammar or input rather
-// than a real limit for the inputs these grammars describe; exhausting it reports
-// no match rather than looping or running long.
+// It is a backtracking matcher over the rule AST. A node maps an input position to the set
+// of positions it can advance to (several, because alternation and repetition branch), and
+// the input is accepted when the root rule can advance from the start to the very end.
+// Positions are memoized per (node, position) so shared subgrammars are not re-explored.
+//
+// The work budget counts matches attempted, including one per start position when advancing
+// a set, so an input that widens the position set pays for the width. It guards against a
+// pathological grammar or input; exhausting it reports no match rather than looping.
 func (g *Grammar) Accepts(input string) bool {
 	m := &matcher{g: g, runes: []rune(input), memo: map[memoKey][]int{}, budget: 1 << 20}
 	root, ok := g.rules[g.root]

@@ -605,21 +605,18 @@ func (t submitReviewTool) Invoke(ctx context.Context, input json.RawMessage) (st
 			return "", ErrSelfApproval
 		}
 	}
-	// Whether the whole diff reached this review. It gates the approval below, and it
-	// gates whether a finding's absence is evidence the defect is gone (see
-	// resolveStaleThreads).
+	// Whether the whole diff reached this review. It gates the approval below, and whether a
+	// finding's absence is evidence the defect is gone (see resolveStaleThreads).
 	//
-	// An APPROVE asserts the change was reviewed. If the diff was truncated on the way
-	// in, that assertion is false, and it is the assertion a signed verdict would go on
-	// to attest. Blocking verdicts stay available on partial evidence: seeing one real
-	// defect is enough to say no, but seeing most of a diff is never enough to say yes.
-	// No configuration relaxes this.
+	// An APPROVE asserts the change was reviewed; if the diff was truncated on the way in,
+	// that assertion is false, and a signed verdict would attest it. Blocking verdicts stay
+	// available on partial evidence: one defect seen is enough to say no, but most of a diff
+	// is never enough to say yes. No configuration relaxes this.
 	//
-	// For every other verdict the coverage read is advisory, and its failure must not
-	// cost the review its verdict. A transient error on the changed-files endpoint would
-	// otherwise stop a reviewer that had found a real defect from ever saying so, in
-	// service of housekeeping that runs after the verdict anyway. An unreadable diff is
-	// treated as incomplete, so nothing is resolved on the strength of it.
+	// For every other verdict the coverage read is advisory and its failure must not cost the
+	// review its verdict: a transient error on the changed-files endpoint would otherwise stop
+	// a reviewer that found a defect from saying so. An unreadable diff is treated as
+	// incomplete, so nothing is resolved on the strength of it.
 	var complete bool
 	var coverageErr error
 	if in.Event == "APPROVE" {

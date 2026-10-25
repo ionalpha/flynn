@@ -30,10 +30,8 @@ import (
 //	flynn auth ls  <integration>              list an integration's credentials
 //	flynn auth rm  <provider> | <integration>/<name>   remove a key or credential
 //
-// The model-provider verbs (set, list) manage the one key per model provider. The
-// integration verbs (add, use, ls) manage the named, role-bearing credentials an
-// integration holds. rm removes a model-provider key when given a bare provider, or
-// an integration credential when given an <integration>/<name> reference.
+// set and list manage the one key per provider; add, use and ls manage an integration's
+// named credentials; rm takes a bare provider or <integration>/<name>.
 func runAuth(args []string, dataDir string) error {
 	if len(args) == 0 {
 		return errors.New("usage: flynn auth <set|set-app|list|add|use|ls|rm|rm-app>")

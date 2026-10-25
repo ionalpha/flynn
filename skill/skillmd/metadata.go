@@ -8,28 +8,17 @@ import (
 
 // The metadata encoding convention.
 //
-// The specification's metadata map is the sanctioned place for "properties not
-// defined by the Agent Skills spec", and its values are strings. Everything we
-// carry beyond the defined fields goes there, and anything that is not already a
-// string has to encode itself. This file is that convention, written once because
-// it is a contract with a second consumer: Ion Alpha's importer reads what Flynn
-// writes, and a convention that drifts between the two silently loses data.
+// The specification's metadata map holds "properties not defined by the Agent Skills spec",
+// as strings, so anything we carry beyond the defined fields encodes itself as one. Ion
+// Alpha's importer reads what Flynn writes, and drift between the two silently loses data.
 //
-// Two rules, and the reasons they are these rules rather than the shorter ones.
+// Keys carry a reverse-DNS prefix. The map is one flat namespace shared with every other
+// tool that writes to it, so an unprefixed "check" or "tags" collides with a pack authored
+// against another runtime; the prefix lets a foreign pack round-trip through us untouched.
 //
-// Keys are namespaced with a reverse-DNS prefix. The metadata map is a single flat
-// namespace shared with every other tool that writes to it, so an unprefixed
-// "check" or "tags" key is a collision waiting for the first pack authored against
-// another runtime. The prefix makes our keys unmistakably ours and makes someone
-// else's unmistakably not, which is what lets a foreign pack round-trip through us
-// untouched.
-//
-// Lists encode as a JSON array, not as a delimited string. A delimited encoding
-// has to answer what happens to a value containing the delimiter, and every answer
-// is either an escaping scheme nobody implements the same way twice or silent data
-// loss when a tag holds a space. JSON is unambiguous for every string, is in the
-// standard library on both sides, and distinguishes an empty list from an absent
-// key, which a delimited encoding cannot.
+// Lists encode as a JSON array, not a delimited string. A delimited encoding must answer
+// what happens to a value containing the delimiter, and every answer is an escaping scheme
+// or silent data loss. JSON is unambiguous and distinguishes an empty list from an absent key.
 const (
 	// MetadataPrefix namespaces every metadata key Flynn writes. Reserved: a key
 	// under it is ours to define, and a reader may assume no other tool writes there.

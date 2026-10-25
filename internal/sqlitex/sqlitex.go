@@ -18,26 +18,20 @@ import (
 	"github.com/ionalpha/flynn/internal/migrate"
 )
 
-// Open opens (creating if needed) a SQLite database at dsn, applies the standard
-// pragmas, caps the pool at a single connection, and migrates to the latest
-// schema using the .sql files under "migrations" in migrationsFS. dsn is a file
-// path, or ":memory:" for an ephemeral store.
+// Open opens (creating if needed) a SQLite database at dsn, applies the standard pragmas,
+// caps the pool at a single connection, and migrates to the latest schema using the .sql
+// files under "migrations" in migrationsFS. dsn is a file path, or ":memory:".
 //
-// Pragmas, chosen for an append-heavy event-sourcing workload that must be light
-// on SSDs:
-//   - journal_mode(WAL): writes append to a write-ahead log instead of rewriting
-//     pages through a rollback journal, which cuts write amplification and lets
-//     reads run without blocking the writer. (A no-op for ":memory:".)
-//   - synchronous(NORMAL): the WAL is fsynced at checkpoints rather than on every
-//     commit, the configuration SQLite recommends with WAL. It is crash-safe (no
-//     corruption); only the last few unsynced transactions can be lost on a power
-//     cut, an acceptable trade for a local agent and far fewer fsyncs / less wear.
-//   - busy_timeout(5000): wait rather than fail on a lock.
-//   - foreign_keys(1): enforce referential integrity (a no-op where none declared).
+// Pragmas, chosen for an append-heavy event-sourcing workload that must be light on SSDs:
+//   - journal_mode(WAL): writes append to a log instead of rewriting pages through a
+//     rollback journal, cutting write amplification and letting reads run without blocking
+//     the writer. (A no-op for ":memory:".)
+//   - synchronous(NORMAL): the WAL is fsynced at checkpoints, not every commit. It is
+//     crash-safe; only the last few unsynced transactions can be lost on a power cut.
+//   - busy_timeout(5000) waits on a lock; foreign_keys(1) enforces referential integrity.
 //
-// One connection: SQLite serialises writers anyway, and a single connection keeps
-// a ":memory:" database alive with a consistent view. Reads need not queue behind
-// it: OpenReadPool opens the read side of a file database.
+// One connection: SQLite serialises writers anyway, and a single connection keeps a
+// ":memory:" database alive with a consistent view. OpenReadPool opens the read side.
 func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn+dsnPragmas)
 	if err != nil {

@@ -42,23 +42,18 @@ type MergeResult struct {
 	Resource Resource
 }
 
-// Resolve decides a cross-instance conflict between an incoming replicated record
-// and the current local one for the same ID, returning the winner and whether it
-// is the incoming record. It is the pure heart of Merge, deterministic and
-// commutative so every instance converges on the same result no matter the order
-// records arrive. The rules, in order:
+// Resolve decides a cross-instance conflict between an incoming replicated record and the
+// current local one for the same ID, returning the winner and whether it is the incoming
+// record. It is the pure heart of Merge, deterministic and commutative so every instance
+// converges whatever order records arrive. The rules, in order:
 //
-//  1. Idempotence: the same write (equal UpdatedHLC and LastWriterID) is a no-op,
-//     so re-delivering a record never changes anything.
-//  2. Provenance precedence: a human-authored write outranks an automated one
-//     regardless of clocks, because human intent should not be silently overwritten
-//     by a later agent or system write.
-//  3. Last-writer-wins by UpdatedHLC, with LastWriterID as the deterministic
-//     tiebreak when two writes share an exact HLC.
+//  1. Idempotence: the same write (equal UpdatedHLC and LastWriterID) is a no-op.
+//  2. Provenance precedence: a human-authored write outranks an automated one regardless
+//     of clocks, so human intent is not silently overwritten by a later agent write.
+//  3. Last-writer-wins by UpdatedHLC, with LastWriterID as the tiebreak on an exact tie.
 //
-// Tombstones carry the same envelope as live writes, so a delete and a write are
-// ordered by the very same key: a higher-HLC delete removes, and a higher-HLC
-// write after a delete intentionally resurrects.
+// Tombstones carry the same envelope as live writes, so a delete and a write are ordered by
+// the same key: a higher-HLC delete removes, and a higher-HLC write after a delete resurrects.
 func Resolve(incoming, current Resource) (winner Resource, takeIncoming bool) {
 	if incoming.UpdatedHLC == current.UpdatedHLC && incoming.LastWriterID == current.LastWriterID {
 		return current, false // same write already applied

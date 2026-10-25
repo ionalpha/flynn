@@ -20,22 +20,15 @@ const recallLimit = skillrecall.DefaultLimit
 // objective and renders a compact, bounded block to prepend to the system prompt.
 // It returns "" when nothing is on file, so a fresh agent's prompt is unchanged.
 //
-// Which skills an objective is offered is skillrecall's decision, not this file's.
-// It is a package of its own so the pack's own test can ask what an objective would
-// be offered without starting a run: a description that does not reach its subject
-// is otherwise a silent failure, and the same ranker answering both is what makes
-// that test mean anything. Memory is ranked here, on the same lexical cut.
+// Which skills an objective is offered is skillrecall's decision, in a package of its own
+// so the pack's test can ask the same ranker what an objective would be offered without
+// starting a run; otherwise a description that does not reach its subject fails silently.
+// Memory is ranked here, on the same lexical cut.
 //
-// What a surviving skill contributes to the prompt is its name and its description,
-// which is the discovery stage of the Agent Skills disclosure model and the whole of
-// what a skill says about itself before something has decided it applies. The
-// procedure is not here: the model calls skill_read for it. So the prompt carries a
-// complete offer at roughly the cost of the truncated one it replaced, and a skill
-// that is read leaves a record saying so.
-//
-// It returns the prompt block, the ids of the skills surfaced (for
-// outcome reinforcement), and a compact human-readable line per recalled item (a
-// skill name or a memory snippet) so the session can show the user what it pulled in.
+// A surviving skill contributes its name and description only (the discovery stage of the
+// Agent Skills disclosure model); the model calls skill_read for the procedure, and that
+// leaves a record. It returns the prompt block, the ids of the skills surfaced (for outcome
+// reinforcement), and a line per recalled item so the session can show what it pulled in.
 func recallContext(ctx context.Context, skills state.SkillStore, memories state.MemoryStore, objective string) (block string, recalled []string, items []string) {
 	terms := skillrecall.Keywords(objective)
 	if len(terms) == 0 {

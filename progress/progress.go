@@ -31,21 +31,16 @@ import (
 // signals, and deliberately not the working tree:
 //
 //   - The set of distinct tool actions (tool name + arguments) the run has taken. A step
-//     that re-reads the same file makes a tool call whose (tool, args) is already in the
-//     set, so the set does not grow and the step reads as idle — the exact loop
-//     no-progress detection exists to catch. A step that reads a new file, writes new
-//     content, or runs a new command grows the set and reads as progress.
+//     that re-reads the same file repeats a pair, so the set does not grow and the step
+//     reads as idle, which is what no-progress detection exists to catch.
 //   - The git HEAD at the workdir, read from the filesystem. A committing step leaves a
-//     clean tree but moves HEAD, so keying on HEAD (not on tree dirtiness) counts the
-//     commit as progress — the failure that sank the reference circuit breaker, which
-//     read a committed, clean tree as a dead loop. A workspace that is not a git repo
-//     simply yields no HEAD; detection is not disabled, it runs on the other signals,
-//     unlike the rev-parse gate that switched the whole check off in a non-git root.
-//   - The number of proven ledger items, so an item advanced through the evidence gate
-//     (F2) counts as progress even on a step that touched no file.
+//     clean tree but moves HEAD, so keying on HEAD (not tree dirtiness) counts the commit
+//     as progress. A workspace that is not a git repo yields no HEAD; the other signals
+//     still run.
+//   - The number of proven ledger items, so a step that only advanced one counts.
 //
-// The fingerprint is non-empty even when nothing has happened, as goal.ProgressProbe
-// requires: two do-nothing steps then compare equal and the idle streak advances.
+// The fingerprint is non-empty when nothing has happened (goal.ProgressProbe requires it),
+// so two do-nothing steps compare equal.
 type SpineProbe struct {
 	log     spine.Log
 	workdir string

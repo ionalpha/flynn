@@ -241,22 +241,18 @@ func (s *Store) ClassOf(kind string) Class { return s.classes[kind] }
 
 // Write applies the policy and persists the item.
 //
-// An item with no subject is written unchanged. There is no series to reason
-// about and nothing to key a replacement on, so the policy has no question to
-// answer, and inventing a subject from the content would be the store guessing at
-// what a fact is about.
+// An item with no subject is written unchanged: there is no series to reason about and
+// nothing to key a replacement on, and inventing a subject would be the store guessing.
 //
-// A subjected write reads the live items on its subject and scope first. Scope is
-// matched exactly, never widened: a workspace's own decision does not retire the
-// project-wide one it inherits, because the outer fact is still true for every
-// other workspace under it. Overriding an inherited fact is what writing at the
-// inner scope already does, through recall's most-specific-first order.
+// A subjected write reads the live items on its subject and scope first. Scope is matched
+// exactly, never widened: a workspace's decision does not retire the project-wide one it
+// inherits, which is still true for every other workspace. Overriding an inherited fact is
+// what writing at the inner scope already does, through recall's most-specific-first order.
 //
-// The write is persisted before anything is retired. A store cannot offer one
-// transaction across two calls, so the order is chosen for what a crash between
-// them leaves behind: this way the new fact is stored and the old one is still
-// live, which a later pass can finish, where the other order would delete the
-// standing answer and then fail to store its replacement.
+// The write is persisted before anything is retired. A store cannot offer one transaction
+// across two calls, so the order is chosen for what a crash between them leaves: the new
+// fact stored and the old still live, which a later pass can finish, where the other order
+// would delete the standing answer and then fail to store its replacement.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
 	subject, err := state.NormalizeSubject(m.Subject)
 	if err != nil {

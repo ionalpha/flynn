@@ -63,24 +63,18 @@ func WithClientInfo(i Info) ClientOption { return func(c *Client) { c.info = i }
 
 // Client is the MCP consumer half: it speaks JSON-RPC 2.0 over a byte stream to an MCP
 // server (an extension subprocess reached over its stdio pipes) and turns its advertised
-// tools into calls. It is transport-agnostic on purpose: it reads from any io.Reader and
-// writes to any io.Writer, so the sandbox launch that supplies the subprocess pipes and
-// the client that talks over them stay decoupled, and the protocol logic is testable
-// against an in-memory pair with no process at all.
+// tools into calls. It takes any io.Reader and io.Writer, so the protocol is testable
+// without a process.
 //
-// The client is hardened against a hostile or broken peer, since an extension is treated
-// as potentially compromised: reads are size-bounded (a reply cannot exhaust memory),
-// every request carries a deadline through its context (a peer that never answers cannot
-// wedge a call), replies are matched to their request by id (a spurious or duplicate id
-// is ignored, never mismatched to a waiting call), and a dead transport fails every
-// in-flight and future call closed rather than hanging.
+// An extension is treated as potentially compromised: reads are size-bounded (a reply cannot
+// exhaust memory), every request carries a deadline through its context (a silent peer
+// cannot wedge a call), replies are matched to their request by id (a spurious or duplicate
+// id is ignored), and a dead transport fails every in-flight and future call closed.
 //
-// The channel is strictly one-directional: flynn only ever initiates requests and only
-// ever consumes their replies. A message the server ORIGINATES (a sampling or elicitation
-// request, a notification) is dropped, never dispatched and never answered, so an
-// extension can send tools and results but can never call back into flynn. This is the
-// structural answer to "consuming MCP adds a surface": the surface is a client that speaks
-// three methods and refuses everything the server tries to drive.
+// The channel is one-directional: flynn only initiates requests and consumes their replies.
+// A message the server ORIGINATES (a sampling or elicitation request, a notification) is
+// dropped, never dispatched and never answered, so an extension can send tools and results
+// but can never call back into flynn.
 type Client struct {
 	w    io.Writer
 	info Info

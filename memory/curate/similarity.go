@@ -8,31 +8,20 @@ import "strings"
 // between every subject starting with the same letter.
 const minAbbreviation = 2
 
-// SubjectSimilarity scores how alike two normalized subjects look, in [0,1] with
-// 1 identical. It is the default measure behind fork detection, and a host with
-// embeddings in hand replaces it (WithSimilarity).
+// SubjectSimilarity scores how alike two normalized subjects look, in [0,1] with 1
+// identical. It is the default measure behind fork detection; a host with embeddings
+// replaces it (WithSimilarity).
 //
-// It compares subjects token by token rather than as strings, because the forks
-// that matter share a word and differ in one: "db-choice" against
-// "database-choice" is a fork, and "db-choice" against "queue-choice" is two
-// topics that happen to be about a choice. A character measure over the whole
-// string scores the second pair higher than the first, which is exactly backwards.
+// It compares subjects token by token, because the forks that matter share a word and
+// differ in one: "db-choice" against "database-choice" is a fork, "db-choice" against
+// "queue-choice" is two topics, and a character measure over the whole string scores the
+// second pair higher. Within a token an abbreviation is a partial match ("db" for
+// "database"), scoring lower as it gets shorter relative to the word.
 //
-// Within a token, an abbreviation counts as a partial match: "db" for "database",
-// "prod" for "production", "deploy" for "deployment". That is the shape these
-// forks actually take, and the score falls away as the abbreviation gets shorter
-// relative to the word, so a two-letter prefix of a long word scores near the
-// floor rather than near a match.
-//
-// The score is symmetric by construction: the greedy pairing is run in both
-// directions and the lower score wins, so the answer does not depend on which
-// subject the store happened to list first. Being the lower of the two also makes
-// it conservative, which is the right direction for a signal that costs a person
-// attention every time it fires.
-//
-// What it cannot do is see through a synonym. "db-choice" and "storage-engine"
-// are the same topic and share no token, so nothing lexical will connect them.
-// That is the gap an embedding measure closes.
+// The score is symmetric: the greedy pairing runs both ways and the lower score wins, so
+// the answer does not depend on which subject the store listed first, and the conservative
+// direction suits a signal that costs a person attention each time it fires. It cannot see
+// through a synonym ("db-choice" and "storage-engine"); only an embedding measure closes that.
 func SubjectSimilarity(a, b string) float64 {
 	if a == b {
 		if a == "" {

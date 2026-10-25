@@ -68,25 +68,16 @@ type SandboxConfig struct {
 	// and the host credential is never made writable to it.
 	AuthSeedPaths []string
 	// AuthSeedFiles names the files inside AuthDir that an episode's credential home must
-	// contain (for codex: the OAuth token and the CLI's own config). Naming them switches
-	// an episode from pointing the child straight at AuthDir to giving it a per-episode
-	// copy of just these files, in a writable directory outside the workspace that the run
-	// creates and deletes.
+	// contain (for codex: the OAuth token and the CLI's own config). Naming them gives each
+	// episode a per-episode copy of just these files, in a writable directory outside the
+	// workspace, instead of pointing the child straight at AuthDir.
 	//
-	// An episode needs this because the CLI writes its own home as it runs (a session
-	// rollout, a log, a PATH shim) and every confinement tier denies writes outside the
-	// workspace, so pointing it at a read-only AuthDir fails partway through the episode.
-	// The two obvious fixes are both worse. Granting write on the host's AuthDir hands an
-	// untrusted harness the credential file it authenticates with, to corrupt or replace,
-	// and leaves whatever it wrote behind after the run. Putting the home inside the
-	// workspace copies the OAuth token into the tree the record captures. The per-episode
-	// copy has neither problem: the child can write all it likes, it writes only a copy
-	// that dies with the episode, and the copy sits outside the recorded workspace.
-	//
-	// The cost is that a token the CLI refreshes mid-episode is refreshed only in the copy,
-	// so the host's credential stays as it was; the refresh token it was issued from
-	// remains valid, so the next episode still authenticates. Empty keeps the read-only
-	// AuthDir behaviour (correct for a detection probe, which writes nothing).
+	// The CLI writes its own home as it runs and every confinement tier denies writes outside
+	// the workspace, so a read-only AuthDir fails partway through an episode. Granting write
+	// on AuthDir would hand an untrusted harness the credential file to corrupt; putting the
+	// home inside the workspace would copy the OAuth token into the tree the record captures.
+	// A token refreshed mid-episode is refreshed only in the copy, so the host's refresh
+	// token stays valid. Empty keeps the read-only AuthDir (right for a detection probe).
 	AuthSeedFiles []string
 	// ProgramDirs are the directories holding the external CLI's own executable and the
 	// helper binaries shipped beside it. The confined child is granted read (and execute)
@@ -179,22 +170,15 @@ func (s *SandboxSpawner) authEnv(home string) []string {
 // configured it is the host's AuthDir, read-only and owned by nobody here, and there is
 // nothing to delete.
 //
-// The home itself is scoped to the RUN, not the episode: it is created on the first
-// episode and reused by every later one. It has to be, because it is where the CLI keeps
-// its own conversation, and a later turn of a session asks the CLI to continue the
-// conversation it opened. A home thrown away with each episode would take that
-// conversation with it, and the CLI would be told to resume something that no longer
-// exists. It is still a private directory beside the workspace (never inside it, which the
-// record captures), holding what this run put there and nothing from the user's home
-// beyond the seeds.
+// The home is scoped to the RUN, not the episode: created on the first episode and reused,
+// because it holds the CLI's conversation and a later turn asks the CLI to continue it. It
+// is a private directory beside the workspace (never inside it, which the record captures).
 //
-// The credentials are not run-scoped: they are copied in for each episode and deleted when
-// it ends, so a copied token still never outlives the episode it was copied for. What
-// persists between episodes is the CLI's own state, not the key.
+// The credentials are not run-scoped: they are copied in per episode and deleted when it
+// ends, so a copied token never outlives its episode. Only the CLI's own state persists.
 //
-// A seed file that does not exist is skipped rather than failing: a CLI that has never been
-// configured has no config file, and whether it is authenticated at all is the adapter's
-// question to answer through Probe, not a launch precondition here.
+// A seed file that does not exist is skipped: whether a CLI is authenticated is the
+// adapter's question through Probe, not a launch precondition here.
 func (s *SandboxSpawner) episodeAuthHome(workdir string) (string, []string, error) {
 	srcs, err := s.seedSources()
 	if err != nil {

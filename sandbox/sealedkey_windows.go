@@ -13,17 +13,15 @@ import (
 // to open the sealed key the host named for it: read+execute on the key file and traverse
 // on the two directories above it.
 //
-// A signer runs inside an AppContainer whose package SID is minted fresh from the scratch
-// working directory on every launch (see appContainerMoniker), so an entry granted to one
-// launch's SID is a dead entry by the next. Rather than chase the per-launch SID, this
-// grants the well-known ALL APPLICATION PACKAGES SID, which every AppContainer carries.
+// A signer's AppContainer package SID is minted fresh from the scratch working directory on
+// every launch (see appContainerMoniker), so an entry granted to one launch's SID is dead by
+// the next. This grants the well-known ALL APPLICATION PACKAGES SID, which every AppContainer
+// carries.
 //
-// It is safe to grant on this file specifically because the file is the sealed key: an
-// AES-GCM box whose passphrase lives only in the vault and reaches the signer over the
-// private unlock channel, never on disk. A package-read entry on the ciphertext discloses
-// nothing to a container that does not already hold the passphrase. The grants are scoped
-// tightly: read on the one key file, and traverse-only (non-inheritable) on the parent
-// directories, so no other file under the data directory is exposed.
+// That is safe on this file because it is the sealed key: an AES-GCM box whose passphrase
+// lives only in the vault and reaches the signer over the private unlock channel, never on
+// disk, so reading the ciphertext discloses nothing. The grants are scoped to read on the one
+// key file and non-inheritable traverse on the parent directories, exposing no other file.
 func GrantSealedKeyReadable(keyPath string) error {
 	sid, err := windows.CreateWellKnownSid(windows.WinBuiltinAnyPackageSid)
 	if err != nil {

@@ -7,21 +7,17 @@ import (
 )
 
 // Overlay composites over onto base at column x, row y (both zero-based) and
-// returns the resulting lines. It is how dialogs, pickers, and panels appear:
-// the base component renders as usual, the overlay is spliced over it before
-// the frame is painted, and dismissing the overlay simply stops splicing.
-// Nothing about the base changes, so overlays never corrupt underlying state.
+// returns the resulting lines. The base renders as usual and the overlay is spliced over
+// it before the frame is painted, so dismissing an overlay just stops splicing and the
+// base state is never touched.
 //
-// The splice is width-aware (grapheme clusters, escape sequences), and the
-// overlay content is isolated from the base row's styling with an SGR reset
-// on both sides. The base row's own styling does not resume after the
-// overlay: re-opening an arbitrary interrupted style run is not worth the
-// complexity when overlays are opaque boxes that cover the styled content
-// anyway.
+// The splice is width-aware (grapheme clusters, escape sequences), and the overlay is
+// isolated from the base row's styling with an SGR reset on both sides. The base row's
+// styling does not resume after the overlay: overlays are opaque boxes over the styled
+// content, so re-opening an interrupted style run is not worth the complexity.
 //
-// Rows and columns beyond the base are padded with blanks, so an overlay can
-// extend past the base's bottom edge (a dialog taller than the live region
-// grows the frame rather than being clipped).
+// Rows and columns beyond the base are padded with blanks, so a dialog taller than the
+// live region grows the frame rather than being clipped.
 func Overlay(base, over []string, x, y int) []string {
 	if len(over) == 0 {
 		return base

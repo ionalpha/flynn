@@ -211,28 +211,18 @@ func (s *Store) selectSealedBlobs(ctx context.Context) ([]sealedBlob, error) {
 
 // ArchiveSealedBlobs relocates every hot payload body whose referencing events are all
 // sealed into the warm store, compressed, records the relocation as one governed retention
-// event, and returns how many bodies moved. It is the hot->warm tiering step: after it
-// runs, the hot `blobs` table holds only bodies still referenced by unsealed (recent)
-// events, so the hot file's body footprint tracks the working set instead of all history.
+// event, and returns how many bodies moved. Afterwards the hot `blobs` table holds only
+// bodies referenced by unsealed events, so its footprint tracks the working set.
 //
-// It runs in two phases so the mutation is atomic with its own audit record. First every
-// eligible body is copied to warm (idempotent by content id) and confirmed durable there.
-// Then, in a single write transaction, the confirmed bodies are deleted from hot and a
-// RetentionArchived event is appended to the reserved retention stream naming the count,
-// the bytes reclaimed and gained, and a manifest digest committing to exactly which bodies
-// moved. Because the delete and the event commit together, a reader never sees bodies
-// relocated with no event explaining where they went - tiering is never a silent mutation.
+// Two phases make the mutation atomic with its audit record. First every eligible body is
+// copied to warm (idempotent by content id) and confirmed durable. Then, in one write
+// transaction, the confirmed bodies are deleted from hot and a RetentionArchived event
+// (count, bytes, a manifest digest of which bodies moved) is appended to the retention
+// stream, so a reader never sees bodies relocated with no event explaining where they went.
 //
-// The phase split preserves the crash guarantees of a copy-then-delete move. A crash after
-// phase one leaves the copied bodies in both stores (harmless - the hot read wins) and no
-// event; the retried sweep re-copies (idempotent), re-confirms, and completes phase two. A
-// crash inside phase two rolls the transaction back atomically, so the bodies stay hot and
-// no partial record is written. A body is addressed by its SHA-256 and the envelope commits
-// to that id, so the warm copy rehydrates to the identical bytes and no checkpoint, proof,
-// or event over the run streams changes. Freed hot pages return to SQLite's free list for
-// reuse by later appends (bounding steady-state growth); reclaiming them to the OS is a
-// separate compaction step. A no-op sweep (nothing sealed, or no warm tier) moves nothing
-// and records nothing - only a real relocation is worth an event.
+// A crash after phase one leaves the bodies in both stores (the hot read wins) and no event;
+// the retried sweep completes phase two. A crash inside phase two rolls back. A body is addressed by its SHA-256, which the envelope commits to,
+// so the warm copy rehydrates to identical bytes. A sweep that moves nothing records nothing.
 func (s *Store) ArchiveSealedBlobs(ctx context.Context) (moved int, err error) {
 	if s.warm == nil {
 		return 0, nil

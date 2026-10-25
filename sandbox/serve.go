@@ -64,20 +64,16 @@ const tailBufferCap = 16 << 10 // 16 KiB
 
 // Serve starts spec.Argv as a background process in the sandbox working directory with
 // the deny-by-default environment (the host's environment is never inherited, exactly
-// as for Exec), and returns a handle once the process has started. A failure to start
-// is an error; a process that starts and later exits is reported through the handle,
-// not here. When spec.Confine is set, the process is launched under whatever kernel
-// confinement this Local was configured for, so a runtime parsing untrusted weights
-// runs read-only to the host and behind the syscall filter where the platform enforces
-// them.
+// as for Exec), and returns a handle once the process has started. A failure to start is an
+// error; a process that starts and later exits is reported through the handle. When
+// spec.Confine is set, the process is launched under the kernel confinement this Local was
+// configured for, so a runtime parsing untrusted weights runs read-only to the host and
+// behind the syscall filter where the platform enforces them.
 //
-// Confinement here is expressed on the child process the standard library starts, the
-// path Linux and macOS use for a backgrounded server as well as a one-shot command.
 // Where a platform cannot carry its confinement onto a backgroundable handle (Windows,
-// whose AppContainer is applied through a blocking launch), an explicitly confined Serve
-// is refused rather than started at the directory-jail floor under a tier the trust gate
-// relied on; only the always-on best-effort baseline is allowed to drop to the floor,
-// matching the fallback rule Exec uses.
+// whose AppContainer is applied through a blocking launch), an explicitly confined Serve is
+// refused rather than started at the directory-jail floor under a tier the trust gate relied
+// on; only the always-on best-effort baseline may drop to the floor, as in Exec.
 func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return nil, errors.New("sandbox: serve: no command")

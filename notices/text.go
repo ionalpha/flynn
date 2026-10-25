@@ -8,19 +8,16 @@ import (
 // Sanitize turns a string that arrived over the network into a string that is safe to
 // hand a terminal, truncated to at most maxRunes.
 //
-// Text from the feed is printed to a terminal, and a terminal is an interpreter. An
-// escape sequence in a notice could rewrite lines that were already printed (so a notice
-// could overwrite the governance decisions above it), set the window title, or on some
-// terminals stuff characters into the input buffer, which is a command-execution
-// primitive. Signing the feed does not help here: the escape would be authentically
-// signed by us. So the text is stripped before it can ever be printed, and the stripping
-// happens once, at decode, rather than at each print site.
+// A terminal is an interpreter. An escape sequence in a notice could rewrite lines already
+// printed (overwriting the governance decisions above it), set the window title, or on some
+// terminals push characters into the input buffer. Signing does not help: the escape would
+// be authentically signed by us. So the text is stripped once, at decode, not at each print
+// site.
 //
-// The rule is a deny-by-default one: keep printable runes and nothing else. That drops
-// ESC and the rest of the C0 controls, the C1 controls (including the 8-bit CSI and OSC
-// introducers, which a naive "strip \x1b[" filter misses entirely), DEL, and invalid
-// UTF-8. Newlines and tabs are the deliberate exception, allowed in Detail because a
-// paragraph of advisory text needs them and neither carries an escape.
+// The rule is deny by default: keep printable runes and nothing else. That drops ESC and
+// the other C0 controls, the C1 controls (including the 8-bit CSI and OSC introducers, which
+// a "strip \x1b[" filter misses), DEL, and invalid UTF-8. Newlines and tabs are allowed in
+// Detail because a paragraph of advisory text needs them and neither carries an escape.
 func Sanitize(s string, maxRunes int) string {
 	var b strings.Builder
 	b.Grow(len(s))

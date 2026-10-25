@@ -15,31 +15,20 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// ModelAuditor rules on the terms that do not reduce to a command. Some of what a run is
-// held to is genuinely a judgement about how it worked ("changes stay within the scope the
-// objective describes", "the existing public API keeps its meaning"), and no exit code
-// settles those. It reads the run's own recorded events and asks a model.
+// ModelAuditor rules on the terms that do not reduce to a command ("changes stay within
+// the scope the objective describes"): a judgement no exit code settles. It reads the run's
+// own recorded events and asks a model. It is the weaker of the two auditors, so three
+// rules keep it from becoming a formality.
 //
-// It is the weaker of the two auditors and is built to know it. Three rules keep it from
-// becoming a formality.
+// It will not rule on an absence. A log does not contain what is absent, so a model reading
+// one reports "I found nothing" whether the run swept the tree or never looked. Admission
+// refuses an unsearchable term (goal.AssertsAbsence); one the model reads as an absence
+// claim defeated that recognizer, and is refused.
 //
-// It will not rule on an absence. A term claiming something is not there cannot be settled
-// by reading a log, because a log does not contain what is absent, and a model reading one
-// will report the same "I found nothing" whether the run swept the tree or never looked.
-// Admission already refuses an unsearchable term (goal.AssertsAbsence), so a term reaching
-// here that the model itself reads as an absence claim is one whose wording defeated that
-// recognizer. It is refused rather than passed, which makes the two layers independent:
-// getting an absence claim waved through takes wording that fools a word list and a model
-// that then denies it is one.
+// It will not stand in for a written check: a term declaring one is audited by running it.
 //
-// It will not stand in for a check that was written. A term declaring a check is audited by
-// running it; a model asked to judge from the record whether `grep -r AWS_SECRET .` would
-// have exited zero is guessing at an answer that was one command away.
-//
-// A verdict must cite the record. "The term holds" with nothing pointed at is the sentence
-// a run under completion pressure produces most easily, so an uncited verdict is treated as
-// no audit at all, and the goal stops. What was cited goes on the spine beside the verdict,
-// so a reader can go back to what was looked at rather than taking the verdict's word.
+// A verdict must cite the record. An uncited "the term holds" is what a run under completion
+// pressure produces most easily, so it stops the goal. The citation goes on the spine.
 type ModelAuditor struct {
 	model     llm.Model
 	log       spine.Log

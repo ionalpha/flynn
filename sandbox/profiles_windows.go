@@ -51,22 +51,17 @@ func isProfileMoniker(name string) bool {
 // CleanStaleProfiles removes the AppContainer profiles this package registered whose
 // folders were last modified before the given cutoff, and reports how many it removed.
 //
-// It exists because a profile outlives its sandbox whenever Close does not run: a crashed
-// run, a killed process, a caller that forgot. Each survivor keeps a registered container
-// identity whose SID is re-derivable from the workspace path, so an access entry granted
-// to it stays live rather than becoming dead, and its folder accumulates on disk without
-// bound. A machine that has been running confined commands for a while therefore needs a
-// collector, not just a correct teardown.
+// A profile outlives its sandbox whenever Close does not run (a crash, a kill, a caller that
+// forgot). Each survivor keeps a registered identity whose SID is re-derivable from the
+// workspace path, so access entries granted to it stay live, and its folder accumulates on
+// disk without bound; a correct teardown alone does not bound that.
 //
-// The cutoff is what makes this safe to run while other sandboxes are alive: a profile in
-// use belongs to a process that registered it recently, so a caller passes a cutoff well
-// in the past (an hour, a day) and a live run is never collected. The caller supplies the
-// cutoff rather than this package reading the clock, because wall time enters the codebase
-// only through the clock port.
+// The cutoff keeps this safe beside live sandboxes: a profile in use was registered
+// recently, so a caller passes a cutoff well in the past and a live run is never collected.
+// The caller supplies it because wall time enters the codebase only through the clock port.
 //
-// Removal is not all-or-nothing. A profile that cannot be deleted (in use, or a permission
-// the process does not hold) is counted as an error and the sweep continues, so one stuck
-// profile does not strand the rest. The returned error joins every failure.
+// A profile that cannot be deleted is counted as an error and the sweep continues, so one
+// stuck profile does not strand the rest. The returned error joins every failure.
 func CleanStaleProfiles(before time.Time) (int, error) {
 	root, err := profileRoot()
 	if err != nil {

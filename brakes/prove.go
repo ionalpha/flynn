@@ -55,20 +55,17 @@ const proofReason = "halt self-test"
 func (h *Hook) Engage(run, reason string) { h.sw.Engage(run, reason) }
 
 // ProveHalts demonstrates, against this Hook's own Before path, that its halt enforces.
-// It asserts all four things that have to hold for a kill to mean anything: an unhalted run
-// passes, a halted run is refused, the refusal is Forbidden and carries the reason it was
-// halted with, and a reset releases the run again. Any deviation returns ErrBrakesBroken
-// naming what it caught.
+// It asserts the four things a kill needs: an unhalted run passes, a halted run is
+// refused, the refusal is Forbidden and carries the halt reason, and a reset releases the
+// run again. Any deviation returns ErrBrakesBroken naming what it caught.
 //
-// The third assertion is the one that is easy to leave out and the one a caller depends on
-// most. A halt reported as transient is a halt the caller retries past, so a refusal with
-// the wrong class is a brake that delays a run rather than stopping it. The fourth is there
-// for the opposite reason: a Before that refuses unconditionally would pass an assertion
-// that halted runs are refused while halting every run there is.
+// The class is the assertion a caller depends on most: a halt reported as transient is
+// one the caller retries past, so the wrong class is a brake that delays rather than
+// stops. The reset assertion rules out a Before that refuses unconditionally, which would
+// pass "halted runs are refused" while halting every run.
 //
-// It takes no context because there is nothing to cancel. The path it drives is
-// synchronous and in-process, it touches no run that exists, and it is called while a
-// composition is being assembled, before there is a run to be canceled on behalf of.
+// It takes no context: the path it drives is synchronous, in-process and touches no
+// existing run, and it runs while a composition is assembled, before any run exists.
 func (h *Hook) ProveHalts() error {
 	ctx := Into(context.Background(), proofRun)
 	probe := dispatch.Action{Name: proofAction}

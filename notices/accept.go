@@ -18,24 +18,16 @@ const StaleAfter = 7 * 24 * time.Hour
 // Accept verifies a fetched feed document against the keyring and the client's trust
 // state, and returns the feed together with the trust state to persist.
 //
-// It refuses exactly two things, and both of them mean forgery or replay rather than bad
-// luck:
+// It refuses two things, both forgery or replay:
 //
-//   - a document that does not verify against a key in the ring, or is not a feed at all
-//     (Verify's checks), and
-//   - a feed older than the newest one this client has already trusted. That is the
-//     rollback defence: an origin or a mirror that serves a genuinely signed but stale
-//     feed is trying to bury a newer advisory, and the monotonic version is what makes
-//     that visible. Re-serving the same version is fine and normal.
+//   - a document that does not verify against a key in the ring (Verify's checks), and
+//   - a feed older than the newest one this client has already trusted: a signed but stale
+//     feed is an origin or mirror trying to bury a newer advisory. The same version is fine.
 //
-// It deliberately does NOT refuse an expired feed, and that is a decision worth being
-// explicit about. Expiry tells the client the channel has gone quiet; it says nothing
-// about whether the notices inside are true. If our re-signing job broke on the same
-// weekend we published a critical advisory, a client that refused the expired feed would
-// refuse the advisory, which is precisely backwards: the failure of our infrastructure
-// would suppress the warning it exists to deliver. So staleness never suppresses content.
-// It surfaces as a warning next to the content (see Feed.Stale), which is the honest
-// thing to show and the thing an attacker who is blocking the origin cannot prevent.
+// It does not refuse an expired feed. Expiry says the channel has gone quiet, not that the
+// notices are false, and refusing it would let our own re-signing failure suppress a
+// critical advisory it exists to deliver. Staleness is shown as a warning next to the
+// content (see Feed.Stale), which an attacker blocking the origin cannot prevent.
 func Accept(doc []byte, ring *Keyring, tr Trust, now time.Time) (Feed, Trust, error) {
 	f, err := Verify(doc, ring)
 	if err != nil {

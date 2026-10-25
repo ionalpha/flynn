@@ -26,20 +26,16 @@ var credentialPrefixes = []string{"sk-", "sk_", "ghp_", "gho_", "ghu_", "ghs_", 
 // replaced by secret.Redacted. The result is safe to write into a bundle manifest
 // that an operator will attach to a bug report.
 //
-// It redacts three things: the value of any flag whose name looks like a
-// credential, every argument following a subcommand that takes free text (a goal's
-// objective, an `auth set` key), and any bare argument carrying a recognizable
-// credential prefix. The program path, flag names, subcommands, and ordinary
-// values are preserved, because a manifest whose command line is entirely redacted
-// tells a reader nothing about what was being profiled.
+// It redacts the value of any flag whose name looks like a credential, every argument
+// following a subcommand that takes free text (a goal's objective, an `auth set` key),
+// and any bare argument with a recognizable credential prefix. The program path, flag
+// names, subcommands and ordinary values are kept, because a fully redacted command line
+// tells a reader nothing about what was profiled. It reuses secret.Text, so the agent has
+// one rendering of a withheld value.
 //
-// Redaction reuses secret.Text rather than formatting a placeholder here, so the
-// agent has exactly one rendering of a withheld value.
-//
-// A subcommand is recognized by name wherever it appears among the bare arguments
-// rather than by position. flag's own parse rules cannot be reproduced here (this
-// package does not know which of flynn's flags take a value), and guessing wrong
-// about position would silently leave an objective in the clear.
+// A subcommand is recognized by name wherever it appears among the bare arguments, not by
+// position: this package does not know which of flynn's flags take a value, and guessing
+// wrong about position would silently leave an objective in the clear.
 func RedactArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil

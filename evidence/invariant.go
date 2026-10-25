@@ -24,28 +24,18 @@ import (
 const AuditInvariantAction = "goal.audit.invariant"
 
 // CommandAuditor is the goal.InvariantAuditor that rules on a term by running the check
-// the term declares, inside the run's own sandbox and through the dispatch waist. A
-// zero exit says the term still holds; any other exit is a breach carrying the check's
-// output as what was observed.
+// the term declares, inside the run's own sandbox and through the dispatch waist. A zero
+// exit says the term still holds; any other exit is a breach carrying the check's output.
 //
-// Running the check is the whole point. The failure invariants exist for is a run that
-// looks locally compliant at every step, and asking that run whether it kept to its
-// terms is asking the wrong witness. A check that exits non-zero is not an opinion.
+// Invariants exist for a run that looks locally compliant at every step, and asking that
+// run whether it kept to its terms asks the wrong witness, so the check is run.
 //
-// Everything an audit cannot answer is an error rather than a clean verdict. A missing
-// sandbox, a check that could not be started, an admission that refused it, a term with no
-// check and nobody to rule on it: none of them is evidence a term holds, and reporting no
-// breach would hand the run a pass it never earned. The reconciler stops the goal on the
-// error, which is the fail-closed direction. This is the opposite of CommandVerifier's
-// rule for a ledger item, and deliberately so: an item that cannot be checked is unproven
-// and the run carries on trying, while a term that cannot be checked means the run is no
-// longer governed and there is nothing to carry on to.
-//
-// A term that declares no check is not this auditor's to rule on, and it hands those to
-// the prose auditor it was built with (ModelAuditor in production). The split is by what
-// the term declares rather than by what it says, so a term with a check is always settled
-// by running it: a model asked to judge from the record whether the check would have
-// passed is guessing at something one command away.
+// Anything an audit cannot answer (no sandbox, a check that could not start, a refused
+// admission, a term with no check or prose auditor) is an error, not a clean verdict, and
+// the reconciler stops the goal. CommandVerifier does the opposite for a ledger item on
+// purpose: an unchecked item is unproven, an unchecked term means the run is ungoverned.
+// A term with no check goes to the prose auditor (ModelAuditor in production); a term with
+// one is always settled by running it.
 type CommandAuditor struct {
 	sb         sandbox.Sandbox
 	log        spine.Log
