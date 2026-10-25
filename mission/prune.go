@@ -58,46 +58,15 @@ func pruneTranscript(msgs []llm.Message, summarizer func(tool string) ResultSumm
 		return msgs
 	}
 
-	// Map each result back to the call that produced it.
-	calls := map[string]toolCall{}
-	for _, m := range msgs {
-		for _, b := range m.Blocks {
-			if b.Kind == llm.KindToolUse && b.ToolUse != nil {
-				calls[b.ToolUse.ID] = toolCall{b.ToolUse.Name, b.ToolUse.Input}
-			}
-		}
-	}
-
-	// Find the most recent result per tool (kept verbatim) and the most recent
-	// position of each distinct large result body (so an earlier identical one is
-	// pruned as a duplicate rather than re-summarized). Only large bodies are hashed:
-	// a body can only match another of the same length, and pruning is decided for
-	// large results alone, so small results never populate the duplicate index. Each
-	// large body is hashed exactly once here and its hash reused in pruneResult.
-	latestByTool := map[string]blockPos{}
-	latestByBody := map[uint64]blockPos{}
-	bodyHash := map[blockPos]uint64{}
-	for mi, m := range msgs {
-		for bi, b := range m.Blocks {
-			if b.Kind != llm.KindToolResult || b.ToolResult == nil {
-				continue
-			}
-			here := blockPos{mi, bi}
-			latestByTool[calls[b.ToolResult.ToolUseID].name] = here
-			if len(b.ToolResult.Content) > pruneResultThreshold {
-				h := hashString(b.ToolResult.Content)
-				bodyHash[here] = h
-				latestByBody[h] = here
-			}
-		}
-	}
+	calls := indexCalls(msgs)
+	idx := indexResults(msgs, calls)
 
 	out := make([]llm.Message, len(msgs))
 	for mi, m := range msgs {
 		out[mi] = m
 		var blocks []llm.Block // allocated lazily, only if this message changes
 		for bi, b := range m.Blocks {
-			summary, pruned := pruneResult(b, blockPos{mi, bi}, calls, latestByTool, latestByBody, bodyHash, summarizer)
+			summary, pruned := pruneResult(b, blockPos{mi, bi}, calls, idx, summarizer)
 			if !pruned {
 				continue
 			}
@@ -113,6 +82,58 @@ func pruneTranscript(msgs []llm.Message, summarizer func(tool string) ResultSumm
 		}
 	}
 	return out
+}
+
+// indexCalls maps each tool-use id to the call that carries it, so a result can be
+// traced back to the tool that produced it.
+func indexCalls(msgs []llm.Message) map[string]toolCall {
+	calls := map[string]toolCall{}
+	for _, m := range msgs {
+		for _, b := range m.Blocks {
+			if b.Kind == llm.KindToolUse && b.ToolUse != nil {
+				calls[b.ToolUse.ID] = toolCall{b.ToolUse.Name, b.ToolUse.Input}
+			}
+		}
+	}
+	return calls
+}
+
+// resultIndex is what pruneResult consults to decide which results survive.
+type resultIndex struct {
+	// latestByTool is the most recent result position per tool name, kept verbatim.
+	latestByTool map[string]blockPos
+	// latestByBody is the most recent position of each distinct large result body, so
+	// an earlier identical one is pruned as a duplicate rather than re-summarized.
+	latestByBody map[uint64]blockPos
+	// bodyHash is the hash of each large result body, computed once while indexing and
+	// reused by pruneResult.
+	bodyHash map[blockPos]uint64
+}
+
+// indexResults builds the resultIndex in one scan. Only large bodies are hashed: a
+// body can only match another of the same length, and pruning is decided for large
+// results alone, so small results never populate the duplicate index.
+func indexResults(msgs []llm.Message, calls map[string]toolCall) resultIndex {
+	idx := resultIndex{
+		latestByTool: map[string]blockPos{},
+		latestByBody: map[uint64]blockPos{},
+		bodyHash:     map[blockPos]uint64{},
+	}
+	for mi, m := range msgs {
+		for bi, b := range m.Blocks {
+			if b.Kind != llm.KindToolResult || b.ToolResult == nil {
+				continue
+			}
+			here := blockPos{mi, bi}
+			idx.latestByTool[calls[b.ToolResult.ToolUseID].name] = here
+			if len(b.ToolResult.Content) > pruneResultThreshold {
+				h := hashString(b.ToolResult.Content)
+				idx.bodyHash[here] = h
+				idx.latestByBody[h] = here
+			}
+		}
+	}
+	return idx
 }
 
 // hasPrunableResult reports whether any block is a non-error tool result large enough
@@ -138,9 +159,7 @@ func hasPrunableResult(msgs []llm.Message) bool {
 func pruneResult(
 	b llm.Block, here blockPos,
 	calls map[string]toolCall,
-	latestByTool map[string]blockPos,
-	latestByBody map[uint64]blockPos,
-	bodyHash map[blockPos]uint64,
+	idx resultIndex,
 	summarizer func(tool string) ResultSummarizer,
 ) (string, bool) {
 	if b.Kind != llm.KindToolResult || b.ToolResult == nil {
@@ -151,12 +170,12 @@ func pruneResult(
 		return "", false // errors and small results are always kept in full
 	}
 	c := calls[r.ToolUseID]
-	if latestByTool[c.name] == here {
+	if idx.latestByTool[c.name] == here {
 		return "", false // the freshest result of each tool is kept in full
 	}
 	// here is a large result, so its body was hashed once when the duplicate index was
 	// built; reuse that hash rather than hashing the body again.
-	if dup := latestByBody[bodyHash[here]]; dup != here {
+	if dup := idx.latestByBody[idx.bodyHash[here]]; dup != here {
 		return fmt.Sprintf("[pruned %s: identical to a later result]", toolLabel(c.name)), true
 	}
 	body := ""

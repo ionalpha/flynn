@@ -65,11 +65,11 @@ linters:
     # that routes every endpoint through one handler would otherwise set the ceiling
     # for production code.
     gocyclo:
-      # Set by flow.lex.
-      min-complexity: 28
+      # Set by (*core).projectRecords and resolveReviewCredentials.
+      min-complexity: 21
     gocognit:
-      # Set by (*input.Reader).pump.
-      min-complexity: 38
+      # Set by conformance.GenerateCrypto, (*utf8Reader).Read and render.wrapSpans.
+      min-complexity: 30
     # Doc comments are the rendered docs: `go doc` and pkg.go.dev serve them straight
     # from the source, so an undocumented exported symbol is a hole in the public API
     # reference, not a style slip. Both rules pass tree-wide today (every exported

@@ -8,21 +8,12 @@ import (
 )
 
 // Reader pumps a raw terminal byte stream through a Decoder and delivers
-// events on a channel. It supplies the one policy the pure decoder cannot: a
-// lone Escape byte is indistinguishable from the start of an escape sequence
-// until more bytes arrive or enough time passes, so when a read leaves the
-// decoder holding a partial sequence, the reader arms an idle timer and
-// flushes if nothing follows. The timer never arms mid-paste: a large paste
-// may stall between chunks, and flushing there would split it in two.
-//
-// The reader can also be paused, parking its read goroutine off the input
-// stream so another process (an external editor) can own the terminal
-// exclusively, then resumed. Reads are token-gated to make that possible: the
-// pump issues one token per read, so pausing withholds the next token instead
-// of racing a blocked read for the stream's bytes.
-//
-// Time comes from the injected clock.Timing, so the escape delay is testable
-// without real sleeps and consistent with the runtime's determinism rules.
+// events on a channel. A lone Escape byte cannot be told from the start of an
+// escape sequence until more bytes arrive, so a partial sequence arms an idle
+// timer (from the injected clock.Timing) that flushes it; the timer never arms
+// mid-paste, or a stall between chunks would split the paste in two. Reads are
+// token-gated so a pause withholds the next token instead of racing a blocked
+// read for the stream's bytes.
 type Reader struct {
 	events chan Event
 	stop   chan struct{}

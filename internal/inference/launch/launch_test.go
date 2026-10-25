@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/catalog"
 )
 
@@ -376,5 +377,50 @@ func contains(ss []string, want string) bool {
 func TestLoopbackHostIsLoopback(t *testing.T) {
 	if !strings.HasPrefix(loopbackHost, "127.") {
 		t.Fatalf("the serve host must be loopback, got %q", loopbackHost)
+	}
+}
+
+// TestBuildPlanRefusalCodesAndPrecedence pins which refusal wins when a config breaks
+// several invariants at once. The checks run in a fixed order, so a caller sees the
+// same code for the same bad config, and a cheap structural fault is reported before a
+// tuning knob.
+func TestBuildPlanRefusalCodesAndPrecedence(t *testing.T) {
+	valid := func() Config {
+		return Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000}
+	}
+	cases := []struct {
+		name string
+		mut  func(*Config)
+		code string
+	}{
+		{"no binary", func(c *Config) { c.BinPath = "" }, "launch_no_binary"},
+		{"no weights", func(c *Config) { c.WeightsPath = "" }, "launch_no_weights"},
+		{"not local", func(c *Config) { c.Model.Kind = catalog.KindAPI }, "launch_not_local"},
+		{"port low", func(c *Config) { c.Port = 0 }, "launch_bad_port"},
+		{"port high", func(c *Config) { c.Port = 65536 }, "launch_bad_port"},
+		{"no template", func(c *Config) { c.Model.ChatTemplate = "" }, "launch_no_template"},
+		{"unknown template", func(c *Config) { c.Model.ChatTemplate = "evil" }, "launch_unknown_template"},
+		{"kv cache", func(c *Config) { c.KVCacheType = "nope" }, "launch_bad_kv_cache"},
+		{"draft negative min", func(c *Config) { c.DraftMin = -1 }, "launch_bad_draft"},
+		{"draft min above max", func(c *Config) { c.DraftMax, c.DraftMin = 2, 3 }, "launch_bad_draft"},
+		{"quant", func(c *Config) { c.Quantization = "nope" }, "launch_bad_quant"},
+		{"kv dtype", func(c *Config) { c.KVCacheDtype = "nope" }, "launch_bad_kv_dtype"},
+		{"gpu util", func(c *Config) { c.GPUMemoryUtilization = 2 }, "launch_bad_gpu_util"},
+		{"format", func(c *Config) { c.Format = "nope" }, "launch_bad_format"},
+		{"binary beats weights", func(c *Config) { c.BinPath, c.WeightsPath = "", "" }, "launch_no_binary"},
+		{"port beats template", func(c *Config) { c.Port, c.Model.ChatTemplate = 0, "" }, "launch_bad_port"},
+		{"template beats tuning", func(c *Config) { c.Model.ChatTemplate, c.KVCacheType = "", "nope" }, "launch_no_template"},
+		{"kv cache beats draft", func(c *Config) { c.KVCacheType, c.DraftMax = "nope", -1 }, "launch_bad_kv_cache"},
+		{"tuning beats format", func(c *Config) { c.GPUMemoryUtilization, c.Format = 2, "nope" }, "launch_bad_gpu_util"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := valid()
+			tc.mut(&cfg)
+			_, err := BuildPlan(cfg)
+			if got := fault.CodeOf(err); got != tc.code {
+				t.Fatalf("code = %q (err %v), want %q", got, err, tc.code)
+			}
+		})
 	}
 }
