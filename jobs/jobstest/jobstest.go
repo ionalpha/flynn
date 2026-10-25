@@ -41,6 +41,7 @@ func RunSuite(t *testing.T, newQueue func() Harness) {
 	t.Run("ClaimOrdersByRunAt", func(t *testing.T) { testClaimOrdering(t, newQueue()) })
 	t.Run("CompleteMarksDone", func(t *testing.T) { testComplete(t, newQueue()) })
 	t.Run("FailRetriesThenDies", func(t *testing.T) { testFailRetriesThenDies(t, newQueue()) })
+	t.Run("FailSchedulesRetryAt", func(t *testing.T) { testFailSchedulesRetry(t, newQueue()) })
 	t.Run("FailPermanentlyDeadsAtOnce", func(t *testing.T) { testFailPermanently(t, newQueue()) })
 	t.Run("CompleteAndFailGuardState", func(t *testing.T) { testGuards(t, newQueue()) })
 	t.Run("GetUnknownIsNotFound", func(t *testing.T) { testGetNotFound(t, newQueue()) })
@@ -294,6 +295,29 @@ func testFailRetriesThenDies(t *testing.T, h Harness) {
 	}
 }
 
+// testFailSchedulesRetry pins the retryAt argument: a retry the caller backed
+// off must not be claimable before that time, or backoff does nothing.
+func testFailSchedulesRetry(t *testing.T, h Harness) {
+	defer func() { _ = h.Queue.Close() }()
+	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", MaxAttempts: 3})
+	j, _ := claimOne(t, h, "")
+	retryAt := h.Clock.Now().Add(time.Hour)
+	if err := h.Queue.Fail(ctx(), j.ID, "boom", retryAt.UnixNano()); err != nil {
+		t.Fatalf("Fail: %v", err)
+	}
+	got, _ := h.Queue.Get(ctx(), j.ID)
+	if got.RunAt != retryAt.UnixNano() {
+		t.Errorf("RunAt = %d after Fail, want the retryAt %d", got.RunAt, retryAt.UnixNano())
+	}
+	if _, ok := claimOne(t, h, ""); ok {
+		t.Fatal("claimed a failed job before its retryAt")
+	}
+	h.Clock.Advance(2 * time.Hour)
+	if _, ok := claimOne(t, h, ""); !ok {
+		t.Fatal("did not claim the retry once its retryAt arrived")
+	}
+}
+
 func testFailPermanently(t *testing.T, h Harness) {
 	defer func() { _ = h.Queue.Close() }()
 	// Plenty of attempts remain, but a negative retryAt marks the cause not
@@ -330,6 +354,23 @@ func testGuards(t *testing.T, h Harness) {
 	// Unknown IDs are ErrNotFound.
 	if err := h.Queue.Complete(ctx(), "nope"); !errors.Is(err, jobs.ErrNotFound) {
 		t.Errorf("Complete unknown = %v, want ErrNotFound", err)
+	}
+	if err := h.Queue.Fail(ctx(), "nope", "x", 0); !errors.Is(err, jobs.ErrNotFound) {
+		t.Errorf("Fail unknown = %v, want ErrNotFound", err)
+	}
+	// A finished job is no longer running, so it cannot finish a second time.
+	claimed, ok := claimOne(t, h, "")
+	if !ok {
+		t.Fatal("claim got nothing")
+	}
+	if err := h.Queue.Complete(ctx(), claimed.ID); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if err := h.Queue.Complete(ctx(), claimed.ID); !errors.Is(err, jobs.ErrNotRunning) {
+		t.Errorf("Complete done = %v, want ErrNotRunning", err)
+	}
+	if err := h.Queue.Fail(ctx(), claimed.ID, "x", 0); !errors.Is(err, jobs.ErrNotRunning) {
+		t.Errorf("Fail done = %v, want ErrNotRunning", err)
 	}
 }
 

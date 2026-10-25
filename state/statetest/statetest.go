@@ -369,6 +369,11 @@ func testMemory(t *testing.T, p state.Provider) {
 	if scoped, _ := mem.Recall(ctx, state.RecallQuery{Query: "deploys", Scope: state.Scope{Project: "x"}}); len(scoped) != 1 {
 		t.Fatalf("scoped Recall = %d, want 1", len(scoped))
 	}
+	// A scope also excludes: the global fact is not in project x, so a store that
+	// ignored the scope would pass the check above and fail this one.
+	if other, _ := mem.Recall(ctx, state.RecallQuery{Query: "prefers", Scope: state.Scope{Project: "x"}}); len(other) != 0 {
+		t.Fatalf("scoped Recall returned %d item(s) from outside the scope, want 0", len(other))
+	}
 
 	if err := mem.Delete(ctx, a.ID); err != nil {
 		t.Fatal(err)
