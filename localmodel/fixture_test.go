@@ -77,6 +77,13 @@ func runFakeRuntime(args []string) {
 		}
 		_ = json.NewEncoder(w).Encode(args)
 	})
+	mux.HandleFunc("/v1/_env", func(w http.ResponseWriter, r *http.Request) {
+		if !authed(r) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(os.Environ())
+	})
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "") })
 	ln, err := net.Listen("tcp", net.JoinHostPort(flags["--host"], flags["--port"]))
 	if err != nil {

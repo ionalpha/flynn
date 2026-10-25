@@ -112,14 +112,12 @@ func (h *Host) start(ctx context.Context, m Model, opts ServeOptions) (Endpoint,
 		return Endpoint{}, err
 	}
 	// The header parse is the first time the file's contents are interpreted, so the file is
-	// frozen and its digest checked first: a parser should not be shown bytes nobody vouched for.
+	// frozen and its digest checked first: a parser should not be shown bytes nobody vouched
+	// for. Hash and parse share one open file, so the bytes parsed are the bytes hashed.
 	if err := os.Chmod(w.Path, 0o400); err != nil {
 		return Endpoint{}, fmt.Errorf("localmodel: freeze weights: %w", err)
 	}
-	if err := verifyWeights(w); err != nil {
-		return Endpoint{}, err
-	}
-	dec, err := launch.InspectTemplate(w.Path, m.ChatTemplate)
+	dec, err := verifiedTemplate(w, m.ChatTemplate)
 	if err != nil {
 		return Endpoint{}, err
 	}

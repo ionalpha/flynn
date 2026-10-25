@@ -390,6 +390,23 @@ func TestInspectTemplate(t *testing.T) {
 	}
 }
 
+// TestInspectTemplateFromReadsTheReaderItIsGiven checks the descriptor-based entry point
+// decides from the bytes it is handed and refuses bytes that are not a GGUF header, so a
+// caller that hashed a file can parse the same open file.
+func TestInspectTemplateFromReadsTheReaderItIsGiven(t *testing.T) {
+	good := buildMiniGGUF(map[string]string{"tokenizer.chat_template": "{{ messages }}"})
+	dec, err := InspectTemplateFrom(bytes.NewReader(good), "chatml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Template != "chatml" || !dec.ModelSupplied {
+		t.Fatalf("decision = %+v, want the trusted template with the model's flagged", dec)
+	}
+	if _, err := InspectTemplateFrom(strings.NewReader("not a gguf file"), "chatml"); err == nil {
+		t.Fatal("bytes without a GGUF header were accepted")
+	}
+}
+
 func contains(ss []string, want string) bool {
 	for _, s := range ss {
 		if s == want {

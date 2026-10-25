@@ -2,13 +2,18 @@ package localmodel
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/gguf"
+	"github.com/ionalpha/flynn/internal/inference/launch"
 )
 
 // Weights is a verified weights file on disk.
@@ -134,6 +139,28 @@ func verifyWeights(w Weights) error {
 		return fmt.Errorf("%w: the weights changed after they were verified", ErrDigestMismatch)
 	}
 	return nil
+}
+
+// verifiedTemplate hashes the weights through one open file, refuses them unless the digest
+// matches, and only then rewinds that same file and reads its header. Nothing is parsed from
+// a path, so a file swapped for another after the hash is never what the parser sees.
+func verifiedTemplate(w Weights, trusted string) (gguf.ChatTemplateDecision, error) {
+	f, err := os.Open(w.Path) //nolint:gosec // a path under the data directory
+	if err != nil {
+		return gguf.ChatTemplateDecision{}, fmt.Errorf("localmodel: open weights: %w", err)
+	}
+	defer func() { _ = f.Close() }()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, f); err != nil {
+		return gguf.ChatTemplateDecision{}, fmt.Errorf("localmodel: hash weights: %w", err)
+	}
+	if hex.EncodeToString(hash.Sum(nil)) != w.SHA256 {
+		return gguf.ChatTemplateDecision{}, fmt.Errorf("%w: the weights changed after they were verified", ErrDigestMismatch)
+	}
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return gguf.ChatTemplateDecision{}, fmt.Errorf("localmodel: rewind weights: %w", err)
+	}
+	return launch.InspectTemplateFrom(f, trusted)
 }
 
 // sizeCeiling caps a download at the declared size plus 5%, so a server cannot stream

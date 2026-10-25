@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"io"
 	"os"
 
 	"github.com/ionalpha/flynn/fault"
@@ -18,7 +19,14 @@ func InspectTemplate(weightsPath, trusted string) (gguf.ChatTemplateDecision, er
 		return gguf.ChatTemplateDecision{}, fault.Wrap(fault.Terminal, "launch_open_weights", err)
 	}
 	defer func() { _ = f.Close() }()
-	meta, err := gguf.ReadMetadata(f)
+	return InspectTemplateFrom(f, trusted)
+}
+
+// InspectTemplateFrom is [InspectTemplate] over a reader the caller already holds. A caller
+// that has just hashed a file passes the descriptor it hashed, so the bytes parsed are the
+// bytes whose digest was checked, with no second open by path for a swap to land in.
+func InspectTemplateFrom(r io.Reader, trusted string) (gguf.ChatTemplateDecision, error) {
+	meta, err := gguf.ReadMetadata(r)
 	if err != nil {
 		return gguf.ChatTemplateDecision{}, fault.Wrap(fault.Terminal, "launch_read_gguf", err)
 	}

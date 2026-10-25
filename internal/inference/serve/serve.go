@@ -372,16 +372,19 @@ type waitable interface {
 // passes, or ctx is cancelled. A server that exits while starting is the common
 // real-world failure (a bad runtime flag, a refused weights file), so it is reported
 // with the server's own output rather than as a bare timeout.
+//
+// An answer only counts while the process this call started is still running. Another
+// process may already hold the port (the free port was chosen before the launch); the
+// runtime then fails to bind and exits, and the squatter answers the probe in its place.
+// Accepting that answer would hand the caller, and any credential it then sends, to a
+// stranger. So the first probe waits one tick, giving a runtime that cannot bind time to
+// exit, and every answer is re-checked against the process.
 func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	tick := time.NewTicker(m.pollEvery)
 	defer tick.Stop()
 
-	// Probe once immediately so an already-warm endpoint is not made to wait a tick.
-	if m.probe(ctx, baseURL) == nil {
-		return nil
-	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -393,7 +396,14 @@ func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string, 
 			return fault.New(fault.Terminal, "serve_timeout",
 				fmt.Sprintf("serve: the runtime did not answer within %s:\n%s", timeout, proc.Output()))
 		case <-tick.C:
-			if m.probe(ctx, baseURL) == nil {
+			if m.probe(ctx, baseURL) != nil {
+				continue
+			}
+			select {
+			case <-proc.Done():
+				return fault.New(fault.Terminal, "serve_exited",
+					"serve: the endpoint answered but the runtime had exited, so something else holds the port:\n"+proc.Output())
+			default:
 				return nil
 			}
 		}

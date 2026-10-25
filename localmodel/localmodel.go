@@ -40,7 +40,13 @@
 // The sandbox leaves outbound network access open to a served runtime (see
 // [Host.Serve]); the loopback pin and the token are what keep the endpoint private. On a
 // platform without owner-only file permissions (Windows) the token file relies on the
-// data directory's own access control.
+// data directory's own access control. The runtime reads the token from a file whose path
+// is on its command line; it is not handed over an inherited descriptor, because the
+// sandbox cannot yet pass one. The runtime opens the weights by path, so the digest is
+// checked on a descriptor before the header is parsed and again just before launch, but
+// the window between that last check and the runtime's own open stays: the file is
+// read-only then, so only the owning account can change it. A runtime that outlives a
+// crashed host is not reaped.
 //
 // This package is experimental: it may change before it is listed in the stable tier.
 package localmodel
