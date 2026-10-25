@@ -38,11 +38,11 @@ func launchPaths(t *testing.T, l *Local) map[string]error {
 	return out
 }
 
-// TestDefaultConfinementRefusesOnEveryLaunchPath is the fail-closed default: a Local built
+// TestDefaultConfinementRefusesWhenKernelConfinementUnavailable is the fail-closed default: a Local built
 // with only [WithDefaultConfinement] on a host that refuses confinement gives the classified
 // refusal from every launch path, names the container and microVM tiers, and never runs the
 // command.
-func TestDefaultConfinementRefusesOnEveryLaunchPath(t *testing.T) {
+func TestDefaultConfinementRefusesWhenKernelConfinementUnavailable(t *testing.T) {
 	stubGate(t, refusing(CauseAppArmorUserns))
 	dir := t.TempDir()
 	l, err := NewLocal(dir, WithDefaultConfinement())
@@ -73,12 +73,21 @@ func TestDefaultConfinementRefusesOnEveryLaunchPath(t *testing.T) {
 	}
 }
 
-// TestBestEffortConfinementRunsAtTheFloorAndSaysSo is the opt-in side: the same refusing
-// host runs the command at the process-jail floor, and every such run reaches the notice
-// with the classified reason and is counted.
-func TestBestEffortConfinementRunsAtTheFloorAndSaysSo(t *testing.T) {
+// TestBestEffortRequiresExplicitOptInAndIsRecorded is the opt-in side: the same refusing
+// host that stops a default Local runs the command at the process-jail floor for one built
+// with the opt-in, and every such run reaches the notice with the classified reason, is
+// counted, and shows the lowered tier beside the opt-in flag for the run record.
+func TestBestEffortRequiresExplicitOptInAndIsRecorded(t *testing.T) {
 	stubGate(t, refusing(CauseUserNamespacesDisabled))
 	dir := t.TempDir()
+	plain, err := NewLocal(t.TempDir(), WithDefaultConfinement())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = plain.Close() })
+	if _, err := plain.Exec(context.Background(), Command{Line: "touch ran"}); !errors.Is(err, ErrConfinementRefused) {
+		t.Fatalf("without the opt-in err = %v, want the refusal", err)
+	}
 	var notices []error
 	l, err := NewLocal(dir, WithBestEffortConfinement(func(reason error) { notices = append(notices, reason) }))
 	if err != nil {

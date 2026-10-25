@@ -62,10 +62,10 @@ func TestFallBackUnexpressibleRecordsOnlyUnderTheOptIn(t *testing.T) {
 	}
 }
 
-// TestNoFallbackDecisionOutsideBestEffort holds the guarantee on [floorPolicy]: the opt-in
+// TestConfinementFallbackDecidedInOnePlace holds the guarantee on [floorPolicy]: the opt-in
 // flag is touched in one file, that file never reads the environment, and no launch path
 // carries a fallback condition of its own.
-func TestNoFallbackDecisionOutsideBestEffort(t *testing.T) {
+func TestConfinementFallbackDecidedInOnePlace(t *testing.T) {
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
