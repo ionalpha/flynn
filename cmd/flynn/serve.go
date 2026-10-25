@@ -26,6 +26,7 @@ import (
 	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/internal/source/signalcli"
 	"github.com/ionalpha/flynn/internal/source/telegram"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/reconcile"
@@ -132,7 +133,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	// through its provider and a service marked stopped is torn down and retired. This
 	// runs in every mode, channels or monitor-only, because a deployed app must be
 	// supervised regardless of whether this process also answers messages.
-	_, opsLoader, err := wireExtensions(rstore, dataDir)
+	opsLoader, err := governed.OpenIntegrations(rstore, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)))
 	if err != nil {
 		return err
 	}

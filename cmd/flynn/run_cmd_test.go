@@ -11,6 +11,7 @@ import (
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/externagent"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -296,7 +297,7 @@ var errRefusedAppend = errors.New("the log refused the event")
 func TestGovernedDistillerRunsThroughTheWaist(t *testing.T) {
 	ctx := context.Background()
 	model := llmtest.NewScripted(llmtest.SayText("nothing worth keeping here"))
-	d := governedDistiller(model)
+	d := governed.Distiller(model)
 	if d == nil {
 		t.Fatal("no distiller built")
 	}

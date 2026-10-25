@@ -83,7 +83,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	// mirrors what a one-shot external run does.
 	var distiller learn.Distiller
 	if learnEnabled && extAgent == nil {
-		distiller = governedDistiller(model)
+		distiller = governed.Distiller(model)
 	}
 
 	keys, err := loadKeymap(dataDir)
@@ -120,7 +120,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	// attributed as primed when it is used rather than as the session having gone
 	// and found it. It is the session's, not the turn's: the digest is built once at
 	// the opening line and what it primed stays primed for the conversation.
-	ctx = wakeContext(ctx)
+	ctx = governed.WakeContext(ctx)
 
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
 	// resumed run is seeded so the session continues the same durable conversation.

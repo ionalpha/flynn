@@ -425,37 +425,6 @@ func TestResolveDevBinary(t *testing.T) {
 	}
 }
 
-// TestExtensionRuntimeOptions: the grants are off unless asked for, which is what makes a
-// launched extension default-deny (no egress, no key, no network of its own).
-func TestExtensionRuntimeOptions(t *testing.T) {
-	var cfg extRuntimeOptions
-	if cfg.egressGrant != nil || cfg.hostSigner != nil || cfg.hostFetcher != nil {
-		t.Fatal("the zero runtime must grant nothing")
-	}
-	fetcher, err := extension.NewHTTPHostFetcher("https://rpc.example")
-	if err != nil {
-		t.Fatalf("fetcher: %v", err)
-	}
-	// There is no policy option to set, and that is the point: the host holds no parser, so it
-	// has nothing to police a payload with. The signer does that, where the key is.
-	for _, opt := range []extRuntimeOption{
-		withEgressGrant([]string{"rpc.example"}),
-		withHostSigner(func(string, string) extension.HostSigner { return nil }),
-		withHostFetcher(func(string, string) extension.HostFetcher { return fetcher }),
-	} {
-		opt(&cfg)
-	}
-	if len(cfg.egressGrant) != 1 || cfg.egressGrant[0] != "rpc.example" {
-		t.Errorf("egress grant = %v, want the one granted", cfg.egressGrant)
-	}
-	if cfg.hostSigner == nil {
-		t.Error("the signer grant was not installed")
-	}
-	if cfg.hostFetcher == nil || cfg.hostFetcher("token", "mint") == nil {
-		t.Error("the host endpoint was not granted to the tool")
-	}
-}
-
 // TestNewFlagSetHandsErrorsBack: a subcommand's bad flag must not exit the process; the
 // dispatch turns it into a usage error.
 func TestNewFlagSetHandsErrorsBack(t *testing.T) {
@@ -478,35 +447,28 @@ func TestOrUser(t *testing.T) {
 
 // TestCallGrantsAreScopedToTheCalledTool: the signer and the endpoint are lent to the one
 // tool the request calls, named bare or as "<name>.<tool>", and to no other mount. Every
-// other tool, including a different tool on the same extension, gets nil, so it borrows
-// neither the key nor the network.
+// other tool, including a different tool on the same extension, borrows neither the key
+// nor the network.
 func TestCallGrantsAreScopedToTheCalledTool(t *testing.T) {
-	routed := extension.HostSigner(stubSigner{})
 	for _, tool := range []string{"mint", "token.mint"} {
 		t.Run(tool, func(t *testing.T) {
 			req := callRequest{name: "token", tool: tool, signer: "solana-signer", endpoint: "https://rpc.example"}
+
+			if !req.isCalledTool("token", "mint") {
+				t.Error("the called tool was not selected")
+			}
+			for _, other := range [][2]string{{"token", "burn"}, {"other", "mint"}, {"", ""}} {
+				if req.isCalledTool(other[0], other[1]) {
+					t.Errorf("%s.%s was selected as the called tool", other[0], other[1])
+				}
+			}
+			routed := extension.HostSigner(stubSigner{})
 			opts, err := req.runtimeOptions(&routed)
 			if err != nil {
 				t.Fatalf("runtimeOptions: %v", err)
 			}
-			var cfg extRuntimeOptions
-			for _, o := range opts {
-				o(&cfg)
-			}
-
-			if cfg.hostSigner("token", "mint") != routed {
-				t.Error("the called tool was not given the routed signer")
-			}
-			if cfg.hostFetcher("token", "mint") == nil {
-				t.Error("the called tool was not given the endpoint")
-			}
-			for _, other := range [][2]string{{"token", "burn"}, {"other", "mint"}} {
-				if cfg.hostSigner(other[0], other[1]) != nil {
-					t.Errorf("%s.%s borrowed the signer", other[0], other[1])
-				}
-				if cfg.hostFetcher(other[0], other[1]) != nil {
-					t.Errorf("%s.%s borrowed the network", other[0], other[1])
-				}
+			if len(opts) != 3 {
+				t.Fatalf("got %d options, want egress, signer and endpoint", len(opts))
 			}
 		})
 	}

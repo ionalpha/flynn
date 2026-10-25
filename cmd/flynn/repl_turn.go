@@ -72,8 +72,8 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		if s.verbose {
 			digestErrs = s.out
 		}
-		s.system = withWake(turnCtx, s.memory(), s.system, digestErrs)
-		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.memory().store, userText); block != "" {
+		s.system = governed.WithWake(turnCtx, s.memory(), s.system, digestErrs)
+		if block, recalled, items := recallContext(turnCtx, s.store.Skills(), s.memory().Store(), userText); block != "" {
 			s.system += "\n\n" + block
 			s.recalled = recalled
 			// Surface what past learning was pulled into context (naming each item), so
@@ -92,7 +92,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	// The turn is reassembled each message; the skill toolset is not, so what the
 	// session has read accumulates across the whole conversation.
 	if s.skillset == nil {
-		s.skillset = skilltool.New(s.store.Skills(), skilltool.WithNotes(s.memory().skillNotes()))
+		s.skillset = skilltool.New(s.store.Skills(), skilltool.WithNotes(s.memory().SkillNotes()))
 	}
 	asm := assembly{
 		model: s.model, plan: s.plan, workdir: s.cwd, system: s.system,
@@ -246,7 +246,7 @@ func (s *replSession) finish(ctx context.Context) error {
 	_ = learn.Reinforce(ctx, s.store.Skills(), s.skillset.Reads(), s.converged)
 	if s.distiller != nil && s.converged {
 		_, _ = fmt.Fprintln(s.out, "\nlearning from this session...")
-		distillOutcome(ctx, s.out, s.distiller, s.store.Skills(), s.memory().store, s.cwd, learn.Outcome{
+		distillOutcome(ctx, s.out, s.distiller, s.store.Skills(), s.memory().Store(), s.cwd, learn.Outcome{
 			Objective:  s.objective,
 			Result:     s.lastResult,
 			Transcript: s.transcript,

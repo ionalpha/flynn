@@ -284,10 +284,10 @@ func TestStandaloneAConvergedRunIsDistilledWithItsCheckRun(t *testing.T) {
 // telling a memory that earns its place from one that is merely offered.
 func TestStandaloneASessionWakesWithADigestAndCountsThePush(t *testing.T) {
 	_, store := dataDir(t)
-	ctx := wakeContext(acceptCtx(t))
-	mem := newMemoryStack(store.Memory(), nil)
+	ctx := governed.WakeContext(acceptCtx(t))
+	mem := governed.NewMemoryStack(store.Memory(), nil)
 
-	written, err := mem.store.Write(ctx, state.MemoryItem{
+	written, err := mem.Store().Write(ctx, state.MemoryItem{
 		Kind: curate.KindPreference, Subject: "review-style",
 		Content: "state the risk before the fix", Sources: []string{rememberSource},
 	})
@@ -295,11 +295,11 @@ func TestStandaloneASessionWakesWithADigestAndCountsThePush(t *testing.T) {
 		t.Fatalf("pin a preference: %v", err)
 	}
 
-	system := withWake(ctx, mem, defaultSystemPrompt, nil)
+	system := governed.WithWake(ctx, mem, defaultSystemPrompt, nil)
 	if !strings.Contains(system, "state the risk before the fix") {
 		t.Fatalf("the wake digest did not reach the standing instructions:\n%s", system)
 	}
-	usage, err := mem.store.Usage(ctx, []string{written.ID})
+	usage, err := mem.Store().Usage(ctx, []string{written.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,14 +320,14 @@ func TestStandaloneASessionWakesWithADigestAndCountsThePush(t *testing.T) {
 func TestStandaloneASeriesConsolidatesIntoALesson(t *testing.T) {
 	_, store := dataDir(t)
 	ctx := acceptCtx(t)
-	mem := newMemoryStack(store.Memory(), nil)
+	mem := governed.NewMemoryStack(store.Memory(), nil)
 
 	for _, what := range []string{
 		"the deploy failed: the migration ran before the schema lock",
 		"the deploy failed again: same migration, same lock",
 		"the deploy failed a third time on the migration",
 	} {
-		if _, err := mem.store.Write(ctx, state.MemoryItem{
+		if _, err := mem.Store().Write(ctx, state.MemoryItem{
 			Kind: "episode", Subject: "deploy", Content: what, Sources: []string{"agent:run-1"},
 		}); err != nil {
 			t.Fatalf("write an episode: %v", err)

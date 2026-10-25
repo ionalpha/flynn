@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/watch"
 )
@@ -54,7 +55,7 @@ func runWatch(modelSpec, dataDir string, learnEnabled, verbose bool) error {
 
 	var distiller learn.Distiller
 	if learnEnabled {
-		distiller = governedDistiller(model)
+		distiller = governed.Distiller(model)
 	}
 
 	out := &syncWriter{w: os.Stdout}

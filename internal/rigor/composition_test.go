@@ -18,16 +18,24 @@ import (
 // divergence the exported assembly exists to remove. The binary reaches them only through
 // governed.Assemble, governed.NewKit and the other exported entry points.
 var composition = map[string][]string{
-	"github.com/ionalpha/flynn/runtime":       {"New"},
-	"github.com/ionalpha/flynn/mission":       {"NewExecutor", "NewPlanner", "WithGrant", "WithSandbox", "WithBrakes", "WithBudget", "WithEventSink"},
-	"github.com/ionalpha/flynn/driver":        {"NewRouter"},
-	"github.com/ionalpha/flynn/evidence":      {"NewCommandAuditor", "NewCommandVerifier", "NewModelAuditor", "NewModelSteerJudge", "NewSpineEvidence"},
-	"github.com/ionalpha/flynn/orchestration": {"NewSpawner", "Units", "UnitGovernor"},
-	"github.com/ionalpha/flynn/capability":    {"NewContainmentGate"},
-	"github.com/ionalpha/flynn/progress":      {"NewSpineProbe"},
-	"github.com/ionalpha/flynn/refusal":       {"NewSpineProbe"},
-	"github.com/ionalpha/flynn/approval":      {"NewGate"},
-	"github.com/ionalpha/flynn/allowance":     {"NewGate"},
+	"github.com/ionalpha/flynn/runtime":               {"New"},
+	"github.com/ionalpha/flynn/mission":               {"NewExecutor", "NewPlanner", "WithGrant", "WithSandbox", "WithBrakes", "WithBudget", "WithEventSink"},
+	"github.com/ionalpha/flynn/driver":                {"NewRouter"},
+	"github.com/ionalpha/flynn/evidence":              {"NewCommandAuditor", "NewCommandVerifier", "NewModelAuditor", "NewModelSteerJudge", "NewSpineEvidence"},
+	"github.com/ionalpha/flynn/orchestration":         {"NewSpawner", "Units", "UnitGovernor"},
+	"github.com/ionalpha/flynn/capability":            {"NewContainmentGate"},
+	"github.com/ionalpha/flynn/extension":             {"NewRegistry", "NewLoader", "NewProcessHandler"},
+	"github.com/ionalpha/flynn/progress":              {"NewSpineProbe"},
+	"github.com/ionalpha/flynn/memory/curate":         {"Wrap"},
+	"github.com/ionalpha/flynn/memory/digest":         {"New"},
+	"github.com/ionalpha/flynn/memory/ridealong":      {"New"},
+	"github.com/ionalpha/flynn/memory/hybrid":         {"Wrap"},
+	"github.com/ionalpha/flynn/learn":                 {"NewGovernedVerifier", "NewGovernedDistiller"},
+	"github.com/ionalpha/flynn/internal/integrations": {"NewHandler"},
+	"github.com/ionalpha/flynn/internal/ops":          {"RegisterWith"},
+	"github.com/ionalpha/flynn/refusal":               {"NewSpineProbe"},
+	"github.com/ionalpha/flynn/approval":              {"NewGate"},
+	"github.com/ionalpha/flynn/allowance":             {"NewGate"},
 }
 
 // compositionCalls returns "pkg.Name" for every reference in src to a constructor in

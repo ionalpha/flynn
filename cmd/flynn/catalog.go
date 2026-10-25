@@ -15,8 +15,6 @@ import (
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
 	"github.com/ionalpha/flynn/internal/credential"
-	"github.com/ionalpha/flynn/internal/integrations"
-	"github.com/ionalpha/flynn/internal/ops"
 	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/mission"
@@ -82,40 +80,18 @@ func openIntegrationRuntime(ctx context.Context, dataDir string) (*integrationRu
 		_ = durable.Close()
 		return nil, err
 	}
-	creds, loader, err := wireExtensions(store, dataDir)
+	loader, err := governed.OpenIntegrations(store, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)))
 	if err != nil {
 		_ = durable.Close()
 		return nil, err
 	}
 	return &integrationRuntime{
 		store:  store,
-		creds:  creds,
+		creds:  credential.NewStore(store),
 		svc:    service.NewStore(store),
 		loader: loader,
 		closer: durable.Close,
 	}, nil
-}
-
-// wireExtensions assembles the extension execution stack over an existing resource
-// store: the credential store, the vault-backed secret source, and a loader whose
-// registry serves both the integration surface (API operations) and the ops surface
-// (hosting providers) from one operation engine. It is shared by the integration
-// commands and the served supervision loop so an operation runs through identical
-// credential resolution, role enforcement, and egress confinement everywhere.
-func wireExtensions(store resource.Store, dataDir string) (*credential.Store, *extension.Loader, error) {
-	creds := credential.NewStore(store)
-	opts := []integrations.Option{
-		integrations.WithSecrets(vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))),
-		integrations.WithCredentials(creds),
-	}
-	ereg := extension.NewRegistry()
-	if err := ereg.Register(integrations.NewHandler(opts...)); err != nil {
-		return nil, nil, err
-	}
-	if err := ops.RegisterWith(ereg, opts...); err != nil {
-		return nil, nil, err
-	}
-	return creds, extension.NewLoader(ereg), nil
 }
 
 // integrationsList prints the catalog: every extension, where it came from, whether

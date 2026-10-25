@@ -707,7 +707,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	// skipped.
 	var distiller learn.Distiller
 	if learnEnabled && extAgent == nil {
-		distiller = governedDistiller(model)
+		distiller = governed.Distiller(model)
 	}
 
 	// With fan-out enabled the run drives the full goals engine: the model may

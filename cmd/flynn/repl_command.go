@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 )
 
@@ -88,7 +89,7 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 		// A distilling session learns through the model, so keep the distiller on the model
 		// the session now drives.
 		if s.learnEnabled {
-			s.distiller = governedDistiller(model)
+			s.distiller = governed.Distiller(model)
 		}
 	}
 

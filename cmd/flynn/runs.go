@@ -189,7 +189,7 @@ func regradeSkills(out io.Writer, dataDir string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	verifier := governedVerifier(cwd)
+	verifier := governed.SkillVerifier(cwd)
 	res, err := learn.Regrade(ctx, store.Skills(), state.Scope{}, verifier)
 	if err != nil {
 		return err
