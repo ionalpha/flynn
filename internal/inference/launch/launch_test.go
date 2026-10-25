@@ -310,6 +310,32 @@ func TestBuildPlanGGUFFormatStillServes(t *testing.T) {
 	}
 }
 
+func TestBuildPlanAPIKeyFileKeepsKeyOutOfArgv(t *testing.T) {
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, APIKeyFile: "/run/key"}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !argvHasFlag(plan.Argv, "--api-key-file", "/run/key") {
+		t.Fatalf("key file not passed: %v", plan.Argv)
+	}
+	if contains(plan.Argv, "--api-key") {
+		t.Fatalf("a key file must not also put a key on the command line: %v", plan.Argv)
+	}
+}
+
+func TestBuildPlanAPIKeyFileRefusals(t *testing.T) {
+	both := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, APIKey: "tok", APIKeyFile: "/run/key"}
+	vllm := Config{BinPath: "vllm", WeightsPath: "/w", Model: localModel("chatml"), Format: catalog.FormatSafetensors, Port: 9000, APIKeyFile: "/run/key"}
+	for name, cfg := range map[string]Config{"both key forms": both, "vLLM has no key file flag": vllm} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildPlan(cfg); err == nil {
+				t.Fatalf("expected %s to be refused", name)
+			}
+		})
+	}
+}
+
 // buildMiniGGUF encodes a minimal valid GGUF header carrying the given string metadata,
 // enough for the reader to extract the chat template.
 func buildMiniGGUF(kvs map[string]string) []byte {

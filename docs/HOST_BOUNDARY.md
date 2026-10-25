@@ -96,13 +96,23 @@ tests and a durable one for the binary.
 | `resource.Store` | `resource.NewMemory`, `storage/sqlite` resource store | `cmd/flynn/mission.go` `runtimeConfig` | shipped |
 | `resource.SchemaCompiler` / `Validator` | `resource.builtinCompiler`, `resource.Registry` | `resource` kind registration | shipped |
 | `jobs.Queue` / `Waker` | `jobs.MemoryQueue`, `storage/sqlite` job queue | `store.Jobs()`, `agent.go` | shipped |
-| `llm.Model` | `llm/anthropic`, `llm/openai`, local serving | `provider.Resolve` | shipped |
+| `llm.Model` | `llm/anthropic`, `llm/openai`, local serving (`localmodel.Host` starts the server, `llm/openai` talks to it) | `provider.Resolve`, `cmd/flynn/modelrun.go` `newLocalRunner` | shipped |
 | `sandbox.Sandbox` | `sandbox.Local`, `sandbox.MicroVM` (`BootMicroVM`); `sandbox.Remote` (`NewRemote`) is the adapter for a host-supplied `sandbox.Transport` and is unused until one exists | `sandbox.NewLocal` at each assembly | shipped |
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
 | `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
+
+A host that wants a model running on the same machine has `localmodel` and needs no port
+of its own for it: `localmodel.Open` takes a data directory and returns a host that
+classifies a source, installs a runtime behind the advisory gate, fetches weights against
+a catalog digest, serves them inside the sandbox on a loopback port behind a per-launch
+token, and stops them. The guards have no switch. A host that starts a model server
+itself (a runtime launched from a download) has none of them, which is why the package
+offers no way to supply a server binary, an address, a chat template or a floor. The
+served runtime keeps outbound network access under the local sandbox, so the loopback
+pin and the token are what keep the endpoint private.
 
 `allowance.Policy` is wired but marks nothing until the operator names an action, and
 that empty default is the intended answer rather than a gap. Which actions reach
