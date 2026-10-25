@@ -193,37 +193,9 @@ func Start(cfg Config) (*Bundle, error) {
 		cfg.Interval = DefaultInterval
 	}
 
-	// A watchdog with no sampler would never see a sample. Say so here rather than
-	// let an operator run a week-long soak that was never watching anything.
-	if cfg.Leak != nil && cfg.Interval < 0 {
-		return nil, errors.New("diag: leak watch needs the timeline sampler, but Interval disables it")
-	}
-
-	// Validate the application-supplied counters before anything is created, so a bad
-	// one costs no bundle directory. Two ways a counter breaks the sampler, both caught
-	// here rather than at the first sample or the first leak dump: a nil Read panics the
-	// moment the baseline sample calls it, and a name that is not a plain filename
-	// component becomes part of a leak dump path (leak.<name>.<seq>.<member>), so a name
-	// with a slash writes into a directory that does not exist and a name with ".."
-	// escapes the bundle.
-	for _, c := range cfg.Counters {
-		if c.Read == nil {
-			return nil, fmt.Errorf("diag: counter %q has no Read function", c.Name)
-		}
-		if !safeCounterName(c.Name) {
-			return nil, fmt.Errorf("diag: counter name %q must be a plain filename component: it becomes part of a leak dump path", c.Name)
-		}
-	}
-
-	// The watchdog is built before anything is created, so a rejected threshold costs
-	// no bundle directory, no CPU profile, and nothing for a reader to half-trust. Its
-	// dump target is wired below, once there is a bundle to dump into.
-	var wd *watchdog
-	if cfg.Leak != nil {
-		var err error
-		if wd, err = newWatchdog(*cfg.Leak, nil); err != nil {
-			return nil, err
-		}
+	wd, err := validateStart(cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := os.MkdirAll(cfg.Dir, 0o700); err != nil {
@@ -244,31 +216,8 @@ func Start(cfg Config) (*Bundle, error) {
 		observer = wd.push
 	}
 
-	cpu, err := b.create(MemberCPU)
-	if err != nil {
+	if err := b.startCapture(observer); err != nil {
 		return nil, err
-	}
-	if err := pprof.StartCPUProfile(cpu); err != nil {
-		_ = cpu.Close()
-		return nil, fmt.Errorf("diag: start cpu profile: %w", err)
-	}
-	b.cpuFile = cpu
-
-	// Contention profiling is opt-in because both rates cost time in every blocking
-	// operation and every contended lock handoff for the life of the process.
-	if cfg.Contention {
-		runtime.SetBlockProfileRate(1)
-		runtime.SetMutexProfileFraction(1)
-	}
-
-	if cfg.Interval > 0 {
-		tl, err := b.startTimeline(observer)
-		if err != nil {
-			pprof.StopCPUProfile()
-			_ = cpu.Close()
-			return nil, err
-		}
-		b.timeline = tl
 	}
 
 	// Labelling is live only while a bundle is open, so the waist and the long-lived
@@ -278,6 +227,70 @@ func Start(cfg Config) (*Bundle, error) {
 	profiling.Store(true)
 
 	return b, nil
+}
+
+// validateStart rejects a Config that cannot work before anything is created, so a
+// bad one costs no bundle directory, no CPU profile, and nothing for a reader to
+// half-trust. It returns the watchdog when cfg.Leak asks for one; its dump target is
+// wired by Start once there is a bundle to dump into.
+func validateStart(cfg Config) (*watchdog, error) {
+	// A watchdog with no sampler would never see a sample. Say so here rather than
+	// let an operator run a week-long soak that was never watching anything.
+	if cfg.Leak != nil && cfg.Interval < 0 {
+		return nil, errors.New("diag: leak watch needs the timeline sampler, but Interval disables it")
+	}
+
+	// Two ways a counter breaks the sampler, both caught here rather than at the first
+	// sample or the first leak dump: a nil Read panics the moment the baseline sample
+	// calls it, and a name that is not a plain filename component becomes part of a
+	// leak dump path (leak.<name>.<seq>.<member>), so a name with a slash writes into a
+	// directory that does not exist and a name with ".." escapes the bundle.
+	for _, c := range cfg.Counters {
+		if c.Read == nil {
+			return nil, fmt.Errorf("diag: counter %q has no Read function", c.Name)
+		}
+		if !safeCounterName(c.Name) {
+			return nil, fmt.Errorf("diag: counter name %q must be a plain filename component: it becomes part of a leak dump path", c.Name)
+		}
+	}
+
+	if cfg.Leak == nil {
+		return nil, nil
+	}
+	return newWatchdog(*cfg.Leak, nil)
+}
+
+// startCapture starts the CPU profile, the opt-in contention profiling, and the
+// timeline sampler, in that order. A failure stops whatever it had started, so the
+// process is left with no profile running behind an error.
+func (b *Bundle) startCapture(observer func(Sample)) error {
+	cpu, err := b.create(MemberCPU)
+	if err != nil {
+		return err
+	}
+	if err := pprof.StartCPUProfile(cpu); err != nil {
+		_ = cpu.Close()
+		return fmt.Errorf("diag: start cpu profile: %w", err)
+	}
+	b.cpuFile = cpu
+
+	// Contention profiling is opt-in because both rates cost time in every blocking
+	// operation and every contended lock handoff for the life of the process.
+	if b.cfg.Contention {
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
+	}
+
+	if b.cfg.Interval > 0 {
+		tl, err := b.startTimeline(observer)
+		if err != nil {
+			pprof.StopCPUProfile()
+			_ = cpu.Close()
+			return err
+		}
+		b.timeline = tl
+	}
+	return nil
 }
 
 // Annotate records a key/value pair in the manifest, so a caller can correlate a

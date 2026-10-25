@@ -269,38 +269,7 @@ func (t prFetchTool) Invoke(ctx context.Context, _ json.RawMessage) (string, err
 	if err != nil {
 		return "", err
 	}
-	posted := make([]PostedFinding, 0, len(existing))
-	for _, c := range existing {
-		if markerIn(c.Body) == "" || !sameLogin(c.User.Login, self) {
-			continue
-		}
-		// GitHub reports line as null for a comment whose anchor no longer exists in the
-		// diff, which decodes to zero. Such a finding cannot be restated where it was
-		// made, and offering it back with a line of zero would have the reviewer repost
-		// something the finding validator refuses. It is left out: GitHub already reports
-		// the thread as outdated, and an outdated thread is retracted on that evidence
-		// rather than on the reviewer's silence.
-		if c.Line <= 0 {
-			continue
-		}
-		rule, summary, failure := bodyParts(c.Body)
-		posted = append(posted, PostedFinding{
-			Path: c.Path, Line: c.Line, Rule: rule, Summary: summary, Failure: failure,
-		})
-	}
-	// Ordered so a pull request nothing has happened to reads the same way twice. Two
-	// findings may share a path and a line and differ only in their rule, and each keys
-	// a conversation of its own. The rule breaks that tie: without it sort.Slice, which
-	// is not stable, hands the reviewer a different list on every run.
-	sort.Slice(posted, func(i, j int) bool {
-		if posted[i].Path != posted[j].Path {
-			return posted[i].Path < posted[j].Path
-		}
-		if posted[i].Line != posted[j].Line {
-			return posted[i].Line < posted[j].Line
-		}
-		return posted[i].Rule < posted[j].Rule
-	})
+	posted := postedFindings(existing, self)
 
 	complete := !truncated && pr.ChangedFiles <= t.s.cfg.MaxFiles
 	for _, f := range files {
@@ -322,6 +291,43 @@ func (t prFetchTool) Invoke(ctx context.Context, _ json.RawMessage) (string, err
 		return "", err
 	}
 	return string(b), nil
+}
+
+// postedFindings returns the findings self already has on the pull request, ordered
+// so a pull request nothing has happened to reads the same way twice.
+func postedFindings(existing []ReviewComment, self string) []PostedFinding {
+	posted := make([]PostedFinding, 0, len(existing))
+	for _, c := range existing {
+		if markerIn(c.Body) == "" || !sameLogin(c.User.Login, self) {
+			continue
+		}
+		// GitHub reports line as null for a comment whose anchor no longer exists in the
+		// diff, which decodes to zero. Such a finding cannot be restated where it was
+		// made, and offering it back with a line of zero would have the reviewer repost
+		// something the finding validator refuses. It is left out: GitHub already reports
+		// the thread as outdated, and an outdated thread is retracted on that evidence
+		// rather than on the reviewer's silence.
+		if c.Line <= 0 {
+			continue
+		}
+		rule, summary, failure := bodyParts(c.Body)
+		posted = append(posted, PostedFinding{
+			Path: c.Path, Line: c.Line, Rule: rule, Summary: summary, Failure: failure,
+		})
+	}
+	// Two findings may share a path and a line and differ only in their rule, and each
+	// keys a conversation of its own. The rule breaks that tie: without it sort.Slice,
+	// which is not stable, hands the reviewer a different list on every run.
+	sort.Slice(posted, func(i, j int) bool {
+		if posted[i].Path != posted[j].Path {
+			return posted[i].Path < posted[j].Path
+		}
+		if posted[i].Line != posted[j].Line {
+			return posted[i].Line < posted[j].Line
+		}
+		return posted[i].Rule < posted[j].Rule
+	})
+	return posted
 }
 
 // --- comment ----------------------------------------------------------------
