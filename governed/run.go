@@ -3,10 +3,8 @@ package governed
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 
-	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/diag"
 	"github.com/ionalpha/flynn/goal"
@@ -72,7 +70,6 @@ type Run struct {
 	posture  Posture
 	mode     Mode
 	external *ExternalAgent
-	budget   *budgetpkg.Limits
 }
 
 // ID is the run's identity: its session id, its goal's name, its spine stream and its
@@ -110,17 +107,11 @@ func (r *Run) Close() error {
 	return r.p.close()
 }
 
-// Prepare opens the run's spend ceiling when [WithBudget] was given, so the ceiling is in
-// force from the first action and not after a race, and returns a context carrying an
-// egress observer bound to the run's stream: every dial netguard makes on the run's
-// behalf reports its allow or block verdict into the same recorded history as the run's
-// governed actions. Start the runtime with the returned context.
+// Prepare returns a context carrying an egress observer bound to the run's stream: every
+// dial netguard makes on the run's behalf reports its allow or block verdict into the same
+// recorded history as the run's governed actions. Start the runtime with the returned
+// context. The spend ceiling does not depend on it; [Assemble] opens that.
 func (r *Run) Prepare(ctx context.Context) (context.Context, error) {
-	if r.budget != nil {
-		if _, err := budgetpkg.NewLedger(r.store).Open(ctx, r.ID(), resource.Scope{}, *r.budget); err != nil {
-			return ctx, fmt.Errorf("open run budget: %w", err)
-		}
-	}
 	egress := spinesink.NewEgress(r.log, r.ID())
 	return netguard.WithObserver(ctx, egress.Observe), nil
 }
@@ -144,34 +135,22 @@ func (r *Run) GoalSpec(spec goal.Spec) goal.Spec {
 	return spec
 }
 
-// Submit opens the run's session, submits spec as its goal and then states the run's
-// posture on the stream as a [PostureEventType] event. The runtime must be started. A
-// caller that streams the conversation live uses this and [Run.Resume]; [Run.Do] uses
-// this too, so no path starts a goal without the posture on its record. A failed write
-// is an error: a run must not be able to go unrecorded.
+// Submit opens the run's session and submits spec as its goal. The runtime must be
+// started. A caller that streams the conversation live uses this and [Run.Resume];
+// [Run.Do] uses this too.
 func (r *Run) Submit(ctx context.Context, spec goal.Spec) (resource.Key, error) {
-	key, err := r.p.sess.Submit(ctx, r.rt, r.GoalSpec(spec))
-	if err != nil {
-		return key, err
-	}
-	if err := recordPosture(ctx, r.log, r.ID(), r.posture); err != nil {
-		return key, fmt.Errorf("governed: record posture: %w", err)
-	}
-	return key, nil
+	return r.p.sess.Submit(ctx, r.rt, r.GoalSpec(spec))
 }
 
-// Resume continues the stored run id on the same stream and states the posture it was
-// assembled with again, since a resumed run may be assembled differently from the one it
-// continues and the record should say so. The runtime must be started.
+// Resume continues the stored run id on the same stream. The runtime must be started. The
+// posture this assembly states is the one [Assemble] recorded, which may differ from the
+// run being continued.
 func (r *Run) Resume(ctx context.Context, id string) error {
 	g, err := r.rt.Resume(ctx, id)
 	if err != nil {
 		return err
 	}
 	r.p.sess.Resume(ctx, r.rt, g.Key())
-	if err := recordPosture(ctx, r.log, r.ID(), r.posture); err != nil {
-		return fmt.Errorf("governed: record posture: %w", err)
-	}
 	return nil
 }
 

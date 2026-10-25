@@ -2,6 +2,9 @@ package governed
 
 import (
 	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/ionalpha/flynn/extension"
@@ -68,6 +71,33 @@ func TestOpenIntegrationsServesBothSurfaces(t *testing.T) {
 		t.Fatalf("no extension is loaded yet, so there should be no tools: %v", got)
 	}
 	var _ ToolBridge = loader
+}
+
+// TestOpenExtensionsRefusesADevSourceUnlessAskedTo: an unsigned local binary named by a spec
+// in the store is not run by an embedder that did not ask for dev extensions. The path does
+// not exist, so with the option on the load still fails, and for a different reason.
+func TestOpenExtensionsRefusesADevSourceUnlessAskedTo(t *testing.T) {
+	block, err := json.Marshal(extension.ProcessBlock{
+		Dev: &extension.DevSource{Path: filepath.Join(t.TempDir(), "absent")},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	load := func(opts ...ExtensionOption) error {
+		b, _ := memBackends(t)
+		exts, err := OpenExtensions(context.Background(), b.Resources, t.TempDir(), opts...)
+		if err != nil {
+			t.Fatalf("OpenExtensions: %v", err)
+		}
+		return exts.Process.OnLoad(context.Background(), extension.Mount{ID: "x", Name: "x", Block: block})
+	}
+
+	if err := load(); err == nil || !strings.Contains(err.Error(), "dev mode is not enabled") {
+		t.Fatalf("default load = %v, want the dev-mode refusal", err)
+	}
+	if err := load(WithDevExtensions()); err == nil || strings.Contains(err.Error(), "dev mode is not enabled") {
+		t.Fatalf("load with dev extensions = %v, want a refusal for the missing binary", err)
+	}
 }
 
 // TestOpenExtensionsSyncsTheCatalogAndIsDefaultDeny: opening the runtime records the

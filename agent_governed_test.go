@@ -5,11 +5,13 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/archetypes"
 	"github.com/ionalpha/flynn/externagent"
 	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -121,8 +123,10 @@ func TestEveryConfigOptOutIsNamedAndRecorded(t *testing.T) {
 	}
 	a := New(Config{
 		WorkDir: dir, Resources: b.Resources, Jobs: b.Jobs, Log: b.Log,
-		Tools:   tools.New(sb).Tools(),
-		Waivers: []governed.Waiver{{Guard: governed.GuardSandbox, Reason: reason}},
+		Policy: &Policy{
+			Tools:   tools.New(sb).Tools(),
+			Waivers: []governed.Waiver{{Guard: governed.GuardSandbox, Reason: reason}},
+		},
 	})
 
 	res, err := a.runGoalResult(ctxT(t), llmtest.NewScripted(llmtest.SayText("ok")), "go")
@@ -159,11 +163,13 @@ func TestConfigRefusesWhatItCannotGovern(t *testing.T) {
 		cfg  Config
 		want string
 	}{
-		{"host tools without a sandbox waiver", Config{Tools: tools.New(sb).Tools()}, "sandbox"},
-		{"waiver without a reason", Config{Waivers: []governed.Waiver{{Guard: governed.GuardBrakes}}}, "reason"},
-		{"waiver of an unknown guard", Config{Waivers: []governed.Waiver{{Guard: "everything", Reason: "no"}}}, "unknown guard"},
-		{"external agent with approval policy", Config{ExternalAgent: ext, RequireApproval: []string{"bash"}}, "external"},
-		{"external agent with host tools", Config{ExternalAgent: ext, Tools: tools.New(sb).Tools()}, "external"},
+		{"host tools without a sandbox waiver", Config{Policy: &Policy{Tools: tools.New(sb).Tools()}}, "sandbox"},
+		{"waiver without a reason", Config{Policy: &Policy{Waivers: []governed.Waiver{{Guard: governed.GuardBrakes}}}}, "reason"},
+		{"waiver of an unknown guard", Config{Policy: &Policy{Waivers: []governed.Waiver{{Guard: "everything", Reason: "no"}}}}, "unknown guard"},
+		{"external agent with approval policy", Config{ExternalAgent: ext, Policy: &Policy{RequireApproval: []string{"bash"}}}, "external"},
+		{"external agent with host tools", Config{ExternalAgent: ext, Policy: &Policy{Tools: tools.New(sb).Tools()}}, "external"},
+		{"external agent with an archetype", Config{ExternalAgent: ext, Agent: &archetypes.Spec{Capabilities: []string{"read"}}}, "Config.Agent"},
+		{"external agent with a driver name", Config{ExternalAgent: ext, Driver: "single-shot"}, "Config.Driver"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -179,7 +185,7 @@ func TestConfigRefusesWhatItCannotGovern(t *testing.T) {
 // TestConfigApprovalPolicyReachesTheRun: the listed actions are on the run's posture. The
 // refusal itself is the governed package's to prove.
 func TestConfigApprovalPolicyReachesTheRun(t *testing.T) {
-	a := New(Config{WorkDir: t.TempDir(), RequireApproval: []string{"bash"}})
+	a := New(Config{WorkDir: t.TempDir(), Policy: &Policy{RequireApproval: []string{"bash"}}})
 
 	res, err := a.runGoalResult(ctxT(t), llmtest.NewScripted(llmtest.SayText("ok")), "go")
 	if err != nil {
@@ -188,6 +194,19 @@ func TestConfigApprovalPolicyReachesTheRun(t *testing.T) {
 
 	if !res.Posture.Approval || !slices.Contains(res.Posture.ApprovalActions, "bash") {
 		t.Fatalf("posture = %+v, want approval on and bash listed", res.Posture)
+	}
+}
+
+// TestConfigStaysComparable: a host may compare Configs or key a map by one, and a slice
+// field breaks that at compile time for every such host. The list-valued settings sit
+// behind Policy for this reason.
+func TestConfigStaysComparable(t *testing.T) {
+	if !reflect.TypeOf(Config{}).Comparable() {
+		t.Fatal("Config is not comparable; a list-valued field belongs in Policy")
+	}
+	p := &Policy{RequireApproval: []string{"bash"}}
+	if (Config{Policy: p}) != (Config{Policy: p}) {
+		t.Fatal("two Configs sharing a Policy compare unequal")
 	}
 }
 

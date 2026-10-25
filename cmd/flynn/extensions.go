@@ -605,7 +605,9 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...governed.
 		return nil, err
 	}
 	store := durable.Resources(reg)
-	exts, err := governed.OpenExtensions(ctx, store, dataDir, opts...)
+	// The binary is the developer's own tool: `extensions link` names a local build, so it
+	// opts into dev sources, which an embedder of governed.OpenExtensions does not by default.
+	exts, err := governed.OpenExtensions(ctx, store, dataDir, append([]governed.ExtensionOption{governed.WithDevExtensions()}, opts...)...)
 	if err != nil {
 		_ = durable.Close()
 		return nil, err

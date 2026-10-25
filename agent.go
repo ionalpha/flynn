@@ -10,7 +10,7 @@
 // A run is assembled by the governed package, the same assembly the flynn binary
 // calls, so an embedded run carries the guards the binary does. [Config] adds backends
 // and policy; it has no field whose zero value removes a guard, and the only way to
-// run with less is a named [Config.Waivers] entry, which is recorded on the run's
+// run with less is a named [Policy.Waivers] entry, which is recorded on the run's
 // spine stream.
 package agent
 
@@ -48,7 +48,7 @@ When the objective is fully accomplished, stop and reply with a short summary of
 
 // Config configures an Agent. The zero value is usable: New fills in safe,
 // standalone defaults so the agent always runs without external services. No field's
-// zero value removes a guard; [Config.Waivers] is the only opt-out.
+// zero value removes a guard; [Policy.Waivers] is the only opt-out.
 type Config struct {
 	// Model is the provider:model identifier (e.g. "anthropic:claude-opus-4-8").
 	// Goal resolves it to a concrete model, reading the provider's API key from
@@ -94,16 +94,11 @@ type Config struct {
 	// Secrets resolves provider credentials, for the root model and for a delegated
 	// child that names another. Nil reads the process environment.
 	Secrets secret.Source
-	// Tools, when set, replaces the sandboxed working-tree tools. The run then has no
-	// sandbox to confine them, so it is refused unless Waivers names
-	// [governed.GuardSandbox]. The grant is exactly these tools plus the model call,
-	// narrowed by Agent when that is set. Delegation is off in this mode.
-	Tools []mission.Tool
-	// RequireApproval lists the actions that pause for a person before they run. With
-	// no Prompter the listed actions are refused, because a run that cannot reach a
-	// person does not proceed as though it had.
-	RequireApproval []string
-	// Prompter asks a person to decide an approval. With an empty RequireApproval it
+	// Policy carries what a host sets by list: its own tools, the actions that need
+	// approval and the guards it waives. It is a pointer so Config stays comparable, and
+	// nil asks for nothing beyond the governed defaults.
+	Policy *Policy
+	// Prompter asks a person to decide an approval. With no Policy.RequireApproval it
 	// makes the run interactive without listing any action.
 	Prompter mission.ApprovalPrompter
 	// Reporter receives the run's conversational events in addition to the spine,
@@ -113,13 +108,35 @@ type Config struct {
 	// that collides with a tool the run already offers fails the run.
 	Extensions governed.ToolBridge
 	// ExternalAgent hands the loop to an external agent CLI; Model need not be set.
-	// Combined with RequireApproval, or with Tools, the run fails: the external loop
-	// cannot enforce the first and is not given the second.
+	// Combined with Policy.RequireApproval, Policy.Tools, Agent or Driver the run fails:
+	// the external loop cannot enforce an approval policy or an archetype's capabilities
+	// and is not given a toolset or a driver name.
 	ExternalAgent *governed.ExternalAgent
+}
+
+// Policy is the list-valued part of [Config].
+type Policy struct {
+	// Tools, when set, replaces the sandboxed working-tree tools. The run then has no
+	// sandbox to confine them, so it is refused unless Waivers names
+	// [governed.GuardSandbox]. The grant is exactly these tools plus the model call,
+	// narrowed by Config.Agent when that is set. Delegation is off in this mode.
+	Tools []mission.Tool
+	// RequireApproval lists the actions that pause for a person before they run. With
+	// no Config.Prompter the listed actions are refused, because a run that cannot reach
+	// a person does not proceed as though it had.
+	RequireApproval []string
 	// Waivers are the guards this run opts out of, each with the reason an auditor
 	// will read. They are written to the run's stream before the run acts. Nothing
 	// else in Config removes a guard.
 	Waivers []governed.Waiver
+}
+
+// policy is the Policy to apply: the host's, or the empty one.
+func (c Config) policy() Policy {
+	if c.Policy == nil {
+		return Policy{}
+	}
+	return *c.Policy
 }
 
 // Agent is the core runtime.
@@ -161,10 +178,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	return nil
 }
 
-// Goal drives objective to completion through the sandboxed toolset and returns the
-// model's final answer. It resolves the model from Config.Model, confines every tool
-// to the working directory, and governs each model call and tool call through the
-// dispatch waist. A caller that needs the run id, why it stopped or its record calls
+// Goal drives objective to completion and returns the model's final answer. It resolves
+// the model from Config.Model, confines the tools to the working directory (unless
+// Policy.Waivers says the host's own tools are not confined), and governs each model call
+// and tool call through the dispatch waist. A caller that needs the run id, why it stopped or its record calls
 // [Agent.GoalResult].
 func (a *Agent) Goal(ctx context.Context, objective string) (string, error) {
 	res, err := a.GoalResult(ctx, objective)
@@ -250,7 +267,7 @@ func (a *Agent) backends() (governed.Backends, error) {
 }
 
 // options translates Config into the options of the governed assembly. Every guard is on
-// unless Config.Waivers names it.
+// unless Policy.Waivers names it.
 func (a *Agent) options(ctx context.Context, obs []mission.Reporter) ([]governed.Option, error) {
 	c := a.cfg
 	workdir := c.WorkDir
@@ -269,11 +286,12 @@ func (a *Agent) options(ctx context.Context, obs []mission.Reporter) ([]governed
 	if c.Sandbox != nil {
 		opts = append(opts, governed.WithSandbox(c.Sandbox))
 	}
-	for _, w := range c.Waivers {
+	pol := c.policy()
+	for _, w := range pol.Waivers {
 		opts = append(opts, governed.Waive(w.Guard, w.Reason))
 	}
-	if len(c.RequireApproval) > 0 || c.Prompter != nil {
-		opts = append(opts, governed.WithApproval(c.RequireApproval, c.Prompter))
+	if len(pol.RequireApproval) > 0 || c.Prompter != nil {
+		opts = append(opts, governed.WithApproval(pol.RequireApproval, c.Prompter))
 	}
 	reporter := c.Reporter
 	if len(obs) > 0 && obs[0] != nil {
@@ -288,12 +306,19 @@ func (a *Agent) options(ctx context.Context, obs []mission.Reporter) ([]governed
 
 	switch {
 	case c.ExternalAgent != nil:
-		if len(c.Tools) > 0 {
-			return nil, errors.New("agent: Config.Tools does not apply to an external agent loop")
+		// Each of these would be dropped silently and read as honoured: the external loop
+		// brings its own tools and its own loop, so neither a grant nor a driver name binds it.
+		switch {
+		case len(pol.Tools) > 0:
+			return nil, errors.New("agent: Policy.Tools does not apply to an external agent loop")
+		case c.Agent != nil:
+			return nil, errors.New("agent: Config.Agent does not apply to an external agent loop, which brings its own tools; its capabilities could not bound them")
+		case c.Driver != "":
+			return nil, errors.New("agent: Config.Driver does not apply to an external agent loop")
 		}
 		opts = append(opts, governed.WithExternalAgent(*c.ExternalAgent))
-	case len(c.Tools) > 0:
-		opts = append(opts, governed.WithToolset(c.Tools, a.toolGrant()))
+	case len(pol.Tools) > 0:
+		opts = append(opts, governed.WithToolset(pol.Tools, a.toolGrant()))
 	default:
 		// The default loop may also delegate to governed child runs: owned by the
 		// parent, grant narrowed, depth- and concurrency-bounded.
@@ -321,7 +346,7 @@ func (a *Agent) toolGrant() capability.Grant {
 			allowed[n] = true
 		}
 	}
-	for _, t := range a.cfg.Tools {
+	for _, t := range a.cfg.policy().Tools {
 		if n := t.Def().Name; a.cfg.Agent == nil || allowed[n] {
 			names = append(names, n)
 		}

@@ -1,12 +1,14 @@
 package governed
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
 
 	"github.com/ionalpha/flynn/approval"
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/internal/spinesink"
@@ -118,6 +120,26 @@ func ApprovalPolicy(actions []string) approval.Requirements {
 		}
 	}
 	return req
+}
+
+// checkApprovalNames refuses a policy that names an action the run's grant does not list.
+// The gate matches on the action's exact name, and an action outside the grant is refused at
+// the waist before it could be taken, so such a name gates nothing: it is a misspelling or a
+// tool the run was not given, and accepting it would print a posture that lists a gate no
+// action can reach.
+func (c *config) checkApprovalNames(grant capability.Grant) error {
+	var unknown []string
+	for name := range ApprovalPolicy(c.approve) {
+		if !grant.Allows(name) {
+			unknown = append(unknown, name)
+		}
+	}
+	if len(unknown) == 0 {
+		return nil
+	}
+	sort.Strings(unknown)
+	return fmt.Errorf("governed: WithApproval names %s, which this run's grant does not include (it offers %s)",
+		strings.Join(unknown, ", "), strings.Join(grant.Actions(), ", "))
 }
 
 // GatedActions is the sorted list of actions a policy pauses, for the line a run prints

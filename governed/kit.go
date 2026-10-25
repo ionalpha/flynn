@@ -7,6 +7,7 @@ import (
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -81,12 +82,27 @@ func (k *Kit) Grant() capability.Grant { return k.p.grant }
 // SessionID is the spine stream the kit records onto.
 func (k *Kit) SessionID() string { return k.p.sess.ID() }
 
+// boundAdmitter is the capability admitter for a call that must carry a grant. The
+// capability package admits everything on a context with none, which suits a standalone
+// agent; a served tool call that skipped [Kit.Bind] would then run with no policy at all,
+// and a refusal that names the missing step is what tells its author.
+type boundAdmitter struct{ capability.Admitter }
+
+func (a boundAdmitter) Admit(ctx context.Context, act dispatch.Action) error {
+	if _, ok := capability.FromContext(ctx); !ok {
+		return fault.New(fault.Forbidden, "capability_unbound",
+			"action "+act.Name+" has no grant on its context; bind one with Kit.Bind before dispatching")
+	}
+	return a.Admitter.Admit(ctx, act)
+}
+
 // Dispatcher is the waist a served call crosses: the capability admitter, the governance
 // sink, the containment gate over the kit's sandbox and the rate breaker. It is the same
-// waist a goal loop's actions cross.
+// waist a goal loop's actions cross. A call whose context was not bound with [Kit.Bind] is
+// refused, not admitted.
 func (k *Kit) Dispatcher() *dispatch.Dispatcher {
 	opts := []dispatch.Option{
-		dispatch.WithAdmitter(capability.Admitter{}),
+		dispatch.WithAdmitter(boundAdmitter{}),
 		dispatch.WithEventSink(k.p.sink),
 		dispatch.WithHook(capability.NewContainmentGate(k.p.sb)),
 	}

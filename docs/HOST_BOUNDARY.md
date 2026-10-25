@@ -451,21 +451,24 @@ and `cmd/flynn` is one caller of it. `internal/rigor`'s `TestBinaryDoesNotCompos
 fails the build if the binary starts building hooks or a sink itself, so an embedder
 and the binary cannot drift apart. The root `agent.Config` reaches the same function:
 it takes the host's `Resources`, `Jobs` and `Log` (all three or none), a `Sandbox`,
-`Secrets`, `Tools`, `RequireApproval`, `Prompter`, `Reporter`, `Extensions` and
-`ExternalAgent`, and `Goal` has a sibling, `GoalResult`, that returns the run id, the
-stop reason and the record beside the text.
+`Secrets`, `Prompter`, `Reporter`, `Extensions`, `ExternalAgent` and a `Policy` holding
+the list-valued settings (`Tools`, `RequireApproval`, `Waivers`), and `Goal` has a
+sibling, `GoalResult`, that returns the run id, the stop reason and the record beside
+the text. The lists sit behind a `Policy` pointer so `Config` stays comparable.
 
 Defaults are the governed ones: a zero option set gets the sandbox with its
 containment gate, the approval gate, the brakes and the budget, the spine sink, the
 auditor and the probes. A run gets less only through `governed.Waive(guard, reason)`.
 The package exports no `Without...` function, a test scans for one, and a waiver
 without a reason is refused. Each waiver is written to the run's own stream as a
-`governance.waived` event, and `Run.Submit` and `Run.Resume` write a
-`governance.posture` event stating which guards the run was wired with, so a sealed
-record carries the posture and a reader does not rely on the host's account of it. The
-posture follows `session.started` on the stream; the goal's first step can begin
-before the append returns, so it is in every run's record and not guaranteed ahead of
-the first action.
+`governance.waived` event, and `Assemble` then writes a `governance.posture` event
+stating which guards the run was wired with and the budget and brake limits in force, so
+a sealed record carries the posture and a reader does not rely on the host's account of
+it. Both are written before `Assemble` returns, so they precede the run's first action
+on every path that starts one (`Run.Submit`, `Run.Resume`, `Run.Do`, or a caller driving
+`Run.Runtime` itself), and they precede `session.started` on the stream: a reader looks
+for the first session event, not the first event. The spend ceiling from `WithBudget` is
+opened in `Assemble` for the same reason.
 
 A nil or zero option never means no guard. A nil sandbox, a nil model without an
 external agent, an unrestricted grant on `WithToolset` and an approval policy with no
@@ -473,7 +476,9 @@ prompter each refuse by name or deny; `TestOptionsNeverSilentlyWeaken` and
 `TestApprovalWithoutAPrompterDenies` hold them. The approval gate is always installed
 and passes everything when the policy is empty, so the posture event records
 `approval: true` with an empty action list in that case, and does not claim that
-approval was off.
+approval was off. An external agent loop has no approval gate on its path, so its
+posture records `approval: false`. A `Kit`'s dispatcher refuses a call whose context
+carries no grant, where the capability package alone would admit it.
 
 Where policy comes from. The assembly takes the grant, the dispatch hooks, the
 approval policy, the egress allow-list and the sandbox policy only from what the host

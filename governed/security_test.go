@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -289,30 +290,45 @@ func TestRunClosesOnlyWhatItOwns(t *testing.T) {
 	}
 }
 
-// TestPostureIsRecordedAfterTheSessionOpens: the run's stream starts with the session's own
-// opening event, which readers of a stream rely on, and the posture follows it before any
-// terminal event.
-func TestPostureIsRecordedAfterTheSessionOpens(t *testing.T) {
+// streamTypes lists the event types on a run's stream in order.
+func streamTypes(t *testing.T, log spine.Log, stream string) []string {
+	t.Helper()
+	events, err := log.Read(context.Background(), spine.Query{Stream: stream})
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	types := make([]string, len(events))
+	for i, e := range events {
+		types[i] = e.Type
+	}
+	return types
+}
+
+// TestPostureIsOnTheRecordBeforeAnythingStartsTheRun: Assemble returns with the waivers and
+// the posture already on the stream, so a goal started by any path (Submit, Resume, or a
+// host driving Runtime itself, as a served goal does) has the statement ahead of its first
+// action. Checked before any start path is called, since none can run earlier than the
+// assembly, and again after Do to pin the order against the session's own events.
+func TestPostureIsOnTheRecordBeforeAnythingStartsTheRun(t *testing.T) {
 	b, _ := memBackends(t)
-	run, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()))
+	run, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), Waive(GuardBudget, "the host meters spend"))
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	defer func() { _ = run.Close() }()
+
+	got := streamTypes(t, b.Log, run.ID())
+	if len(got) != 2 || got[0] != WaivedEventType || got[1] != PostureEventType {
+		t.Fatalf("stream after Assemble = %v, want the waiver and then the posture", got)
+	}
+
 	if _, err := run.Do(ctxT(t), goal.Spec{Objective: "answer"}); err != nil {
 		t.Fatalf("run: %v", err)
 	}
-
-	events, err := b.Log.Read(context.Background(), spine.Query{Stream: run.ID()})
-	if err != nil {
-		t.Fatalf("read: %v", err)
-	}
-	if len(events) < 2 || events[0].Type != string(session.KindSessionStarted) || events[1].Type != PostureEventType {
-		var types []string
-		for _, e := range events {
-			types = append(types, e.Type)
-		}
-		t.Fatalf("stream starts %v, want the session opening and then the posture", types)
+	got = streamTypes(t, b.Log, run.ID())
+	started := slices.Index(got, string(session.KindSessionStarted))
+	if started < 2 || got[1] != PostureEventType {
+		t.Fatalf("stream = %v, want the posture ahead of %s", got, session.KindSessionStarted)
 	}
 }
 

@@ -36,6 +36,15 @@ type extensionConfig struct {
 	egressGrant []string
 	hostSigner  func(ext, tool string) extension.HostSigner
 	hostFetcher func(ext, tool string) extension.HostFetcher
+	devSources  bool
+}
+
+// WithDevExtensions makes the loader honour a dev source: an extension that names a local
+// binary by path, which is unsigned and unverified. Without it only a signed release
+// resolves, so a host that embeds the assembly cannot be handed an unsigned binary by a
+// spec in its store. Turn it on for a developer's own machine, never for a deployed host.
+func WithDevExtensions() ExtensionOption {
+	return func(c *extensionConfig) { c.devSources = true }
 }
 
 // WithExtensionEgress sets the host's outbound allow-list for a launched extension. The
@@ -64,10 +73,10 @@ func WithExtensionFetcher(fn func(ext, tool string) extension.HostFetcher) Exten
 
 // OpenExtensions syncs the bundled catalog into store and builds a loader whose only
 // handler is the process handler. A released extension resolves by downloading it and
-// proving its origin against the pinned signing identity; a dev extension resolves by its
-// local path, which is unsigned and honoured here because this function is the explicit
-// opt-in. A spec that declares a release is never satisfied by a local binary, so a stray
-// dev block cannot downgrade a signed extension to an unsigned one. Every launch is
+// proving its origin against the pinned signing identity. A dev extension, which resolves
+// by a local path and is unsigned, is refused unless [WithDevExtensions] is given. A spec
+// that declares a release is never satisfied by a local binary, so a stray dev block
+// cannot downgrade a signed extension to an unsigned one. Every launch is
 // confined, and is refused rather than run unconfined. Each launch's scratch directory
 // lives under dataDir and is removed when the connection stops.
 func OpenExtensions(ctx context.Context, store resource.Store, dataDir string, opts ...ExtensionOption) (*Extensions, error) {
@@ -102,7 +111,7 @@ func OpenExtensions(ctx context.Context, store resource.Store, dataDir string, o
 				Dir:        filepath.Join(dataDir, "extensions"),
 				Downloader: fetch.New(),
 			},
-			Dev: extension.DevResolver{Enabled: true},
+			Dev: extension.DevResolver{Enabled: cfg.devSources},
 		},
 		procOpts...,
 	)

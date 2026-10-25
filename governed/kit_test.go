@@ -9,6 +9,8 @@ import (
 
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
+	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
@@ -69,6 +71,37 @@ func TestKitRecordsItsBrakeWaiver(t *testing.T) {
 	}
 	if kit.Dispatcher() == nil || len(kit.Toolset()) == 0 {
 		t.Fatal("kit offers no dispatcher or tools")
+	}
+}
+
+// TestKitDispatcherDeniesUntilBound: a served call whose context never went through Bind has
+// no grant, and the capability package admits that. The kit must not: it refuses by name,
+// and a bound call is admitted only for what the grant lists.
+func TestKitDispatcherDeniesUntilBound(t *testing.T) {
+	b, _ := memBackends(t)
+	kit, err := NewKit(ctxT(t), b.Log, WithWorkDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("kit: %v", err)
+	}
+	defer func() { _ = kit.Close() }()
+	d := kit.Dispatcher()
+	ran := false
+	work := func(context.Context) (dispatch.Metering, error) { ran = true; return dispatch.Metering{}, nil }
+
+	err = d.Govern(context.Background(), dispatch.Action{Name: "bash"}, work)
+	if err == nil || ran {
+		t.Fatalf("an unbound call was admitted: err=%v ran=%v", err, ran)
+	}
+	if fault.CodeOf(err) != "capability_unbound" {
+		t.Fatalf("refusal code = %q, want capability_unbound", fault.CodeOf(err))
+	}
+
+	bound := kit.Bind(context.Background(), capability.NewGrant("read"))
+	if err := d.Govern(bound, dispatch.Action{Name: "bash"}, work); err == nil || ran {
+		t.Fatalf("a call outside the bound grant was admitted: err=%v ran=%v", err, ran)
+	}
+	if err := d.Govern(bound, dispatch.Action{Name: "read"}, work); err != nil || !ran {
+		t.Fatalf("a call inside the bound grant was refused: err=%v ran=%v", err, ran)
 	}
 }
 

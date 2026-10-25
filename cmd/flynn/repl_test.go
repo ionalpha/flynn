@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -46,8 +47,10 @@ func assertMultiTurnStream(t *testing.T, evs []session.Event, wantTurns int) {
 	if len(evs) == 0 {
 		t.Fatal("empty stream")
 	}
-	if evs[0].Kind != session.KindSessionStarted {
-		t.Fatalf("first event = %q, want %q", evs[0].Kind, session.KindSessionStarted)
+	// The run states its governance posture before it does anything, so the posture is the
+	// first event and the session opens right after it.
+	if len(evs) < 2 || string(evs[0].Kind) != governed.PostureEventType || evs[1].Kind != session.KindSessionStarted {
+		t.Fatalf("stream opens with %q, want %q then %q", evs[0].Kind, governed.PostureEventType, session.KindSessionStarted)
 	}
 	starts, converged, lastTurn := 0, 0, 0
 	open := map[string]bool{}

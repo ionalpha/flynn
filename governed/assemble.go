@@ -197,9 +197,11 @@ func (c *config) check(mode Mode) error {
 }
 
 // Assemble composes one governed run over b. model drives the loop and may be nil only
-// with [WithExternalAgent]. Each waiver is recorded on the run's stream before it
-// returns, as a [WaivedEventType] event. The posture is recorded by [Run.Submit] and
-// [Run.Resume], which is where the run's stream starts.
+// with [WithExternalAgent]. The spend ceiling from [WithBudget] is opened, each waiver is
+// recorded as a [WaivedEventType] event and the posture as a [PostureEventType] event
+// before it returns, so the ceiling and the record are in place ahead of the first action
+// however the goal is later started: [Run.Submit], [Run.Resume], [Run.Do], or a caller that
+// drives [Run.Runtime] itself. A resumed run is a new assembly and states its own.
 // The caller owns the returned run for the length of one goal and closes it.
 func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) (*Run, error) {
 	if err := b.validate(); err != nil {
@@ -227,17 +229,32 @@ func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) 
 	if err != nil {
 		return nil, err
 	}
+	if err := c.checkApprovalNames(p.grant); err != nil {
+		_ = p.close()
+		return nil, err
+	}
 	run, err := c.build(model, b, p, mode)
 	if err != nil {
 		_ = p.close()
 		return nil, err
 	}
-	// Recorded last so a build that failed leaves no waiver behind for a run that never
-	// existed, and before the caller can start the run, so the weaker posture is on the
-	// record ahead of its first action.
+	// Done last so a build that failed leaves no ceiling or waiver behind for a run that
+	// never existed, and before the caller can start the run, so the ceiling is in force
+	// and the posture is on the record ahead of its first action on every path that starts
+	// one. The waivers go first: they say what was given up, the posture what remains.
+	if c.budget != nil && run.posture.Budget {
+		if _, err := budgetpkg.NewLedger(b.Resources).Open(ctx, p.sess.ID(), resource.Scope{}, *c.budget); err != nil {
+			_ = p.close()
+			return nil, fmt.Errorf("governed: open run budget: %w", err)
+		}
+	}
 	if err := recordWaivers(ctx, b.Log, p.sess.ID(), c.waiveList); err != nil {
 		_ = p.close()
 		return nil, fmt.Errorf("governed: record waivers: %w", err)
+	}
+	if err := recordPosture(ctx, b.Log, p.sess.ID(), run.posture); err != nil {
+		_ = p.close()
+		return nil, fmt.Errorf("governed: record posture: %w", err)
 	}
 	return run, nil
 }
@@ -274,20 +291,26 @@ func (c *config) gates(b Backends, p *parts) (gates, error) {
 	return g, nil
 }
 
-func (c *config) newBrakes() *brakes.Hook {
+// brakeLimits is the limits the run's brakes are built with, so the posture states the
+// ones in force and not the ones asked for.
+func (c *config) brakeLimits() brakes.Limits {
 	if c.brake != nil {
-		return brakes.NewHook(*c.brake, nil)
+		return *c.brake
 	}
-	return DefaultBrakes()
+	return defaultBrakeLimits()
 }
+
+func defaultBrakeLimits() brakes.Limits {
+	return brakes.Limits{MaxActions: DefaultMaxActionsPerMinute, Window: time.Minute}
+}
+
+func (c *config) newBrakes() *brakes.Hook { return brakes.NewHook(c.brakeLimits(), nil) }
 
 // DefaultBrakes builds the run's safety governor: the circuit breaker that halts a
 // runaway from outside the model loop. Its rate is a generous backstop that fires only on
 // a degenerate tight loop, never on legitimate tool use. Each call returns a fresh Hook
 // with its own in-memory kill-switch, so a run's breaker state and halt are its own.
-func DefaultBrakes() *brakes.Hook {
-	return brakes.NewHook(brakes.Limits{MaxActions: DefaultMaxActionsPerMinute, Window: time.Minute}, nil)
-}
+func DefaultBrakes() *brakes.Hook { return brakes.NewHook(defaultBrakeLimits(), nil) }
 
 func (c *config) observer(p *parts) mission.Reporter {
 	if c.reporter == nil {
@@ -314,6 +337,18 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	}
 	if g.stack != nil {
 		post.ApprovalActions = g.stack.actions
+	}
+	if mode == ModeExternal {
+		// An external agent loop runs its own tools beyond the approval gate, so the gate is
+		// built and never consulted. Claiming it would tell a reader of the record that a
+		// human could stop an action nothing routes through one.
+		post.Approval, post.ApprovalActions = false, nil
+	}
+	if g.pool != nil && c.budget != nil {
+		post.BudgetLimits = *c.budget
+	}
+	if g.brk != nil {
+		post.BrakeLimits = c.brakeLimits()
 	}
 	for k, v := range c.waivers {
 		post.Waived[k] = v
@@ -417,7 +452,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	}
 	return &Run{
 		rt: rt, p: p, store: b.Resources, log: b.Log, posture: post,
-		mode: mode, external: c.external, budget: c.budget,
+		mode: mode, external: c.external,
 	}, nil
 }
 

@@ -121,7 +121,7 @@ func (a assembly) assemble(ctx context.Context) (*governed.Run, error) {
 }
 
 // stringList is a flag.Value that accumulates every occurrence of a repeatable flag,
-// so `--require-approval shell --require-approval net.fetch` names two actions rather
+// so `--require-approval bash --require-approval write` names two actions rather
 // than the second overwriting the first.
 type stringList struct{ values []string }
 

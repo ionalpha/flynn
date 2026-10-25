@@ -3,6 +3,8 @@ package governed
 import (
 	"context"
 
+	"github.com/ionalpha/flynn/brakes"
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -63,19 +65,18 @@ func recordWaivers(ctx context.Context, log spine.Log, stream string, ws []Waive
 	return nil
 }
 
-// PostureEventType is the spine event type under which [Run.Submit] and [Run.Resume]
-// state, on the run's own stream, which guards the run was wired with. [WaivedEventType]
-// says what was given up and why; this says what is in force, so a reader of a sealed
-// record learns the posture from the record and not from the host's account of it. It is
-// written right after the goal is submitted, which keeps the session.started event first
-// on the stream; the goal's first step can begin before the append returns, so the event
-// is in the record of every run but not guaranteed ahead of its first action. A resumed
-// run states it again, because each assembly is its own claim.
+// PostureEventType is the spine event type under which [Assemble] states, on the run's own
+// stream, which guards the run was wired with. [WaivedEventType] says what was given up and
+// why; this says what is in force, so a reader of a sealed record learns the posture from
+// the record and not from the host's account of it. It is written before [Assemble]
+// returns, so it precedes the run's first action however the goal is started, and so it
+// precedes the session's own opening event: a reader looking for a run's first session
+// event skips the governance events ahead of it. A resumed run states it again, because
+// each assembly is its own claim.
 const PostureEventType = "governance.posture"
 
-// recordPosture writes p onto stream. A failed write fails the submit or resume for the
-// same reason a failed waiver fails assembly: a run weaker than the binary's must not be
-// able to hide it.
+// recordPosture writes p onto stream. A failed write fails assembly for the same reason a
+// failed waiver does: a run weaker than the binary's must not be able to hide it.
 func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture) error {
 	actions := make([]any, 0, len(p.ApprovalActions))
 	for _, a := range p.ApprovalActions {
@@ -99,6 +100,10 @@ func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture)
 			"allowance":       p.Allowance,
 			"brakes":          p.Brakes,
 			"budget":          p.Budget,
+			"budgetTokens":    p.BudgetLimits.Tokens,
+			"budgetCost":      p.BudgetLimits.Cost,
+			"brakeMaxActions": p.BrakeLimits.MaxActions,
+			"brakeWindow":     p.BrakeLimits.Window.String(),
 			"halt":            p.Halt,
 			"eventSink":       p.EventSink,
 			"verifier":        p.Verifier,
@@ -147,6 +152,12 @@ type Posture struct {
 	Brakes bool
 	Budget bool
 	Halt   bool
+
+	// BudgetLimits is the spend ceiling opened for the run; zero when the budget hook is
+	// wired and no ceiling was given, which leaves the run unmetered against any pool.
+	BudgetLimits budgetpkg.Limits
+	// BrakeLimits is the limits the run's brakes were built with, zero when waived.
+	BrakeLimits brakes.Limits
 
 	EventSink   bool
 	Verifier    bool

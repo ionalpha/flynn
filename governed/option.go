@@ -252,9 +252,10 @@ func WithBrakeLimits(l brakes.Limits) Option {
 	}
 }
 
-// WithBudget sets the spend ceiling [Run.Prepare] opens for the run. A run with no
-// ceiling is unchanged: its budget hook is wired but a pool with no budget is
-// unlimited.
+// WithBudget sets the spend ceiling [Assemble] opens for the run, so it is in force on
+// every path that starts the run. A run with no ceiling is unchanged: its budget hook is
+// wired but a pool with no budget is unlimited. The ceiling is the run's pool, keyed by its
+// id: a pool already open under that id (a resumed run) is kept as it stands.
 func WithBudget(l budgetpkg.Limits) Option {
 	return func(c *config) { c.budget = &l }
 }
