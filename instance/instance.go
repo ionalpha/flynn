@@ -93,6 +93,10 @@ type Status struct {
 	State              State    `json:"state,omitempty"`
 	Runs               []string `json:"runs,omitempty"`
 	ObservedGeneration int64    `json:"observedGeneration,omitempty"`
+	// OmittedRuns counts the run ids [SetStatus] dropped because the instance
+	// reported more than [MaxListLen], or ids longer than [MaxFieldLen]. A reader
+	// sees Runs is incomplete instead of the whole beat failing.
+	OmittedRuns int `json:"omittedRuns,omitempty"`
 }
 
 var specSchema = json.RawMessage(`{
@@ -147,10 +151,14 @@ func Register(ctx context.Context, store resource.Store, scope resource.Scope, i
 		r.Status = existing.Status
 		// The record cap covers the merged record, so a spec cannot be sized to
 		// overflow around a status already stored.
-		if old, derr := DecodeStatus(existing); derr == nil {
-			if err := validate(id, spec, old); err != nil {
-				return resource.Resource{}, err
-			}
+		// An undecodable stored status counts as empty, so corruption cannot be
+		// used to skip the check.
+		old, derr := DecodeStatus(existing)
+		if derr != nil {
+			old = Status{}
+		}
+		if err := validate(id, spec, old); err != nil {
+			return resource.Resource{}, err
 		}
 	case errors.Is(err, resource.ErrNotFound):
 		if r.Status, err = (Status{State: StateIdle}).encode(); err != nil {
@@ -167,7 +175,8 @@ func Register(ctx context.Context, store resource.Store, scope resource.Scope, i
 // by reading the current record first, so status and spec are written by their
 // respective owners and never clobber each other.
 func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, id string, state State, runs []string) (resource.Resource, error) {
-	st := Status{State: state, Runs: runs}
+	st := Status{State: state}
+	st.Runs, st.OmittedRuns = capRuns(runs)
 	if err := validate(id, Spec{}, st); err != nil {
 		return resource.Resource{}, err
 	}
@@ -175,10 +184,12 @@ func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, 
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	if old, derr := DecodeSpec(existing); derr == nil {
-		if err := validate(id, old, st); err != nil {
-			return resource.Resource{}, err
-		}
+	old, derr := DecodeSpec(existing)
+	if derr != nil {
+		old = Spec{}
+	}
+	if err := validate(id, old, st); err != nil {
+		return resource.Resource{}, err
 	}
 	status, err := st.encode()
 	if err != nil {
@@ -192,6 +203,20 @@ func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, 
 // [MaxFieldLen], [MaxListLen] or [MaxRecordBytes]. The stored record is left
 // unchanged.
 var ErrTooLarge = errors.New("instance: field or record exceeds its size cap")
+
+// capRuns keeps the first [MaxListLen] run ids that fit [MaxFieldLen] and counts
+// the rest. A Reporter that over-reports must not make every beat fail: the beat
+// is the liveness signal, and a refused one reads as an unreachable runner.
+func capRuns(runs []string) (kept []string, omitted int) {
+	for _, id := range runs {
+		if len(kept) == MaxListLen || len(id) > MaxFieldLen {
+			omitted++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept, omitted
+}
 
 func validate(id string, spec Spec, st Status) error {
 	if len(id) > MaxFieldLen || len(spec.Host) > MaxFieldLen || len(spec.Version) > MaxFieldLen ||

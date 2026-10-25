@@ -190,12 +190,6 @@ func TestInstanceFieldLengthCapped(t *testing.T) {
 			t.Fatalf("%s: err = %v, want ErrTooLarge", name, err)
 		}
 	}
-	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, []string{long}); !errors.Is(err, instance.ErrTooLarge) {
-		t.Fatalf("run id: err = %v", err)
-	}
-	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, make([]string, instance.MaxListLen+1)); !errors.Is(err, instance.ErrTooLarge) {
-		t.Fatalf("runs: err = %v", err)
-	}
 	after, err := store.Get(ctx, instance.Kind, resource.Scope{}, "r1")
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +239,7 @@ func TestInstanceRecordSizeCapped(t *testing.T) {
 func TestInstanceHasNoGoalTextOrSecretFields(t *testing.T) {
 	reviewed := map[string]bool{
 		"Spec.Host": true, "Spec.Version": true, "Spec.Capabilities": true,
-		"Status.State": true, "Status.Runs": true, "Status.ObservedGeneration": true,
+		"Status.State": true, "Status.Runs": true, "Status.ObservedGeneration": true, "Status.OmittedRuns": true,
 	}
 	for _, typ := range []reflect.Type{reflect.TypeOf(instance.Spec{}), reflect.TypeOf(instance.Status{})} {
 		for i := range typ.NumField() {
@@ -277,5 +271,32 @@ func TestStatusWriteCannotChangeSpec(t *testing.T) {
 	}
 	if string(afterSpec.Status) != string(afterStatus.Status) {
 		t.Fatalf("spec write changed status: %s -> %s", afterStatus.Status, afterSpec.Status)
+	}
+}
+
+// TestOverReportedRunsAreTruncatedNotRefused pins that a Reporter naming too many
+// or too long run ids still lands its beat (so the runner stays reachable) and
+// the status says how many were dropped.
+func TestOverReportedRunsAreTruncatedNotRefused(t *testing.T) {
+	ctx := context.Background()
+	store := newCapStore(t)
+	if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	runs := make([]string, instance.MaxListLen+5)
+	for i := range runs {
+		runs[i] = "run"
+	}
+	runs[0] = strings.Repeat("x", instance.MaxFieldLen+1)
+	r, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, runs)
+	if err != nil {
+		t.Fatalf("an over-reporting beat must still be written: %v", err)
+	}
+	st, err := instance.DecodeStatus(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(st.Runs) != instance.MaxListLen || st.OmittedRuns != 5 {
+		t.Fatalf("runs = %d, omitted = %d, want %d and 5", len(st.Runs), st.OmittedRuns, instance.MaxListLen)
 	}
 }
