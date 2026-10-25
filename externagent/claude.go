@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 )
 
@@ -111,20 +110,14 @@ const claudeCapabilityNotice = "You are running as a governed backend inside Fly
 // claude with unattested effects; a healthy but logged-out CLI is a recoverable
 // onboarding prompt.
 func (c *Claude) Detect(ctx context.Context) (Readiness, error) {
-	if c.spawner == nil {
-		return Readiness{Refuse: true, Reason: "claude detection needs a process spawner"}, nil
+	version, stop := cliProbe{
+		name: "claude", bin: c.bin, spawner: c.spawner,
+		notFound: "claude CLI not found on PATH; install Claude Code to use the claude backend",
+	}.probeVersion(ctx)
+	if stop != nil {
+		return *stop, nil
 	}
-	version, err := c.spawner.Probe(ctx, c.bin, "--version")
-	if err != nil {
-		// A failed probe is unreadiness, not a Go error: report an actionable reason so the
-		// caller can onboard rather than crash. A CLI on disk that would not run says
-		// something different from one that is absent, so the two are reported apart.
-		if _, statErr := os.Stat(c.bin); statErr == nil {
-			return Readiness{Reason: fmt.Sprintf("claude is installed at %s but the confined child could not run it: %v", c.bin, err)}, nil //nolint:nilerr // an unrunnable CLI is unreadiness, not a Go error
-		}
-		return Readiness{Reason: "claude CLI not found on PATH; install Claude Code to use the claude backend"}, nil //nolint:nilerr // probe failure is reported as unreadiness
-	}
-	r := Readiness{Available: true, Version: strings.TrimSpace(version)}
+	r := Readiness{Available: true, Version: version}
 
 	// The lockdown depends on four knobs: headless print, the stream-json event format,
 	// the HTTP MCP client, and the tool and permission controls that deny the native
