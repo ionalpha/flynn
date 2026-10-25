@@ -38,6 +38,20 @@ func TestMarkdownParagraphWraps(t *testing.T) {
 	}
 }
 
+// TestMarkdownVariationSelectorAfterGap: a word that opens with U+FE0F joins the
+// space the filler puts before it into one two-cell cluster that the wrap counted
+// as one cell, so the row comes out a cell too wide and the final clamp has to
+// catch it. ansi.Truncate measures that cluster as one cell, so the clamp cannot
+// take Truncate's word for it (issue #582, reduced).
+func TestMarkdownVariationSelectorAfterGap(t *testing.T) {
+	const width = 9
+	for _, r := range render.NewMarkdown(theme.Default()).Render("0 ️0000000", width) {
+		if w := ansi.StringWidth(r); w > width {
+			t.Fatalf("row is %d cells at width %d: %q", w, width, r)
+		}
+	}
+}
+
 func TestMarkdownBlankLineBetweenBlocks(t *testing.T) {
 	rows := renderPlain(t, "one\n\ntwo", 40)
 	want := []string{"one", "", "two"}
