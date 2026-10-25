@@ -166,3 +166,26 @@ func TestFromEnvEnablesTheWatchdog(t *testing.T) {
 		t.Error("an unparseable FLYNN_LEAK_WATCH enabled the watchdog")
 	}
 }
+
+// TestStartRejectsAnUnsafeCounterNameBeforeTouchingTheBundle: a counter name becomes
+// part of a leak dump path, so one that is not a plain filename component is refused
+// by Start itself, with no bundle directory created.
+func TestStartRejectsAnUnsafeCounterNameBeforeTouchingTheBundle(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "bundle")
+	b, err := Start(Config{
+		Dir:      dir,
+		Interval: time.Second,
+		Clock:    clock.NewManual(epoch),
+		Counters: []Counter{{Name: "../escape", Read: func() float64 { return 0 }}},
+	})
+	if err == nil {
+		_ = b.Stop()
+		t.Fatal("Start accepted a counter name that escapes the bundle")
+	}
+	if !strings.Contains(err.Error(), "../escape") {
+		t.Errorf("error %q does not name the offending counter", err)
+	}
+	if _, err := os.Stat(dir); !os.IsNotExist(err) {
+		t.Error("a rejected config created the bundle directory")
+	}
+}

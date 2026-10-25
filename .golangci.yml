@@ -65,8 +65,8 @@ linters:
     # that routes every endpoint through one handler would otherwise set the ceiling
     # for production code.
     gocyclo:
-      # Set by launch.BuildPlan.
-      min-complexity: 23
+      # Set by (*core).projectRecords and resolveReviewCredentials.
+      min-complexity: 21
     gocognit:
       # Set by conformance.GenerateCrypto, (*utf8Reader).Read and render.wrapSpans.
       min-complexity: 30
