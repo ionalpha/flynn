@@ -77,7 +77,14 @@ Run `./dev/check` until it is green before opening a PR.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by
   you. GitHub renders a newline inside a paragraph as a line break, so a body wrapped
   like a commit message displays as ragged short lines. Lists, tables and fenced code
-  are unaffected. CI rejects the wrapped form.
+  are unaffected. CI rejects the wrapped form. Write `Closes #123` only for a real
+  GitHub issue; CI rejects a closing keyword with no number.
+- **Coverage:** `codecov/patch` is advisory, so a red one does not block the merge, and
+  that makes it easy to stop reading. Read the patch report on every PR: an uncovered
+  changed line in production code needs a test, or a reason in the PR body (code CI
+  cannot run, such as a platform or privilege the runner lacks). A test harness that
+  lives outside `_test.go` files (the `*test` conformance packages, fault doubles) goes
+  in `codecov.yml`'s ignore list with its reason, rather than being tested itself.
 - **Security:** never commit secrets. Report vulnerabilities privately (see `SECURITY.md`).
 
 ## Out of scope here

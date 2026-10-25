@@ -110,6 +110,13 @@ if [ "$have_body" -eq 1 ]; then
     echo "lists, tables and fenced code are unaffected." >&2
     exit 1
   fi
+
+  # Duplicated in .github/workflows/pr-body.yml for the reason given above.
+  if printf '%s\n' "$body" | tr -d '\r' | grep -Eiq '^[[:space:]]*(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[[:space:]]*$'; then
+    echo "Refusing to open a PR: the body has a closing keyword with no issue number." >&2
+    echo "Write 'Closes #123' for a real issue, or delete the line." >&2
+    exit 1
+  fi
 fi
 
 # --ready is ours, not gh's: drop it and open a pull request that is ready for review.
