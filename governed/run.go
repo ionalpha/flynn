@@ -54,6 +54,9 @@ type Result struct {
 	Message string
 	// Steps is how many reconcile steps the goal spent.
 	Steps int
+	// Posture is what the run was assembled with, including every waived guard, so a
+	// host that only keeps the result can still say how governed the run was.
+	Posture Posture
 	// Record is the run's events in order. It is read after the run ends and is empty if
 	// the log could not be read; the spine remains the authority.
 	Record []session.Event
@@ -169,7 +172,7 @@ func (r *Run) Do(ctx context.Context, spec goal.Spec) (Result, error) {
 // settle reads how the goal ended from its status, which the reconciler owns, and the
 // record from the log, after the runtime has stopped writing to either.
 func (r *Run) settle(ctx context.Context, key resource.Key, text string, werr error) Result {
-	res := Result{RunID: r.ID(), Text: text, Stop: StopStalled}
+	res := Result{RunID: r.ID(), Text: text, Stop: StopStalled, Posture: r.posture}
 	switch {
 	case werr == nil:
 		res.Stop = StopConverged

@@ -74,7 +74,7 @@ func approvalIdentity(entropy io.Reader) (approval.Signer, *approval.Keyring, er
 	signer, pub, err := approval.GenerateEd25519Signer(approvalKeyID, entropy)
 	if err == nil {
 		// A key that was just generated is always the right size, so this does not fail in
-		// practice. It is checked rather than discarded because a keyring that quietly
+		// practice. It is checked rather than discarded because a keyring that silently
 		// dropped the run's only approver would refuse every approval the run minted, and
 		// the run would read as one where the operator's decisions never took effect.
 		err = keyring.Add(approvalKeyID, pub)

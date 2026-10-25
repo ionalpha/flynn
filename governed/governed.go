@@ -55,7 +55,7 @@ const (
 
 // Backends are the durable ports a run is assembled over. All three are required: a run
 // with no log has no record, and one with no resource store or queue has nothing to
-// reconcile, so a nil port is an error rather than a quiet in-memory substitute that
+// reconcile, so a nil port is an error rather than an in-memory substitute that is not asked for that
 // would lose the run on exit. [MemoryBackends] is the explicit in-memory choice.
 type Backends struct {
 	// Resources holds the run's goal and every child goal, budget and approval it spawns.
