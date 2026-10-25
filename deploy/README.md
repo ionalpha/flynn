@@ -15,7 +15,7 @@ is no attack surface beyond the binary itself.
 
 ```sh
 # from the repository root
-docker build -t flynn:local --build-arg VERSION=v0.1.0 .
+docker build -t flynn:local --build-arg VERSION=v0.2.0 .
 ```
 
 ## The data volume
