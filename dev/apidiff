@@ -35,8 +35,9 @@ ACCEPTED="dev/apidiff-accepted.txt"
 # prints its symbols with no path before them (`- Config.Objective: removed`), so
 # it is the one entry that cannot be matched by name. Keep in step with the
 # Stability tiers section of ARCHITECTURE.md and the table in docs/VERSIONING.md;
-# internal/rigor fails when the three disagree.
-STABLE=". capability chain clock dispatch fault ids jobs llm memory/memorytest observe provider resource sandbox secret spine state storage/sqlite tools"
+# internal/rigor fails when the three disagree, and when a stable package names a
+# type from a package outside this list in its exported API.
+STABLE=". capability chain clock envelope fault hlc ids jobs llm memory/memorytest observe provider resource sandbox secret spine state storage/sqlite tools"
 
 # Conformance suites. Each one is the executable half of a port in STABLE, and a
 # change that makes an implementation which passed fail is a break of that port

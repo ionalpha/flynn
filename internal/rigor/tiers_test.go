@@ -12,15 +12,13 @@ import (
 	"testing"
 )
 
-// The stable tier is written down in three places a person reads and once more in
-// the one a machine acts on: the Stability tiers section of ARCHITECTURE.md, the
-// tier table of docs/VERSIONING.md, and the STABLE list of dev/apidiff. The first
-// two are promises; the last is the gate that keeps them. A name missing from the
-// gate is a promise nothing enforces, which is how the root agent package went
-// unchecked while ARCHITECTURE.md called it stable. These tests fail when the four
-// disagree, so the next edit to any of them meets the others.
-
 // rootName is how the prose names the module root, which dev/apidiff writes as ".".
+// The tier is written in the Stability tiers section of ARCHITECTURE.md and the
+// tier table of docs/VERSIONING.md, which are promises, and in the STABLE list of
+// dev/apidiff, which is the gate that keeps them. A name missing from the gate is a
+// promise nothing enforces, which is how the root agent package went unchecked
+// while ARCHITECTURE.md called it stable. The tests in this file fail when those
+// three disagree, so the next edit to one meets the others.
 const rootName = "agent"
 
 var (
@@ -63,6 +61,15 @@ func apidiffLists(t *testing.T) (stable, suites []string) {
 	return stable, suites
 }
 
+// backtickedNames returns the code spans of a markdown line, in order.
+func backtickedNames(line string) []string {
+	var out []string
+	for _, m := range backticked.FindAllStringSubmatch(line, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
 // bulletTokens returns the backticked names in the markdown text from the line
 // containing start up to, not including, the line containing end.
 func bulletTokens(t *testing.T, doc, start, end string) []string {
@@ -75,11 +82,7 @@ func bulletTokens(t *testing.T, doc, start, end string) []string {
 	if !ok {
 		t.Fatalf("no text %q after %q", end, start)
 	}
-	var out []string
-	for _, m := range backticked.FindAllStringSubmatch(body, -1) {
-		out = append(out, m[1])
-	}
-	return out
+	return backtickedNames(body)
 }
 
 // onlyIn returns the entries of a that are not in b, sorted and without repeats.
@@ -128,10 +131,13 @@ func TestStableTierListsAgree(t *testing.T) {
 		t.Fatal("docs/VERSIONING.md has no Stable surface row in its tier table")
 	}
 	row, _, _ = strings.Cut(row, "\n")
-	var vers []string
-	for _, m := range backticked.FindAllStringSubmatch(row, -1) {
-		vers = append(vers, m[1])
+	vers := backtickedNames(row)
+	_, domainRow, ok := strings.Cut(versioning, "| Domain surface |")
+	if !ok {
+		t.Fatal("docs/VERSIONING.md has no Domain surface row in its tier table")
 	}
+	domainRow, _, _ = strings.Cut(domainRow, "\n")
+	versDomain := backtickedNames(domainRow)
 
 	lists := []struct {
 		name string
@@ -153,6 +159,35 @@ func TestStableTierListsAgree(t *testing.T) {
 	}
 	if both := onlyIn(arch, onlyIn(arch, archDomain)); len(both) > 0 {
 		t.Errorf("ARCHITECTURE.md lists %v as both stable and domain", both)
+	}
+
+	// Both domain lists end in "and the rest", so neither is complete; what they
+	// name must agree with each other and must not be a gated package.
+	domains := []struct {
+		name string
+		got  []string
+	}{
+		{"ARCHITECTURE.md domain surface", archDomain},
+		{"docs/VERSIONING.md domain row", versDomain},
+	}
+	for _, l := range domains {
+		if len(l.got) < 5 {
+			t.Errorf("%s: read %d domain names; the parser has lost the list", l.name, len(l.got))
+		}
+		if gated := onlyIn(l.got, onlyIn(l.got, gate)); len(gated) > 0 {
+			t.Errorf("%s calls %v unstable but dev/apidiff gates it as stable", l.name, gated)
+		}
+		for _, name := range l.got {
+			if !hasShippedGo(filepath.Join("..", "..", filepath.FromSlash(name))) {
+				t.Errorf("%s names %q, which is not a package of the module", l.name, name)
+			}
+		}
+	}
+	if d := onlyIn(archDomain, versDomain); len(d) > 0 {
+		t.Errorf("ARCHITECTURE.md calls %v unstable and docs/VERSIONING.md does not name them", d)
+	}
+	if d := onlyIn(versDomain, archDomain); len(d) > 0 {
+		t.Errorf("docs/VERSIONING.md calls %v unstable and ARCHITECTURE.md does not name them", d)
 	}
 
 	for _, name := range gate {
@@ -201,8 +236,7 @@ func TestConformanceSuitesAreNamedAndGated(t *testing.T) {
 }
 
 // securityInterface is a stable interface that carries audit, fencing or
-// concurrency-control state, with the suite a backend must pass. The security
-// property each suite checks is stated in its package comment.
+// concurrency-control state, with the suite a backend must pass.
 type securityInterface struct {
 	pkg, name string
 	suite     string
@@ -212,9 +246,9 @@ type securityInterface struct {
 // securityInterfaces is the manifest TestEveryStableSecurityInterfaceHasSuite
 // reads. An interface joins it when an implementation that gets its contract
 // wrong would let a record be rewritten, a write be lost, or a claim be held
-// twice. dispatch.Admitter and dispatch.Hook are not listed: they hold no state of
-// their own, so no backend exists to certify; what they decide is tested at the
-// waist, per policy.
+// twice. dispatch.Admitter is the fail-closed gate every action passes, but it is
+// not stable and holds no state, so it is not listed; it joins both when it has a
+// contract suite.
 var securityInterfaces = []securityInterface{
 	{"spine", "Log", "spine/spinetest", "the audit log: append-only order and sequence"},
 	{"resource", "Store", "resource/resourcetest", "versioned writes and scope isolation"},
@@ -360,5 +394,164 @@ func TestApidiffAcceptedEntriesHaveReasons(t *testing.T) {
 	}
 	for _, line := range unreasoned(text) {
 		t.Errorf("accepted break has no reason above it: %s", line)
+	}
+}
+
+// exposedImports adds to out the import path of every package that n names in a
+// way a caller of the declaration can see. Unexported struct fields and interface
+// methods are skipped: a host cannot name or implement them, so a package they
+// mention is not part of the promise.
+func exposedImports(n ast.Node, imports map[string]string, out map[string]bool) {
+	visible := func(f *ast.Field) bool {
+		return len(f.Names) == 0 || slices.ContainsFunc(f.Names, func(id *ast.Ident) bool { return id.IsExported() })
+	}
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.StructType:
+			for _, f := range x.Fields.List {
+				if visible(f) {
+					exposedImports(f.Type, imports, out)
+				}
+			}
+			return false
+		case *ast.InterfaceType:
+			for _, f := range x.Methods.List {
+				if visible(f) {
+					exposedImports(f.Type, imports, out)
+				}
+			}
+			return false
+		case *ast.SelectorExpr:
+			if id, ok := x.X.(*ast.Ident); ok {
+				if p, ok := imports[id.Name]; ok {
+					out[p] = true
+				}
+			}
+		}
+		return true
+	})
+}
+
+// exportedAPIImports returns the import paths of the packages the exported
+// declarations of the shipped files in dir mention in their types.
+func exportedAPIImports(t *testing.T, dir string) map[string]bool {
+	t.Helper()
+	out := map[string]bool{}
+	forShippedFiles(t, dir, func(f *ast.File) {
+		imports := map[string]string{}
+		for _, imp := range f.Imports {
+			path := strings.Trim(imp.Path.Value, `"`)
+			name := path[strings.LastIndex(path, "/")+1:]
+			if imp.Name != nil {
+				name = imp.Name.Name
+			}
+			imports[name] = path
+		}
+		for _, d := range f.Decls {
+			switch d := d.(type) {
+			case *ast.FuncDecl:
+				if !d.Name.IsExported() {
+					continue
+				}
+				if d.Recv != nil {
+					if !slices.ContainsFunc(d.Recv.List, func(r *ast.Field) bool { return exportedReceiver(r.Type) }) {
+						continue
+					}
+					exposedImports(d.Recv, imports, out)
+				}
+				exposedImports(d.Type, imports, out)
+			case *ast.GenDecl:
+				for _, spec := range d.Specs {
+					switch s := spec.(type) {
+					case *ast.TypeSpec:
+						if s.Name.IsExported() {
+							exposedImports(s.Type, imports, out)
+						}
+					case *ast.ValueSpec:
+						if s.Type != nil && slices.ContainsFunc(s.Names, func(id *ast.Ident) bool { return id.IsExported() }) {
+							exposedImports(s.Type, imports, out)
+						}
+					}
+				}
+			}
+		}
+	})
+	return out
+}
+
+// exportedReceiver reports whether a method receiver type names an exported type.
+func exportedReceiver(e ast.Expr) bool {
+	switch x := e.(type) {
+	case *ast.StarExpr:
+		return exportedReceiver(x.X)
+	case *ast.IndexExpr:
+		return exportedReceiver(x.X)
+	case *ast.Ident:
+		return x.IsExported()
+	}
+	return false
+}
+
+// ungatedExposures are the places a stable package names a package outside the
+// stable tier in its exported API, each with why it is tolerated for now. An
+// entry is a debt: a break in the unstable package changes the stable shape and
+// dev/apidiff reports it as domain, not as the break it is.
+var ungatedExposures = map[string]string{
+	"agent -> archetypes":     "agent.Config.Agent is an *archetypes.Spec, the input of the governed archetype run, which is still being shaped. Promote archetypes when it settles, or replace the field with a type the facade owns.",
+	"sandbox -> netguard":     "sandbox.WithEgress takes a netguard.Policy. netguard is one small proxy package; promote it once its Policy is settled.",
+	"capability -> dispatch":  "capability.Admitter and ContainmentGate implement dispatch.Admitter and dispatch.Hook, so dispatch.Action and dispatch.Metering are in their signatures. dispatch is unstable until a suite states what a correct admitter does; promote it with that suite.",
+	"tools -> mission":        "tools hands the model its tools as mission.Tool values and mission.ResultSummarizer. mission is the large, moving orchestration package, so promoting it is not an option; the tool contract needs to move to a small stable package first.",
+	"tools/github -> mission": "the same mission.Tool exposure as tools, through the GitHub toolset.",
+}
+
+// TestStableAPIOnlyNamesGatedTypes fails when an exported declaration of a stable
+// package names a type from a module package outside the stable tier. A type that
+// appears in the signature or fields of the stable surface is part of it whether
+// or not anyone promised it, and a break in an ungated package would pass
+// dev/apidiff as a domain change while changing what the stable surface means.
+// Tolerated exceptions are in [ungatedExposures], with the reason.
+func TestStableAPIOnlyNamesGatedTypes(t *testing.T) {
+	stable, _ := apidiffLists(t)
+	module := modulePath(t, filepath.Join("..", ".."))
+	seen := map[string]bool{}
+	for _, name := range stable {
+		root := filepath.Join("..", "..", filepath.FromSlash(name))
+		if name == rootName {
+			root = filepath.Join("..", "..")
+		}
+		err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+			if err != nil || !d.IsDir() {
+				return err
+			}
+			rel, _ := filepath.Rel(filepath.Join("..", ".."), path)
+			rel = filepath.ToSlash(rel)
+			if d.Name() == "testdata" || d.Name() == "internal" || (name == rootName && rel != ".") {
+				return filepath.SkipDir
+			}
+			from := rel
+			if rel == "." {
+				from = rootName
+			}
+			for imp := range exportedAPIImports(t, path) {
+				target, ok := strings.CutPrefix(imp, module+"/")
+				if !ok || strings.HasPrefix(target, "internal/") || underStable(stable, target) {
+					continue
+				}
+				key := from + " -> " + target
+				seen[key] = true
+				if _, tolerated := ungatedExposures[key]; !tolerated {
+					t.Errorf("%s names a type from %s in its exported API, and %s is not in the stable tier: gate it, or stop exposing it", from, target, target)
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatalf("walk %s: %v", name, err)
+		}
+	}
+	for key := range ungatedExposures {
+		if !seen[key] {
+			t.Errorf("ungatedExposures lists %q, which no longer holds: delete the entry", key)
+		}
 	}
 }
