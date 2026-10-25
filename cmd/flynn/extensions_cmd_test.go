@@ -475,3 +475,59 @@ func TestOrUser(t *testing.T) {
 		t.Errorf("orUser(%q) = %q, want it unchanged", catalog.SourceBundled, got)
 	}
 }
+
+// TestCallGrantsAreScopedToTheCalledTool: the signer and the endpoint are lent to the one
+// tool the request calls, named bare or as "<name>.<tool>", and to no other mount. Every
+// other tool, including a different tool on the same extension, gets nil, so it borrows
+// neither the key nor the network.
+func TestCallGrantsAreScopedToTheCalledTool(t *testing.T) {
+	routed := extension.HostSigner(stubSigner{})
+	for _, tool := range []string{"mint", "token.mint"} {
+		t.Run(tool, func(t *testing.T) {
+			req := callRequest{name: "token", tool: tool, signer: "solana-signer", endpoint: "https://rpc.example"}
+			opts, err := req.runtimeOptions(&routed)
+			if err != nil {
+				t.Fatalf("runtimeOptions: %v", err)
+			}
+			var cfg extRuntimeOptions
+			for _, o := range opts {
+				o(&cfg)
+			}
+
+			if cfg.hostSigner("token", "mint") != routed {
+				t.Error("the called tool was not given the routed signer")
+			}
+			if cfg.hostFetcher("token", "mint") == nil {
+				t.Error("the called tool was not given the endpoint")
+			}
+			for _, other := range [][2]string{{"token", "burn"}, {"other", "mint"}} {
+				if cfg.hostSigner(other[0], other[1]) != nil {
+					t.Errorf("%s.%s borrowed the signer", other[0], other[1])
+				}
+				if cfg.hostFetcher(other[0], other[1]) != nil {
+					t.Errorf("%s.%s borrowed the network", other[0], other[1])
+				}
+			}
+		})
+	}
+}
+
+// stubSigner is a HostSigner that is only ever compared, never asked to sign.
+type stubSigner struct{}
+
+func (stubSigner) Public() []byte { return nil }
+
+func (stubSigner) Sign(context.Context, []byte) ([]byte, error) { return nil, nil }
+
+// TestExtensionsCallFailsWhenTheRuntimeCannotOpen: a data directory that is a file cannot
+// hold the store, and the call reports that instead of going on to launch anything.
+func TestExtensionsCallFailsWhenTheRuntimeCannotOpen(t *testing.T) {
+	notADir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(notADir, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := extensionsCall(context.Background(), notADir, []string{"token", "mint"}); err == nil {
+		t.Fatal("a call against an unopenable data directory succeeded")
+	}
+}
