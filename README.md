@@ -345,8 +345,10 @@ Flynn can drive another coding agent as the model behind a run (`--model claude`
 `--model codex`) while keeping its own governance around it. The external harness is
 locked to Flynn's bridge: its native tool surface is denied, and only the tools Flynn
 bridges to it are callable, so every action still passes the dispatch waist and lands
-in the run's record as attested events. On platforms without a governed-egress leg the
-command refuses and says so rather than running the child unconfined.
+in the run's record as attested events. Governed egress is enforced on Linux and macOS.
+On native Windows there is no such leg yet, so `--model claude` and `--model codex`
+refuse and say so rather than running the child with its network open; run Flynn inside
+a WSL2 distribution to use them there.
 
 Either backend drives a one-shot goal, a pull-request review, or an interactive
 session:
@@ -736,7 +738,7 @@ above is filling in on top of that foundation. Follow
 - An MCP server (`flynn mcp serve`) that exposes the agent's own tools to any MCP client.
 - Out-of-process MCP extensions: a third-party tool runs as a separate confined binary, answering calls over a strictly one-directional client, with `flynn extensions dev` for authoring one locally.
 - Pull-request review (`flynn review`): per-file passes plus a sweep for what they missed, findings anchored to their lines and rechecked across pushes, with approval gated behind an explicit flag.
-- External agent backends (`--model claude`, `--model codex`): another coding agent drives the turn with its native tool surface denied, callable only through Flynn's bridged tools, recorded as attested events.
+- External agent backends (`--model claude`, `--model codex`): another coding agent drives the turn with its native tool surface denied, callable only through Flynn's bridged tools, recorded as attested events. Linux and macOS (and WSL2); native Windows refuses until its egress leg exists.
 - Replay and inspection surfaces: `flynn inspect`/`replay`, `flynn diff` between two resources, `flynn describe` with change history, and `flynn regrade` to re-grade learned skills.
 - Sealed runtime profile bundles (`--profile`): cpu, heap, goroutines, and a sampled timeline under a hashed manifest, with CPU samples attributed to the action that caused them.
 - Credentials sealed in an OS keychain or a passphrase vault, kept out of prompts and logs.
