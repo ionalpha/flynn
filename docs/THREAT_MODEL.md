@@ -362,10 +362,14 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   to what provenance alone implies, and a promotion performed by an LLM review is itself
   attack surface, which is why an untrusted-origin or tainted item is denied outright rather
   than made promotable. The operator reviewing from the command line reads the finished
-  sentence too, so the gate rests on the taint marking, not on the review, and the
-  standalone binary does not mark taint yet: it opens no taint scope around a run, so a
-  note distilled from an issue body or a command's output arrives at `memory ls` as the
-  agent's own and promotable. Until it does, promote only what you can check yourself.
+  sentence too, so the gate rests on the taint marking, not on the review. The standalone
+  binary marks it coarsely: a note distilled from a run whose transcript calls the shell
+  or spawns a child is tainted, because the shell's network is open and nothing on the
+  host tells a `curl` from a `go test`, and a child's transcript is not in the parent's.
+  A `/compact` carries the compacted turns' taint forward with their summary. What stays
+  promotable is a note from a run that only read and edited files in the working tree, so
+  a working tree that is itself third-party content (a freshly cloned repository) is the
+  residual.
 - Provenance-tagged learned skills. Durable memory carries provenance, trust classification
   and taint (above); a skill is loaded as procedure the agent follows and is not yet
   classified the same way, so a skill written from untrusted content is read back with the

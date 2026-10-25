@@ -9,6 +9,7 @@ import (
 
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/memory/digest"
+	"github.com/ionalpha/flynn/memory/guard"
 	"github.com/ionalpha/flynn/memory/hybrid"
 	"github.com/ionalpha/flynn/memory/ridealong"
 	"github.com/ionalpha/flynn/state"
@@ -86,7 +87,12 @@ func newMemoryStack(inner state.MemoryStore, notify func(context.Context, curate
 	if notify != nil {
 		copts = append(copts, curate.WithNotify(notify))
 	}
-	store := curate.Wrap(inner, copts...)
+	// The guard goes under the write policy, as curate's own documentation has it, so
+	// every write the policy makes (the fact, and any contradiction episode it records)
+	// is screened and stamped with the writing context's taint. Without it a run's taint
+	// scope would be marked and then never read, and every learned note would arrive at
+	// the wake digest as the agent's own clean work.
+	store := curate.Wrap(guard.Wrap(inner), copts...)
 	// The digest's default pusher is a ridealong.Surfacer over the same store, so
 	// a pushed item is counted and the run's prime scope is marked in one step.
 	// Nothing here replaces it: the counting is what later tells a memory that
