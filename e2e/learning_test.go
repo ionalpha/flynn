@@ -117,7 +117,65 @@ func TestLearningRunDistillsASkillAndAMemoryTheNextRunIsHanded(t *testing.T) {
 		}
 	}
 
-	// The distilled memory is the agent's own note, so it reaches the next run through
-	// recall rather than the wake digest; the record of pushes and uses still reads back.
+	// The distilled memory is the agent's own note, so until it is promoted it reaches
+	// the next run through recall rather than the wake digest; the record of pushes
+	// and uses still reads back.
 	requireExit(t, in.run("memory", "usage"), 0, "memory usage")
+}
+
+// TestLearningPromotedMemoryWakesTheNextRun: a memory the agent distilled is held
+// out of the wake digest until the operator promotes it, then every later run wakes
+// with it whatever its objective says, and the push is on the record. The
+// objectives after the first share no words with the memory, so the only path that
+// can hand it over is the digest.
+func TestLearningPromotedMemoryWakesTheNextRun(t *testing.T) {
+	const fact = "The calculator package builds with plain go build and has no generated code."
+	lessons := `[{"kind":"memory","title":"calculator build","body":"` + fact + `","tags":["calculator"]}]`
+	fake := newFakeOpenAIFunc(t, func(req oaiRequest, _ int) oaiReply {
+		if isDistillRequest(req) {
+			return finalText(lessons)
+		}
+		return finalText("Done.")
+	})
+	in := newInstance(t).withModel(fake)
+	requireExit(t, in.run("goal", "tidy the imports in the calculator package"), 0, "first goal")
+
+	pending := in.run("memory", "ls", "--pending")
+	requireExit(t, pending, 0, "memory ls --pending")
+	var id string
+	for _, line := range strings.Split(pending.stdout, "\n") {
+		if strings.Contains(line, "(awaiting review)") {
+			id = strings.Fields(line)[0]
+		}
+	}
+	if id == "" {
+		t.Fatalf("the distilled memory is not awaiting review:\n%s", pending.stdout)
+	}
+
+	handed := func(objective string) string {
+		t.Helper()
+		n := fake.count()
+		requireExit(t, in.run("goal", objective), 0, objective)
+		for i := n; i < fake.count(); i++ {
+			if req := fake.request(t, i); !isDistillRequest(req) {
+				return req.System
+			}
+		}
+		t.Fatalf("no model request for %q", objective)
+		return ""
+	}
+
+	if sys := handed("write a haiku about the sea"); strings.Contains(sys, "plain go build") {
+		t.Fatalf("an unreviewed memory was pushed at an unrelated run:\n%s", sys)
+	}
+	requireExit(t, in.run("memory", "promote", id), 0, "memory promote")
+	if sys := handed("summarise the weather report"); !strings.Contains(sys, "plain go build") {
+		t.Fatalf("the promoted memory was not in the next run's wake digest:\n%s", sys)
+	}
+
+	usage := in.run("memory", "usage")
+	requireExit(t, usage, 0, "memory usage")
+	if !strings.Contains(usage.stdout, "pushed 1") {
+		t.Fatalf("memory usage does not record the push:\n%s", usage.stdout)
+	}
 }
