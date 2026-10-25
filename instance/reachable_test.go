@@ -2,6 +2,9 @@ package instance_test
 
 import (
 	"context"
+	"errors"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +36,7 @@ func TestReachableCondition(t *testing.T) {
 		{"exactly at window", mk(instance.StateIdle, beat), beat.Add(window), "True", instance.ReasonHeartbeatFresh, false},
 		{"stale", mk(instance.StateWorking, beat), beat.Add(window + time.Second), "False", instance.ReasonHeartbeatStale, true},
 		{"never written", mk(instance.StateIdle, time.Time{}), beat, "False", instance.ReasonHeartbeatStale, true},
-		{"done and old", mk(instance.StateDone, beat), beat.Add(time.Hour), "False", instance.ReasonStopped, false},
+		{"forged done does not hide a stale runner", mk(instance.StateDone, beat), beat.Add(time.Hour), "False", instance.ReasonHeartbeatStale, true},
 		{"future within skew", mk(instance.StateWorking, beat.Add(skew)), beat, "True", instance.ReasonHeartbeatFresh, false},
 		{"future beyond skew", mk(instance.StateWorking, beat.Add(skew+time.Second)), beat, "False", instance.ReasonHeartbeatStale, true},
 		{"far future never ages", mk(instance.StateWorking, beat.AddDate(100, 0, 0)), beat.AddDate(50, 0, 0), "False", instance.ReasonHeartbeatStale, true},
@@ -55,10 +58,20 @@ func TestReachableCondition(t *testing.T) {
 	}
 }
 
-func TestUnreachableDisabledByNonPositiveWindow(t *testing.T) {
+func TestNonPositiveWindowStillMarksStaleUnreachable(t *testing.T) {
 	r := resource.Resource{Envelope: resource.Envelope{UpdatedAt: time.Unix(0, 0)}}
-	if instance.Unreachable(r, time.Unix(1000, 0), 0) {
-		t.Fatal("a zero window must disable the check")
+	now := time.Unix(0, 0).Add(time.Hour)
+	for _, w := range []time.Duration{0, -time.Second} {
+		if !instance.Unreachable(r, now, w) {
+			t.Fatalf("window %v: a stale runner must be unreachable", w)
+		}
+		if c := instance.ReachableCondition(r, now, w); c.Status != "False" {
+			t.Fatalf("window %v: condition = %+v, want False", w, c)
+		}
+	}
+	fresh := resource.Resource{Envelope: resource.Envelope{UpdatedAt: now}}
+	if instance.Unreachable(fresh, now, 0) {
+		t.Fatal("a fresh runner must stay reachable under the default window")
 	}
 }
 
@@ -143,5 +156,126 @@ func TestIdentityStableAcrossWrites(t *testing.T) {
 	}
 	if again.ID != first.ID || !again.CreatedAt.Equal(first.CreatedAt) {
 		t.Fatalf("identity changed: %s/%v -> %s/%v", first.ID, first.CreatedAt, again.ID, again.CreatedAt)
+	}
+}
+
+func newCapStore(t *testing.T) resource.Store {
+	t.Helper()
+	reg := resource.NewRegistry()
+	if err := instance.RegisterKind(reg); err != nil {
+		t.Fatal(err)
+	}
+	return resource.NewMemory(reg)
+}
+
+func TestInstanceFieldLengthCapped(t *testing.T) {
+	ctx := context.Background()
+	store := newCapStore(t)
+	long := strings.Repeat("x", instance.MaxFieldLen+1)
+	if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Host: "h"}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.Get(ctx, instance.Kind, resource.Scope{}, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	specs := map[string]instance.Spec{
+		"host":    {Host: long},
+		"version": {Version: long},
+		"cap":     {Capabilities: []string{long}},
+		"caps":    {Capabilities: make([]string, instance.MaxListLen+1)},
+	}
+	for name, spec := range specs {
+		if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", spec); !errors.Is(err, instance.ErrTooLarge) {
+			t.Fatalf("%s: err = %v, want ErrTooLarge", name, err)
+		}
+	}
+	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, []string{long}); !errors.Is(err, instance.ErrTooLarge) {
+		t.Fatalf("run id: err = %v", err)
+	}
+	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, make([]string, instance.MaxListLen+1)); !errors.Is(err, instance.ErrTooLarge) {
+		t.Fatalf("runs: err = %v", err)
+	}
+	after, err := store.Get(ctx, instance.Kind, resource.Scope{}, "r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.Version != before.Version || string(after.Spec) != string(before.Spec) || string(after.Status) != string(before.Status) {
+		t.Fatal("a refused write changed the stored record")
+	}
+}
+
+// TestInstanceRecordSizeCapped fills every list with entries that each fit their
+// own cap, so only the record-wide cap can refuse the write.
+func TestInstanceRecordSizeCapped(t *testing.T) {
+	ctx := context.Background()
+	store := newCapStore(t)
+	entry := strings.Repeat("x", instance.MaxFieldLen)
+	caps := make([]string, instance.MaxListLen)
+	runs := make([]string, instance.MaxListLen)
+	for i := range caps {
+		caps[i], runs[i] = entry, entry
+	}
+	if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{}); err != nil {
+		t.Fatal(err)
+	}
+	if 2*instance.MaxListLen*instance.MaxFieldLen <= instance.MaxRecordBytes {
+		t.Fatal("per-field caps already imply the record cap; the record cap is dead code")
+	}
+	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, runs); err != nil {
+		t.Fatalf("a status at its own caps must fit: %v", err)
+	}
+	if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Capabilities: caps}); !errors.Is(err, instance.ErrTooLarge) {
+		t.Fatalf("a spec that overflows the record around the stored status: err = %v", err)
+	}
+	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateIdle, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Capabilities: caps}); err != nil {
+		t.Fatalf("a spec at its own caps must fit: %v", err)
+	}
+	if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, runs); !errors.Is(err, instance.ErrTooLarge) {
+		t.Fatalf("a status that overflows the record around the stored spec: err = %v", err)
+	}
+}
+
+// TestInstanceHasNoGoalTextOrSecretFields fails on any spec or status field not in
+// the reviewed list, so adding a free-text field (goal text, a prompt, a token, an
+// address, a label) forces a decision about its cap and rendering here.
+func TestInstanceHasNoGoalTextOrSecretFields(t *testing.T) {
+	reviewed := map[string]bool{
+		"Spec.Host": true, "Spec.Version": true, "Spec.Capabilities": true,
+		"Status.State": true, "Status.Runs": true, "Status.ObservedGeneration": true,
+	}
+	for _, typ := range []reflect.Type{reflect.TypeOf(instance.Spec{}), reflect.TypeOf(instance.Status{})} {
+		for i := range typ.NumField() {
+			name := typ.Name() + "." + typ.Field(i).Name
+			if !reviewed[name] {
+				t.Errorf("unreviewed field %s: cap it, check it carries no goal text or secret, then list it here", name)
+			}
+		}
+	}
+}
+
+func TestStatusWriteCannotChangeSpec(t *testing.T) {
+	ctx := context.Background()
+	store := newCapStore(t)
+	first, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Host: "h", Version: "v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterStatus, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateBlocked, []string{"a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterStatus.Spec) != string(first.Spec) {
+		t.Fatalf("status write changed spec: %s -> %s", first.Spec, afterStatus.Spec)
+	}
+	afterSpec, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Host: "h", Version: "v2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterSpec.Status) != string(afterStatus.Status) {
+		t.Fatalf("spec write changed status: %s -> %s", afterStatus.Status, afterSpec.Status)
 	}
 }

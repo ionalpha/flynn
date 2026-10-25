@@ -17,39 +17,31 @@ const (
 	// ReasonHeartbeatStale is the reason on an unreachable condition: the heartbeat
 	// is older than the window, so the process most likely stopped or lost its store.
 	ReasonHeartbeatStale = "HeartbeatStale"
-	// ReasonStopped is the reason on a Reachable=False condition for an instance
-	// that recorded [StateDone]: it stopped deliberately, which is not a fault.
-	ReasonStopped = "Stopped"
 )
 
 // Unreachable reports whether a control plane should mark the instance
-// unreachable as of now: its heartbeat is older than staleAfter and it did not
-// record a clean [StateDone] first. A cleanly stopped instance is not unreachable,
-// it is finished, so a host badging runners does not flag a deliberate shutdown as
-// a fault. It shares [IsStale]'s rules for the window, and is pure (time enters
-// only through now).
+// unreachable as of now: [IsStale] holds for its heartbeat. A recorded
+// [StateDone] does not exempt it. Done is written by the instance itself, so
+// exempting it would let a forged Done hide a runner that is still being driven;
+// a host that wants to tell a finished runner from a lost one reads the state as
+// well. A non-positive staleAfter uses [DefaultStaleAfter]. It is pure (time
+// enters only through now).
 func Unreachable(r resource.Resource, now time.Time, staleAfter time.Duration) bool {
-	if st, err := DecodeStatus(r); err == nil && st.State == StateDone {
-		return false
-	}
 	return IsStale(r, now, staleAfter)
 }
 
 // ReachableCondition derives the Reachable [resource.Condition] for an instance
 // from its heartbeat age, so a host reads one standard shape instead of
-// re-deriving the rule. Status is "True" while the heartbeat is fresh, and "False"
-// with [ReasonHeartbeatStale] once [Unreachable] holds or [ReasonStopped] for a
-// clean Done. LastTransitionTime is the heartbeat time (the envelope's last write),
-// the latest moment the instance was known to be alive. The condition is computed
-// on read and never stored, so it cannot itself go stale. It is pure.
+// re-deriving the rule. Status is "True" with [ReasonHeartbeatFresh] while the
+// heartbeat is fresh and "False" with [ReasonHeartbeatStale] once [Unreachable]
+// holds. LastTransitionTime is the heartbeat time (the envelope's last write), the
+// latest moment the instance was known to be alive. The condition is computed on
+// read and never stored, so it cannot itself go stale. It is pure.
 func ReachableCondition(r resource.Resource, now time.Time, staleAfter time.Duration) resource.Condition {
 	c := resource.Condition{Type: ConditionReachable, LastTransitionTime: r.UpdatedAt}
-	switch {
-	case Unreachable(r, now, staleAfter):
+	if Unreachable(r, now, staleAfter) {
 		c.Status, c.Reason = "False", ReasonHeartbeatStale
-	case IsStale(r, now, staleAfter):
-		c.Status, c.Reason = "False", ReasonStopped
-	default:
+	} else {
 		c.Status, c.Reason = "True", ReasonHeartbeatFresh
 	}
 	return c
