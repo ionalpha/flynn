@@ -202,11 +202,17 @@ func TestDriveUnderABudgetOpensThePool(t *testing.T) {
 
 	model := llmtest.NewScripted(llmtest.SayText("done"))
 	var out bytes.Buffer
-	_, runID, _, err := drive(
-		ctx, &out, model, harness.Plan{}, t.TempDir(),
-		"do the thing", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), false, "", nil,
-		withBudget(budgetpkg.Limits{Tokens: 100_000, Cost: 10}),
-	)
+	_, runID, _, err := driveRequest{
+		out:       &out,
+		model:     model,
+		plan:      harness.Plan{},
+		workdir:   t.TempDir(),
+		objective: "do the thing",
+		system:    defaultSystemPrompt,
+		rstore:    store.Resources(reg),
+		jq:        store.Jobs(),
+		log:       store.Log(),
+	}.withOptions(withBudget(budgetpkg.Limits{Tokens: 100_000, Cost: 10})).execute(ctx)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}
@@ -224,8 +230,17 @@ func TestDriveRefusesToResumeARunThatIsNotThere(t *testing.T) {
 	reg := mustRegistry(t)
 
 	model := llmtest.NewScripted(llmtest.SayText("done"))
-	_, _, _, err := drive(ctx, &bytes.Buffer{}, model, harness.Plan{}, t.TempDir(),
-		"", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), false, "run/absent", nil)
+	_, _, _, err := driveRequest{
+		out:      &bytes.Buffer{},
+		model:    model,
+		plan:     harness.Plan{},
+		workdir:  t.TempDir(),
+		system:   defaultSystemPrompt,
+		rstore:   store.Resources(reg),
+		jq:       store.Jobs(),
+		log:      store.Log(),
+		resumeID: "run/absent",
+	}.execute(ctx)
 	if err == nil {
 		t.Fatal("resuming a run that does not exist was accepted")
 	}

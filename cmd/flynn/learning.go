@@ -81,7 +81,19 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// against the same store the digest pushes from.
 	skillset := skilltool.New(skills, skilltool.WithNotes(mem.skillNotes()))
 	opts = append([]driveOption{withSkills(skillset)}, opts...)
-	result, source, transcript, err := drive(ctx, out, model, plan, workdir, objective, system, resources, store.Jobs(), log, verbose, "", fanout, opts...)
+	result, source, transcript, err := driveRequest{
+		out:       out,
+		model:     model,
+		plan:      plan,
+		workdir:   workdir,
+		objective: objective,
+		system:    system,
+		rstore:    resources,
+		jq:        store.Jobs(),
+		log:       log,
+		verbose:   verbose,
+		fanout:    fanout,
+	}.withOptions(opts...).execute(ctx)
 
 	// Record what the run was shown and what it took up as two separate facts. Every
 	// recalled skill was offered; only the ones the model loaded through skill_read

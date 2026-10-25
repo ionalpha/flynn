@@ -509,13 +509,17 @@ func TestReviewRunSubmitsVerdictAndRefusesShell(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	result, _, _, err := drive(
-		ctx, &out, &reviewScript{}, harness.Plan{}, "",
-		"Review pull request #7.", review.SystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), true, "", nil,
-		withToolset(&boundToolset{tools: toolset, grant: review.Grant()}),
-		withEventObserver(observe),
-	)
+	result, _, _, err := driveRequest{
+		out:       &out,
+		model:     &reviewScript{},
+		plan:      harness.Plan{},
+		objective: "Review pull request #7.",
+		system:    review.SystemPrompt,
+		rstore:    store.Resources(reg),
+		jq:        store.Jobs(),
+		log:       store.Log(),
+		verbose:   true,
+	}.withOptions(withToolset(&boundToolset{tools: toolset, grant: review.Grant()}), withEventObserver(observe)).execute(ctx)
 	if err != nil {
 		t.Fatalf("drive: %v\noutput:\n%s", err, out.String())
 	}
