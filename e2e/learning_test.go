@@ -179,3 +179,38 @@ func TestLearningPromotedMemoryWakesTheNextRun(t *testing.T) {
 		t.Fatalf("memory usage does not record the push:\n%s", usage.stdout)
 	}
 }
+
+// TestLearningMemoryFromAShellRunCannotBePromoted: the shell's network is open, so a
+// note distilled from a run that used it may repeat a page a third party wrote. It is
+// stored and recallable, marked as never pushed, and `memory promote` refuses it.
+func TestLearningMemoryFromAShellRunCannotBePromoted(t *testing.T) {
+	lessons := `[{"kind":"memory","title":"build","body":"The build needs cgo enabled.","tags":["build"]}]`
+	fake := newFakeOpenAIFunc(t, func(req oaiRequest, _ int) oaiReply {
+		if isDistillRequest(req) {
+			return finalText(lessons)
+		}
+		for _, m := range req.Messages {
+			if m.ToolCallID != "" {
+				return finalText("Done.")
+			}
+		}
+		return toolCall("c1", "bash", `{"command":"echo hi"}`)
+	})
+	in := newInstance(t).withModel(fake)
+	requireExit(t, in.run("goal", "find out what the build needs"), 0, "goal")
+
+	ls := in.run("memory", "ls")
+	requireExit(t, ls, 0, "memory ls")
+	var id string
+	for _, line := range strings.Split(ls.stdout, "\n") {
+		if strings.Contains(line, "untrusted input was in its context") {
+			id = strings.Fields(line)[0]
+		}
+	}
+	if id == "" {
+		t.Fatalf("the memory from a shell run is not marked as never pushed:\n%s", ls.stdout)
+	}
+	refused := in.run("memory", "promote", id)
+	requireExit(t, refused, 1, "memory promote of a tainted note")
+	requireContains(t, refused.stderr, "cannot be promoted", "refusal")
+}

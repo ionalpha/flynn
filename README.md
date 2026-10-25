@@ -300,7 +300,9 @@ layers in view rather than hidden behind it.
   With none set, and with an endpoint that fails, recall is exactly what it was.
   What the agent learns for itself waits for you before it is pushed:
   `flynn memory ls --pending` lists it with where it came from, and
-  `flynn memory promote <id>` puts one in every later run's wake digest.
+  `flynn memory promote <id>` puts one in every later run's wake digest. A memory
+  from a run that used the shell or spawned a child is never pushed and cannot be
+  promoted, since the shell may have fetched what it says; it is still recalled.
   `flynn memory forget <id>` deletes an item, `flynn memory usage` shows what was
   pushed and what was used, and `flynn memory consolidate` distils a subject's
   episodes into one lesson.

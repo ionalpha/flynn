@@ -12,6 +12,8 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/memory/guard"
+	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/provider"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
@@ -242,7 +244,11 @@ type externalProvenance struct {
 // check is verified in a sandbox at workdir before it is crystallized, so a broken
 // procedure is dropped rather than learned. Shared by the one-shot runner and the
 // interactive session so both capture identically.
-func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distiller, skills state.SkillStore, memories state.MemoryStore, workdir string, outcome learn.Outcome) {
+//
+// carried are taint reasons from conversation the transcript no longer holds (a
+// session's compacted turns), so a summary cannot launder what it summarised.
+func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distiller, skills state.SkillStore, memories state.MemoryStore, workdir string, outcome learn.Outcome, carried ...string) {
+	ctx = taintFromTranscript(ctx, outcome.Transcript, carried...)
 	curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(governedVerifier(workdir)))
 	if captured, err := curator.Curate(ctx, outcome); err == nil {
 		if n := len(captured.Skills) + len(captured.Memories); n > 0 {
@@ -258,6 +264,51 @@ func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distille
 	if archived, derr := learn.Decay(ctx, skills, state.Scope{}, learn.DefaultDecay()); derr == nil && len(archived) > 0 {
 		_, _ = fmt.Fprintf(out, "  (retired %d unhelpful skill(s))\n", len(archived))
 	}
+}
+
+// untrustedOutputTools are the tools whose results this binary cannot vouch for, so
+// a note distilled from a run that called one is tainted: never pushed at wake, and
+// refused by `memory promote`. The shell is here because its network is open and
+// nothing on a host without a governed egress proxy tells a curl from a go test. A
+// spawn is here because the child's transcript is not in the parent's. The file tools
+// and skill_read read the working tree and the skill store, which the install trusts.
+// TestUntrustedOutputToolsCoverEveryUntrustedTool fails on a reduced-trust tool added
+// to the default toolset without being listed.
+var untrustedOutputTools = map[string]bool{
+	"bash":              true,
+	mission.ActionSpawn: true,
+}
+
+// taintFromTranscript returns ctx with a fresh taint scope, marked for each call in
+// transcript to one of [untrustedOutputTools] and for each carried reason. The memory
+// writes the distiller makes under the returned context go through the guard, which
+// stamps them with the mark.
+//
+// The scope is opened here rather than at the top of the run because the distiller
+// is the run's only memory writer and the transcript is the complete record of what
+// the model was shown, so reading it at the write gives the answer marking each
+// tool result as it arrived would, without threading a scope through every path
+// that drives a run.
+func taintFromTranscript(ctx context.Context, transcript []llm.Message, carried ...string) context.Context {
+	ctx = guard.NewTaintScope(ctx)
+	for _, reason := range append(taintReasons(transcript), carried...) {
+		guard.MarkTainted(ctx, reason)
+	}
+	return ctx
+}
+
+// taintReasons names each call in transcript to one of [untrustedOutputTools], in
+// the form the guard records a reason ("tool:bash").
+func taintReasons(transcript []llm.Message) []string {
+	var reasons []string
+	for _, m := range transcript {
+		for _, b := range m.Blocks {
+			if b.ToolUse != nil && untrustedOutputTools[b.ToolUse.Name] {
+				reasons = append(reasons, guard.SchemeTool+b.ToolUse.Name)
+			}
+		}
+	}
+	return reasons
 }
 
 // governedVerifier builds the skill-check verifier the CLI uses: a sandbox verifier

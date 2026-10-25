@@ -21,6 +21,7 @@ func (s *replSession) clear() {
 	s.recalled = nil
 	s.lastResult = ""
 	s.carriedContext = ""
+	s.carriedTaint = nil
 }
 
 // compact summarizes the conversation so far and resets the session to continue from
@@ -46,7 +47,12 @@ func (s *replSession) compact(ctx context.Context) (int, error) {
 		return 0, errors.New("compaction produced an empty summary; leaving the conversation unchanged")
 	}
 	n := len(s.transcript)
+	// The summary carries the compacted turns' content forward, so it carries their
+	// taint too: the transcript the session distils from at the end will no longer
+	// show the shell call that fetched what the summary repeats.
+	carried := append(s.carriedTaint, taintReasons(s.transcript)...)
 	s.clear()
+	s.carriedTaint = carried
 	s.carriedContext = "Summary of the earlier conversation (compacted to save context):\n" + summary
 	return n, nil
 }
