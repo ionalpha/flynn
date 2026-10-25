@@ -8,8 +8,8 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/archetype"
-	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/resource"
 )
 

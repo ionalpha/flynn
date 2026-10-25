@@ -7,7 +7,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/ionalpha/flynn/internal/instance"
+	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/resource"
 )
 

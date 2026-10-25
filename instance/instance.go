@@ -32,6 +32,11 @@ const (
 // several heartbeat intervals, so a single missed refresh does not flap the state.
 const DefaultStaleAfter = 90 * time.Second
 
+// MaxClockSkew is how far ahead of the reader's clock a heartbeat may be dated and
+// still count as fresh. Beyond it the heartbeat is untrustworthy and the record is
+// stale; see [IsStale].
+const MaxClockSkew = 30 * time.Second
+
 // State is the coarse run-state of an instance: the vocabulary the read surface
 // reports for what a process is doing right now.
 type State string
@@ -144,18 +149,20 @@ func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, 
 
 func (s Status) encode() (json.RawMessage, error) { return json.Marshal(s) }
 
-// IsStale reports whether the instance's heartbeat is older than staleAfter as of
-// now. The heartbeat is the resource's last envelope write time (UpdatedAt): a live
-// process refreshes it on every Register and SetStatus, so a record that has not
-// moved is a process that has stopped writing. A non-positive staleAfter disables
-// the check (nothing is ever stale), and a record that was never written (zero
-// UpdatedAt) is treated as stale, because there is no heartbeat to trust. The
-// comparison is strict, so a heartbeat exactly staleAfter old is not yet stale.
+// IsStale reports whether the instance's heartbeat (UpdatedAt, refreshed by every
+// Register and SetStatus) is older than staleAfter as of now. A non-positive
+// staleAfter disables the check, a never-written record is stale, and the
+// comparison is strict.
+//
+// A heartbeat dated more than [MaxClockSkew] after now is stale too: taken at face
+// value the age is negative and a stopped or forged runner would look fresh until
+// the clock caught up. Skew inside the tolerance is fresh, so ordinary drift does
+// not flap.
 func IsStale(r resource.Resource, now time.Time, staleAfter time.Duration) bool {
 	if staleAfter <= 0 {
 		return false
 	}
-	if r.UpdatedAt.IsZero() {
+	if r.UpdatedAt.IsZero() || r.UpdatedAt.Sub(now) > MaxClockSkew {
 		return true
 	}
 	return now.Sub(r.UpdatedAt) > staleAfter
