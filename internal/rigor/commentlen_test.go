@@ -30,7 +30,7 @@ var longBlockAllowlist = map[string]string{
 // longBlockCeiling is the number of blocks at or over longBlockLines that are
 // not in longBlockAllowlist. It is debt: lower it when a block is cut, never
 // raise it. A new long comment must be cut or allowlisted with a reason.
-const longBlockCeiling = 1 // internal/tui/input/reader.go Reader, owned by another change in flight
+const longBlockCeiling = 0
 
 // TestDeclarationCommentsStayShort fails when the count of declaration comments
 // of longBlockLines or more rises above the ceiling, and when an allowlisted
