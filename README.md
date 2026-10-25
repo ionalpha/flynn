@@ -75,8 +75,13 @@ curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | sh
 irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 ```
 
-Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0`) or change the
-install directory with `FLYNN_INSTALL_DIR`.
+Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0-rc.1`) or change
+the install directory with `FLYNN_INSTALL_DIR`.
+
+The script installs the newest release, v0.1.3. This README describes `main`, which is
+the v0.2.0 release candidate: governed goals, the bundled skill pack and the new memory
+are in v0.2.0-rc.1 and not in v0.1.3. To try the candidate, install with
+`FLYNN_VERSION=v0.2.0-rc.1`, or run `flynn upgrade --pre` from v0.1.3.
 
 That is the last time you need the script. From then on the binary maintains itself:
 
@@ -719,7 +724,7 @@ foundations are in place and a real agent loop runs today; the breadth described
 above is filling in on top of that foundation. Follow
 [@ionalpha_](https://x.com/ionalpha_) for progress.
 
-**Running today**
+**Running today** (on `main` and in v0.2.0-rc.1; see [Install](#install) for what v0.1.3 lacks)
 
 - A single static Go binary, cross-compiled for Windows, macOS, Linux, and ARM.
 - An event-sourced spine with materialized resources and a self-healing reconcile loop.
