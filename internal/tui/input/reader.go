@@ -134,84 +134,129 @@ func (r *Reader) read(src io.Reader, chunks chan<- []byte) {
 // when it can and otherwise poking the blocked read and waiting for its
 // final chunk.
 func (r *Reader) pump(timing clock.Timing, escDelay time.Duration, chunks <-chan []byte) {
-	var pauseDone chan struct{}
-	defer func() {
-		if pauseDone != nil {
-			close(pauseDone)
-		}
-		close(r.done)
-	}()
-	var d Decoder
-	var idle clock.Timer
-	paused := false
-	outstanding := false
-	stopIdle := func() {
-		if idle != nil {
-			idle.Stop()
-			idle = nil
-		}
-	}
+	p := &pumpState{r: r, timing: timing, escDelay: escDelay}
+	defer p.finish()
 	for {
-		if !paused && !outstanding {
-			r.token <- struct{}{} // buffered; never blocks with one token in play
-			outstanding = true
-		}
-		var idleC <-chan time.Time
-		if idle != nil {
-			idleC = idle.C()
-		}
+		p.issueToken()
 		select {
 		case <-r.stop:
-			stopIdle()
+			p.stopIdle()
 			return
 		case req := <-r.pause:
-			paused = true
-			stopIdle()
-			// Reclaim the token when the read goroutine has not taken it
-			// yet: no read will start, so the park is immediate. Otherwise a
-			// read is blocked; poke it and park when its chunk arrives.
-			select {
-			case <-r.token:
-				outstanding = false
-			default:
-			}
-			if !outstanding {
-				close(req.done)
-			} else {
-				pauseDone = req.done
-				req.poke()
-			}
+			p.park(req)
 		case <-r.resume:
-			paused = false
-			d = Decoder{}
+			p.paused = false
+			p.d = Decoder{}
 		case chunk, open := <-chunks:
-			stopIdle()
-			outstanding = false
-			if pauseDone != nil {
-				close(pauseDone)
-				pauseDone = nil
-			}
-			if !open {
-				r.emit(d.Flush())
-				close(r.events)
+			if !p.chunk(chunk, open) {
 				return
 			}
-			if paused {
-				continue // raced the pause or answered the poke; not input
-			}
-			if !r.emit(d.Feed(chunk)) {
-				return
-			}
-			if d.Pending() && !d.MidPaste() {
-				idle = timing.NewTimer(escDelay)
-			}
-		case <-idleC:
-			idle = nil
-			if !r.emit(d.Flush()) {
+		case <-p.idleC():
+			if !p.flushIdle() {
 				return
 			}
 		}
 	}
+}
+
+// pumpState is the pump's loop-local state, held in one place so each select
+// case is a method. outstanding is true while a read token is in play;
+// pauseDone is the acknowledgement owed to a Pause whose read is still blocked.
+type pumpState struct {
+	r           *Reader
+	timing      clock.Timing
+	escDelay    time.Duration
+	d           Decoder
+	idle        clock.Timer
+	paused      bool
+	outstanding bool
+	pauseDone   chan struct{}
+}
+
+// finish releases a Pause still waiting on a read, so its caller is never
+// stranded by a pump that exits, then marks the reader done.
+func (p *pumpState) finish() {
+	if p.pauseDone != nil {
+		close(p.pauseDone)
+	}
+	close(p.r.done)
+}
+
+// issueToken grants the read goroutine its next read unless paused or one is
+// already in play.
+func (p *pumpState) issueToken() {
+	if p.paused || p.outstanding {
+		return
+	}
+	p.r.token <- struct{}{} // buffered; never blocks with one token in play
+	p.outstanding = true
+}
+
+func (p *pumpState) stopIdle() {
+	if p.idle != nil {
+		p.idle.Stop()
+		p.idle = nil
+	}
+}
+
+// idleC is the idle timer's channel, or nil (which blocks forever in a select)
+// when no timer is armed.
+func (p *pumpState) idleC() <-chan time.Time {
+	if p.idle == nil {
+		return nil
+	}
+	return p.idle.C()
+}
+
+// park handles a pause request. It reclaims the token when the read goroutine
+// has not taken it yet: no read will start, so the park is immediate.
+// Otherwise a read is blocked; poke it and park when its chunk arrives.
+func (p *pumpState) park(req pauseReq) {
+	p.paused = true
+	p.stopIdle()
+	select {
+	case <-p.r.token:
+		p.outstanding = false
+	default:
+	}
+	if !p.outstanding {
+		close(req.done)
+		return
+	}
+	p.pauseDone = req.done
+	req.poke()
+}
+
+// chunk handles a read result and reports whether pumping should continue.
+func (p *pumpState) chunk(chunk []byte, open bool) bool {
+	p.stopIdle()
+	p.outstanding = false
+	if p.pauseDone != nil {
+		close(p.pauseDone)
+		p.pauseDone = nil
+	}
+	if !open {
+		p.r.emit(p.d.Flush())
+		close(p.r.events)
+		return false
+	}
+	if p.paused {
+		return true // raced the pause or answered the poke; not input
+	}
+	if !p.r.emit(p.d.Feed(chunk)) {
+		return false
+	}
+	if p.d.Pending() && !p.d.MidPaste() {
+		p.idle = p.timing.NewTimer(p.escDelay)
+	}
+	return true
+}
+
+// flushIdle resolves a partial sequence nothing has followed, and reports
+// whether pumping should continue.
+func (p *pumpState) flushIdle() bool {
+	p.idle = nil
+	return p.r.emit(p.d.Flush())
 }
 
 // emit delivers events, honoring stop so a departed consumer never wedges

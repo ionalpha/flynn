@@ -50,8 +50,11 @@ func testDescription(t *testing.T, sk state.SkillStore) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(listed) != 1 || listed[0].Description != desc {
-		t.Fatalf("List returned %d skills, first description %q, want 1 and %q", len(listed), listed[0].Description, desc)
+	if len(listed) != 1 {
+		t.Fatalf("List returned %d skills, want 1", len(listed))
+	}
+	if listed[0].Description != desc {
+		t.Fatalf("List returned description %q, want %q", listed[0].Description, desc)
 	}
 
 	// Search reaches the description, and this is the part that decides whether a

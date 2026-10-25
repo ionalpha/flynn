@@ -1,0 +1,15 @@
+[36mf.go[0m [32m+4[0m [31m-3[0m
+[36m@@ -1 +1 @@[0m
+[2m  1 [0m[31m- line[0m                                           [2m │ [0m[2m  1 [0m[32m+ first[0m                                          
+[2m  2   line[0m                                           [2m │ [0m[2m  2   line[0m                                           
+[2m  3   line[0m                                           [2m │ [0m[2m  3   line[0m                                           
+[2m  4 [0m[31m- l[0m[7;31mine[0m                                           [2m │ [0m[2m  4 [0m[32m+ l[0m[7;32mast[0m                                           
+[2m  5   line[0m                                           [2m │ [0m[2m  5   line[0m                                           
+[2m  6   line[0m                                           [2m │ [0m[2m  6   line[0m                                           
+[2m  7   line[0m                                           [2m │ [0m[2m  7   line[0m                                           
+[36m@@ -117 +115 @@[0m
+[2m117   line[0m                                           [2m │ [0m[2m115   line[0m                                           
+[2m118   line[0m                                           [2m │ [0m[2m116   line[0m                                           
+[2m119   line[0m                                           [2m │ [0m[2m117   line[0m                                           
+[2m120 [0m[31m- line[0m                                           [2m │ [0m[2m118 [0m[32m+ line[0m                                           
+                                                     [2m │ [0m[2m119 [0m[32m+ [0m                                               

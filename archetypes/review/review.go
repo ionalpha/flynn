@@ -27,9 +27,9 @@ package review
 import (
 	"slices"
 
+	"github.com/ionalpha/flynn/archetypes"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
-	"github.com/ionalpha/flynn/internal/archetype"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/tools/github"
 )
@@ -123,8 +123,8 @@ func Grant() capability.Grant { return capability.NewGrant(capabilities...) }
 // An empty model defers to the host's configured model, so a reviewer can run on a
 // frontier model or a local one without touching this spec. Package harness adapts
 // the scaffolding to whichever it gets.
-func Archetype(model string) archetype.Spec {
-	return archetype.Spec{
+func Archetype(model string) archetypes.Spec {
+	return archetypes.Spec{
 		System:       SystemPrompt,
 		Capabilities: Capabilities(),
 		Model:        model,

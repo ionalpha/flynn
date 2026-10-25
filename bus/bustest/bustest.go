@@ -68,6 +68,16 @@ func (c *collector) waitFor(t *testing.T, n int) []bus.Message {
 	return c.snapshot()
 }
 
+// waitExactly is waitFor followed by a settle window: it fails when more than n
+// messages arrive. Without the window an over-delivering bus passes any check
+// that stops counting at n, because the extra message is still in flight.
+func (c *collector) waitExactly(t *testing.T, n int) []bus.Message {
+	t.Helper()
+	got := c.waitFor(t, n)
+	c.expectNone(t)
+	return got
+}
+
 // expectNone asserts no message arrives within a short window.
 func (c *collector) expectNone(t *testing.T) {
 	t.Helper()
@@ -121,7 +131,7 @@ func testStar(t *testing.T, b bus.Bus) {
 	// One token only: a deeper subject must not match "orders.*".
 	mustPublish(t, b, "orders.created.line", "c")
 
-	got := c.waitFor(t, 2)
+	got := c.waitExactly(t, 2)
 	if len(got) != 2 {
 		t.Fatalf("got %d messages, want 2 (deeper subject must not match *)", len(got))
 	}
@@ -154,10 +164,10 @@ func testFanOut(t *testing.T, b bus.Bus) {
 	mustSubscribe(t, b, "signals.tick", c2.handle)
 	mustPublish(t, b, "signals.tick", "t")
 
-	if got := c1.waitFor(t, 1); len(got) != 1 {
+	if got := c1.waitExactly(t, 1); len(got) != 1 {
 		t.Fatalf("c1 got %d, want 1", len(got))
 	}
-	if got := c2.waitFor(t, 1); len(got) != 1 {
+	if got := c2.waitExactly(t, 1); len(got) != 1 {
 		t.Fatalf("c2 got %d, want 1", len(got))
 	}
 }
@@ -170,7 +180,7 @@ func testOrder(t *testing.T, b bus.Bus) {
 	for i := range n {
 		mustPublish(t, b, "seq", itoa(i))
 	}
-	got := c.waitFor(t, n)
+	got := c.waitExactly(t, n)
 	// Payloads were published as ascending indices; delivery to one subscription
 	// must preserve that order exactly.
 	for i := range got {
@@ -240,7 +250,7 @@ func testHandlerErrorIsolated(t *testing.T, b bus.Bus) {
 	mustSubscribe(t, b, "x", good.handle)
 	mustPublish(t, b, "x", "ok")
 	// The erroring subscriber must not prevent the healthy one from receiving.
-	if got := good.waitFor(t, 1); len(got) != 1 {
+	if got := good.waitExactly(t, 1); len(got) != 1 {
 		t.Fatalf("healthy subscriber got %d, want 1", len(got))
 	}
 }
