@@ -66,6 +66,20 @@ jobs:
           fi
           echo "PR body contains all required template sections."
 
+      # A closing keyword with no issue number is the template's placeholder left
+      # unfilled. It links nothing, and on the merged page it reads as if an issue
+      # was meant and lost.
+      - name: Reject a closing keyword with no issue number
+        if: github.event.pull_request.user.type != 'Bot'
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          if printf '%s\n' "$BODY" | tr -d '\r' | grep -Eiq '^[[:space:]]*(close[sd]?|fix(e[sd])?|resolve[sd]?)[[:space:]]+#[[:space:]]*$'; then
+            echo "::error::PR body has a closing keyword with no issue number (e.g. a bare 'Closes #'). Name the issue or delete the line."
+            exit 1
+          fi
+          echo "PR body has no empty closing keyword."
+
       # Markdown in a pull request body is not markdown in a file. GitHub renders
       # a single newline inside a paragraph as a line break, so a body wrapped at
       # 72 columns the way a commit message is arrives as a column of ragged short

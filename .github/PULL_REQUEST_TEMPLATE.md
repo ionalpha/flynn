@@ -9,7 +9,7 @@
 
 <!-- The motivation: the problem it solves or the capability it enables. State the why before the how. -->
 
-Closes #
+<!-- If this resolves a GitHub issue, add "Closes #123" here. Otherwise add nothing: a bare "Closes #" links nothing and CI rejects it. -->
 
 ## How to verify
 

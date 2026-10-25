@@ -197,39 +197,14 @@ type Plan struct {
 // loopback-bound server running a known prompt contract, whichever engine serves it. It
 // performs no I/O and starts nothing.
 func BuildPlan(cfg Config) (Plan, error) {
-	if cfg.BinPath == "" {
-		return Plan{}, fault.New(fault.Terminal, "launch_no_binary", "launch: no runtime binary path")
+	if err := validateIdentity(cfg); err != nil {
+		return Plan{}, err
 	}
-	if cfg.WeightsPath == "" {
-		return Plan{}, fault.New(fault.Terminal, "launch_no_weights", "launch: no weights path")
+	if err := validateTemplate(cfg); err != nil {
+		return Plan{}, err
 	}
-	if !cfg.Model.Local() {
-		return Plan{}, fault.New(fault.Terminal, "launch_not_local", "launch: "+cfg.Model.ID+" is not a local model")
-	}
-	if cfg.Port < 1 || cfg.Port > 65535 {
-		return Plan{}, fault.New(fault.Terminal, "launch_bad_port", fmt.Sprintf("launch: port %d is out of range", cfg.Port))
-	}
-	tmpl := cfg.Model.ChatTemplate
-	if tmpl == "" {
-		return Plan{}, fault.New(fault.Terminal, "launch_no_template", "launch: "+cfg.Model.ID+" has no trusted chat template; refusing to serve without a prompt contract")
-	}
-	if !KnownChatTemplate(tmpl) {
-		return Plan{}, fault.New(fault.Terminal, "launch_unknown_template", "launch: "+cfg.Model.ID+" chat template "+tmpl+" is not a recognized trusted template")
-	}
-	if cfg.KVCacheType != "" && !knownKVCacheTypes[cfg.KVCacheType] {
-		return Plan{}, fault.New(fault.Terminal, "launch_bad_kv_cache", "launch: "+cfg.KVCacheType+" is not a recognized KV-cache type")
-	}
-	if cfg.DraftMax < 0 || cfg.DraftMin < 0 || (cfg.DraftMax > 0 && cfg.DraftMin > cfg.DraftMax) {
-		return Plan{}, fault.New(fault.Terminal, "launch_bad_draft", "launch: draft token bounds are out of range")
-	}
-	if cfg.Quantization != "" && !knownVLLMQuant[cfg.Quantization] {
-		return Plan{}, fault.New(fault.Terminal, "launch_bad_quant", "launch: "+cfg.Quantization+" is not a recognized vLLM quantization scheme")
-	}
-	if cfg.KVCacheDtype != "" && !knownVLLMKVCacheDtype[cfg.KVCacheDtype] {
-		return Plan{}, fault.New(fault.Terminal, "launch_bad_kv_dtype", "launch: "+cfg.KVCacheDtype+" is not a recognized vLLM KV-cache dtype")
-	}
-	if cfg.GPUMemoryUtilization < 0 || cfg.GPUMemoryUtilization > 1 {
-		return Plan{}, fault.New(fault.Terminal, "launch_bad_gpu_util", "launch: GPU memory utilization must be in (0,1]")
+	if err := validateTuning(cfg); err != nil {
+		return Plan{}, err
 	}
 
 	engine, ok := EngineForFormat(cfg.Format)
@@ -240,7 +215,7 @@ func BuildPlan(cfg Config) (Plan, error) {
 	var argv []string
 	switch engine {
 	case EngineLlamaCpp:
-		argv = buildLlamaCppArgv(cfg, tmpl)
+		argv = buildLlamaCppArgv(cfg, cfg.Model.ChatTemplate)
 	case EngineVLLM:
 		argv = buildVLLMArgv(cfg)
 	default:
@@ -256,6 +231,59 @@ func BuildPlan(cfg Config) (Plan, error) {
 		BaseURL:            fmt.Sprintf("http://%s:%d/v1", loopbackHost, cfg.Port),
 		TemplateOverridden: cfg.ModelEmbedsTemplate,
 	}, nil
+}
+
+// validateIdentity refuses a config that does not name a runnable local server: the
+// binary and weights, a local model, and a usable TCP port.
+func validateIdentity(cfg Config) error {
+	if cfg.BinPath == "" {
+		return fault.New(fault.Terminal, "launch_no_binary", "launch: no runtime binary path")
+	}
+	if cfg.WeightsPath == "" {
+		return fault.New(fault.Terminal, "launch_no_weights", "launch: no weights path")
+	}
+	if !cfg.Model.Local() {
+		return fault.New(fault.Terminal, "launch_not_local", "launch: "+cfg.Model.ID+" is not a local model")
+	}
+	if cfg.Port < 1 || cfg.Port > 65535 {
+		return fault.New(fault.Terminal, "launch_bad_port", fmt.Sprintf("launch: port %d is out of range", cfg.Port))
+	}
+	return nil
+}
+
+// validateTemplate refuses a model with no trusted, recognized chat template, so no
+// plan can run without a vetted prompt contract.
+func validateTemplate(cfg Config) error {
+	tmpl := cfg.Model.ChatTemplate
+	if tmpl == "" {
+		return fault.New(fault.Terminal, "launch_no_template", "launch: "+cfg.Model.ID+" has no trusted chat template; refusing to serve without a prompt contract")
+	}
+	if !KnownChatTemplate(tmpl) {
+		return fault.New(fault.Terminal, "launch_unknown_template", "launch: "+cfg.Model.ID+" chat template "+tmpl+" is not a recognized trusted template")
+	}
+	return nil
+}
+
+// validateTuning refuses an efficiency knob outside its recognized range. It runs
+// after the identity and template checks so a structural fault is reported before a
+// tuning one, and before the engine is chosen so a bad knob is refused on either.
+func validateTuning(cfg Config) error {
+	if cfg.KVCacheType != "" && !knownKVCacheTypes[cfg.KVCacheType] {
+		return fault.New(fault.Terminal, "launch_bad_kv_cache", "launch: "+cfg.KVCacheType+" is not a recognized KV-cache type")
+	}
+	if cfg.DraftMax < 0 || cfg.DraftMin < 0 || (cfg.DraftMax > 0 && cfg.DraftMin > cfg.DraftMax) {
+		return fault.New(fault.Terminal, "launch_bad_draft", "launch: draft token bounds are out of range")
+	}
+	if cfg.Quantization != "" && !knownVLLMQuant[cfg.Quantization] {
+		return fault.New(fault.Terminal, "launch_bad_quant", "launch: "+cfg.Quantization+" is not a recognized vLLM quantization scheme")
+	}
+	if cfg.KVCacheDtype != "" && !knownVLLMKVCacheDtype[cfg.KVCacheDtype] {
+		return fault.New(fault.Terminal, "launch_bad_kv_dtype", "launch: "+cfg.KVCacheDtype+" is not a recognized vLLM KV-cache dtype")
+	}
+	if cfg.GPUMemoryUtilization < 0 || cfg.GPUMemoryUtilization > 1 {
+		return fault.New(fault.Terminal, "launch_bad_gpu_util", "launch: GPU memory utilization must be in (0,1]")
+	}
+	return nil
 }
 
 // buildLlamaCppArgv builds the llama.cpp server command for cfg with the trusted

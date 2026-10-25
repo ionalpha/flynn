@@ -235,3 +235,20 @@ func deepCopyMessages(msgs []llm.Message) []llm.Message {
 	}
 	return out
 }
+
+// TestPruneNamesAnUnpairedResultNeutrally: a result whose call is absent from the
+// transcript cannot name a tool, so its summary says "tool". Results with no call
+// all share the empty tool name, so only the last of them counts as the freshest.
+func TestPruneNamesAnUnpairedResultNeutrally(t *testing.T) {
+	msgs := []llm.Message{
+		resultMsg("orphan-1", big("a"), false),
+		resultMsg("orphan-2", big("b"), false),
+	}
+	out := pruneTranscript(msgs, noSummarizer)
+	if got := firstResult(out); !strings.HasPrefix(got, "[pruned tool: ") {
+		t.Fatalf("first orphan = %q, want a neutral \"tool\" summary", got)
+	}
+	if got := out[1].Blocks[0].ToolResult.Content; got != msgs[1].Blocks[0].ToolResult.Content {
+		t.Fatalf("last orphan was elided: %q", got)
+	}
+}
