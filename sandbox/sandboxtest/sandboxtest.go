@@ -16,12 +16,12 @@ import (
 // RequireConfinement skips the test when [sandbox.CheckConfinement] refuses the host. It
 // never relaxes confinement: the code under test still refuses on a host that cannot
 // confine, and this only keeps that refusal out of tests that are not about it. A platform
-// the self-test does not cover ([sandbox.CauseUnsupportedPlatform]) is not skipped, since
-// its own confinement runs the test as before.
+// with no kernel confinement ([sandbox.CauseUnsupportedPlatform]) is skipped too, since
+// [sandbox.WithDefaultConfinement] refuses every launch there.
 func RequireConfinement(tb testing.TB) {
 	tb.Helper()
 	r := sandbox.CheckConfinement(context.Background())
-	if !r.Ready && r.Cause != sandbox.CauseUnsupportedPlatform {
+	if !r.Ready {
 		tb.Skipf("this host cannot confine commands (%s): %s", r.Cause, r.Detail)
 	}
 }

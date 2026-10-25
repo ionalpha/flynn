@@ -226,12 +226,34 @@ clears any cached pass and runs the check again.
 
 ### Hiding the runner's own files
 
-The runner hides its data directory, its control-socket directory and its credential
-files from the commands it launches with `WithUnreadablePaths`. Inside the sandbox a
-hidden directory is empty and a hidden file reads as empty, while the rest of the host
-stays readable. The set needs `WithReadOnlyFS` and Linux, and a Local that cannot apply it
-refuses with `ErrReadDeny` and does not run the command. A path reachable under a second
-name (another bind mount of the same directory) is not hidden under that name.
+`WithUnreadablePaths` is the mechanism for hiding a runner's data directory, control-socket
+directory and credential files from the commands it launches. The runner does not apply it
+yet: `flynn serve` builds its sandbox without it, so those paths are readable to a
+command today (see the next section). Inside the sandbox a hidden directory is empty and
+a hidden file reads as empty, while the rest of the host stays readable. The set needs
+`WithReadOnlyFS` and Linux, and a Local that cannot apply it refuses with `ErrReadDeny` and
+does not run the command. A path reachable under a second name (another bind mount of the
+same directory) is not hidden under that name.
+
+### What the sandbox does not hide
+
+A command's user namespace maps to the service's own uid, so to the filesystem it is the
+same user as the runner, and it shares the runner's process namespace. Three consequences
+follow, none of which the unit's directory modes change:
+
+- Files the service account owns (the state directory, the control socket in `/run/flynn`)
+  are readable to a command unless a Local hides them with `WithUnreadablePaths`.
+- A command at the process-jail floor (the `WithBestEffortConfinement` opt-in) can read
+  `/proc/<runner pid>/environ`, which holds the `EnvironmentFile=` secrets.
+- A kernel-confined command cannot read that file: it sits in a child user namespace
+  without CAP_SYS_PTRACE over the runner. `TestConfinedCommandCannotReadRunnerEnviron`
+  checks this against a real kernel, with the floor read as its control.
+
+Marking the runner non-dumpable (`prctl(PR_SET_DUMPABLE, 0)`) would close the floor case
+and is not done: the kernel then makes `/proc/<child pid>/uid_map` root-owned, the runner
+can no longer map the namespace of a command it confines, and every confined launch
+fails the readiness check. Keep secrets out of a runner that runs the floor tier, or do
+not run that tier.
 
 ### What the tests prove
 

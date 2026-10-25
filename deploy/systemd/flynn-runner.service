@@ -48,9 +48,11 @@ Group=flynn
 StateDirectory=flynn
 UMask=0077
 
-# The runtime directory (/run/flynn) for the control socket, owner-only. A command the
-# sandbox runs is a different user inside its namespace and must not be able to traverse
-# here, so 0700 is part of what keeps the socket out of its reach.
+# The runtime directory (/run/flynn) for the control socket, owner-only. The mode keeps
+# other accounts out. It does not keep out a command the sandbox runs: that command's user
+# namespace maps to this account's own uid, so it is the same user to the filesystem, and
+# it shares the service's process namespace. See "What the sandbox does not hide" in
+# deploy/README.md.
 RuntimeDirectory=flynn
 RuntimeDirectoryMode=0700
 

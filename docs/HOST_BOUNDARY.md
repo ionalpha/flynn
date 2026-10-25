@@ -547,11 +547,11 @@ through is counted (`ConfinementFallbacks`) and passed to the notice, which reac
 standard error when it is nil. It is never offered for a Local that denies the network,
 governs egress, hides paths or holds a read grant the floor cannot honour.
 
-A runner hides what is its own from the commands it launches with
-`WithUnreadablePaths`: the data directory, the control-socket directory and the
-credential files read as empty inside the sandbox, and a Local that cannot do this
-(off Linux, without `WithReadOnlyFS`, or with a grant under a hidden path) refuses with
-`ErrReadDeny`. `deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
+An embedder hides a runner's own files from the commands it launches with
+`WithUnreadablePaths`: the paths read as empty inside the sandbox, and a Local that
+cannot do this (off Linux, without `WithReadOnlyFS`, or with a grant under a hidden
+path) refuses with `ErrReadDeny`. `flynn serve` does not apply it yet, so the data
+directory, the control socket and the credential files are readable to a command. `deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
 unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`
 explains each line.
 

@@ -1,12 +1,14 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/netguard"
 )
 
@@ -89,4 +91,45 @@ func TestConfinementFallbackDecidedInOnePlace(t *testing.T) {
 			t.Errorf("%s decides on the confinement probe itself; use fallBack", f)
 		}
 	}
+}
+
+// TestDefaultConfinementRefusesWhereThePlatformCannotConfine covers a platform with no kernel
+// confinement, where [WithDefaultConfinement] sets nothing: the Local refuses every launch
+// path with the unsupported-platform code, and only the opt-in runs at the floor, counted.
+func TestDefaultConfinementRefusesWhereThePlatformCannotConfine(t *testing.T) {
+	if got := newTestLocal(t, WithDefaultConfinement()).confineUnsupported; got != !kernelConfinementSupported() {
+		t.Fatalf("confineUnsupported = %v on a platform whose support is %v", got, kernelConfinementSupported())
+	}
+
+	def := newTestLocal(t, WithDefaultConfinement())
+	def.confineUnsupported = true
+	for name, err := range map[string]error{
+		"guard": def.guardLaunch(),
+		"exec":  execErr(def),
+	} {
+		if fault.CodeOf(err) != "sandbox_confine_unsupported" {
+			t.Errorf("%s: err = %v, want sandbox_confine_unsupported", name, err)
+		}
+		if err != nil && !strings.Contains(err.Error(), "microVM tier") {
+			t.Errorf("%s: %q does not point to the container or microVM tier", name, err)
+		}
+	}
+	if def.ConfinementFallbacks() != 0 {
+		t.Fatal("a refusal must not count as a fallback")
+	}
+
+	var got []error
+	opted := newTestLocal(t, WithBestEffortConfinement(func(r error) { got = append(got, r) }))
+	opted.confineUnsupported = true
+	if err := opted.guardLaunch(); err != nil {
+		t.Fatalf("the opt-in must pass the guard, got %v", err)
+	}
+	if opted.ConfinementFallbacks() != 1 || len(got) != 1 {
+		t.Fatalf("fallbacks=%d notices=%d, want the opt-in counted and reported once", opted.ConfinementFallbacks(), len(got))
+	}
+}
+
+func execErr(l *Local) error {
+	_, err := l.Exec(context.Background(), Command{Line: "exit 0"})
+	return err
 }

@@ -51,6 +51,9 @@ type Local struct {
 	writableDirs []string
 	// unreadable are paths hidden from a confined command (see WithUnreadablePaths).
 	unreadable []string
+	// confineUnsupported is set when the default confinement was asked for on a platform
+	// that has no kernel confinement, so a launch has to refuse (see guardUnsupported).
+	confineUnsupported bool
 	// hostReadable selects a confinement tier that leaves the host readable while still
 	// confining writes to the workspace (see WithHostReadable). It changes nothing on the
 	// platforms whose kernel tier is already read-permitting; on Windows it selects the
@@ -319,26 +322,28 @@ func WithKernelConfinement() LocalOption {
 }
 
 // WithDefaultConfinement is the secure-by-default baseline: it enables the kernel
-// confinements the current platform can enforce, and nothing where it cannot. It enables
-// the read-only host and the syscall filter, so a command reads the host and works in its
-// directory but cannot change the host. Network denial is left to the per-run policy.
+// confinements the current platform can enforce. It enables the read-only host and the
+// syscall filter, so a command reads the host and works in its directory but cannot change
+// the host. Network denial is left to the per-run policy.
 //
 // A launch the host refuses (on Linux, unprivileged user namespaces restricted by sysctl,
 // AppArmor or a service unit) fails closed with a [RefusedError] and never runs the command
-// unconfined. [WithBestEffortConfinement] is the explicit opt-in to the process-jail floor.
+// unconfined. A platform with no kernel confinement refuses every launch the same way.
+// [WithBestEffortConfinement] is the explicit opt-in to the process-jail floor.
 //
 // On Windows the baseline reads the host, so it uses the write-restricted token rather than
-// the AppContainer. The container denies reads unless a directory carries an ACE for the app
-// package, and ordinary toolchain often lacks it (an MSI that sets its own DACL drops it;
-// see nodejs/node#63590). A caller that wants reads denied asks by name, with
-// WithReadOnlyFS or WithKernelConfinement, and gets the container.
+// the AppContainer, which denies reads unless a directory carries an ACE for the app package
+// and ordinary toolchain often lacks it (see nodejs/node#63590). A caller that wants reads
+// denied asks by name, with WithReadOnlyFS or WithKernelConfinement, and gets the container.
 func WithDefaultConfinement() LocalOption {
 	return func(l *Local) {
 		if kernelConfinementSupported() {
 			l.readonlyFS = true
 			l.seccomp = true
 			l.hostReadable = true
+			return
 		}
+		l.confineUnsupported = true
 	}
 }
 

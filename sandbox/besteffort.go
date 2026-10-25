@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"sync/atomic"
+
+	"github.com/ionalpha/flynn/fault"
 )
 
 // floorPolicy is whether a Local may run a command at the process-jail floor when the
@@ -81,6 +83,22 @@ func (l *Local) fallBackUnexpressible(reason error) bool {
 	}
 	l.floor.record(reason)
 	return true
+}
+
+// guardUnsupported refuses a launch from a Local that asked for [WithDefaultConfinement] on
+// a platform with no kernel confinement, where the option sets nothing and the command
+// would otherwise run with no boundary and no error. A Local with the opt-in runs it at the
+// floor through [Local.fallBackUnexpressible], which counts and reports it.
+func (l *Local) guardUnsupported() error {
+	if !l.confineUnsupported {
+		return nil
+	}
+	err := fault.New(fault.Forbidden, "sandbox_confine_unsupported",
+		"sandbox: kernel confinement is not supported on this platform; refusing rather than running the command unconfined (use the container or microVM tier)")
+	if l.fallBackUnexpressible(err) {
+		return nil
+	}
+	return err
 }
 
 // record counts a run at the floor and reports why to the notice.
