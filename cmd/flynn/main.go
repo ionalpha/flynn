@@ -819,6 +819,17 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID, nil)
+	_, _, _, err = driveRequest{
+		out:      os.Stdout,
+		model:    model,
+		plan:     plan,
+		workdir:  cwd,
+		system:   defaultSystemPrompt,
+		rstore:   store.Resources(reg),
+		jq:       store.Jobs(),
+		log:      store.Log(),
+		verbose:  verbose,
+		resumeID: runID,
+	}.execute(ctx)
 	return err
 }
