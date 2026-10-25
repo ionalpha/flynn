@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/archetypes"
 	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/bus"
 	"github.com/ionalpha/flynn/capability"
@@ -78,7 +79,7 @@ type Config struct {
 	// a tool the archetype does not list is refused at the waist even though the host
 	// offers it. Nil runs the default generalist (all tools granted). The model call
 	// is always permitted.
-	Agent *archetype.Spec
+	Agent *archetypes.Spec
 	// State is the durable backend for sessions, skills, and memory. If nil, an
 	// in-memory provider is used so the agent runs with zero setup.
 	State state.Provider
