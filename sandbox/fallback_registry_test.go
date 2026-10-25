@@ -28,17 +28,17 @@ func unsettableConfinement(t *testing.T, opts ...LocalOption) *Local {
 	return l
 }
 
-// TestBackgroundLaunchesFallBackToTheFloor proves the always-on baseline degrades to the
-// process-jail floor rather than failing when the host cannot establish confinement, on every
-// launch path that backgrounds a process. The failed attempt never ran the command, so the
-// retry is safe, and the baseline is always-on rather than an explicit request.
+// TestBackgroundLaunchesFallBackToTheFloor proves the explicit [WithBestEffortConfinement]
+// opt-in degrades to the process-jail floor when the host cannot establish confinement, on
+// every launch path that backgrounds a process. The failed attempt never ran the command, so
+// the retry is safe. The default refuses instead, which the fail-closed tests cover.
 func TestBackgroundLaunchesFallBackToTheFloor(t *testing.T) {
 	t.Run("serve", func(t *testing.T) {
-		l := unsettableConfinement(t, WithDefaultConfinement(),
+		l := unsettableConfinement(t, WithBestEffortConfinement(func(error) {}),
 			WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
 		p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
 		if err != nil {
-			t.Fatalf("the baseline must fall back to the floor, not fail: %v", err)
+			t.Fatalf("the opt-in must fall back to the floor, not fail: %v", err)
 		}
 		t.Cleanup(func() { _ = p.Stop() })
 		if !p.Running() {
@@ -46,40 +46,41 @@ func TestBackgroundLaunchesFallBackToTheFloor(t *testing.T) {
 		}
 	})
 	t.Run("stream", func(t *testing.T) {
-		l := unsettableConfinement(t, WithDefaultConfinement())
+		l := unsettableConfinement(t, WithBestEffortConfinement(func(error) {}))
 		p, err := l.Stream(context.Background(), StreamSpec{
-			Argv: helperArgv(),
-			Env:  []string{"SANDBOX_STREAM_HELPER=1", "HELPER_LINES=1"},
+			Argv:    helperArgv(),
+			Env:     []string{"SANDBOX_STREAM_HELPER=1", "HELPER_LINES=1"},
+			Confine: true,
 		})
 		if err != nil {
-			t.Fatalf("the baseline must fall back to the floor, not fail: %v", err)
+			t.Fatalf("the opt-in must fall back to the floor, not fail: %v", err)
 		}
 		if err := p.Wait(); err != nil {
 			t.Fatalf("the fallback did not run the command: %v", err)
 		}
 	})
 	t.Run("session", func(t *testing.T) {
-		l := unsettableConfinement(t, WithDefaultConfinement())
+		l := unsettableConfinement(t, WithBestEffortConfinement(func(error) {}))
 		s, err := l.Session(context.Background(), SessionSpec{
 			Argv:    []string{os.Args[0], "-test.run=TestSessionHelperProcess"},
 			Env:     []string{"FLYNN_SANDBOX_SESSION_HELPER=1"},
 			Confine: true,
 		})
 		if err != nil {
-			t.Fatalf("the baseline must fall back to the floor, not fail: %v", err)
+			t.Fatalf("the opt-in must fall back to the floor, not fail: %v", err)
 		}
 		if err := s.Stop(); err != nil {
 			t.Fatalf("stop: %v", err)
 		}
 	})
 	t.Run("capture", func(t *testing.T) {
-		l := unsettableConfinement(t, WithDefaultConfinement())
+		l := unsettableConfinement(t, WithBestEffortConfinement(func(error) {}))
 		res, err := l.Capture(context.Background(), CaptureSpec{
 			Argv: helperArgv(),
 			Env:  []string{"SANDBOX_STREAM_HELPER=1", "HELPER_LINES=1"},
 		})
 		if err != nil {
-			t.Fatalf("the baseline must fall back to the floor, not fail: %v", err)
+			t.Fatalf("the opt-in must fall back to the floor, not fail: %v", err)
 		}
 		if !strings.Contains(res.Output, "line0") {
 			t.Fatalf("the fallback did not run the command, got %q", res.Output)

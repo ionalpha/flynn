@@ -81,6 +81,7 @@ func TestCaptureGrantsEnvButScrubsHost(t *testing.T) {
 
 func TestCaptureConfinedProducesOutput(t *testing.T) {
 	l := newTestLocal(t, WithDefaultConfinement())
+	requireConfinedRun(t, l)
 	// A confined child can exec only a binary it can read: on Windows the AppContainer
 	// cannot read the test binary in its temp dir, so copy the helper into the working
 	// directory, the one location the confinement grants it.

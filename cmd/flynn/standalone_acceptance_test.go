@@ -21,6 +21,7 @@ import (
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -231,6 +232,7 @@ func waitForBreach(ctx context.Context, t *testing.T, rstore resource.Store, nam
 // skills and expects one. Learning something broken is worse than learning nothing:
 // the next run reaches for it.
 func TestStandaloneAConvergedRunIsDistilledWithItsCheckRun(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	_, store := dataDir(t)
 	work := t.TempDir()
 	ctx := acceptCtx(t)

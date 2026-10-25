@@ -528,6 +528,33 @@ Every test of the auditor supplied a fake sandbox, which is how it stayed invisi
 `TestTheAuditorRunsAChecksCommandInTheRealSandbox` runs the wired auditor against the
 real one and asserts whichever of the two answers the host can give.
 
+Whether a host can contain confined work is something to ask before a run, not to learn
+from a refusal in the middle of one. `flynn sandbox check` (and
+[`sandbox.CheckConfinement`](../sandbox/readiness.go) for a host embedding Flynn) starts a
+real confined no-op child and returns a [`sandbox.Readiness`](../sandbox/readiness.go):
+a pass, or a named cause (a service unit's `RestrictNamespaces=`, disabled user
+namespaces, an AppArmor user-namespace restriction, a syscall filter) with the change
+that fixes it and the container or microVM tier as the alternative. A Local that asks for
+confinement runs that check before its first launch and refuses with the same result. The
+check has no off switch: no flag, environment variable or configuration accepts a
+refusal, and an outcome it cannot classify refuses.
+
+The default is fail closed. `WithDefaultConfinement` never runs a command unconfined: a
+host that cannot confine gets a refusal from `Exec`, `Capture`, `Stream`, `Serve` and
+`Session`. Running at the process-jail floor is a separate, named choice,
+`WithBestEffortConfinement(notice)`, made in code by the embedder. Each launch it lets
+through is counted (`ConfinementFallbacks`) and passed to the notice, which reaches
+standard error when it is nil. It is never offered for a Local that denies the network,
+governs egress, hides paths or holds a read grant the floor cannot honour.
+
+A runner hides what is its own from the commands it launches with
+`WithUnreadablePaths`: the data directory, the control-socket directory and the
+credential files read as empty inside the sandbox, and a Local that cannot do this
+(off Linux, without `WithReadOnlyFS`, or with a grant under a hidden path) refuses with
+`ErrReadDeny`. `deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
+unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`
+explains each line.
+
 ## How this list is derived
 
 Membership is mechanical. Only the verdict column is a judgment.

@@ -71,31 +71,27 @@ func (p *StreamProcess) Wait() error { return p.wait() }
 // path, alongside Exec (one-shot) and Serve (backgrounded). Confinement follows the
 // same rules as Exec: a governed-egress Local always takes the confined path so its
 // OS-level egress denial holds; an explicit Confine request is honored where the
-// platform can enforce it and, unless this Local is the always-on best-effort baseline,
-// a confinement that cannot be established fails the launch rather than dropping to an
-// unconfined run (refuse-rather-than-downgrade). The best-effort fallback, when it
-// applies, never weakens a governed-egress or network-denied launch.
+// platform can enforce it, and a confinement that cannot be established fails the launch
+// rather than dropping to an unconfined run (refuse-rather-than-downgrade).
+// [WithBestEffortConfinement] is the only exception, and it never weakens a governed-egress
+// or network-denied launch.
 func (l *Local) Stream(ctx context.Context, spec StreamSpec) (*StreamProcess, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return nil, errors.New("sandbox: stream: no command")
 	}
 	// Governed egress fails closed on a platform without an enforcement leg, before any
 	// launch (the Windows path does not run through confine).
-	if err := l.guardEgress(); err != nil {
+	if err := l.guardLaunch(); err != nil {
 		return nil, err
 	}
 	// Egress requires the confined path (its OS-level denial composes into confine)
 	// whenever it is configured, regardless of spec.Confine, and like Exec is never
-	// weakened by the best-effort fallback.
+	// weakened by the opt-in fallback.
 	confined := l.egress != nil || (spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp))
 	p, err := l.startStream(ctx, spec, confined)
-	// A confined launch that could not start (an error, not a non-zero exit) under the
-	// always-on baseline falls back to the floor, exactly as Exec does; the failed attempt
-	// never ran, so there is nothing to undo. The controls Exec refuses to weaken are
-	// excluded here too: a governed-egress or network-denied launch, and a sandbox that
-	// reports the kernel-confined tier the trust gate already relied on, fail closed rather
-	// than dropping to an unconfined run.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
+	// A confined launch that could not start (an error, not a non-zero exit) runs again at
+	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	if l.fallBack(err, confined) {
 		return l.startStream(ctx, spec, false)
 	}
 	return p, err

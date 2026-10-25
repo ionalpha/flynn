@@ -11,6 +11,7 @@ import (
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -160,6 +161,7 @@ func TestSpineVerifyRejectsUnsealed(t *testing.T) {
 // command's real exit code, run in a sandbox and not derived from anything the model
 // said.
 func TestRunVerificationIndependent(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx := context.Background()
 	if !runVerification(ctx, t.TempDir(), "exit 0") {
 		t.Fatal("a passing command was reported as failed")
@@ -175,6 +177,7 @@ func TestRunVerificationIndependent(t *testing.T) {
 // so the run's own sealed record fails the ground-truth check rather than overstating
 // the outcome.
 func TestRunGroundTruthEndToEnd(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	groundTruthOf := func(t *testing.T, verify string) error {
 		t.Helper()
 		ctx := context.Background()

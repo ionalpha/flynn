@@ -127,6 +127,120 @@ Because the API binds loopback, reach it deliberately rather than by opening a p
 - **Use a private overlay.** A WireGuard or Tailscale network, or your platform's
   private networking, lets a remote client reach the container without any public bind.
 
+## Running under systemd
+
+`systemd/flynn-runner.service` runs `flynn serve` on a Linux host with the sandbox
+working. It is a hardened service unit: no capabilities, `NoNewPrivileges=true`, a
+read-only system, a private `/tmp`, and a syscall filter. A hardened unit that sets
+`RestrictNamespaces=true` or filters `mount` stops the sandbox from creating the
+namespaces it confines each command in, and the agent then refuses to run commands. The
+runner unit adds exactly two things to that baseline, each commented in the file with the
+reason:
+
+- `RestrictNamespaces=user net mnt`, the three namespace types the sandbox creates.
+- `SystemCallFilter=mount` after the `@privileged` exclusion, and
+  `SystemCallErrorNumber=EPERM`, so the launcher can make the mounts private inside its
+  own namespace and a refused call fails with a readable error instead of killing the
+  process.
+
+It grants no capability and sets no ambient capability. `deploy/runner_unit_test.go`
+diffs the unit against `testdata/hardened-baseline.service` and fails if anything other
+than those namespace and syscall lines differs.
+
+### Checking a host
+
+```sh
+flynn sandbox check          # or --json for a machine-readable result
+```
+
+The command starts a real confined no-op child, so the result reflects what the kernel,
+the unit and any security module do to the sandbox on this host, not what their settings
+say. Run it as the service user, ideally from the unit itself (`systemd-run` with the
+unit's properties, or `ExecStartPre=`). It exits non-zero on anything but a clean pass,
+and an outcome it cannot classify is a refusal, never a pass.
+
+| Cause | What it means | Fix |
+|---|---|---|
+| `namespace-restricted` | the unit's `RestrictNamespaces=` excludes a type the sandbox needs | set `RestrictNamespaces=user net mnt` and restart |
+| `user-namespaces-disabled` | `kernel.unprivileged_userns_clone=0` or `user.max_user_namespaces=0` | raise the limit, or use the container or microVM tier |
+| `apparmor-userns-restricted` | Ubuntu 24.04 and later restrict user namespaces per program | install `apparmor/flynn` (below) |
+| `seccomp-conflict` | a syscall filter blocks a call the launcher needs | allow `mount` after the `@privileged` exclusion and set `SystemCallErrorNumber=EPERM` |
+| `unsupported-platform` | the host is not Linux, where the check has nothing to start | use the platform's own confinement tier |
+| `unknown` | the failure matched no known cause | read the detail line; use the container or microVM tier |
+
+When the host refuses, the agent refuses to launch commands and says why. It does not run
+them unconfined, and no flag, environment variable or configuration turns the check off.
+The alternative it points to is the container tier or the microVM tier, which do not
+need unprivileged namespaces from the host process.
+
+`RestrictNamespaces=` is enforced only on x86, x86-64, ppc64, s390 and some MIPS
+kernels. On other architectures (arm64 included) the unit's line has no effect, which is
+why the check runs the real child rather than reading the unit, and why it reports the
+architecture and a warning.
+
+### Ubuntu 24.04 and later
+
+These releases restrict unprivileged user namespaces with AppArmor, which blocks the
+sandbox inside a hardened unit. Install the per-binary profile rather than setting
+`kernel.apparmor_restrict_unprivileged_userns=0`, which lifts the restriction for every
+program on the host:
+
+```sh
+install -m 0644 deploy/apparmor/flynn /etc/apparmor.d/flynn
+apparmor_parser -r /etc/apparmor.d/flynn
+```
+
+The profile names `/usr/local/bin/flynn`, grants the `userns` permission and runs
+unconfined otherwise, so it changes nothing else about what the binary can do. Edit the
+path if the binary lives elsewhere. AppArmor's restriction has known bypasses through
+other binaries that hold the permission, so treat it as a narrowing and not a boundary.
+
+### Mounts with locked flags
+
+Under `NoNewPrivileges=true` systemd mounts `/` and the private `/tmp` with `nosuid`.
+The kernel locks such flags once a mount is copied into a user namespace, and a remount
+that leaves one out fails with `EPERM`. The launcher therefore carries a mount's existing
+`nosuid`, `nodev`, `noexec` and access-time flags through the read-only and writable
+remounts it performs. Keeping a flag only removes capability, so it widens nothing.
+
+### Best effort is an opt-in
+
+A Local built with `WithDefaultConfinement` fails closed. A host that cannot confine
+gets a refusal that carries the classified cause, never a command run unconfined. An
+embedder that accepts running at the process-jail floor says so in code with
+`WithBestEffortConfinement(notice)`. Each launch that falls back is counted
+(`ConfinementFallbacks`) and passed to the notice, which defaults to standard error, so
+the operator sees it. Nothing in the environment, a flag or a file selects it, and it is
+never offered for a Local that denies the network, governs egress, hides paths with
+`WithUnreadablePaths` or holds a read grant the floor cannot honour.
+
+### Recording readiness
+
+`flynn sandbox check --ready-file PATH` writes the result as JSON, with the CPU
+architecture and the tier the probe measured, for a supervisor or a load balancer to
+read. It refuses a path the sandbox can write (the work directory, a granted directory,
+`/tmp`, `/var/tmp`, `/dev/shm`) with an error, so a confined command cannot forge a pass. Point it
+into the unit's `RuntimeDirectory=` (`/run/flynn`, mode 0700), which no sandbox view
+leaves writable. A failed check leaves the runner not ready; a later launch failure
+clears any cached pass and runs the check again.
+
+### Hiding the runner's own files
+
+The runner hides its data directory, its control-socket directory and its credential
+files from the commands it launches with `WithUnreadablePaths`. Inside the sandbox a
+hidden directory is empty and a hidden file reads as empty, while the rest of the host
+stays readable. The set needs `WithReadOnlyFS` and Linux, and a Local that cannot apply it
+refuses with `ErrReadDeny` and does not run the command. A path reachable under a second
+name (another bind mount of the same directory) is not hidden under that name.
+
+### What the tests prove
+
+`deploy/negative_control_linux_test.go` runs transient units with `systemd-run`: the
+shipped directives must pass the check, and `RestrictNamespaces=yes` or a tightened
+`SystemCallFilter` must fail it with a named cause. Set `FLYNN_BIN` to a built `flynn`
+to run them against the real binary. They skip without systemd, root or an x86 kernel,
+because `RestrictNamespaces=` is inert elsewhere.
+
 ## How this fits
 
 This image is the most direct way to have Flynn host itself: it works today on any

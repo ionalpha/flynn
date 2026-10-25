@@ -61,6 +61,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"db":           runDB,
 	"version":      runVersion,
 	"upgrade":      runUpgrade,
+	"sandbox":      runSandbox,
 }
 
 // staleSandboxProfileAge is how old a sandbox's operating-system profile must be before
@@ -591,6 +592,7 @@ func printUsage(w io.Writer) {
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
+  flynn sandbox check [--json] [--ready-file PATH]  start a confined child and report whether this host allows the Linux sandbox, or why not and the fix (exits 1 on any refusal)
 Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).
 
 A goal spec file states the terms of a run: what must stay true while it works. Each

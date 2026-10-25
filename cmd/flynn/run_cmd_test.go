@@ -17,6 +17,7 @@ import (
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
@@ -112,6 +113,7 @@ func TestInspectRunReplaysTheRecordedRun(t *testing.T) {
 // TestRegradeSkillsReportsTheTally: regrade re-runs every stored skill's check and
 // reports what it reconfirmed and what it retired, which is the command's whole output.
 func TestRegradeSkillsReportsTheTally(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
@@ -235,6 +237,7 @@ func TestDriveRefusesToResumeARunThatIsNotThere(t *testing.T) {
 // the run's own stream, and when the log cannot take it the run says so rather than
 // reporting a check that is not in the record.
 func TestRunGroundTruthReportsAnUnrecordableCheck(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx := context.Background()
 	var out bytes.Buffer
 	recordGroundTruth(ctx, &out, refusingLog{}, "run/x", t.TempDir(), "exit 0")
@@ -420,6 +423,7 @@ func TestRankMemoryOrdersByRelevanceThenRecency(t *testing.T) {
 // sealed into a signed record on its own stream and the resource projection is
 // snapshotted, so the run verifies from the durable store alone afterwards.
 func TestRunLearningMissionSealsAndVerifiesItsOwnRun(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	dataDir := t.TempDir()

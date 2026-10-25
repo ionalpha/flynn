@@ -16,7 +16,7 @@ import (
 // process. Like Serve, Session refuses rather than starting the process at the
 // directory-jail floor while the sandbox reports the confined tier: an out-of-process
 // extension that cannot be contained must not run at all. It is a governance refusal
-// (Forbidden); only the always-on best-effort baseline drops to the floor instead.
+// (Forbidden); only [WithBestEffortConfinement] drops to the floor instead.
 var errSessionConfineUnsupported = fault.New(fault.Forbidden, "sandbox_session_confine_unsupported",
 	"sandbox: kernel confinement cannot be applied to a duplex background process on this platform; refusing rather than running the extension unconfined")
 
@@ -112,9 +112,9 @@ func (s *Session) Stop() error {
 // stdin and stdout pipes, its stderr tail, and its lifecycle. Confinement follows the
 // same rules as Exec, Stream, and Serve: a governed-egress Local always takes the confined
 // path so its OS-level egress denial holds; an explicit Confine request is honoured where
-// the platform can enforce it and, unless this Local is the always-on best-effort
-// baseline, a confinement that cannot be established fails the launch rather than dropping
-// to an unconfined run (refuse-rather-than-downgrade). Where a platform cannot carry its
+// the platform can enforce it, and a confinement that cannot be established fails the
+// launch rather than dropping to an unconfined run (refuse-rather-than-downgrade), unless
+// the Local was built with [WithBestEffortConfinement]. Where a platform cannot carry its
 // confinement onto a still-writable background process, a confined Session is refused
 // rather than run unconfined, exactly as Serve refuses a confined background server.
 func (l *Local) Session(ctx context.Context, spec SessionSpec) (*Session, error) {
@@ -123,31 +123,27 @@ func (l *Local) Session(ctx context.Context, spec SessionSpec) (*Session, error)
 	}
 	// Governed egress fails closed on a platform without an enforcement leg, before any
 	// launch.
-	if err := l.guardEgress(); err != nil {
+	if err := l.guardLaunch(); err != nil {
 		return nil, err
 	}
 	// Egress requires the confined path (its OS-level denial composes into confine)
 	// whenever it is configured, regardless of spec.Confine, and like Exec is never
-	// weakened by the best-effort fallback.
+	// weakened by the opt-in fallback.
 	confined := l.egress != nil || (spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp))
 	// On a platform that cannot apply its kernel confinement to a duplex background
 	// process, refuse rather than silently dropping to the directory-jail floor under a
-	// tier the trust gate relied on. Only the always-on best-effort baseline (no egress,
-	// no explicit network denial) is allowed to fall to the floor, as Serve permits.
+	// tier the trust gate relied on. Only the opt-in (no egress, no network denial) falls to
+	// the floor, as Serve permits.
 	if confined && !duplexConfinementExpressible() {
-		if l.egress != nil || l.denyNetwork || !l.confineBestEffort {
+		if !l.fallBackUnexpressible(errSessionConfineUnsupported) {
 			return nil, errSessionConfineUnsupported
 		}
 		return l.startSession(ctx, spec, false)
 	}
 	p, err := l.startSession(ctx, spec, confined)
-	// A confined launch that could not start (an error, not a non-zero exit) under the
-	// always-on baseline falls back to the floor, exactly as Exec and Stream do; the
-	// failed attempt never ran, so there is nothing to undo. The controls Exec refuses to
-	// weaken are excluded here too: a governed-egress or network-denied launch, and a
-	// sandbox reporting the kernel-confined tier the trust gate already relied on, fail
-	// closed rather than dropping to an unconfined run.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
+	// A confined launch that could not start (an error, not a non-zero exit) runs again at
+	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	if l.fallBack(err, confined) {
 		return l.startSession(ctx, spec, false)
 	}
 	return p, err

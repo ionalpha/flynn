@@ -30,6 +30,7 @@ ignore:
   - "llm/llmtest"
   - "memory/memorytest"
   - "resource/resourcetest"
+  - "sandbox/sandboxtest"
   - "skill/skilltest"
   - "spine/spinetest"
   - "state/statetest"

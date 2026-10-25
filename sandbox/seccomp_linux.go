@@ -35,7 +35,7 @@ const (
 // set, otherwise allow it.
 func installFilter(auditArch uint32, denied []int) error {
 	if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-		return fmt.Errorf("set no-new-privs: %w", err)
+		return fmt.Errorf("%s: %w", msgNoNewPrivs, err)
 	}
 	prog := buildSeccompFilter(auditArch, denied)
 	fprog := &unix.SockFprog{
@@ -45,7 +45,7 @@ func installFilter(auditArch uint32, denied []int) error {
 	}
 	//nolint:gosec // prctl takes the filter program by address; fprog and its backing slice are live across the call
 	if err := unix.Prctl(unix.PR_SET_SECCOMP, unix.SECCOMP_MODE_FILTER, uintptr(unsafe.Pointer(fprog)), 0, 0); err != nil {
-		return fmt.Errorf("install seccomp filter: %w", err)
+		return fmt.Errorf("%s: %w", msgInstallFilter, err)
 	}
 	return nil
 }
