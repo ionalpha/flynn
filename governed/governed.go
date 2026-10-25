@@ -13,7 +13,7 @@
 // option that means "fewer guards" except [Waive], which names the [Guard], needs a
 // reason, and writes both onto the run's spine stream as a [WaivedEventType] event
 // before the run starts. A nil or zero value passed to an option is an error, never a
-// silent opt-out, and [Run.Posture] reports what was actually wired so a host can
+// silent opt-out, and [Run.Posture] reports what was wired so a host can
 // assert it.
 //
 // # Modes

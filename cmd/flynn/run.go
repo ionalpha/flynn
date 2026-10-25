@@ -142,14 +142,9 @@ func (r driveRequest) announce(w io.Writer, run *governed.Run) {
 // replays the prior conversation first, then tails the rest live.
 func (r driveRequest) begin(ctx context.Context, run *governed.Run) error {
 	if r.resumeID != "" {
-		g, err := run.Runtime().Resume(ctx, r.resumeID)
-		if err != nil {
-			return err
-		}
-		run.Session().Resume(ctx, run.Runtime(), g.Key())
-		return nil
+		return run.Resume(ctx, r.resumeID)
 	}
-	_, err := run.Session().Submit(ctx, run.Runtime(), run.GoalSpec(r.goalSpec()))
+	_, err := run.Submit(ctx, r.goalSpec())
 	return err
 }
 

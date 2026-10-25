@@ -36,15 +36,8 @@ func NewKit(ctx context.Context, log spine.Log, opts ...Option) (*Kit, error) {
 	if c.err != nil {
 		return nil, c.err
 	}
-	if c.hasToolset || c.external != nil || c.fanout != nil || c.bridge != nil || c.hasCaps ||
-		c.driver != "" || c.brake != nil || c.budget != nil || len(c.approve) > 0 || len(c.outside) > 0 ||
-		c.prompter != nil || c.reporter != nil || c.planning {
-		return nil, errors.New("governed: NewKit takes only the working-tree options and Waive(GuardBrakes)")
-	}
-	for g := range c.waivers {
-		if g != GuardBrakes {
-			return nil, errors.New("governed: NewKit can waive only GuardBrakes; " + string(g) + " has no meaning without a goal loop")
-		}
+	if err := c.checkKitOptions(); err != nil {
+		return nil, err
 	}
 	p, err := newParts(c, log, false)
 	if err != nil {
@@ -59,6 +52,22 @@ func NewKit(ctx context.Context, log spine.Log, opts ...Option) (*Kit, error) {
 		k.brk = DefaultBrakes()
 	}
 	return k, nil
+}
+
+// checkKitOptions refuses an option only a goal loop can use, and a waiver of a guard a
+// kit does not have, so neither is accepted and then ignored.
+func (c *config) checkKitOptions() error {
+	if c.hasToolset || c.external != nil || c.fanout != nil || c.bridge != nil || c.hasCaps ||
+		c.driver != "" || c.brake != nil || c.budget != nil || len(c.approve) > 0 || len(c.outside) > 0 ||
+		c.prompter != nil || c.reporter != nil || c.planning {
+		return errors.New("governed: NewKit takes only the working-tree options and Waive(GuardBrakes)")
+	}
+	for g := range c.waivers {
+		if g != GuardBrakes {
+			return errors.New("governed: NewKit can waive only GuardBrakes; " + string(g) + " has no meaning without a goal loop")
+		}
+	}
+	return nil
 }
 
 // Toolset is the tools the kit offers.

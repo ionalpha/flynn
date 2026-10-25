@@ -168,11 +168,18 @@ func WithReporter(r mission.Reporter) Option {
 // WithToolset runs a caller-supplied toolset under grant instead of the sandboxed
 // working-tree tools. The grant is the complete authority the waist consults. There is
 // no sandbox, so the run also loses the sandbox-bound verifier, auditor and containment
-// gate; that is a weaker posture and requires Waive(GuardSandbox, reason).
+// gate; that is a weaker posture and requires Waive(GuardSandbox, reason). A grant that
+// admits every action is refused, so the caller always names what the tools may do.
 func WithToolset(tools []mission.Tool, grant capability.Grant) Option {
 	return func(c *config) {
 		if len(tools) == 0 {
 			c.fail(errors.New("governed: WithToolset needs at least one tool"))
+			return
+		}
+		if grant.Unrestricted() {
+			// An unrestricted grant admits every action, which is the one grant that cannot be
+			// told apart from having no policy. The caller names what the tools may do.
+			c.fail(errors.New("governed: WithToolset needs a grant that names its actions, not an unrestricted one"))
 			return
 		}
 		c.toolset, c.toolGrant, c.hasToolset = tools, grant, true

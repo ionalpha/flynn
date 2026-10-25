@@ -133,19 +133,17 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, user
 		return "", err
 	}
 	if s.started {
-		g, err := run.Runtime().Resume(turnCtx, s.runID)
-		if err != nil {
+		if err := run.Resume(turnCtx, s.runID); err != nil {
 			return "", err
 		}
-		run.Session().Resume(turnCtx, run.Runtime(), g.Key())
 	} else {
 		objective := openingObjective(userText, images)
-		if _, err := run.Session().Submit(turnCtx, run.Runtime(), run.GoalSpec(goal.Spec{
+		if _, err := run.Submit(turnCtx, goal.Spec{
 			Objective:   objective,
 			Attachments: images,
 			// The run fills the stop condition, and for an external agent the CLI's model
 			// string, so `flynn --model claude:<model>` pins the model the CLI itself runs.
-		})); err != nil {
+		}); err != nil {
 			return "", err
 		}
 		s.runID = run.Session().ID()

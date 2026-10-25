@@ -154,6 +154,22 @@ func (c *config) mode() (Mode, error) {
 	return mode, nil
 }
 
+// checkWaiversAgainstOptions refuses a waiver for a guard the same option set also
+// configures: the record would say the guard was given up while the run carried it, or the
+// reverse, and a reader cannot tell which statement to believe.
+func (c *config) checkWaiversAgainstOptions() error {
+	if _, w := c.waivers[GuardApproval]; w && (len(ApprovalPolicy(c.approve)) > 0 || c.prompter != nil) {
+		return errors.New("governed: Waive(GuardApproval) contradicts WithApproval")
+	}
+	if _, w := c.waivers[GuardBrakes]; w && c.brake != nil {
+		return errors.New("governed: Waive(GuardBrakes) contradicts WithBrakeLimits")
+	}
+	if _, w := c.waivers[GuardBudget]; w && c.budget != nil {
+		return errors.New("governed: Waive(GuardBudget) contradicts WithBudget")
+	}
+	return nil
+}
+
 // check rejects option combinations that would claim a guard the run does not have. It
 // runs before anything is built so a contradiction leaves nothing to clean up.
 func (c *config) check(mode Mode) error {
@@ -168,14 +184,8 @@ func (c *config) check(mode Mode) error {
 	case mode == ModeToolset && (c.hasCaps || c.bridge != nil):
 		return errors.New("governed: a toolset run's grant is the caller's; WithCapabilities and WithExtensions do not apply")
 	}
-	if _, w := c.waivers[GuardApproval]; w && (len(ApprovalPolicy(c.approve)) > 0 || c.prompter != nil) {
-		return errors.New("governed: Waive(GuardApproval) contradicts WithApproval")
-	}
-	if _, w := c.waivers[GuardBrakes]; w && c.brake != nil {
-		return errors.New("governed: Waive(GuardBrakes) contradicts WithBrakeLimits")
-	}
-	if _, w := c.waivers[GuardBudget]; w && c.budget != nil {
-		return errors.New("governed: Waive(GuardBudget) contradicts WithBudget")
+	if err := c.checkWaiversAgainstOptions(); err != nil {
+		return err
 	}
 	if mode == ModeExternal && (len(ApprovalPolicy(c.approve)) > 0 || len(outsidePolicy(c.outside)) > 0) {
 		return errors.New("governed: an external agent loop cannot enforce approval or allowance policy; run it natively or remove the policy")
@@ -187,7 +197,9 @@ func (c *config) check(mode Mode) error {
 }
 
 // Assemble composes one governed run over b. model drives the loop and may be nil only
-// with [WithExternalAgent]. Waivers are recorded on the run's stream before it returns.
+// with [WithExternalAgent]. Each waiver is recorded on the run's stream before it
+// returns, as a [WaivedEventType] event. The posture is recorded by [Run.Submit] and
+// [Run.Resume], which is where the run's stream starts.
 // The caller owns the returned run for the length of one goal and closes it.
 func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) (*Run, error) {
 	if err := b.validate(); err != nil {

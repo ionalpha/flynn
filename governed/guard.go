@@ -63,6 +63,57 @@ func recordWaivers(ctx context.Context, log spine.Log, stream string, ws []Waive
 	return nil
 }
 
+// PostureEventType is the spine event type under which [Run.Submit] and [Run.Resume]
+// state, on the run's own stream, which guards the run was wired with. [WaivedEventType]
+// says what was given up and why; this says what is in force, so a reader of a sealed
+// record learns the posture from the record and not from the host's account of it. It is
+// written right after the goal is submitted, which keeps the session.started event first
+// on the stream; the goal's first step can begin before the append returns, so the event
+// is in the record of every run but not guaranteed ahead of its first action. A resumed
+// run states it again, because each assembly is its own claim.
+const PostureEventType = "governance.posture"
+
+// recordPosture writes p onto stream. A failed write fails the submit or resume for the
+// same reason a failed waiver fails assembly: a run weaker than the binary's must not be
+// able to hide it.
+func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture) error {
+	actions := make([]any, 0, len(p.ApprovalActions))
+	for _, a := range p.ApprovalActions {
+		actions = append(actions, a)
+	}
+	waived := make(map[string]any, len(p.Waived))
+	for g, reason := range p.Waived {
+		waived[string(g)] = reason
+	}
+	_, err := log.Append(ctx, spine.AppendInput{
+		Stream: stream,
+		Type:   PostureEventType,
+		Actor:  spine.ActorSystem,
+		Payload: map[string]any{
+			"mode":            string(p.Mode),
+			"sandbox":         p.Sandbox,
+			"hostSandbox":     p.HostSandbox,
+			"containment":     p.Containment,
+			"approval":        p.Approval,
+			"approvalActions": actions,
+			"allowance":       p.Allowance,
+			"brakes":          p.Brakes,
+			"budget":          p.Budget,
+			"halt":            p.Halt,
+			"eventSink":       p.EventSink,
+			"verifier":        p.Verifier,
+			"evidence":        p.Evidence,
+			"ledgerProof":     p.LedgerProof,
+			"auditor":         p.Auditor,
+			"steerJudge":      p.SteerJudge,
+			"progress":        p.Progress,
+			"refusals":        p.Refusals,
+			"waived":          waived,
+		},
+	})
+	return err
+}
+
 // Mode is the shape of the run's loop.
 type Mode string
 
@@ -74,7 +125,7 @@ const (
 	ModeExternal     Mode = "external"
 )
 
-// Posture reports what [Assemble] wired, computed from the wiring and not from the
+// Posture reports what [Assemble] wired, computed from what was built and not from the
 // options asked for, so a host can assert it before it starts the run. A field is false
 // when that guard is not on this run's path, whether because it was waived or because
 // the mode does not have it; Waived names the first cause.

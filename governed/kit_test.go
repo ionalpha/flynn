@@ -72,7 +72,7 @@ func TestKitRecordsItsBrakeWaiver(t *testing.T) {
 	}
 }
 
-// TestApprovalGateIsEffectiveByDefault: a policy given to a default run actually stops the
+// TestApprovalGateIsEffectiveByDefault: a policy given to a default run stops the
 // action. The same script with no policy writes the file, so the refusal is the gate's.
 func TestApprovalGateIsEffectiveByDefault(t *testing.T) {
 	write := func() *llmtest.ScriptedModel {

@@ -144,6 +144,37 @@ func (r *Run) GoalSpec(spec goal.Spec) goal.Spec {
 	return spec
 }
 
+// Submit opens the run's session, submits spec as its goal and then states the run's
+// posture on the stream as a [PostureEventType] event. The runtime must be started. A
+// caller that streams the conversation live uses this and [Run.Resume]; [Run.Do] uses
+// this too, so no path starts a goal without the posture on its record. A failed write
+// is an error: a run must not be able to go unrecorded.
+func (r *Run) Submit(ctx context.Context, spec goal.Spec) (resource.Key, error) {
+	key, err := r.p.sess.Submit(ctx, r.rt, r.GoalSpec(spec))
+	if err != nil {
+		return key, err
+	}
+	if err := recordPosture(ctx, r.log, r.ID(), r.posture); err != nil {
+		return key, fmt.Errorf("governed: record posture: %w", err)
+	}
+	return key, nil
+}
+
+// Resume continues the stored run id on the same stream and states the posture it was
+// assembled with again, since a resumed run may be assembled differently from the one it
+// continues and the record should say so. The runtime must be started.
+func (r *Run) Resume(ctx context.Context, id string) error {
+	g, err := r.rt.Resume(ctx, id)
+	if err != nil {
+		return err
+	}
+	r.p.sess.Resume(ctx, r.rt, g.Key())
+	if err := recordPosture(ctx, r.log, r.ID(), r.posture); err != nil {
+		return fmt.Errorf("governed: record posture: %w", err)
+	}
+	return nil
+}
+
 // Do runs spec to the end and reports how it ended. It starts the runtime, submits the
 // goal, waits for it to settle and stops the runtime again, so nothing it started outlives
 // the call. A stalled or cancelled goal returns the populated [Result] and an error.
@@ -157,7 +188,7 @@ func (r *Run) Do(ctx context.Context, spec goal.Spec) (Result, error) {
 	done := make(chan struct{})
 	go func() { _ = r.rt.Start(diag.LabelGoroutine(runCtx, "component", "goal-runtime")); close(done) }()
 
-	key, serr := r.p.sess.Submit(runCtx, r.rt, r.GoalSpec(spec))
+	key, serr := r.Submit(runCtx, spec)
 	var text string
 	werr := serr
 	if serr == nil {

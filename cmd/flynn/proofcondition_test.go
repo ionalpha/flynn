@@ -52,7 +52,7 @@ func TestThePromotionConditionForLedgerProof(t *testing.T) {
 	t.Cleanup(func() { _ = run.Close() })
 	go func() { _ = run.Runtime().Start(ctx) }()
 
-	if _, err := run.Session().Submit(ctx, run.Runtime(), goal.Spec{
+	if _, err := run.Submit(ctx, goal.Spec{
 		Objective:     "state the answer",
 		StopCondition: "the objective is fully accomplished",
 	}); err != nil {

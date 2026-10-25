@@ -41,7 +41,8 @@ package is one plus the highest layer it imports.
 | L4 governance + domain | `capability`, `budget`, `internal/spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
-| L7 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade. |
+| L7 assembly | `governed` | The one place a governed run is composed: sandbox, toolset, grant, dispatch hooks, spine sink, memory, learning and extensions. |
+| L8 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade, each one caller of `governed`. |
 
 The valuable property is the *direction*, not the count. A primitive must never
 reach up into a domain package; that inversion is what turns a clean graph into a
@@ -315,8 +316,8 @@ promise. The layout makes the tiers physical:
   external verifiers must be able to import). Keep these small and guarded;
   breaking them is a major-version event.
 - **Domain surface** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`,
-  `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`,
-  `controlplane`, `orchestration`, ...): importable and visible, but **unstable
+  `session`, `runtime`, `governed`, `learn`, `budget`, `memory`, `skill`,
+  `extension`, `controlplane`, `orchestration`, ...): importable and visible, but **unstable
   while pre-1.0**. These churn as the orchestration graph and router land.
   Power users may import them with that understanding.
 - **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
@@ -370,6 +371,12 @@ is part of CI).
   toolset and runs one objective to its answer.
 - **`session`** conversational front door and event stream; **`runtime`** wires
   the controller, worker, store, and bus together.
+- **`governed`** composes a governed run: `Assemble` takes options and returns a
+  `Run` with the posture it has. Defaults are the governed ones, and each
+  opt-out is a named `Waive` recorded on the spine. `cmd/flynn` and the root
+  `agent` call it and compose nothing else (`TestBinaryDoesNotComposeAGovernedRun`
+  in `internal/rigor` fails the binary if it does). `agent.Config` can carry a
+  host's backends, and `GoalResult` returns the run id, stop reason and record.
 - **`goal`** the controller + worker; **`mission`** the conversation executor;
   **`reconcile`** the generic loop they run on.
 - **`resource`** event-sourced state of record; **`spine`** the raw event log;

@@ -153,11 +153,11 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	t.Cleanup(func() { _ = run.Close() })
 	go func() { _ = run.Runtime().Start(ctx) }()
 
-	if _, err := run.Session().Submit(ctx, run.Runtime(), run.GoalSpec(goal.Spec{
+	if _, err := run.Submit(ctx, goal.Spec{
 		Objective:     spec.Objective,
 		StopCondition: spec.StopCondition,
 		Invariants:    spec.Invariants,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("submit a goal that states its terms: %v", err)
 	}
 

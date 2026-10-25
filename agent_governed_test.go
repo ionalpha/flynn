@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"slices"
 	"strings"
 	"testing"
@@ -185,5 +188,61 @@ func TestConfigApprovalPolicyReachesTheRun(t *testing.T) {
 
 	if !res.Posture.Approval || !slices.Contains(res.Posture.ApprovalActions, "bash") {
 		t.Fatalf("posture = %+v, want approval on and bash listed", res.Posture)
+	}
+}
+
+// closeSpy counts closes of the sandbox it wraps.
+type closeSpy struct {
+	sandbox.Sandbox
+	closed int
+}
+
+func (s *closeSpy) Close() error { s.closed++; return nil }
+
+// TestFacadeLeavesAHostSandboxOpen: a sandbox the host put in Config is the host's to close,
+// and a run that finishes with it still open lets the host reuse it for the next goal.
+func TestFacadeLeavesAHostSandboxOpen(t *testing.T) {
+	inner, err := sandbox.NewLocal(t.TempDir(), sandbox.WithDefaultConfinement())
+	if err != nil {
+		t.Fatalf("sandbox: %v", err)
+	}
+	defer func() { _ = inner.Close() }()
+	spy := &closeSpy{Sandbox: inner}
+
+	a := New(Config{Sandbox: spy})
+	res, err := a.runGoalResult(ctxT(t), llmtest.NewScripted(llmtest.SayText("done")), "say so")
+	if err != nil {
+		t.Fatalf("runGoalResult: %v", err)
+	}
+	if !res.Posture.HostSandbox || !res.Posture.Containment {
+		t.Errorf("posture = %+v, want the host sandbox reported with the containment gate", res.Posture)
+	}
+	if spy.closed != 0 {
+		t.Fatalf("the facade closed the host's sandbox %d times", spy.closed)
+	}
+}
+
+// TestConfigDocStatesHowAGuardIsGivenUp: Config is the facade an embedder reads first, so its
+// doc must say that no zero value removes a guard and name Waivers as the one opt-out. A
+// rewrite that drops either leaves the reader to guess.
+func TestConfigDocStatesHowAGuardIsGivenUp(t *testing.T) {
+	src, err := parser.ParseFile(token.NewFileSet(), "agent.go", nil, parser.ParseComments)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	var doc string
+	for _, d := range src.Decls {
+		if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.TYPE {
+			for _, s := range g.Specs {
+				if ts := s.(*ast.TypeSpec); ts.Name.Name == "Config" {
+					doc = g.Doc.Text()
+				}
+			}
+		}
+	}
+	for _, want := range []string{"zero value removes a guard", "Waivers"} {
+		if !strings.Contains(strings.Join(strings.Fields(doc), " "), want) {
+			t.Errorf("the Config doc does not say %q", want)
+		}
 	}
 }
