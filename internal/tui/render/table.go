@@ -12,91 +12,109 @@ import (
 // when the terminal is narrower than the natural layout, cells truncated with
 // a ".." marker rather than wrapped so rows stay scannable.
 func (m *Markdown) table(t *east.Table, src []byte, width int, base theme.Style) []string {
-	var (
-		header []([]span)
-		rows   [][]([]span)
-		aligns []east.Alignment
-	)
-	for r := t.FirstChild(); r != nil; r = r.NextSibling() {
-		var cells []([]span)
-		cellBase := base
-		if _, isHeader := r.(*east.TableHeader); isHeader {
-			cellBase = m.style(theme.Strong, base)
-		}
-		for c := r.FirstChild(); c != nil; c = c.NextSibling() {
-			cell, ok := c.(*east.TableCell)
-			if !ok {
-				continue
-			}
-			cells = append(cells, m.inline(cell, src, cellBase))
-			if _, isHeader := r.(*east.TableHeader); isHeader {
-				aligns = append(aligns, cell.Alignment)
-			}
-		}
-		if _, isHeader := r.(*east.TableHeader); isHeader {
-			header = cells
-		} else {
-			rows = append(rows, cells)
-		}
-	}
-
-	cols := len(header)
-	for _, r := range rows {
-		if len(r) > cols {
-			cols = len(r)
-		}
-	}
+	g := m.tableCells(t, src, base)
+	cols := g.columns()
 	if cols == 0 {
 		return nil
 	}
-
-	widths := make([]int, cols)
-	measure := func(cells []([]span)) {
-		for i, c := range cells {
-			if w := textWidth(plainText(c)); w > widths[i] {
-				widths[i] = w
-			}
-		}
-	}
-	measure(header)
-	for _, r := range rows {
-		measure(r)
-	}
-	for i := range widths {
-		if widths[i] < 1 {
-			widths[i] = 1
-		}
-	}
+	widths := g.widths(cols)
 	fitColumns(widths, width-3*(cols-1))
 
 	border := m.style(theme.Border, theme.Style{})
-	renderRow := func(cells []([]span)) string {
-		parts := make([]string, cols)
-		for i := range cols {
-			var cell []span
-			if i < len(cells) {
-				cell = cells[i]
-			}
-			cell = truncateSpans(cell, widths[i], "..")
-			cell = alignSpans(cell, widths[i], alignAt(aligns, i))
-			parts[i] = lineOf(padSpans(cell, widths[i]))
-		}
-		return strings.Join(parts, border.Render(" │ "))
-	}
-
 	var out []string
-	if len(header) > 0 {
-		out = append(out, renderRow(header))
+	if len(g.header) > 0 {
+		out = append(out, g.renderRow(g.header, widths, border))
 		seps := make([]string, cols)
 		for i, w := range widths {
 			seps[i] = strings.Repeat("─", w)
 		}
 		out = append(out, border.Render(strings.Join(seps, "─┼─")))
 	}
-	for _, r := range rows {
-		out = append(out, renderRow(r))
+	for _, r := range g.rows {
+		out = append(out, g.renderRow(r, widths, border))
 	}
 	return out
+}
+
+// tableGrid is a table's inline-rendered cells, split into the header row
+// and the body, with the alignment each header cell declares.
+type tableGrid struct {
+	header []([]span)
+	rows   [][]([]span)
+	aligns []east.Alignment
+}
+
+// tableCells renders every cell's inline content. Header cells are bold, and
+// their alignments govern the columns below them.
+func (m *Markdown) tableCells(t *east.Table, src []byte, base theme.Style) tableGrid {
+	var g tableGrid
+	for r := t.FirstChild(); r != nil; r = r.NextSibling() {
+		_, isHeader := r.(*east.TableHeader)
+		cellBase := base
+		if isHeader {
+			cellBase = m.style(theme.Strong, base)
+		}
+		var cells []([]span)
+		for c := r.FirstChild(); c != nil; c = c.NextSibling() {
+			cell, ok := c.(*east.TableCell)
+			if !ok {
+				continue
+			}
+			cells = append(cells, m.inline(cell, src, cellBase))
+			if isHeader {
+				g.aligns = append(g.aligns, cell.Alignment)
+			}
+		}
+		if isHeader {
+			g.header = cells
+		} else {
+			g.rows = append(g.rows, cells)
+		}
+	}
+	return g
+}
+
+// columns is the widest row's cell count.
+func (g tableGrid) columns() int {
+	cols := len(g.header)
+	for _, r := range g.rows {
+		cols = max(cols, len(r))
+	}
+	return cols
+}
+
+// widths is each column's natural width: its widest cell, at least one.
+func (g tableGrid) widths(cols int) []int {
+	widths := make([]int, cols)
+	for i := range widths {
+		widths[i] = 1
+	}
+	measure := func(cells []([]span)) {
+		for i, c := range cells {
+			widths[i] = max(widths[i], textWidth(plainText(c)))
+		}
+	}
+	measure(g.header)
+	for _, r := range g.rows {
+		measure(r)
+	}
+	return widths
+}
+
+// renderRow truncates, aligns and pads each cell to its column. A row shorter
+// than the table gets empty cells.
+func (g tableGrid) renderRow(cells []([]span), widths []int, border theme.Style) string {
+	parts := make([]string, len(widths))
+	for i, w := range widths {
+		var cell []span
+		if i < len(cells) {
+			cell = cells[i]
+		}
+		cell = truncateSpans(cell, w, "..")
+		cell = alignSpans(cell, w, alignAt(g.aligns, i))
+		parts[i] = lineOf(padSpans(cell, w))
+	}
+	return strings.Join(parts, border.Render(" │ "))
 }
 
 // fitColumns shrinks the widest columns first until the total fits the

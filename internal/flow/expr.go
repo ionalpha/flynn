@@ -48,79 +48,72 @@ type token struct {
 	pos  int
 }
 
+// punctuation maps the single-character structural tokens to their kinds.
+var punctuation = map[byte]tokenKind{
+	'.': tDot, '[': tLBracket, ']': tRBracket, '(': tLParen, ')': tRParen, ',': tComma,
+}
+
 // lex turns source into tokens. It never panics: an unterminated string or a stray
 // rune is a returned error, so fuzzing the parser cannot crash the process.
 func lex(src string) ([]token, error) {
 	var toks []token
-	i := 0
-	for i < len(src) {
-		c := src[i]
-		switch {
-		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
-			i++
-		case c >= '0' && c <= '9':
-			// A number is digits with at most one decimal point, so a second '.' ends
-			// the token and starts a field access (e.g. so "1.2" is a number but
-			// "a.1.2" parses as field steps rather than one malformed number).
-			j := i
-			seenDot := false
-			for j < len(src) {
-				if isDigit(src[j]) {
-					j++
-					continue
-				}
-				if src[j] == '.' && !seenDot {
-					seenDot = true
-					j++
-					continue
-				}
-				break
-			}
-			toks = append(toks, token{tNumber, src[i:j], i})
-			i = j
-		case c == '\'' || c == '"':
-			s, n, err := lexString(src, i)
-			if err != nil {
-				return nil, err
-			}
-			toks = append(toks, token{tString, s, i})
-			i = n
-		case c == '_' || isLetter(c):
-			j := i
-			for j < len(src) && (src[j] == '_' || isLetter(src[j]) || isDigit(src[j])) {
-				j++
-			}
-			toks = append(toks, token{tIdent, src[i:j], i})
-			i = j
-		case c == '.':
-			toks = append(toks, token{tDot, ".", i})
-			i++
-		case c == '[':
-			toks = append(toks, token{tLBracket, "[", i})
-			i++
-		case c == ']':
-			toks = append(toks, token{tRBracket, "]", i})
-			i++
-		case c == '(':
-			toks = append(toks, token{tLParen, "(", i})
-			i++
-		case c == ')':
-			toks = append(toks, token{tRParen, ")", i})
-			i++
-		case c == ',':
-			toks = append(toks, token{tComma, ",", i})
-			i++
-		default:
-			op, n := lexOperator(src, i)
-			if n == 0 {
-				return nil, fmt.Errorf("flow: unexpected character %q at %d", string(c), i)
-			}
-			toks = append(toks, token{tOp, op, i})
-			i = n
+	for i := 0; i < len(src); {
+		tok, next, err := lexToken(src, i)
+		if err != nil {
+			return nil, err
 		}
+		if tok.kind != tEOF { // whitespace yields no token
+			toks = append(toks, tok)
+		}
+		i = next
 	}
-	toks = append(toks, token{tEOF, "", len(src)})
-	return toks, nil
+	return append(toks, token{tEOF, "", len(src)}), nil
+}
+
+// lexToken reads the token starting at i and returns it with the index after
+// it. Whitespace returns a tEOF token, which lex skips.
+func lexToken(src string, i int) (token, int, error) {
+	c := src[i]
+	switch {
+	case isSpace(c):
+		return token{}, i + 1, nil
+	case isDigit(c):
+		j := lexNumberEnd(src, i)
+		return token{tNumber, src[i:j], i}, j, nil
+	case c == '\'' || c == '"':
+		s, n, err := lexString(src, i)
+		return token{tString, s, i}, n, err
+	case c == '_' || isLetter(c):
+		j := lexIdentEnd(src, i)
+		return token{tIdent, src[i:j], i}, j, nil
+	}
+	if kind, ok := punctuation[c]; ok {
+		return token{kind, string(c), i}, i + 1, nil
+	}
+	op, n := lexOperator(src, i)
+	if n == 0 {
+		return token{}, 0, fmt.Errorf("flow: unexpected character %q at %d", string(c), i)
+	}
+	return token{tOp, op, i}, n, nil
+}
+
+// lexNumberEnd returns the index just past the number starting at i. A number is
+// digits with at most one decimal point, so a second '.' ends the token and
+// starts a field access (e.g. so "1.2" is a number but "a.1.2" parses as field
+// steps rather than one malformed number).
+func lexNumberEnd(src string, i int) int {
+	seenDot := false
+	for i < len(src) {
+		switch {
+		case isDigit(src[i]):
+		case src[i] == '.' && !seenDot:
+			seenDot = true
+		default:
+			return i
+		}
+		i++
+	}
+	return i
 }
 
 func lexString(src string, start int) (string, int, error) {
@@ -171,6 +164,15 @@ func lexOperator(src string, i int) (string, int) {
 	return "", 0
 }
 
+// lexIdentEnd returns the index just past the identifier starting at i.
+func lexIdentEnd(src string, i int) int {
+	for i < len(src) && (src[i] == '_' || isLetter(src[i]) || isDigit(src[i])) {
+		i++
+	}
+	return i
+}
+
+func isSpace(c byte) bool  { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
 func isDigit(c byte) bool  { return c >= '0' && c <= '9' }
 func isLetter(c byte) bool { return unicode.IsLetter(rune(c)) }
 

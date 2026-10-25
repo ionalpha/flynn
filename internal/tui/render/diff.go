@@ -199,67 +199,129 @@ func splitHunks(th *theme.Theme, u udiff.UnifiedDiff, width int) []string {
 	if cell < 1 {
 		return unifiedHunks(th, u, width)
 	}
-	border := th.Style(theme.Border)
-	muted := th.Style(theme.Muted)
-	side := func(n int, sign string, signStyle theme.Style, content []span) string {
-		spans := []span{{num(n, gw) + " ", muted}, {sign + " ", signStyle}}
-		spans = append(spans, truncateSpans(content, cell, "..")...)
-		return lineOf(padSpans(spans, col))
-	}
-	blank := func() string { return lineOf(padSpans(nil, col)) }
-
-	join := func(left, right string) string { return left + border.Render(" │ ") + right }
-
+	v := splitView{th: th, gw: gw, col: col, cell: cell}
 	var out []string
 	for _, h := range u.Hunks {
 		out = append(out, hardWrapLine([]span{{hunkLabel(h), th.Style(theme.DiffLocation)}}, width)...)
-		oldN, newN := h.FromLine, h.ToLine
-		lines := h.Lines
-		for i := 0; i < len(lines); {
-			if lines[i].Kind == udiff.Equal {
-				content := []span{{clean(lines[i].Content), th.Style(theme.DiffContext)}}
-				out = append(out, join(
-					side(oldN, " ", th.Style(theme.DiffContext), content),
-					side(newN, " ", th.Style(theme.DiffContext), content),
-				))
-				oldN++
-				newN++
-				i++
-				continue
-			}
-			delStart := i
-			for i < len(lines) && lines[i].Kind == udiff.Delete {
-				i++
-			}
-			insStart := i
-			for i < len(lines) && lines[i].Kind == udiff.Insert {
-				i++
-			}
-			dels, inss := lines[delStart:insStart], lines[insStart:i]
-			paired := len(dels) == len(inss)
-			for j := 0; j < len(dels) || j < len(inss); j++ {
-				left, right := blank(), blank()
-				if j < len(dels) {
-					content := []span{{clean(dels[j].Content), th.Style(theme.DiffRemoved)}}
-					if paired {
-						content = intraline(clean(dels[j].Content), clean(inss[j].Content), th.Style(theme.DiffRemoved))
-					}
-					left = side(oldN, "-", th.Style(theme.DiffRemoved), content)
-					oldN++
-				}
-				if j < len(inss) {
-					content := []span{{clean(inss[j].Content), th.Style(theme.DiffAdded)}}
-					if paired {
-						content = intraline(clean(inss[j].Content), clean(dels[j].Content), th.Style(theme.DiffAdded))
-					}
-					right = side(newN, "+", th.Style(theme.DiffAdded), content)
-					newN++
-				}
-				out = append(out, join(left, right))
-			}
-		}
+		out = append(out, v.hunk(h)...)
 	}
 	return out
+}
+
+// splitView is the fixed geometry of a side-by-side diff: the gutter width,
+// the column width, and the cell width left for content after the gutter and
+// sign.
+type splitView struct {
+	th            *theme.Theme
+	gw, col, cell int
+}
+
+// side renders one column: line number, sign, then content truncated to the
+// cell and padded to the column.
+func (v splitView) side(n int, sign string, signStyle theme.Style, content []span) string {
+	spans := []span{{num(n, v.gw) + " ", v.th.Style(theme.Muted)}, {sign + " ", signStyle}}
+	spans = append(spans, truncateSpans(content, v.cell, "..")...)
+	return lineOf(padSpans(spans, v.col))
+}
+
+// blank is the empty column opposite an unpaired line.
+func (v splitView) blank() string { return lineOf(padSpans(nil, v.col)) }
+
+func (v splitView) join(left, right string) string {
+	return left + v.th.Style(theme.Border).Render(" │ ") + right
+}
+
+// hunk renders one hunk's rows, numbering the old and new sides as it walks.
+func (v splitView) hunk(h *udiff.Hunk) []string {
+	w := hunkWalker{v: v, oldN: h.FromLine, newN: h.ToLine}
+	lines := make([]diffLine, len(h.Lines))
+	for i, l := range h.Lines {
+		lines[i] = diffLine{kind: l.Kind, text: clean(l.Content)}
+	}
+	for i := 0; i < len(lines); {
+		if lines[i].kind == udiff.Equal {
+			w.context(lines[i])
+			i++
+			continue
+		}
+		delEnd := runEnd(lines, i, udiff.Delete)
+		insEnd := runEnd(lines, delEnd, udiff.Insert)
+		w.change(lines[i:delEnd], lines[delEnd:insEnd])
+		i = insEnd
+	}
+	return w.out
+}
+
+// diffLine is a hunk line with its text already cleaned for display;
+// go-udiff does not export its line type.
+type diffLine struct {
+	kind udiff.OpKind
+	text string
+}
+
+// runEnd is the index just past the run of kind lines starting at i.
+func runEnd(lines []diffLine, i int, kind udiff.OpKind) int {
+	for i < len(lines) && lines[i].kind == kind {
+		i++
+	}
+	return i
+}
+
+// hunkWalker accumulates a hunk's rows and the next old and new line numbers.
+type hunkWalker struct {
+	v          splitView
+	oldN, newN int
+	out        []string
+}
+
+// context emits an unchanged line on both sides.
+func (w *hunkWalker) context(l diffLine) {
+	style := w.v.th.Style(theme.DiffContext)
+	content := []span{{l.text, style}}
+	w.out = append(w.out, w.v.join(
+		w.v.side(w.oldN, " ", style, content),
+		w.v.side(w.newN, " ", style, content),
+	))
+	w.oldN++
+	w.newN++
+}
+
+// change emits a run of deletes against the run of inserts that follows it,
+// row by row. Equal-length runs get the word-level highlight on each pair.
+func (w *hunkWalker) change(dels, inss []diffLine) {
+	paired := len(dels) == len(inss)
+	for j := 0; j < len(dels) || j < len(inss); j++ {
+		left, right := w.v.blank(), w.v.blank()
+		if j < len(dels) {
+			left = w.removed(dels[j], inss, j, paired)
+		}
+		if j < len(inss) {
+			right = w.added(inss[j], dels, j, paired)
+		}
+		w.out = append(w.out, w.v.join(left, right))
+	}
+}
+
+func (w *hunkWalker) removed(l diffLine, inss []diffLine, j int, paired bool) string {
+	style := w.v.th.Style(theme.DiffRemoved)
+	content := []span{{l.text, style}}
+	if paired {
+		content = intraline(l.text, inss[j].text, style)
+	}
+	row := w.v.side(w.oldN, "-", style, content)
+	w.oldN++
+	return row
+}
+
+func (w *hunkWalker) added(l diffLine, dels []diffLine, j int, paired bool) string {
+	style := w.v.th.Style(theme.DiffAdded)
+	content := []span{{l.text, style}}
+	if paired {
+		content = intraline(l.text, dels[j].text, style)
+	}
+	row := w.v.side(w.newN, "+", style, content)
+	w.newN++
+	return row
 }
 
 // hunkLabel is the location line above a hunk.
