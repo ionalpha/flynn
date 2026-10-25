@@ -348,74 +348,86 @@ func toolsKey(tools []llm.Tool) uint64 {
 // Unlike the block model, OpenAI carries each tool result as its own "tool" role
 // message, so a user turn holding tool results expands into several messages.
 func encodeMessage(m llm.Message) []chatMessage {
-	switch m.Role {
-	case llm.RoleAssistant:
-		msg := chatMessage{Role: "assistant"}
-		if text := m.TextContent(); text != "" {
-			msg.Content = &text
-		}
-		for _, u := range m.ToolUses() {
-			msg.ToolCalls = append(msg.ToolCalls, chatToolCall{
-				ID:       u.ID,
-				Type:     "function",
-				Function: chatFuncCall{Name: u.Name, Arguments: string(u.Input)},
-			})
-		}
-		return []chatMessage{msg}
-	default: // user (and system, handled separately): text and images become one
-		// user message, tool results become individual tool messages.
-		var out []chatMessage
-		var parts []contentPart
-		hasImage := false
-		for _, b := range m.Blocks {
-			switch b.Kind {
-			case llm.KindText:
-				if b.Text != "" {
-					parts = append(parts, contentPart{Type: "text", Text: b.Text})
-				}
-			case llm.KindImage:
-				if b.Image != nil {
-					hasImage = true
-					parts = append(parts, contentPart{Type: "image_url", ImageURL: &imageURL{
-						URL: "data:" + b.Image.MediaType + ";base64," + base64.StdEncoding.EncodeToString(b.Image.Data),
-					}})
-				}
-			case llm.KindToolResult:
-				if b.ToolResult != nil {
-					content := b.ToolResult.Content
-					out = append(out, chatMessage{Role: "tool", ToolCallID: b.ToolResult.ToolUseID, Content: &content})
-				}
-			default:
-				// KindToolUse becomes assistant tool_calls elsewhere; KindOpaque has
-				// no OpenAI mapping.
+	if m.Role == llm.RoleAssistant {
+		return []chatMessage{encodeAssistant(m)}
+	}
+	// User (and system, handled separately).
+	return encodeUser(m)
+}
+
+func encodeAssistant(m llm.Message) chatMessage {
+	msg := chatMessage{Role: "assistant"}
+	if text := m.TextContent(); text != "" {
+		msg.Content = &text
+	}
+	for _, u := range m.ToolUses() {
+		msg.ToolCalls = append(msg.ToolCalls, chatToolCall{
+			ID:       u.ID,
+			Type:     "function",
+			Function: chatFuncCall{Name: u.Name, Arguments: string(u.Input)},
+		})
+	}
+	return msg
+}
+
+// encodeUser turns text and images into one user message and each tool result
+// into its own tool message. A turn with no text or image (only tool results)
+// adds no user message. When it does have text, the user message goes after the
+// tool messages and never before them: Chat Completions requires every tool_call
+// to be answered by a tool message immediately following the assistant turn that
+// made it, and a user message in between makes the whole request a 400. A turn
+// carries both whenever something rides along with the results, a stall nudge
+// for instance.
+func encodeUser(m llm.Message) []chatMessage {
+	var out []chatMessage
+	var parts []contentPart
+	hasImage := false
+	for _, b := range m.Blocks {
+		switch b.Kind {
+		case llm.KindText:
+			if b.Text != "" {
+				parts = append(parts, contentPart{Type: "text", Text: b.Text})
 			}
-		}
-		// A user turn with no text or image (only tool results) adds no user message.
-		// When it does have text, the user message goes after the tool messages and
-		// never before them: Chat Completions requires every tool_call to be answered
-		// by a tool message immediately following the assistant turn that made it, and
-		// a user message in between makes the whole request a 400. A turn carries both
-		// whenever something rides along with the results, a stall nudge for instance.
-		//
-		// With an image present the content must be the array form; without one it
-		// collapses to a plain string, the shape every endpoint accepts and the callers
-		// that never send images keep sending.
-		if len(parts) > 0 {
-			user := chatMessage{Role: "user"}
-			if hasImage {
-				user.Content = parts
-			} else {
-				var b strings.Builder
-				for _, p := range parts {
-					b.WriteString(p.Text)
-				}
-				text := b.String()
-				user.Content = &text
+		case llm.KindImage:
+			if b.Image != nil {
+				hasImage = true
+				parts = append(parts, imagePart(b.Image))
 			}
-			out = append(out, user)
+		case llm.KindToolResult:
+			if b.ToolResult != nil {
+				content := b.ToolResult.Content
+				out = append(out, chatMessage{Role: "tool", ToolCallID: b.ToolResult.ToolUseID, Content: &content})
+			}
+		default:
+			// KindToolUse becomes assistant tool_calls elsewhere; KindOpaque has
+			// no OpenAI mapping.
 		}
+	}
+	if len(parts) == 0 {
 		return out
 	}
+	return append(out, chatMessage{Role: "user", Content: userContent(parts, hasImage)})
+}
+
+func imagePart(img *llm.Image) contentPart {
+	return contentPart{Type: "image_url", ImageURL: &imageURL{
+		URL: "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Data),
+	}}
+}
+
+// userContent is the array form when an image is present, and otherwise a plain
+// string: the shape every endpoint accepts and the callers that never send images
+// keep sending.
+func userContent(parts []contentPart, hasImage bool) any {
+	if hasImage {
+		return parts
+	}
+	var b strings.Builder
+	for _, p := range parts {
+		b.WriteString(p.Text)
+	}
+	text := b.String()
+	return &text
 }
 
 // --- response decoding ------------------------------------------------------
