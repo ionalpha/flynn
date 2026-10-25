@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -229,5 +231,119 @@ func TestMemoryLsEmpty(t *testing.T) {
 	}
 	if err := runMemoryReview(context.Background(), "bogus", nil, mem, &out); !errors.Is(err, errMemoryUsage) {
 		t.Fatalf("unknown subcommand: %v", err)
+	}
+}
+
+// faultyReviewStore fails the one method named, so each read and write the review
+// commands make is shown to surface its failure rather than report success.
+type faultyReviewStore struct {
+	state.MemoryStore
+	fail string
+	err  error
+}
+
+func (f faultyReviewStore) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
+	if f.fail == "recall" {
+		return nil, f.err
+	}
+	return f.MemoryStore.Recall(ctx, q)
+}
+
+func (f faultyReviewStore) Promotions(ctx context.Context, ids []string) ([]state.MemoryPromotion, error) {
+	if f.fail == "promotions" {
+		return nil, f.err
+	}
+	return f.MemoryStore.Promotions(ctx, ids)
+}
+
+func (f faultyReviewStore) Promote(ctx context.Context, d state.PromotionDecision) (state.MemoryPromotion, error) {
+	if f.fail == "promote" {
+		return state.MemoryPromotion{}, f.err
+	}
+	return f.MemoryStore.Promote(ctx, d)
+}
+
+func (f faultyReviewStore) Delete(ctx context.Context, id string) error {
+	if f.fail == "delete" {
+		return f.err
+	}
+	return f.MemoryStore.Delete(ctx, id)
+}
+
+func TestMemoryReviewSurfacesStoreFailures(t *testing.T) {
+	f := newReviewFixture(t)
+	want := errors.New("the store is gone")
+	cases := []struct {
+		fail string
+		args []string
+	}{
+		{"recall", []string{"ls"}},
+		{"promotions", []string{"ls"}},
+		{"recall", []string{"promote", f.agent.ID}},
+		{"promotions", []string{"promote", f.agent.ID}},
+		{"promote", []string{"promote", f.agent.ID}},
+		{"delete", []string{"forget", f.agent.ID}},
+	}
+	for _, c := range cases {
+		t.Run(c.fail+" "+c.args[0], func(t *testing.T) {
+			var out bytes.Buffer
+			store := faultyReviewStore{MemoryStore: f.mem, fail: c.fail, err: want}
+			if err := runMemoryReview(context.Background(), c.args[0], c.args[1:], store, &out); !errors.Is(err, want) {
+				t.Fatalf("err = %v, want the store failure", err)
+			}
+		})
+	}
+}
+
+func TestMemoryReviewEdgeCases(t *testing.T) {
+	ctx := context.Background()
+	mem := state.NewMemory().Memory()
+	bare, err := mem.Write(ctx, state.MemoryItem{Content: "an item with no kind and no source"})
+	if err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	run := func(args ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := runMemoryReview(ctx, args[0], args[1:], mem, &out); err != nil {
+			t.Fatalf("%v: %v", args, err)
+		}
+		return out.String()
+	}
+
+	// No recorded provenance grades as the agent's own, awaiting review, and the
+	// listing says the source is missing rather than printing a blank.
+	if got := run("ls"); !strings.Contains(got, bare.ID+" [fact] (awaiting review)") || !strings.Contains(got, "from: no recorded source") {
+		t.Errorf("ls of a bare item:\n%s", got)
+	}
+	run("promote", bare.ID)
+	if got := run("promote", bare.ID); !strings.Contains(got, "is already promoted") {
+		t.Errorf("second promote: %q", got)
+	}
+	if got := run("ls", "--pending"); got != "nothing is awaiting review\n" {
+		t.Errorf("ls --pending with nothing waiting: %q", got)
+	}
+}
+
+// TestMemoryReviewReportsAnUnopenableDataDir: a data directory that cannot be
+// created fails the command before any subcommand runs.
+func TestMemoryReviewReportsAnUnopenableDataDir(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "not-a-dir")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if err := memoryReview("ls", nil, filepath.Join(file, "data"), &out); err == nil {
+		t.Fatal("a data dir under a file opened")
+	}
+}
+
+// TestMemoryReviewOpensTheInstallsStore runs a subcommand over a real data
+// directory, the path every invocation from the command line takes.
+func TestMemoryReviewOpensTheInstallsStore(t *testing.T) {
+	dir := t.TempDir()
+	var out bytes.Buffer
+	if err := memoryReview("ls", nil, dir, &out); err != nil || out.String() != "no memory yet\n" {
+		t.Fatalf("ls on a fresh install: %q, %v", out.String(), err)
 	}
 }
