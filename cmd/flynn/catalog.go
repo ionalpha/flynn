@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
 	"github.com/ionalpha/flynn/internal/credential"
@@ -70,7 +72,7 @@ func openIntegrationRuntime(ctx context.Context, dataDir string) (*integrationRu
 	if err != nil {
 		return nil, err
 	}
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		_ = durable.Close()
 		return nil, err

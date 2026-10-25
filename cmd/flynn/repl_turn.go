@@ -13,11 +13,11 @@ import (
 
 	"github.com/ionalpha/flynn/externagent"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
@@ -89,23 +89,23 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 		return "", err
 	}
 
-	var (
-		run *missionRun
-		err error
-	)
 	// The turn is reassembled each message; the skill toolset is not, so what the
 	// session has read accumulates across the whole conversation.
 	if s.skillset == nil {
 		s.skillset = skilltool.New(s.store.Skills(), skilltool.WithNotes(s.memory().skillNotes()))
 	}
+	asm := assembly{
+		model: s.model, plan: s.plan, workdir: s.cwd, system: s.system,
+		rstore: s.store.Resources(s.reg), jq: s.store.Jobs(), log: s.store.Log(),
+		skills: s.skillset, runID: s.runID, gates: s.gates,
+	}
 	if s.ext != nil {
 		// The external CLI drives the loop: the same sandbox, session, bridged toolset,
 		// grant, and governance recording as a native turn, but the turn is an episode of
 		// the CLI's own conversation rather than a step of ours.
-		run, err = assembleExternalMission(s.ext, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{})
-	} else {
-		run, err = assembleMission(s.model, s.plan, s.cwd, s.system, s.store.Resources(s.reg), s.store.Jobs(), s.store.Log(), s.skillset, s.runID, sandbox.ResourceLimits{}, false, false, s.gates)
+		asm.ext = s.ext
 	}
+	run, err := asm.assemble(turnCtx)
 	if err != nil {
 		return "", err
 	}
@@ -113,7 +113,7 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 	// accumulates a container profile for every message the user sends.
 	defer func() { _ = run.Close() }()
 	done := make(chan struct{})
-	go func() { _ = run.rt.Start(turnCtx); close(done) }()
+	go func() { _ = run.Runtime().Start(turnCtx); close(done) }()
 
 	result, runErr := s.driveTurn(turnCtx, run, userText, images)
 
@@ -127,31 +127,28 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 // renders the turn live. It advances the session cursor past the events it showed,
 // accumulates the transcript, and records the result so the closing learning pass
 // learns from the whole conversation.
-func (s *replSession) driveTurn(turnCtx context.Context, run *missionRun, userText string, images []llm.Image) (string, error) {
-	events, err := run.sess.Subscribe(turnCtx, s.lastSeq)
+func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, userText string, images []llm.Image) (string, error) {
+	events, err := run.Session().Subscribe(turnCtx, s.lastSeq)
 	if err != nil {
 		return "", err
 	}
 	if s.started {
-		g, err := run.rt.Resume(turnCtx, s.runID)
+		g, err := run.Runtime().Resume(turnCtx, s.runID)
 		if err != nil {
 			return "", err
 		}
-		run.sess.Resume(turnCtx, run.rt, g.Key())
+		run.Session().Resume(turnCtx, run.Runtime(), g.Key())
 	} else {
 		objective := openingObjective(userText, images)
-		if _, err := run.sess.Submit(turnCtx, run.rt, goal.Spec{
-			Objective:     objective,
-			Attachments:   images,
-			StopCondition: defaultStopCondition,
-			// The model the loop drives. Empty for a native session (the session's own model
-			// applies); for an external agent it is the CLI's model string, so `flynn --model
-			// claude:<model>` pins the model the CLI itself runs.
-			Model: externalModel(s.ext),
-		}); err != nil {
+		if _, err := run.Session().Submit(turnCtx, run.Runtime(), run.GoalSpec(goal.Spec{
+			Objective:   objective,
+			Attachments: images,
+			// The run fills the stop condition, and for an external agent the CLI's model
+			// string, so `flynn --model claude:<model>` pins the model the CLI itself runs.
+		})); err != nil {
 			return "", err
 		}
-		s.runID = run.sess.ID()
+		s.runID = run.Session().ID()
 		s.objective = objective
 		s.started = true
 		_, _ = fmt.Fprintf(s.out, "  run %s\n", s.runID)

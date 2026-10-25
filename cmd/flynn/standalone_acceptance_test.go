@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -141,23 +142,26 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	  ]
 	}`)
 
-	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
+	// Through the exported assembly with nothing but its defaults, which is what an
+	// embedder gets and what the binary adds its own levers to.
+	run, err := governed.Assemble(ctx, alwaysDone{},
+		governed.Backends{Resources: rstore, Jobs: store.Jobs(), Log: store.Log()},
+		governed.WithWorkDir(t.TempDir()), governed.WithSystem(defaultSystemPrompt))
 	if err != nil {
 		t.Fatalf("assemble the mission the binary assembles: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
-	go func() { _ = run.rt.Start(ctx) }()
+	go func() { _ = run.Runtime().Start(ctx) }()
 
-	if _, err := run.sess.Submit(ctx, run.rt, goal.Spec{
+	if _, err := run.Session().Submit(ctx, run.Runtime(), run.GoalSpec(goal.Spec{
 		Objective:     spec.Objective,
-		StopCondition: stopCondition(spec.StopCondition),
+		StopCondition: spec.StopCondition,
 		Invariants:    spec.Invariants,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("submit a goal that states its terms: %v", err)
 	}
 
-	status := waitForBreach(ctx, t, rstore, run.sess.ID())
+	status := waitForBreach(ctx, t, rstore, run.ID())
 	if status.Phase != goal.PhaseStalled {
 		t.Fatalf("a stated term did not stop the goal: %+v", status)
 	}
@@ -166,7 +170,7 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	// jail refuses to run it. There the capability is the refusal: the run stops saying
 	// the check could not run, rather than finishing as though the term held. Asserting
 	// the breach on such a host would be asserting something the binary cannot do there.
-	if sandbox.ContainmentOf(run.parts.sandbox) < sandbox.Required(sandbox.TrustSemi) {
+	if sandbox.ContainmentOf(run.Sandbox()) < sandbox.Required(sandbox.TrustSemi) {
 		if !strings.Contains(status.Message, "the check could not run") {
 			t.Fatalf("a host that cannot run the check stopped the run for some other reason: %+v", status)
 		}

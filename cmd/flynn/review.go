@@ -15,6 +15,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/archetypes/review"
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/chain"
@@ -172,7 +174,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

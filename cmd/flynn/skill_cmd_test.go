@@ -167,7 +167,8 @@ type failingSkills struct {
 }
 
 func (f failingSkills) List(context.Context, state.Scope) ([]state.Skill, error) { return nil, f.err }
-func (f failingSkills) Get(context.Context, string) (state.Skill, error)         { return state.Skill{}, f.err }
+
+func (f failingSkills) Get(context.Context, string) (state.Skill, error) { return state.Skill{}, f.err }
 
 func TestSkillReadFailuresAreErrors(t *testing.T) {
 	broken := failingSkills{err: errors.New("disk on fire")}

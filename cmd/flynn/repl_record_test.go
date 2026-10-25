@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 )
@@ -167,7 +168,7 @@ func TestReplayReportsARecordItCannotRead(t *testing.T) {
 func TestTurnReportsAnUnreadableCheckpoint(t *testing.T) {
 	ctx := context.Background()
 	s, buf := newSlashSession(t, llmtest.NewScripted(llmtest.SayText("done")))
-	spec, err := json.Marshal(goal.Spec{Objective: "do the thing", StopCondition: defaultStopCondition})
+	spec, err := json.Marshal(goal.Spec{Objective: "do the thing", StopCondition: governed.DefaultStopCondition})
 	if err != nil {
 		t.Fatal(err)
 	}

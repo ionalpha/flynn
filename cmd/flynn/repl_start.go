@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -63,7 +65,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

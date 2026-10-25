@@ -1,32 +1,31 @@
-package main
+package governed
 
 import (
 	"testing"
 
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
 
-// TestMissionPartsGrantsSpawnOnlyForFanout locks the governance invariant the shared
+// TestPartsGrantsSpawnOnlyForFanout locks the governance invariant the shared
 // builder exists to protect: a single-conversation run's grant must NOT include the
 // delegation action, and a fan-out run's grant MUST. Both must always cover the model
 // call and the distillation, plus every tool. Before the builder, the two assembly
 // paths hand-assembled these lists, so a new action added to one and not the other
 // would silently diverge what single vs fan-out runs are allowed to do; this test
 // fails if that divergence ever returns.
-func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
+func TestPartsGrantsSpawnOnlyForFanout(t *testing.T) {
 	skills := skilltool.New(state.NewMemory().Skills())
-	single, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", false, sandbox.ResourceLimits{})
+	single, err := newParts(&config{workdir: t.TempDir(), skills: skills}, spine.NewMemoryLog(), false)
 	if err != nil {
-		t.Fatalf("newMissionParts single: %v", err)
+		t.Fatalf("newParts single: %v", err)
 	}
-	fanout, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", true, sandbox.ResourceLimits{})
+	fanout, err := newParts(&config{workdir: t.TempDir(), skills: skills}, spine.NewMemoryLog(), true)
 	if err != nil {
-		t.Fatalf("newMissionParts fanout: %v", err)
+		t.Fatalf("newParts fanout: %v", err)
 	}
 
 	// The delegation action is the one difference between the two paths.
@@ -41,7 +40,7 @@ func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
 	// every tool in the shared toolset.
 	for _, p := range []struct {
 		name  string
-		parts *missionParts
+		parts *parts
 	}{{"single", single}, {"fanout", fanout}} {
 		if !p.parts.grant.Allows(mission.ActionModelGenerate) {
 			t.Errorf("%s grant must allow the model-generate action", p.name)
@@ -63,12 +62,12 @@ func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
 	}
 }
 
-// TestMissionPartsSkillToolsFollowTheStore locks the other half of the same
+// TestPartsSkillToolsFollowTheStore locks the other half of the same
 // invariant: the skill tools are offered when there is a store to answer them and
 // withheld when there is not. A run that offered skill_read with nothing behind it
 // would advertise a capability every call fails at, which is worse than not having
 // it, and the grant must track the offer either way.
-func TestMissionPartsSkillToolsFollowTheStore(t *testing.T) {
+func TestPartsSkillToolsFollowTheStore(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		skills *skilltool.Set
@@ -78,9 +77,9 @@ func TestMissionPartsSkillToolsFollowTheStore(t *testing.T) {
 		{"without one", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parts, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), tc.skills, "", false, sandbox.ResourceLimits{})
+			parts, err := newParts(&config{workdir: t.TempDir(), skills: tc.skills}, spine.NewMemoryLog(), false)
 			if err != nil {
-				t.Fatalf("newMissionParts: %v", err)
+				t.Fatalf("newParts: %v", err)
 			}
 			for _, want := range []string{"skill_read", "skill_resource"} {
 				var offered bool

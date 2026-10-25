@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/diag"
@@ -818,7 +820,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

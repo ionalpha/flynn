@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/dispatch"
@@ -28,7 +30,7 @@ import (
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
 func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool, fanout *fanoutConfig, opts ...driveOption) (string, error) {
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return "", err
 	}

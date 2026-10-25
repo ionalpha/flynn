@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/fsatomic"
@@ -150,7 +152,7 @@ func modelProbe(ctx context.Context, runner *localRunner, consent consentPolicy,
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

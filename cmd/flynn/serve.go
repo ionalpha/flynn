@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/internal/bindguard"
@@ -30,7 +31,6 @@ import (
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -94,7 +94,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		}()
 	}
 
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -322,12 +322,12 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	// A served conversation has no operator at a terminal, so it carries no approval
 	// policy and no prompter. Adding one here would need a way to reach whoever is on
 	// the other end of the channel, which is a different mechanism from a modal prompt.
-	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
+	run, err := assembly{model: model, plan: plan, workdir: workdir, rstore: rstore, jq: jq, log: servedLog}.assemble(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = mr.Close() }()
-	rt := mr.rt
+	defer func() { _ = run.Close() }()
+	rt := run.Runtime()
 
 	// Triage turns each recorded entry into a goal and replies with its answer on the
 	// channel it arrived from.
@@ -399,7 +399,7 @@ type goalWorker struct {
 func (w *goalWorker) Start(ctx context.Context, _, objective string) (string, error) {
 	g, err := w.rt.SubmitGoal(ctx, "", goal.Spec{
 		Objective:     objective,
-		StopCondition: defaultStopCondition,
+		StopCondition: governed.DefaultStopCondition,
 	})
 	if err != nil {
 		return "", err

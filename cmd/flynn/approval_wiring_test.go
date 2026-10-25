@@ -15,7 +15,6 @@ import (
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -190,25 +189,27 @@ func driveRun(t *testing.T, appr gateSetup) (string, spine.Log, string) {
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi"}`)),
 		llmtest.SayText("done"),
 	)
-	run, err := assembleMission(model, harness.Plan{}, dir, defaultSystemPrompt,
-		rstore, store.Jobs(), log, nil, "", sandbox.ResourceLimits{}, false, false, appr)
+	run, err := assembly{
+		model: model, workdir: dir, system: defaultSystemPrompt,
+		rstore: rstore, jq: store.Jobs(), log: log, gates: appr,
+	}.assemble(ctx)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
 	done := make(chan struct{})
-	go func() { _ = run.rt.Start(ctx); close(done) }()
+	go func() { _ = run.Runtime().Start(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 
-	if _, err := run.rt.SubmitGoal(ctx, run.sess.ID(), goal.Spec{
+	if _, err := run.Runtime().SubmitGoal(ctx, run.ID(), goal.Spec{
 		Objective:     "write hello.txt",
 		StopCondition: "the file is written",
 	}); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	waitForSettled(ctx, t, rstore, run.sess.ID())
-	return dir, log, run.sess.ID()
+	waitForSettled(ctx, t, rstore, run.ID())
+	return dir, log, run.ID()
 }
 
 // waitForSettled polls until the goal stops running, either way. A refused action is a

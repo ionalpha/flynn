@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
@@ -41,16 +40,17 @@ func TestFanoutAssemblyRunsAUnitGraph(t *testing.T) {
 	reg := mustRegistry(t)
 	rstore := store.Resources(reg)
 
-	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{},
-		t.TempDir(), defaultSystemPrompt, rstore, store.Jobs(), store.Log(), nil, "",
-		nil, sandbox.ResourceLimits{}, gateSetup{})
+	run, err := assembly{
+		model: alwaysDone{}, workdir: t.TempDir(), system: defaultSystemPrompt,
+		rstore: rstore, jq: store.Jobs(), log: store.Log(), fanout: &fanoutConfig{},
+	}.assemble(ctx)
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
 	done := make(chan struct{})
-	go func() { _ = run.rt.Start(ctx); close(done) }()
+	go func() { _ = run.Runtime().Start(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 
 	units := []goal.Unit{
@@ -63,7 +63,7 @@ func TestFanoutAssemblyRunsAUnitGraph(t *testing.T) {
 			DependsOn: []string{"parser"}, Actions: []string{mission.ActionModelGenerate},
 		},
 	}
-	if _, err := run.rt.SubmitGoal(ctx, "root", goal.Spec{
+	if _, err := run.Runtime().SubmitGoal(ctx, "root", goal.Spec{
 		Objective:     "deliver the parser and the api",
 		StopCondition: "both units are proven",
 		Grant:         []string{mission.ActionSpawn, mission.ActionModelGenerate},

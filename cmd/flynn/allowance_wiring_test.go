@@ -10,10 +10,8 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 )
 
 // driveMarkedRun drives a run whose model tries to write a file, with the write tool marked
@@ -36,28 +34,30 @@ func driveMarkedRun(t *testing.T, marked, declared []string) (goal.Status, strin
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi"}`)),
 		llmtest.SayText("done"),
 	)
-	run, err := assembleMission(model, harness.Plan{}, dir, defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false,
-		gateSetup{outside: marked})
+	run, err := assembly{
+		model: model, workdir: dir, system: defaultSystemPrompt,
+		rstore: rstore, jq: store.Jobs(), log: store.Log(),
+		gates: gateSetup{outside: marked},
+	}.assemble(ctx)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
 	done := make(chan struct{})
-	go func() { _ = run.rt.Start(ctx); close(done) }()
+	go func() { _ = run.Runtime().Start(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 
-	if _, err := run.rt.SubmitGoal(ctx, run.sess.ID(), goal.Spec{
+	if _, err := run.Runtime().SubmitGoal(ctx, run.ID(), goal.Spec{
 		Objective:     "write hello.txt",
 		StopCondition: "the file is written",
 		Allowances:    declaredAllowances(declared),
 	}); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	waitForSettled(ctx, t, rstore, run.sess.ID())
+	waitForSettled(ctx, t, rstore, run.ID())
 
-	r, err := rstore.Get(ctx, goal.Kind, resource.Scope{}, run.sess.ID())
+	r, err := rstore.Get(ctx, goal.Kind, resource.Scope{}, run.ID())
 	if err != nil {
 		t.Fatalf("get goal: %v", err)
 	}
@@ -132,21 +132,6 @@ func TestDeclaredAllowancesNormalizesTheOperatorsList(t *testing.T) {
 	}
 }
 
-// TestOutsideGateIsAbsentWhenNothingIsMarked keeps the fan-out's base spec honest: a run
-// with no marked action carries no gate rather than one that is installed and marks
-// nothing. Both admit everything; only one of them claims a gate is there.
-func TestOutsideGateIsAbsentWhenNothingIsMarked(t *testing.T) {
-	if got := outsideGate(nil); got != nil {
-		t.Errorf("gate = %v, want none when nothing is marked", got)
-	}
-	if got := outsideGate([]string{" "}); got != nil {
-		t.Errorf("gate = %v, want none when only blanks are marked", got)
-	}
-	if outsideGate([]string{"deploy"}) == nil {
-		t.Error("no gate was built for a marked action")
-	}
-}
-
 // TestWithAllowanceSetsBothHalves keeps the two lists together on the run's config. Neither
 // means anything alone: marking with nothing declared is a run that stops the first time it
 // reaches one, and declaring an action nothing marked authorizes what was never gated.
@@ -159,8 +144,5 @@ func TestWithAllowanceSetsBothHalves(t *testing.T) {
 	}
 	if len(cfg.allowances) != 1 || cfg.allowances[0].Action != "write" {
 		t.Fatalf("declared = %+v, want one declaration of write", cfg.allowances)
-	}
-	if len(cfg.gates.allowanceOptions()) != 1 {
-		t.Error("a marked action installed no gate")
 	}
 }

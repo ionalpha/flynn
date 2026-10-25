@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
@@ -104,7 +106,7 @@ func TestGoalCommandPlansBeforeItBuilds(t *testing.T) {
 		t.Fatalf("first model call was not the planner: %q", sys)
 	}
 	// A visible ledger was recorded on the goal, item and verify clause both.
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -517,7 +519,7 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 // mustRegistry builds the mission resource registry or fails the test.
 func mustRegistry(t *testing.T) *resource.Registry {
 	t.Helper()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}

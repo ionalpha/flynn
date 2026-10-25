@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
 	"github.com/ionalpha/flynn/internal/fetch"
@@ -645,7 +647,7 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntim
 	if err != nil {
 		return nil, err
 	}
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		_ = durable.Close()
 		return nil, err

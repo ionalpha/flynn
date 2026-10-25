@@ -1,4 +1,4 @@
-package main
+package governed
 
 import (
 	"bytes"
@@ -12,35 +12,17 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// TestRequireApprovalFlagAccumulates: the flag is repeatable, so naming two actions gates
-// two, and the second occurrence does not overwrite the first the way a plain string flag
-// would. A blank occurrence is dropped rather than becoming an action named the empty
-// string, which would list a requirement nothing could ever satisfy.
-func TestRequireApprovalFlagAccumulates(t *testing.T) {
-	var list stringList
-	for _, v := range []string{"shell", "  ", "net.fetch", "shell"} {
-		if err := list.Set(v); err != nil {
-			t.Fatalf("set %q: %v", v, err)
-		}
-	}
-	if got := list.String(); got != "shell,net.fetch,shell" {
-		t.Fatalf("accumulated %q, want every non-blank occurrence in order", got)
-	}
-	// The policy collapses the duplicate to one requirement. Repeating a flag is not how
-	// anyone means to ask for a two-signature quorum.
-	policy := approvalPolicy(list.values)
+// TestPolicyNormalizesTheOperatorsList: the policy collapses a repeated action to one
+// requirement, since repeating a name is not how anyone means to ask for a two-signature
+// quorum, and drops a blank rather than listing a requirement nothing could satisfy.
+func TestPolicyNormalizesTheOperatorsList(t *testing.T) {
+	policy := ApprovalPolicy([]string{"shell", "  ", "net.fetch", "shell"})
 	if policy["shell"] != 1 {
 		t.Fatalf("shell requires %d signatures, want 1", policy["shell"])
 	}
-	gated := gatedActions(policy)
+	gated := GatedActions(policy)
 	if len(gated) != 2 || gated[0] != "net.fetch" || gated[1] != "shell" {
 		t.Fatalf("gated actions = %v, want the two distinct names, sorted", gated)
-	}
-	// A nil list reads as the empty string rather than panicking, since the flag package
-	// calls String on the zero value while building its usage output.
-	var empty *stringList
-	if empty.String() != "" {
-		t.Fatal("the zero flag value did not render as empty")
 	}
 }
 
@@ -87,7 +69,8 @@ func TestApprovalIdentityRefusesADegradedKey(t *testing.T) {
 		t.Fatalf("sign: %v", err)
 	}
 	dec, err := approval.NewVerifier(keyring, approval.NewMemStore()).Check(
-		context.Background(), approval.Envelope{Action: "shell", Nonce: "n1"}, []approval.Approval{appr}, 1)
+		context.Background(), approval.Envelope{Action: "shell", Nonce: "n1"}, []approval.Approval{appr}, 1,
+	)
 	if err != nil {
 		t.Fatalf("check: %v", err)
 	}
@@ -96,21 +79,29 @@ func TestApprovalIdentityRefusesADegradedKey(t *testing.T) {
 	}
 }
 
-// TestNoPolicyBuildsNoStack: naming no actions builds nothing at all, so an ungated run
-// carries no gate, no signer and no key. The default install pays nothing for a mechanism
-// it has not turned on, and a nil stack still answers every method.
-func TestNoPolicyBuildsNoStack(t *testing.T) {
+// TestNoPolicyStillBuildsTheGate: naming no actions still installs the gate, as a
+// pass-through, so a run's approval posture never depends on whether a caller remembered to
+// ask for one. A nil stack, which only a waived run has, answers every method.
+func TestNoPolicyStillBuildsTheGate(t *testing.T) {
 	stack, err := newApprovalStack(nil, spine.NewMemoryLog(), "run-1")
 	if err != nil {
 		t.Fatalf("build: %v", err)
 	}
-	if stack != nil {
-		t.Fatal("a run that listed no actions was given an approval stack")
+	if stack == nil || stack.gate == nil {
+		t.Fatal("a run that listed no actions was given no approval gate")
 	}
-	if opts := stack.options(nil); opts != nil {
+	if len(stack.actions) != 0 {
+		t.Fatalf("an empty policy gates %v", stack.actions)
+	}
+	if got := len(stack.options(nil)); got != 1 {
+		t.Fatalf("options = %d, want just the gate", got)
+	}
+
+	var waived *approvalStack
+	if opts := waived.options(nil); opts != nil {
 		t.Fatalf("a nil stack produced %d mission options", len(opts))
 	}
-	if spec := stack.spec(nil); spec != nil {
+	if spec := waived.spec(nil); spec != nil {
 		t.Fatal("a nil stack produced a driver approval spec")
 	}
 }
