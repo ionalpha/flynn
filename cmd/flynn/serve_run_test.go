@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/notices"
 	"github.com/ionalpha/flynn/provider"
@@ -305,4 +307,19 @@ func TestGoalWorkerPollErrors(t *testing.T) {
 			t.Fatal("expected an undecodable status to be reported")
 		}
 	})
+}
+
+// TestGoalWorkerStartRefusesWithoutABudgetPool: a served goal runs only under a pool of
+// its own. When the pool cannot be opened the start fails before any goal is submitted,
+// rather than running the goal with no spend ceiling.
+func TestGoalWorkerStartRefusesWithoutABudgetPool(t *testing.T) {
+	errDown := errors.New("store down")
+	w := &goalWorker{budgets: budgetpkg.NewLedger(goalGetStore{err: errDown})}
+	handle, err := w.Start(context.Background(), "entry-1", "do the thing")
+	if !errors.Is(err, errDown) {
+		t.Fatalf("Start error = %v, want the pool's %v", err, errDown)
+	}
+	if handle != "" {
+		t.Fatalf("Start returned handle %q for a goal it must not have submitted", handle)
+	}
 }
