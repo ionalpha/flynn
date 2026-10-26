@@ -248,7 +248,7 @@ func (f *fixture) open() *localmodel.Host {
 var (
 	archiveOnce sync.Once
 	archiveData []byte
-	archiveErr  error
+	errArchive  error
 )
 
 // runtimeArchive is the test binary packed as the runtime archive. The binary is large, so
@@ -257,17 +257,17 @@ func runtimeArchive(t *testing.T, name string) []byte {
 	t.Helper()
 	archiveOnce.Do(func() {
 		var self string
-		if self, archiveErr = os.Executable(); archiveErr != nil {
+		if self, errArchive = os.Executable(); errArchive != nil {
 			return
 		}
 		var body []byte
-		if body, archiveErr = os.ReadFile(self); archiveErr != nil {
+		if body, errArchive = os.ReadFile(self); errArchive != nil {
 			return
 		}
 		archiveData = tarGz(t, name, body)
 	})
-	if archiveErr != nil {
-		t.Fatal(archiveErr)
+	if errArchive != nil {
+		t.Fatal(errArchive)
 	}
 	return archiveData
 }

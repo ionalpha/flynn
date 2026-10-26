@@ -66,12 +66,13 @@ func editRecord(t *testing.T, f *fixture, edit func(rec map[string]any)) {
 func waitStopped(t *testing.T, url string) {
 	t.Helper()
 	c := &http.Client{Timeout: time.Second}
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+	for range 100 {
 		resp, err := c.Get(url) //nolint:noctx // a short liveness poll against loopback
 		if err != nil {
 			return
 		}
 		_ = resp.Body.Close()
+		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("the server at %s is still answering", url)
 }
