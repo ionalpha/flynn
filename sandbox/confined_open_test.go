@@ -153,3 +153,18 @@ func TestConfinedRelRefusesPathsOutsideTheRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestMkdirParentsRefusesAndReportsFailures(t *testing.T) {
+	l := newLocal(t)
+	// A target whose parent is outside the root is denied before anything is opened.
+	if err := l.mkdirParents(filepath.Join(filepath.Dir(l.root), "elsewhere", "f.txt")); !errors.Is(err, ErrDenied) {
+		t.Fatalf("a parent outside the root must be denied, got %v", err)
+	}
+	// A root that no longer exists is an error, not a silent success.
+	if err := os.RemoveAll(l.root); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.mkdirParents(filepath.Join(l.root, "a", "f.txt")); err == nil {
+		t.Fatal("mkdirParents must fail when the root is gone")
+	}
+}
