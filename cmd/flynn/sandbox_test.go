@@ -192,3 +192,27 @@ func TestSandboxCheckReadyFileInsideTheScratchAreaFailsTheCommand(t *testing.T) 
 		t.Fatalf("err = %v, want a refusal to record where the sandbox can write", err)
 	}
 }
+
+// failingWriter refuses every write, as a closed pipe would.
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write refused") }
+
+// TestSandboxCheckFailsWhenTheResultCannotBePrinted shows a result nobody could read is not
+// reported as a success, in either output form.
+func TestSandboxCheckFailsWhenTheResultCannotBePrinted(t *testing.T) {
+	for _, args := range [][]string{{"check"}, {"check", "--json"}} {
+		err := sandboxCommand(args, failingWriter{}, &bytes.Buffer{}, readyResult)
+		if err == nil || !strings.Contains(err.Error(), "write refused") {
+			t.Errorf("%v: err = %v, want the write failure", args, err)
+		}
+	}
+}
+
+// TestRunSandboxRejectsUsageErrors reaches the real entry point without starting a check:
+// sandboxCommand refuses a missing subcommand before it runs anything.
+func TestRunSandboxRejectsUsageErrors(t *testing.T) {
+	if err := runSandbox(nil, ""); err == nil {
+		t.Fatal("a missing subcommand must be a usage error")
+	}
+}
