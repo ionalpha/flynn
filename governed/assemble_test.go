@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/brakes"
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/goal"
@@ -241,6 +242,8 @@ func TestOptionsNeverSilentlyWeaken(t *testing.T) {
 		{name: "zero brake cap", opts: []Option{WithBrakeLimits(brakes.Limits{Window: time.Minute})}, want: "positive"},
 		{name: "zero brake window", opts: []Option{WithBrakeLimits(brakes.Limits{MaxActions: 5})}, want: "positive"},
 		{name: "brakes waived and set", opts: []Option{Waive(GuardBrakes, "r"), WithBrakeLimits(brakes.Limits{MaxActions: 5, Window: time.Second})}, want: "contradicts"},
+		{name: "budget waived and set", opts: []Option{Waive(GuardBudget, "r"), WithBudget(budgetpkg.Limits{Tokens: 10})}, want: "contradicts"},
+		{name: "toolset plus a host sandbox", opts: []Option{WithToolset([]mission.Tool{namedTool("echo")}, grant), Waive(GuardSandbox, "r"), WithSandbox(hostSandbox(t))}, want: "mutually exclusive"},
 		{name: "approval waived and set", opts: []Option{Waive(GuardApproval, "r"), WithApproval([]string{"shell"}, nil)}, want: "contradicts"},
 		{name: "unknown driver", opts: []Option{WithDriver("no-such-loop")}, want: "no-such-loop"},
 		{name: "driver outside fanout", opts: []Option{WithDriver(driver.NameDefault)}, want: "fanout"},
@@ -488,4 +491,74 @@ func extDriver(t *testing.T) driver.Driver {
 		t.Fatalf("resolve: %v", err)
 	}
 	return drv
+}
+
+// hostSandbox is a confined local sandbox a test hands to [WithSandbox].
+func hostSandbox(t *testing.T) sandbox.Sandbox {
+	t.Helper()
+	sb, err := sandbox.NewLocal(t.TempDir(), sandbox.WithDefaultConfinement())
+	if err != nil {
+		t.Fatalf("sandbox: %v", err)
+	}
+	t.Cleanup(func() { _ = sb.Close() })
+	return sb
+}
+
+// TestToolsetRunCanPlan: planning applies to a caller's toolset as it does to the default
+// loop, and the posture says so.
+func TestToolsetRunCanPlan(t *testing.T) {
+	b, _ := memBackends(t)
+	grant := capability.NewGrant("echo", mission.ActionModelGenerate)
+	run, err := Assemble(ctxT(t), say("done"), b,
+		WithToolset([]mission.Tool{namedTool("echo")}, grant), Waive(GuardSandbox, "no working tree"), WithPlanning())
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	defer func() { _ = run.Close() }()
+	if run.Posture().Mode != ModeToolset {
+		t.Fatalf("posture = %+v", run.Posture())
+	}
+}
+
+// TestExtensionToolsJoinTheRun: an extension tool whose name no built-in uses is offered
+// beside them, so the shadowing refusal does not turn away every extension.
+func TestExtensionToolsJoinTheRun(t *testing.T) {
+	b, _ := memBackends(t)
+	run, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithExtensions(bridgeOf(namedTool("weather"))))
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	_ = run.Close()
+}
+
+// TestExternalGoalSpecCarriesTheModelString: the external agent's model string fills a
+// spec that names none, and a model the caller set is kept.
+func TestExternalGoalSpecCarriesTheModelString(t *testing.T) {
+	b, _ := memBackends(t)
+	run, err := Assemble(ctxT(t), say("x"), b, WithWorkDir(t.TempDir()),
+		WithExternalAgent(ExternalAgent{Model: "ext-model", Driver: extDriver(t)}))
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	defer func() { _ = run.Close() }()
+	if got := run.GoalSpec(goal.Spec{}); got.Model != "ext-model" {
+		t.Fatalf("model = %q, want ext-model", got.Model)
+	}
+	if got := run.GoalSpec(goal.Spec{Model: "mine"}); got.Model != "mine" {
+		t.Fatalf("a set model was overwritten: %q", got.Model)
+	}
+}
+
+// TestMemoryBackendsAssembleARun: the in-process backends are complete, so a run over
+// them assembles without the host supplying a store.
+func TestMemoryBackendsAssembleARun(t *testing.T) {
+	b, err := MemoryBackends()
+	if err != nil {
+		t.Fatalf("MemoryBackends: %v", err)
+	}
+	run, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()))
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	_ = run.Close()
 }
