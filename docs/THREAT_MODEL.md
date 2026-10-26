@@ -372,7 +372,7 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   than made promotable. The operator reviewing from the command line reads the finished
   sentence too, so the gate rests on the taint marking, not on the review. The standalone
   binary marks it coarsely: a note distilled from a run whose transcript calls the shell
-  or spawns a child is tainted, because the shell's network is open and nothing on the
+  or spawns a child is tainted, because `--allow-network` opens the shell's network and nothing on the
   host tells a `curl` from a `go test`, and a child's transcript is not in the parent's.
   A `/compact` carries the compacted turns' taint forward with their summary. What stays
   promotable is a note from a run that only read and edited files in the working tree, so
