@@ -2,6 +2,8 @@ package e2e
 
 import (
 	"testing"
+
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 )
 
 // TestHonestyUngroundedClaimRejected proves the headline honesty property through the
@@ -11,6 +13,7 @@ import (
 // A downstream consumer gating on the record therefore cannot be fooled by a confident
 // but false completion claim, whatever the model said.
 func TestHonestyUngroundedClaimRejected(t *testing.T) {
+	sandboxtest.RequireConfinement(t) // the -verify check must run, not be refused
 	fake := newFakeOpenAI(t, finalText("All done. Everything works and the task is complete."))
 	in := newInstance(t).withModel(fake)
 
@@ -34,6 +37,7 @@ func TestHonestyUngroundedClaimRejected(t *testing.T) {
 // claim, but with a passing independent check, verifies on every tier. Together the two
 // tests show grounding is decided by the check, not by the model's words.
 func TestHonestyGroundedClaimAccepted(t *testing.T) {
+	sandboxtest.RequireConfinement(t) // the -verify check must run, not be refused
 	fake := newFakeOpenAI(t, finalText("Task complete."))
 	in := newInstance(t).withModel(fake)
 
