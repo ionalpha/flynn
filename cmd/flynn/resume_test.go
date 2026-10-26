@@ -41,8 +41,17 @@ func TestResumeContinuesInterruptedRun(t *testing.T) {
 	ctx1, cancel1 := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel1()
 	var out1 bytes.Buffer
-	_, runID, _, _ := drive(ctx1, &out1, blockingModel{}, harness.Plan{}, dir,
-		"do the task", defaultSystemPrompt, resources, store.Jobs(), log, false, "", nil)
+	_, runID, _, _ := driveRequest{
+		out:       &out1,
+		model:     blockingModel{},
+		plan:      harness.Plan{},
+		workdir:   dir,
+		objective: "do the task",
+		system:    defaultSystemPrompt,
+		rstore:    resources,
+		jq:        store.Jobs(),
+		log:       log,
+	}.execute(ctx1)
 	if runID == "" {
 		t.Fatal("no run id from the interrupted run")
 	}
@@ -52,8 +61,18 @@ func TestResumeContinuesInterruptedRun(t *testing.T) {
 	ctx2, cancel2 := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel2()
 	var out2 bytes.Buffer
-	result, _, _, rerr := drive(ctx2, &out2, finish, harness.Plan{}, dir,
-		"do the task", defaultSystemPrompt, resources, store.Jobs(), log, false, runID, nil)
+	result, _, _, rerr := driveRequest{
+		out:       &out2,
+		model:     finish,
+		plan:      harness.Plan{},
+		workdir:   dir,
+		objective: "do the task",
+		system:    defaultSystemPrompt,
+		rstore:    resources,
+		jq:        store.Jobs(),
+		log:       log,
+		resumeID:  runID,
+	}.execute(ctx2)
 	if rerr != nil {
 		t.Fatalf("resume returned an error: %v\nout:\n%s", rerr, out2.String())
 	}

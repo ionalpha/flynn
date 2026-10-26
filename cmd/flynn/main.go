@@ -582,6 +582,9 @@ func printUsage(w io.Writer) {
   flynn db reset             move an unusable database aside (backed up) so the next run recreates it; also 'db path' and 'db backup'
   flynn notices [--refresh] [--all]  show the signed security advisories and release notices that apply to this build
   flynn regrade              re-grade learned skills against the working directory
+  flynn memory ls            list what this install remembers, with ids, sources and whether each is pushed at wake (--pending: only items awaiting review)
+  flynn memory promote <id>  review one of the agent's own memories into every later run's wake digest (revoke <id> takes it back out)
+  flynn memory forget <id>   delete a memory, including one pinned with /remember
   flynn memory consolidate   distil each subject's accumulated episodes into one lesson and retire them (--max-calls n caps the model spend)
   flynn memory usage         show what memory was pushed at readers, what they used, and how alike the instances' pushed sets are
   flynn skill ls             list the skills a run can be offered: the pack shipped in the binary and the ones this install learned
@@ -821,6 +824,17 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID, nil)
+	_, _, _, err = driveRequest{
+		out:      os.Stdout,
+		model:    model,
+		plan:     plan,
+		workdir:  cwd,
+		system:   defaultSystemPrompt,
+		rstore:   store.Resources(reg),
+		jq:       store.Jobs(),
+		log:      store.Log(),
+		verbose:  verbose,
+		resumeID: runID,
+	}.execute(ctx)
 	return err
 }

@@ -29,10 +29,7 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "usage: flynn models fetch <model-id> [--quant <name>]")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	if done, err := parseModelFlags(fs, args); done {
 		return err
 	}
 	id := fs.Arg(0)

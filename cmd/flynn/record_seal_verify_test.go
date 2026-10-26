@@ -47,9 +47,17 @@ func TestSealFromStoreProducesVerifiableRecord(t *testing.T) {
 	}
 
 	model := llmtest.NewScripted(llmtest.SayText("done"))
-	_, runID, _, err := drive(ctx, io.Discard, model, harness.Plan{}, t.TempDir(),
-		"reply done and stop", defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), false, "", nil)
+	_, runID, _, err := driveRequest{
+		out:       io.Discard,
+		model:     model,
+		plan:      harness.Plan{},
+		workdir:   t.TempDir(),
+		objective: "reply done and stop",
+		system:    defaultSystemPrompt,
+		rstore:    store.Resources(reg),
+		jq:        store.Jobs(),
+		log:       store.Log(),
+	}.execute(ctx)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}
