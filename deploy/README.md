@@ -29,6 +29,7 @@ docker run -d --name flynn \
   -v flynn-data:/data \
   -e ANTHROPIC_API_KEY=sk-ant-... \
   -e TELEGRAM_BOT_TOKEN=123:abc \
+  -e FLYNN_TELEGRAM_ALLOW=123456789 \
   flynn:local
 ```
 
@@ -77,14 +78,24 @@ inbound port is required for the agent to answer messages.
 | Variable | Purpose |
 | --- | --- |
 | `ANTHROPIC_API_KEY` | Model provider key. Required once a channel is configured so the agent can run goals. |
-| `TELEGRAM_BOT_TOKEN` | Telegram channel. Set it to answer Telegram messages; omit for a monitor-only daemon. |
+| `TELEGRAM_BOT_TOKEN` | Telegram channel. Set it to answer Telegram messages; omit for a monitor-only daemon. Requires `FLYNN_TELEGRAM_ALLOW`. |
+| `FLYNN_TELEGRAM_ALLOW` | Comma separated Telegram user ids who may start a run. Numeric ids only (message `@userinfobot` to find yours): a username can be renamed or reassigned. Required with `TELEGRAM_BOT_TOKEN`; `flynn serve` refuses to start without it. |
+| `FLYNN_SIGNAL_ALLOW` | Comma separated Signal numbers (`+15551234567`) who may start a run. Required with `--signal-tcp`. |
 | `FLYNN_API_TOKEN` | Bearer token for the control-plane API. If unset, Flynn generates one and prints it to the logs at startup. |
 | `FLYNN_VAULT_PASSPHRASE` | Unseals the sealed credential vault non-interactively, so configured integrations work without a TTY prompt. Needed once you store an integration credential. Keep it stable: losing it makes stored credentials unrecoverable. |
 | `FLYNN_VAULT_FILE` | Set to `1` to store credentials only in the passphrase-sealed file and never touch the OS keychain. Recommended in a container or on a headless host (no keychain service), and for anyone who does not want a key in the OS keychain. Pair it with `FLYNN_VAULT_PASSPHRASE`. |
 
 The default command is `serve --data-dir=/data --api-addr=127.0.0.1:7575`. Add
-`--signal-tcp` for a Signal channel, or drop `--api-addr` entirely if you do not want
-the control-plane API.
+`--signal-tcp` (with `--signal-allow` or `FLYNN_SIGNAL_ALLOW`) for a Signal channel, or
+drop `--api-addr` entirely if you do not want the control-plane API.
+
+A chat message becomes a goal that runs with the agent's tools, so a channel answers only
+the senders you list and refuses to start with none. A message from anyone else is dropped
+before it is stored, and the sender's id (not the message) is recorded on the
+`serve.intake` stream. Each served goal runs under the same flags as a terminal run
+(`--require-approval`, `--allow`, `--max-tokens`, `--max-cost`); nothing in a chat can
+answer an approval prompt, so an action you list for approval is refused. With no budget
+flag, each goal is capped at 1,000,000 tokens.
 
 ## Security model
 
