@@ -165,8 +165,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		fanout      = fs.Bool("fanout", false, "let the goal delegate sub-tasks to concurrent child agents (each routed to the model its archetype pins), all folded into one verifiable record")
 		maxCost     = fs.Float64("max-cost", 0, "cap the run's total model+tool spend in the provider's currency unit; 0 (default) is unlimited. A fan-out's children share the one ceiling, and an action is refused once it is reached.")
 		maxTokens   = fs.Int64("max-tokens", 0, "cap the run's total metered tokens; 0 (default) is unlimited. Shares one ceiling across a fan-out.")
-		maxMemory   = fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today).")
-		maxProcs    = fs.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop.")
+		shellFlags  = registerShellFlags(fs)
 		showVersion = fs.Bool("version", false, "print version and exit")
 		profileDir  = fs.String("profile", "", "capture a runtime profile bundle (cpu, heap, goroutines, a sampled timeline, and a hashed manifest) into this directory for the life of the command")
 		profileCont = fs.Bool("profile-contention", false, "add block and mutex profiles to the --profile bundle; both slow every blocking operation, so they are off by default")
@@ -257,8 +256,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		allowed:      allowed.values,
 		maxCost:      *maxCost,
 		maxTokens:    *maxTokens,
-		maxMemoryMiB: *maxMemory,
-		maxProcesses: *maxProcs,
+		shell:        shellFlags.policy(*dataDir),
 	})
 }
 
@@ -323,14 +321,16 @@ type invocation struct {
 	// goalSpec is the path to the goal spec file, or "" when none was passed. It is the
 	// path rather than the loaded spec because loading it is a fallible step the router
 	// reports as a usage error.
-	goalSpec     string
-	reqApproval  []string
-	outside      []string
-	allowed      []string
-	maxCost      float64
-	maxTokens    int64
-	maxMemoryMiB int
-	maxProcesses int
+	goalSpec    string
+	reqApproval []string
+	outside     []string
+	allowed     []string
+	maxCost     float64
+	maxTokens   int64
+	// shell is what the commands the run launches are limited to and kept away from. It
+	// is built from the flags once, here, so every entry point that drives a shell hands
+	// the same value on and none of them restates the defaults.
+	shell shellPolicy
 }
 
 // exit maps a subcommand's error to a process exit code: 1 with the message on stderr, or 0 on
@@ -355,7 +355,7 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 	"memory":  routeMemory,
 	"skill":   routeSkill,
 	"serve": func(inv invocation, rest []string) int {
-		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir))
+		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir, inv.shell))
 	},
 	"watch": func(inv invocation, _ []string) int {
 		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
@@ -415,7 +415,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	// is a turn of one continuing conversation. With stdin redirected (a pipe, a file, a CI
 	// step) there is no one to prompt, so print usage instead.
 	if len(rest) == 0 && stdinIsTerminal() {
-		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain, inv.reqApproval))
+		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain, inv.reqApproval, inv.shell))
 	}
 
 	printUsage(inv.stderr)
@@ -443,7 +443,7 @@ func routeGoal(inv invocation, rest []string) int {
 		_, _ = fmt.Fprintln(inv.stderr, err)
 		return 2
 	}
-	return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.maxMemoryMiB, inv.maxProcesses))
+	return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.shell))
 }
 
 func routeInspect(inv invocation, rest []string) int {
@@ -459,7 +459,7 @@ func routeResume(inv invocation, rest []string) int {
 		_, _ = fmt.Fprintln(inv.stderr, "usage: flynn resume <run-id>")
 		return 2
 	}
-	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose))
+	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose, inv.shell))
 }
 
 // routeMemory runs `flynn memory`. It is not a dataDirCommands entry: consolidation
@@ -593,7 +593,7 @@ func printUsage(w io.Writer) {
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
   flynn sandbox check [--json] [--ready-file PATH]  start a confined child and report whether this host allows the Linux sandbox, or why not and the fix (exits 1 on any refusal)
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, -v/--verbose, --plain, --profile <dir> (run with --help for details).
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, -v/--verbose, --plain, --profile <dir> (run with --help for details).
 
 A goal spec file states the terms of a run: what must stay true while it works. Each
 term is audited after every step, before the goal is asked whether it is done, and a
@@ -646,7 +646,7 @@ func dataDirName() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, maxMemoryMiB, maxProcesses int) error {
+func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, shell shellPolicy) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -718,7 +718,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 
 	opts := []driveOption{
 		withBudget(budgetpkg.Limits{Tokens: maxTokens, Cost: maxCost}),
-		withResourceLimits(sandbox.ResourceLimits{MemoryMiB: maxMemoryMiB, MaxProcesses: maxProcesses}),
+		withShellPolicy(shell),
 		// A one-shot run has no operator at a prompt, so it carries the gate without a
 		// prompter: a listed action is refused rather than taken. That is the fail-closed
 		// half of the same mechanism the interactive session resolves by asking.
@@ -800,7 +800,7 @@ func credentialSource(dataDir string) secret.Source {
 // terminal phase. Ctrl-C detaches without losing the run, which can be resumed
 // again. Learning capture is skipped: a resume continues a run, it does not start a
 // fresh one to distill.
-func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
+func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell shellPolicy) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -821,6 +821,6 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool) error {
 	if err != nil {
 		return err
 	}
-	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID, nil)
+	_, _, _, err = drive(ctx, os.Stdout, model, plan, cwd, "", defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), verbose, runID, nil, withShellPolicy(shell))
 	return err
 }

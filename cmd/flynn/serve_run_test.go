@@ -38,7 +38,7 @@ func serveEnv(t *testing.T) (dataDir, modelSpec string) {
 // exiting, so a typo is an error the dispatch turns into an exit code.
 func TestServeRejectsBadFlags(t *testing.T) {
 	dataDir, spec := serveEnv(t)
-	if err := runServeContext(context.Background(), []string{"--no-such-flag"}, spec, dataDir); err == nil {
+	if err := runServeContext(context.Background(), []string{"--no-such-flag"}, spec, dataDir, shellPolicy{}); err == nil {
 		t.Fatal("expected an unknown flag to be refused")
 	}
 }
@@ -47,7 +47,7 @@ func TestServeRejectsBadFlags(t *testing.T) {
 // cannot back the served path. It is refused before anything is opened.
 func TestServeRefusesAnExternalAgent(t *testing.T) {
 	dataDir, _ := serveEnv(t)
-	err := runServeContext(context.Background(), nil, "codex:gpt-5", dataDir)
+	err := runServeContext(context.Background(), nil, "codex:gpt-5", dataDir, shellPolicy{})
 	if err == nil {
 		t.Fatal("expected serve to refuse an external agent backend")
 	}
@@ -60,7 +60,7 @@ func TestServeRefusesAnExternalAgent(t *testing.T) {
 // and says so rather than idling forever waiting for an interrupt.
 func TestServeWithNothingConfigured(t *testing.T) {
 	dataDir, spec := serveEnv(t)
-	err := runServeContext(context.Background(), nil, spec, dataDir)
+	err := runServeContext(context.Background(), nil, spec, dataDir, shellPolicy{})
 	if err == nil {
 		t.Fatal("expected serve with no channel and no API to be refused")
 	}
@@ -82,7 +82,7 @@ func TestServeRefusesAnUnsafeAPIBind(t *testing.T) {
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
 			dataDir, spec := serveEnv(t)
-			err := runServeContext(context.Background(), args, spec, dataDir)
+			err := runServeContext(context.Background(), args, spec, dataDir, shellPolicy{})
 			if err == nil {
 				t.Fatal("a wildcard bind must be refused")
 			}
@@ -106,7 +106,7 @@ func TestServeRefusalStopsItsLoops(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			dataDir, spec := serveEnv(t)
 			before := serveLoopGoroutines()
-			if err := runServeContext(context.Background(), args, spec, dataDir); err == nil {
+			if err := runServeContext(context.Background(), args, spec, dataDir, shellPolicy{}); err == nil {
 				t.Fatal("expected serve to be refused")
 			}
 			if after := serveLoopGoroutines(); after > before {
@@ -149,7 +149,7 @@ func TestServeMonitorOnlyServesAndStops(t *testing.T) {
 	defer cancel()
 	errc := make(chan error, 1)
 	go func() {
-		errc <- runServeContext(ctx, []string{"--api-addr", addr, "--api-token", "operator-token"}, spec, dataDir)
+		errc <- runServeContext(ctx, []string{"--api-addr", addr, "--api-token", "operator-token"}, spec, dataDir, shellPolicy{})
 	}()
 
 	waitForListener(t, addr, errc)
@@ -172,7 +172,7 @@ func TestServeMonitorOnlyServesAndStops(t *testing.T) {
 func TestServeChannelNeedsAModel(t *testing.T) {
 	dataDir, spec := serveEnv(t)
 	args := []string{"--telegram-token", "test-token", "--signal-tcp", "127.0.0.1:7583"}
-	err := runServeContext(context.Background(), args, spec, dataDir)
+	err := runServeContext(context.Background(), args, spec, dataDir, shellPolicy{})
 	if err == nil {
 		t.Fatal("expected serve to refuse to start with no model credential")
 	}
@@ -188,7 +188,7 @@ func TestServeRefusesAnEmptyChannelToken(t *testing.T) {
 	// An empty value for a flag that was given is not the same as the flag being absent:
 	// the absent case is covered by the nothing-to-do refusal above.
 	t.Setenv("TELEGRAM_BOT_TOKEN", "from-the-environment")
-	err := runServeContext(context.Background(), nil, spec, dataDir)
+	err := runServeContext(context.Background(), nil, spec, dataDir, shellPolicy{})
 	if err == nil {
 		t.Fatal("expected serve to get past the nothing-to-do refusal with a channel from the environment")
 	}

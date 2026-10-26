@@ -157,6 +157,14 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   the agent's environment; a command sees only a minimal, credential-free baseline plus
   variables granted to it by name, so a model-run command cannot read the agent's keys
   from its own environment.
+- **Credentials read from disk by a command.** The command the model writes runs with the
+  kernel confinement and, by default, with the Flynn data directory, the runner's runtime
+  directory and the account's credential locations (`~/.ssh`, cloud and CLI login tokens,
+  keychain and agent sockets) hidden, and with no network, so what it could read it cannot
+  send out. `--allow-network` and `--allow-credential-reads` lift each, and the run's
+  `sandbox.posture` event records which. Open: another process's command line is readable
+  through procfs because the sandbox has no PID namespace, so a token passed on argv is
+  exposed (see `deploy/README.md`).
 - **Credentials in prompts or logs.** Secrets are held as a redacting type and resolved
   from the vault at call time, so they are not formatted into prompts, logs, or error
   output.

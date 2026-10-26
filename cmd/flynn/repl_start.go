@@ -23,7 +23,7 @@ import (
 // session (unless learning is disabled). It assumes stdin is a terminal; the caller
 // falls back to usage when it is not. By default it runs the full-screen interface;
 // plain (or a non-terminal stdout) selects the line-based interface instead.
-func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string) error {
+func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string, shell shellPolicy) error {
 	ctx := context.Background()
 
 	cwd, err := os.Getwd()
@@ -112,6 +112,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		// The policy is the session's for its whole life; the prompter that resolves a
 		// pause is installed by whichever interface runs, because only one of them can ask.
 		gates: gateSetup{approve: reqApproval},
+		shell: shell,
 	}
 
 	// Every turn runs under a prime scope, so a memory the wake digest pushed is

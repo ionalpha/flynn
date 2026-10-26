@@ -226,23 +226,50 @@ clears any cached pass and runs the check again.
 
 ### Hiding the runner's own files
 
-`WithUnreadablePaths` is the mechanism for hiding a runner's data directory, control-socket
-directory and credential files from the commands it launches. The runner does not apply it
-yet: `flynn serve` builds its sandbox without it, so those paths are readable to a
-command today (see the next section). Inside the sandbox a hidden directory is empty and
-a hidden file reads as empty, while the rest of the host stays readable. The set needs
-`WithReadOnlyFS` and Linux, and a Local that cannot apply it refuses with `ErrReadDeny` and
-does not run the command. A path reachable under a second name (another bind mount of the
-same directory) is not hidden under that name.
+`flynn run`, `flynn serve` and the other commands that launch the agent's shell hide, by
+default, the Flynn data directory (the run database, the instance signing key, the stored
+provider credentials), the runner's runtime directory (`/run/flynn` and `RUNTIME_DIRECTORY`),
+and the credential locations of the account the service runs as: `~/.ssh`, `~/.gnupg`,
+`~/.aws`, `~/.azure`, `~/.config/gcloud`, `~/.config/gh`, `~/.docker`, `~/.kube`, `~/.netrc`,
+`~/.npmrc`, `~/.pypirc`, `~/.git-credentials`, the Claude and Codex login tokens, the
+keyring and password-store directories, the paths named by `SSH_AUTH_SOCK`, `GNUPGHOME`,
+`KUBECONFIG` and the cloud SDK variables, and the session bus, keyring and agent sockets in
+the user's runtime directory. Inside the sandbox a hidden directory is empty and a hidden
+file reads as empty, while the rest of the host stays readable. The mechanism is
+`WithUnreadablePaths`: it needs `WithReadOnlyFS` and Linux, and a Local that cannot apply it
+refuses with `ErrReadDeny` and does not run the command. A path reachable under a second
+name (another bind mount of the same directory) is not hidden under that name.
+
+The same default gives a command no network: it runs in a network namespace with no
+interfaces, so it cannot send what it reads anywhere, and the loopback services of the host
+(the control-plane API among them) are out of reach too. Each run records its posture as a
+`sandbox.posture` event on its own stream: the tier, whether the network was `denied` or
+`open`, whether the credentials were `hidden` or `readable`, and the hidden paths.
+
+Two flags relax the default, and the event records each:
+
+- `--allow-network` gives the commands the host's network. Git over https or ssh, package
+  installs and anything else a command fetches need it. It is all or nothing: the commands
+  can then reach every address the host can.
+- `--allow-credential-reads` leaves the data directory and the credential locations
+  readable. It is also the only way to run a shell on a platform that cannot hide a path
+  (macOS and Windows today), where the default makes every launch refuse with `ErrReadDeny`.
+  Git over ssh with a key in `~/.ssh` needs it as well as `--allow-network`, and the commands
+  then see every credential in that list, so prefer a deploy key kept outside it.
 
 ### What the sandbox does not hide
 
 A command's user namespace maps to the service's own uid, so to the filesystem it is the
-same user as the runner, and it shares the runner's process namespace. Three consequences
+same user as the runner, and it shares the runner's process namespace. Several consequences
 follow, none of which the unit's directory modes change:
 
-- Files the service account owns (the state directory, the control socket in `/run/flynn`)
-  are readable to a command unless a Local hides them with `WithUnreadablePaths`.
+- Files the service account owns that are outside the default hide set (anything but the
+  data directory, `/run/flynn` and the credential locations above) are readable to a
+  command, and so is everything under `--allow-credential-reads`.
+- Another process's command line is readable through `/proc/<pid>/cmdline`, which has no
+  ptrace check, so a token passed as an argument to a process of the same account is
+  exposed. Only a PID namespace with its own procfs would hide it, and the sandbox has none.
+  Pass secrets through the environment or a file, not argv.
 - A command at the process-jail floor (the `WithBestEffortConfinement` opt-in) can read
   `/proc/<runner pid>/environ`, which holds the `EnvironmentFile=` secrets.
 - A kernel-confined command cannot read that file: it sits in a child user namespace

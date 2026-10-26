@@ -105,7 +105,7 @@ func TestTheAuditorRunsAChecksCommandInTheRealSandbox(t *testing.T) {
 	store := memStore(t)
 	rstore := store.Resources(mustRegistry(t))
 	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
+		rstore, store.Jobs(), store.Log(), nil, "", checkShell, false, false, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -170,7 +170,7 @@ func TestFanoutAssemblyCanRuleOnAStatedTerm(t *testing.T) {
 	store := memStore(t)
 	rstore := store.Resources(mustRegistry(t))
 	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", nil, sandbox.ResourceLimits{}, gateSetup{})
+		rstore, store.Jobs(), store.Log(), nil, "", nil, shellPolicy{}, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
 	}

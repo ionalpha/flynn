@@ -16,7 +16,6 @@ import (
 	"github.com/ionalpha/flynn/orchestration"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -78,8 +77,8 @@ type fanoutConfig struct {
 // agent's model, while the root and every child fold into one recorded, sealable
 // stream. The shared store backs the child goals a fan-out spawns, so they land
 // where the runtime reconciles them.
-func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resolveModel driver.ModelResolver, resLimits sandbox.ResourceLimits, appr gateSetup) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, skills, runID, true, resLimits)
+func assembleFanoutMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resolveModel driver.ModelResolver, shell shellPolicy, appr gateSetup) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, skills, runID, true, shell)
 	if err != nil {
 		return nil, err
 	}

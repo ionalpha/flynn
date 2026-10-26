@@ -13,7 +13,6 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 )
 
 // driveMarkedRun drives a run whose model tries to write a file, with the write tool marked
@@ -37,7 +36,7 @@ func driveMarkedRun(t *testing.T, marked, declared []string) (goal.Status, strin
 		llmtest.SayText("done"),
 	)
 	run, err := assembleMission(model, harness.Plan{}, dir, defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false,
+		rstore, store.Jobs(), store.Log(), nil, "", shellPolicy{}, false, false,
 		gateSetup{outside: marked})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)

@@ -162,9 +162,9 @@ func TestDriveOptionsApplyToTheRunConfig(t *testing.T) {
 		t.Fatalf("cost ceiling not applied: %+v", cfg.budget)
 	}
 
-	withResourceLimits(sandbox.ResourceLimits{MaxProcesses: 4})(&cfg)
-	if cfg.resLimits.MaxProcesses != 4 {
-		t.Fatalf("resource limits not applied: %+v", cfg.resLimits)
+	withShellPolicy(shellPolicy{limits: sandbox.ResourceLimits{MaxProcesses: 4}, allowNetwork: true})(&cfg)
+	if cfg.shell.limits.MaxProcesses != 4 || !cfg.shell.allowNetwork {
+		t.Fatalf("shell policy not applied: %+v", cfg.shell)
 	}
 
 	ea := &externAgent{model: "gpt-5-codex"}
@@ -360,7 +360,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	t.Cleanup(ea.close)
 
 	run, err := assembleExternalMission(ea, t.TempDir(), defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "", sandbox.ResourceLimits{})
+		store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "", shellPolicy{})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	// A native fan-out run, by contrast, is granted the delegation it exists to make.
 	fan, err := assembleFanoutMission(llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
 		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "",
-		nil, sandbox.ResourceLimits{}, gateSetup{})
+		nil, shellPolicy{}, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
 	}
