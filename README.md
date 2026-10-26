@@ -75,8 +75,15 @@ curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | sh
 irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 ```
 
-Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0`) or change the
-install directory with `FLYNN_INSTALL_DIR`.
+Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0-rc.1`) or change
+the install directory with `FLYNN_INSTALL_DIR`.
+
+The script installs the newest release, v0.1.3. This README describes `main`, which is
+the v0.2.0 release candidate: governed goals, the bundled skill pack and the new memory
+are in v0.2.0-rc.1 and not in v0.1.3. To try the candidate, install with
+`FLYNN_VERSION=v0.2.0-rc.1`, or run `flynn upgrade --pre` from v0.1.3. Read the
+[v0.2.0 notes](docs/releases/v0.2.0.md#upgrading-from-v013) before upgrading: commands
+the agent runs now have no network unless you pass `--allow-network`.
 
 That is the last time you need the script. From then on the binary maintains itself:
 
@@ -109,9 +116,11 @@ docker run -v flynn-data:/data \
 ```
 
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
-(`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;
+(`:0.2.0-rc.1` for the release candidate) instead of `latest`, which is v0.1.3 until
+v0.2.0 ships. The API binds loopback inside the container on purpose;
 add a channel (for example `-e TELEGRAM_BOT_TOKEN=... -e FLYNN_TELEGRAM_ALLOW=<your user id>`) to reach the agent, or see
-[`deploy/README.md`](deploy/README.md) for remote access and hardening.
+[`deploy/README.md`](deploy/README.md) for remote access and hardening. The image has no
+shell, so the agent cannot run commands inside it; use the binary for work that needs them.
 
 Every published manifest is keyless-signed with cosign and can be verified:
 
@@ -731,7 +740,7 @@ foundations are in place and a real agent loop runs today; the breadth described
 above is filling in on top of that foundation. Follow
 [@ionalpha_](https://x.com/ionalpha_) for progress.
 
-**Running today**
+**Running today** (on `main` and in v0.2.0-rc.1; see [Install](#install) for what v0.1.3 lacks)
 
 - A single static Go binary, cross-compiled for Windows, macOS, Linux, and ARM.
 - An event-sourced spine with materialized resources and a self-healing reconcile loop.
