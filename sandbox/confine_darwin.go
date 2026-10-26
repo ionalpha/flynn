@@ -62,7 +62,8 @@ func (l *Local) confine(c *exec.Cmd) error {
 	}
 	// When egress is governed, the profile allows outbound only to the loopback proxy,
 	// composed into this single profile rather than a second sandbox-exec wrapping.
-	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp, l.egressAddr(), l.writableDirs...)
+	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp, l.egressAddr(), l.writableDirs...) +
+		seatbeltHidden(l.unreadable)
 	// Wrap the existing command: the launcher applies the profile, then execs the real
 	// command (still c.Args from here on) under it. c.Path points at the launcher; the
 	// original program name stays as the launcher's first non-flag argument.
