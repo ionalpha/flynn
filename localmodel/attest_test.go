@@ -141,6 +141,21 @@ func TestAdoptionRefusesWhatItCannotVouchFor(t *testing.T) {
 		}
 		waitStopped(t, ep.BaseURL+"/models")
 	})
+	t.Run("a server a process-jail Host started", func(t *testing.T) {
+		// The sandbox does not say which launches fell back to the floor, so a Host that
+		// accepted a jail records every server as one, and a Host that requires the kernel
+		// never adopts it on a guess.
+		f := newFixture(t, fixtureOpts{})
+		_, ep := serveOnce(t, f)
+		if ep.Containment != sandbox.ContainmentNone.String() {
+			t.Fatalf("Containment = %q; want %q from a Host that accepted a jail", ep.Containment, sandbox.ContainmentNone)
+		}
+		kernel := reopen(t, f, func(c *localmodel.Config) { c.MinContainment = "kernel" })
+		if _, err := kernel.Reach(t.Context(), f.model.ID); !errors.Is(err, localmodel.ErrNotRunning) {
+			t.Fatalf("Reach = %v; want ErrNotRunning for a server recorded as a jail", err)
+		}
+		waitStopped(t, ep.BaseURL+"/models")
+	})
 	t.Run("isolation recorded at the level asked for", func(t *testing.T) {
 		f := newFixture(t, fixtureOpts{})
 		serveOnce(t, f)
