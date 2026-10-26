@@ -29,7 +29,7 @@ none of them can reach you on a day you did not choose.
 | Tier | Packages | What you can expect |
 | --- | --- | --- |
 | Stable surface | the root `agent` facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`, `jobs`, `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, `chain` | The embedding contract. Breaks are gated in CI, and any break that ships was argued for in writing. |
-| Domain surface | `goal`, `mission`, `reconcile`, `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, `dispatch`, `approval`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
+| Domain surface | `goal`, `mission`, `reconcile`, `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, `dispatch`, `approval`, `localmodel`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
 | `internal/` | everything under it | Not importable. No promise at all. |
 
 The gate is `dev/apidiff`, which compares the exported API of the branch against
