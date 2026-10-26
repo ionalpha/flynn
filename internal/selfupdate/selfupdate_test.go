@@ -23,6 +23,7 @@ import (
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/internal/release"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 )
 
 // goldenTag is the release whose real, published Sigstore bundle this package is
@@ -222,6 +223,7 @@ func goldenBundle(t *testing.T) []byte {
 // the archive is downloaded and pinned to the digest that provenance names, the binary
 // is extracted, it is made to prove it runs, and it replaces the running one.
 func TestUpgradeInstallsAVerifiedRelease(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	newBinary := buildFakeFlynn(t, goldenTag)
 	archive := packArchive(t, runtime.GOOS, newBinary)
 
@@ -293,6 +295,7 @@ func TestUpgradeInstallsAVerifiedRelease(t *testing.T) {
 // libc, a broken build, a local policy that will not execute it) must not replace one
 // that does.
 func TestUpgradeKeepsTheOldBinaryWhenTheNewOneWillNotRun(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	if testing.Short() {
 		t.Skip("needs a compiler")
 	}

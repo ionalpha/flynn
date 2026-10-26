@@ -159,6 +159,7 @@ func TestSessionConfinedRoundTrip(t *testing.T) {
 		t.Fatalf("new local: %v", err)
 	}
 	t.Cleanup(func() { _ = loc.Close() })
+	requireConfinedRun(t, loc)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

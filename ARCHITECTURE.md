@@ -320,7 +320,9 @@ promise. The layout makes the tiers physical:
   `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
   `orchestration`, `dispatch`, `approval`, ...): importable and visible, but **unstable
   while pre-1.0**. These churn as the orchestration graph and router land.
-  Power users may import them with that understanding.
+  Power users may import them with that understanding. `localmodel`, the public
+  face of local inference, is in this band and marked experimental: it may change
+  before it is listed as stable.
 - **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
   guards, stores, probes, and adapters the surfaces are built from.
 
@@ -427,7 +429,11 @@ is part of CI).
 - **`learn`** the closed learning loop (capture, verify, reinforce, regrade);
   **`memory`** and **`skill`** its durable stores.
 - **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
-  adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation.
+  adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation;
+  **`localmodel`** runs a catalog model on this machine for a host (per-host advisory
+  floor, digest-pinned downloads, loopback-only and token-protected serving inside the
+  sandbox at a stated minimum isolation, with the listener attributed before the token
+  is sent), and `flynn models` is one of its clients.
 - **`clock`**, **`ids`**, **`hlc`** the determinism ports; **`fault`** the error
   taxonomy; **`observe`** logging/tracing; **`bus`** the in-process event bus;
   **`jobs`** the leased job queue.

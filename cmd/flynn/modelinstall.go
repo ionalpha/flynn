@@ -6,12 +6,11 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"runtime"
 	"strings"
 
-	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/internal/inference/provision"
+	"github.com/ionalpha/flynn/localmodel"
 )
 
 // runRuntimeInstall implements `flynn models install [runtime]`: fetch a pinned, gated
@@ -21,31 +20,32 @@ import (
 // digest by the download path and gated on its version before it is offered, so an
 // install only ever places a known, safe runtime on disk. It does not start anything.
 func runRuntimeInstall(args []string, dataDir string, out io.Writer) error {
-	name := "llama.cpp"
+	name := localmodel.Runtime
 	if len(args) >= 1 && args[0] != "" {
 		name = args[0]
 	}
 
-	rel, ok := provision.ReleaseFor(name, runtime.GOOS, runtime.GOARCH)
-	if !ok {
+	// Only the runtime the public API serves is installed here; it applies the advisory gate
+	// before any download and checks the archive against its pinned digest.
+	if _, ok := provision.ReleaseFor(name, runtime.GOOS, runtime.GOARCH); !ok || name != localmodel.Runtime {
 		return fmt.Errorf("models install: no pinned %s build for %s/%s; Flynn can provision: %s",
 			name, runtime.GOOS, runtime.GOARCH, strings.Join(installableRuntimes(), ", "))
-	}
-	if err := rel.Gate(); err != nil {
-		return fmt.Errorf("models install: refusing to install %s %s: %w", name, rel.Version, err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	dest := filepath.Join(dataDir, "runtimes")
-	_, _ = fmt.Fprintf(out, "installing %s %s for %s/%s (%s, verified against a pinned digest)\n",
-		name, rel.Version, rel.GOOS, rel.GOARCH, humanBytes(rel.SizeBytes))
-	res, err := provision.Install(ctx, fetch.New(), rel, dest)
+	host, err := openHost(dataDir, out)
 	if err != nil {
 		return fmt.Errorf("models install: %w", err)
 	}
-	if res.FromCache {
+	defer func() { _ = host.Close() }()
+	_, _ = fmt.Fprintf(out, "installing %s for %s/%s (verified against a pinned digest)\n", name, runtime.GOOS, runtime.GOARCH)
+	res, err := host.EnsureRuntime(ctx)
+	if err != nil {
+		return fmt.Errorf("models install: %w", err)
+	}
+	if res.Cached {
 		_, _ = fmt.Fprintf(out, "already installed: %s\n", res.BinPath)
 		return nil
 	}

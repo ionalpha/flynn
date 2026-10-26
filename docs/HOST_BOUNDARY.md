@@ -96,13 +96,33 @@ tests and a durable one for the binary.
 | `resource.Store` | `resource.NewMemory`, `storage/sqlite` resource store | `governed/assemble.go` | shipped |
 | `resource.SchemaCompiler` / `Validator` | `resource.builtinCompiler`, `resource.Registry` | `resource` kind registration | shipped |
 | `jobs.Queue` / `Waker` | `jobs.MemoryQueue`, `storage/sqlite` job queue | `store.Jobs()`, `agent.go` | shipped |
-| `llm.Model` | `llm/anthropic`, `llm/openai`, local serving | `provider.Resolve` | shipped |
+| `llm.Model` | `llm/anthropic`, `llm/openai`, local serving (`localmodel.Host` starts the server, `llm/openai` talks to it) | `provider.Resolve`, `cmd/flynn/modelrun.go` `newLocalRunner` | shipped |
 | `sandbox.Sandbox` | `sandbox.Local`, `sandbox.MicroVM` (`BootMicroVM`); `sandbox.Remote` (`NewRemote`) is the adapter for a host-supplied `sandbox.Transport` and is unused until one exists | `sandbox.NewLocal` at each assembly | shipped |
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
 | `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `governed/assemble.go`, `governed/learning.go` | shipped |
 | `allowance.Policy` | `allowance.Actions` | `governed/allowance.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
+
+A host that wants a model running on the same machine has `localmodel` and needs no port
+of its own for it: `localmodel.Open` takes a data directory and returns a host that
+classifies a source, installs a runtime behind the advisory gate, fetches weights against
+a catalog digest, serves them inside the sandbox on a loopback port behind a per-launch
+token, and stops them. The guards have no switch. A host that starts a model server
+itself (a runtime launched from a download) has none of them, which is why the package
+offers no way to supply a server binary, an address, a chat template, a runtime build or
+a lower floor. The served runtime keeps outbound network access under the local sandbox,
+so the loopback pin and the token are what keep the endpoint private.
+
+Three things are the host's to decide, and each is checked in one direction only. A host
+can raise the advisory floor for its own `Host` with `RaiseFloor`; the floor never lowers,
+and one `Host` raising it does not change another. A host states the least isolation it
+accepts with `Config.MinContainment` (kernel confinement unless it says `"process"`), and
+`Serve` refuses a sandbox that provides less and reports the level it launched under. A
+server found already running is held to the same floor and isolation as a new one, and is
+stopped if it falls short. Before the token is sent anywhere, the listener has to refuse a
+request with no credential and one with a made-up credential, and accept one with a probe
+key only the launched runtime was given.
 
 `allowance.Policy` is wired but marks nothing until the operator names an action, and
 that empty default is the intended answer rather than a gap. Which actions reach
@@ -586,6 +606,38 @@ its terms, and nobody told. The auditor now reports it `Terminal`, so the run st
 Every test of the auditor supplied a fake sandbox, which is how it stayed invisible;
 `TestTheAuditorRunsAChecksCommandInTheRealSandbox` runs the wired auditor against the
 real one and asserts whichever of the two answers the host can give.
+
+Whether a host can contain confined work is something to ask before a run, not to learn
+from a refusal in the middle of one. `flynn sandbox check` (and
+[`sandbox.CheckConfinement`](../sandbox/readiness.go) for a host embedding Flynn) starts a
+real confined no-op child and returns a [`sandbox.Readiness`](../sandbox/readiness.go):
+a pass, or a named cause (a service unit's `RestrictNamespaces=`, disabled user
+namespaces, an AppArmor user-namespace restriction, a syscall filter) with the change
+that fixes it and the container or microVM tier as the alternative. A Local that asks for
+confinement runs that check before its first launch and refuses with the same result. The
+check has no off switch: no flag, environment variable or configuration accepts a
+refusal, and an outcome it cannot classify refuses.
+
+The default is fail closed. `WithDefaultConfinement` never runs a command unconfined: a
+host that cannot confine gets a refusal from `Exec`, `Capture`, `Stream`, `Serve` and
+`Session`. Running at the process-jail floor is a separate, named choice,
+`WithBestEffortConfinement(notice)`, made in code by the embedder. Each launch it lets
+through is counted (`ConfinementFallbacks`) and passed to the notice, which reaches
+standard error when it is nil. It is never offered for a Local that denies the network,
+governs egress, hides paths or holds a read grant the floor cannot honour.
+
+An embedder hides a runner's own files from the commands it launches with
+`WithUnreadablePaths`: the paths read as empty inside the sandbox, and a Local that
+cannot do this (off Linux, without `WithReadOnlyFS`, or with a grant under a hidden
+path) refuses with `ErrReadDeny`. The binary applies it, with `WithNetworkDenied`, to the
+shell of `flynn run`, `flynn serve` and the goal worker: the data directory, the runner's
+runtime directory and the account's credential locations are hidden, and the command has no
+network. `--allow-network` and `--allow-credential-reads` lift each, and the run's stream
+records which. An embedder that builds its own Local gets neither unless it asks.
+
+`deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
+unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`
+explains each line.
 
 ## How this list is derived
 

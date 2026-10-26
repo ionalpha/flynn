@@ -13,13 +13,13 @@ import (
 // (POSIX sh and cmd.exe both honor "exit N").
 func exitCmd(code int) string { return "exit " + strconv.Itoa(code) }
 
-// TestBestEffortConfinementFallsBack proves the always-on baseline degrades instead of
-// failing when the confinement cannot be set up: with confinement requested as the
-// default but its setup forced to fail, the command still runs and returns its real
-// result rather than an error. The forced failure stands in for a host that refuses
-// the namespace setup (such as one restricting unprivileged user namespaces).
+// TestBestEffortConfinementFallsBack proves the explicit opt-in degrades instead of failing
+// when the confinement cannot be set up: with its setup forced to fail, the command still
+// runs and returns its real result rather than an error, and the lowering is counted. The
+// forced failure stands in for a host that refuses the namespace setup (such as one
+// restricting unprivileged user namespaces).
 func TestBestEffortConfinementFallsBack(t *testing.T) {
-	sb, err := NewLocal(t.TempDir(), WithDefaultConfinement())
+	sb, err := NewLocal(t.TempDir(), WithBestEffortConfinement(func(error) {}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -29,10 +29,38 @@ func TestBestEffortConfinementFallsBack(t *testing.T) {
 
 	res, err := sb.Exec(context.Background(), Command{Line: "echo fell-back && " + exitCmd(4)})
 	if err != nil {
-		t.Fatalf("the default baseline must fall back to the floor, not fail: %v", err)
+		t.Fatalf("the opt-in must fall back to the floor, not fail: %v", err)
 	}
 	if res.ExitCode != 4 || !strings.Contains(res.Output, "fell-back") {
 		t.Fatalf("the fallback did not run the command: exit %d\n%s", res.ExitCode, res.Output)
+	}
+	// Only the Linux launcher is forced to fail; elsewhere the confinement is real and no
+	// lowering happens to count.
+	if runtime.GOOS == "linux" && sb.ConfinementFallbacks() != 1 {
+		t.Fatalf("fallbacks = %d, want the lowered run counted once", sb.ConfinementFallbacks())
+	}
+}
+
+// TestDefaultConfinementFailsClosed is the other side of the opt-in: the same forced setup
+// failure under [WithDefaultConfinement] alone is an error, and the command does not run.
+func TestDefaultConfinementFailsClosed(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("the selfExe setup-failure override only applies to the Linux launcher")
+	}
+	sb, err := NewLocal(t.TempDir(), WithDefaultConfinement())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sb.Close() })
+	sb.readonlyFS = true
+	sb.selfExe = filepath.Join(t.TempDir(), "no-such-binary")
+
+	res, err := sb.Exec(context.Background(), Command{Line: "echo ran"})
+	if err == nil {
+		t.Fatalf("the default must refuse when confinement cannot be set up, got %+v", res)
+	}
+	if strings.Contains(res.Output, "ran") || sb.ConfinementFallbacks() != 0 {
+		t.Fatalf("the command ran or a fallback was counted: %+v", res)
 	}
 }
 
@@ -63,11 +91,11 @@ func TestExplicitConfinementFailsLoud(t *testing.T) {
 // TestDefaultConfinementPreservesExitCode guards the secure-by-default baseline
 // against the failure mode where applying confinement turns a real command result
 // into an error: a command's exit code must come back unchanged whether the host
-// enforces the confinement or the baseline falls back to the floor because the kernel
+// enforces the confinement or the explicit opt-in runs at the floor because the kernel
 // will not set it up. A non-zero exit is a result, never an error, so a verifier or
 // caller reading the exit code sees the truth on every host.
 func TestDefaultConfinementPreservesExitCode(t *testing.T) {
-	sb, err := NewLocal(t.TempDir(), WithDefaultConfinement())
+	sb, err := NewLocal(t.TempDir(), WithBestEffortConfinement(func(error) {}))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,45 @@
+# The plain hardened baseline a runner unit is compared against: the standard directives a
+# security-minded operator sets on any network service, with no allowance for the sandbox.
+# It forbids every namespace and filters out the privileged system calls. Tests only; not
+# shipped.
+
+[Unit]
+Description=Flynn runner (hardened, sandbox-capable)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+ExecStart=/usr/local/bin/flynn serve --data-dir /var/lib/flynn
+Restart=on-failure
+User=flynn
+Group=flynn
+StateDirectory=flynn
+UMask=0077
+RuntimeDirectory=flynn
+RuntimeDirectoryMode=0700
+EnvironmentFile=-/etc/flynn/flynn.env
+NoNewPrivileges=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RemoveIPC=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallArchitectures=native
+RestrictNamespaces=true
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

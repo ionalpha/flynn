@@ -494,3 +494,31 @@ func unwritableDir(t *testing.T) string {
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
 	return dir
 }
+
+// TestWaitReadyRefusesAnAnswerFromAPortSquatter checks that an endpoint which answers
+// while the process the manager launched has exited is not taken for that process: the
+// port was held by something else, and a caller would send it credentials. The process
+// exits during the probe, which is the order a runtime that cannot bind produces.
+func TestWaitReadyRefusesAnAnswerFromAPortSquatter(t *testing.T) {
+	exits := newFakeProc(1)
+	squatterAnswers := func(context.Context, string) error {
+		_ = exits.Stop()
+		return nil
+	}
+	m := managerWith(t, NewRegistry(t.TempDir()), &fakeLauncher{proc: newFakeProc(9)},
+		squatterAnswers, func(int) error { return nil }, WithReadyTimeout(time.Hour))
+
+	err := m.waitReady(context.Background(), exits, "http://127.0.0.1:9/v1", time.Hour)
+	if err == nil {
+		t.Fatal("an answer was accepted although the launched process had exited")
+	}
+	if !strings.Contains(err.Error(), "exited") {
+		t.Fatalf("error = %v, want it to say the runtime exited", err)
+	}
+
+	m = managerWith(t, NewRegistry(t.TempDir()), &fakeLauncher{proc: newFakeProc(9)},
+		alwaysHealthy, func(int) error { return nil }, WithReadyTimeout(time.Hour))
+	if err := m.waitReady(context.Background(), newFakeProc(2), "http://127.0.0.1:9/v1", time.Hour); err != nil {
+		t.Fatalf("a live process that answers was refused: %v", err)
+	}
+}

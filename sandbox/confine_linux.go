@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -24,6 +23,7 @@ const (
 	envReadonly = "FLYNN_SANDBOX_READONLY"
 	envSeccomp  = "FLYNN_SANDBOX_SECCOMP"
 	envWritable = "FLYNN_SANDBOX_WRITABLE"
+	envHidden   = "FLYNN_SANDBOX_UNREADABLE"
 )
 
 // kernelConfinementSupported reports whether this platform can enforce the network,
@@ -58,16 +58,19 @@ func (l *Local) confine(c *exec.Cmd) error {
 	if !l.denyNetwork && !l.readonlyFS && !l.seccomp && !l.egressActive() {
 		return nil
 	}
+	// A host that refuses the confinement stops the launch here, with the reason, before
+	// any child starts. There is no branch below this that runs the command without the
+	// isolation it was configured for.
+	if !l.selfTest {
+		if err := requireConfinement(l.hostNeeds()); err != nil {
+			return err
+		}
+	}
 	if c.SysProcAttr == nil {
 		c.SysProcAttr = &syscall.SysProcAttr{}
 	}
 	sp := c.SysProcAttr
-	sp.Cloneflags |= syscall.CLONE_NEWUSER
-	sp.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
-	sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
-	// Writing "deny" to setgroups is required before an unprivileged gid mapping is
-	// accepted; the Go runtime does this when this flag is false.
-	sp.GidMappingsEnableSetgroups = false
+	enterUserNamespace(sp)
 	// Governed egress needs the same fresh network namespace that denial does, for the
 	// same reason: it is what leaves the child with no route of its own. Denial stops
 	// there; egress then reopens exactly one path, a proxy endpoint on the namespace's
@@ -86,6 +89,19 @@ func (l *Local) confine(c *exec.Cmd) error {
 		l.reexecConfined(c)
 	}
 	return nil
+}
+
+// enterUserNamespace places the child in a new user namespace with the caller mapped to
+// root inside it. It is the one place the identity mapping is built, shared by the
+// launch path and by the readiness check, so the check exercises the mapping a launch
+// uses.
+func enterUserNamespace(sp *syscall.SysProcAttr) {
+	sp.Cloneflags |= syscall.CLONE_NEWUSER
+	sp.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
+	sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
+	// Writing "deny" to setgroups is required before an unprivileged gid mapping is
+	// accepted; the Go runtime does this when this flag is false.
+	sp.GidMappingsEnableSetgroups = false
 }
 
 // reexecConfined rewrites c to run this same binary as a launcher: the binary is
@@ -113,6 +129,9 @@ func (l *Local) reexecConfined(c *exec.Cmd) {
 	}
 	if len(l.writableDirs) > 0 {
 		c.Env = append(c.Env, envWritable+"="+encodeArgv(l.writableDirs))
+	}
+	if len(l.unreadable) > 0 {
+		c.Env = append(c.Env, envHidden+"="+encodeArgv(l.unreadable))
 	}
 	c.Path = self
 	c.Args = []string{self}
@@ -146,7 +165,12 @@ func runConfinedChild() int {
 			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: malformed writable directories")
 			return 126
 		}
-		if err := confineMounts(dir, writable); err != nil {
+		hidden, err := decodeArgv(os.Getenv(envHidden))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: malformed unreadable paths")
+			return 126
+		}
+		if err := confineMounts(dir, writable, hidden); err != nil {
 			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
 			return 126
 		}
@@ -215,10 +239,11 @@ func runConfinedChild() int {
 // namespace, then remounts every existing mount read-only, gives the command a fresh
 // private scratch area so ordinary tooling still works (isolated from the host's, and
 // never placed so as to hide the working directory), and finally re-grants write
-// access to the working directory and to those extra directories.
-func confineMounts(dir string, writable []string) error {
+// access to the working directory and to those extra directories. The paths named with
+// WithUnreadablePaths are hidden last, so no grant above restores one.
+func confineMounts(dir string, writable, hidden []string) error {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
-		return fmt.Errorf("make mounts private: %w", err)
+		return fmt.Errorf("%s: %w", msgMakePrivate, err)
 	}
 	mps, err := mountPoints()
 	if err != nil {
@@ -227,7 +252,7 @@ func confineMounts(dir string, writable []string) error {
 	for _, mp := range mps {
 		// Best effort: some pseudo-filesystems reject a read-only remount, and the
 		// host stays read-only regardless because its real mounts are covered.
-		_ = syscall.Mount("", mp, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_RDONLY, "")
+		_ = syscall.Mount("", mp, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_RDONLY|keptMountFlags(mp), "")
 	}
 	for _, scratch := range []string{"/dev/shm", "/tmp"} {
 		if shadows(scratch, append([]string{dir}, writable...)) {
@@ -250,7 +275,7 @@ func confineMounts(dir string, writable []string) error {
 			return fmt.Errorf("writable directory %s: %w", w, err)
 		}
 	}
-	return nil
+	return hideUnreadable(hidden)
 }
 
 // remountWritable re-grants write access to one directory inside the read-only view, by
@@ -260,10 +285,35 @@ func remountWritable(dir string) error {
 	if err := syscall.Mount(dir, dir, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind: %w", err)
 	}
-	if err := syscall.Mount("", dir, "", syscall.MS_REMOUNT|syscall.MS_BIND, ""); err != nil {
+	if err := syscall.Mount("", dir, "", syscall.MS_REMOUNT|syscall.MS_BIND|keptMountFlags(dir), ""); err != nil {
 		return fmt.Errorf("make writable: %w", err)
 	}
 	return nil
+}
+
+// restrictiveMountFlags are the mount flags that only take a capability away. A remount
+// that omits one clears it, and the kernel refuses that outright for a mount that came
+// from outside the launcher's user namespace with the flag set (it is locked there).
+const restrictiveMountFlags = syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC | syscall.MS_NOATIME | syscall.MS_NODIRATIME
+
+// keptMountFlags returns the restrictive flags the mount holding path already has, to be
+// passed again by a remount so it changes only the read-only flag. A service unit that
+// sets NoNewPrivileges=true mounts / and its private /tmp nosuid, and a remount that
+// dropped the flag fails with EPERM, which refused every confined launch under such a
+// unit and, for the read-only remount above, left the mount writable. Keeping a flag
+// never grants anything, so an unreadable path falls back to none.
+func keptMountFlags(path string) uintptr {
+	var st syscall.Statfs_t
+	if err := syscall.Statfs(path, &st); err != nil {
+		return 0
+	}
+	return keepRestrictive(uint64(st.Flags)) //nolint:gosec // G115: statfs flags are small non-negative mount bits
+}
+
+// keepRestrictive selects the restrictive flags from a statfs flags word, whose bits for
+// them are the mount(2) flag values.
+func keepRestrictive(statfsFlags uint64) uintptr {
+	return uintptr(statfsFlags & restrictiveMountFlags)
 }
 
 // shadows reports whether mounting at mp would hide any of the given directories, which
@@ -333,19 +383,6 @@ func unescapeOctal(s string) string {
 	return b.String()
 }
 
-// pathWithin reports whether child is parent or a path nested under it, with both
-// already absolute and cleaned.
-func pathWithin(child, parent string) bool {
-	if child == parent {
-		return true
-	}
-	rel, err := filepath.Rel(parent, child)
-	if err != nil {
-		return false
-	}
-	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
 // encodeArgv encodes the command so it can travel across the re-exec in an
 // environment variable: each argument is base64-encoded (so it holds no byte that
 // the environment cannot, and no comma), and the arguments are joined with commas,
@@ -388,6 +425,7 @@ func strippedEnv() []string {
 			strings.HasPrefix(kv, envArgv+"="),
 			strings.HasPrefix(kv, envReadonly+"="),
 			strings.HasPrefix(kv, envWritable+"="),
+			strings.HasPrefix(kv, envHidden+"="),
 			strings.HasPrefix(kv, envEgress+"="),
 			strings.HasPrefix(kv, envEgressFD+"="),
 			strings.HasPrefix(kv, envForward+"="),
@@ -403,4 +441,4 @@ func strippedEnv() []string {
 // platformConfinementTier names the Linux kernel-confinement mechanism. The tier
 // read-permits the host by construction (a read-only mount namespace), so
 // WithHostReadable selects no different mechanism here.
-func (l *Local) platformConfinementTier() string { return "namespace-seccomp" }
+func (l *Local) platformConfinementTier() string { return tierNamespaceSeccomp }

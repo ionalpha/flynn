@@ -25,9 +25,11 @@ var gateFunctions = map[string]bool{
 //
 //  1. Every caller of serveModel (the function that provisions and serves a model) also
 //     calls a gate function, so a model is classified and admitted before it is served.
-//  2. The serve manager's Ensure (the call that actually starts the runtime process) is
-//     reached only through serveModel, so there is no second, ungated way to launch a
-//     runtime.
+//  2. The serve manager's Ensure (the call that starts the runtime process in a test
+//     with injected provisioning) is reached only from serveModel's helpers, and the
+//     public host's Serve (the call that starts it in production) only from serveViaHost,
+//     and each helper is called only by serveModel, so there is no second, ungated way to
+//     launch a runtime.
 func TestNoModelRunPathSkipsTheGate(t *testing.T) {
 	// Parse this package's own source (production files only), so the call-graph check
 	// reflects exactly what ships. Reading the directory and parsing each file avoids the
@@ -38,7 +40,8 @@ func TestNoModelRunPathSkipsTheGate(t *testing.T) {
 	}
 	fset := token.NewFileSet()
 
-	var ensureCallers []string
+	var ensureCallers, hostServeCallers []string
+	helperCallers := map[string][]string{}
 	var serveModelCallers []string
 	gatedServeModelCallers := map[string]bool{}
 
@@ -62,6 +65,14 @@ func TestNoModelRunPathSkipsTheGate(t *testing.T) {
 			if calls["Ensure"] {
 				ensureCallers = append(ensureCallers, name)
 			}
+			if callsHostMethod(fn.Body, "Serve") {
+				hostServeCallers = append(hostServeCallers, name)
+			}
+			for _, helper := range []string{"serveStubbed", "serveViaHost"} {
+				if calls[helper] {
+					helperCallers[helper] = append(helperCallers[helper], name)
+				}
+			}
 			if calls["serveModel"] && name != "serveModel" {
 				serveModelCallers = append(serveModelCallers, name)
 				if callsAnyGate(calls) {
@@ -80,11 +91,22 @@ func TestNoModelRunPathSkipsTheGate(t *testing.T) {
 		}
 	}
 
-	// The runtime is started only inside serveModel, so Ensure must have exactly that one
-	// caller. A new caller would be a second path to execution that skips serveModel's gating.
+	// The runtime is started only inside serveModel's helpers, so Ensure and the host's Serve
+	// must each have exactly one caller, and that caller is reachable only from serveModel. A
+	// new caller would be a second path to execution that skips serveModel's gating.
 	for _, caller := range ensureCallers {
-		if caller != "serveModel" {
+		if caller != "serveStubbed" {
 			t.Fatalf("the serve manager's Ensure is called by %s; it must be reached only through serveModel so no path starts a runtime ungated", caller)
+		}
+	}
+	for _, caller := range hostServeCallers {
+		if caller != "serveViaHost" {
+			t.Fatalf("the host's Serve is called by %s; it must be reached only through serveModel so no path starts a runtime ungated", caller)
+		}
+	}
+	for _, helper := range []string{"serveStubbed", "serveViaHost"} {
+		if got := helperCallers[helper]; len(got) != 1 || got[0] != "serveModel" {
+			t.Fatalf("%s is called by %v; only serveModel may call it", helper, got)
 		}
 	}
 }
@@ -107,6 +129,26 @@ func calledNames(body *ast.BlockStmt) map[string]bool {
 		return true
 	})
 	return out
+}
+
+// callsHostMethod reports whether a block calls the named method on a field called host, the
+// runner's public local-inference host. A bare method name would also match unrelated Serve
+// methods elsewhere in the package.
+func callsHostMethod(body *ast.BlockStmt, method string) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == method {
+			if recv, ok := sel.X.(*ast.SelectorExpr); ok && recv.Sel.Name == "host" {
+				found = true
+			}
+		}
+		return true
+	})
+	return found
 }
 
 func callsAnyGate(calls map[string]bool) bool {

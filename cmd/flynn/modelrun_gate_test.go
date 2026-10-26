@@ -3,8 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -170,58 +170,34 @@ func TestSourceFileNameNamesTheCheckableFile(t *testing.T) {
 	}
 }
 
-// TestRealEnsureWeightsRefusesAndReuses covers the weights step without any download: a
-// code-executing quant is refused outright, a file already on disk is reused as it stands
-// (it was verified when it was written), and a quant whose URL cannot be fetched over the
-// hardened transport fails as a fetch error rather than writing a partial file.
-func TestRealEnsureWeightsRefusesAndReuses(t *testing.T) {
-	dataDir := t.TempDir()
+// TestNewLocalRunnerProvisionsOnlyThroughTheHost checks the production runner has no
+// provisioning path of its own: the public host is set, and the injected steps that tests
+// use to stub the process path are absent, so nothing serves without the host's guards.
+func TestNewLocalRunnerProvisionsOnlyThroughTheHost(t *testing.T) {
 	var out bytes.Buffer
-	ensure := realEnsureWeights(dataDir, &out)
-	m := localTestModel()
-
-	pickle := catalog.Quant{Name: "fp16", Format: catalog.FormatPickle, URL: "https://example.test/w.bin"}
-	if _, err := ensure(context.Background(), m, pickle); err == nil ||
-		!strings.Contains(err.Error(), "code-executing weight format") {
-		t.Fatalf("a pickle quant must be refused before it is fetched, got %v", err)
+	r := newLocalRunner(t.TempDir(), &out)
+	t.Cleanup(func() { _ = r.Close() })
+	if r.host == nil {
+		t.Fatalf("the runner must hold the public host, hostErr = %v", r.hostErr)
 	}
-
-	q := m.Quants[0]
-	dest := filepath.Join(dataDir, "models", weightsFileName(m.ID, q))
-	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
-		t.Fatal(err)
+	if r.ensureRuntime != nil || r.ensureWeights != nil {
+		t.Fatal("a production runner must not carry its own provisioning steps")
 	}
-	if err := os.WriteFile(dest, []byte("already verified"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, err := ensure(context.Background(), m, q)
-	if err != nil || got != dest {
-		t.Fatalf("an existing file must be reused, got %q, %v", got, err)
-	}
-	if out.Len() != 0 {
-		t.Errorf("reusing weights must not report a fetch, got %q", out.String())
-	}
-
-	// A quant that is not on disk is fetched, and the hardened transport refuses a
-	// plaintext URL, so the failure is reported as a fetch failure with nothing written.
-	insecure := catalog.Quant{Name: "Q8_0", Format: catalog.FormatGGUF, URL: "http://example.test/w.gguf", SizeBytes: 10}
-	if _, err := ensure(context.Background(), m, insecure); err == nil || !strings.Contains(err.Error(), "fetch weights") {
-		t.Fatalf("an unfetchable quant must fail as a fetch error, got %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dataDir, "models", weightsFileName(m.ID, insecure))); !os.IsNotExist(err) {
-		t.Error("a failed fetch must leave no file behind")
+	if r.httpClient() == nil {
+		t.Fatal("a client for a running server must come from the host so it presents the launch token")
 	}
 }
 
-// TestRealEnsureRuntimeRefusesAnUnpinnedRuntime checks the provisioning step will only
-// install a runtime this build pins a release for: an unknown engine name is refused rather
-// than resolved at run time.
-func TestRealEnsureRuntimeRefusesAnUnpinnedRuntime(t *testing.T) {
-	var out bytes.Buffer
-	ensure := realEnsureRuntime(t.TempDir(), &out)
-	_, err := ensure(context.Background(), "not-a-runtime")
-	if err == nil || !strings.Contains(err.Error(), "no pinned not-a-runtime build") {
-		t.Fatalf("error = %v, want a refusal to provision an unpinned runtime", err)
+// TestRunnerWithoutAHostRefusesToServe checks the failure direction: a runner that has neither
+// a host nor injected steps refuses, and names why, instead of starting a server unguarded.
+func TestRunnerWithoutAHostRefusesToServe(t *testing.T) {
+	r := &localRunner{dataDir: t.TempDir(), out: &bytes.Buffer{}, hostErr: errors.New("data directory is read-only")}
+	_, err := r.serveModel(context.Background(), localTestModel(), 0, false)
+	if err == nil || !strings.Contains(err.Error(), "local inference is unavailable") || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("error = %v, want a refusal that names the cause", err)
+	}
+	if err := r.provision(context.Background(), localTestModel(), localTestModel().Quants[0]); err == nil {
+		t.Fatal("provisioning without a host must be refused too")
 	}
 }
 

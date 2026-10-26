@@ -105,7 +105,7 @@ func modelRun(ctx context.Context, runner *localRunner, consent consentPolicy, i
 		return nil
 	}
 
-	client := localModelClient(ep, m.ID, localModelPlan(ctx, m, runner.dataDir))
+	client := localModelClient(ep, m.ID, localModelPlan(ctx, m, runner.dataDir), runner.httpClient())
 	resp, err := client.Generate(ctx, llm.Request{
 		Messages:  []llm.Message{llm.Text(llm.RoleUser, prompt)},
 		MaxTokens: 1024,
@@ -159,7 +159,7 @@ func modelProbe(ctx context.Context, runner *localRunner, consent consentPolicy,
 
 	// Probe the raw model: no plan, so no grammar or other scaffolding shapes the answer and the
 	// score measures the model's own reliability.
-	client := localModelClient(ep, m.ID, harness.Plan{})
+	client := localModelClient(ep, m.ID, harness.Plan{}, runner.httpClient())
 	return probeAndStore(ctx, client, m, selfProvisionedRuntime, store.Resources(reg), out)
 }
 
@@ -327,10 +327,7 @@ func provisionAndSelect(ctx context.Context, runner *localRunner, m catalog.Mode
 	if q.URL == "" {
 		return fmt.Errorf("models use: %q has no pinned direct download, so it cannot be provisioned for local serving yet", id)
 	}
-	if _, err := runner.ensureRuntime(ctx, selfProvisionedRuntime); err != nil {
-		return fmt.Errorf("models use: %w", err)
-	}
-	if _, err := runner.ensureWeights(ctx, m, q); err != nil {
+	if err := runner.provision(ctx, m, q); err != nil {
 		return fmt.Errorf("models use: %w", err)
 	}
 	if err := writeActiveModel(runner.dataDir, id); err != nil {
@@ -399,7 +396,7 @@ func runModelStop(args []string, dataDir string, out io.Writer) error {
 	id := args[0]
 	runner := newLocalRunner(dataDir, out)
 	defer func() { _ = runner.Close() }()
-	stopped, err := runner.manager.Stop(id)
+	stopped, err := runner.stopModel(context.Background(), id)
 	if err != nil {
 		return fmt.Errorf("models stop: %w", err)
 	}

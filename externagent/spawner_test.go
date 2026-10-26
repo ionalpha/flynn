@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 )
 
 // TestSpawnerHelperProcess is the child end of the spawner tests: re-executed as a plain
@@ -104,6 +105,7 @@ func TestStartRefusesBelowContainmentFloor(t *testing.T) {
 }
 
 func TestProbeReturnsOutput(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	s := NewSandboxSpawner(SandboxConfig{})
 	name, args := probeArgv(0)
 	out, err := s.Probe(context.Background(), name, args...)
@@ -182,6 +184,7 @@ func probeArgv(exit int) (string, []string) {
 // Ensure the probe timeout option threads through without changing behavior on a fast
 // command.
 func TestProbeHonorsTimeoutOption(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	s := NewSandboxSpawner(SandboxConfig{ProbeTimeout: 5 * time.Second})
 	name, args := probeArgv(0)
 	out, err := s.Probe(context.Background(), name, args...)

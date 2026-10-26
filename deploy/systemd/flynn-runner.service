@@ -1,0 +1,133 @@
+# Flynn runner: a hardened systemd service that still lets the Linux sandbox confine
+# the commands the agent runs.
+#
+# A unit that sets RestrictNamespaces=true or filters out @privileged system calls
+# stops the sandbox from creating its namespaces and mounting its read-only view. Flynn
+# then refuses to run commands (it never runs them unconfined). This unit is the
+# standard hardening with exactly two additions, each marked "SANDBOX" below:
+#
+#   RestrictNamespaces=user net mnt     the namespace types the sandbox creates
+#   SystemCallFilter=mount              the one call the launcher needs back
+#
+# Nothing here grants a capability. Every line says why it is present; a test holds the
+# unit to a plain hardened baseline and fails if any other line differs.
+#
+# Install:
+#   useradd --system --home-dir /var/lib/flynn --shell /usr/sbin/nologin flynn
+#   install -m 0755 flynn /usr/local/bin/flynn
+#   install -m 0644 flynn-runner.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now flynn-runner
+#   sudo -u flynn flynn sandbox check          (should print "confinement ready")
+#
+# On Ubuntu 24.04 and later also install deploy/apparmor/flynn; see deploy/README.md.
+
+[Unit]
+# The name systemctl status and the journal show.
+Description=Flynn runner (hardened, sandbox-capable)
+# Model providers are remote, so start once the network is up.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Report the service started only once the binary has executed, so a missing or
+# non-executable /usr/local/bin/flynn fails the start instead of passing silently.
+Type=exec
+# The same path the AppArmor profile in deploy/apparmor/flynn names. The state directory
+# below is /var/lib/flynn.
+ExecStart=/usr/local/bin/flynn serve --data-dir /var/lib/flynn
+# Restart after a crash, not after a deliberate stop.
+Restart=on-failure
+
+# An unprivileged account. The sandbox creates user namespaces without privilege, so
+# the service never needs root.
+User=flynn
+Group=flynn
+
+# The one writable location: durable state and the agents' workspaces. systemd creates
+# it, owns it to the account above, and mounts everything else read-only.
+StateDirectory=flynn
+UMask=0077
+
+# The runtime directory (/run/flynn) for the control socket, owner-only. The mode keeps
+# other accounts out. It does not keep out a command the sandbox runs: that command's user
+# namespace maps to this account's own uid, so it is the same user to the filesystem, and
+# it shares the service's process namespace. See "What the sandbox does not hide" in
+# deploy/README.md.
+RuntimeDirectory=flynn
+RuntimeDirectoryMode=0700
+
+# Provider keys and bot tokens, kept out of the unit and out of Environment=. The file is
+# owned by root with mode 0600, which systemd reads before it drops to the account above.
+# The dash makes the file optional.
+EnvironmentFile=-/etc/flynn/flynn.env
+
+# A process and its children can never gain privilege through setuid binaries or file
+# capabilities. The sandbox's user namespace gives the command root only inside the
+# namespace, so this stays on.
+NoNewPrivileges=true
+
+# No capability is granted or inheritable. The sandbox needs none: the capabilities a
+# command holds inside its own user namespace come from the kernel when it creates the
+# namespace, not from this service. Never add CAP_SYS_ADMIN here.
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# The whole file system is read-only to the service except StateDirectory= above.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+
+# Kernel interfaces a service has no business changing.
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# Refuse to create setuid files or realtime scheduling, and do not let the process
+# change its execution domain.
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+RemoveIPC=true
+
+# Sockets: local, IPv4 and IPv6 only. Model providers and the monitor API need no more.
+# AF_NETLINK is left out on purpose; a host whose resolver needs it can add it, and
+# that does not affect the sandbox.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Only the native system call ABI, so a filter cannot be sidestepped through another.
+SystemCallArchitectures=native
+
+# SANDBOX: the namespace types the sandbox creates for a confined command. "user" holds
+# the mapped identity, "net" the empty network, "mnt" the read-only host view. Any other
+# type (pid, ipc, uts, cgroup) stays refused. systemd enforces this directive only on
+# x86, x86-64, ppc64, ppc64le, s390x and some MIPS; on other architectures it does
+# nothing, which is why "flynn sandbox check" starts a real confined child instead of
+# trusting this line.
+RestrictNamespaces=user net mnt
+
+# Allow the usual service calls, then remove the privileged, resource-management and
+# obsolete groups.
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources @obsolete
+
+# SANDBOX: the launcher mounts inside its own mount namespace to make the host
+# read-only. mount sits in @privileged, so it is allowed back by name after the
+# exclusion above. Inside a user namespace it cannot touch the host's mounts.
+SystemCallFilter=mount
+
+# A refused system call fails with EPERM instead of killing the process, so the
+# sandbox can report why.
+SystemCallErrorNumber=EPERM
+
+# Not set, deliberately:
+#   MemoryDenyWriteExecute  breaks the JIT in agent command-line tools run by the sandbox.
+#   ProcSubset=pid          hides /proc/sys, which "flynn sandbox check" reads to name
+#                           the cause of a refusal.
+#   PrivateUsers            would put the service in a user namespace, and the sandbox
+#                           creates its own inside it.
+
+[Install]
+# Start at boot.
+WantedBy=multi-user.target
