@@ -270,6 +270,32 @@ jobs:
           got="$(docker run --rm "ghcr.io/ionalpha/flynn:${VERSION}-amd64" --version)"
           echo "image reports: $got"
           [ "$got" = "$VERSION" ]
+      # The agent's commands run in the image's sandbox, so the image must pass the same
+      # self-test a host does. Under Docker's default seccomp profile it must refuse and
+      # name the shipped profile; under the shipped profile it must pass, which runs a
+      # confined child and the escape canaries through the image's shell. The runner is
+      # Ubuntu 24.04, so AppArmor's user namespace restriction is in play too. A pass
+      # without the profile fails the step: it would mean the profile grants more than
+      # the runtime now requires, and deploy/seccomp should shrink.
+      - name: Container sandbox needs the shipped seccomp profile
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          img="ghcr.io/ionalpha/flynn:${VERSION}-amd64"
+          if out="$(docker run --rm "$img" sandbox check --json)"; then
+            echo "$out"
+            echo "::error::sandbox check passed under Docker's default seccomp profile"
+            exit 1
+          fi
+          echo "$out"
+          jq -e '.fix | contains("flynn-seccomp.json")' <<<"$out"
+          docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json "$img" sandbox check
+      # The source Dockerfile is what `docker build .` and deploy/compose.yaml use, and
+      # goreleaser never builds it, so build it here and hold it to the same self-test.
+      - name: Source Dockerfile builds and passes the sandbox check
+        run: |
+          docker build -t flynn:source --build-arg VERSION=0.0.0-ci .
+          docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json flynn:source sandbox check
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-binaries

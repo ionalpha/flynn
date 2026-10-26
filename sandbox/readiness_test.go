@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -85,6 +86,37 @@ func TestClassify(t *testing.T) {
 			proc:   with(healthy, procSelfStatus, statusFiltered),
 			cause:  CauseNamespaceRestricted,
 			fixHas: "daemon-reload",
+		},
+		{
+			// Measured on Docker 29 with its default profile: the user namespace is refused
+			// with EPERM under the runtime's filter.
+			name:      "Docker's default seccomp profile blocks the user namespace",
+			f:         failure{stage: stageUser, errno: syscall.EPERM, raw: "operation not permitted"},
+			proc:      with(healthy, procSelfStatus, statusFiltered, markerDocker, ""),
+			cause:     CauseNamespaceRestricted,
+			fixHas:    "deploy/seccomp/flynn.json",
+			detailHas: "running in a container",
+		},
+		{
+			name:   "Podman's filter blocks the network namespace",
+			f:      failure{stage: stageNet, errno: syscall.EPERM, raw: "operation not permitted"},
+			proc:   with(healthy, procSelfStatus, statusFiltered, markerPodman, "engine=\"podman\"\n"),
+			cause:  CauseNamespaceRestricted,
+			fixHas: "--security-opt seccomp=",
+		},
+		{
+			name:   "a container's filter stops the launcher installing its own",
+			f:      launcher("install seccomp filter: operation not permitted"),
+			proc:   with(healthy, procSelfStatus, statusFiltered, markerDocker, ""),
+			cause:  CauseSeccompConflict,
+			fixHas: "deploy/seccomp/flynn.json",
+		},
+		{
+			name:   "a container's filter kills the child with SIGSYS",
+			f:      failure{stage: stageLauncher, signal: true},
+			proc:   with(healthy, procSelfStatus, statusFiltered, markerDocker, ""),
+			cause:  CauseSeccompConflict,
+			fixHas: "Localhost seccompProfile",
 		},
 		{
 			name:      "user.max_user_namespaces=0",
@@ -412,9 +444,31 @@ func TestAppArmorFixPointsAtTheShippedProfileAndNeverTheGlobalSysctl(t *testing.
 			t.Errorf("fixAppArmor does not contain %q", want)
 		}
 	}
-	for _, fix := range []string{fixNamespaces, fixSeccomp, fixUnknown, fixPlatform, (evidence{}).userNSFix()} {
+	for _, fix := range []string{fixNamespaces, fixSeccomp, fixContainer, fixUnknown, fixPlatform, (evidence{}).userNSFix()} {
 		if strings.Contains(fix, "apparmor_restrict_unprivileged_userns=0") {
 			t.Errorf("fix %q recommends the global AppArmor switch", fix)
+		}
+	}
+}
+
+// TestContainerFixNamesAProfileThatShips holds the container fix to a file the repository
+// carries, and to warning off the two broad switches an operator reaches for first.
+func TestContainerFixNamesAProfileThatShips(t *testing.T) {
+	const profile = "deploy/seccomp/flynn.json"
+	if !strings.Contains(fixContainer, profile) {
+		t.Fatalf("fixContainer does not name %s", profile)
+	}
+	if _, err := os.Stat(filepath.Join("..", filepath.FromSlash(profile))); err != nil {
+		t.Errorf("fixContainer names %s, which is not in the repository: %v", profile, err)
+	}
+	for _, want := range []string{"Do not use seccomp=unconfined", "do not add CAP_SYS_ADMIN"} {
+		if !strings.Contains(fixContainer, want) {
+			t.Errorf("fixContainer does not contain %q", want)
+		}
+	}
+	for _, fix := range []string{fixNamespaces, fixSeccomp} {
+		if strings.Contains(fix, profile) {
+			t.Errorf("the service unit fix %q names the container profile", fix)
 		}
 	}
 }

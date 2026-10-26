@@ -103,10 +103,16 @@ for the durable state (SQLite store, credential vault, learned skills) so it sur
 container replacement, and pass a model key:
 
 ```sh
+curl -fsSLO https://github.com/ionalpha/flynn/releases/latest/download/flynn-seccomp.json
 docker run -v flynn-data:/data \
+  --security-opt seccomp=flynn-seccomp.json \
   -e ANTHROPIC_API_KEY=your-key \
   ghcr.io/ionalpha/flynn:latest
 ```
+
+The seccomp profile is Docker's default plus the three calls the agent's command sandbox
+needs (`clone`, `unshare`, `mount`); without it the agent refuses to run commands. See
+[`deploy/README.md`](deploy/README.md#the-sandbox-in-a-container).
 
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
 (`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;

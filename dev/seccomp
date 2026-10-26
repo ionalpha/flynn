@@ -1,0 +1,57 @@
+#!/usr/bin/env sh
+# Refresh the container seccomp profile from Docker's default.
+#
+# deploy/seccomp/flynn.json is Docker's default profile plus one rule (clone, unshare,
+# mount for the sandbox's namespaces). Docker accepts only a whole profile, so ours
+# carries a copy of upstream's, and the copy goes stale as upstream changes. This
+# script fetches the default at the pinned moby/profiles commit, checks it against the
+# pinned checksum, and regenerates the shipped profile; the deploy tests then hold the
+# result to "default plus that rule".
+#
+# To move to a newer default: set MOBY_PROFILES_COMMIT to the commit of a seccomp/v*
+# release tag, run this once with MOBY_SECCOMP_SHA256 empty to print the new checksum,
+# set it, and run it again.
+#
+#   ./dev/seccomp          # fetch, verify, regenerate
+#   ./dev/seccomp --check  # fetch and verify the committed copy only (no writes)
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# seccomp/v0.2.4, released 2026-09-29.
+MOBY_PROFILES_COMMIT="245180c51918481c0525424b3ee025d2b435d46c"
+MOBY_SECCOMP_SHA256="785b2429264afba4d594320337cb17f144f3c7d51585f9805eef72e28f4f9334"
+
+BASE="deploy/testdata/moby-default-seccomp.json"
+URL="https://raw.githubusercontent.com/moby/profiles/$MOBY_PROFILES_COMMIT/seccomp/default.json"
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
+echo "==> fetching moby/profiles seccomp/default.json at $MOBY_PROFILES_COMMIT"
+curl -fsSL "$URL" -o "$TMP"
+GOT="$(sha256 "$TMP")"
+if [ "$GOT" != "$MOBY_SECCOMP_SHA256" ]; then
+  echo "checksum mismatch: got $GOT, pinned $MOBY_SECCOMP_SHA256" >&2
+  exit 1
+fi
+
+if [ "${1:-}" = "--check" ]; then
+  if ! cmp -s "$TMP" "$BASE"; then
+    echo "$BASE differs from upstream at $MOBY_PROFILES_COMMIT; run ./dev/seccomp" >&2
+    exit 1
+  fi
+  echo "==> $BASE matches upstream"
+  exit 0
+fi
+
+cp "$TMP" "$BASE"
+echo "==> regenerating deploy/seccomp/flynn.json"
+go test ./deploy -run TestSeccompProfileIsDockerDefaultPlusSandbox -count=1 -update-seccomp
+go test ./deploy -run TestSeccompProfile -count=1
