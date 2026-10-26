@@ -2,6 +2,7 @@ package instance_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -299,4 +300,65 @@ func TestOverReportedRunsAreTruncatedNotRefused(t *testing.T) {
 	if len(st.Runs) != instance.MaxListLen || st.OmittedRuns != 5 {
 		t.Fatalf("runs = %d, omitted = %d, want %d and 5", len(st.Runs), st.OmittedRuns, instance.MaxListLen)
 	}
+}
+
+// corruptRead serves every stored record with one half replaced by JSON that does not
+// decode into it. The store refuses such a record on write, so a corrupted half can only
+// arrive from beneath it (a host's own store, a row edited by hand), and this stands in
+// for that.
+type corruptRead struct {
+	resource.Store
+	half string
+}
+
+func (c corruptRead) Get(ctx context.Context, kind string, scope resource.Scope, name string) (resource.Resource, error) {
+	r, err := c.Store.Get(ctx, kind, scope, name)
+	if err != nil {
+		return r, err
+	}
+	if c.half == "spec" {
+		r.Spec = json.RawMessage(`[]`)
+	} else {
+		r.Status = json.RawMessage(`[]`)
+	}
+	return r, nil
+}
+
+// TestUndecodableStoredHalfStillCapsTheWrite: Register and SetStatus size the merged
+// record against the half already stored. A stored half that does not decode counts as
+// empty, so the write still goes through the caps instead of failing on the corruption or
+// skipping the check: an oversized write is refused with [instance.ErrTooLarge].
+func TestUndecodableStoredHalfStillCapsTheWrite(t *testing.T) {
+	ctx := context.Background()
+	long := strings.Repeat("x", instance.MaxFieldLen+1)
+	corrupt := func(t *testing.T, half string) resource.Store {
+		t.Helper()
+		store := newCapStore(t)
+		if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Host: "h"}); err != nil {
+			t.Fatal(err)
+		}
+		return corruptRead{Store: store, half: half}
+	}
+
+	t.Run("status", func(t *testing.T) {
+		store := corrupt(t, "status")
+		if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Host: long}); !errors.Is(err, instance.ErrTooLarge) {
+			t.Fatalf("oversized spec over a corrupt status: err = %v, want ErrTooLarge", err)
+		}
+		if _, err := instance.Register(ctx, store, resource.Scope{}, "r1", instance.Spec{Host: "h2"}); err != nil {
+			t.Fatalf("spec within its caps over a corrupt status: %v", err)
+		}
+	})
+	t.Run("spec", func(t *testing.T) {
+		store := corrupt(t, "spec")
+		if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.State(long), nil); !errors.Is(err, instance.ErrTooLarge) {
+			t.Fatalf("oversized status over a corrupt spec: err = %v, want ErrTooLarge", err)
+		}
+		// SetStatus writes the stored spec back unchanged, so the store's own schema
+		// check is what refuses this one: the caps pass and the corruption is not
+		// laundered into a fresh write.
+		if _, err := instance.SetStatus(ctx, store, resource.Scope{}, "r1", instance.StateWorking, []string{"run-1"}); !errors.Is(err, resource.ErrInvalid) {
+			t.Fatalf("status within its caps over a corrupt spec: err = %v, want the store's ErrInvalid", err)
+		}
+	})
 }
