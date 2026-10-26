@@ -15,13 +15,13 @@ const (
 	// (docker run --security-opt seccomp=deploy/seccomp/flynn.json).
 	seccompProfile = "seccomp/flynn.json"
 	// mobyDefaultProfile is Docker's default profile, copied unchanged from moby/profiles
-	// at the commit dev/seccomp pins. dev/seccomp also checks the copy against that commit.
+	// at the commit dev/container-profiles pins, which also checks the copy against it.
 	mobyDefaultProfile = "testdata/moby-default-seccomp.json"
 )
 
-// updateSeccomp regenerates the shipped profile from the pinned default instead of
-// checking it. dev/seccomp passes it after refreshing the default.
-var updateSeccomp = flag.Bool("update-seccomp", false, "rewrite deploy/seccomp/flynn.json from the pinned Docker default")
+// updateProfiles rewrites the shipped container profiles from the pinned originals instead
+// of checking them. dev/container-profiles passes it after refreshing the upstream copies.
+var updateProfiles = flag.Bool("update-profiles", false, "rewrite the shipped container profiles from the pinned Docker originals")
 
 // sandboxSyscalls are the calls Docker's default profile allows only to CAP_SYS_ADMIN and
 // the Linux sandbox needs without it: clone with namespace flags (the launcher's user,
@@ -92,14 +92,14 @@ func decodeProfile(t *testing.T, b []byte) (profile, map[string]json.RawMessage)
 func TestSeccompProfileIsDockerDefaultPlusSandbox(t *testing.T) {
 	base := []byte(readFile(t, mobyDefaultProfile))
 	want := generateSeccomp(t, base)
-	if *updateSeccomp {
+	if *updateProfiles {
 		if err := os.WriteFile(seccompProfile, want, 0o644); err != nil { //nolint:gosec // a profile the operator reads and passes to the runtime; nothing secret
 			t.Fatal(err)
 		}
 	}
 	got := []byte(readFile(t, seccompProfile))
 	if !bytes.Equal(got, want) {
-		t.Fatalf("%s is not the generated profile; run dev/seccomp to regenerate it from the pinned Docker default", seccompProfile)
+		t.Fatalf("%s is not the generated profile; run dev/container-profiles to regenerate it from the pinned Docker default", seccompProfile)
 	}
 
 	baseProfile, baseTop := decodeProfile(t, base)

@@ -51,6 +51,10 @@ services:
       # command sandbox needs for its own namespaces. Without it the agent refuses to run
       # commands. See "The sandbox in a container" in deploy/README.md.
       - seccomp=./seccomp/flynn.json
+      # On an AppArmor host (Ubuntu, Debian), Docker's docker-default profile denies the
+      # sandbox's mounts. Load the shipped profile once and uncomment this line:
+      #   sudo apparmor_parser -r apparmor/flynn-container
+      # - apparmor=flynn-container
     cap_drop:
       - ALL
 

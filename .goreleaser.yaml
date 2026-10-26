@@ -120,11 +120,13 @@ docker_signs:
 
 checksum:
   name_template: checksums.txt
-  # The container seccomp profile is listed in the signed checksums with the binaries,
-  # so an operator can verify the file they hand to the container runtime.
+  # The container profiles are listed in the signed checksums with the binaries, so an
+  # operator can verify the files they hand to the container runtime.
   extra_files:
     - glob: deploy/seccomp/flynn.json
       name_template: flynn-seccomp.json
+    - glob: deploy/apparmor/flynn-container
+      name_template: flynn-apparmor-container
 
 sboms:
   - artifacts: archive
@@ -178,11 +180,13 @@ changelog:
 release:
   draft: false
   prerelease: auto
-  # The seccomp profile the container needs for the sandbox (Docker's default plus clone,
-  # unshare and mount; see deploy/README.md), published beside the image it belongs to.
+  # The profiles the container needs for the sandbox (Docker's own, each with one change;
+  # see deploy/README.md), published beside the image they belong to.
   extra_files:
     - glob: deploy/seccomp/flynn.json
       name_template: flynn-seccomp.json
+    - glob: deploy/apparmor/flynn-container
+      name_template: flynn-apparmor-container
   # What upgrading to this tag costs somebody who already imports the module, as
   # produced by dev/apidiff in the release workflow. An importer pins, so this is
   # the one moment the question is live for them. `index` rather than .Env.NAME so

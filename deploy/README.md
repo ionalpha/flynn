@@ -13,7 +13,7 @@ result is a small image with no libc and no package manager, running as a non-ro
 (uid `65532`), carrying the binary, CA certificates, time-zone data and busybox (at
 `/busybox`, on `PATH`). Busybox is there because the agent's commands run through `sh`:
 an image without a shell can run no command at all. Each command runs inside the
-sandbox, which needs the seccomp profile below.
+sandbox, which needs the two profiles below.
 
 ```sh
 # from the repository root
@@ -23,38 +23,64 @@ docker build -t flynn:local --build-arg VERSION=v0.2.0 .
 ## The sandbox in a container
 
 Every command the agent runs is confined in its own user, network and mount namespaces,
-with a read-only view of the host and a syscall filter. Docker's default seccomp profile
-allows the calls that create those namespaces (`clone` with namespace flags, `unshare`,
-`mount`) only to a container holding `CAP_SYS_ADMIN`, so under the default profile the
-agent refuses to run commands, and `flynn sandbox check` says so and names the fix.
+with a read-only view of the host and a syscall filter. Docker's defaults refuse a
+container two things this needs:
 
-The fix is `seccomp/flynn.json`: Docker's default profile with one added rule allowing
-those three calls. The kernel still lets an unprivileged process create a namespace only
-for itself and mount only inside a namespace it owns, so the rule grants nothing outside
-the sandbox. Each release publishes it as `flynn-seccomp.json`, listed in the signed
-`checksums.txt`.
+- **Seccomp.** Docker's default profile allows the calls that create namespaces (`clone`
+  with namespace flags, `unshare`) and `mount` only to a container holding
+  `CAP_SYS_ADMIN`.
+- **AppArmor.** On an AppArmor host (Ubuntu, Debian, and most Docker hosts), Docker's
+  `docker-default` profile denies every mount, including the ones the sandbox makes
+  inside its own namespaces.
+
+Under the defaults the agent refuses to run commands, and `flynn sandbox check` says so
+and names the fix. Flynn ships one profile for each, and each is Docker's own with one
+change:
+
+| File | Release asset | Change from Docker's |
+|---|---|---|
+| `seccomp/flynn.json` | `flynn-seccomp.json` | adds a rule allowing `clone`, `unshare`, `mount` |
+| `apparmor/flynn-container` | `flynn-apparmor-container` | replaces `deny mount,` with the four kinds of mount the sandbox makes (make `/` private, bind, read-only remount, tmpfs) |
+
+The kernel still lets an unprivileged process create a namespace only for itself and
+mount only inside a namespace it owns, so neither change reaches outside the sandbox.
+Both assets are listed in each release's signed `checksums.txt`.
 
 ```sh
-curl -fsSLO https://github.com/ionalpha/flynn/releases/latest/download/flynn-seccomp.json
-docker run -d --name flynn   --security-opt seccomp=flynn-seccomp.json   -v flynn-data:/data   -e ANTHROPIC_API_KEY=sk-ant-...   ghcr.io/ionalpha/flynn:latest
+base=https://github.com/ionalpha/flynn/releases/latest/download
+curl -fsSLO "$base/flynn-seccomp.json"
+# AppArmor hosts only (check with: cat /sys/module/apparmor/parameters/enabled)
+curl -fsSLO "$base/flynn-apparmor-container"
+sudo apparmor_parser -r flynn-apparmor-container
+
+docker run -d --name flynn   --security-opt seccomp=flynn-seccomp.json   --security-opt apparmor=flynn-container   -v flynn-data:/data   -e ANTHROPIC_API_KEY=sk-ant-...   ghcr.io/ionalpha/flynn:latest
 docker exec flynn flynn sandbox check
 ```
 
-`compose.yaml` already sets it. Do not use `seccomp=unconfined` or add `CAP_SYS_ADMIN`
-instead: either removes far more than the sandbox needs.
+Leave out the AppArmor option on a host without AppArmor (Docker Desktop, Fedora).
+`compose.yaml` sets the seccomp profile and has the AppArmor line ready to uncomment. The
+AppArmor profile needs AppArmor 3 or later (Ubuntu 22.04, Debian 12 and newer).
 
-- **Kubernetes:** copy the profile to each node under the kubelet's seccomp directory
-  and set `securityContext.seccompProfile` to `type: Localhost` with its path.
+Do not use `seccomp=unconfined` or `apparmor=unconfined`, or add `CAP_SYS_ADMIN`,
+instead: each removes far more than the sandbox needs.
+
+- **Kubernetes:** install both profiles on each node (the seccomp file under the
+  kubelet's seccomp directory, the AppArmor one with `apparmor_parser`) and set
+  `securityContext.seccompProfile` (`type: Localhost`) and
+  `securityContext.appArmorProfile` (`type: Localhost`, `localhostProfile:
+  flynn-container`).
 - **Podman, rootless Docker, gVisor:** not tested yet. Run `flynn sandbox check` in the
   container; it refuses with the cause rather than running commands unconfined.
-- **Fly.io:** each machine is a Firecracker microVM with no container seccomp profile,
-  so nothing is needed.
+- **Fly.io:** each machine is a Firecracker microVM with no container seccomp or
+  AppArmor profile, so nothing is needed.
 
-`seccomp/flynn.json` is generated, not edited by hand. `dev/seccomp` fetches Docker's
-default from a pinned `moby/profiles` release, checks it against a pinned checksum, and
-regenerates the file; `seccomp_test.go` fails if the file is anything other than that
-default plus the one rule, and fails if Docker's default ever starts allowing one of the
-three calls on its own, so the rule can shrink.
+Neither profile is edited by hand. `dev/container-profiles` fetches Docker's seccomp
+profile and AppArmor template from a pinned `moby/profiles` release, checks them against
+pinned checksums, and regenerates both files. The deploy tests fail if either file is
+anything other than Docker's original plus its one change, and fail if Docker's seccomp
+default ever starts allowing one of the three calls on its own, so the rule can shrink.
+CI runs the published image on Ubuntu 24.04 under Docker's defaults, with the seccomp
+profile alone, and with both: the first two must refuse and the last must pass.
 
 ### Your own toolchain
 
@@ -67,7 +93,7 @@ COPY --from=ghcr.io/ionalpha/flynn:latest /usr/local/bin/flynn /usr/local/bin/fl
 ENTRYPOINT ["flynn"]
 ```
 
-The same seccomp profile applies to that image.
+The same two profiles apply to that image.
 
 ## The data volume
 
@@ -167,7 +193,7 @@ Flynn is secured by default; the container configuration keeps it that way.
 - **The runtime is minimal and unprivileged.** Non-root user, no libc or package
   manager, read-only root filesystem (state is on the volume), no privilege escalation,
   and all Linux capabilities dropped (see `compose.yaml`). The agent's commands run in
-  busybox inside the sandbox, which the seccomp profile above lets start without any
+  busybox inside the sandbox, which the two profiles above let start without any
   capability.
 
 Both base images in the `Dockerfile` are pinned by `@sha256` digest, so a build is

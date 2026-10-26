@@ -119,6 +119,16 @@ func TestClassify(t *testing.T) {
 			fixHas: "Localhost seccompProfile",
 		},
 		{
+			// Measured on Ubuntu 24.04 with the shipped seccomp profile and docker-default
+			// AppArmor: the namespaces start and the launcher's first mount is refused.
+			name:   "docker-default AppArmor refuses the launcher's mount",
+			f:      launcher("make mounts private: permission denied"),
+			proc:   with(healthy, procSelfStatus, statusFiltered, procAppArmor, "1\n", markerDocker, ""),
+			cause:  CauseAppArmorUserns,
+			also:   []Cause{CauseSeccompConflict},
+			fixHas: "--security-opt apparmor=flynn-container",
+		},
+		{
 			name:      "user.max_user_namespaces=0",
 			f:         failure{stage: stageUser, errno: syscall.ENOSPC, raw: "no space left on device"},
 			proc:      with(healthy, procMaxUserNS, "0\n"),
@@ -455,13 +465,15 @@ func TestAppArmorFixPointsAtTheShippedProfileAndNeverTheGlobalSysctl(t *testing.
 // carries, and to warning off the two broad switches an operator reaches for first.
 func TestContainerFixNamesAProfileThatShips(t *testing.T) {
 	const profile = "deploy/seccomp/flynn.json"
-	if !strings.Contains(fixContainer, profile) {
-		t.Fatalf("fixContainer does not name %s", profile)
+	for _, p := range []string{profile, "deploy/apparmor/flynn-container"} {
+		if !strings.Contains(fixContainer, p) {
+			t.Errorf("fixContainer does not name %s", p)
+		}
+		if _, err := os.Stat(filepath.Join("..", filepath.FromSlash(p))); err != nil {
+			t.Errorf("fixContainer names %s, which is not in the repository: %v", p, err)
+		}
 	}
-	if _, err := os.Stat(filepath.Join("..", filepath.FromSlash(profile))); err != nil {
-		t.Errorf("fixContainer names %s, which is not in the repository: %v", profile, err)
-	}
-	for _, want := range []string{"Do not use seccomp=unconfined", "do not add CAP_SYS_ADMIN"} {
+	for _, want := range []string{"Do not use seccomp=unconfined or apparmor=unconfined", "do not add CAP_SYS_ADMIN"} {
 		if !strings.Contains(fixContainer, want) {
 			t.Errorf("fixContainer does not contain %q", want)
 		}

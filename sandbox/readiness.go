@@ -313,11 +313,11 @@ func classify(f failure, proc procReader) Readiness {
 	case f.stage == stageUser && (ev.maxUserNS == "0" || ev.cloneSysctl == "0" || f.effectiveErrno() == syscall.ENOSPC):
 		return refuse(r, CauseUserNamespacesDisabled, ev.userNSFix())
 	case f.sawAppArmorDenial():
-		return refuse(r, CauseAppArmorUserns, fixAppArmor, alsoFilter(f, ev)...)
+		return refuse(r, CauseAppArmorUserns, ev.appArmorFix(), alsoFilter(f, ev)...)
 	case f.stage == stageUser && denied && ev.filter:
 		return refuse(r, CauseNamespaceRestricted, ev.namespacesFix(), appArmorIf(ev)...)
 	case denied && ev.apparmor == "1":
-		return refuse(r, CauseAppArmorUserns, fixAppArmor, alsoFilter(f, ev)...)
+		return refuse(r, CauseAppArmorUserns, ev.appArmorFix(), alsoFilter(f, ev)...)
 	case (f.stage == stageNet || f.stage == stageMount) && denied && ev.filter:
 		return refuse(r, CauseNamespaceRestricted, ev.namespacesFix())
 	case launcherBlockedBySeccomp(f, ev):
@@ -431,13 +431,21 @@ func (ev evidence) userNSFix() string {
 	return "user namespaces are exhausted or unavailable: raise user.max_user_namespaces (sysctl -w user.max_user_namespaces=15000), and check that the kernel was built with CONFIG_USER_NS"
 }
 
-// namespacesFix and seccompFix send a container to the runtime profile, because inside
-// one the filter comes from the runtime and no unit setting reaches it.
+// namespacesFix, seccompFix and appArmorFix send a container to the runtime profiles,
+// because inside one the filter and the AppArmor profile come from the runtime, and
+// neither a unit setting nor a per-binary host profile reaches them.
 func (ev evidence) namespacesFix() string {
 	if ev.container {
 		return fixContainer
 	}
 	return fixNamespaces
+}
+
+func (ev evidence) appArmorFix() string {
+	if ev.container {
+		return fixContainer
+	}
+	return fixAppArmor
 }
 
 func (ev evidence) seccompFix() string {
@@ -524,7 +532,7 @@ const (
 	fixNamespaces  = "the service unit restricts namespaces, or filters a system call that starting a child needs (both answer EPERM). Allow exactly the types the sandbox creates by setting RestrictNamespaces=user net mnt in the unit (the Flynn runner unit does), and keep the SystemCallFilter= groups of the runner unit, then run systemctl daemon-reload and restart the service. Do not set RestrictNamespaces=no, and do not turn confinement off"
 	fixAppArmor    = "AppArmor denies capabilities inside unprivileged user namespaces for programs without a profile that grants them. Install the per-binary AppArmor profile Flynn ships (deploy/apparmor/flynn, which grants userns to the flynn binary and nothing else) with the path in its header set to this binary, then run apparmor_parser -r on it. Do not set kernel.apparmor_restrict_unprivileged_userns=0: that lifts the restriction for every program on the host"
 	fixSeccomp     = "a seccomp filter from the service unit or the container runtime blocks a call the launcher needs. In a systemd unit, allow mount after the @privileged exclusion with SystemCallFilter=mount (the Flynn runner unit does) and set SystemCallErrorNumber=EPERM so a refused call fails instead of killing the process"
-	fixContainer   = "this process runs in a container whose runtime seccomp profile blocks the namespaces the sandbox creates (Docker's default allows clone with namespace flags, unshare and mount only with CAP_SYS_ADMIN). Run the container with the profile Flynn ships, which is Docker's default plus those three calls: docker run --security-opt seccomp=flynn-seccomp.json, the file published with each release (deploy/seccomp/flynn.json in the source); on Kubernetes, install it on each node and set a Localhost seccompProfile. Do not use seccomp=unconfined and do not add CAP_SYS_ADMIN: both lift far more than the sandbox needs"
+	fixContainer   = "this process runs in a container whose runtime profiles block the sandbox: Docker's default seccomp profile allows clone with namespace flags, unshare and mount only with CAP_SYS_ADMIN, and on an AppArmor host (Ubuntu, Debian) its docker-default AppArmor profile denies every mount. Run the container with the profiles Flynn publishes with each release, each Docker's own with only that change: --security-opt seccomp=flynn-seccomp.json (deploy/seccomp/flynn.json in the source), and on an AppArmor host load flynn-apparmor-container (deploy/apparmor/flynn-container) with apparmor_parser -r and add --security-opt apparmor=flynn-container. On Kubernetes, install them on each node and set a Localhost seccompProfile and appArmorProfile. Do not use seccomp=unconfined or apparmor=unconfined, and do not add CAP_SYS_ADMIN: each lifts far more than the sandbox needs"
 	fixUnknown     = "confinement could not be established and the reason is not one Flynn recognises, so it refuses to run unconfined. Read the detail, run flynn sandbox check --json on the host, and report the output"
 	fixIneffective = "the sandbox started a command but did not confine it, so Flynn refuses to run commands. Do not run agent commands on this host; use the container tier or the microVM tier, and report the detail of flynn sandbox check --json"
 	fixPlatform    = "the namespace sandbox is Linux-only; on this platform use the platform's own confinement or a stronger tier"

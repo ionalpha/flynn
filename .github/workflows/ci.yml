@@ -271,29 +271,44 @@ jobs:
           echo "image reports: $got"
           [ "$got" = "$VERSION" ]
       # The agent's commands run in the image's sandbox, so the image must pass the same
-      # self-test a host does. Under Docker's default seccomp profile it must refuse and
-      # name the shipped profile; under the shipped profile it must pass, which runs a
-      # confined child and the escape canaries through the image's shell. The runner is
-      # Ubuntu 24.04, so AppArmor's user namespace restriction is in play too. A pass
-      # without the profile fails the step: it would mean the profile grants more than
-      # the runtime now requires, and deploy/seccomp should shrink.
-      - name: Container sandbox needs the shipped seccomp profile
+      # self-test a host does. The runner is Ubuntu 24.04, an AppArmor host like most
+      # Docker hosts, so the image runs three ways: under Docker's defaults, with only
+      # the shipped seccomp profile, and with both shipped profiles. The first two must
+      # refuse and name the missing profile; the last must pass, which runs a confined
+      # child and the escape canaries through the image's shell. A pass with a profile
+      # missing fails the step: it would mean that profile grants more than the runtime
+      # now requires, and it should shrink.
+      - name: Load the container AppArmor profile
+        run: sudo apparmor_parser -r deploy/apparmor/flynn-container
+      - name: Container sandbox needs the shipped profiles
         env:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           img="ghcr.io/ionalpha/flynn:${VERSION}-amd64"
+          seccomp="--security-opt seccomp=deploy/seccomp/flynn.json"
+          apparmor="--security-opt apparmor=flynn-container"
           # Each failure is an annotation carrying the check's one-line JSON, so the cause
           # reads from the pull request without opening the log.
           fail=0
-          if out="$(docker run --rm "$img" sandbox check --json)"; then
-            echo "::error title=Passed without the profile::$(jq -c . <<<"$out")"
-            fail=1
-          elif ! jq -e '.fix | contains("flynn-seccomp.json")' <<<"$out" >/dev/null; then
-            echo "::error title=Refusal does not name the profile::$(jq -c . <<<"$out")"
-            fail=1
-          fi
-          if ! out="$(docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json "$img" sandbox check --json)"; then
-            echo "::error title=Refused with the profile::$(jq -c . <<<"$out")"
+          # refuses TITLE WANT [docker run options...]: the check must refuse and its fix
+          # must contain WANT.
+          refuses() {
+            title="$1" want="$2"
+            shift 2
+            if out="$(docker run --rm "$@" "$img" sandbox check --json)"; then
+              echo "::error title=$title passed::$(jq -c . <<<"$out")"
+              fail=1
+            elif ! jq -e --arg w "$want" '.fix | contains($w)' <<<"$out" >/dev/null; then
+              echo "::error title=$title refusal does not name $want::$(jq -c . <<<"$out")"
+              fail=1
+            fi
+          }
+          refuses "Docker defaults" "flynn-seccomp.json"
+          # shellcheck disable=SC2086 # the option strings split into flag and value on purpose
+          refuses "Seccomp profile only" "apparmor=flynn-container" $seccomp
+          # shellcheck disable=SC2086
+          if ! out="$(docker run --rm $seccomp $apparmor "$img" sandbox check --json)"; then
+            echo "::error title=Refused with both profiles::$(jq -c . <<<"$out")"
             fail=1
           fi
           exit "$fail"
@@ -302,8 +317,8 @@ jobs:
       - name: Source Dockerfile builds and passes the sandbox check
         run: |
           docker build -t flynn:source --build-arg VERSION=0.0.0-ci .
-          if ! out="$(docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json flynn:source sandbox check --json)"; then
-            echo "::error title=Source image refused with the profile::$(jq -c . <<<"$out")"
+          if ! out="$(docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json --security-opt apparmor=flynn-container flynn:source sandbox check --json)"; then
+            echo "::error title=Source image refused with both profiles::$(jq -c . <<<"$out")"
             exit 1
           fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
