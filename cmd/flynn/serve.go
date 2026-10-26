@@ -30,7 +30,6 @@ import (
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -43,16 +42,16 @@ import (
 // budget; the learning loop is not yet wired into the served path.
 //
 // It blocks until interrupted (Ctrl-C), then stops the control loops.
-func runServe(args []string, modelSpec, dataDir string) error {
+func runServe(args []string, modelSpec, dataDir string, shell shellPolicy) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runServeContext(ctx, args, modelSpec, dataDir)
+	return runServeContext(ctx, args, modelSpec, dataDir, shell)
 }
 
 // runServeContext is runServe with the shutdown signal supplied rather than installed, so the
 // server's whole lifecycle (bring-up, bind, shutdown) is drivable without sending the
 // process a signal. Cancelling ctx stops it exactly as Ctrl-C does.
-func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string) error {
+func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string, shell shellPolicy) error {
 	cfg, err := parseServeConfig(args)
 	if err != nil {
 		return err
@@ -178,7 +177,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		return nil
 	}
 
-	return serveChannels(ctx, modelSpec, dataDir, rstore, store.Jobs(), servedLog, sources, sinks)
+	return serveChannels(ctx, modelSpec, dataDir, rstore, store.Jobs(), servedLog, sources, sinks, shell)
 }
 
 // serveConfig is the parsed `flynn serve` configuration: the channel credentials and the
@@ -309,7 +308,7 @@ func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog 
 // records every inbound message from sources, triages each into a goal run in the working
 // directory, and replies with the answer on the channel it arrived from. It blocks until ctx is
 // cancelled.
-func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink) error {
+func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink, shell shellPolicy) error {
 	// Channels need a model and the goal runtime that executes a triaged entry.
 	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
@@ -322,7 +321,7 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	// A served conversation has no operator at a terminal, so it carries no approval
 	// policy and no prompter. Adding one here would need a way to reach whoever is on
 	// the other end of the channel, which is a different mechanism from a modal prompt.
-	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
+	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, nil, "", shell, false, false, gateSetup{})
 	if err != nil {
 		return err
 	}

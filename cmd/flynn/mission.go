@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"time"
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
@@ -78,17 +80,17 @@ func (p *missionParts) Close() error {
 // newMissionParts wires the shared ingredients for a run at workdir recording onto
 // log under runID (empty gets a fresh one). withSpawn adds the delegation action to
 // the grant, so a fan-out run may spawn sub-goals and a single conversation cannot;
-// everything else is identical across the two paths. resLimits caps the host memory
-// and process count of the commands the run's tools execute (its zero value applies
-// no cap).
+// everything else is identical across the two paths. shell decides what the run's
+// commands can reach; its zero value is the strictest policy, so a run handed no
+// relaxation has no network and no view of the data directory or the host's credential
+// locations. The posture is written to the run's stream before anything runs in it.
 //
-// skills is the skill toolset the run reads procedures through, and may be nil: a
-// run assembled without one (a served control-plane run, a test) simply offers no
-// skill tool, rather than offering one that answers nothing. It is passed in rather
-// than built here because it accumulates the run's reads and the caller grades the
-// run against them; a session spanning several turns hands the same set to each.
-func newMissionParts(workdir string, log spine.Log, skills *skilltool.Set, runID string, withSpawn bool, resLimits sandbox.ResourceLimits) (*missionParts, error) {
-	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement(), sandbox.WithResourceLimits(resLimits))
+// skills is the skill toolset the run reads procedures through, and may be nil: a run
+// assembled without one simply offers no skill tool, rather than one that answers
+// nothing. It is passed in because it accumulates the run's reads and the caller grades
+// the run against them; a session spanning several turns hands the same set to each.
+func newMissionParts(workdir string, log spine.Log, skills *skilltool.Set, runID string, withSpawn bool, shell shellPolicy) (*missionParts, error) {
+	sb, err := sandbox.NewLocal(workdir, shell.options()...)
 	if err != nil {
 		return nil, err
 	}
@@ -98,6 +100,10 @@ func newMissionParts(workdir string, log spine.Log, skills *skilltool.Set, runID
 		sopts = append(sopts, session.WithID(runID))
 	}
 	sess := session.New(log, bus.NewMemory(), sopts...)
+	if err := declareShellPosture(context.Background(), log, sess.ID(), sb); err != nil {
+		_ = sb.Close()
+		return nil, fmt.Errorf("record the shell's posture: %w", err)
+	}
 
 	// The working-tree tools, plus the skill tools when there is a store behind them.
 	// They are one toolset from here on: the grant below is built from whatever this
@@ -154,8 +160,8 @@ func (p *missionParts) runtimeConfig(exec goal.StepExecutor, stop goal.StopEvalu
 // recalled knowledge into it. It is the shared assembly behind the one-shot runner,
 // resume, and the interactive session, so none of them reassembles the runtime by
 // hand.
-func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resLimits sandbox.ResourceLimits, planning, requireProof bool, appr gateSetup) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
+func assembleMission(model llm.Model, plan harness.Plan, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, shell shellPolicy, planning, requireProof bool, appr gateSetup) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, skills, runID, false, shell)
 	if err != nil {
 		return nil, err
 	}
@@ -366,8 +372,8 @@ func externalModel(ea *externAgent) string {
 // unobserved-but-contained and are recorded as a declared provenance gap. A run driven
 // this way does not fan out (the external harness owns its own loop), so the spawn
 // action is withheld from the grant.
-func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, resLimits sandbox.ResourceLimits) (*missionRun, error) {
-	parts, err := newMissionParts(workdir, log, skills, runID, false, resLimits)
+func assembleExternalMission(ea *externAgent, workdir, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, skills *skilltool.Set, runID string, shell shellPolicy) (*missionRun, error) {
+	parts, err := newMissionParts(workdir, log, skills, runID, false, shell)
 	if err != nil {
 		return nil, err
 	}

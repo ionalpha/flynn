@@ -120,11 +120,11 @@ func (r driveRequest) assemble() (*missionRun, error) {
 		return assembleToolsetMission(r.model, r.plan, c.toolset, r.system, r.rstore, r.jq, r.log, r.resumeID, c.planning, c.gates)
 	case c.extAgent != nil:
 		// The CLI's episode driver runs the loop in place of a model conversation.
-		return assembleExternalMission(c.extAgent, r.workdir, r.system, r.rstore, r.jq, r.log, c.skills, r.resumeID, c.resLimits)
+		return assembleExternalMission(c.extAgent, r.workdir, r.system, r.rstore, r.jq, r.log, c.skills, r.resumeID, c.shell)
 	case r.fanout != nil:
-		return assembleFanoutMission(r.model, r.plan, r.workdir, r.system, r.rstore, r.jq, r.log, c.skills, r.resumeID, r.fanout.resolveModel, c.resLimits, c.gates)
+		return assembleFanoutMission(r.model, r.plan, r.workdir, r.system, r.rstore, r.jq, r.log, c.skills, r.resumeID, r.fanout.resolveModel, c.shell, c.gates)
 	default:
-		return assembleMission(r.model, r.plan, r.workdir, r.system, r.rstore, r.jq, r.log, c.skills, r.resumeID, c.resLimits, c.planning, c.proof, c.gates)
+		return assembleMission(r.model, r.plan, r.workdir, r.system, r.rstore, r.jq, r.log, c.skills, r.resumeID, c.shell, c.planning, c.proof, c.gates)
 	}
 }
 

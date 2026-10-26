@@ -127,6 +127,8 @@ type Config struct {
 	// "kernel" (the default) requires kernel-enforced confinement of the runtime, and
 	// "process" accepts a process jail on a machine that cannot provide it. The runtime
 	// parses untrusted weights, so a host that has not said otherwise gets a refusal.
+	// Under "process" every server is reported and recorded as a process jail, even where
+	// the kernel did confine it, because the sandbox does not say which launches fell back.
 	// [Endpoint.Containment] reports the level of every launch.
 	MinContainment string
 	// HTTPClient carries every download. Nil uses a client that refuses private and
@@ -228,7 +230,19 @@ func Open(cfg Config) (*Host, error) {
 			return nil, fmt.Errorf("localmodel: create %s: %w", filepath.Base(d), err)
 		}
 	}
-	sb, err := sandbox.NewLocal(runDir, sandbox.WithDefaultConfinement())
+	var sb *sandbox.Local
+	confinement := sandbox.WithDefaultConfinement()
+	containment := func() sandbox.Containment { return sandbox.ContainmentOf(sb) }
+	if minContainment < sandbox.ContainmentKernel {
+		// The sandbox refuses a launch it cannot confine, so a host that accepts a process
+		// jail has to say so to the sandbox too. A launch under the opt-in may run at the
+		// floor without the sandbox's reported tier changing, so every server this Host
+		// starts is recorded at the floor: a later Host that requires kernel confinement
+		// then refuses to adopt it, where a kernel record could hand it an unconfined server.
+		confinement = sandbox.WithBestEffortConfinement(func(error) {})
+		containment = func() sandbox.Containment { return sandbox.ContainmentNone }
+	}
+	sb, err = sandbox.NewLocal(runDir, confinement)
 	if err != nil {
 		return nil, fmt.Errorf("localmodel: sandbox: %w", err)
 	}
@@ -245,7 +259,7 @@ func Open(cfg Config) (*Host, error) {
 		locks:    newKeyedLock(),
 
 		minContainment: minContainment,
-		containment:    func() sandbox.Containment { return sandbox.ContainmentOf(sb) },
+		containment:    containment,
 	}
 	h.mgr = h.newManager(serve.SandboxLauncher{SB: sb})
 	return h, nil

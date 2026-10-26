@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 )
 
 // unwritableParent returns a workspace path whose parent directory does not exist, so the
@@ -186,6 +187,7 @@ func TestStartRefusesWhatItCannotPrepare(t *testing.T) {
 // logged-in CLI as logged out, because the confined child inherits no home to derive the
 // location from.
 func TestProbeRunsUnderTheAssembledCredentialHome(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	src := t.TempDir()
 	cfg := filepath.Join(src, ".claude.json")
 	if err := os.WriteFile(cfg, []byte(`{"config":true}`), 0o600); err != nil {
@@ -218,6 +220,7 @@ func TestProbeReportsASourceItCannotGather(t *testing.T) {
 // no seeding configured the child is pointed straight at the host's own credential home, so
 // an auth-status probe can see whether the CLI is logged in without anything being copied.
 func TestProbeGrantsTheHostAuthDirReadOnly(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	sp := NewSandboxSpawner(SandboxConfig{AuthDir: authDirWithToken(t), AuthEnv: "CODEX_HOME"})
 	name, args := probeArgv(0)
 	out, err := sp.Probe(context.Background(), name, args...)

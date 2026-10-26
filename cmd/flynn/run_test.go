@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -409,6 +410,7 @@ func TestRunCreditsTheOutcomeToWhatItRead(t *testing.T) {
 // skill in the sandbox: a skill whose check fails is dropped (never stored), while
 // one whose check passes is kept and tagged verified.
 func TestRunVerifiesCapturedSkill(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	dir := t.TempDir()
 	store := memStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -495,8 +497,12 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 	if len(evs) == 0 {
 		t.Fatalf("run %s left no events on the durable spine after reopen", runID)
 	}
-	if evs[0].Type != string(session.KindSessionStarted) {
-		t.Fatalf("first spine event = %q, want %q", evs[0].Type, session.KindSessionStarted)
+	// The run's shell posture precedes the session it governs.
+	if evs[0].Type != shellPostureEvent {
+		t.Fatalf("first spine event = %q, want %q", evs[0].Type, shellPostureEvent)
+	}
+	if len(evs) < 2 || evs[1].Type != string(session.KindSessionStarted) {
+		t.Fatalf("the posture is not followed by %q", session.KindSessionStarted)
 	}
 	var converged bool
 	for _, e := range evs {

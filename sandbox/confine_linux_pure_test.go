@@ -95,7 +95,7 @@ func TestMountPointsReadsTheHostMounts(t *testing.T) {
 // them would see the sandbox's internals.
 func TestStrippedEnvRemovesEveryControlVariable(t *testing.T) {
 	controls := []string{
-		envConfine, envDir, envArgv, envReadonly, envSeccomp, envWritable,
+		envConfine, envDir, envArgv, envReadonly, envSeccomp, envWritable, envHidden,
 		envEgress, envEgressFD, envForward, envForwardFD,
 	}
 	for _, k := range controls {

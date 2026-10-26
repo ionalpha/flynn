@@ -5,7 +5,6 @@ import (
 
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -20,11 +19,11 @@ import (
 // fails if that divergence ever returns.
 func TestMissionPartsGrantsSpawnOnlyForFanout(t *testing.T) {
 	skills := skilltool.New(state.NewMemory().Skills())
-	single, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", false, sandbox.ResourceLimits{})
+	single, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", false, shellPolicy{})
 	if err != nil {
 		t.Fatalf("newMissionParts single: %v", err)
 	}
-	fanout, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", true, sandbox.ResourceLimits{})
+	fanout, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), skills, "", true, shellPolicy{})
 	if err != nil {
 		t.Fatalf("newMissionParts fanout: %v", err)
 	}
@@ -78,7 +77,7 @@ func TestMissionPartsSkillToolsFollowTheStore(t *testing.T) {
 		{"without one", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parts, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), tc.skills, "", false, sandbox.ResourceLimits{})
+			parts, err := newMissionParts(t.TempDir(), spine.NewMemoryLog(), tc.skills, "", false, shellPolicy{})
 			if err != nil {
 				t.Fatalf("newMissionParts: %v", err)
 			}

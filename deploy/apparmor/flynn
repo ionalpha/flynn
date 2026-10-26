@@ -1,0 +1,30 @@
+# AppArmor profile for the flynn binary on Ubuntu 24.04 and later.
+#
+# Those releases set kernel.apparmor_restrict_unprivileged_userns=1: a program may create
+# an unprivileged user namespace, but inside it every capability is denied unless the
+# program's profile contains the "userns" permission. The Flynn sandbox runs each confined
+# command in such a namespace, so without this profile "flynn sandbox check" refuses with
+# the cause apparmor-userns-restricted.
+#
+# The profile grants that one permission to this one binary and nothing else.
+# flags=(unconfined) keeps every other access exactly as it is without a profile; the
+# profile confines nothing, it only names the program so the userns rule can apply to it.
+# Install it instead of setting the global sysctl to 0, which lifts the restriction for
+# every program on the host.
+#
+# This is not a security boundary: AppArmor's userns restriction has known bypasses
+# through other binaries that hold the permission. It narrows what an unprivileged
+# program can do; it does not contain a hostile one.
+#
+# Install (adjust the path below if flynn lives elsewhere):
+#   install -m 0644 flynn /etc/apparmor.d/flynn
+#   apparmor_parser -r /etc/apparmor.d/flynn
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile flynn /usr/local/bin/flynn flags=(unconfined) {
+  userns,
+
+  include if exists <local/flynn>
+}

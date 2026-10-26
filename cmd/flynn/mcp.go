@@ -15,7 +15,6 @@ import (
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/mcp"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
@@ -82,7 +81,7 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	// assembly is the point: a served session is governed by the same grant and records
 	// onto the same kind of stream as the agent's own run, so authority cannot drift
 	// between the two paths.
-	parts, err := newMissionParts(dir, store.Log(), skilltool.New(store.Skills()), "", false, sandbox.ResourceLimits{})
+	parts, err := newMissionParts(dir, store.Log(), skilltool.New(store.Skills()), "", false, shellPolicy{dataDir: dataDir})
 	if err != nil {
 		return err
 	}

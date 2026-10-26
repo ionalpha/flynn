@@ -6,24 +6,23 @@ import (
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/memory/hybrid"
 	"github.com/ionalpha/flynn/mission"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
 // driveConfig collects the optional levers a run is driven with. Its zero value (no
-// budget, no resource caps) drives a run exactly as before, so a caller that passes
-// no option is unaffected.
+// budget, the strictest shell policy) drives a run as a caller that passes no option
+// expects, so leaving an option out never opens anything.
 type driveConfig struct {
-	budget    budgetpkg.Limits
-	resLimits sandbox.ResourceLimits
-	extAgent  *externAgent
-	toolset   *boundToolset
-	observe   func(session.Event)
-	planning  bool
-	proof     bool
-	skills    *skilltool.Set
-	gates     gateSetup
+	budget   budgetpkg.Limits
+	shell    shellPolicy
+	extAgent *externAgent
+	toolset  *boundToolset
+	observe  func(session.Event)
+	planning bool
+	proof    bool
+	skills   *skilltool.Set
+	gates    gateSetup
 	// allowances are the irreversible actions outside the workspace this run was declared
 	// to be allowed, carried onto the goal spec so the waist checks them and the
 	// reconciler can tell an ask that has been answered from one that has not.
@@ -59,12 +58,12 @@ func withMemoryEmbedder(e hybrid.Embedder) driveOption {
 	return func(c *driveConfig) { c.emb = e }
 }
 
-// withResourceLimits caps the host memory and process count of the commands a run's
-// tools execute, on top of the always-on wall-clock and process-tree containment. The
-// zero value applies no cap, so passing it leaves a run's commands unconstrained. See
-// sandbox.ResourceLimits for the per-platform enforcement.
-func withResourceLimits(r sandbox.ResourceLimits) driveOption {
-	return func(c *driveConfig) { c.resLimits = r }
+// withShellPolicy sets what the commands a run's tools execute are limited to and kept
+// away from: their memory and process count (see [sandbox.ResourceLimits] for the
+// per-platform enforcement), the network, and the data directory and credential
+// locations. Without it a run gets the zero [shellPolicy], which keeps all of them closed.
+func withShellPolicy(p shellPolicy) driveOption {
+	return func(c *driveConfig) { c.shell = p }
 }
 
 // withPlanning turns the planning phase on for the run: before the first build step the
