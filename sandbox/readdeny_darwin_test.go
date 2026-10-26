@@ -29,7 +29,10 @@ func TestSeatbeltHidesConfiguredPaths(t *testing.T) {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, f := range []string{filepath.Join(dir, "id_ed25519"), file} {
+	// unlisted is named by no command below, so finding it in any output means the directory
+	// was listed; an error message naming a path the command line gave it does not.
+	const unlisted = "known_hosts_unlisted"
+	for _, f := range []string{filepath.Join(dir, "id_ed25519"), filepath.Join(dir, unlisted), file} {
 		if err := os.WriteFile(f, []byte(secret), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -53,7 +56,7 @@ func TestSeatbeltHidesConfiguredPaths(t *testing.T) {
 		"ls " + dir,
 		"cat " + file,
 	} {
-		if res := run(line); res.ExitCode == 0 || strings.Contains(res.Output, secret) || strings.Contains(res.Output, "id_ed25519") {
+		if res := run(line); res.ExitCode == 0 || strings.Contains(res.Output, secret) || strings.Contains(res.Output, unlisted) {
 			t.Errorf("%q reached a hidden path: exit %d, output %q", line, res.ExitCode, res.Output)
 		}
 	}
