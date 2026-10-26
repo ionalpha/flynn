@@ -110,7 +110,7 @@ docker run -v flynn-data:/data \
 
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
 (`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;
-add a channel (for example `-e TELEGRAM_BOT_TOKEN=...`) to reach the agent, or see
+add a channel (for example `-e TELEGRAM_BOT_TOKEN=... -e FLYNN_TELEGRAM_ALLOW=<your user id>`) to reach the agent, or see
 [`deploy/README.md`](deploy/README.md) for remote access and hardening.
 
 Every published manifest is keyless-signed with cosign and can be verified:

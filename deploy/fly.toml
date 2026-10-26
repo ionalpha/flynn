@@ -4,7 +4,8 @@
 #   fly volumes create flynn_data --size 3 --region iad        # durable disk for /data
 #   fly secrets set ANTHROPIC_API_KEY=... \
 #                   FLYNN_VAULT_PASSPHRASE=... \                # unseals the credential vault
-#                   TELEGRAM_BOT_TOKEN=...                      # optional chat channel
+#                   TELEGRAM_BOT_TOKEN=... \                    # optional chat channel
+#                   FLYNN_TELEGRAM_ALLOW=...                    # user ids who may start a run (required with the token)
 #   fly deploy --config deploy/fly.toml --dockerfile Dockerfile
 #
 # This runs ONE always-on machine bound to ONE volume. Flynn keeps a single-writer

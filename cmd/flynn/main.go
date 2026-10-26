@@ -356,7 +356,11 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 	"memory":  routeMemory,
 	"skill":   routeSkill,
 	"serve": func(inv invocation, rest []string) int {
-		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir))
+		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir, serveGovernance{
+			approve: inv.reqApproval, outside: inv.outside, allowed: inv.allowed,
+			budget:    budgetpkg.Limits{Tokens: inv.maxTokens, Cost: inv.maxCost},
+			resLimits: sandbox.ResourceLimits{MemoryMiB: inv.maxMemoryMiB, MaxProcesses: inv.maxProcesses},
+		}))
 	},
 	"watch": func(inv invocation, _ []string) int {
 		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
@@ -591,7 +595,7 @@ func printUsage(w io.Writer) {
   flynn skill ls             list the skills a run can be offered: the pack shipped in the binary and the ones this install learned
   flynn skill show <skill>   print one skill: what it is for, how runs have taken it up, and its body
   flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
-  flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
+  flynn serve [--telegram-token T --telegram-allow ID] [--signal-tcp ADDR --signal-allow NUMBER] [--api-addr ADDR]  run as a service: answer chat messages from the allowed senders (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
