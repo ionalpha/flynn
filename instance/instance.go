@@ -3,9 +3,20 @@
 // describable through the same read model as every other kind, and gives placement
 // and remote control a concrete handle to address. An Instance carries declarative
 // spec (its host, version, and the capabilities it offers) and reconciled status
-// (its current run-state and the runs it is driving). The status is written by the
-// live process, never by a user, and the resource's own last-write time on the
-// envelope is the heartbeat, so a stale record is a missed heartbeat.
+// (its current run-state and the runs it is driving). The resource's own last-write
+// time on the envelope is the heartbeat, so a stale record is a missed heartbeat.
+//
+// # Trust
+//
+// This package does no authentication and no authorisation. The record name is the
+// instance id, and anything that can Put the kind on a store can write any
+// instance's spec and status, including making a stopped runner look alive or a
+// live one look Done. The host must restrict writes of an Instance record to that
+// instance's own authenticated identity (an admission rule or per-instance
+// credential on the store), and must treat every field as self-reported by the
+// instance. The package does bound what a write can carry (see [MaxFieldLen],
+// [MaxRecordBytes]) and keeps liveness derivation fail-closed (see [IsStale]), but
+// those limits do not make a record trustworthy.
 package instance
 
 import (
@@ -31,6 +42,22 @@ const (
 // state, so reporting its last live state as current would be a lie. The value is
 // several heartbeat intervals, so a single missed refresh does not flap the state.
 const DefaultStaleAfter = 90 * time.Second
+
+const (
+	// MaxFieldLen caps the byte length of any string in a spec or status, so a
+	// compromised instance cannot use its record to carry a payload or flood a
+	// renderer.
+	MaxFieldLen = 256
+	// MaxListLen caps the entries in Capabilities and Runs.
+	MaxListLen = 64
+	// MaxRecordBytes caps the summed length of the strings in one record.
+	MaxRecordBytes = 24 << 10
+)
+
+// MaxClockSkew is how far ahead of the reader's clock a heartbeat may be dated and
+// still count as fresh. Beyond it the heartbeat is untrustworthy and the record is
+// stale; see [IsStale].
+const MaxClockSkew = 30 * time.Second
 
 // State is the coarse run-state of an instance: the vocabulary the read surface
 // reports for what a process is doing right now.
@@ -66,14 +93,18 @@ type Status struct {
 	State              State    `json:"state,omitempty"`
 	Runs               []string `json:"runs,omitempty"`
 	ObservedGeneration int64    `json:"observedGeneration,omitempty"`
+	// OmittedRuns counts the run ids [SetStatus] dropped because the instance
+	// reported more than [MaxListLen], or ids longer than [MaxFieldLen]. A reader
+	// sees Runs is incomplete instead of the whole beat failing.
+	OmittedRuns int `json:"omittedRuns,omitempty"`
 }
 
 var specSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
-    "host": {"type": "string"},
-    "version": {"type": "string"},
-    "capabilities": {"type": "array", "items": {"type": "string"}}
+    "host": {"type": "string", "maxLength": 256},
+    "version": {"type": "string", "maxLength": 256},
+    "capabilities": {"type": "array", "maxItems": 64, "items": {"type": "string", "maxLength": 256}}
   },
   "additionalProperties": false
 }`)
@@ -101,6 +132,9 @@ func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeS
 // status is preserved, so re-registering on startup never clears a live run-state;
 // a brand new instance starts Idle. It returns the stored resource.
 func Register(ctx context.Context, store resource.Store, scope resource.Scope, id string, spec Spec) (resource.Resource, error) {
+	if err := validate(id, spec, Status{}); err != nil {
+		return resource.Resource{}, err
+	}
 	specJSON, err := json.Marshal(spec)
 	if err != nil {
 		return resource.Resource{}, err
@@ -115,6 +149,17 @@ func Register(ctx context.Context, store resource.Store, scope resource.Scope, i
 	switch existing, err := store.Get(ctx, Kind, scope, id); {
 	case err == nil:
 		r.Status = existing.Status
+		// The record cap covers the merged record, so a spec cannot be sized to
+		// overflow around a status already stored.
+		// An undecodable stored status counts as empty, so corruption cannot be
+		// used to skip the check.
+		old, derr := DecodeStatus(existing)
+		if derr != nil {
+			old = Status{}
+		}
+		if err := validate(id, spec, old); err != nil {
+			return resource.Resource{}, err
+		}
 	case errors.Is(err, resource.ErrNotFound):
 		if r.Status, err = (Status{State: StateIdle}).encode(); err != nil {
 			return resource.Resource{}, err
@@ -130,11 +175,23 @@ func Register(ctx context.Context, store resource.Store, scope resource.Scope, i
 // by reading the current record first, so status and spec are written by their
 // respective owners and never clobber each other.
 func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, id string, state State, runs []string) (resource.Resource, error) {
+	st := Status{State: state}
+	st.Runs, st.OmittedRuns = capRuns(runs)
+	if err := validate(id, Spec{}, st); err != nil {
+		return resource.Resource{}, err
+	}
 	existing, err := store.Get(ctx, Kind, scope, id)
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	status, err := (Status{State: state, Runs: runs}).encode()
+	old, derr := DecodeSpec(existing)
+	if derr != nil {
+		old = Spec{}
+	}
+	if err := validate(id, old, st); err != nil {
+		return resource.Resource{}, err
+	}
+	status, err := st.encode()
 	if err != nil {
 		return resource.Resource{}, err
 	}
@@ -142,20 +199,63 @@ func SetStatus(ctx context.Context, store resource.Store, scope resource.Scope, 
 	return store.Put(ctx, existing)
 }
 
+// ErrTooLarge is returned by [Register] and [SetStatus] for a write that exceeds
+// [MaxFieldLen], [MaxListLen] or [MaxRecordBytes]. The stored record is left
+// unchanged.
+var ErrTooLarge = errors.New("instance: field or record exceeds its size cap")
+
+// capRuns keeps the first [MaxListLen] run ids that fit [MaxFieldLen] and counts
+// the rest. A Reporter that over-reports must not make every beat fail: the beat
+// is the liveness signal, and a refused one reads as an unreachable runner.
+func capRuns(runs []string) (kept []string, omitted int) {
+	for _, id := range runs {
+		if len(kept) == MaxListLen || len(id) > MaxFieldLen {
+			omitted++
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept, omitted
+}
+
+func validate(id string, spec Spec, st Status) error {
+	if len(id) > MaxFieldLen || len(spec.Host) > MaxFieldLen || len(spec.Version) > MaxFieldLen ||
+		len(spec.Capabilities) > MaxListLen || len(st.Runs) > MaxListLen || len(st.State) > MaxFieldLen {
+		return ErrTooLarge
+	}
+	size := len(id) + len(spec.Host) + len(spec.Version) + len(st.State)
+	for _, v := range [][]string{spec.Capabilities, st.Runs} {
+		for _, e := range v {
+			if len(e) > MaxFieldLen {
+				return ErrTooLarge
+			}
+			size += len(e)
+		}
+	}
+	if size > MaxRecordBytes {
+		return ErrTooLarge
+	}
+	return nil
+}
+
 func (s Status) encode() (json.RawMessage, error) { return json.Marshal(s) }
 
-// IsStale reports whether the instance's heartbeat is older than staleAfter as of
-// now. The heartbeat is the resource's last envelope write time (UpdatedAt): a live
-// process refreshes it on every Register and SetStatus, so a record that has not
-// moved is a process that has stopped writing. A non-positive staleAfter disables
-// the check (nothing is ever stale), and a record that was never written (zero
-// UpdatedAt) is treated as stale, because there is no heartbeat to trust. The
-// comparison is strict, so a heartbeat exactly staleAfter old is not yet stale.
+// IsStale reports whether the instance's heartbeat (UpdatedAt, refreshed by every
+// Register and SetStatus) is older than staleAfter as of now. A never-written
+// record is stale, and the comparison is strict. A non-positive staleAfter is
+// replaced by [DefaultStaleAfter] rather than disabling the check: a zero value
+// from an unset option must not make a dead runner read as alive.
+//
+// now is the reader's clock while UpdatedAt is stamped by the store's, so the two
+// can differ. A heartbeat dated more than [MaxClockSkew] after now is stale: taken
+// at face value its age is negative and a stopped or forged runner would look
+// fresh until the reader's clock caught up. Skew inside the tolerance is fresh, so
+// ordinary drift does not flap.
 func IsStale(r resource.Resource, now time.Time, staleAfter time.Duration) bool {
 	if staleAfter <= 0 {
-		return false
+		staleAfter = DefaultStaleAfter
 	}
-	if r.UpdatedAt.IsZero() {
+	if r.UpdatedAt.IsZero() || r.UpdatedAt.Sub(now) > MaxClockSkew {
 		return true
 	}
 	return now.Sub(r.UpdatedAt) > staleAfter
@@ -165,9 +265,10 @@ func IsStale(r resource.Resource, now time.Time, staleAfter time.Duration) bool 
 // its recorded status and the age of its heartbeat. It is the single rule the read
 // surface (flynn ps/status, the dashboard, the remote API) shares, so a crashed
 // process is never reported as alive: a live recorded state (Idle, Working, Blocked)
-// becomes Unknown once the heartbeat goes stale. A cleanly finished instance stays
-// Done regardless of heartbeat age, because it recorded its own terminal state
-// before shutting down and is expected to stop refreshing. A record whose status is
+// becomes Unknown once the heartbeat goes stale. A recorded Done stays Done
+// regardless of heartbeat age, because a clean stop writes it before the process
+// stops refreshing; it is self-reported, so a host that needs liveness uses
+// [Unreachable], which does not exempt Done. A record whose status is
 // missing or unreadable reports Unknown rather than guessing. The function is pure
 // (time enters only through now), so it is deterministic under replay and the same
 // result on every machine.
