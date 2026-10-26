@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/archetype"
@@ -14,7 +16,7 @@ import (
 )
 
 func TestResolveKindKnownAndFallbackAndUnknown(t *testing.T) {
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}

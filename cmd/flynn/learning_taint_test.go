@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/memory/guard"
@@ -64,7 +65,7 @@ func TestLearnedMemoryIsTaintedByTheShell(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			mem := newMemoryStack(state.NewMemory().Memory(), nil).store
+			mem := governed.NewMemoryStack(state.NewMemory().Memory(), nil).Store()
 			ctx := taintFromTranscript(context.Background(), c.transcript, c.carried...)
 			it, err := mem.Write(ctx, state.MemoryItem{Kind: "lesson", Content: "the build needs cgo", Sources: []string{guard.SchemeAgent + "run-1"}})
 			if err != nil {
@@ -88,7 +89,7 @@ func TestLearnedMemoryIsTaintedByTheShell(t *testing.T) {
 // /remember included, and a pinned fact written outside any run's taint scope must
 // stay the operator's, pushed at wake.
 func TestRememberIsNotTaintedByTheGuard(t *testing.T) {
-	mem := newMemoryStack(state.NewMemory().Memory(), nil).store
+	mem := governed.NewMemoryStack(state.NewMemory().Memory(), nil).Store()
 	var out strings.Builder
 	if !rememberFact(context.Background(), &out, mem, "use tabs") {
 		t.Fatalf("remember failed: %s", out.String())

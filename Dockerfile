@@ -69,7 +69,8 @@ VOLUME ["/data"]
 # address (every interface) on purpose, so the API is reachable inside the container
 # (via `docker exec` or a tunnel) and is never silently exposed. Auth is on by default:
 # a bearer token is generated and logged when FLYNN_API_TOKEN is unset. To have the
-# agent answer messages, add a channel (TELEGRAM_BOT_TOKEN) and a model key
-# (ANTHROPIC_API_KEY); see deploy/README.md for remote access and hardening.
+# agent answer messages, add a channel (TELEGRAM_BOT_TOKEN) with the user ids allowed to
+# start a run (FLYNN_TELEGRAM_ALLOW) and a model key (ANTHROPIC_API_KEY); see
+# deploy/README.md for remote access and hardening.
 ENTRYPOINT ["flynn"]
 CMD ["serve", "--data-dir=/data", "--api-addr=127.0.0.1:7575"]

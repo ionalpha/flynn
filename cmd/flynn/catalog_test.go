@@ -270,29 +270,6 @@ func blockedDataDir(t *testing.T) string {
 	return filepath.Join(file, "data")
 }
 
-// TestWireExtensionsServesBothSurfaces proves the shared extension stack registers a
-// handler for the API surface and the hosting surface from one registry, so an ops
-// provider and an API integration load through the same engine.
-func TestWireExtensionsServesBothSurfaces(t *testing.T) {
-	reg := resource.NewRegistry()
-	if err := extension.RegisterKind(reg); err != nil {
-		t.Fatalf("register kind: %v", err)
-	}
-	if err := credential.RegisterKind(reg); err != nil {
-		t.Fatalf("register kind: %v", err)
-	}
-	creds, loader, err := wireExtensions(resource.NewMemory(reg), t.TempDir())
-	if err != nil {
-		t.Fatalf("wireExtensions: %v", err)
-	}
-	if creds == nil || loader == nil {
-		t.Fatal("wireExtensions returned an incomplete stack")
-	}
-	if got := loader.Tools(); len(got) != 0 {
-		t.Fatalf("no extension is loaded yet, so there should be no tools: %v", got)
-	}
-}
-
 func TestOrNone(t *testing.T) {
 	if orNone("") != "none" {
 		t.Fatal("an absent auth type should render as none")

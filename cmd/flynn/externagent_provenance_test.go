@@ -10,6 +10,8 @@ import (
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/externagent"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
+	"github.com/ionalpha/flynn/spine"
 )
 
 // stubHarnessDriver stands in for an external-agent driver. It reports only what its fields
@@ -94,10 +96,16 @@ func TestObservedProvenanceOfASilentHarness(t *testing.T) {
 func TestRecordAttestedEventsBindsTheStream(t *testing.T) {
 	d := &tallyingDriver{stubHarnessDriver{name: "codex", unrecorded: 3}}
 	ea := &externAgent{driver: d}
-	recordAttestedEvents(ea, nil, "run-1")
-	sink, ok := d.recorder.(*attestedSink)
-	if !ok || sink.stream != "run-1" {
-		t.Fatalf("the driver was not bound to the run's stream, got %#v", d.recorder)
+	log := spine.NewMemoryLog()
+	governed.RecordAttested(ea.driver, log, "run-1")
+	if d.recorder == nil {
+		t.Fatal("the driver was not given a recorder")
+	}
+	if err := d.recorder.Record(context.Background(), externagent.Event{Kind: externagent.EventText, Tier: externagent.TierAttested, Raw: []byte(`{}`)}); err != nil {
+		t.Fatalf("record: %v", err)
+	}
+	if evs, err := log.Read(context.Background(), spine.Query{Stream: "run-1"}); err != nil || len(evs) != 1 {
+		t.Fatalf("the driver was not bound to the run's stream: %d events, %v", len(evs), err)
 	}
 	n, err := unrecordedAttested(ea)
 	if n != 3 || err != nil {
@@ -110,7 +118,7 @@ func TestRecordAttestedEventsBindsTheStream(t *testing.T) {
 	}
 
 	plain := &externAgent{driver: &plainDriver{stubHarnessDriver{name: "other"}}}
-	recordAttestedEvents(plain, nil, "run-2") // must not panic on a driver with no recorder
+	governed.RecordAttested(plain.driver, nil, "run-2") // must not panic on a driver with no recorder
 	if n, err := unrecordedAttested(plain); n != 0 || err != nil {
 		t.Errorf("a non-recording driver must report no gap, got (%d, %v)", n, err)
 	}

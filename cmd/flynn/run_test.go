@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
@@ -105,7 +107,7 @@ func TestGoalCommandPlansBeforeItBuilds(t *testing.T) {
 		t.Fatalf("first model call was not the planner: %q", sys)
 	}
 	// A visible ledger was recorded on the goal, item and verify clause both.
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,12 +499,13 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 	if len(evs) == 0 {
 		t.Fatalf("run %s left no events on the durable spine after reopen", runID)
 	}
-	// The run's shell posture precedes the session it governs.
-	if evs[0].Type != shellPostureEvent {
-		t.Fatalf("first spine event = %q, want %q", evs[0].Type, shellPostureEvent)
+	// The run's shell posture precedes its governance posture, and both precede the session
+	// they govern.
+	if evs[0].Type != governed.ShellPostureEventType {
+		t.Fatalf("first spine event = %q, want %q", evs[0].Type, governed.ShellPostureEventType)
 	}
-	if len(evs) < 2 || evs[1].Type != string(session.KindSessionStarted) {
-		t.Fatalf("the posture is not followed by %q", session.KindSessionStarted)
+	if len(evs) < 3 || evs[1].Type != governed.PostureEventType || evs[2].Type != string(session.KindSessionStarted) {
+		t.Fatalf("the shell posture is followed by %v, want %q then %q", evs[1:], governed.PostureEventType, session.KindSessionStarted)
 	}
 	var converged bool
 	for _, e := range evs {
@@ -523,7 +526,7 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 // mustRegistry builds the mission resource registry or fails the test.
 func mustRegistry(t *testing.T) *resource.Registry {
 	t.Helper()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}

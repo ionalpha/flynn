@@ -1,12 +1,15 @@
-package main
+package governed
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/allowance"
 	"github.com/ionalpha/flynn/approval"
+	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/internal/spinesink"
@@ -23,16 +26,18 @@ const approvalKeyID = "operator"
 
 // approvalStack is the shipped human-approval path: the gate that pauses a privileged
 // action, the signer that mints the approval the operator's decision authorizes, and the
-// host id both are bound to. A nil stack means no action on this run requires approval,
-// which is the default.
+// host id both are bound to. The gate is installed on every run; with an empty policy it
+// admits everything, so installing it costs nothing and a run's approval posture never
+// depends on whether a caller remembered to ask for one.
 type approvalStack struct {
-	gate   *approval.Gate
-	signer approval.Signer
-	host   string
+	gate    *approval.Gate
+	signer  approval.Signer
+	host    string
+	actions []string
 }
 
-// newApprovalStack builds the approval path for a run whose policy lists actions, or
-// returns nil when it lists none. Decisions are recorded onto stream on log.
+// newApprovalStack builds the approval path for a run, recording decisions onto stream
+// on log.
 //
 // The policy decides which actions pause. The verifier checks a presented approval
 // against a keyring, a nonce store and a clock, so an approval is single-use, in-date and
@@ -46,10 +51,7 @@ type approvalStack struct {
 // rather than proving who made it. A deployment with separation of duties supplies
 // approvers out of band; this is the n=1 case of that, not a different design.
 func newApprovalStack(actions []string, log spine.Log, stream string) (*approvalStack, error) {
-	policy := approvalPolicy(actions)
-	if len(policy) == 0 {
-		return nil, nil
-	}
+	policy := ApprovalPolicy(actions)
 	host := approvalHost(os.Hostname)
 	signer, keyring, err := approvalIdentity(ids.Entropy(nil))
 	if err != nil {
@@ -59,7 +61,7 @@ func newApprovalStack(actions []string, log spine.Log, stream string) (*approval
 	gate := approval.NewGate(policy, verifier,
 		approval.WithGateHost(host),
 		approval.WithSink(spinesink.NewApproval(log, stream)))
-	return &approvalStack{gate: gate, signer: signer, host: host}, nil
+	return &approvalStack{gate: gate, signer: signer, host: host, actions: GatedActions(policy)}, nil
 }
 
 // approvalIdentity mints the run's approver: a fresh keypair from entropy, and a keyring
@@ -75,7 +77,7 @@ func approvalIdentity(entropy io.Reader) (approval.Signer, *approval.Keyring, er
 	signer, pub, err := approval.GenerateEd25519Signer(approvalKeyID, entropy)
 	if err == nil {
 		// A key that was just generated is always the right size, so this does not fail in
-		// practice. It is checked rather than discarded because a keyring that quietly
+		// practice. It is checked rather than discarded because a keyring that silently
 		// dropped the run's only approver would refuse every approval the run minted, and
 		// the run would read as one where the operator's decisions never took effect.
 		err = keyring.Add(approvalKeyID, pub)
@@ -100,11 +102,10 @@ func approvalHost(hostname func() (string, error)) string {
 	return name
 }
 
-// approvalPolicy turns the operator's list of action names into the gate's policy, one
-// signature per listed action. Blank entries are dropped and duplicates collapse, so
-// `--require-approval shell --require-approval shell` is one requirement rather than a
-// quorum of two: raising the quorum is a real thing to want and repeating a flag is not
-// how anyone means to ask for it.
+// ApprovalPolicy turns a list of action names into the gate's policy, one signature per
+// listed action. Blank entries are dropped and duplicates collapse, so listing `shell`
+// twice is one requirement rather than a quorum of two: raising the quorum is a real
+// thing to want and repeating a flag is not how anyone means to ask for it.
 //
 // An empty result is the default and means no action requires a person. The standing
 // controls on a run are its capability grant and its sandbox, which apply to every action
@@ -112,7 +113,7 @@ func approvalHost(hostname func() (string, error)) string {
 // above them, for the actions a particular operator wants to see before they happen. A
 // default that paused something would also be a default that deadlocks every
 // non-interactive run, which has no one to ask.
-func approvalPolicy(actions []string) approval.Requirements {
+func ApprovalPolicy(actions []string) approval.Requirements {
 	req := approval.Requirements{}
 	for _, a := range actions {
 		if name := strings.TrimSpace(a); name != "" {
@@ -120,6 +121,55 @@ func approvalPolicy(actions []string) approval.Requirements {
 		}
 	}
 	return req
+}
+
+// checkActionNames refuses an approval or allowance policy that names an action the run's
+// grant does not list. Both gates match an action by its exact name, and an action outside
+// the grant is refused at the waist before it could be taken, so such a name gates nothing:
+// it is a misspelling or a tool the run was not given, and accepting it would print a
+// posture that lists a gate no action can reach.
+func (c *config) checkActionNames(grant capability.Grant) error {
+	for _, p := range []struct {
+		option string
+		names  []string
+	}{
+		{"WithApproval", GatedActions(ApprovalPolicy(c.approve))},
+		{"WithAllowance", sortedNames(outsidePolicy(c.outside))},
+	} {
+		var unknown []string
+		for _, name := range p.names {
+			if !grant.Allows(name) {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			return fmt.Errorf("governed: %s names %s, which this run's grant does not include (it offers %s)",
+				p.option, strings.Join(unknown, ", "), strings.Join(grant.Actions(), ", "))
+		}
+	}
+	return nil
+}
+
+// sortedNames lists the actions of an allowance set in order.
+func sortedNames(set allowance.Actions) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// GatedActions is the sorted list of actions a policy pauses, for the line a run prints
+// when it starts under approval. A run whose behaviour changed should say so before it
+// surprises someone by stopping halfway.
+func GatedActions(req approval.Requirements) []string {
+	names := make([]string, 0, len(req))
+	for name := range req {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // options returns the mission options that install the stack on an executor: the gate
@@ -143,68 +193,11 @@ func (s *approvalStack) options(prompter mission.ApprovalPrompter) []mission.Opt
 }
 
 // spec returns the loop-agnostic form of the stack, for a run assembled through a Driver
-// rather than by calling mission.NewExecutor directly. A nil stack yields nil, so the
-// Router's base spec carries no approval and every loop it builds is ungated, which is
-// the default.
+// rather than by calling mission.NewExecutor directly. A nil stack yields nil, which is
+// only the waived run.
 func (s *approvalStack) spec(prompter mission.ApprovalPrompter) *driver.Approval {
 	if s == nil {
 		return nil
 	}
 	return &driver.Approval{Gate: s.gate, Prompter: prompter, Signer: s.signer, Host: s.host}
-}
-
-// gateSetup is what an entry point asks for from the two gates above the run's capability
-// grant: the actions that need a person to authorize them and the prompter that asks, and
-// the actions whose effects leave the workspace and cannot be undone. It travels as one
-// value so an assembly signature grows by one parameter rather than several that must
-// agree.
-//
-// A zero value is a run with neither gate. The approval fields are independent: actions
-// with no prompter is the non-interactive run that refuses rather than proceeds, and a
-// prompter with no actions is an interactive session where nothing is asked to pause.
-//
-// The gates are not folded together because they ask different questions. Approval asks
-// a person now, which needs someone reachable; an allowance was written down before the
-// run, for a run nobody watches, and is answered by editing the goal.
-type gateSetup struct {
-	approve  []string
-	prompter mission.ApprovalPrompter
-	// outside names the actions that reach outside the workspace irreversibly. One of them
-	// runs only if the goal declares it, and a run that reaches an undeclared one is paused
-	// with the ask rather than handed a refusal it would look for a way around.
-	outside []string
-}
-
-// stringList is a flag.Value that accumulates every occurrence of a repeatable flag,
-// so `--require-approval shell --require-approval net.fetch` names two actions rather
-// than the second overwriting the first.
-type stringList struct{ values []string }
-
-// String renders the accumulated values for the flag package's usage output.
-func (s *stringList) String() string {
-	if s == nil {
-		return ""
-	}
-	return strings.Join(s.values, ",")
-}
-
-// Set appends one occurrence. A blank value is kept out rather than turned into an
-// action named the empty string, which would list a requirement nothing can satisfy.
-func (s *stringList) Set(v string) error {
-	if v = strings.TrimSpace(v); v != "" {
-		s.values = append(s.values, v)
-	}
-	return nil
-}
-
-// gatedActions is the sorted list of actions a policy pauses, for the line a run prints
-// when it starts under approval. A run whose behaviour changed should say so before it
-// surprises someone by stopping halfway.
-func gatedActions(req approval.Requirements) []string {
-	names := make([]string, 0, len(req))
-	for name := range req {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
 }

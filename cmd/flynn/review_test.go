@@ -19,6 +19,8 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/archetypes/review"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/credential"
@@ -364,7 +366,7 @@ func TestStoredGitHubToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -535,7 +537,7 @@ func TestReviewRunSubmitsVerdictAndRefusesShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}

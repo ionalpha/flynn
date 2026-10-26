@@ -17,7 +17,8 @@ services:
         VERSION: ${FLYNN_VERSION:-0.0.0-dev}
     image: flynn:local
     # Keep a loopback control-plane API and answer Telegram when a token is set. Drop
-    # TELEGRAM_BOT_TOKEN to run a monitor-only daemon.
+    # TELEGRAM_BOT_TOKEN to run a monitor-only daemon. A token without
+    # FLYNN_TELEGRAM_ALLOW makes serve refuse to start.
     command:
       - serve
       - --data-dir=/data
@@ -27,6 +28,8 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       # Chat channel (optional). Remove to run monitor-only.
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      # Telegram user ids (comma separated, numeric) who may start a run. Required with the token.
+      FLYNN_TELEGRAM_ALLOW: ${FLYNN_TELEGRAM_ALLOW:-}
       # Control-plane bearer token. If unset, one is generated and printed to the logs.
       FLYNN_API_TOKEN: ${FLYNN_API_TOKEN:-}
       # Unseals the credential vault non-interactively so configured integrations work.

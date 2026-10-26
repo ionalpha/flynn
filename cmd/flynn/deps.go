@@ -8,6 +8,8 @@ import (
 	"os"
 	"text/tabwriter"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/internal/dependency"
 	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/sandbox"
@@ -62,7 +64,7 @@ func openDepsRuntime(ctx context.Context, dataDir string, opts ...dependency.Opt
 	if err != nil {
 		return nil, err
 	}
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		_ = durable.Close()
 		return nil, err

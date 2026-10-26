@@ -43,8 +43,8 @@ func TestReceiveDeliversTextMessages(t *testing.T) {
 
 	select {
 	case spec := <-in:
-		if spec.Conversation != "4242" || spec.Sender != "ada" || spec.Type != "message" || spec.Content != "hello" {
-			t.Fatalf("spec = %+v, want {Conversation:4242 Sender:ada Type:message Content:hello}", spec)
+		if spec.Conversation != "4242" || spec.Sender != "7" || spec.Type != "message" || spec.Content != "hello" {
+			t.Fatalf("spec = %+v, want {Conversation:4242 Sender:7 Type:message Content:hello}", spec)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for the message")

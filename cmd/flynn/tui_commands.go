@@ -145,8 +145,8 @@ func (h *sessionHost) doTokens(_ context.Context) {
 func (h *sessionHost) doMemory(ctx context.Context) {
 	h.echoPrompt("/memory")
 	var buf bytes.Buffer
-	h.s.memory().describeRecall(&buf)
-	renderMemory(ctx, &buf, h.s.memory().store)
+	h.s.memory().DescribeRecall(&buf)
+	renderMemory(ctx, &buf, h.s.memory().Store())
 	h.appendReport(buf.String())
 }
 
@@ -155,7 +155,7 @@ func (h *sessionHost) doMemory(ctx context.Context) {
 func (h *sessionHost) doRemember(ctx context.Context, fact string) {
 	h.echoPrompt(strings.TrimSpace("/remember " + fact))
 	var buf bytes.Buffer
-	rememberFact(ctx, &buf, h.s.memory().store, fact)
+	rememberFact(ctx, &buf, h.s.memory().Store(), fact)
 	h.appendReport(buf.String())
 }
 

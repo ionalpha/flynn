@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
@@ -29,7 +31,7 @@ func dispatchPs(args []string, dataDir string) error {
 		return err
 	}
 	defer func() { _ = durable.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -55,7 +57,7 @@ func dispatchStatus(args []string, dataDir string) error {
 		return err
 	}
 	defer func() { _ = durable.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

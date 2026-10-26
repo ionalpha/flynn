@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -30,7 +32,7 @@ func (blockingModel) Generate(ctx context.Context, _ llm.Request) (llm.Response,
 func TestResumeContinuesInterruptedRun(t *testing.T) {
 	dir := t.TempDir()
 	store := memStore(t)
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}

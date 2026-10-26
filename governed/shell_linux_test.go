@@ -1,4 +1,4 @@
-package main
+package governed
 
 import (
 	"context"
@@ -36,7 +36,7 @@ func plant(t *testing.T, path string) {
 }
 
 // confinedShell returns a sandbox built from p, in a fresh working directory.
-func confinedShell(t *testing.T, p shellPolicy) *sandbox.Local {
+func confinedShell(t *testing.T, p ShellPolicy) *sandbox.Local {
 	t.Helper()
 	sandboxtest.RequireConfinement(t)
 	sb, err := sandbox.NewLocal(t.TempDir(), p.options()...)
@@ -101,7 +101,7 @@ func TestConfinedCommandCannotReadPlantedCanaries(t *testing.T) {
 	home, dataDir, canaries := credentialHome(t)
 
 	t.Run("default", func(t *testing.T) {
-		sb := confinedShell(t, shellPolicy{dataDir: dataDir})
+		sb := confinedShell(t, ShellPolicy{DataDir: dataDir})
 
 		if out, code := execIn(t, sb, "cat "+filepath.Join(home, "notes.txt")); code != 0 || !strings.Contains(out, canary) {
 			t.Fatalf("an ordinary file in the home is unreadable (exit %d): %q", code, out)
@@ -118,7 +118,7 @@ func TestConfinedCommandCannotReadPlantedCanaries(t *testing.T) {
 	})
 
 	t.Run("credential opt-in", func(t *testing.T) {
-		sb := confinedShell(t, shellPolicy{dataDir: dataDir, allowCredentialReads: true})
+		sb := confinedShell(t, ShellPolicy{DataDir: dataDir, AllowCredentialReads: true})
 		for _, p := range canaries {
 			if out, _ := execIn(t, sb, "cat "+p); !strings.Contains(out, canary) {
 				t.Errorf("the opt-in did not make %s readable: %q", p, out)
@@ -173,7 +173,7 @@ func TestConfinedCommandCannotConnectByDefault(t *testing.T) {
 	}
 	port, accepted, seen := listen(t)
 
-	deny := confinedShell(t, shellPolicy{dataDir: t.TempDir()})
+	deny := confinedShell(t, ShellPolicy{DataDir: t.TempDir()})
 	if out, code := execIn(t, deny, connectLine(port)); code == 0 || strings.Contains(out, "connected") {
 		t.Fatalf("the default policy let a command connect out (exit %d): %q", code, out)
 	}
@@ -181,7 +181,7 @@ func TestConfinedCommandCannotConnectByDefault(t *testing.T) {
 		t.Fatalf("the listener accepted %d connections from a denied command", n)
 	}
 
-	allow := confinedShell(t, shellPolicy{dataDir: t.TempDir(), allowNetwork: true})
+	allow := confinedShell(t, ShellPolicy{DataDir: t.TempDir(), AllowNetwork: true})
 	if out, code := execIn(t, allow, connectLine(port)); code != 0 || !strings.Contains(out, "connected") {
 		t.Fatalf("the network opt-in did not reach the listener (exit %d): %q", code, out)
 	}
@@ -226,7 +226,7 @@ func siblingProcess(t *testing.T) int {
 // readable from a confined command through procfs.
 func TestConfinedCommandCannotReadParentProcEnviron(t *testing.T) {
 	pid := siblingProcess(t)
-	sb := confinedShell(t, shellPolicy{dataDir: t.TempDir()})
+	sb := confinedShell(t, ShellPolicy{DataDir: t.TempDir()})
 	if out, _ := execIn(t, sb, fmt.Sprintf("cat /proc/%d/environ", pid)); strings.Contains(out, canary) {
 		t.Fatalf("the confined command read another process's environment: %q", out)
 	}
@@ -242,7 +242,7 @@ func TestConfinedCommandCannotReadParentProcEnviron(t *testing.T) {
 // gap, and it starts asserting the day a PID namespace closes it.
 func TestConfinedCommandCannotReadParentCmdline(t *testing.T) {
 	pid := siblingProcess(t)
-	sb := confinedShell(t, shellPolicy{dataDir: t.TempDir()})
+	sb := confinedShell(t, ShellPolicy{DataDir: t.TempDir()})
 	if out, _ := execIn(t, sb, fmt.Sprintf("cat /proc/%d/cmdline", pid)); strings.Contains(out, canary) {
 		t.Skip("open gap: a confined command can read another process's command line through procfs; closing it needs a PID namespace with its own procfs")
 	}
@@ -266,8 +266,8 @@ func TestKeychainNotReachableFromConfinedCommand(t *testing.T) {
 		sockets = append(sockets, p)
 	}
 
-	deny := confinedShell(t, shellPolicy{dataDir: t.TempDir()})
-	allow := confinedShell(t, shellPolicy{dataDir: t.TempDir(), allowCredentialReads: true})
+	deny := confinedShell(t, ShellPolicy{DataDir: t.TempDir()})
+	allow := confinedShell(t, ShellPolicy{DataDir: t.TempDir(), AllowCredentialReads: true})
 	for _, p := range sockets {
 		line := fmt.Sprintf("test -S %s && echo socket", p)
 		if out, _ := execIn(t, allow, line); !strings.Contains(out, "socket") {

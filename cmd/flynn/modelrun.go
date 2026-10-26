@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/bindguard"
 	"github.com/ionalpha/flynn/internal/catalog"
@@ -563,7 +565,7 @@ func localProfileSource(ctx context.Context, dataDir string) harness.ProfileSour
 		return harness.StaticProfiles{}
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return harness.StaticProfiles{}
 	}
