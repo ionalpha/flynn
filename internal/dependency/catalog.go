@@ -3,13 +3,10 @@ package dependency
 import (
 	"context"
 	"embed"
-	"encoding/json"
 	"fmt"
-	"io/fs"
-	"path"
-	"sort"
-	"strings"
 	"sync"
+
+	"github.com/ionalpha/flynn/internal/embeddedspecs"
 )
 
 // specsFS holds the official dependency specs shipped in the binary. Each is a JSON file
@@ -20,11 +17,7 @@ import (
 var specsFS embed.FS
 
 // Entry is one official dependency from the embedded catalog.
-type Entry struct {
-	Name string
-	Spec Spec
-	Raw  json.RawMessage
-}
+type Entry = embeddedspecs.Entry[Spec]
 
 var catalog struct {
 	once     sync.Once
@@ -42,35 +35,7 @@ func Entries() ([]Entry, error) {
 }
 
 func loadCatalog() {
-	files, err := fs.ReadDir(specsFS, "specs")
-	if err != nil {
-		catalog.err = fmt.Errorf("dependency: read embedded specs: %w", err)
-		return
-	}
-	catalog.reserved = map[string]bool{}
-	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
-			continue
-		}
-		raw, err := specsFS.ReadFile(path.Join("specs", f.Name()))
-		if err != nil {
-			catalog.err = fmt.Errorf("dependency: read %s: %w", f.Name(), err)
-			return
-		}
-		var spec Spec
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			catalog.err = fmt.Errorf("dependency: decode %s: %w", f.Name(), err)
-			return
-		}
-		name := strings.TrimSuffix(f.Name(), ".json")
-		if catalog.reserved[name] {
-			catalog.err = fmt.Errorf("dependency: duplicate official dependency name %q", name)
-			return
-		}
-		catalog.reserved[name] = true
-		catalog.entries = append(catalog.entries, Entry{Name: name, Spec: spec, Raw: append(json.RawMessage(nil), raw...)})
-	}
-	sort.Slice(catalog.entries, func(i, j int) bool { return catalog.entries[i].Name < catalog.entries[j].Name })
+	catalog.entries, catalog.reserved, catalog.err = embeddedspecs.Parse[Spec](specsFS, embeddedspecs.Naming{Prefix: "dependency", Noun: "dependency"}, nil)
 }
 
 // Reserved reports whether a name belongs to an official bundled dependency, so a

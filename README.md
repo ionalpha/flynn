@@ -303,8 +303,14 @@ layers in view rather than hidden behind it.
   `FLYNN_EMBED_MODEL` to a provider:model spec (`openai:text-embedding-3-small`, or
   `llamacpp:<model>` against a local server) and it is ranked by meaning as well.
   With none set, and with an endpoint that fails, recall is exactly what it was.
-  `flynn memory usage` shows what was pushed and what was used, and
-  `flynn memory consolidate` distils a subject's episodes into one lesson.
+  What the agent learns for itself waits for you before it is pushed:
+  `flynn memory ls --pending` lists it with where it came from, and
+  `flynn memory promote <id>` puts one in every later run's wake digest. A memory
+  from a run that used the shell or spawned a child is never pushed and cannot be
+  promoted, since the shell may have fetched what it says; it is still recalled.
+  `flynn memory forget <id>` deletes an item, `flynn memory usage` shows what was
+  pushed and what was used, and `flynn memory consolidate` distils a subject's
+  episodes into one lesson.
 - **A curator.** An outcome-driven pass decays and archives skills that stop working,
   so the library stays sharp instead of sprawling. Nothing is ever silently deleted.
 - **Reinforced by outcomes.** Skills and memory are strengthened or decayed by real
@@ -549,6 +555,9 @@ full flag list.
 | `flynn skill ls` | List the skills a run can be offered: the bundled pack and what this install learned |
 | `flynn skill show <skill>` | Print one skill: what it is for, how runs have taken it up, and its body |
 | `flynn skill ab <skill>` | Measure whether a skill helps: its exercises run with it and without it, paired |
+| `flynn memory ls [--pending]` | List what this install remembers: ids, sources, and whether each is pushed at wake |
+| `flynn memory promote <id>` | Review one of the agent's own memories into every later run's wake digest (`revoke <id>` takes it out) |
+| `flynn memory forget <id>` | Delete a memory, including one pinned with `/remember` |
 | `flynn memory usage` | Show what memory was pushed at readers and what they used |
 | `flynn memory consolidate` | Distil each subject's accumulated episodes into one lesson |
 | `flynn regrade` | Re-grade learned skills against the working directory |
@@ -736,7 +745,7 @@ above is filling in on top of that foundation. Follow
 - A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
 - Governed goals: a planned ledger whose checks run and are recorded, terms of a run checked after every step (`--goal-spec`), required approvals, declared allowances for irreversible actions, `flynn kill` and `flynn steer`, and no-progress detection.
 - A bundled pack of thirteen skills in the Agent Skills format, read on request and graded on the runs that read them, with `flynn skill ls`, `show` and `ab`.
-- Memory with subjects and supersession, a gated wake digest, a recorded push and use per instance (`flynn memory usage`), and offline consolidation (`flynn memory consolidate`).
+- Memory with subjects and supersession, a gated wake digest you review into (`flynn memory promote`), a recorded push and use per instance (`flynn memory usage`), and offline consolidation (`flynn memory consolidate`).
 - Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
 - Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
 - The learning loop: skills and memory captured from work, reinforced by outcomes, with skills that stop working decayed and archived.
@@ -757,7 +766,6 @@ above is filling in on top of that foundation. Follow
 **In progress**
 
 - Missions that outlive a single session, and declaring a goal's unit graph from the CLI (today it is the Go API).
-- A memory review command, so the agent's own memories can be promoted into the wake digest without a host.
 - A cost-aware model router in front of the registry.
 - Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
 - Time-travel on top of replay: fork-from-event and run diff.

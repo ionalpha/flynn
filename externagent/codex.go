@@ -3,8 +3,6 @@ package externagent
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 )
 
@@ -80,22 +78,14 @@ const codexCapabilityNotice = "You are running as a governed backend inside Flyn
 // so the driver stops rather than running codex with unattested effects; a healthy
 // but logged-out CLI is a recoverable onboarding prompt.
 func (c *Codex) Detect(ctx context.Context) (Readiness, error) {
-	if c.spawner == nil {
-		return Readiness{Refuse: true, Reason: "codex detection needs a process spawner"}, nil
+	version, stop := cliProbe{
+		name: "codex", bin: c.bin, spawner: c.spawner,
+		notFound: "codex CLI not found on PATH; install it to use the codex backend",
+	}.probeVersion(ctx)
+	if stop != nil {
+		return *stop, nil
 	}
-	version, err := c.spawner.Probe(ctx, c.bin, "--version")
-	if err != nil {
-		// A failed probe is unreadiness, not a Go error: report an actionable reason so the
-		// caller can onboard rather than crash. A CLI that is on disk but would not run says
-		// something different from one that is absent: the confined child could not reach or
-		// execute it. Telling the user to install what they already have sends them the wrong
-		// way, so the two are reported apart.
-		if _, statErr := os.Stat(c.bin); statErr == nil {
-			return Readiness{Reason: fmt.Sprintf("codex is installed at %s but the confined child could not run it: %v", c.bin, err)}, nil //nolint:nilerr // an unrunnable CLI is unreadiness, not a Go error
-		}
-		return Readiness{Reason: "codex CLI not found on PATH; install it to use the codex backend"}, nil //nolint:nilerr // probe failure is reported as unreadiness
-	}
-	r := Readiness{Available: true, Version: strings.TrimSpace(version)}
+	r := Readiness{Available: true, Version: version}
 
 	// The lockdown depends on three knobs: the read-only sandbox and the JSON event
 	// stream on exec, and a streamable-HTTP MCP client. A build missing any of them

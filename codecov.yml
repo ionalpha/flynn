@@ -13,6 +13,15 @@
 # is, and adding a case to one lowers the patch coverage of the pull request that
 # adds it. That penalises writing conformance tests, which is backwards.
 #
+# `internal/conformtest` is the same kind of code for the same reason, in two halves.
+# `conformtest` runs a suite against a deliberately broken implementation in a child
+# process and asserts that the suite fails; its Fatalf branches fire only when the suite
+# under test cannot fail (the defect it exists to catch), and the child-process half runs
+# in a process Codecov never collects from. `conformtest/faultstate` is the broken
+# implementation: pass-through store wrappers with a hook per method, whose forwarding
+# lines execute only in the tests of the packages that import them. Both are test
+# doubles that cannot live in a _test.go file because other packages' tests import them.
+#
 # The packages they test are not ignored. Coverage of the real implementations,
 # which is what the harnesses exist to produce, is unaffected.
 #
@@ -33,5 +42,6 @@ ignore:
   - "skill/skilltest"
   - "spine/spinetest"
   - "state/statetest"
+  - "internal/conformtest"
   - "sandbox/egress_linux.go"
   - "sandbox/forward_linux.go"

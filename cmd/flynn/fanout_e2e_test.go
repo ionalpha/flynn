@@ -95,9 +95,18 @@ func TestFanoutRunSealsOneVerifiableRecord(t *testing.T) {
 	// nil resolver is the n=0 case of per-goal model routing.
 	fc := &fanoutConfig{}
 
-	result, runID, _, err := drive(ctx, io.Discard, fanoutTestModel{}, harness.Plan{}, t.TempDir(),
-		"delegate the work to a child agent and then finish", defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), rec, false, "", fc)
+	result, runID, _, err := driveRequest{
+		out:       io.Discard,
+		model:     fanoutTestModel{},
+		plan:      harness.Plan{},
+		workdir:   t.TempDir(),
+		objective: "delegate the work to a child agent and then finish",
+		system:    defaultSystemPrompt,
+		rstore:    store.Resources(reg),
+		jq:        store.Jobs(),
+		log:       rec,
+		fanout:    fc,
+	}.execute(ctx)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}
