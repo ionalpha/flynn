@@ -10,8 +10,8 @@ import (
 	"github.com/ionalpha/flynn/governed"
 
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/archetype"
-	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/resource"
 )
 

@@ -7,7 +7,7 @@ import (
 
 	"pgregory.net/rapid"
 
-	"github.com/ionalpha/flynn/internal/instance"
+	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -74,14 +74,14 @@ func TestEffectiveState(t *testing.T) {
 	}
 }
 
-// TestEffectiveStateDisabledCheck verifies a non-positive staleAfter turns the
-// staleness rule off entirely: even an ancient heartbeat keeps the live state, so
-// callers can opt out of the heartbeat downgrade.
-func TestEffectiveStateDisabledCheck(t *testing.T) {
+// TestEffectiveStateNonPositiveWindowFailsClosed verifies a non-positive
+// staleAfter falls back to the default window: an ancient heartbeat still
+// downgrades, so an unset option never makes a dead runner read as alive.
+func TestEffectiveStateNonPositiveWindowFailsClosed(t *testing.T) {
 	ancient := instanceRes(t, instance.StateWorking, base.Add(-1000*time.Hour))
 	for _, ttl := range []time.Duration{0, -time.Second} {
-		if got := instance.EffectiveState(ancient, base, ttl); got != instance.StateWorking {
-			t.Fatalf("staleAfter=%v: EffectiveState = %q, want Working (check disabled)", ttl, got)
+		if got := instance.EffectiveState(ancient, base, ttl); got != instance.StateUnknown {
+			t.Fatalf("staleAfter=%v: EffectiveState = %q, want Unknown", ttl, got)
 		}
 	}
 }
@@ -99,8 +99,9 @@ func TestIsStale(t *testing.T) {
 		{"exactly ttl is fresh", base.Add(-ttl), ttl, false},
 		{"one ns over is stale", base.Add(-ttl - 1), ttl, true},
 		{"zero heartbeat is stale", time.Time{}, ttl, true},
-		{"disabled never stale", base.Add(-1000 * time.Hour), 0, false},
-		{"negative ttl never stale", base.Add(-1000 * time.Hour), -1, false},
+		{"zero ttl uses default", base.Add(-1000 * time.Hour), 0, true},
+		{"negative ttl uses default", base.Add(-1000 * time.Hour), -1, true},
+		{"zero ttl default still fresh", base.Add(-time.Second), 0, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
