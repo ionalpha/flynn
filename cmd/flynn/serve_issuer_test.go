@@ -32,7 +32,7 @@ func TestServeIssuerAndTokenAreMutuallyExclusive(t *testing.T) {
 		"--api-token", "operator-token",
 		"--api-issuer", controlplane.PrincipalID(issuer.Public()),
 	}
-	err = runServeContext(context.Background(), args, spec, dataDir, serveGovernance{})
+	err = runServeContext(context.Background(), args, spec, dataDir, shellPolicy{})
 	if err == nil {
 		t.Fatal("expected --api-token and --api-issuer together to be refused")
 	}
@@ -47,7 +47,7 @@ func TestServeIssuerAndTokenAreMutuallyExclusive(t *testing.T) {
 func TestServeIssuerRejectsAMalformedKey(t *testing.T) {
 	dataDir, spec := serveEnv(t)
 	args := []string{"--api-addr", "127.0.0.1:0", "--api-issuer", "not-a-key"}
-	err := runServeContext(context.Background(), args, spec, dataDir, serveGovernance{})
+	err := runServeContext(context.Background(), args, spec, dataDir, shellPolicy{})
 	if err == nil {
 		t.Fatal("expected a malformed --api-issuer to be refused")
 	}
@@ -83,7 +83,7 @@ func TestServeIssuerAcceptsADelegatedToken(t *testing.T) {
 	defer cancel()
 	errc := make(chan error, 1)
 	go func() {
-		errc <- runServeContext(ctx, []string{"--api-addr", addr, "--api-issuer", controlplane.PrincipalID(issuer.Public())}, spec, dataDir, serveGovernance{})
+		errc <- runServeContext(ctx, []string{"--api-addr", addr, "--api-issuer", controlplane.PrincipalID(issuer.Public())}, spec, dataDir, shellPolicy{})
 	}()
 	waitForListener(t, addr, errc)
 

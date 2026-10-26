@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -47,10 +46,17 @@ func assertMultiTurnStream(t *testing.T, evs []session.Event, wantTurns int) {
 	if len(evs) == 0 {
 		t.Fatal("empty stream")
 	}
-	// The run states its governance posture before it does anything, so the posture is the
-	// first event and the session opens right after it.
-	if len(evs) < 2 || string(evs[0].Kind) != governed.PostureEventType || evs[1].Kind != session.KindSessionStarted {
-		t.Fatalf("stream opens with %q, want %q then %q", evs[0].Kind, governed.PostureEventType, session.KindSessionStarted)
+	// The shell's posture is on the record before the session opens, so that nothing the
+	// run launches is ahead of the statement of what it was kept away from.
+	if string(evs[0].Kind) != shellPostureEvent {
+		t.Fatalf("first event = %q, want the shell posture %q", evs[0].Kind, shellPostureEvent)
+	}
+	opened := 0
+	for opened < len(evs) && string(evs[opened].Kind) == shellPostureEvent {
+		opened++
+	}
+	if opened == len(evs) || evs[opened].Kind != session.KindSessionStarted {
+		t.Fatalf("the posture is followed by %v, want %q", evs[min(opened, len(evs)-1)].Kind, session.KindSessionStarted)
 	}
 	starts, converged, lastTurn := 0, 0, 0
 	open := map[string]bool{}

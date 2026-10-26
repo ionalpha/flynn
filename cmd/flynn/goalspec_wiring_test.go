@@ -12,7 +12,6 @@ import (
 	"github.com/ionalpha/flynn/evidence"
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
@@ -113,18 +112,16 @@ func TestTheAuditorRunsAChecksCommandInTheRealSandbox(t *testing.T) {
 
 	store := memStore(t)
 	rstore := store.Resources(mustRegistry(t))
-	run, err := assembly{
-		model: alwaysDone{}, workdir: t.TempDir(), system: defaultSystemPrompt,
-		rstore: rstore, jq: store.Jobs(), log: store.Log(),
-	}.assemble(ctx)
+	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
+		rstore, store.Jobs(), store.Log(), nil, "", checkShell, false, false, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
-	auditor := evidence.NewCommandAuditor(run.Sandbox(), store.Log(), nil,
+	auditor := evidence.NewCommandAuditor(run.parts.sandbox, store.Log(), nil,
 		dispatch.WithAdmitter(capability.Admitter{}),
-		dispatch.WithHook(capability.NewContainmentGate(run.Sandbox())))
+		dispatch.WithHook(capability.NewContainmentGate(run.parts.sandbox)))
 	r := resource.Resource{Kind: goal.Kind, Name: "probe"}
 
 	// A term's check is model-adjacent work run on the operator's machine, so it is
@@ -133,7 +130,7 @@ func TestTheAuditorRunsAChecksCommandInTheRealSandbox(t *testing.T) {
 	// namespaces, is exactly that host). That is the honest answer and it is asserted
 	// here rather than skipped: what must not happen is a run carrying on unaudited,
 	// or, as it did, carrying on forever with nobody told.
-	if sandbox.ContainmentOf(run.Sandbox()) < sandbox.Required(sandbox.TrustSemi) {
+	if sandbox.ContainmentOf(run.parts.sandbox) < sandbox.Required(sandbox.TrustSemi) {
 		_, err := auditor.Audit(ctx, r, goal.Spec{}, goal.Status{},
 			[]goal.Invariant{{ID: "held", Statement: "it holds", Check: "exit 0"}})
 		if err == nil {
@@ -180,28 +177,26 @@ func TestFanoutAssemblyCanRuleOnAStatedTerm(t *testing.T) {
 
 	store := memStore(t)
 	rstore := store.Resources(mustRegistry(t))
-	run, err := assembly{
-		model: alwaysDone{}, workdir: t.TempDir(), system: defaultSystemPrompt,
-		rstore: rstore, jq: store.Jobs(), log: store.Log(), fanout: &fanoutConfig{},
-	}.assemble(ctx)
+	run, err := assembleFanoutMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
+		rstore, store.Jobs(), store.Log(), nil, "", nil, shellPolicy{}, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 	done := make(chan struct{})
-	go func() { _ = run.Runtime().Start(ctx); close(done) }()
+	go func() { _ = run.rt.Start(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 
 	spec := loadWrittenGoalSpec(t, `{
 	  "objective": "deliver the work",
 	  "invariants": [{"id": "clean-tree", "statement": "the tree stays clean", "check": "exit 0"}]
 	}`)
-	if _, err := run.Runtime().SubmitGoal(ctx, "termed", run.GoalSpec(goal.Spec{
+	if _, err := run.rt.SubmitGoal(ctx, "termed", goal.Spec{
 		Objective:     spec.Objective,
-		StopCondition: spec.StopCondition,
+		StopCondition: stopCondition(spec.StopCondition),
 		Grant:         []string{mission.ActionModelGenerate},
 		Invariants:    spec.Invariants,
-	})); err != nil {
+	}); err != nil {
 		t.Fatalf("submit a fan-out goal that states its terms: %v", err)
 	}
 
@@ -264,7 +259,7 @@ func TestARunWithNoSpecFileStatesNoTerms(t *testing.T) {
 	if len(submitted.Invariants) != 0 {
 		t.Fatalf("a run that stated no terms carries some: %+v", submitted.Invariants)
 	}
-	if submitted.StopCondition != governed.DefaultStopCondition {
+	if submitted.StopCondition != defaultStopCondition {
 		t.Fatalf("stop condition = %q, want the default", submitted.StopCondition)
 	}
 	if strings.Contains(out.String(), "terms") {
