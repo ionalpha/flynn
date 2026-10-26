@@ -14,8 +14,10 @@ import (
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/internal/bindguard"
 	"github.com/ionalpha/flynn/internal/fsatomic"
+	"github.com/ionalpha/flynn/internal/inference"
 	"github.com/ionalpha/flynn/internal/inference/launch"
 	"github.com/ionalpha/flynn/internal/inference/serve"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
 )
 
@@ -35,6 +37,10 @@ type Endpoint struct {
 	Token secret.Text
 	// Reused is true when a server already running was adopted instead of started.
 	Reused bool
+	// Containment names the isolation the server runs under: "kernel-confined" or
+	// "process-jail". It is what the sandbox reported when the server was started, not
+	// what was requested.
+	Containment string
 	// TemplateOverridden is true when the weights embedded a chat template that was
 	// replaced with the catalog's.
 	TemplateOverridden bool
@@ -63,19 +69,20 @@ type Server struct {
 // the load is unknown, not zero.
 type Stats = serve.RuntimeStats
 
-// Serve brings a catalog model up and returns its endpoint. In order, it classifies the
-// reference and refuses it if the sandbox cannot isolate it, installs the runtime behind
-// the advisory gate, fetches the weights against their digest, reads the weights' header
-// and replaces any embedded chat template, writes a fresh token to an owner-only file,
-// verifies the weights and the runtime binary once more, and starts the server on a
-// loopback port inside the sandbox. A server already running for the model is adopted
-// when its recorded token file is still readable; otherwise it is stopped and replaced.
+// Serve brings a catalog model up and returns its endpoint. Calls for one model run one
+// at a time, so a server is never started twice or stopped by a racing call. A server
+// already running is adopted only if it was started from a build at or above the current
+// floor, under at least the isolation [Config.MinContainment] asks for, with a key file
+// still readable, and if its listener passes the handshake below; otherwise it is stopped
+// and replaced. A launch installs the runtime behind the advisory gate, fetches the weights
+// against their digest, replaces any embedded chat template, and checks the weights and the
+// runtime binary once more before starting the server on a loopback port.
 //
-// The sandbox confines the server's file access but leaves outbound network access open,
-// so the runtime could reach the internet. What it cannot do is serve anyone but the
-// holder of the token: the listener is loopback-only and the token never appears on the
-// command line. After the server answers, Serve sends it a request without the token and
-// stops it with [ErrUnauthenticated] if the request is accepted.
+// Another process can take the chosen port before the runtime binds it, so the token goes
+// nowhere until the listener is attributed: Serve sends it a request with no credential and
+// one with a made-up one, both of which it must refuse, then one with a probe key, which it
+// must not refuse. Failing the first two returns [ErrUnauthenticated], the third
+// [ErrWrongListener]; the server is stopped either way.
 func (h *Host) Serve(ctx context.Context, ref string, opts ServeOptions) (Endpoint, error) {
 	_, _, a, err := h.assess(ref)
 	if err != nil {
@@ -91,14 +98,23 @@ func (h *Host) Serve(ctx context.Context, ref string, opts ServeOptions) (Endpoi
 	if err != nil {
 		return Endpoint{}, h.fail(err)
 	}
+	unlock, err := h.locks.lock(ctx, m.ID)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	defer unlock()
 	if ep, ok, err := h.reuse(ctx, m.ID); err != nil || ok {
 		return ep, err
 	}
-	ep, err := h.start(ctx, m, opts)
+	have := h.containment()
+	if have < h.minContainment {
+		return Endpoint{}, h.fail(fmt.Errorf("%w: a model server needs %s confinement, but this host provides %s; set Config.MinContainment to \"process\" to accept a process jail", ErrNotAdmitted, h.minContainment, have))
+	}
+	ep, err := h.start(ctx, m, opts, have)
 	return ep, h.fail(err)
 }
 
-func (h *Host) start(ctx context.Context, m Model, opts ServeOptions) (Endpoint, error) {
+func (h *Host) start(ctx context.Context, m Model, opts ServeOptions, have sandbox.Containment) (Endpoint, error) {
 	q, err := pickQuant(m, "")
 	if err != nil {
 		return Endpoint{}, err
@@ -129,6 +145,10 @@ func (h *Host) start(ctx context.Context, m Model, opts ServeOptions) (Endpoint,
 	if err != nil {
 		return Endpoint{}, err
 	}
+	probeKey, err := ids.Token()
+	if err != nil {
+		return Endpoint{}, err
+	}
 	keyPath := h.keyPath(m.ID)
 	plan, err := launch.BuildPlan(launch.Config{
 		BinPath: rt.BinPath, WeightsPath: w.Path, Model: m, Format: q.Format, Port: port,
@@ -139,43 +159,53 @@ func (h *Host) start(ctx context.Context, m Model, opts ServeOptions) (Endpoint,
 	}
 	// The last check before launch, run after everything slow so the window between it and
 	// the runtime opening the file is as short as it can be made. The weights are already
-	// read-only, so only the owning account can write into that window.
+	// read-only, so only the owning account can write into that window. The hook lets a
+	// test change the file, or take the port, inside it.
+	if h.preLaunch != nil {
+		h.preLaunch(port)
+	}
 	if err := verifyWeights(w); err != nil {
 		return Endpoint{}, err
 	}
 	if err := verifyRuntimeBinary(rt.BinPath); err != nil {
 		return Endpoint{}, err
 	}
-	if err := fsatomic.WriteFile(keyPath, []byte(token), 0o600); err != nil {
+	if err := fsatomic.WriteFile(keyPath, []byte(token+"\n"+probeKey+"\n"), 0o600); err != nil {
 		return Endpoint{}, fmt.Errorf("localmodel: write token file: %w", err)
 	}
-	h.remember(port, token)
-	sep, err := h.mgr.Ensure(ctx, serve.EnsureConfig{ModelID: m.ID, Runtime: Runtime, Plan: plan, Confine: true})
+	sep, err := h.mgr.Ensure(ctx, serve.EnsureConfig{
+		ModelID: m.ID, Runtime: Runtime, Plan: plan, Confine: true,
+		Version: rt.Version, Containment: have.String(),
+		Attest: func(ctx context.Context, baseURL string) error { return h.attest(ctx, baseURL, probeKey) },
+	})
 	if err != nil {
-		h.forgetPort(port)
+		_ = os.Remove(keyPath)
 		return Endpoint{}, err
 	}
 	if sep.Reused {
-		// Another launch won the race. The token file just written belongs to a server
+		// Another process won the race. The key file just written belongs to a server
 		// that is not running, so the winner cannot be trusted to match it.
-		h.forgetPort(port)
 		_, _ = h.mgr.Stop(m.ID)
+		_ = os.Remove(keyPath)
 		return Endpoint{}, errors.New("localmodel: a server for this model appeared during launch; retry")
 	}
-	if err := h.requireToken(ctx, sep.BaseURL); err != nil {
-		_, _ = h.mgr.Stop(m.ID)
-		h.forgetPort(port)
-		return Endpoint{}, err
-	}
+	// The token is remembered only now: until the listener was attributed, a request made
+	// through [Host.Client] to this port would have carried it.
+	h.remember(sep.Port, token)
 	return Endpoint{
 		ModelID: m.ID, BaseURL: sep.BaseURL, Port: sep.Port, PID: sep.PID,
 		Token: secret.New(token), TemplateOverridden: plan.TemplateOverridden,
+		Containment: have.String(),
 	}, nil
 }
 
-// reuse adopts a running server for the model. A server whose token file cannot be read
-// is stopped, because an endpoint nobody holds the token for is of no use and one that
-// might be someone else's should not be left up.
+// reuse adopts a running server for the model, or stops it and reports none. A server is
+// stopped, and its key file removed, when it was started from a build below the floor now
+// in force (or from one the record does not name), when it runs under less isolation than
+// [Config.MinContainment] asks for, or when its key file cannot be read: an endpoint
+// nobody holds the token for is of no use, and one that might be someone else's should not
+// be left up. A server that passes those is attested before its token is remembered or
+// returned, and one that fails attestation is stopped with the error.
 func (h *Host) reuse(ctx context.Context, id string) (Endpoint, bool, error) {
 	recs, err := h.mgr.Status(ctx)
 	if err != nil {
@@ -185,25 +215,62 @@ func (h *Host) reuse(ctx context.Context, id string) (Endpoint, bool, error) {
 		if r.ModelID != id || r.ContainerID != "" {
 			continue
 		}
-		tok, ok := h.readToken(id)
-		if !ok {
-			_, _ = h.mgr.Stop(id)
+		keys := h.readKeys(id)
+		if !h.adoptable(r) || len(keys) < 2 {
+			h.dropServer(id, r.Port)
 			return Endpoint{}, false, nil
 		}
-		h.remember(r.Port, tok)
-		if err := h.requireToken(ctx, r.BaseURL); err != nil {
-			_, _ = h.mgr.Stop(id)
-			h.forgetPort(r.Port)
+		if err := h.attest(ctx, r.BaseURL, keys[1]); err != nil {
+			h.dropServer(id, r.Port)
 			return Endpoint{}, false, h.fail(err)
 		}
-		return Endpoint{ModelID: id, BaseURL: r.BaseURL, Port: r.Port, PID: r.PID, Token: secret.New(tok), Reused: true}, true, nil
+		h.remember(r.Port, keys[0])
+		return Endpoint{
+			ModelID: id, BaseURL: r.BaseURL, Port: r.Port, PID: r.PID, Token: secret.New(keys[0]),
+			Reused: true, Containment: containmentOf(r.Containment).String(),
+		}, true, nil
 	}
 	return Endpoint{}, false, nil
 }
 
+// adoptable reports whether a recorded server may be handed out: its build passes the
+// floor in force now, and its isolation meets [Config.MinContainment]. A record that
+// names no build or no isolation was written by a launch that could not say, and is held
+// to the strictest reading.
+func (h *Host) adoptable(r serve.Record) bool {
+	v := inference.ParseVersion(r.Version)
+	if len(v) == 0 || h.gate(v) != nil {
+		return false
+	}
+	return containmentOf(r.Containment) >= h.minContainment
+}
+
+// containmentOf reads the isolation level a record names. Anything but the kernel level,
+// including a record that names none, is the process jail.
+func containmentOf(s string) sandbox.Containment {
+	if s == sandbox.ContainmentKernel.String() {
+		return sandbox.ContainmentKernel
+	}
+	return sandbox.ContainmentNone
+}
+
+// dropServer stops the server for a model, forgets its port and deletes its key file.
+func (h *Host) dropServer(id string, port int) {
+	h.forgetPort(port)
+	_, _ = h.mgr.Stop(id)
+	_ = os.Remove(h.keyPath(id))
+}
+
 // Reach returns the endpoint of a model already running, token included, or
-// [ErrNotRunning]. It checks the token requirement again before handing the endpoint out.
+// [ErrNotRunning]. It applies the checks [Host.Serve] applies to a server it finds running,
+// so a server below the floor, or one that no longer proves it holds the token, is stopped
+// and reported as not running or as an error.
 func (h *Host) Reach(ctx context.Context, id string) (Endpoint, error) {
+	unlock, err := h.locks.lock(ctx, id)
+	if err != nil {
+		return Endpoint{}, err
+	}
+	defer unlock()
 	ep, ok, err := h.reuse(ctx, id)
 	switch {
 	case err != nil:
@@ -231,6 +298,7 @@ func (h *Host) Status(ctx context.Context) ([]Server, error) {
 // Stop ends the server for a model and deletes its token file. It reports whether a
 // server was found.
 func (h *Host) Stop(id string) (bool, error) {
+	defer h.locks.acquire(id)()
 	if recs, err := h.mgr.Status(context.Background()); err == nil {
 		for _, r := range recs {
 			if r.ModelID == id {
@@ -269,35 +337,89 @@ func (h *Host) forgetPort(port int) {
 	h.mu.Unlock()
 }
 
-// readToken returns the token a launch recorded for the model, if the file is still
-// readable and holds one.
-func (h *Host) readToken(id string) (string, bool) {
+// readKeys returns the keys a launch wrote for the model, in order: the session token,
+// then the probe key. It returns none when the file cannot be read.
+func (h *Host) readKeys(id string) []string {
 	b, err := os.ReadFile(h.keyPath(id))
-	tok := strings.TrimSpace(string(b))
-	return tok, err == nil && tok != ""
+	if err != nil {
+		return nil
+	}
+	return strings.Fields(string(b))
 }
 
-// requireToken sends the server a chat request with no token and returns
-// [ErrUnauthenticated] unless it is refused with 401 or 403. Anything else, including a
-// failure to ask, counts as not enforced: a server that cannot be shown to require the
-// token is not handed out.
-func (h *Host) requireToken(ctx context.Context, baseURL string) error {
+// readToken returns the session token a launch recorded for the model, if the key file is
+// still readable and holds one.
+func (h *Host) readToken(id string) (string, bool) {
+	keys := h.readKeys(id)
+	if len(keys) == 0 {
+		return "", false
+	}
+	return keys[0], true
+}
+
+// attest shows that the listener at baseURL is the server this host launched, using only
+// requests that carry neither the session token nor anything that would let the
+// listener's owner use it. The server is started with two keys and accepts either. A
+// listener is attributed to the launch when it refuses a request with no credential,
+// refuses one with a key nobody issued, and accepts one with the probe key. A squatter
+// that answers 200 to everything fails the first, one that accepts any bearer fails the
+// second, and one that refuses everything fails the third. Only a process that read the
+// key file passes all three, and the file is readable by the owning account alone. The
+// probe key reaches the listener only after the first two have shown it enforces a
+// credential, and it opens nothing but the server it was written for.
+func (h *Host) attest(ctx context.Context, baseURL, probeKey string) error {
+	st, err := h.chatStatus(ctx, baseURL, "")
+	if err != nil {
+		return fmt.Errorf("%w: could not check: %w", ErrUnauthenticated, err)
+	}
+	if !refused(st) {
+		return fmt.Errorf("%w: status %d with no credential", ErrUnauthenticated, st)
+	}
+	bogus, err := ids.Token()
+	if err != nil {
+		return err
+	}
+	st, err = h.chatStatus(ctx, baseURL, bogus)
+	if err != nil {
+		return fmt.Errorf("%w: could not check: %w", ErrUnauthenticated, err)
+	}
+	if !refused(st) {
+		return fmt.Errorf("%w: status %d with a key nobody issued", ErrUnauthenticated, st)
+	}
+	st, err = h.chatStatus(ctx, baseURL, probeKey)
+	if err != nil {
+		return fmt.Errorf("%w: could not check: %w", ErrWrongListener, err)
+	}
+	if refused(st) {
+		return fmt.Errorf("%w: it refused the key written for this launch", ErrWrongListener)
+	}
+	return nil
+}
+
+// refused reports whether a status is an authentication refusal.
+func refused(status int) bool {
+	return status == http.StatusUnauthorized || status == http.StatusForbidden
+}
+
+// chatStatus posts an empty chat request to baseURL with the bearer key, or none when key
+// is empty, and returns the status. It never attaches the session token.
+func (h *Host) chatStatus(ctx context.Context, baseURL, key string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", strings.NewReader(`{"model":"probe","messages":[]}`))
 	if err != nil {
-		return err
+		return 0, err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
 	resp, err := h.client(false).Do(req)
 	if err != nil {
-		return fmt.Errorf("%w: could not check: %w", ErrUnauthenticated, err)
+		return 0, err
 	}
 	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusUnauthorized && resp.StatusCode != http.StatusForbidden {
-		return fmt.Errorf("%w: status %d", ErrUnauthenticated, resp.StatusCode)
-	}
-	return nil
+	return resp.StatusCode, nil
 }
 
 // Client returns an HTTP client for the servers this host manages. It reaches only

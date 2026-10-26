@@ -17,8 +17,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/ionalpha/flynn/localmodel"
 )
@@ -55,12 +57,23 @@ func runFakeRuntime(args []string) {
 			flags[args[i]] = args[i+1]
 		}
 	}
-	token := ""
+	// The key file holds one key per line, and the server accepts any of them.
+	var keys []string
 	if b, err := os.ReadFile(flags[fakeRuntimeFlag]); err == nil {
-		token = strings.TrimSpace(string(b))
+		keys = strings.Fields(string(b))
 	}
 	noAuth := strings.Contains(flags["--model"], "noauth")
-	authed := func(r *http.Request) bool { return noAuth || r.Header.Get("Authorization") == "Bearer "+token }
+	authed := func(r *http.Request) bool {
+		if noAuth {
+			return true
+		}
+		for _, k := range keys {
+			if r.Header.Get("Authorization") == "Bearer "+k {
+				return true
+			}
+		}
+		return false
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, `{"data":[]}`) })
 	mux.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
@@ -87,6 +100,9 @@ func runFakeRuntime(args []string) {
 	mux.HandleFunc("/metrics", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "") })
 	ln, err := net.Listen("tcp", net.JoinHostPort(flags["--host"], flags["--port"]))
 	if err != nil {
+		// Lost the bind race. Staying up a moment keeps the launch from seeing the exit
+		// before it has asked the listener who it is.
+		time.Sleep(3 * time.Second)
 		os.Exit(3)
 	}
 	_ = http.Serve(ln, mux)
@@ -163,15 +179,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	if runtime.GOOS == "windows" {
 		f.binName += ".exe"
 	}
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	body, err := os.ReadFile(self)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.archive = tarGz(t, f.binName, body)
+	f.archive = runtimeArchive(t, f.binName)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/runtime.tar.gz", func(w http.ResponseWriter, _ *http.Request) {
@@ -211,12 +219,14 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 }
 
 func (f *fixture) config() localmodel.Config {
-	return localmodel.Config{
-		DataDir:    f.dataDir,
-		Catalog:    []localmodel.Model{f.model},
-		Releases:   []localmodel.Release{f.release},
-		HTTPClient: f.srv.Client(),
-	}
+	// The jail is accepted so the tests run where the platform cannot confine a process
+	// further; the tests that exercise the refusal ask for the kernel level themselves.
+	return localmodel.WithReleases(localmodel.Config{
+		DataDir:        f.dataDir,
+		Catalog:        []localmodel.Model{f.model},
+		HTTPClient:     f.srv.Client(),
+		MinContainment: "process",
+	}, f.release)
 }
 
 func (f *fixture) open() *localmodel.Host {
@@ -233,6 +243,33 @@ func (f *fixture) open() *localmodel.Host {
 		_ = h.Close()
 	})
 	return h
+}
+
+var (
+	archiveOnce sync.Once
+	archiveData []byte
+	archiveErr  error
+)
+
+// runtimeArchive is the test binary packed as the runtime archive. The binary is large, so
+// it is read and compressed once per process; every fixture serves the same bytes.
+func runtimeArchive(t *testing.T, name string) []byte {
+	t.Helper()
+	archiveOnce.Do(func() {
+		var self string
+		if self, archiveErr = os.Executable(); archiveErr != nil {
+			return
+		}
+		var body []byte
+		if body, archiveErr = os.ReadFile(self); archiveErr != nil {
+			return
+		}
+		archiveData = tarGz(t, name, body)
+	})
+	if archiveErr != nil {
+		t.Fatal(archiveErr)
+	}
+	return archiveData
 }
 
 func tarGz(t *testing.T, name string, body []byte) []byte {

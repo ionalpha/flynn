@@ -141,7 +141,11 @@ func openHost(dataDir string, out io.Writer) (*localmodel.Host, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve the data directory: %w", err)
 	}
-	return localmodel.Open(localmodel.Config{DataDir: abs, Progress: out})
+	// The admission gate in gateAndServe has already decided, from the trust level and the
+	// isolation this host provides, whether the model may run, and told the user. The host
+	// is asked only to report what the sandbox achieved, so a platform that cannot confine
+	// further than a process jail is not refused a second time.
+	return localmodel.Open(localmodel.Config{DataDir: abs, Progress: out, MinContainment: "process"})
 }
 
 // httpClient is the client for a running local server. It presents the server's per-launch
@@ -426,6 +430,9 @@ func (r *localRunner) serveViaHost(ctx context.Context, m catalog.ModelSpec, ctx
 	ep, err := r.host.Serve(ctx, m.ID, localmodel.ServeOptions{CtxSize: ctxSize, CPUOnly: cpuOnly})
 	if err != nil {
 		return serve.Endpoint{}, err
+	}
+	if r.out != nil && !ep.Reused {
+		_, _ = fmt.Fprintf(r.out, "isolation: %s\n", ep.Containment)
 	}
 	return serve.Endpoint{ModelID: ep.ModelID, BaseURL: ep.BaseURL, Port: ep.Port, PID: ep.PID, Reused: ep.Reused}, nil
 }

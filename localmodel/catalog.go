@@ -47,13 +47,42 @@ type Hardware struct {
 
 // Models lists the local models in the catalog that match q.
 func (h *Host) Models(q ModelQuery) []Model {
-	return catalog.Catalog{Models: h.models}.Find(catalog.Query{
+	return cloneModels(catalog.Catalog{Models: h.models}.Find(catalog.Query{
 		Kind:       catalog.KindLocal,
 		Capability: q.Capability,
 		MaxParamsB: q.MaxParamsB,
 		Publisher:  q.Publisher,
 		SafeOnly:   q.SafeOnly,
-	})
+	}))
+}
+
+// cloneModels copies the models and the slices inside them. A [Model] returned by value
+// would otherwise share its Quants backing array with the host's catalog, and a caller
+// that edited a digest or a URL through it would change what the host fetches and trusts.
+func cloneModels(in []Model) []Model {
+	if in == nil {
+		return nil
+	}
+	out := make([]Model, len(in))
+	for i, m := range in {
+		out[i] = cloneModel(m)
+	}
+	return out
+}
+
+func cloneModel(m Model) Model {
+	if m.Quants == nil {
+		return m
+	}
+	qs := make([]Quant, len(m.Quants))
+	for i, q := range m.Quants {
+		if q.Files != nil {
+			q.Files = append([]QuantFile(nil), q.Files...)
+		}
+		qs[i] = q
+	}
+	m.Quants = qs
+	return m
 }
 
 // Model returns the local catalog model with this id.
@@ -66,7 +95,7 @@ func (h *Host) Model(id string) (Model, error) {
 		if !m.Local() {
 			return Model{}, fmt.Errorf("localmodel: %q is a hosted model; there is nothing to run locally", id)
 		}
-		return m, nil
+		return cloneModel(m), nil
 	}
 	return Model{}, fmt.Errorf("localmodel: %q is not in the catalog", id)
 }

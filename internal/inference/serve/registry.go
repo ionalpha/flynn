@@ -33,6 +33,13 @@ type Record struct {
 	BaseURL string `json:"baseURL"`
 	// Runtime names the runtime serving the model, for display.
 	Runtime string `json:"runtime,omitempty"`
+	// Version is the runtime build the server was started from. A later process compares
+	// it with the advisory floor before adopting the server, and treats a record without
+	// one as below every floor, because it cannot say what it is running.
+	Version string `json:"version,omitempty"`
+	// Containment is the isolation the launch ran under, as the sandbox reported it. A
+	// record without one is read as the weakest level.
+	Containment string `json:"containment,omitempty"`
 	// StartedAt is the Unix time the server was started, for display.
 	StartedAt int64 `json:"startedAt,omitempty"`
 }

@@ -1,0 +1,65 @@
+package localmodel
+
+import (
+	"context"
+	"sync"
+
+	"github.com/ionalpha/flynn/internal/inference/serve"
+	"github.com/ionalpha/flynn/sandbox"
+)
+
+// This file is compiled into the test binary only. It is the one place a test reaches
+// into the package: what a host outside the module cannot do (name a runtime build, or
+// pretend the sandbox is weaker or stronger than it is) is done here, so the public API
+// carries no way to do it.
+
+// Release is a runtime build a test pins in place of the module's own.
+type Release = runtimeRelease
+
+// WithReleases returns cfg with the builds a Host will install from.
+func WithReleases(cfg Config, rs ...Release) Config {
+	cfg.releases = rs
+	return cfg
+}
+
+// SetContainment makes the Host see the sandbox as providing level, to test a refusal on
+// a platform that provides more.
+func (h *Host) SetContainment(level sandbox.Containment) {
+	h.containment = func() sandbox.Containment { return level }
+}
+
+// BeforeLaunchCheck runs fn just before the last digest check of a launch, with the port
+// the server will be told to listen on.
+func (h *Host) BeforeLaunchCheck(fn func(port int)) { h.preLaunch = fn }
+
+// LaunchSpy records every spec the Host's sandbox launcher is asked to start.
+type LaunchSpy struct {
+	mu    sync.Mutex
+	specs []sandbox.ServeSpec
+}
+
+// Specs returns the specs seen so far.
+func (s *LaunchSpy) Specs() []sandbox.ServeSpec {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]sandbox.ServeSpec(nil), s.specs...)
+}
+
+type spyLauncher struct {
+	next serve.Launcher
+	spy  *LaunchSpy
+}
+
+func (l spyLauncher) Serve(ctx context.Context, spec sandbox.ServeSpec) (serve.Proc, error) {
+	l.spy.mu.Lock()
+	l.spy.specs = append(l.spy.specs, spec)
+	l.spy.mu.Unlock()
+	return l.next.Serve(ctx, spec)
+}
+
+// SpyOnLaunches wraps the Host's launcher so the specs it is given can be read back.
+func (h *Host) SpyOnLaunches() *LaunchSpy {
+	spy := &LaunchSpy{}
+	h.mgr = h.newManager(spyLauncher{next: serve.SandboxLauncher{SB: h.sb}, spy: spy})
+	return spy
+}

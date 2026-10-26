@@ -386,9 +386,10 @@ is part of CI).
   **`memory`** and **`skill`** its durable stores.
 - **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
   adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation;
-  **`localmodel`** runs a catalog model on this machine for a host (advisory gate,
-  digest-pinned downloads, loopback-only and token-protected serving inside the
-  sandbox), and `flynn models` is one of its clients.
+  **`localmodel`** runs a catalog model on this machine for a host (per-host advisory
+  floor, digest-pinned downloads, loopback-only and token-protected serving inside the
+  sandbox at a stated minimum isolation, with the listener attributed before the token
+  is sent), and `flynn models` is one of its clients.
 - **`clock`**, **`ids`**, **`hlc`** the determinism ports; **`fault`** the error
   taxonomy; **`observe`** logging/tracing; **`bus`** the in-process event bus;
   **`jobs`** the leased job queue.

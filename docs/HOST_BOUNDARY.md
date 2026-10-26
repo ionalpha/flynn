@@ -110,9 +110,19 @@ classifies a source, installs a runtime behind the advisory gate, fetches weight
 a catalog digest, serves them inside the sandbox on a loopback port behind a per-launch
 token, and stops them. The guards have no switch. A host that starts a model server
 itself (a runtime launched from a download) has none of them, which is why the package
-offers no way to supply a server binary, an address, a chat template or a floor. The
-served runtime keeps outbound network access under the local sandbox, so the loopback
-pin and the token are what keep the endpoint private.
+offers no way to supply a server binary, an address, a chat template, a runtime build or
+a lower floor. The served runtime keeps outbound network access under the local sandbox,
+so the loopback pin and the token are what keep the endpoint private.
+
+Three things are the host's to decide, and each is checked in one direction only. A host
+can raise the advisory floor for its own `Host` with `RaiseFloor`; the floor never lowers,
+and one `Host` raising it does not change another. A host states the least isolation it
+accepts with `Config.MinContainment` (kernel confinement unless it says `"process"`), and
+`Serve` refuses a sandbox that provides less and reports the level it launched under. A
+server found already running is held to the same floor and isolation as a new one, and is
+stopped if it falls short. Before the token is sent anywhere, the listener has to refuse a
+request with no credential and one with a made-up credential, and accept one with a probe
+key only the launched runtime was given.
 
 `allowance.Policy` is wired but marks nothing until the operator names an action, and
 that empty default is the intended answer rather than a gap. Which actions reach

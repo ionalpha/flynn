@@ -200,6 +200,19 @@ type EnsureConfig struct {
 	// Confine requests the sandbox kernel confinement for the runtime process, which is
 	// the right default since the runtime parses untrusted weights.
 	Confine bool
+	// Version is the runtime build, recorded so a later process can hold the running
+	// server to the advisory floor.
+	Version string
+	// Containment names the isolation the sandbox reported for the launch, recorded so a
+	// later process can refuse to adopt a server that ran under less than it requires.
+	Containment string
+	// Attest, when set, runs after the endpoint answers and before the server is recorded
+	// or returned. It is the caller's chance to prove the listener is the process this
+	// call started, which a probe cannot: a probe sees whoever holds the port. A non-nil
+	// error stops the server and fails the call. The server must also still be running
+	// afterwards, so a runtime that lost the bind race and exited cannot pass on the
+	// strength of the process that beat it.
+	Attest func(ctx context.Context, baseURL string) error
 }
 
 // Ensure returns a running endpoint for the model, starting the server if one is not
@@ -232,20 +245,45 @@ func (m *Manager) Ensure(ctx context.Context, cfg EnsureConfig) (Endpoint, error
 		_ = proc.Stop()
 		return Endpoint{}, err
 	}
+	if err := m.attest(ctx, proc, cfg); err != nil {
+		_ = proc.Stop()
+		return Endpoint{}, err
+	}
 
 	rec := Record{
-		ModelID:   cfg.ModelID,
-		PID:       proc.PID(),
-		Port:      cfg.Plan.Port,
-		BaseURL:   cfg.Plan.BaseURL,
-		Runtime:   cfg.Runtime,
-		StartedAt: m.clk.Now().Unix(),
+		ModelID:     cfg.ModelID,
+		PID:         proc.PID(),
+		Port:        cfg.Plan.Port,
+		BaseURL:     cfg.Plan.BaseURL,
+		Runtime:     cfg.Runtime,
+		Version:     cfg.Version,
+		Containment: cfg.Containment,
+		StartedAt:   m.clk.Now().Unix(),
 	}
 	if err := m.reg.Put(rec); err != nil {
 		_ = proc.Stop()
 		return Endpoint{}, err
 	}
 	return Endpoint{ModelID: cfg.ModelID, BaseURL: cfg.Plan.BaseURL, Port: cfg.Plan.Port, PID: proc.PID(), proc: proc}, nil
+}
+
+// attest runs the caller's attestation, then confirms the process this call started is
+// still running, so an answer that came from a squatter while the runtime exited is never
+// accepted. A config without an Attest is not attested.
+func (m *Manager) attest(ctx context.Context, proc Proc, cfg EnsureConfig) error {
+	if cfg.Attest == nil {
+		return nil
+	}
+	if err := cfg.Attest(ctx, cfg.Plan.BaseURL); err != nil {
+		return err
+	}
+	select {
+	case <-proc.Done():
+		return fault.New(fault.Terminal, "serve_exited",
+			"serve: the runtime exited while its endpoint was being attested, so something else holds the port:\n"+proc.Output())
+	default:
+		return nil
+	}
 }
 
 // ContainerEnsureConfig is the input to EnsureContainer: which model, the validated
@@ -373,12 +411,12 @@ type waitable interface {
 // real-world failure (a bad runtime flag, a refused weights file), so it is reported
 // with the server's own output rather than as a bare timeout.
 //
-// An answer only counts while the process this call started is still running. Another
-// process may already hold the port (the free port was chosen before the launch); the
-// runtime then fails to bind and exits, and the squatter answers the probe in its place.
-// Accepting that answer would hand the caller, and any credential it then sends, to a
-// stranger. So the first probe waits one tick, giving a runtime that cannot bind time to
-// exit, and every answer is re-checked against the process.
+// An answer only counts while the process this call started is still running, which makes
+// a squatter that answered before the runtime exited unlikely to pass, but not
+// impossible: the exit can come after the check. The answer therefore says only that
+// something is listening. Whether it is this call's server is decided by
+// [EnsureConfig.Attest], which has to be set by a caller that will send the listener a
+// credential.
 func (m *Manager) waitReady(ctx context.Context, proc waitable, baseURL string, timeout time.Duration) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
