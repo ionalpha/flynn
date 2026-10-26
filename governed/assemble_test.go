@@ -246,6 +246,9 @@ func TestOptionsNeverSilentlyWeaken(t *testing.T) {
 		{name: "driver outside fanout", opts: []Option{WithDriver(driver.NameDefault)}, want: "fanout"},
 		{name: "toolset plus fanout", opts: []Option{WithToolset([]mission.Tool{namedTool("echo")}, grant), Waive(GuardSandbox, "r"), WithFanout(nil)}, want: "mutually exclusive"},
 		{name: "toolset plus extensions", opts: []Option{WithToolset([]mission.Tool{namedTool("echo")}, grant), Waive(GuardSandbox, "r"), WithExtensions(bridgeOf())}, want: "do not apply"},
+		{name: "external plus capabilities", opts: []Option{WithExternalAgent(ExternalAgent{Model: "x", Driver: extDriver(t)}), WithCapabilities("read")}, want: "could not bound"},
+		{name: "external plus extensions", opts: []Option{WithExternalAgent(ExternalAgent{Model: "x", Driver: extDriver(t)}), WithExtensions(bridgeOf())}, want: "could not bound"},
+		{name: "allowance names an action the grant lacks", opts: []Option{WithAllowance([]string{"shell"})}, want: "WithAllowance names shell"},
 		{name: "extension shadows bash", opts: []Option{WithExtensions(bridgeOf(namedTool("bash")))}, want: "shadows"},
 		{name: "nil resources", backend: func(b Backends) Backends { b.Resources = nil; return b }, want: "Resources"},
 		{name: "nil jobs", backend: func(b Backends) Backends { b.Jobs = nil; return b }, want: "Jobs"},
@@ -475,4 +478,14 @@ func TestWorkspacePolicyFilesDoNotWidenTheGrant(t *testing.T) {
 			t.Fatalf("grant for %q changed during the run", name)
 		}
 	}
+}
+
+// extDriver is a resolvable driver for a test that needs a valid external agent.
+func extDriver(t *testing.T) driver.Driver {
+	t.Helper()
+	drv, err := driver.Default().Resolve(driver.NameDefault)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	return drv
 }

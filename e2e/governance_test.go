@@ -106,19 +106,19 @@ func TestRequiredApprovalWithNobodyToAskIsRefused(t *testing.T) {
 func TestUndeclaredIrreversibleActionStopsTheRun(t *testing.T) {
 	script := func() *fakeOpenAI {
 		return newFakeOpenAIQueue(t,
-			toolCall("call_1", "shell", `{"command":"`+passingCheck+`"}`),
+			toolCall("call_1", "bash", `{"command":"`+passingCheck+`"}`),
 			finalText("Done."),
 		)
 	}
 
 	undeclared := newInstance(t).withModel(script())
-	res := undeclared.run("-no-learn", "goal", "--irreversible", "shell", "run a command")
+	res := undeclared.run("-no-learn", "goal", "--irreversible", "bash", "run a command")
 	requireExit(t, res, 1, "an undeclared irreversible action")
-	requireContains(t, res.combined(), "shell reaches outside the workspace and cannot be undone", "the stop names the action")
+	requireContains(t, res.combined(), "bash reaches outside the workspace and cannot be undone", "the stop names the action")
 
 	fake := script()
 	declared := newInstance(t).withModel(fake)
-	res = declared.run("-no-learn", "goal", "--irreversible", "shell", "--allow", "shell", "run a command")
+	res = declared.run("-no-learn", "goal", "--irreversible", "bash", "--allow", "bash", "run a command")
 	requireExit(t, res, 0, "a declared irreversible action")
 	for i := range fake.count() {
 		for _, m := range fake.request(t, i).Messages {

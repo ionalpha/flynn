@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/allowance"
 	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/driver"
@@ -122,24 +123,41 @@ func ApprovalPolicy(actions []string) approval.Requirements {
 	return req
 }
 
-// checkApprovalNames refuses a policy that names an action the run's grant does not list.
-// The gate matches on the action's exact name, and an action outside the grant is refused at
-// the waist before it could be taken, so such a name gates nothing: it is a misspelling or a
-// tool the run was not given, and accepting it would print a posture that lists a gate no
-// action can reach.
-func (c *config) checkApprovalNames(grant capability.Grant) error {
-	var unknown []string
-	for name := range ApprovalPolicy(c.approve) {
-		if !grant.Allows(name) {
-			unknown = append(unknown, name)
+// checkActionNames refuses an approval or allowance policy that names an action the run's
+// grant does not list. Both gates match an action by its exact name, and an action outside
+// the grant is refused at the waist before it could be taken, so such a name gates nothing:
+// it is a misspelling or a tool the run was not given, and accepting it would print a
+// posture that lists a gate no action can reach.
+func (c *config) checkActionNames(grant capability.Grant) error {
+	for _, p := range []struct {
+		option string
+		names  []string
+	}{
+		{"WithApproval", GatedActions(ApprovalPolicy(c.approve))},
+		{"WithAllowance", sortedNames(outsidePolicy(c.outside))},
+	} {
+		var unknown []string
+		for _, name := range p.names {
+			if !grant.Allows(name) {
+				unknown = append(unknown, name)
+			}
+		}
+		if len(unknown) > 0 {
+			return fmt.Errorf("governed: %s names %s, which this run's grant does not include (it offers %s)",
+				p.option, strings.Join(unknown, ", "), strings.Join(grant.Actions(), ", "))
 		}
 	}
-	if len(unknown) == 0 {
-		return nil
+	return nil
+}
+
+// sortedNames lists the actions of an allowance set in order.
+func sortedNames(set allowance.Actions) []string {
+	names := make([]string, 0, len(set))
+	for name := range set {
+		names = append(names, name)
 	}
-	sort.Strings(unknown)
-	return fmt.Errorf("governed: WithApproval names %s, which this run's grant does not include (it offers %s)",
-		strings.Join(unknown, ", "), strings.Join(grant.Actions(), ", "))
+	sort.Strings(names)
+	return names
 }
 
 // GatedActions is the sorted list of actions a policy pauses, for the line a run prints
