@@ -194,3 +194,40 @@ func TestUnreadableRegistryIsReported(t *testing.T) {
 		t.Fatalf("the client presented %q to a port no server of this host holds", auth)
 	}
 }
+
+// A listener that cannot even be asked is not attributed: a base URL no request can be
+// built for fails the handshake as an unauthenticated listener.
+func TestAttestRefusesAnUnaskableListener(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+	if err := h.Attest(t.Context(), "http://127.0.0.1:1/\x7f", "probe"); !errors.Is(err, localmodel.ErrUnauthenticated) {
+		t.Fatalf("Attest = %v; want ErrUnauthenticated", err)
+	}
+}
+
+// A second host that finds a server whose key file is gone has no token to present for it,
+// so its client sends none rather than guessing.
+func TestClientPresentsNoTokenWhenTheKeyFileIsGone(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+	ep, err := h.Serve(t.Context(), f.model.ID, localmodel.ServeOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := reopen(t, f, nil)
+	if err := os.Remove(keyFile(f)); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, ep.BaseURL+"/chat/completions", strings.NewReader("{}"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := second.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("status %d; want the server's refusal of a request with no token", resp.StatusCode)
+	}
+}
