@@ -85,3 +85,28 @@ func TestReadinessFileRefusesTheScratchAreas(t *testing.T) {
 		}
 	}
 }
+
+// TestReadinessFileNeedsAnExistingDirectory shows a path whose directory is missing fails
+// before anything is written, rather than creating a directory the caller did not vet
+// against the writable roots.
+func TestReadinessFileNeedsAnExistingDirectory(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "ready.json")
+	if err := WriteReadinessFile(path, Readiness{Ready: true}); err == nil {
+		t.Fatal("a missing directory must fail the write")
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err == nil {
+		t.Fatal("the directory was created")
+	}
+}
+
+// TestPathWithinIsFalseForPathsThatCannotBeRelated covers a relative path against an
+// absolute one: with no relation between them, one is not inside the other.
+func TestPathWithinIsFalseForPathsThatCannotBeRelated(t *testing.T) {
+	abs, err := filepath.Abs("parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pathWithin("relative", abs) {
+		t.Fatal("a relative path was reported inside an absolute one")
+	}
+}
