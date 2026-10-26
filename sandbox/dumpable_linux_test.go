@@ -28,7 +28,7 @@ func TestRunnerProcessHelper(t *testing.T) {
 	environ := "HELPER_READFILE=" + filepath.Join("/proc", strconv.Itoa(os.Getpid()), "environ")
 	report := func(label string, l *Local) {
 		out := strings.ReplaceAll(helperRun(t, l, environ), "\x00", "\n")
-		fmt.Printf("RESULT-%s:%s:END\n", label, out)
+		_, _ = fmt.Fprintf(os.Stdout, "RESULT-%s:%s:END\n", label, out)
 	}
 	report("FLOOR", newTestLocal(t))
 	if confined := newTestLocal(t, WithDefaultConfinement()); confined.kernelConfinementEnforceable() {
