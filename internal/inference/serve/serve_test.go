@@ -353,3 +353,70 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+func TestEnsureAttestsBeforeRecording(t *testing.T) {
+	proc := newFakeProc(31)
+	m, reg := testManager(t, &fakeLauncher{proc: proc}, alwaysHealthy, OSKiller)
+	var sawURL string
+	var recordedDuring bool
+	ep, err := m.Ensure(context.Background(), EnsureConfig{
+		ModelID: "m", Plan: samplePlan(9100), Version: "b60000", Containment: "process-jail",
+		Attest: func(_ context.Context, baseURL string) error {
+			sawURL = baseURL
+			_, recordedDuring, _ = reg.Get("m")
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if sawURL != samplePlan(9100).BaseURL {
+		t.Fatalf("Attest was given %q, want the plan's endpoint", sawURL)
+	}
+	if recordedDuring {
+		t.Fatal("the server was recorded before it was attested")
+	}
+	rec, ok, _ := reg.Get("m")
+	if !ok || rec.Version != "b60000" || rec.Containment != "process-jail" || ep.PID != 31 {
+		t.Fatalf("record = %+v ok=%v; want the build and isolation the launch reported", rec, ok)
+	}
+}
+
+func TestEnsureStopsServerThatFailsAttestation(t *testing.T) {
+	proc := newFakeProc(32)
+	m, reg := testManager(t, &fakeLauncher{proc: proc}, alwaysHealthy, OSKiller)
+	want := errors.New("not the server")
+	_, err := m.Ensure(context.Background(), EnsureConfig{
+		ModelID: "m", Plan: samplePlan(9101),
+		Attest: func(context.Context, string) error { return want },
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("Ensure = %v; want the attestation error", err)
+	}
+	if !proc.wasStopped() {
+		t.Fatal("a server that failed attestation was left running")
+	}
+	if _, ok, _ := reg.Get("m"); ok {
+		t.Fatal("a server that failed attestation was recorded")
+	}
+}
+
+// A runtime that lost the bind race exits, and the squatter that beat it can still pass
+// every question put to it; the exit is what gives it away.
+func TestEnsureRefusesAttestationAfterRuntimeExited(t *testing.T) {
+	proc := newFakeProc(33)
+	m, reg := testManager(t, &fakeLauncher{proc: proc}, alwaysHealthy, OSKiller)
+	_, err := m.Ensure(context.Background(), EnsureConfig{
+		ModelID: "m", Plan: samplePlan(9102),
+		Attest: func(context.Context, string) error {
+			proc.exitNow("bind: address already in use")
+			return nil
+		},
+	})
+	if err == nil || !contains(err.Error(), "address already in use") {
+		t.Fatalf("Ensure = %v; want a refusal carrying the runtime's output", err)
+	}
+	if _, ok, _ := reg.Get("m"); ok {
+		t.Fatal("a server whose runtime had exited was recorded")
+	}
+}

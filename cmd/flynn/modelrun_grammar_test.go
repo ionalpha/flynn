@@ -25,7 +25,7 @@ func sentGrammar(t *testing.T, plan harness.Plan) (string, bool) {
 	}))
 	defer srv.Close()
 
-	client := localModelClient(serve.Endpoint{BaseURL: srv.URL}, "local:model", plan)
+	client := localModelClient(serve.Endpoint{BaseURL: srv.URL}, "local:model", plan, nil)
 	req := llm.Request{
 		Messages: []llm.Message{llm.Text(llm.RoleUser, "read the file")},
 		Tools: []llm.Tool{{

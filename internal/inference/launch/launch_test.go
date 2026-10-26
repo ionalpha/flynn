@@ -310,6 +310,32 @@ func TestBuildPlanGGUFFormatStillServes(t *testing.T) {
 	}
 }
 
+func TestBuildPlanAPIKeyFileKeepsKeyOutOfArgv(t *testing.T) {
+	cfg := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, APIKeyFile: "/run/key"}
+	plan, err := BuildPlan(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !argvHasFlag(plan.Argv, "--api-key-file", "/run/key") {
+		t.Fatalf("key file not passed: %v", plan.Argv)
+	}
+	if contains(plan.Argv, "--api-key") {
+		t.Fatalf("a key file must not also put a key on the command line: %v", plan.Argv)
+	}
+}
+
+func TestBuildPlanAPIKeyFileRefusals(t *testing.T) {
+	both := Config{BinPath: "b", WeightsPath: "w", Model: localModel("chatml"), Port: 9000, APIKey: "tok", APIKeyFile: "/run/key"}
+	vllm := Config{BinPath: "vllm", WeightsPath: "/w", Model: localModel("chatml"), Format: catalog.FormatSafetensors, Port: 9000, APIKeyFile: "/run/key"}
+	for name, cfg := range map[string]Config{"both key forms": both, "vLLM has no key file flag": vllm} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := BuildPlan(cfg); err == nil {
+				t.Fatalf("expected %s to be refused", name)
+			}
+		})
+	}
+}
+
 // buildMiniGGUF encodes a minimal valid GGUF header carrying the given string metadata,
 // enough for the reader to extract the chat template.
 func buildMiniGGUF(kvs map[string]string) []byte {
@@ -361,6 +387,23 @@ func TestInspectTemplate(t *testing.T) {
 	}
 	if dec.ModelSupplied {
 		t.Fatal("a model with no embedded template must not be flagged")
+	}
+}
+
+// TestInspectTemplateFromReadsTheReaderItIsGiven checks the descriptor-based entry point
+// decides from the bytes it is handed and refuses bytes that are not a GGUF header, so a
+// caller that hashed a file can parse the same open file.
+func TestInspectTemplateFromReadsTheReaderItIsGiven(t *testing.T) {
+	good := buildMiniGGUF(map[string]string{"tokenizer.chat_template": "{{ messages }}"})
+	dec, err := InspectTemplateFrom(bytes.NewReader(good), "chatml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec.Template != "chatml" || !dec.ModelSupplied {
+		t.Fatalf("decision = %+v, want the trusted template with the model's flagged", dec)
+	}
+	if _, err := InspectTemplateFrom(strings.NewReader("not a gguf file"), "chatml"); err == nil {
+		t.Fatal("bytes without a GGUF header were accepted")
 	}
 }
 
