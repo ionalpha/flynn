@@ -312,6 +312,13 @@ jobs:
             fail=1
           fi
           exit "$fail"
+      # A refused mount reaches the check only as EPERM; the kernel log names the exact
+      # operation, flags and path AppArmor matched, which is what a profile fix needs.
+      - name: AppArmor denials
+        if: failure()
+        run: |
+          sudo dmesg | grep 'apparmor="DENIED"' | grep 'flynn-container' | tail -n 20 |
+            while IFS= read -r line; do echo "::error title=AppArmor denial::$line"; done
       # The source Dockerfile is what `docker build .` and deploy/compose.yaml use, and
       # goreleaser never builds it, so build it here and hold it to the same self-test.
       - name: Source Dockerfile builds and passes the sandbox check
