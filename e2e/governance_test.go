@@ -103,23 +103,34 @@ func TestRequiredApprovalWithNobodyToAskIsRefused(t *testing.T) {
 // TestUndeclaredIrreversibleActionStopsTheRun: an action marked irreversible and not
 // declared stops the run with the ask, rather than being taken or handed back as a
 // refusal the run might route around. Declared with --allow, the same action is taken.
+//
+// The marked action is write rather than bash. The waist consults containment before
+// the allowance gate, so on a host that cannot confine a command bash is refused by
+// containment first and the allowance stop is never reached; write needs no
+// confinement, so the gate under test is the one that speaks on every host.
 func TestUndeclaredIrreversibleActionStopsTheRun(t *testing.T) {
 	script := func() *fakeOpenAI {
 		return newFakeOpenAIQueue(t,
-			toolCall("call_1", "bash", `{"command":"`+passingCheck+`"}`),
+			toolCall("call_1", "write", `{"path":"irreversible.txt","content":"x"}`),
 			finalText("Done."),
 		)
 	}
 
 	undeclared := newInstance(t).withModel(script())
-	res := undeclared.run("-no-learn", "goal", "--irreversible", "bash", "run a command")
+	res := undeclared.run("-no-learn", "goal", "--irreversible", "write", "write irreversible.txt")
 	requireExit(t, res, 1, "an undeclared irreversible action")
-	requireContains(t, res.combined(), "bash reaches outside the workspace and cannot be undone", "the stop names the action")
+	requireContains(t, res.combined(), "write reaches outside the workspace and cannot be undone", "the stop names the action")
+	if _, err := undeclared.workfile("irreversible.txt"); err == nil {
+		t.Fatal("an undeclared irreversible action was taken")
+	}
 
 	fake := script()
 	declared := newInstance(t).withModel(fake)
-	res = declared.run("-no-learn", "goal", "--irreversible", "bash", "--allow", "bash", "run a command")
+	res = declared.run("-no-learn", "goal", "--irreversible", "write", "--allow", "write", "write irreversible.txt")
 	requireExit(t, res, 0, "a declared irreversible action")
+	if _, err := declared.workfile("irreversible.txt"); err != nil {
+		t.Fatalf("a declared irreversible action was not taken: %v", err)
+	}
 	for i := range fake.count() {
 		for _, m := range fake.request(t, i).Messages {
 			if m.Role == "tool" && strings.Contains(m.Content, "allowance_required") {
