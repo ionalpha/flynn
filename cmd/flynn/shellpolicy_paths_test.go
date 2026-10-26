@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -213,8 +214,14 @@ func TestMCPServerRecordsTheDefaultShellPosture(t *testing.T) {
 	if len(got) != 1 || got[0]["network"] != "denied" || got[0]["credentials"] != "hidden" {
 		t.Fatalf("MCP postures = %v, want one with the network denied and credentials hidden", got)
 	}
-	if !slices.Contains(toStrings(got[0]["hidden"]), dataDir) {
-		t.Errorf("the MCP server's shell does not hide the data directory %q: %v", dataDir, got[0]["hidden"])
+	// The sandbox records a path it can resolve by its real location, so a data directory under a
+	// symlinked temp root (macOS) is named by the target.
+	want, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(toStrings(got[0]["hidden"]), want) {
+		t.Errorf("the MCP server's shell does not hide the data directory %q: %v", want, got[0]["hidden"])
 	}
 }
 
