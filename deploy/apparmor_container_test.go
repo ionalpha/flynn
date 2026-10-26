@@ -29,10 +29,16 @@ const dockerDenyMount = "  deny mount,\n"
 // mounts propagating out of the namespace; bind and rbind build the writable and denied
 // paths; remount makes them read-only; tmpfs gives a scratch directory and hides denied
 // directories. Nothing else docker-default denies is lifted.
+//
+// The remount rule lists its flags because a remount rule without options does not cover
+// a bind remount: AppArmor refused the launcher's "ro, remount, bind" of / with "failed
+// flags match", the remount failed silently, and the sandbox check's canary caught the
+// writable host. The list is the read-only bit and the restrictive flags the launcher
+// carries over (keepRestrictive in sandbox/confine_linux.go).
 var sandboxMounts = []string{
 	"mount options=(rprivate) -> /,",
 	"mount options in (bind, rbind) /** -> /**,",
-	"remount /**,",
+	"remount options in (ro, rw, bind, nosuid, nodev, noexec, noatime, nodiratime) /{,**},",
 	"mount fstype=tmpfs tmpfs -> /**,",
 }
 

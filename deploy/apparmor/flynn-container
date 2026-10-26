@@ -37,7 +37,7 @@ profile "flynn-container" flags=(attach_disconnected,mediate_deleted) {
   # mount namespaces, in place of docker-default's "deny mount,".
   mount options=(rprivate) -> /,
   mount options in (bind, rbind) /** -> /**,
-  remount /**,
+  remount options in (ro, rw, bind, nosuid, nodev, noexec, noatime, nodiratime) /{,**},
   mount fstype=tmpfs tmpfs -> /**,
 
   deny /sys/[^f]*/** wklx,
