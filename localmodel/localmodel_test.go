@@ -19,7 +19,9 @@ import (
 )
 
 // TestExternalPackageUsesOnlyThePublicAPI keeps the tests in this package honest: they
-// stand in for a host outside the module, so none may import an internal package.
+// stand in for a host outside the module, so none may import an internal package. The
+// exception is export_test.go, which belongs to the package under test and holds the hooks
+// no outside host has; it is compiled only into the test binary.
 func TestExternalPackageUsesOnlyThePublicAPI(t *testing.T) {
 	files, err := filepath.Glob("*_test.go")
 	if err != nil {
@@ -29,6 +31,9 @@ func TestExternalPackageUsesOnlyThePublicAPI(t *testing.T) {
 		t.Fatal("no test files found")
 	}
 	for _, f := range files {
+		if f == "export_test.go" {
+			continue
+		}
 		af, err := parser.ParseFile(token.NewFileSet(), f, nil, parser.ImportsOnly)
 		if err != nil {
 			t.Fatal(err)
@@ -147,15 +152,23 @@ func TestNoPathBindsOffLoopback(t *testing.T) {
 // Refusal 2: the advisory gate runs before any byte is fetched, on first install and on
 // a cached one, and the only way to move the floor is up.
 func TestAdvisoryGateCannotBeSkipped(t *testing.T) {
-	// The floor is process-wide and cannot be lowered, so this test raises it to a band
-	// of its own: b9000 is above the compiled-in floor and below b50000, and the default
-	// fixture build, b99999, is above everything raised here, so test order does not matter.
-	h := newFixture(t, fixtureOpts{}).open()
-	if err := h.RaiseFloor("b50000", "TEST-ADVISORY-1"); err != nil {
+	// The floor belongs to the Host it was raised on, so nothing here outlives the test or
+	// reaches another one, and the test gives the same answer however often it runs.
+	old := newFixture(t, fixtureOpts{version: "b60000"})
+	oh := old.open()
+	if err := oh.RaiseFloor("b70000", "TEST-ADVISORY-1"); err != nil {
 		t.Fatal(err)
 	}
-	old := newFixture(t, fixtureOpts{version: "b9000"})
-	oh := old.open()
+
+	// A Host that was not raised installs the same build, so the refusals below come from
+	// the floor on oh and not from the build.
+	other := newFixture(t, fixtureOpts{version: "b60000"}).open()
+	if _, err := other.EnsureRuntime(t.Context()); err != nil {
+		t.Fatalf("a floor raised on one Host stopped another: %v", err)
+	}
+	if other.Floor() == oh.Floor() {
+		t.Fatalf("both Hosts report the floor %s; the raise leaked", oh.Floor())
+	}
 
 	if _, err := oh.EnsureRuntime(t.Context()); err == nil {
 		t.Fatal("a build below the raised floor was installed")

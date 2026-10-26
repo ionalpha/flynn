@@ -10,16 +10,18 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/inference"
 	"github.com/ionalpha/flynn/internal/inference/provision"
 )
 
-// Release is one pinned build of the runtime for one platform: where its archive is, the
-// digest the archive must match, and the server executable inside it. Supplying releases
-// through [Config.Releases] replaces the builds this module pins; the advisory gate and
-// the digest check still apply to them.
-type Release struct {
+// runtimeRelease is one pinned build of the runtime for one platform: where its archive
+// is, the digest the archive must match, and the server executable inside it. A host
+// cannot supply one: the version it reports is a claim about a binary this package never
+// runs, so accepting it from the caller would let a label decide the advisory gate. Tests
+// supply them through a hook that is compiled only into the test binary.
+type runtimeRelease struct {
 	// Runtime is the runtime the build is, [Runtime] for the one this package serves.
 	Runtime string
 	// Version is the build's version, compared against the advisory floor.
@@ -48,9 +50,9 @@ type RuntimeInstall struct {
 	Cached bool
 }
 
-// pinnedReleases converts and checks host-supplied releases. A release without a digest
+// pinnedReleases converts and checks the releases a test supplies. A release without a digest
 // would be installed on trust, so it is refused here rather than at install.
-func pinnedReleases(in []Release) ([]provision.Release, error) {
+func pinnedReleases(in []runtimeRelease) ([]provision.Release, error) {
 	var out []provision.Release
 	for _, r := range in {
 		if r.SHA256 == "" {
@@ -91,30 +93,32 @@ func (h *Host) release() (provision.Release, error) {
 // EnsureRuntime installs the runtime build for this platform and returns where it is.
 // The build is refused if it is below the advisory floor, before anything is downloaded,
 // and a build already installed is held to the same floor. The archive must match its
-// pinned digest. The server binary's own hash is recorded at install and checked again by
-// [Host.Serve] before each launch.
+// pinned digest. The server binary's own hash is recorded when the verified archive is
+// unpacked and checked again by [Host.Serve] before each launch. A build found installed
+// without that record is refused, not recorded: a hash taken from a file nobody vouched
+// for would bless whatever is there.
 func (h *Host) EnsureRuntime(ctx context.Context) (RuntimeInstall, error) {
 	rel, err := h.release()
 	if err != nil {
 		return RuntimeInstall{}, err
 	}
-	if err := rel.Gate(); err != nil {
+	if err := h.gate(rel.Version); err != nil {
 		return RuntimeInstall{}, h.fail(err)
 	}
 	inst, err := provision.Install(ctx, h.dl, rel, h.dataDirPath("runtimes"))
 	if err != nil {
 		return RuntimeInstall{}, h.fail(err)
 	}
-	if !inst.FromCache {
-		h.say("installed %s %s (verified)", Runtime, inst.Version)
-	}
 	sidecar := inst.BinPath + ".sha256"
-	if _, statErr := os.Stat(sidecar); inst.FromCache && statErr == nil {
+	if inst.FromCache {
 		if err := verifyRuntimeBinary(inst.BinPath); err != nil {
 			return RuntimeInstall{}, err
 		}
-	} else if err := recordRuntimeBinary(inst.BinPath, sidecar); err != nil {
-		return RuntimeInstall{}, err
+	} else {
+		h.say("installed %s %s (verified)", Runtime, inst.Version)
+		if err := recordRuntimeBinary(inst.BinPath, sidecar); err != nil {
+			return RuntimeInstall{}, err
+		}
 	}
 	return RuntimeInstall{BinPath: inst.BinPath, Version: inst.Version.String(), Cached: inst.FromCache}, nil
 }
@@ -147,22 +151,68 @@ func verifyRuntimeBinary(bin string) error {
 	return nil
 }
 
-// RaiseFloor raises the minimum runtime version this process will run, for an advisory
+// RaiseFloor raises the minimum runtime version this Host will run, for an advisory
 // learned after the module was built. It keeps the higher of the current floor and
-// version, so a lower version changes nothing, and it has no inverse. The floor is held
-// for the process, across every [Host]. advisoryID names the advisory in a later refusal.
+// version, so a lower version changes nothing, and it has no inverse. The floor belongs to
+// this Host: another Host in the same process does not see it, and it is not remembered
+// when this one closes. Servers already running below it are stopped the next time
+// [Host.Serve] or [Host.Reach] finds them. advisoryID names the advisory in a later
+// refusal.
 func (h *Host) RaiseFloor(version, advisoryID string) error {
 	v := inference.ParseVersion(version)
 	if len(v) == 0 {
 		return errors.New("localmodel: floor version has no numeric component")
 	}
-	inference.Raise(Runtime, v, advisoryID)
+	h.floorMu.Lock()
+	defer h.floorMu.Unlock()
+	if len(h.floor.version) == 0 || h.floor.version.Less(v) {
+		h.floor = hostFloor{version: v, advisory: advisoryID}
+	}
 	return nil
 }
 
-// Floor returns the minimum version of the runtime in force now: the higher of the
-// compiled-in floor and any raised one.
-func (h *Host) Floor() string { return floorOf(Runtime) }
+// Floor returns the minimum version of the runtime this Host will run: the highest of the
+// compiled-in floor, one the process learned from a signed advisory feed, and one raised
+// on this Host.
+func (h *Host) Floor() string {
+	v, ok, _ := inference.FloorFor(Runtime)
+	h.floorMu.RLock()
+	defer h.floorMu.RUnlock()
+	if len(h.floor.version) > 0 && (!ok || v.Less(h.floor.version)) {
+		return h.floor.version.String()
+	}
+	if !ok {
+		return ""
+	}
+	return v.String()
+}
+
+// hostFloor is a floor raised on one Host and the advisory it came from.
+type hostFloor struct {
+	version  inference.Version
+	advisory string
+}
+
+// gate refuses a runtime build below any floor in force: the process-wide one (compiled in
+// or learned from the signed feed), then this Host's own. Every path that installs or
+// adopts a runtime goes through it.
+func (h *Host) gate(v inference.Version) error {
+	if err := inference.SafeToRun(Runtime, v); err != nil {
+		return err
+	}
+	h.floorMu.RLock()
+	f := h.floor
+	h.floorMu.RUnlock()
+	if len(f.version) > 0 && v.Less(f.version) {
+		why := "older than the minimum this host raised"
+		if f.advisory != "" {
+			why = "exposed to " + f.advisory
+		}
+		return fault.New(fault.Forbidden, "runtime_vulnerable",
+			fmt.Sprintf("inference: %s %s is unsafe: %s; update the runtime", Runtime, v, why))
+	}
+	return nil
+}
 
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path) //nolint:gosec // a path under the data directory
