@@ -1,0 +1,4 @@
+go test fuzz v1
+string("00\xb2\xcd00\r000\x120000000000 00000000000000000000\xc6\xc0000000  0000\xab\xe30\x1b0000\xaa\xfc  ️00\xaf\x95000 ")
+int(8)
+

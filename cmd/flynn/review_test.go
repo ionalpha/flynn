@@ -15,6 +15,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -37,6 +38,51 @@ func fixedResolver(addrs ...string) hostResolver {
 			out = append(out, netip.MustParseAddr(a))
 		}
 		return out, nil
+	}
+}
+
+// TestParseReviewFlags: the pull request may come before or after the flags, exactly one is
+// required, and an APPROVE grant without a self-identity is refused.
+func TestParseReviewFlags(t *testing.T) {
+	t.Setenv(envAPIBase, "")
+	tests := []struct {
+		name    string
+		args    []string
+		want    reviewFlags
+		wantErr string
+	}{
+		{
+			name: "pull request first, flags after",
+			args: []string{"acme/widgets#7", "--approve", "--as", "bot", "--max-tokens", "9"},
+			want: reviewFlags{owner: "acme", repo: "widgets", number: 7, approve: true, selfLogin: "bot", maxTokens: 9},
+		},
+		{
+			name: "flags first, repo from the flag",
+			args: []string{"--repo", "acme/widgets", "--oversize", "--max-cost", "1.5", "--max-changed-lines", "40", "--credential", "github/work", "7"},
+			want: reviewFlags{owner: "acme", repo: "widgets", number: 7, oversize: true, maxCost: 1.5, maxLines: 40, credRef: "github/work"},
+		},
+		{name: "no pull request", args: nil, wantErr: "exactly one pull request"},
+		{name: "two pull requests", args: []string{"a/b#1", "a/b#2"}, wantErr: "exactly one pull request"},
+		{name: "unknown flag", args: []string{"a/b#1", "--nope"}, wantErr: "nope"},
+		{name: "bad reference", args: []string{"nonsense"}, wantErr: "no repository"},
+		{name: "approve needs an identity", args: []string{"a/b#1", "--approve"}, wantErr: "--approve requires --as"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := parseReviewFlags(tc.args)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("parseReviewFlags(%q) error = %v, want one containing %q", tc.args, err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseReviewFlags(%q): %v", tc.args, err)
+			}
+			if got != tc.want {
+				t.Fatalf("parseReviewFlags(%q) = %+v, want %+v", tc.args, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -509,13 +555,17 @@ func TestReviewRunSubmitsVerdictAndRefusesShell(t *testing.T) {
 		}
 	}
 	var out bytes.Buffer
-	result, _, _, err := drive(
-		ctx, &out, &reviewScript{}, harness.Plan{}, "",
-		"Review pull request #7.", review.SystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), true, "", nil,
-		withToolset(&boundToolset{tools: toolset, grant: review.Grant()}),
-		withEventObserver(observe),
-	)
+	result, _, _, err := driveRequest{
+		out:       &out,
+		model:     &reviewScript{},
+		plan:      harness.Plan{},
+		objective: "Review pull request #7.",
+		system:    review.SystemPrompt,
+		rstore:    store.Resources(reg),
+		jq:        store.Jobs(),
+		log:       store.Log(),
+		verbose:   true,
+	}.withOptions(withToolset(&boundToolset{tools: toolset, grant: review.Grant()}), withEventObserver(observe)).execute(ctx)
 	if err != nil {
 		t.Fatalf("drive: %v\noutput:\n%s", err, out.String())
 	}

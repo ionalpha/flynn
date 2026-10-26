@@ -71,10 +71,15 @@ func isControl(r rune) bool { return r < 0x20 || r == 0x7f }
 // width (a grapheme cluster wider than a pathological width, a table whose
 // column floors do not fit) is truncated, with a reset appended so a style
 // cut mid-span cannot bleed into the next row.
+//
+// The cut is re-measured and tightened until [ansi.StringWidth] agrees it fits,
+// because [ansi.Truncate] measures some clusters narrower than StringWidth does
+// (a space followed by U+FE0F is one cell to Truncate and two to StringWidth),
+// and StringWidth is the measure every caller lays rows out by.
 func clampRows(rows []string, width int) []string {
 	for i, r := range rows {
-		if ansi.StringWidth(r) > width {
-			rows[i] = ansi.Truncate(r, width, "") + "\x1b[0m"
+		for cut := width; ansi.StringWidth(rows[i]) > width && cut >= 0; cut-- {
+			rows[i] = ansi.Truncate(r, cut, "") + "\x1b[0m"
 		}
 	}
 	return rows

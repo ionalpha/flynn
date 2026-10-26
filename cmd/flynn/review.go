@@ -59,12 +59,25 @@ const githubIntegration = "github"
 // reviews against the API it is running under.
 const envAPIBase = "GITHUB_API_URL"
 
-// runReview reviews one pull request with the reviewer archetype and submits a
-// formal verdict. The archetype supplies the standing instruction and the exact
-// authority (package review); this command only assembles: parse the target, build
-// the repository-bound toolset from the environment's credentials, bind the grant,
-// drive the loop, and map the submitted verdict to an exit code.
-func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
+// reviewFlags is what the review command line asked for: the pull request to review, the
+// authority it grants the reviewer, and the budgets that bound the run.
+type reviewFlags struct {
+	owner, repo string
+	number      int
+	approve     bool
+	selfLogin   string
+	maxLines    int
+	oversize    bool
+	maxCost     float64
+	maxTokens   int64
+	credRef     string
+	apiBase     string
+}
+
+// parseReviewFlags reads the review command line. It refuses an APPROVE grant without a
+// self-identity, because approval that cannot tell its own pull request apart cannot refuse
+// self-approval.
+func parseReviewFlags(args []string) (reviewFlags, error) {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	var (
 		repo      = fs.String("repo", "", "repository as owner/name; unneeded when the pull request is given as a URL")
@@ -94,7 +107,7 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	var positional []string
 	for {
 		if err := fs.Parse(args); err != nil {
-			return err
+			return reviewFlags{}, err
 		}
 		if fs.NArg() == 0 {
 			break
@@ -104,15 +117,34 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	}
 	if len(positional) != 1 {
 		fs.Usage()
-		return errors.New("expected exactly one pull request")
+		return reviewFlags{}, errors.New("expected exactly one pull request")
 	}
 
 	owner, repoName, number, err := parsePRRef(positional[0], *repo)
 	if err != nil {
-		return err
+		return reviewFlags{}, err
 	}
 	if *approve && *selfLogin == "" {
-		return errors.New("--approve requires --as <reviewer-login>: approval without a self-identity cannot refuse self-approval")
+		return reviewFlags{}, errors.New("--approve requires --as <reviewer-login>: approval without a self-identity cannot refuse self-approval")
+	}
+	return reviewFlags{
+		owner: owner, repo: repoName, number: number,
+		approve: *approve, selfLogin: *selfLogin,
+		maxLines: *maxLines, oversize: *oversize,
+		maxCost: *maxCost, maxTokens: *maxTokens,
+		credRef: *credRef, apiBase: *apiBase,
+	}, nil
+}
+
+// runReview reviews one pull request with the reviewer archetype and submits a
+// formal verdict. The archetype supplies the standing instruction and the exact
+// authority (package review); this command only assembles: parse the target, build
+// the repository-bound toolset from the environment's credentials, bind the grant,
+// drive the loop, and map the submitted verdict to an exit code.
+func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
+	fl, err := parseReviewFlags(args)
+	if err != nil {
+		return err
 	}
 
 	// The reviewer's loop is Flynn's own: governance rides the dispatch waist, and
@@ -150,17 +182,17 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	// variable is dropped from the process environment either way.
 	creds := credential.NewStore(store.Resources(reg))
 	cfg, err := resolveReviewCredentials(ctx, credentialSource(dataDir),
-		storedGitHubToken(creds, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), *credRef), os.ReadFile)
+		storedGitHubToken(creds, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)), fl.credRef), os.ReadFile)
 	_ = os.Unsetenv(refToken)
 	if err != nil {
 		return err
 	}
-	cfg.Owner, cfg.Repo, cfg.Number = owner, repoName, number
-	cfg.SelfLogin = *selfLogin
-	cfg.AllowApprove = *approve
-	cfg.MaxChangedLines = *maxLines
-	cfg.ReviewOversize = *oversize
-	if err := configureAPIBase(ctx, &cfg, *apiBase, resolveHost); err != nil {
+	cfg.Owner, cfg.Repo, cfg.Number = fl.owner, fl.repo, fl.number
+	cfg.SelfLogin = fl.selfLogin
+	cfg.AllowApprove = fl.approve
+	cfg.MaxChangedLines = fl.maxLines
+	cfg.ReviewOversize = fl.oversize
+	if err := configureAPIBase(ctx, &cfg, fl.apiBase, resolveHost); err != nil {
 		return err
 	}
 
@@ -177,14 +209,22 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 	}
 
 	verdict := newVerdictTracker()
-	objective := fmt.Sprintf("Review pull request #%d.", number)
-	_, source, _, err := drive(
-		ctx, os.Stdout, model, plan, "", objective, review.SystemPrompt,
-		store.Resources(reg), store.Jobs(), log, verbose, "", nil,
+	objective := fmt.Sprintf("Review pull request #%d.", fl.number)
+	_, source, _, err := driveRequest{
+		out:       os.Stdout,
+		model:     model,
+		plan:      plan,
+		objective: objective,
+		system:    review.SystemPrompt,
+		rstore:    store.Resources(reg),
+		jq:        store.Jobs(),
+		log:       log,
+		verbose:   verbose,
+	}.withOptions(
 		withToolset(&boundToolset{tools: toolset, grant: review.Grant()}),
 		withEventObserver(verdict.observe),
-		withBudget(budgetpkg.Limits{Tokens: *maxTokens, Cost: *maxCost}),
-	)
+		withBudget(budgetpkg.Limits{Tokens: fl.maxTokens, Cost: fl.maxCost}),
+	).execute(ctx)
 	if err != nil {
 		return err
 	}

@@ -31,25 +31,6 @@ When the objective is fully accomplished, stop and reply with a short summary of
 // per-model, window-aware triggering arrives with the model registry.
 const defaultCompactionBudget = 100_000
 
-// drive assembles the runtime over the given store and the sandboxed toolset,
-// streams the session live to out, and returns the converged result, the session
-// id (used as learning provenance), and the conversation transcript (so the
-// distiller can learn from how the goal was reached, not just the final summary).
-// The system prompt is supplied so the caller can fold recalled knowledge into it.
-//
-// It is the positional spelling of [driveRequest.execute], kept while its callers move
-// to building the request directly.
-func drive(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, workdir, objective, system string, rstore resource.Store, jq jobs.Queue, log spine.Log, verbose bool, resumeID string, fanout *fanoutConfig, opts ...driveOption) (result, source string, transcript []llm.Message, err error) {
-	req := driveRequest{
-		out: out, model: model, plan: plan, workdir: workdir, objective: objective, system: system,
-		rstore: rstore, jq: jq, log: log, verbose: verbose, resumeID: resumeID, fanout: fanout,
-	}
-	for _, o := range opts {
-		o(&req.cfg)
-	}
-	return req.execute(ctx)
-}
-
 // driveRequest is everything one driven run needs: what to run it on, what to ask it,
 // and the optional levers in cfg.
 type driveRequest struct {
@@ -73,8 +54,20 @@ type driveRequest struct {
 	cfg    driveConfig
 }
 
-// execute runs the request to completion and returns the result, the run's session id and
-// the transcript. See [drive].
+// withOptions applies opts to the request's levers and returns the request, for a caller
+// that gathers its options as a slice.
+func (r driveRequest) withOptions(opts ...driveOption) driveRequest {
+	for _, o := range opts {
+		o(&r.cfg)
+	}
+	return r
+}
+
+// execute assembles the runtime over the request's store and the sandboxed toolset,
+// streams the session live to out, and returns the converged result, the session id (used
+// as learning provenance), and the conversation transcript (so the distiller can learn from
+// how the goal was reached, not just the final summary). The system prompt is supplied so
+// the caller can fold recalled knowledge into it.
 func (r driveRequest) execute(ctx context.Context) (result, source string, transcript []llm.Message, err error) {
 	w := &syncWriter{w: r.out}
 	run, err := r.assemble()

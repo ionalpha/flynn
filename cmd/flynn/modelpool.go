@@ -31,10 +31,7 @@ func runModelPool(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "Keep a set of local models resident, evicting the lowest-priority idle ones under the memory budget.")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil
-		}
+	if done, err := parseModelFlags(fs, args); done {
 		return err
 	}
 	ids := fs.Args()

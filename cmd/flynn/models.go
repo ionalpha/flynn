@@ -38,10 +38,7 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "usage: flynn models [filters]\nShow the model catalog. Filters:")
 		fs.PrintDefaults()
 	}
-	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			return nil // -h is not a failure; flag already printed the usage
-		}
+	if done, err := parseModelFlags(fs, args); done {
 		return err
 	}
 
@@ -86,6 +83,20 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "\ndefault model: %s (change with `flynn models use <id>`, or /model in a session)\n", active)
 	}
 	return nil
+}
+
+// parseModelFlags parses args for a `flynn models` subcommand. It reports done when the
+// caller must return err as it stands: a parse failure, or a nil err after -h, which is not
+// a failure (flag has already printed the usage). Every subcommand that builds its own
+// FlagSet goes through here so the help case is decided once.
+func parseModelFlags(fs *flag.FlagSet, args []string) (done bool, err error) {
+	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return true, nil
+		}
+		return true, err
+	}
+	return false, nil
 }
 
 // budget is the memory ceiling fit is judged against, and how it was determined.

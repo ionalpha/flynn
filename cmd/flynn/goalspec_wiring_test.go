@@ -49,9 +49,17 @@ func TestGoalSpecTermsReachTheSubmittedGoal(t *testing.T) {
 	// TestTheAuditorRunsAChecksCommandInTheRealSandbox. What was submitted is the same
 	// either way, and it is settled at admission before any of that.
 	var out bytes.Buffer
-	_, runID, _, _ := drive(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
-		t.TempDir(), "upgrade the http client", defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), false, "", nil, withGoalSpec(spec))
+	_, runID, _, _ := driveRequest{
+		out:       &out,
+		model:     llmtest.NewScripted(llmtest.SayText("done")),
+		plan:      harness.Plan{},
+		workdir:   t.TempDir(),
+		objective: "upgrade the http client",
+		system:    defaultSystemPrompt,
+		rstore:    rstore,
+		jq:        store.Jobs(),
+		log:       store.Log(),
+	}.withOptions(withGoalSpec(spec)).execute(ctx)
 
 	r, err := rstore.Get(ctx, goal.Kind, resource.Scope{}, runID)
 	if err != nil {
@@ -225,9 +233,17 @@ func TestARunWithNoSpecFileStatesNoTerms(t *testing.T) {
 	rstore := store.Resources(mustRegistry(t))
 
 	var out bytes.Buffer
-	_, runID, _, err := drive(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
-		t.TempDir(), "do the work", defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), false, "", nil)
+	_, runID, _, err := driveRequest{
+		out:       &out,
+		model:     llmtest.NewScripted(llmtest.SayText("done")),
+		plan:      harness.Plan{},
+		workdir:   t.TempDir(),
+		objective: "do the work",
+		system:    defaultSystemPrompt,
+		rstore:    rstore,
+		jq:        store.Jobs(),
+		log:       store.Log(),
+	}.execute(ctx)
 	if err != nil {
 		t.Fatalf("drive: %v", err)
 	}

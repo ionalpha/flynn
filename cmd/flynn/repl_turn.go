@@ -255,7 +255,7 @@ func (s *replSession) finish(ctx context.Context) error {
 			Converged:  true,
 			Source:     s.runID,
 			SkillsRead: s.skillset.Reads(),
-		})
+		}, s.carriedTaint...)
 	}
 	_, _ = fmt.Fprintf(s.out, "\nsession %s ended.\n", s.runID)
 	return nil

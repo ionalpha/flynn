@@ -127,8 +127,10 @@ func TestConfinedCommandCannotReadPlantedCanaries(t *testing.T) {
 	})
 }
 
-// listen starts a TCP listener on the loopback and counts the connections it accepts.
-func listen(t *testing.T) (port int, accepted *atomic.Int64) {
+// listen starts a TCP listener on the loopback. It counts the connections it accepts and
+// sends on seen for each one, so a test can wait for the host's side of a connection
+// without polling a clock.
+func listen(t *testing.T) (port int, accepted *atomic.Int64, seen <-chan struct{}) {
 	t.Helper()
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -136,6 +138,7 @@ func listen(t *testing.T) (port int, accepted *atomic.Int64) {
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	accepted = new(atomic.Int64)
+	ch := make(chan struct{}, 16)
 	go func() {
 		for {
 			c, err := l.Accept()
@@ -143,10 +146,14 @@ func listen(t *testing.T) (port int, accepted *atomic.Int64) {
 				return
 			}
 			accepted.Add(1)
+			select {
+			case ch <- struct{}{}:
+			default:
+			}
 			_ = c.Close()
 		}
 	}()
-	return l.Addr().(*net.TCPAddr).Port, accepted
+	return l.Addr().(*net.TCPAddr).Port, accepted, ch
 }
 
 // connectLine opens a TCP connection to the loopback port from bash and prints "connected"
@@ -164,7 +171,7 @@ func TestConfinedCommandCannotConnectByDefault(t *testing.T) {
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash is needed to open a socket from the command line")
 	}
-	port, accepted := listen(t)
+	port, accepted, seen := listen(t)
 
 	deny := confinedShell(t, shellPolicy{dataDir: t.TempDir()})
 	if out, code := execIn(t, deny, connectLine(port)); code == 0 || strings.Contains(out, "connected") {
@@ -178,11 +185,9 @@ func TestConfinedCommandCannotConnectByDefault(t *testing.T) {
 	if out, code := execIn(t, allow, connectLine(port)); code != 0 || !strings.Contains(out, "connected") {
 		t.Fatalf("the network opt-in did not reach the listener (exit %d): %q", code, out)
 	}
-	deadline := time.Now().Add(5 * time.Second)
-	for accepted.Load() == 0 && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-	}
-	if accepted.Load() == 0 {
+	select {
+	case <-seen:
+	case <-time.After(5 * time.Second):
 		t.Fatal("the command reported a connection the listener never saw")
 	}
 }
@@ -239,7 +244,7 @@ func TestConfinedCommandCannotReadParentCmdline(t *testing.T) {
 	pid := siblingProcess(t)
 	sb := confinedShell(t, shellPolicy{dataDir: t.TempDir()})
 	if out, _ := execIn(t, sb, fmt.Sprintf("cat /proc/%d/cmdline", pid)); strings.Contains(out, canary) {
-		t.Skip("open gap: a confined command can read another process's command line through procfs; closing it needs a PID namespace with its own procfs (task bddc350d)")
+		t.Skip("open gap: a confined command can read another process's command line through procfs; closing it needs a PID namespace with its own procfs")
 	}
 }
 

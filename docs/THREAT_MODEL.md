@@ -314,7 +314,10 @@ Enforced and tested today:
   wake digest, the one path that reaches a reader without anyone asking; they do not bar it
   from recall, where the reader sees its provenance and decides. What the agent wrote for
   itself, untainted, enters the digest only when a named reviewer has promoted it, and every
-  decision and revision is on the event stream as its audit trail. Ride-along surfacing, the
+  decision and revision is on the event stream as its audit trail. The standalone binary's
+  reviewer is the operator: `flynn memory ls --pending` lists the notes waiting on a
+  decision with their sources, `flynn memory promote` and `revoke` record one, and a
+  promotion of a tainted or untrusted-origin item is refused rather than recorded. Ride-along surfacing, the
   second path that delivers memory to a reader who did not ask for it, is gated too: a
   memory anchored to a host record arrives with a read of that record only if it clears an
   admission policy, whose default keeps out the two categories the digest denies outright
@@ -363,13 +366,18 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   benchmark above measures how often an injected instruction changes the agent's action.
   Actively lowering that rate (input-provenance separation, instruction-versus-data
   isolation) is not yet built.
-- An operator-facing review queue for promotions. The decision record exists and is
-  enforced (above), but nothing yet presents a reviewer with the untainted agent notes
-  waiting on one, so in practice a digest carries the operator's own memory until somebody
-  promotes through the API. Two residuals stay open whatever the queue looks like: a host
-  that never marks its ingest path leaves taint to what provenance alone implies, and a
-  promotion performed by an LLM review is itself attack surface, which is why an
-  untrusted-origin or tainted item is denied outright rather than made promotable.
+- Two residuals of the promotion gate. A host that never marks its ingest path leaves taint
+  to what provenance alone implies, and a promotion performed by an LLM review is itself
+  attack surface, which is why an untrusted-origin or tainted item is denied outright rather
+  than made promotable. The operator reviewing from the command line reads the finished
+  sentence too, so the gate rests on the taint marking, not on the review. The standalone
+  binary marks it coarsely: a note distilled from a run whose transcript calls the shell
+  or spawns a child is tainted, because the shell's network is open and nothing on the
+  host tells a `curl` from a `go test`, and a child's transcript is not in the parent's.
+  A `/compact` carries the compacted turns' taint forward with their summary. What stays
+  promotable is a note from a run that only read and edited files in the working tree, so
+  a working tree that is itself third-party content (a freshly cloned repository) is the
+  residual.
 - Provenance-tagged learned skills. Durable memory carries provenance, trust classification
   and taint (above); a skill is loaded as procedure the agent follows and is not yet
   classified the same way, so a skill written from untrusted content is read back with the

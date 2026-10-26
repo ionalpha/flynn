@@ -175,20 +175,29 @@ func TestShellPolicyOptionsRelaxOnlyWhatWasAsked(t *testing.T) {
 // exactly one.
 func postureOf(t *testing.T, log spine.Log, stream string) map[string]any {
 	t.Helper()
+	found := posturesOn(t, log, stream)
+	if len(found) != 1 {
+		t.Fatalf("%d %s events on the run's stream, want exactly one", len(found), shellPostureEvent)
+	}
+	return found[0]
+}
+
+// posturesOn returns the payload of every shell posture event on stream, oldest first. A
+// resumed run assembles again and states its posture again, so its stream holds one per
+// assembly.
+func posturesOn(t *testing.T, log spine.Log, stream string) []map[string]any {
+	t.Helper()
 	events, err := log.Read(context.Background(), spine.Query{Stream: stream})
 	if err != nil {
 		t.Fatal(err)
 	}
-	var found []spine.Event
+	var found []map[string]any
 	for _, e := range events {
 		if e.Type == shellPostureEvent {
-			found = append(found, e)
+			found = append(found, e.Payload)
 		}
 	}
-	if len(found) != 1 {
-		t.Fatalf("%d %s events on the run's stream, want exactly one", len(found), shellPostureEvent)
-	}
-	return found[0].Payload
+	return found
 }
 
 // TestRunsRecordTheShellPosture is the record of a relaxation: whichever way a run is

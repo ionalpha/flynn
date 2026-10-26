@@ -51,9 +51,9 @@ func newTermReader(rw io.ReadWriter, fd int, prompt string) *termReader {
 
 // utf8Reader passes valid UTF-8 through unchanged and drops bytes that are not, so
 // the terminal line reader above it always makes forward progress. Every read either
-// yields at least one valid byte or surfaces the underlying error once the buffer is
-// drained: it never returns (0, nil) with bytes still pending, which is the state
-// that hangs x/term. All ASCII (including control bytes and escape sequences) is
+// yields at least one valid byte, surfaces the underlying error once the buffer is
+// drained, or returns io.EOF when x/term has no room left for the next rune: it never
+// returns (0, nil) with bytes still pending, which is the state that hangs x/term. All ASCII (including control bytes and escape sequences) is
 // valid UTF-8 and is preserved, so line editing and bracketed paste are unaffected.
 type utf8Reader struct {
 	src     io.Reader
@@ -71,39 +71,16 @@ func (r *utf8Reader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 	for {
-		out := 0
-		for out < len(p) && len(r.pending) > 0 {
-			b := r.pending[0]
-			if b < utf8.RuneSelf { // ASCII: the common case, including ESC and CR
-				p[out] = b
-				out++
-				r.pending = r.pending[1:]
-				continue
-			}
-			if !utf8.FullRune(r.pending) {
-				// A possibly-incomplete trailing multibyte sequence: wait for more
-				// input to complete it, unless none is coming, in which case it is
-				// junk and we drop one byte to keep moving.
-				if r.srcErr == nil && len(r.pending) < utf8.UTFMax {
-					break
-				}
-				r.pending = r.pending[1:]
-				continue
-			}
-			rn, sz := utf8.DecodeRune(r.pending)
-			if rn == utf8.RuneError && sz == 1 {
-				r.pending = r.pending[1:] // invalid byte: drop it
-				continue
-			}
-			if out+sz > len(p) {
-				break // valid rune, but it does not fit this read; deliver it next time
-			}
-			copy(p[out:], r.pending[:sz])
-			out += sz
-			r.pending = r.pending[sz:]
-		}
+		out, noFit := r.drain(p)
 		if out > 0 {
 			return out, nil
+		}
+		if noFit {
+			// The rune at the head is wider than the whole buffer x/term offered, which
+			// happens only when its input buffer is nearly full of bytes it cannot
+			// consume: the len(p) == 0 state above, a few bytes early. Reading more
+			// would never make it fit, so end the read the same way.
+			return 0, io.EOF
 		}
 		if r.srcErr != nil && len(r.pending) == 0 {
 			return 0, r.srcErr
@@ -115,6 +92,43 @@ func (r *utf8Reader) Read(p []byte) (int, error) {
 			r.srcErr = err
 		}
 	}
+}
+
+// drain moves what it can of the pending bytes into p, dropping bytes that are not
+// UTF-8. noFit reports that it stopped at a valid rune wider than the room left in
+// p; out is how many bytes it delivered.
+func (r *utf8Reader) drain(p []byte) (out int, noFit bool) {
+	for out < len(p) && len(r.pending) > 0 {
+		b := r.pending[0]
+		if b < utf8.RuneSelf { // ASCII: the common case, including ESC and CR
+			p[out] = b
+			out++
+			r.pending = r.pending[1:]
+			continue
+		}
+		if !utf8.FullRune(r.pending) {
+			// A possibly-incomplete trailing multibyte sequence: wait for more
+			// input to complete it, unless none is coming, in which case it is
+			// junk and we drop one byte to keep moving.
+			if r.srcErr == nil && len(r.pending) < utf8.UTFMax {
+				return out, false
+			}
+			r.pending = r.pending[1:]
+			continue
+		}
+		rn, sz := utf8.DecodeRune(r.pending)
+		if rn == utf8.RuneError && sz == 1 {
+			r.pending = r.pending[1:] // invalid byte: drop it
+			continue
+		}
+		if out+sz > len(p) {
+			return out, true // valid rune, but it does not fit this read; deliver it next time
+		}
+		copy(p[out:], r.pending[:sz])
+		out += sz
+		r.pending = r.pending[sz:]
+	}
+	return out, false
 }
 
 // ReadLine returns the next message the user enters, or io.EOF when they leave.

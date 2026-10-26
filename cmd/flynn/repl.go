@@ -99,6 +99,9 @@ type replSession struct {
 	// next fresh run's standing instructions so the thread continues with less context.
 	// /clear drops it; /compact sets it.
 	carriedContext string
+	// carriedTaint is the taint reasons of the turns a /compact summarised into
+	// carriedContext, applied when the session is distilled (see [distillOutcome]).
+	carriedTaint []string
 
 	recalled []string
 	// skillset serves skill bodies for every turn and accumulates what the session
