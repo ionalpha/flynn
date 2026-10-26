@@ -74,6 +74,30 @@ func TestStopModelRoutesByWhatIsRunning(t *testing.T) {
 	}
 }
 
+// A registry that cannot be read is reported to the caller, not read as "nothing running"
+// and answered with a stop that finds nothing.
+func TestStopModelReportsAnUnreadableRegistry(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "servers.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	mgr := serve.NewManager(
+		&fakeServeLauncher{},
+		func(context.Context, string) error { return nil },
+		func(int) error { return nil },
+		serve.NewRegistry(dir),
+	)
+	host, err := openHost(t.TempDir(), io.Discard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = host.Close() })
+	r := &localRunner{dataDir: t.TempDir(), out: io.Discard, host: host, manager: mgr}
+	if found, err := r.stopModel(t.Context(), "qwen2.5:0.5b-instruct"); err == nil || found {
+		t.Fatalf("stopModel over an unreadable registry = %v, %v; want an error", found, err)
+	}
+}
+
 // A host that refuses to run the runtime stops the serve and provision paths before any
 // download starts, and the refusal reaches the caller as the host worded it.
 func TestHostRefusalReachesTheCaller(t *testing.T) {
