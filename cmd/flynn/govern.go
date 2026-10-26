@@ -15,7 +15,6 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -52,36 +51,38 @@ type fanoutConfig struct {
 
 // assembly is everything one governed run is built from.
 type assembly struct {
-	model     llm.Model
-	plan      harness.Plan
-	workdir   string
-	system    string
-	rstore    resource.Store
-	jq        jobs.Queue
-	log       spine.Log
-	skills    *skilltool.Set
-	runID     string
-	resLimits sandbox.ResourceLimits
-	planning  bool
-	proof     bool
-	gates     gateSetup
-	budget    budgetpkg.Limits
-	fanout    *fanoutConfig
-	ext       *externAgent
-	toolset   *boundToolset
+	model   llm.Model
+	plan    harness.Plan
+	workdir string
+	system  string
+	rstore  resource.Store
+	jq      jobs.Queue
+	log     spine.Log
+	skills  *skilltool.Set
+	runID   string
+	// shell is what the run's commands are kept away from. A toolset run has no shell and
+	// ignores it.
+	shell    governed.ShellPolicy
+	planning bool
+	proof    bool
+	gates    gateSetup
+	budget   budgetpkg.Limits
+	fanout   *fanoutConfig
+	ext      *externAgent
+	toolset  *boundToolset
 }
 
 // toolsetWaiver is the recorded reason a review-style run has no sandbox.
 const toolsetWaiver = "caller-supplied toolset and grant: the run holds no shell or filesystem tool, so there is no working tree to confine"
 
 // options translates the assembly into the governed package's options. The binary's
-// defaults are the package's defaults, so the only thing said here that weakens a run is
-// the toolset's explicit sandbox waiver.
+// defaults are the package's defaults, so the only things said here that change a run's
+// posture are the toolset's explicit sandbox waiver and the shell policy the operator's
+// flags describe.
 func (a assembly) options() []governed.Option {
 	opts := []governed.Option{
 		governed.WithSystem(a.system),
 		governed.WithPlan(a.plan),
-		governed.WithResourceLimits(a.resLimits),
 		governed.WithApproval(a.gates.approve, a.gates.prompter),
 		governed.WithAllowance(a.gates.outside),
 	}
@@ -112,6 +113,10 @@ func (a assembly) options() []governed.Option {
 		opts = append(opts, governed.WithExternalAgent(governed.ExternalAgent{Model: a.ext.model, Driver: a.ext.driver}))
 	case a.fanout != nil:
 		opts = append(opts, governed.WithFanout(a.fanout.resolveModel))
+	}
+	if a.toolset == nil {
+		// A toolset run has no shell, and the package refuses a policy it cannot apply.
+		opts = append(opts, governed.WithShellPolicy(a.shell))
 	}
 	return opts
 }

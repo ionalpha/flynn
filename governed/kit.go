@@ -23,7 +23,7 @@ type Kit struct {
 }
 
 // NewKit builds a kit recording onto log. It accepts the options that describe the
-// working tree ([WithWorkDir], [WithSandbox], [WithResourceLimits], [WithSkills],
+// working tree ([WithWorkDir], [WithSandbox], [WithShellPolicy], [WithSkills],
 // [WithRunID]) and [Waive] of [GuardBrakes]; an option that only a goal loop can use is
 // an error rather than ignored.
 func NewKit(ctx context.Context, log spine.Log, opts ...Option) (*Kit, error) {
@@ -40,7 +40,7 @@ func NewKit(ctx context.Context, log spine.Log, opts ...Option) (*Kit, error) {
 	if err := c.checkKitOptions(); err != nil {
 		return nil, err
 	}
-	p, err := newParts(c, log, false)
+	p, err := newParts(ctx, c, log, false)
 	if err != nil {
 		return nil, err
 	}

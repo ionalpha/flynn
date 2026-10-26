@@ -65,7 +65,7 @@ type replSession struct {
 	// shell is what the commands every turn's tools run are kept away from. It is the
 	// session's for its whole life, so a turn cannot assemble a looser sandbox than the
 	// session was started with.
-	shell shellPolicy
+	shell governed.ShellPolicy
 
 	// modelSpec is the "provider:model" string of the model the session currently
 	// drives, shown by /model and updated when /model switches it.

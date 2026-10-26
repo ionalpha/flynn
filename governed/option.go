@@ -37,7 +37,8 @@ type config struct {
 
 	workdir  string
 	sandbox  sandbox.Sandbox
-	resLimit sandbox.ResourceLimits
+	shell    ShellPolicy
+	shellSet bool
 	system   string
 	skills   *skilltool.Set
 	runID    string
@@ -103,12 +104,6 @@ func WithSandbox(sb sandbox.Sandbox) Option {
 		}
 		c.sandbox = sb
 	}
-}
-
-// WithResourceLimits caps the host memory and process count of the commands the run's
-// tools execute. It applies only to the sandbox the run builds.
-func WithResourceLimits(l sandbox.ResourceLimits) Option {
-	return func(c *config) { c.resLimit = l }
 }
 
 // WithSystem sets the system prompt framing every turn.

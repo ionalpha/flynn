@@ -1,6 +1,7 @@
 package governed
 
 import (
+	"context"
 	"testing"
 
 	"github.com/ionalpha/flynn/learn"
@@ -19,11 +20,11 @@ import (
 // fails if that divergence ever returns.
 func TestPartsGrantsSpawnOnlyForFanout(t *testing.T) {
 	skills := skilltool.New(state.NewMemory().Skills())
-	single, err := newParts(&config{workdir: t.TempDir(), skills: skills}, spine.NewMemoryLog(), false)
+	single, err := newParts(context.Background(), &config{workdir: t.TempDir(), skills: skills}, spine.NewMemoryLog(), false)
 	if err != nil {
 		t.Fatalf("newParts single: %v", err)
 	}
-	fanout, err := newParts(&config{workdir: t.TempDir(), skills: skills}, spine.NewMemoryLog(), true)
+	fanout, err := newParts(context.Background(), &config{workdir: t.TempDir(), skills: skills}, spine.NewMemoryLog(), true)
 	if err != nil {
 		t.Fatalf("newParts fanout: %v", err)
 	}
@@ -77,7 +78,7 @@ func TestPartsSkillToolsFollowTheStore(t *testing.T) {
 		{"without one", nil, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			parts, err := newParts(&config{workdir: t.TempDir(), skills: tc.skills}, spine.NewMemoryLog(), false)
+			parts, err := newParts(context.Background(), &config{workdir: t.TempDir(), skills: tc.skills}, spine.NewMemoryLog(), false)
 			if err != nil {
 				t.Fatalf("newParts: %v", err)
 			}

@@ -8,11 +8,9 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"time"
 
-	"github.com/ionalpha/flynn/brakes"
 	"github.com/ionalpha/flynn/capability"
-	"github.com/ionalpha/flynn/dispatch"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/mcp"
 	"github.com/ionalpha/flynn/skill/skilltool"
@@ -81,41 +79,30 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	// assembly is the point: a served session is governed by the same grant and records
 	// onto the same kind of stream as the agent's own run, so authority cannot drift
 	// between the two paths.
-	parts, err := newMissionParts(dir, store.Log(), skilltool.New(store.Skills()), "", false, shellPolicy{dataDir: dataDir})
+	kit, err := governed.NewKit(ctx, store.Log(), governed.WithWorkDir(dir), governed.WithSkills(skilltool.New(store.Skills())),
+		governed.WithShellPolicy(governed.ShellPolicy{DataDir: dataDir}))
 	if err != nil {
 		return err
 	}
-	defer func() { _ = parts.Close() }()
+	defer func() { _ = kit.Close() }()
 
 	// The grant the client's calls are admitted against. The default is the full
 	// toolset the agent itself may use in this directory; --read-only narrows it to the
 	// read tools so an untrusted client cannot write or run a command even though the
 	// containment gate would still bound a shell.
-	grant := parts.grant
+	grant := kit.Grant()
 	if readOnly {
 		grant = capability.NewGrant("read", "glob", "grep")
 	}
 
-	// A rate breaker is the standing safety brake: it halts a client that drives a
-	// degenerate tight loop, well above any real pace, and shares one halt state so an
-	// operator kill-switch would stop the session too.
-	brk := brakes.NewHook(brakes.Limits{MaxActions: defaultMaxActionsPerMinute, Window: time.Minute}, nil)
-
-	d := dispatch.New(
-		dispatch.WithAdmitter(capability.Admitter{}),
-		dispatch.WithEventSink(parts.sink),
-		dispatch.WithHook(capability.NewContainmentGate(parts.sandbox)),
-		dispatch.WithHook(brk),
-	)
-
-	runID := parts.sess.ID()
+	runID := kit.SessionID()
 	// Bind the run's grant and brake onto the context the server dispatches under, the
 	// same bindings the mission executor sets before it dispatches. The server holds no
 	// grant of its own; it propagates this context into every governed call.
-	ctx = capability.Into(ctx, grant)
-	ctx = brakes.Into(ctx, runID)
+	ctx = kit.Bind(ctx, grant)
+	toolset := kit.Toolset()
 
-	srv := mcp.NewServer(d, parts.toolset,
+	srv := mcp.NewServer(kit.Dispatcher(), toolset,
 		mcp.WithGoal(runID),
 		mcp.WithInfo(mcp.Info{Name: "flynn", Version: version.String()}))
 
@@ -124,7 +111,7 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 		mode = "read-only"
 	}
 	_, _ = fmt.Fprintf(logw, "flynn mcp: serving %d tools (%s) in %s on stdio; session %s\n",
-		len(parts.toolset), mode, dir, runID)
+		len(toolset), mode, dir, runID)
 
 	return srv.Serve(ctx, in, out)
 }

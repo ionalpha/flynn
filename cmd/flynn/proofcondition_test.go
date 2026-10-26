@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
@@ -43,25 +42,28 @@ func TestThePromotionConditionForLedgerProof(t *testing.T) {
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"answer.txt","content":"42"}`)),
 		llmtest.SayText("done"),
 	)
-	run, err := assembleMission(model, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", checkShell, true, false, gateSetup{})
+	run, err := assembly{
+		model: model, workdir: t.TempDir(), system: defaultSystemPrompt, planning: true,
+		rstore: rstore, jq: store.Jobs(), log: store.Log(),
+		shell: checkShell,
+	}.assemble(ctx)
 	if err != nil {
 		t.Fatalf("assemble the mission the binary assembles: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
-	go func() { _ = run.rt.Start(ctx) }()
+	go func() { _ = run.Runtime().Start(ctx) }()
 
-	if _, err := run.sess.Submit(ctx, run.rt, goal.Spec{
+	if _, err := run.Submit(ctx, goal.Spec{
 		Objective:     "state the answer",
 		StopCondition: "the objective is fully accomplished",
 	}); err != nil {
 		t.Fatalf("submit a goal to plan: %v", err)
 	}
-	if _, err := run.sess.Wait(ctx); err != nil {
+	if _, err := run.Session().Wait(ctx); err != nil {
 		t.Fatalf("the planned run did not settle: %v", err)
 	}
 
-	r, err := rstore.Get(ctx, goal.Kind, resource.Scope{}, run.sess.ID())
+	r, err := rstore.Get(ctx, goal.Kind, resource.Scope{}, run.ID())
 	if err != nil {
 		t.Fatalf("get the goal the run left behind: %v", err)
 	}
@@ -78,7 +80,7 @@ func TestThePromotionConditionForLedgerProof(t *testing.T) {
 	}
 
 	proven := len(status.Ledger) == 1 && status.Ledger[0].Proven
-	contained := sandbox.ContainmentOf(run.parts.sandbox) >= sandbox.Required(sandbox.TrustSemi)
+	contained := sandbox.ContainmentOf(run.Sandbox()) >= sandbox.Required(sandbox.TrustSemi)
 
 	switch {
 	case contained && !proven:

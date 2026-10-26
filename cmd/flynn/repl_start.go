@@ -25,7 +25,7 @@ import (
 // session (unless learning is disabled). It assumes stdin is a terminal; the caller
 // falls back to usage when it is not. By default it runs the full-screen interface;
 // plain (or a non-terminal stdout) selects the line-based interface instead.
-func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string, shell shellPolicy) error {
+func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string, shell governed.ShellPolicy) error {
 	ctx := context.Background()
 
 	cwd, err := os.Getwd()

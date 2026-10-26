@@ -58,7 +58,7 @@ func (p *parts) close() error {
 
 // newParts builds the shared ingredients. withSpawn adds the delegation action to the
 // grant, so a fan-out may spawn sub-goals and a single conversation cannot.
-func newParts(c *config, log spine.Log, withSpawn bool) (*parts, error) {
+func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*parts, error) {
 	var sopts []session.Option
 	if c.runID != "" {
 		sopts = append(sopts, session.WithID(c.runID))
@@ -84,11 +84,17 @@ func newParts(c *config, log spine.Log, withSpawn bool) (*parts, error) {
 			}
 			workdir = cwd
 		}
-		// Secure by default: a model-authored command runs kernel-confined where the
-		// platform enforces it, and at the process-jail floor elsewhere.
-		sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement(), sandbox.WithResourceLimits(c.resLimit))
+		// Secure by default: a model-authored command runs kernel-confined, with no network
+		// and no view of the host's credential locations, unless the caller's policy says
+		// otherwise. The policy is stated on the stream before anything runs in it, so it
+		// precedes the session's opening event.
+		sb, err := sandbox.NewLocal(workdir, c.shell.options()...)
 		if err != nil {
 			return nil, err
+		}
+		if err := declareShellPosture(ctx, log, sess.ID(), sb); err != nil {
+			_ = sb.Close()
+			return nil, fmt.Errorf("governed: record the shell's posture: %w", err)
 		}
 		p.sb, p.owned = sb, sb
 	}
@@ -170,9 +176,9 @@ func (c *config) checkWaiversAgainstOptions() error {
 	return nil
 }
 
-// check rejects option combinations that would claim a guard the run does not have. It
-// runs before anything is built so a contradiction leaves nothing to clean up.
-func (c *config) check(mode Mode) error {
+// checkSandboxOptions rejects the combinations that claim a sandbox, or a shell policy over
+// one, the mode does not have.
+func (c *config) checkSandboxOptions(mode Mode) error {
 	_, sandboxWaived := c.waivers[GuardSandbox]
 	switch {
 	case mode == ModeToolset && !sandboxWaived:
@@ -183,6 +189,17 @@ func (c *config) check(mode Mode) error {
 		return errors.New("governed: WithToolset and WithSandbox are mutually exclusive")
 	case mode == ModeToolset && (c.hasCaps || c.bridge != nil):
 		return errors.New("governed: a toolset run's grant is the caller's; WithCapabilities and WithExtensions do not apply")
+	case c.shellSet && (mode == ModeToolset || c.sandbox != nil):
+		return errors.New("governed: WithShellPolicy applies to the sandbox the run builds; a toolset run has no shell and WithSandbox brings the host's own")
+	}
+	return nil
+}
+
+// check rejects option combinations that would claim a guard the run does not have. It
+// runs before anything is built so a contradiction leaves nothing to clean up.
+func (c *config) check(mode Mode) error {
+	if err := c.checkSandboxOptions(mode); err != nil {
+		return err
 	}
 	if err := c.checkWaiversAgainstOptions(); err != nil {
 		return err
@@ -240,7 +257,7 @@ func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) 
 		return nil, err
 	}
 
-	p, err := newParts(c, b.Log, mode == ModeFanout)
+	p, err := newParts(ctx, c, b.Log, mode == ModeFanout)
 	if err != nil {
 		return nil, err
 	}

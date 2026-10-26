@@ -19,7 +19,6 @@ import (
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -155,11 +154,12 @@ func (g senderGate) refuse(ctx context.Context, spec inbox.Spec) {
 // drives, the same flags a terminal run takes. Without it `flynn --require-approval shell
 // serve` would start a process that quietly ignored the requirement.
 type serveGovernance struct {
-	approve   []string
-	outside   []string
-	allowed   []string
-	budget    budgetpkg.Limits
-	resLimits sandbox.ResourceLimits
+	approve []string
+	outside []string
+	allowed []string
+	budget  budgetpkg.Limits
+	// shell is what the goals' commands are kept away from.
+	shell governed.ShellPolicy
 }
 
 // goalBudget is the ceiling each served goal runs under: the operator's, or the default
@@ -193,8 +193,8 @@ type serveIntake struct {
 func (s serveIntake) run(ctx context.Context) error {
 	run, err := assembly{
 		model: s.model, plan: s.plan, workdir: s.workdir, rstore: s.rstore, jq: s.jq, log: s.log,
-		resLimits: s.gov.resLimits,
-		gates:     gateSetup{approve: s.gov.approve, outside: s.gov.outside},
+		shell: s.gov.shell,
+		gates: gateSetup{approve: s.gov.approve, outside: s.gov.outside},
 	}.assemble(ctx)
 	if err != nil {
 		return err

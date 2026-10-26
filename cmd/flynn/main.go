@@ -21,6 +21,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/diag"
@@ -172,9 +174,9 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		leakWatch   = fs.Bool("leak-watch", false, "watch the --profile bundle's timeline for sustained growth in goroutines, live heap, open descriptors, or child processes, and dump a labelled goroutine profile, a heap profile, and the offending window into the bundle when one of them grows; requires --profile")
 		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
 	)
-	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval shell). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
-	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible shell). The run takes it only where --allow declared it, and a run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
-	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow shell). It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
+	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval bash; a name the run does not offer is refused). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
+	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible bash). The run takes it only where --allow declared it, and a run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
+	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow bash). It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
 	if err := fs.Parse(args); err != nil {
 		// flag.CommandLine exits the process on a bad flag, so this is reached only by a
 		// flag set that was asked to hand parse errors back: a bad flag is a usage error.
@@ -330,7 +332,7 @@ type invocation struct {
 	// shell is what the commands the run launches are limited to and kept away from. It
 	// is built from the flags once, here, so every entry point that drives a shell hands
 	// the same value on and none of them restates the defaults.
-	shell shellPolicy
+	shell governed.ShellPolicy
 }
 
 // exit maps a subcommand's error to a process exit code: 1 with the message on stderr, or 0 on
@@ -355,7 +357,11 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 	"memory":  routeMemory,
 	"skill":   routeSkill,
 	"serve": func(inv invocation, rest []string) int {
-		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir, inv.shell))
+		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir, serveGovernance{
+			approve: inv.reqApproval, outside: inv.outside, allowed: inv.allowed,
+			budget: budgetpkg.Limits{Tokens: inv.maxTokens, Cost: inv.maxCost},
+			shell:  inv.shell,
+		}))
 	},
 	"watch": func(inv invocation, _ []string) int {
 		return inv.exit(runWatch(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose))
@@ -590,7 +596,7 @@ func printUsage(w io.Writer) {
   flynn skill ls             list the skills a run can be offered: the pack shipped in the binary and the ones this install learned
   flynn skill show <skill>   print one skill: what it is for, how runs have taken it up, and its body
   flynn skill ab <skill>     measure whether a skill helps: its exercises run with it and without it, paired
-  flynn serve [--telegram-token T] [--signal-tcp ADDR] [--api-addr ADDR]  run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API
+  flynn serve [--telegram-token T --telegram-allow ID] [--signal-tcp ADDR --signal-allow NUMBER] [--api-addr ADDR]  run as a service: answer chat messages from the allowed senders (Telegram, Signal) and/or expose the read-only monitor API
   flynn mcp serve [--read-only]  expose the toolset to an MCP client over stdio, every call governed and recorded
   flynn --version            print the version
   flynn version [list]      print the running build, or list the releases that exist
@@ -649,7 +655,10 @@ func dataDirName() string {
 // completion in the current directory, recalling past learning into the prompt and
 // (unless disabled) distilling the result back out. Progress and the final result
 // are printed; Ctrl-C cancels the run.
-func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, shell shellPolicy) error {
+func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, learnEnabled, verbose, fanout, requireProof bool, reqApproval, outside, allowed []string, maxCost float64, maxTokens int64, shell governed.ShellPolicy) error {
+	if err := checkAllowedAreMarked(outside, allowed); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -707,7 +716,7 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 	// skipped.
 	var distiller learn.Distiller
 	if learnEnabled && extAgent == nil {
-		distiller = governedDistiller(model)
+		distiller = governed.Distiller(model)
 	}
 
 	// With fan-out enabled the run drives the full goals engine: the model may
@@ -803,7 +812,7 @@ func credentialSource(dataDir string) secret.Source {
 // terminal phase. Ctrl-C detaches without losing the run, which can be resumed
 // again. Learning capture is skipped: a resume continues a run, it does not start a
 // fresh one to distill.
-func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell shellPolicy) error {
+func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.ShellPolicy) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
@@ -820,7 +829,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell shellPolicy
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,7 @@ import (
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/memory/hybrid"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/session"
@@ -15,7 +16,7 @@ import (
 // expects, so leaving an option out never opens anything.
 type driveConfig struct {
 	budget   budgetpkg.Limits
-	shell    shellPolicy
+	shell    governed.ShellPolicy
 	extAgent *externAgent
 	toolset  *boundToolset
 	observe  func(session.Event)
@@ -61,8 +62,8 @@ func withMemoryEmbedder(e hybrid.Embedder) driveOption {
 // withShellPolicy sets what the commands a run's tools execute are limited to and kept
 // away from: their memory and process count (see [sandbox.ResourceLimits] for the
 // per-platform enforcement), the network, and the data directory and credential
-// locations. Without it a run gets the zero [shellPolicy], which keeps all of them closed.
-func withShellPolicy(p shellPolicy) driveOption {
+// locations. Without it a run gets the zero [governed.ShellPolicy], which keeps all of them closed.
+func withShellPolicy(p governed.ShellPolicy) driveOption {
 	return func(c *driveConfig) { c.shell = p }
 }
 
