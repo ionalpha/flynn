@@ -13,7 +13,6 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
@@ -95,7 +94,7 @@ func TestAssembleBuildsAnExternalAgentRun(t *testing.T) {
 		rstore:  store.Resources(reg),
 		jq:      store.Jobs(),
 		log:     store.Log(),
-		cfg:     driveConfig{extAgent: ea, skills: skilltool.New(store.Skills()), resLimits: sandbox.ResourceLimits{}},
+		cfg:     driveConfig{extAgent: ea, skills: skilltool.New(store.Skills()), shell: checkShell},
 	}
 
 	run, err := req.assemble()

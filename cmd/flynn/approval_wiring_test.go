@@ -15,7 +15,6 @@ import (
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -191,7 +190,7 @@ func driveRun(t *testing.T, appr gateSetup) (string, spine.Log, string) {
 		llmtest.SayText("done"),
 	)
 	run, err := assembleMission(model, harness.Plan{}, dir, defaultSystemPrompt,
-		rstore, store.Jobs(), log, nil, "", sandbox.ResourceLimits{}, false, false, appr)
+		rstore, store.Jobs(), log, nil, "", shellPolicy{}, false, false, appr)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}

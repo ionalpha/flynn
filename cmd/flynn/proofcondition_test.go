@@ -44,7 +44,7 @@ func TestThePromotionConditionForLedgerProof(t *testing.T) {
 		llmtest.SayText("done"),
 	)
 	run, err := assembleMission(model, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, true, false, gateSetup{})
+		rstore, store.Jobs(), store.Log(), nil, "", checkShell, true, false, gateSetup{})
 	if err != nil {
 		t.Fatalf("assemble the mission the binary assembles: %v", err)
 	}

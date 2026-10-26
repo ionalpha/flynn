@@ -550,8 +550,13 @@ governs egress, hides paths or holds a read grant the floor cannot honour.
 An embedder hides a runner's own files from the commands it launches with
 `WithUnreadablePaths`: the paths read as empty inside the sandbox, and a Local that
 cannot do this (off Linux, without `WithReadOnlyFS`, or with a grant under a hidden
-path) refuses with `ErrReadDeny`. `flynn serve` does not apply it yet, so the data
-directory, the control socket and the credential files are readable to a command. `deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
+path) refuses with `ErrReadDeny`. The binary applies it, with `WithNetworkDenied`, to the
+shell of `flynn run`, `flynn serve` and the goal worker: the data directory, the runner's
+runtime directory and the account's credential locations are hidden, and the command has no
+network. `--allow-network` and `--allow-credential-reads` lift each, and the run's stream
+records which. An embedder that builds its own Local gets neither unless it asks.
+
+`deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
 unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`
 explains each line.
 

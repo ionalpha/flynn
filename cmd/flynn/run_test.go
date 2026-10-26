@@ -497,8 +497,12 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 	if len(evs) == 0 {
 		t.Fatalf("run %s left no events on the durable spine after reopen", runID)
 	}
-	if evs[0].Type != string(session.KindSessionStarted) {
-		t.Fatalf("first spine event = %q, want %q", evs[0].Type, session.KindSessionStarted)
+	// The run's shell posture precedes the session it governs.
+	if evs[0].Type != shellPostureEvent {
+		t.Fatalf("first spine event = %q, want %q", evs[0].Type, shellPostureEvent)
+	}
+	if len(evs) < 2 || evs[1].Type != string(session.KindSessionStarted) {
+		t.Fatalf("the posture is not followed by %q", session.KindSessionStarted)
 	}
 	var converged bool
 	for _, e := range evs {

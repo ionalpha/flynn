@@ -161,6 +161,11 @@ func WithNetworkDenied() LocalOption {
 	return func(l *Local) { l.denyNetwork = true }
 }
 
+// NetworkDenied reports whether [WithNetworkDenied] (or [WithKernelConfinement]) was
+// applied, so a record of the run can state whether its commands were kept off the network
+// from the sandbox that launches them and not from the options its caller meant to pass.
+func (l *Local) NetworkDenied() bool { return l.denyNetwork }
+
 // WithReadOnlyFS runs commands against a read-only view of the host: the command can
 // read what the host user can, but the only thing it can write is its own working
 // directory (and a private scratch area). A command we do not fully trust therefore
@@ -324,17 +329,16 @@ func WithKernelConfinement() LocalOption {
 // WithDefaultConfinement is the secure-by-default baseline: it enables the kernel
 // confinements the current platform can enforce. It enables the read-only host and the
 // syscall filter, so a command reads the host and works in its directory but cannot change
-// the host. Network denial is left to the per-run policy.
+// the host. It leaves the network open and hides no path: which paths hold credentials is
+// the caller's knowledge, so a caller running a model's commands adds [WithNetworkDenied]
+// and [WithUnreadablePaths] itself.
 //
 // A launch the host refuses (on Linux, unprivileged user namespaces restricted by sysctl,
 // AppArmor or a service unit) fails closed with a [RefusedError] and never runs the command
-// unconfined. A platform with no kernel confinement refuses every launch the same way.
-// [WithBestEffortConfinement] is the explicit opt-in to the process-jail floor.
-//
-// On Windows the baseline reads the host, so it uses the write-restricted token rather than
-// the AppContainer, which denies reads unless a directory carries an ACE for the app package
-// and ordinary toolchain often lacks it (see nodejs/node#63590). A caller that wants reads
-// denied asks by name, with WithReadOnlyFS or WithKernelConfinement, and gets the container.
+// unconfined; so does a platform with no kernel confinement. [WithBestEffortConfinement]
+// is the explicit opt-in to the process-jail floor. On Windows the baseline uses the
+// write-restricted token, not the AppContainer, which denies reads unless a directory
+// carries an ACE for the app package (see nodejs/node#63590).
 func WithDefaultConfinement() LocalOption {
 	return func(l *Local) {
 		if kernelConfinementSupported() {

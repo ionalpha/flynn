@@ -29,7 +29,7 @@ func TestRunInteractiveReportsABrokenKeymap(t *testing.T) {
 	dataDir := startingSession(t)
 	writeConfigFile(t, dataDir, "keymap.json", "{not json")
 
-	err := runInteractive("openai:gpt-5.5", dataDir, false, false, true, nil)
+	err := runInteractive("openai:gpt-5.5", dataDir, false, false, true, nil, shellPolicy{})
 	if err == nil {
 		t.Fatal("a session opened on an unreadable keymap")
 	}
@@ -44,7 +44,7 @@ func TestRunInteractiveReportsABrokenTheme(t *testing.T) {
 	dataDir := startingSession(t)
 	writeConfigFile(t, dataDir, "theme.json", "{not json")
 
-	err := runInteractive("openai:gpt-5.5", dataDir, false, false, true, nil)
+	err := runInteractive("openai:gpt-5.5", dataDir, false, false, true, nil, shellPolicy{})
 	if err == nil {
 		t.Fatal("a session opened on an unreadable theme")
 	}
@@ -65,7 +65,7 @@ func TestRunInteractiveReportsAnUnusableDataDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := runInteractive("openai:gpt-5.5", dataDir, false, false, true, nil); err == nil {
+	if err := runInteractive("openai:gpt-5.5", dataDir, false, false, true, nil, shellPolicy{}); err == nil {
 		t.Fatal("a session opened on a data directory that cannot hold a store")
 	}
 }
@@ -77,7 +77,7 @@ func TestRunInteractiveReportsAnUnusableDataDir(t *testing.T) {
 func TestRunInteractiveLearnsBackWhenLearningIsOn(t *testing.T) {
 	dataDir := startingSession(t)
 
-	if err := runInteractive("openai:gpt-5.5", dataDir, true, false, true, nil); err != nil {
+	if err := runInteractive("openai:gpt-5.5", dataDir, true, false, true, nil, shellPolicy{}); err != nil {
 		t.Fatalf("runInteractive: %v", err)
 	}
 }
@@ -102,7 +102,7 @@ func TestRunInteractiveReportsAnUnavailableHarness(t *testing.T) {
 	dataDir := startingSession(t)
 	withNoExecutables(t)
 
-	err := runInteractive("claude:sonnet", dataDir, false, false, true, nil)
+	err := runInteractive("claude:sonnet", dataDir, false, false, true, nil, shellPolicy{})
 	if err == nil {
 		t.Fatal("a session opened on a harness that is not installed")
 	}
