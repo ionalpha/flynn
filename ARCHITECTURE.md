@@ -41,7 +41,8 @@ package is one plus the highest layer it imports.
 | L4 governance + domain | `capability`, `budget`, `internal/spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
-| L7 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade. |
+| L7 assembly | `governed` | The one place a governed run is composed: sandbox, toolset, grant, dispatch hooks, spine sink, memory, learning and extensions. |
+| L8 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade, each one caller of `governed`. |
 
 The valuable property is the *direction*, not the count. A primitive must never
 reach up into a domain package; that inversion is what turns a clean graph into a
@@ -316,7 +317,7 @@ promise. The layout makes the tiers physical:
   be able to import). Keep these small and guarded; breaking them is a
   major-version event.
 - **Domain surface** (`goal`, `mission`, `reconcile`, `session`, `runtime`,
-  `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
+  `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
   `orchestration`, `dispatch`, `approval`, ...): importable and visible, but **unstable
   while pre-1.0**. These churn as the orchestration graph and router land.
   Power users may import them with that understanding.
@@ -345,12 +346,14 @@ implementation; it arrives as a separate optional interface found by type
 assertion, the way `KeyLister` and `Waker` extend their ports, and a caller that
 does not find it refuses.
 
-Four exposures of an unstable type by a stable package are known and listed with
+Six exposures of an unstable type by a stable package are known and listed with
 their reasons in `internal/rigor` (`ungatedExposures`): `agent.Config.Agent` is an
-`*archetypes.Spec`, `tools` hands out `mission.Tool` values, `sandbox.WithEgress`
-takes a `netguard.Policy`, and `capability` implements the `dispatch` ports. A break in those packages changes what the stable
-surface means while `dev/apidiff` reports it as a domain change. The test fails on
-a fifth, and on an entry that stops being true.
+`*archetypes.Spec`, `agent.Config` takes `governed` and `mission` types and
+`Agent.GoalResult` returns a `governed.Result`, `tools` hands out `mission.Tool`
+values, `sandbox.WithEgress` takes a `netguard.Policy`, and `capability` implements
+the `dispatch` ports. A break in those packages changes what the stable surface
+means while `dev/apidiff` reports it as a domain change. The test fails on a
+seventh, and on an entry that stops being true.
 
 The tiers are checked rather than described. `dev/apidiff` (a CI job, and runnable
 locally) reads the exported API of the newest release tag and of the branch with
@@ -405,6 +408,12 @@ is part of CI).
   toolset and runs one objective to its answer.
 - **`session`** conversational front door and event stream; **`runtime`** wires
   the controller, worker, store, and bus together.
+- **`governed`** composes a governed run: `Assemble` takes options and returns a
+  `Run` with the posture it has. Defaults are the governed ones, and each
+  opt-out is a named `Waive` recorded on the spine. `cmd/flynn` and the root
+  `agent` call it and compose nothing else (`TestBinaryDoesNotComposeAGovernedRun`
+  in `internal/rigor` fails the binary if it does). `agent.Config` can carry a
+  host's backends, and `GoalResult` returns the run id, stop reason and record.
 - **`goal`** the controller + worker; **`mission`** the conversation executor;
   **`reconcile`** the generic loop they run on.
 - **`resource`** event-sourced state of record; **`spine`** the raw event log;

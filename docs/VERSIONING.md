@@ -29,7 +29,7 @@ none of them can reach you on a day you did not choose.
 | Tier | Packages | What you can expect |
 | --- | --- | --- |
 | Stable surface | the root `agent` facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`, `jobs`, `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, `chain` | The embedding contract. Breaks are gated in CI, and any break that ships was argued for in writing. |
-| Domain surface | `goal`, `mission`, `reconcile`, `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, `dispatch`, `approval`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
+| Domain surface | `goal`, `mission`, `reconcile`, `session`, `runtime`, `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, `dispatch`, `approval`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
 | `internal/` | everything under it | Not importable. No promise at all. |
 
 The gate is `dev/apidiff`, which compares the exported API of the branch against
@@ -75,11 +75,13 @@ A port is promised when a suite can say what a correct backend is, and when ever
 type its exported API names is itself stable. `resource.Store` returns a
 `resource.Resource` that embeds `envelope.Envelope` and is stamped by an
 `hlc.Clock`, so `envelope` and `hlc` are stable with it (`state` already named
-both). Four exposures of an unstable type remain and are listed, with reasons, in
-`internal/rigor`: `agent.Config.Agent` is an `*archetypes.Spec`, `tools` hands out
-`mission.Tool` values, `sandbox.WithEgress` takes a `netguard.Policy`, and
-`capability` implements the `dispatch` ports. Until those are settled, a change to
-`archetypes`, `mission`, `netguard` or `dispatch` can change
+both). Six exposures of an unstable type remain and are listed, with reasons, in
+`internal/rigor`: `agent.Config.Agent` is an `*archetypes.Spec`, `agent.Config`
+takes `governed` and `mission` types and `Agent.GoalResult` returns a
+`governed.Result`, `tools` hands out `mission.Tool` values, `sandbox.WithEgress`
+takes a `netguard.Policy`, and `capability` implements the `dispatch` ports. Until
+those are settled, a change to `archetypes`, `governed`, `mission`, `netguard` or
+`dispatch` can change
 what a stable type means while `dev/apidiff` reports it as a domain change. Read
 those packages' lines in the release notes if you use the facade, the tools, the
 egress policy or the capability grants.
