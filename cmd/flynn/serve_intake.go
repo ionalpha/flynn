@@ -232,20 +232,23 @@ func (s serveIntake) run(ctx context.Context) error {
 }
 
 // announce states, before the first message is read, who may start a run and what a run is
-// held to, so a process that is more open than the operator meant to leave it says so.
+// held to, so a process that is more open than the operator meant to leave it says so. A
+// notice that cannot be written does not stop the process: the posture it describes is
+// enforced whether or not anyone is told.
 func (s serveIntake) announce() {
 	if s.notice == nil {
 		return
 	}
+	say := func(format string, args ...any) { _, _ = fmt.Fprintf(s.notice, "flynn serve: "+format+"\n", args...) }
 	for _, src := range s.sources {
-		fmt.Fprintf(s.notice, "flynn serve: %s: %d allowed sender(s); every other sender is refused and recorded\n", src.Name(), len(s.allow[src.Name()]))
+		say("%s: %d allowed sender(s); every other sender is refused and recorded", src.Name(), len(s.allow[src.Name()]))
 	}
 	if gated := governed.GatedActions(governed.ApprovalPolicy(s.gov.approve)); len(gated) > 0 {
-		fmt.Fprintf(s.notice, "flynn serve: approval required for %s; nothing here can prompt, so these actions are refused\n", strings.Join(gated, ", "))
+		say("approval required for %s; nothing here can prompt, so these actions are refused", strings.Join(gated, ", "))
 	} else {
-		fmt.Fprintln(s.notice, "flynn serve: no action requires approval (the run's grant and sandbox are its controls); set --require-approval to gate more")
+		say("no action requires approval (the run's grant and sandbox are its controls); set --require-approval to gate more")
 	}
 	lim := s.gov.goalBudget()
-	fmt.Fprintf(s.notice, "flynn serve: each goal is capped at %d tokens, cost %g (0 is no cap on that axis)\n", lim.Tokens, lim.Cost)
-	fmt.Fprintln(s.notice, "flynn serve: answering messages; press Ctrl-C to stop")
+	say("each goal is capped at %d tokens, cost %g (0 is no cap on that axis)", lim.Tokens, lim.Cost)
+	say("answering messages; press Ctrl-C to stop")
 }

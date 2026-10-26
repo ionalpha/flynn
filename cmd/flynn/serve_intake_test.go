@@ -510,3 +510,57 @@ func TestServeAnnouncesItsPosture(t *testing.T) {
 		}
 	}
 }
+
+// A process with nothing gated says so, since "no prompt" would otherwise read as "all
+// actions are checked".
+func TestServeAnnouncesWhenNothingIsGated(t *testing.T) {
+	var out strings.Builder
+	serveIntake{
+		sources: []inbox.Source{feedSource{name: "telegram"}},
+		allow:   allowTelegram("7"),
+		notice:  &out,
+	}.announce()
+	if got := out.String(); !strings.Contains(got, "no action requires approval") {
+		t.Errorf("announcement does not say nothing is gated:\n%s", got)
+	}
+	serveIntake{}.announce() // no notice writer: nothing to write to, nothing to fail
+}
+
+// brokenSource is a channel that cannot start.
+type brokenSource struct{ feedSource }
+
+var errNoChannel = errors.New("channel unreachable")
+
+func (brokenSource) Receive(context.Context) (<-chan inbox.Spec, error) { return nil, errNoChannel }
+
+// The gate does not hide a channel that failed to start: the error reaches the ingest, which
+// reports it, rather than the gate answering with an empty stream.
+func TestSenderGateReportsASourceThatCannotStart(t *testing.T) {
+	g := senderGate{Source: brokenSource{feedSource{name: "telegram"}}, allow: allowTelegram("7")}
+	if _, err := g.Receive(context.Background()); !errors.Is(err, errNoChannel) {
+		t.Fatalf("Receive error = %v, want %v", err, errNoChannel)
+	}
+}
+
+// A listed sender's message that nobody is reading does not keep the gate's goroutine alive
+// once the run is cancelled.
+func TestSenderGateStopsWhenTheRunIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	g := senderGate{
+		Source: feedSource{name: "telegram", specs: []inbox.Spec{message("7", "hello")}},
+		allow:  allowTelegram("7"),
+	}
+	out, err := g.Receive(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case _, open := <-out:
+		_ = open // either the message won the race or the channel closed; both end the goroutine
+	case <-time.After(5 * time.Second):
+		t.Fatal("gate still open after the run was cancelled")
+	}
+	for range out { //nolint:revive // drain until the gate closes the stream
+	}
+}
