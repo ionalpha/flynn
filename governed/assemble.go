@@ -190,9 +190,24 @@ func (c *config) check(mode Mode) error {
 	if mode == ModeExternal && (len(ApprovalPolicy(c.approve)) > 0 || len(outsidePolicy(c.outside)) > 0) {
 		return errors.New("governed: an external agent loop cannot enforce approval or allowance policy; run it natively or remove the policy")
 	}
+	if mode == ModeExternal && (c.hasCaps || c.bridge != nil) {
+		return errors.New("governed: an external agent loop brings its own tools; WithCapabilities and WithExtensions could not bound them")
+	}
 	if c.driver != "" && mode != ModeFanout {
 		return errors.New("governed: WithDriver selects the router's default loop and applies only to a fanout run")
 	}
+	return nil
+}
+
+// statePool makes the posture state the limits of the pool the run will be charged
+// against. Opening returns a pool that already exists, as on a resume, so the limits asked
+// for are not necessarily the ones in force, and the record states the latter.
+func (r *Run) statePool(pool resource.Resource) error {
+	spec, err := budgetpkg.DecodeSpec(pool)
+	if err != nil {
+		return err
+	}
+	r.posture.BudgetLimits = spec.Limits
 	return nil
 }
 
@@ -229,7 +244,7 @@ func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) 
 	if err != nil {
 		return nil, err
 	}
-	if err := c.checkApprovalNames(p.grant); err != nil {
+	if err := c.checkActionNames(p.grant); err != nil {
 		_ = p.close()
 		return nil, err
 	}
@@ -243,7 +258,11 @@ func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) 
 	// and the posture is on the record ahead of its first action on every path that starts
 	// one. The waivers go first: they say what was given up, the posture what remains.
 	if c.budget != nil && run.posture.Budget {
-		if _, err := budgetpkg.NewLedger(b.Resources).Open(ctx, p.sess.ID(), resource.Scope{}, *c.budget); err != nil {
+		pool, err := budgetpkg.NewLedger(b.Resources).Open(ctx, p.sess.ID(), resource.Scope{}, *c.budget)
+		if err == nil {
+			err = run.statePool(pool)
+		}
+		if err != nil {
 			_ = p.close()
 			return nil, fmt.Errorf("governed: open run budget: %w", err)
 		}

@@ -318,6 +318,10 @@ func (a *Agent) options(ctx context.Context, obs []mission.Reporter) ([]governed
 		}
 		opts = append(opts, governed.WithExternalAgent(*c.ExternalAgent))
 	case len(pol.Tools) > 0:
+		// A toolset run has no router to select a loop, so a driver name would be dropped.
+		if c.Driver != "" {
+			return nil, errors.New("agent: Config.Driver does not apply to a run over Policy.Tools")
+		}
 		opts = append(opts, governed.WithToolset(pol.Tools, a.toolGrant()))
 	default:
 		// The default loop may also delegate to governed child runs: owned by the

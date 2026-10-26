@@ -480,6 +480,14 @@ approval was off. An external agent loop has no approval gate on its path, so it
 posture records `approval: false`. A `Kit`'s dispatcher refuses a call whose context
 carries no grant, where the capability package alone would admit it.
 
+A name in `WithApproval` or `WithAllowance` that the run's grant does not offer is
+refused, because a gate on an action that never occurs reads as protection and gives
+none. An external agent loop also refuses `WithCapabilities` and `WithExtensions`, since
+it brings its own tools and the grant could not bound them. `Config.Driver` with
+`Policy.Tools` is refused for the same reason: the driver would be dropped. A resumed
+run opens the budget pool its first assembly created, so the posture states the limits
+of that pool and not the ones passed to the later `WithBudget`.
+
 Where policy comes from. The assembly takes the grant, the dispatch hooks, the
 approval policy, the egress allow-list and the sandbox policy only from what the host
 passes in or from host-owned configuration (the binary's flags and environment). It reads no policy from the workspace, which the agent can write. The

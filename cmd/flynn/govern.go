@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"strings"
 
@@ -166,6 +167,23 @@ func declaredAllowances(actions []string) []goal.Allowance {
 		out = append(out, goal.Allowance{Action: name})
 	}
 	return out
+}
+
+// checkAllowedAreMarked refuses an --allow name that no --irreversible marks. The
+// declaration authorizes an action only where the run marks it, so an unmatched name
+// authorizes nothing and reads as if it had: usually a misspelling of the action the
+// operator meant to let through.
+func checkAllowedAreMarked(outside, allowed []string) error {
+	marked := map[string]bool{}
+	for _, name := range outside {
+		marked[strings.TrimSpace(name)] = true
+	}
+	for _, name := range allowed {
+		if name = strings.TrimSpace(name); name != "" && !marked[name] {
+			return fmt.Errorf("--allow %s names an action no --irreversible marks, so it would authorize nothing", name)
+		}
+	}
+	return nil
 }
 
 // unrecordedAttested reports how many of the external harness's events could not be

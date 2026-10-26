@@ -267,3 +267,65 @@ func TestGuardsAreConsultedInOrder(t *testing.T) {
 		})
 	}
 }
+
+// TestAllowanceNamesMustBeActionsTheRunOffers: the allowance gate marks an action by its
+// exact name, so a name no tool carries marks nothing. The posture would still say an
+// allowance gate is on, so the run is refused instead; a name that matches reports it on.
+func TestAllowanceNamesMustBeActionsTheRunOffers(t *testing.T) {
+	tests := []struct {
+		name    string
+		actions []string
+		ok      bool
+	}{
+		{"a tool the run offers", []string{"bash"}, true},
+		{"padding is ignored", []string{" bash "}, true},
+		{"an action no tool provides", []string{"shell"}, false},
+		{"one good name and one bad", []string{"bash", "shell"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, _ := memBackends(t)
+			run, err := Assemble(ctxT(t), say("x"), b, WithWorkDir(t.TempDir()), WithAllowance(tt.actions))
+			if err == nil {
+				defer func() { _ = run.Close() }()
+			}
+			if (err == nil) != tt.ok {
+				t.Fatalf("err = %v, want ok=%v", err, tt.ok)
+			}
+			if err == nil && !run.Posture().Allowance {
+				t.Errorf("posture = %+v, want the allowance gate reported on", run.Posture())
+			}
+		})
+	}
+}
+
+// TestResumedRunStatesThePoolItIsChargedAgainst: opening a budget returns the pool that
+// already exists, so a resumption that asks for a larger ceiling still runs under the first
+// one. The posture, and the record of it, state the ceiling in force and not the one asked for.
+func TestResumedRunStatesThePoolItIsChargedAgainst(t *testing.T) {
+	b, _ := memBackends(t)
+	first, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()),
+		WithBudget(budgetpkg.Limits{Tokens: 100}))
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+
+	second, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithRunID(first.ID()),
+		WithBudget(budgetpkg.Limits{Tokens: 5000}))
+	if err != nil {
+		t.Fatalf("assemble the resumed run: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	if got := second.Posture().BudgetLimits.Tokens; got != 100 {
+		t.Fatalf("posture states a ceiling of %d tokens, want the 100 the pool was opened with", got)
+	}
+	ev := postureEvents(t, b.Log, first.ID())
+	if len(ev) != 2 {
+		t.Fatalf("recorded %d posture statements, want 2", len(ev))
+	}
+	if got, _ := ev[1].Payload["budgetTokens"].(float64); got != 100 {
+		t.Errorf("the resumed run's record says budgetTokens = %v, want 100", ev[1].Payload["budgetTokens"])
+	}
+}

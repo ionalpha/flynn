@@ -169,6 +169,10 @@ func TestConfigRefusesWhatItCannotGovern(t *testing.T) {
 		{"external agent with approval policy", Config{ExternalAgent: ext, Policy: &Policy{RequireApproval: []string{"bash"}}}, "external"},
 		{"external agent with host tools", Config{ExternalAgent: ext, Policy: &Policy{Tools: tools.New(sb).Tools()}}, "external"},
 		{"external agent with an archetype", Config{ExternalAgent: ext, Agent: &archetypes.Spec{Capabilities: []string{"read"}}}, "Config.Agent"},
+		{"host tools with a driver name", Config{Driver: "single-shot", Policy: &Policy{
+			Tools:   tools.New(sb).Tools(),
+			Waivers: []governed.Waiver{{Guard: governed.GuardSandbox, Reason: "test"}},
+		}}, "Config.Driver"},
 		{"external agent with a driver name", Config{ExternalAgent: ext, Driver: "single-shot"}, "Config.Driver"},
 	}
 	for _, tc := range tests {
