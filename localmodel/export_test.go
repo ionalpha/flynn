@@ -63,3 +63,8 @@ func (h *Host) SpyOnLaunches() *LaunchSpy {
 	h.mgr = h.newManager(spyLauncher{next: serve.SandboxLauncher{SB: h.sb}, spy: spy})
 	return spy
 }
+
+// Attest runs the listener handshake against baseURL with probeKey.
+func (h *Host) Attest(ctx context.Context, baseURL, probeKey string) error {
+	return h.attest(ctx, baseURL, probeKey)
+}

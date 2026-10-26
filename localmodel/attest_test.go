@@ -10,11 +10,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -545,5 +547,72 @@ func TestReturnedModelsCannotEditTheCatalog(t *testing.T) {
 	cfg.Catalog[0].Quants[0].Digest = "sha256:" + strings.Repeat("2", 64)
 	if later, _ := h.Model(f.model.ID); later.Quants[0].Digest != digest {
 		t.Fatal("an edit to the catalog slice passed to Open reached the host")
+	}
+}
+
+// A listener that cannot be asked is not attributed, whichever of the three questions
+// fails to get an answer.
+func TestAttestFailsClosedWhenTheListenerCannotBeAsked(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL + "/v1"
+	dead.Close()
+	if err := h.Attest(t.Context(), deadURL, "probe"); !errors.Is(err, localmodel.ErrUnauthenticated) {
+		t.Fatalf("a closed port: %v; want ErrUnauthenticated", err)
+	}
+
+	// dropAt closes the connection on the nth request and answers the rest as a server
+	// that enforces a credential would.
+	dropAt := func(n int) string {
+		var calls atomic.Int32
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if int(calls.Add(1)) == n {
+				conn, _, err := w.(http.Hijacker).Hijack()
+				if err == nil {
+					_ = conn.Close()
+				}
+				return
+			}
+			if r.Header.Get("Authorization") == "Bearer probe" {
+				return
+			}
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL + "/v1"
+	}
+	if err := h.Attest(t.Context(), dropAt(2), "probe"); !errors.Is(err, localmodel.ErrUnauthenticated) {
+		t.Fatalf("a listener that drops the made-up credential: %v; want ErrUnauthenticated", err)
+	}
+	if err := h.Attest(t.Context(), dropAt(3), "probe"); !errors.Is(err, localmodel.ErrWrongListener) {
+		t.Fatalf("a listener that drops the probe key: %v; want ErrWrongListener", err)
+	}
+	if err := h.Attest(t.Context(), dropAt(99), "probe"); err != nil {
+		t.Fatalf("a listener that behaves as the server does: %v", err)
+	}
+	if err := h.Attest(t.Context(), dropAt(99), "other"); !errors.Is(err, localmodel.ErrWrongListener) {
+		t.Fatalf("a listener that refuses the launch's key: %v; want ErrWrongListener", err)
+	}
+}
+
+// Calls that name no running or servable model fail without starting anything.
+func TestNothingRunningIsReportedAsSuch(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+	spy := h.SpyOnLaunches()
+
+	if _, err := h.Serve(t.Context(), "no/such-model", localmodel.ServeOptions{}); err == nil {
+		t.Fatal("Serve accepted a model that is not in the catalog")
+	}
+	if _, err := h.Stats(t.Context(), f.model.ID); !errors.Is(err, localmodel.ErrNotRunning) {
+		t.Fatalf("Stats = %v; want ErrNotRunning", err)
+	}
+	if found, err := h.Stop(f.model.ID); err != nil || found {
+		t.Fatalf("Stop = %v, %v; want nothing found", found, err)
+	}
+	if n := len(spy.Specs()); n != 0 {
+		t.Fatalf("%d servers were launched", n)
 	}
 }
