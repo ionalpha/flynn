@@ -282,20 +282,30 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
           img="ghcr.io/ionalpha/flynn:${VERSION}-amd64"
+          # Each failure is an annotation carrying the check's one-line JSON, so the cause
+          # reads from the pull request without opening the log.
+          fail=0
           if out="$(docker run --rm "$img" sandbox check --json)"; then
-            echo "$out"
-            echo "::error::sandbox check passed under Docker's default seccomp profile"
-            exit 1
+            echo "::error title=Passed without the profile::$(jq -c . <<<"$out")"
+            fail=1
+          elif ! jq -e '.fix | contains("flynn-seccomp.json")' <<<"$out" >/dev/null; then
+            echo "::error title=Refusal does not name the profile::$(jq -c . <<<"$out")"
+            fail=1
           fi
-          echo "$out"
-          jq -e '.fix | contains("flynn-seccomp.json")' <<<"$out"
-          docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json "$img" sandbox check
+          if ! out="$(docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json "$img" sandbox check --json)"; then
+            echo "::error title=Refused with the profile::$(jq -c . <<<"$out")"
+            fail=1
+          fi
+          exit "$fail"
       # The source Dockerfile is what `docker build .` and deploy/compose.yaml use, and
       # goreleaser never builds it, so build it here and hold it to the same self-test.
       - name: Source Dockerfile builds and passes the sandbox check
         run: |
           docker build -t flynn:source --build-arg VERSION=0.0.0-ci .
-          docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json flynn:source sandbox check
+          if ! out="$(docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json flynn:source sandbox check --json)"; then
+            echo "::error title=Source image refused with the profile::$(jq -c . <<<"$out")"
+            exit 1
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-binaries
