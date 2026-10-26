@@ -253,16 +253,18 @@ func writeFile(dst string, r io.Reader, limit int64) (int64, error) {
 // stays within base. An entry that is absolute or walks out of the tree with ".." is
 // rejected outright rather than re-rooted, so a hostile archive or manifest cannot place a
 // file outside the install directory and cannot disguise its intent by relying on path
-// collapsing. The containment is then re-checked against the resolved path as defense in
-// depth. It is exported so a caller writing files from an untrusted manifest (not only the
-// archive extractor) can apply the same guard.
+// collapsing. [filepath.IsLocal] also refuses a reserved Windows device name such as NUL
+// or COM1, which would otherwise open the device rather than create a file. The
+// containment is then re-checked against the resolved path as defense in depth. It is
+// exported so a caller writing files from an untrusted manifest (not only the archive
+// extractor) can apply the same guard.
 func SafeJoin(base, name string) (string, bool) {
 	slashed := strings.ReplaceAll(name, `\`, "/")
-	norm := path.Clean(slashed)
-	if norm == "." || norm == ".." || strings.HasPrefix(norm, "../") || path.IsAbs(norm) || strings.Contains(name, ":") {
+	local := filepath.FromSlash(path.Clean(slashed))
+	if local == "." || !filepath.IsLocal(local) || strings.Contains(name, ":") {
 		return "", false
 	}
-	dst := filepath.Join(base, filepath.FromSlash(norm))
+	dst := filepath.Join(base, local)
 	rel, err := filepath.Rel(base, dst)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
 		return "", false

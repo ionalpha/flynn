@@ -608,7 +608,7 @@ func (l *Local) WriteFile(_ context.Context, path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(abs), 0o750); err != nil { //nolint:gosec // abs is confined to the sandbox root by resolve
+	if err := l.mkdirParents(abs); err != nil {
 		return err
 	}
 	f, err := l.confinedOpen(abs, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)

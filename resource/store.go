@@ -131,13 +131,10 @@ func encodePayload(r Resource) (json.RawMessage, error) {
 	if err != nil {
 		return nil, err
 	}
-	p := make([]byte, 0, len(b)+len(payloadKey)+4)
-	p = append(p, `{"`...)
-	p = append(p, payloadKey...)
-	p = append(p, `":`...)
-	p = append(p, b...)
-	p = append(p, '}')
-	return p, nil
+	// Appending to the fixed prefix lets append size the buffer, so no capacity is computed
+	// by adding to a length that came from the marshalled record.
+	p := append([]byte(`{"`+payloadKey+`":`), b...)
+	return append(p, '}'), nil
 }
 
 // DecodeResource reconstructs a Resource from an event payload. Durable backends

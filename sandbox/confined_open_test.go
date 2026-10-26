@@ -113,3 +113,43 @@ func TestConfinedOpenSymlinkSwapRaceNeverLeaks(t *testing.T) {
 	close(stop)
 	<-done
 }
+
+// A parent directory swapped to a symlink pointing out of the root after resolve ran must
+// not have directories created through it. resolve would deny the path if it saw the
+// symlink, so this calls mkdirParents directly with the state a swap leaves behind.
+func TestMkdirParentsRefusesEscapingSymlinkedParent(t *testing.T) {
+	l := newLocal(t)
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(l.root, "out")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := l.mkdirParents(filepath.Join(l.root, "out", "made", "f.txt")); err == nil {
+		t.Fatal("mkdirParents created directories through a symlink that leaves the root")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "made")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a directory was created outside the root: %v", err)
+	}
+}
+
+func TestMkdirParentsCreatesNestedDirectories(t *testing.T) {
+	l := newLocal(t)
+	if err := l.mkdirParents(filepath.Join(l.root, "a", "b", "f.txt")); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(l.root, "a", "b")); err != nil || !fi.IsDir() {
+		t.Fatalf("parents not created: %v", err)
+	}
+	// A file directly in the root has no parent to create.
+	if err := l.mkdirParents(filepath.Join(l.root, "f.txt")); err != nil {
+		t.Fatalf("a file in the root must need no parents: %v", err)
+	}
+}
+
+func TestConfinedRelRefusesPathsOutsideTheRoot(t *testing.T) {
+	l := newLocal(t)
+	for _, abs := range []string{filepath.Dir(l.root), filepath.Join(l.root, "..", "x")} {
+		if rel, err := l.confinedRel(abs); !errors.Is(err, ErrDenied) {
+			t.Fatalf("confinedRel(%q) = %q, %v; want ErrDenied", abs, rel, err)
+		}
+	}
+}
