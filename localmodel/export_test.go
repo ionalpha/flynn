@@ -68,3 +68,39 @@ func (h *Host) SpyOnLaunches() *LaunchSpy {
 func (h *Host) Attest(ctx context.Context, baseURL, probeKey string) error {
 	return h.attest(ctx, baseURL, probeKey)
 }
+
+// RedactText is the redaction every error and displayed line passes through.
+func RedactText(s string, secrets ...string) string { return redactText(s, secrets...) }
+
+// Fail redacts err as a Host does before returning it.
+func (h *Host) Fail(err error) error { return h.fail(err) }
+
+// RememberToken records a token for a port, as a launch does once its listener is attributed.
+func (h *Host) RememberToken(port int, token string) { h.remember(port, token) }
+
+// HashFile hashes a file as the launch checks do.
+func HashFile(path string) (string, error) { return hashFile(path) }
+
+// RecordRuntimeBinary stores the hash of bin in sidecar.
+func RecordRuntimeBinary(bin, sidecar string) error { return recordRuntimeBinary(bin, sidecar) }
+
+// VerifyRuntimeBinary checks bin against the hash recorded beside it.
+func VerifyRuntimeBinary(bin string) error { return verifyRuntimeBinary(bin) }
+
+// VerifyWeights is the last digest check before a launch.
+func VerifyWeights(w Weights) error { return verifyWeights(w) }
+
+// VerifiedTemplate hashes and then parses the weights through one open file.
+func VerifiedTemplate(w Weights) error {
+	_, err := verifiedTemplate(w, "chatml")
+	return err
+}
+
+// SizeCeiling is the download cap for a declared size.
+func SizeCeiling(size int64) int64 { return sizeCeiling(size) }
+
+// SmallestServable picks the quantization a model is served from when none is named.
+func SmallestServable(m Model) error {
+	_, err := smallestServable(m)
+	return err
+}
