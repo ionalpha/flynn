@@ -153,6 +153,9 @@ func TestEnsureWeightsReportsStaleWeightsItCannotRemove(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(w.Path, "occupied"), 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// The host narrows the path's mode before it tries the removal, which on a directory
+	// takes away the search bit the temporary directory's cleanup needs.
+	t.Cleanup(func() { _ = os.Chmod(w.Path, 0o700) })
 	if _, err := h.EnsureWeights(t.Context(), f.model.ID, ""); err == nil || !strings.Contains(err.Error(), "remove stale weights") {
 		t.Fatalf("EnsureWeights = %v; want a stale weights removal error", err)
 	}
