@@ -402,14 +402,14 @@ func TestServeReportsAndEnforcesConfinement(t *testing.T) {
 		}
 	})
 	t.Run("a jail is refused unless the Host accepted one", func(t *testing.T) {
-		for _, min := range []string{"", "kernel"} {
+		for _, floor := range []string{"", "kernel"} {
 			f := newFixture(t, fixtureOpts{})
-			h := reopen(t, f, func(c *localmodel.Config) { c.MinContainment = min })
+			h := reopen(t, f, func(c *localmodel.Config) { c.MinContainment = floor })
 			spy := h.SpyOnLaunches()
 			h.SetContainment(sandbox.ContainmentNone)
 			_, err := h.Serve(t.Context(), f.model.ID, localmodel.ServeOptions{})
 			if !errors.Is(err, localmodel.ErrNotAdmitted) {
-				t.Fatalf("MinContainment %q: Serve = %v; want ErrNotAdmitted", min, err)
+				t.Fatalf("MinContainment %q: Serve = %v; want ErrNotAdmitted", floor, err)
 			}
 			if !strings.Contains(err.Error(), sandbox.ContainmentNone.String()) {
 				t.Fatalf("the refusal does not say what the host provides: %v", err)

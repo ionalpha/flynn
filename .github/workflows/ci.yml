@@ -443,7 +443,7 @@ jobs:
       # objects the platform passes build are saved and restored with everything else.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.15.0
           skip-cache: true
       # The action above lints the host target only (GOOS=linux), so build-tagged
       # platform files (_windows.go, _darwin.go) never reach a maintainer. Re-run the
