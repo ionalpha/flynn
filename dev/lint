@@ -9,7 +9,7 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
-GOLANGCI_VERSION="v2.12.2"
+GOLANGCI_VERSION="v2.15.0"
 
 # Resolve golangci-lint from PATH or the Go bin dir.
 golangci="$(command -v golangci-lint || true)"

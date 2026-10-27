@@ -268,7 +268,7 @@ func TestAllowListComparesNumericIDs(t *testing.T) {
 				t.Errorf("allows(%q, %q) = %v, want %v", tc.source, tc.sender, got, tc.want)
 			}
 		}
-		if (senderAllowList{}).allows("telegram", "7") || (senderAllowList(nil)).allows("telegram", "7") {
+		if (senderAllowList{}).allows("telegram", "7") || senderAllowList(nil).allows("telegram", "7") {
 			t.Error("an empty allow-list let a sender in")
 		}
 	})

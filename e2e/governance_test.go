@@ -166,7 +166,8 @@ func TestKillStopsARunningGoalBeforeItsNextAction(t *testing.T) {
 	close(release)
 
 	select {
-	case <-goal.done:
+	case err := <-goal.done:
+		t.Logf("killed goal exited: %v", err)
 	case <-time.After(60 * time.Second):
 		t.Fatal("the killed goal did not exit")
 	}

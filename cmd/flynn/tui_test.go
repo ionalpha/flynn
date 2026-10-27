@@ -715,7 +715,10 @@ func TestSessionShellFileCompletion(t *testing.T) {
 
 	a.Quit()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("shell exited with error: %v", err)
+		}
 	case <-time.After(15 * time.Second):
 		t.Fatal("shell did not stop")
 	}
