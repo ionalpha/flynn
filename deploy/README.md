@@ -88,7 +88,7 @@ Busybox is the minimum that lets the agent run commands out of the box. For real
 work, put the binary into an image that already has your tools:
 
 ```dockerfile
-FROM golang:1.26-trixie
+FROM golang:1.27-trixie
 COPY --from=ghcr.io/ionalpha/flynn:latest /usr/local/bin/flynn /usr/local/bin/flynn
 ENTRYPOINT ["flynn"]
 ```
