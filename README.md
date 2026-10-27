@@ -127,15 +127,15 @@ profile allows the sandbox's own mounts. Without them the agent refuses to run c
 On a host without AppArmor (Docker Desktop, Fedora), skip the AppArmor lines. See
 [`deploy/README.md`](deploy/README.md#the-sandbox-in-a-container).
 
-Until v0.2.0 ships, `latest` (the image tag and the release download) is v0.1.3, which
-has no shell and no profiles. To run the release candidate, set
-`base=https://github.com/ionalpha/flynn/releases/download/v0.2.0-rc.1` and use the image
-`ghcr.io/ionalpha/flynn:0.2.0-rc.1`.
-
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
 (`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;
 add a channel (for example `-e TELEGRAM_BOT_TOKEN=... -e FLYNN_TELEGRAM_ALLOW=<your user id>`) to reach the agent, or see
 [`deploy/README.md`](deploy/README.md) for remote access and hardening.
+
+Until v0.2.0 ships, `latest` (the image tag and the release download) is v0.1.3, which
+has no shell and no profiles. To run the release candidate, set
+`base=https://github.com/ionalpha/flynn/releases/download/v0.2.0-rc.1` and use the image
+`ghcr.io/ionalpha/flynn:0.2.0-rc.1`.
 
 Every published manifest is keyless-signed with cosign and can be verified:
 
@@ -594,10 +594,12 @@ full flag list.
 Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
 `--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
 `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`, `--max-memory`,
-`--max-processes`, `--allow-network`, `--allow-credential-reads`, `--no-learn`,
-`--no-bundled-skills`, `--data-dir`, `--profile <dir>`. A command the agent runs has no
-network and cannot read `~/.ssh`, cloud and CLI login tokens or the data directory unless
-the matching `--allow-` flag is set.
+`--max-processes`, `--allow-network`, `--allow-credential-reads`,
+`--require-credential-hiding`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
+`--profile <dir>`. A command the agent runs has no network and, on Linux and macOS, cannot
+read `~/.ssh`, cloud and CLI login tokens or the data directory unless the matching
+`--allow-` flag is set. Windows cannot hide those paths: there they stay readable, Flynn says
+so when a run starts, and `--require-credential-hiding` refuses to run commands instead.
 Run flags go before the objective: `flynn goal --require-approval shell "deploy it"`.
 
 ## Use it as a library
