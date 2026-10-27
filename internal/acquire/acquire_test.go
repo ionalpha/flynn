@@ -227,3 +227,17 @@ func TestSafeJoinRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+// TestSafeJoinRejectsWindowsDeviceNames pins that an entry named for a reserved device is
+// refused on Windows, where writing it would open the device instead of creating a file.
+func TestSafeJoinRejectsWindowsDeviceNames(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("device names are reserved only on Windows")
+	}
+	base := filepath.Clean(filepath.Join(os.TempDir(), "install"))
+	for _, name := range []string{"NUL", "bin/CON", "COM1", `lib\aux`} {
+		if dst, ok := SafeJoin(base, name); ok {
+			t.Fatalf("SafeJoin(%q) allowed a device name as %q", name, dst)
+		}
+	}
+}
