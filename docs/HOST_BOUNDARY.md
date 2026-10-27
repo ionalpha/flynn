@@ -627,13 +627,17 @@ standard error when it is nil. It is never offered for a Local that denies the n
 governs egress, hides paths or holds a read grant the floor cannot honour.
 
 An embedder hides a runner's own files from the commands it launches with
-`WithUnreadablePaths`: the paths read as empty inside the sandbox, and a Local that
-cannot do this (off Linux, without `WithReadOnlyFS`, or with a grant under a hidden
-path) refuses with `ErrReadDeny`. The binary applies it, with `WithNetworkDenied`, to the
+`WithUnreadablePaths`: the paths read as empty inside the sandbox on Linux and are denied on
+macOS, and a Local that cannot do this (on Windows, without `WithReadOnlyFS`, or with a grant
+under a hidden path) refuses with `ErrReadDeny`; `sandbox.ReadDenySupported` says which
+platform this is before a launch refuses. The binary applies it, with `WithNetworkDenied`, to the
 shell of `flynn run`, `flynn serve` and the goal worker: the data directory, the runner's
 runtime directory and the account's credential locations are hidden, and the command has no
 network. `--allow-network` and `--allow-credential-reads` lift each, and the run's stream
-records which. An embedder that builds its own Local gets neither unless it asks.
+records which. On Windows the binary sets `ShellPolicy.AllowCredentialReadsWhereUnhidable`, so
+the shell runs with the credentials readable and the posture event says the platform was the
+reason; `--require-credential-hiding` keeps the refusal. An embedder that builds its own Local
+gets none of this unless it asks, and the zero `ShellPolicy` refuses on Windows.
 
 `deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
 unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`

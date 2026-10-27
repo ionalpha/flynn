@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/inbox"
 	"github.com/ionalpha/flynn/notices"
+	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -211,6 +212,16 @@ func TestMCPServerRecordsTheDefaultShellPosture(t *testing.T) {
 	}
 
 	got := storedPostures(t, dataDir, m[1])
+	if !sandbox.ReadDenySupported() {
+		// The served shell runs where nothing can be hidden, and its record and the log say why.
+		if len(got) != 1 || got[0]["network"] != "denied" || got[0]["credentials"] != "readable" || got[0]["credentials_reason"] != governed.CredentialsReadableByPlatform {
+			t.Fatalf("MCP postures = %v, want one with the network denied and credentials readable by the platform", got)
+		}
+		if !strings.Contains(logw.String(), "cannot hide paths") {
+			t.Errorf("the server did not tell the operator the credentials are readable: %q", logw.String())
+		}
+		return
+	}
 	if len(got) != 1 || got[0]["network"] != "denied" || got[0]["credentials"] != "hidden" {
 		t.Fatalf("MCP postures = %v, want one with the network denied and credentials hidden", got)
 	}

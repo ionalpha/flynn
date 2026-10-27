@@ -39,10 +39,38 @@ type ShellPolicy struct {
 	// namespace with no interfaces, which also takes away the loopback services of the host
 	// (a control-plane API among them).
 	AllowNetwork bool
-	// AllowCredentialReads leaves DataDir and the credential locations readable. It is the
-	// only way to run a shell on a platform that cannot hide a path (anything but Linux
-	// today), where the hidden set makes every launch refuse.
+	// AllowCredentialReads leaves DataDir and the credential locations readable on every
+	// platform.
 	AllowCredentialReads bool
+	// AllowCredentialReadsWhereUnhidable leaves them readable only on a platform that cannot
+	// hide a path ([sandbox.ReadDenySupported] is false: Windows today), and hides them
+	// everywhere else. Without it such a platform refuses every launch, so a run whose
+	// shell must never see the credentials cannot start there by accident; with it the
+	// shell runs, and the run's posture event says the credentials were readable and that
+	// the platform was the reason. The binary sets it so a first run works on every OS.
+	AllowCredentialReadsWhereUnhidable bool
+}
+
+// Posture reasons recorded on a [ShellPostureEventType] event whose credentials are
+// readable: the policy asked for it, or the platform could not hide them and the policy
+// accepted that.
+const (
+	CredentialsReadableByPolicy   = "policy"
+	CredentialsReadableByPlatform = "platform"
+)
+
+// CredentialsReadable reports whether the commands will be able to read the credential
+// locations on this platform, and which posture reason the run will record for it. It is
+// the one decision [ShellPolicy] options and the posture event both read, so a caller that
+// warns an operator says what the record will say.
+func (p ShellPolicy) CredentialsReadable() (readable bool, reason string) {
+	switch {
+	case p.AllowCredentialReads:
+		return true, CredentialsReadableByPolicy
+	case p.AllowCredentialReadsWhereUnhidable && !sandbox.ReadDenySupported():
+		return true, CredentialsReadableByPlatform
+	}
+	return false, ""
 }
 
 // WithShellPolicy sets what the commands of the run's own sandbox may reach. Without it
@@ -63,7 +91,7 @@ func (p ShellPolicy) options() []sandbox.LocalOption {
 	if !p.AllowNetwork {
 		opts = append(opts, sandbox.WithNetworkDenied())
 	}
-	if !p.AllowCredentialReads {
+	if readable, _ := p.CredentialsReadable(); !readable {
 		opts = append(opts, sandbox.WithUnreadablePaths(p.hiddenPaths()...))
 	}
 	return opts
@@ -169,10 +197,12 @@ func dedupe(paths []string) []string {
 }
 
 // declareShellPosture records on stream what sb keeps its commands away from, read from the
-// sandbox that will launch them. A relaxation the operator asked for is therefore in the
-// sealed record next to the actions that ran under it. A record that cannot be written
-// fails the assembly: a run must not start under a relaxed policy it cannot account for.
-func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *sandbox.Local) error {
+// sandbox that will launch them. A relaxation the operator asked for, or one the platform
+// forced, is therefore in the sealed record next to the actions that ran under it, with
+// reason naming which (see [ShellPolicy.CredentialsReadable]). A record that cannot be
+// written fails the assembly: a run must not start under a relaxed policy it cannot account
+// for.
+func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *sandbox.Local, reason string) error {
 	network := "open"
 	if sb.NetworkDenied() {
 		network = "denied"
@@ -189,6 +219,8 @@ func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *
 	}
 	if len(hidden) > 0 {
 		payload["hidden"] = hidden
+	} else if reason != "" {
+		payload["credentials_reason"] = reason
 	}
 	_, err := log.Append(ctx, spine.AppendInput{
 		Stream:  stream,

@@ -104,6 +104,7 @@ type instance struct {
 	t         *testing.T
 	dataDir   string
 	workspace string
+	home      string
 	env       []string
 	model     string
 }
@@ -125,6 +126,7 @@ func newInstance(t *testing.T) *instance {
 		t:         t,
 		dataDir:   data,
 		workspace: work,
+		home:      home,
 		env:       scrubbedEnv(home),
 		model:     "openai:gpt-e2e",
 	}

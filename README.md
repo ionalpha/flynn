@@ -582,10 +582,12 @@ full flag list.
 Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
 `--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
 `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`, `--max-memory`,
-`--max-processes`, `--allow-network`, `--allow-credential-reads`, `--no-learn`,
-`--no-bundled-skills`, `--data-dir`, `--profile <dir>`. A command the agent runs has no
-network and cannot read `~/.ssh`, cloud and CLI login tokens or the data directory unless
-the matching `--allow-` flag is set.
+`--max-processes`, `--allow-network`, `--allow-credential-reads`,
+`--require-credential-hiding`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
+`--profile <dir>`. A command the agent runs has no network and, on Linux and macOS, cannot
+read `~/.ssh`, cloud and CLI login tokens or the data directory unless the matching
+`--allow-` flag is set. Windows cannot hide those paths: there they stay readable, Flynn says
+so when a run starts, and `--require-credential-hiding` refuses to run commands instead.
 Run flags go before the objective: `flynn goal --require-approval shell "deploy it"`.
 
 ## Use it as a library

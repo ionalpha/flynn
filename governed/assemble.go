@@ -92,7 +92,8 @@ func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*p
 		if err != nil {
 			return nil, err
 		}
-		if err := declareShellPosture(ctx, log, sess.ID(), sb); err != nil {
+		_, reason := c.shell.CredentialsReadable()
+		if err := declareShellPosture(ctx, log, sess.ID(), sb, reason); err != nil {
 			_ = sb.Close()
 			return nil, fmt.Errorf("governed: record the shell's posture: %w", err)
 		}

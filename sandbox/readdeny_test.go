@@ -6,11 +6,12 @@ import (
 	"testing"
 )
 
-// TestReadDenyRefusesOffLinux covers the platforms that build no private mount view: a
-// complete configuration is still refused, since there is nothing to hide the path with.
-func TestReadDenyRefusesOffLinux(t *testing.T) {
-	if readDenyEnforceable() {
-		t.Skip("this platform hides paths; TestSandboxCannotReadRunnerDataDir covers it")
+// TestReadDenyRefusesWhereUnsupported covers the platform that cannot hide a path
+// (Windows): a complete configuration is still refused, since there is nothing to hide the
+// path with.
+func TestReadDenyRefusesWhereUnsupported(t *testing.T) {
+	if ReadDenySupported() {
+		t.Skip("this platform hides paths; the Linux and macOS read-deny tests cover it")
 	}
 	l := newTestLocal(t, WithDefaultConfinement(), WithUnreadablePaths(t.TempDir()))
 	if _, err := l.Exec(context.Background(), Command{Line: "echo ran"}); !errors.Is(err, ErrReadDeny) {
@@ -19,9 +20,9 @@ func TestReadDenyRefusesOffLinux(t *testing.T) {
 }
 
 // TestReadDenyRefusesAnUnenforceableSet holds the rule that a read-deny set which cannot be
-// applied stops the launch, on every platform: without a private mount view the Local
-// shares the host's, and a set that hides the working directory or a grant contradicts the
-// Local's own configuration.
+// applied stops the launch, on every platform: without a read-only host view the Local
+// leaves the host's filesystem as it is, and a set that hides the working directory or a
+// grant contradicts the Local's own configuration.
 func TestReadDenyRefusesAnUnenforceableSet(t *testing.T) {
 	secret := t.TempDir()
 	work := t.TempDir()

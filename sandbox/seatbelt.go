@@ -74,6 +74,26 @@ func seatbeltProfile(root string, denyNetwork, readonlyFS, hardenSyscalls bool, 
 	return b.String()
 }
 
+// seatbeltHidden renders the profile rules that hide each path from the command: every read
+// and every write under it is denied. They are appended after the rest of the profile, and
+// rules are last-match-wins, so no write grant or allow-default read reaches a hidden path.
+// Where Linux covers a path with an empty one, macOS refuses the access, so the command sees
+// a permission error rather than an empty directory. A subpath rule matches a file as well as
+// a directory, and matches a path that does not exist yet, so a credential file created
+// while the command runs is hidden too.
+func seatbeltHidden(paths []string) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("(deny file-read* file-write*\n")
+	for _, p := range paths {
+		b.WriteString("    (subpath " + sbplString(p) + ")\n")
+	}
+	b.WriteString(")\n")
+	return b.String()
+}
+
 // seatbeltWritableDevices are the only host files outside the working tree a command
 // may write under the read-only host view: the standard device endpoints a shell and
 // its tools need to redirect output and read entropy. They are individual files, not

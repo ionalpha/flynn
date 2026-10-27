@@ -357,6 +357,7 @@ var invocationCommands = map[string]func(inv invocation, rest []string) int{
 	"memory":  routeMemory,
 	"skill":   routeSkill,
 	"serve": func(inv invocation, rest []string) int {
+		inv.noteShellPosture()
 		return inv.exit(runServe(rest[1:], inv.modelSpec, inv.dataDir, serveGovernance{
 			approve: inv.reqApproval, outside: inv.outside, allowed: inv.allowed,
 			budget: budgetpkg.Limits{Tokens: inv.maxTokens, Cost: inv.maxCost},
@@ -421,6 +422,7 @@ func routeCommand(cmd string, rest []string, inv invocation) int {
 	// is a turn of one continuing conversation. With stdin redirected (a pipe, a file, a CI
 	// step) there is no one to prompt, so print usage instead.
 	if len(rest) == 0 && stdinIsTerminal() {
+		inv.noteShellPosture()
 		return inv.exit(runInteractive(inv.modelSpec, inv.dataDir, inv.learn, inv.verbose, inv.plain, inv.reqApproval, inv.shell))
 	}
 
@@ -449,6 +451,7 @@ func routeGoal(inv invocation, rest []string) int {
 		_, _ = fmt.Fprintln(inv.stderr, err)
 		return 2
 	}
+	inv.noteShellPosture()
 	return inv.exit(runGoal(inv.modelSpec, objective, inv.verify, inv.dataDir, spec, inv.learn, inv.verbose, inv.fanout, inv.requireProof, inv.reqApproval, inv.outside, inv.allowed, inv.maxCost, inv.maxTokens, inv.shell))
 }
 
@@ -465,6 +468,7 @@ func routeResume(inv invocation, rest []string) int {
 		_, _ = fmt.Fprintln(inv.stderr, "usage: flynn resume <run-id>")
 		return 2
 	}
+	inv.noteShellPosture()
 	return inv.exit(resumeRun(inv.modelSpec, rest[1], inv.dataDir, inv.verbose, inv.shell))
 }
 
@@ -602,7 +606,7 @@ func printUsage(w io.Writer) {
   flynn version [list]      print the running build, or list the releases that exist
   flynn upgrade             replace this binary with a newer, signature-verified release
   flynn sandbox check [--json] [--ready-file PATH]  start a confined child and report whether this host allows the Linux sandbox, or why not and the fix (exits 1 on any refusal)
-Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, -v/--verbose, --plain, --profile <dir> (run with --help for details).
+Flags: --model, --data-dir, --no-learn, --verify "<cmd>", --goal-spec <file>, --require-proof, --require-approval <action>, --irreversible <action>, --allow <action>, --fanout, --max-cost, --max-tokens, --max-memory, --max-processes, --allow-network, --allow-credential-reads, --require-credential-hiding, -v/--verbose, --plain, --profile <dir> (run with --help for details).
 
 A goal spec file states the terms of a run: what must stay true while it works. Each
 term is audited after every step, before the goal is asked whether it is done, and a

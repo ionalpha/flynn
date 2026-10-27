@@ -326,16 +326,25 @@ and the credential locations of the account the service runs as: `~/.ssh`, `~/.g
 keyring and password-store directories, the paths named by `SSH_AUTH_SOCK`, `GNUPGHOME`,
 `KUBECONFIG` and the cloud SDK variables, and the session bus, keyring and agent sockets in
 the user's runtime directory. Inside the sandbox a hidden directory is empty and a hidden
-file reads as empty, while the rest of the host stays readable. The mechanism is
-`WithUnreadablePaths`: it needs `WithReadOnlyFS` and Linux, and a Local that cannot apply it
-refuses with `ErrReadDeny` and does not run the command. A path reachable under a second
+file reads as empty, while the rest of the host stays readable. On macOS the seatbelt profile
+denies every read and write under a hidden path instead, so the command gets a permission
+error. The mechanism is `WithUnreadablePaths`: it needs `WithReadOnlyFS` and Linux or macOS,
+and a Local that cannot apply it refuses with `ErrReadDeny` and does not run the command.
+
+Windows cannot hide a path: the write-restricted token the shell runs under checks its
+restrictions on writes only. There the binary runs the shell with the credential locations
+readable, prints a notice to standard error when a run starts, and records
+`"credentials_reason": "platform"` on the run's posture event. `--require-credential-hiding`
+keeps the refusal instead, so no command runs. A Windows runner that must keep its
+credentials from the shell runs Flynn inside WSL2. A path reachable under a second
 name (another bind mount of the same directory) is not hidden under that name.
 
 The same default gives a command no network: it runs in a network namespace with no
 interfaces, so it cannot send what it reads anywhere, and the loopback services of the host
 (the control-plane API among them) are out of reach too. Each run records its posture as a
 `sandbox.posture` event on its own stream: the tier, whether the network was `denied` or
-`open`, whether the credentials were `hidden` or `readable`, and the hidden paths.
+`open`, whether the credentials were `hidden` or `readable`, the hidden paths, and, when
+they were readable, whether the operator (`policy`) or the platform (`platform`) left them so.
 
 Two flags relax the default, and the event records each:
 
@@ -343,9 +352,7 @@ Two flags relax the default, and the event records each:
   installs and anything else a command fetches need it. It is all or nothing: the commands
   can then reach every address the host can.
 - `--allow-credential-reads` leaves the data directory and the credential locations
-  readable. It is also the only way to run a shell on a platform that cannot hide a path
-  (macOS and Windows today), where the default makes every launch refuse with `ErrReadDeny`.
-  Git over ssh with a key in `~/.ssh` needs it as well as `--allow-network`, and the commands
+  readable on every platform. Git over ssh with a key in `~/.ssh` needs it as well as `--allow-network`, and the commands
   then see every credential in that list, so prefer a deploy key kept outside it.
 
 ### What the sandbox does not hide

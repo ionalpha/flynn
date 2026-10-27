@@ -7,24 +7,22 @@ import (
 )
 
 // ErrReadDeny reports that a path named by [WithUnreadablePaths] cannot be hidden from the
-// confined command: the platform has no way to hide it, the Local does not build a private
-// mount view, or the set contradicts the grants. It fails the launch and is never absorbed
+// confined command: the platform has no way to hide it, the Local does not confine the
+// host's filesystem, or the set contradicts the grants. It fails the launch and is never absorbed
 // by [WithBestEffortConfinement]: a command that was to be kept away from a runner's
 // credentials and ran without that is the failure the option exists to prevent.
 var ErrReadDeny = errors.New("sandbox: cannot hide a configured path from the command")
 
-// WithUnreadablePaths hides files and directories from a confined command. The default
-// confinement leaves the host readable, which suits a development checkout and does not
-// suit a runner whose data directory, control socket and credential files sit beside the
-// commands it launches. A directory is replaced by an empty one and a file by an empty
-// file, so the command sees that the path exists and finds nothing in it.
+// WithUnreadablePaths hides files and directories from a confined command, for a runner
+// whose data directory, control socket and credential files sit beside the commands it
+// launches; the default confinement leaves the host readable.
 //
-// It requires [WithReadOnlyFS], which is what gives the command a mount view of its own,
-// and a platform that builds one (Linux). Anywhere else, and when a path contains the
-// working directory or a granted directory, the launch fails with [ErrReadDeny]. A path
-// that does not exist when the command starts is skipped, since there is nothing to read.
-// Paths are made absolute and symlink-free once, like the root. A path reachable under a
-// second name, by another bind mount of the same files, is not hidden under that name.
+// It requires [WithReadOnlyFS] and a platform that can hide a path ([ReadDenySupported]).
+// Linux covers each path in the command's own mount view, so it reads as empty; macOS
+// denies every access under it, so a read fails with a permission error and a file created
+// there later stays hidden. On Windows, or when a path contains the working directory or a
+// grant, the launch fails with [ErrReadDeny]. Paths are made absolute and symlink-free
+// once; a path reachable under a second name (another bind mount) is not hidden under it.
 func WithUnreadablePaths(paths ...string) LocalOption {
 	return func(l *Local) {
 		for _, p := range paths {
@@ -42,6 +40,12 @@ func WithUnreadablePaths(paths ...string) LocalOption {
 		}
 	}
 }
+
+// ReadDenySupported reports whether this platform can hide a path from a command it
+// confines, which is whether [WithUnreadablePaths] can launch at all. It is true on Linux
+// and macOS and false on Windows, so a caller can choose what to do there before a launch
+// refuses.
+func ReadDenySupported() bool { return readDenyEnforceable() }
 
 // UnreadablePaths lists the paths hidden from the commands this Local confines, so a
 // record of the run can show what the command was kept away from.
@@ -66,10 +70,10 @@ func (l *Local) guardReadDeny() error {
 		return nil
 	}
 	if !readDenyEnforceable() {
-		return fmt.Errorf("%w: this platform builds no private mount view; use the container or microVM tier", ErrReadDeny)
+		return fmt.Errorf("%w: this platform cannot hide a path from a command it confines; use the container or microVM tier", ErrReadDeny)
 	}
 	if !l.readonlyFS {
-		return fmt.Errorf("%w: a Local without WithReadOnlyFS shares the host's mount view", ErrReadDeny)
+		return fmt.Errorf("%w: a Local without WithReadOnlyFS does not confine the host's filesystem", ErrReadDeny)
 	}
 	for _, hidden := range l.unreadable {
 		for _, kept := range l.keptVisible() {
