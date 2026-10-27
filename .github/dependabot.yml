@@ -14,3 +14,13 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  # The base images are pinned by digest, so without this a rebuilt distroless image
+  # (a busybox or ca-certificates fix) never reaches the published image. Dependabot
+  # proposes the new digest for a tag that was rebuilt, and newer golang version tags.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      base-images:
+        patterns: ["*"]
