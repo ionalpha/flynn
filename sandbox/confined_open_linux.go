@@ -40,7 +40,7 @@ func (l *Local) confinedOpen(abs string, flags int, perm os.FileMode) (*os.File,
 	// EINVAL, where open would just ignore it. Mirror open's leniency so a caller passing
 	// a perm on a non-creating open is not rejected.
 	var mode uint64
-	if flags&(os.O_CREATE) != 0 {
+	if flags&os.O_CREATE != 0 {
 		mode = uint64(perm.Perm())
 	}
 	// RESOLVE_NO_SYMLINKS refuses every symlink component, matching the non-following
