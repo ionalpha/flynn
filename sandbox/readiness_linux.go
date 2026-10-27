@@ -29,9 +29,9 @@ func checkHost(ctx context.Context, n needs) Readiness {
 	return check(ctx, n, probe{run: runStage, proc: readProc, arch: runtime.GOARCH})
 }
 
-// readProc reads a /proc file for the classifier.
+// readProc reads a /proc file or a container marker file for the classifier.
 func readProc(path string) (string, bool) {
-	b, err := os.ReadFile(path) //nolint:gosec // path is one of the fixed /proc files the classifier names, never caller input
+	b, err := os.ReadFile(path) //nolint:gosec // path is one of the fixed files the classifier names, never caller input
 	if err != nil {
 		return "", false
 	}

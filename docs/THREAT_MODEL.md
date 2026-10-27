@@ -162,7 +162,11 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   directory and the account's credential locations (`~/.ssh`, cloud and CLI login tokens,
   keychain and agent sockets) hidden, and with no network, so what it could read it cannot
   send out. `--allow-network` and `--allow-credential-reads` lift each, and the run's
-  `sandbox.posture` event records which. Open: another process's command line is readable
+  `sandbox.posture` event records which. Open: Windows cannot hide a path from a command, so
+  there the credential locations stay readable by default, with a notice and the reason on
+  the posture event (`--require-credential-hiding` refuses instead); on macOS a command can
+  still ask the keychain service for an item it hands out without a prompt. Open: another
+  process's command line is readable
   through procfs because the sandbox has no PID namespace, so a token passed on argv is
   exposed (see `deploy/README.md`).
 - **Credentials in prompts or logs.** Secrets are held as a redacting type and resolved

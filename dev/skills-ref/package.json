@@ -1,0 +1,8 @@
+{
+  "name": "flynn-skills-ref-check",
+  "private": true,
+  "description": "Pins the Agent Skills reference validator dev/skillsref runs. Not a dependency of the Go module.",
+  "dependencies": {
+    "skills-ref": "0.1.5"
+  }
+}

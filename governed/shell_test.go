@@ -2,6 +2,7 @@ package governed
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
@@ -219,6 +220,74 @@ func TestRunsRecordTheShellPosture(t *testing.T) {
 				t.Errorf("the hidden list omits the data directory: %v", hidden)
 			}
 		})
+	}
+}
+
+// TestRunsRecordWhyTheCredentialsWereReadable: a posture whose credentials are readable says
+// whether the policy asked for it or the platform could not hide them, so a record read later
+// tells an operator's choice from a platform limit. The fallback hides them wherever the
+// platform can, and then records no reason, because nothing was relaxed.
+func TestRunsRecordWhyTheCredentialsWereReadable(t *testing.T) {
+	useHome(t)
+	dataDir := filepath.Join(t.TempDir(), "flynn-data")
+	fallback := "hidden"
+	fallbackReason := ""
+	if !sandbox.ReadDenySupported() {
+		fallback, fallbackReason = "readable", CredentialsReadableByPlatform
+	}
+	for _, tc := range []struct {
+		name                        string
+		policy                      ShellPolicy
+		wantCredentials, wantReason string
+	}{
+		{"default", ShellPolicy{DataDir: dataDir}, "hidden", ""},
+		{"credential opt-in", ShellPolicy{DataDir: dataDir, AllowCredentialReads: true}, "readable", CredentialsReadableByPolicy},
+		{"platform fallback", ShellPolicy{DataDir: dataDir, AllowCredentialReadsWhereUnhidable: true}, fallback, fallbackReason},
+		{"both", ShellPolicy{DataDir: dataDir, AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true}, "readable", CredentialsReadableByPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if readable, reason := tc.policy.CredentialsReadable(); readable != (tc.wantCredentials == "readable") || reason != tc.wantReason {
+				t.Fatalf("CredentialsReadable = %v, %q; want credentials %s with reason %q", readable, reason, tc.wantCredentials, tc.wantReason)
+			}
+			b, _ := memBackends(t)
+			run, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithShellPolicy(tc.policy))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = run.Close() })
+			got := postureOf(t, b.Log, run.ID())
+			reason, _ := got["credentials_reason"].(string)
+			if got["credentials"] != tc.wantCredentials || reason != tc.wantReason {
+				t.Fatalf("posture = %v, want credentials %q with reason %q", got, tc.wantCredentials, tc.wantReason)
+			}
+		})
+	}
+}
+
+// TestStrictPolicyRefusesWhereThePlatformCannotHide: without the fallback, a platform that
+// cannot hide a path refuses the command rather than running it with the credentials in
+// view, so an embedder that never opted in gets no silent relaxation.
+func TestStrictPolicyRefusesWhereThePlatformCannotHide(t *testing.T) {
+	if sandbox.ReadDenySupported() {
+		t.Skip("this platform hides paths, so the strict policy runs commands")
+	}
+	useHome(t)
+	sb, err := sandbox.NewLocal(t.TempDir(), ShellPolicy{}.options()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sb.Close() })
+	if _, err := sb.Exec(ctxT(t), sandbox.Command{Line: "echo ran"}); !errors.Is(err, sandbox.ErrReadDeny) {
+		t.Fatalf("got %v, want ErrReadDeny", err)
+	}
+	ok, err := sandbox.NewLocal(t.TempDir(), ShellPolicy{AllowCredentialReadsWhereUnhidable: true}.options()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ok.Close() })
+	res, err := ok.Exec(ctxT(t), sandbox.Command{Line: "echo ran"})
+	if err != nil || !strings.Contains(res.Output, "ran") {
+		t.Fatalf("the fallback did not run the command: %v, %q", err, res.Output)
 	}
 }
 

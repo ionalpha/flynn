@@ -8,15 +8,92 @@ cluster. This directory holds a hardened `Dockerfile` and ready-to-edit configs.
 
 A multi-stage build (`Dockerfile` at the repository root) compiles `cmd/flynn` into a
 fully static binary (the SQLite store driver is pure Go, so there is no cgo and no libc
-dependency) and copies it onto `gcr.io/distroless/static-debian12:nonroot`. The result
-is a small image with no shell and no package manager, running as a non-root user
-(uid `65532`), carrying only the binary plus CA certificates and time-zone data. There
-is no attack surface beyond the binary itself.
+dependency) and copies it onto `gcr.io/distroless/static-debian13:debug-nonroot`. The
+result is a small image with no libc and no package manager, running as a non-root user
+(uid `65532`), carrying the binary, CA certificates, time-zone data and busybox (at
+`/busybox`, on `PATH`). Busybox is there because the agent's commands run through `sh`:
+an image without a shell can run no command at all. Each command runs inside the
+sandbox, which needs the two profiles below.
 
 ```sh
 # from the repository root
 docker build -t flynn:local --build-arg VERSION=v0.2.0 .
 ```
+
+## The sandbox in a container
+
+Every command the agent runs is confined in its own user, network and mount namespaces,
+with a read-only view of the host and a syscall filter. Docker's defaults refuse a
+container two things this needs:
+
+- **Seccomp.** Docker's default profile allows the calls that create namespaces (`clone`
+  with namespace flags, `unshare`) and `mount` only to a container holding
+  `CAP_SYS_ADMIN`.
+- **AppArmor.** On an AppArmor host (Ubuntu, Debian, and most Docker hosts), Docker's
+  `docker-default` profile denies every mount, including the ones the sandbox makes
+  inside its own namespaces.
+
+Under the defaults the agent refuses to run commands, and `flynn sandbox check` says so
+and names the fix. Flynn ships one profile for each, and each is Docker's own with one
+change:
+
+| File | Release asset | Change from Docker's |
+|---|---|---|
+| `seccomp/flynn.json` | `flynn-seccomp.json` | adds a rule allowing `clone`, `unshare`, `mount` |
+| `apparmor/flynn-container` | `flynn-apparmor-container` | replaces `deny mount,` with the four kinds of mount the sandbox makes (make `/` private, bind, read-only remount, tmpfs) |
+
+The kernel still lets an unprivileged process create a namespace only for itself and
+mount only inside a namespace it owns, so neither change reaches outside the sandbox.
+Both assets are listed in each release's signed `checksums.txt`.
+
+```sh
+base=https://github.com/ionalpha/flynn/releases/latest/download
+curl -fsSLO "$base/flynn-seccomp.json"
+# AppArmor hosts only (check with: cat /sys/module/apparmor/parameters/enabled)
+curl -fsSLO "$base/flynn-apparmor-container"
+sudo apparmor_parser -r flynn-apparmor-container
+
+docker run -d --name flynn   --security-opt seccomp=flynn-seccomp.json   --security-opt apparmor=flynn-container   -v flynn-data:/data   -e ANTHROPIC_API_KEY=sk-ant-...   ghcr.io/ionalpha/flynn:latest
+docker exec flynn flynn sandbox check
+```
+
+Leave out the AppArmor option on a host without AppArmor (Docker Desktop, Fedora).
+`compose.yaml` sets the seccomp profile and has the AppArmor line ready to uncomment. The
+AppArmor profile needs AppArmor 3 or later (Ubuntu 22.04, Debian 12 and newer).
+
+Do not use `seccomp=unconfined` or `apparmor=unconfined`, or add `CAP_SYS_ADMIN`,
+instead: each removes far more than the sandbox needs.
+
+- **Kubernetes:** install both profiles on each node (the seccomp file under the
+  kubelet's seccomp directory, the AppArmor one with `apparmor_parser`) and set
+  `securityContext.seccompProfile` (`type: Localhost`) and
+  `securityContext.appArmorProfile` (`type: Localhost`, `localhostProfile:
+  flynn-container`).
+- **Podman, rootless Docker, gVisor:** not tested yet. Run `flynn sandbox check` in the
+  container; it refuses with the cause rather than running commands unconfined.
+- **Fly.io:** each machine is a Firecracker microVM with no container seccomp or
+  AppArmor profile, so nothing is needed.
+
+Neither profile is edited by hand. `dev/container-profiles` fetches Docker's seccomp
+profile and AppArmor template from a pinned `moby/profiles` release, checks them against
+pinned checksums, and regenerates both files. The deploy tests fail if either file is
+anything other than Docker's original plus its one change, and fail if Docker's seccomp
+default ever starts allowing one of the three calls on its own, so the rule can shrink.
+CI runs the published image on Ubuntu 24.04 under Docker's defaults, with the seccomp
+profile alone, and with both: the first two must refuse and the last must pass.
+
+### Your own toolchain
+
+Busybox is the minimum that lets the agent run commands out of the box. For real project
+work, put the binary into an image that already has your tools:
+
+```dockerfile
+FROM golang:1.26-trixie
+COPY --from=ghcr.io/ionalpha/flynn:latest /usr/local/bin/flynn /usr/local/bin/flynn
+ENTRYPOINT ["flynn"]
+```
+
+The same two profiles apply to that image.
 
 ## The data volume
 
@@ -59,7 +136,7 @@ exact create-app, create-volume, set-secrets, and deploy steps; run them from th
 repository root.
 
 Two things are specific to Fly. First, it runs the container as root: Fly mounts the
-volume root-owned and the distroless image has no shell to adjust ownership at boot, so
+volume root-owned and the image runs no init step to adjust ownership at boot, so
 `fly.toml` builds the image with `APP_USER=root`. This is safe on Fly because each app
 is its own isolated Firecracker microVM, which is the isolation boundary; every other
 host here keeps the non-root default. Second, the durable state is a single-writer
@@ -113,13 +190,16 @@ Flynn is secured by default; the container configuration keeps it that way.
   environment variables (Docker secrets, Fly secrets, or your platform's secret store),
   never baked into the image. Integration credentials are sealed in the vault under
   `/data`, separate from the resources that reference them.
-- **The runtime is minimal and unprivileged.** Non-root user, no shell, read-only root
-  filesystem (state is on the volume), no privilege escalation, and all Linux
-  capabilities dropped (see `compose.yaml`).
+- **The runtime is minimal and unprivileged.** Non-root user, no libc or package
+  manager, read-only root filesystem (state is on the volume), no privilege escalation,
+  and all Linux capabilities dropped (see `compose.yaml`). The agent's commands run in
+  busybox inside the sandbox, which the two profiles above let start without any
+  capability.
 
 Both base images in the `Dockerfile` are pinned by `@sha256` digest, so a build is
-reproducible and the base cannot change under its tag. Update the digest together with
-the tag when moving to a newer base.
+reproducible and the base cannot change under its tag. Dependabot proposes a new digest
+when the base is rebuilt (a busybox or CA certificate fix), so a pinned digest does not
+mean a stale base.
 
 ## Reaching the control plane remotely
 
@@ -246,16 +326,25 @@ and the credential locations of the account the service runs as: `~/.ssh`, `~/.g
 keyring and password-store directories, the paths named by `SSH_AUTH_SOCK`, `GNUPGHOME`,
 `KUBECONFIG` and the cloud SDK variables, and the session bus, keyring and agent sockets in
 the user's runtime directory. Inside the sandbox a hidden directory is empty and a hidden
-file reads as empty, while the rest of the host stays readable. The mechanism is
-`WithUnreadablePaths`: it needs `WithReadOnlyFS` and Linux, and a Local that cannot apply it
-refuses with `ErrReadDeny` and does not run the command. A path reachable under a second
+file reads as empty, while the rest of the host stays readable. On macOS the seatbelt profile
+denies every read and write under a hidden path instead, so the command gets a permission
+error. The mechanism is `WithUnreadablePaths`: it needs `WithReadOnlyFS` and Linux or macOS,
+and a Local that cannot apply it refuses with `ErrReadDeny` and does not run the command.
+
+Windows cannot hide a path: the write-restricted token the shell runs under checks its
+restrictions on writes only. There the binary runs the shell with the credential locations
+readable, prints a notice to standard error when a run starts, and records
+`"credentials_reason": "platform"` on the run's posture event. `--require-credential-hiding`
+keeps the refusal instead, so no command runs. A Windows runner that must keep its
+credentials from the shell runs Flynn inside WSL2. A path reachable under a second
 name (another bind mount of the same directory) is not hidden under that name.
 
 The same default gives a command no network: it runs in a network namespace with no
 interfaces, so it cannot send what it reads anywhere, and the loopback services of the host
 (the control-plane API among them) are out of reach too. Each run records its posture as a
 `sandbox.posture` event on its own stream: the tier, whether the network was `denied` or
-`open`, whether the credentials were `hidden` or `readable`, and the hidden paths.
+`open`, whether the credentials were `hidden` or `readable`, the hidden paths, and, when
+they were readable, whether the operator (`policy`) or the platform (`platform`) left them so.
 
 Two flags relax the default, and the event records each:
 
@@ -263,9 +352,7 @@ Two flags relax the default, and the event records each:
   installs and anything else a command fetches need it. It is all or nothing: the commands
   can then reach every address the host can.
 - `--allow-credential-reads` leaves the data directory and the credential locations
-  readable. It is also the only way to run a shell on a platform that cannot hide a path
-  (macOS and Windows today), where the default makes every launch refuse with `ErrReadDeny`.
-  Git over ssh with a key in `~/.ssh` needs it as well as `--allow-network`, and the commands
+  readable on every platform. Git over ssh with a key in `~/.ssh` needs it as well as `--allow-network`, and the commands
   then see every credential in that list, so prefer a deploy key kept outside it.
 
 ### What the sandbox does not hide

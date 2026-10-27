@@ -28,20 +28,21 @@ func useHome(t *testing.T) string {
 }
 
 // TestShellFlagsBuildThePolicy shows the flags are the only way to relax the policy, and that
-// leaving them off leaves it closed.
+// leaving them off leaves it closed wherever the platform can close it.
 func TestShellFlagsBuildThePolicy(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		args []string
 		want governed.ShellPolicy
 	}{
-		{"no flags", nil, governed.ShellPolicy{DataDir: "/d"}},
-		{"network", []string{"-allow-network"}, governed.ShellPolicy{DataDir: "/d", AllowNetwork: true}},
-		{"credentials", []string{"-allow-credential-reads"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReads: true}},
+		{"no flags", nil, governed.ShellPolicy{DataDir: "/d", AllowCredentialReadsWhereUnhidable: true}},
+		{"network", []string{"-allow-network"}, governed.ShellPolicy{DataDir: "/d", AllowNetwork: true, AllowCredentialReadsWhereUnhidable: true}},
+		{"credentials", []string{"-allow-credential-reads"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true}},
+		{"strict", []string{"-require-credential-hiding"}, governed.ShellPolicy{DataDir: "/d"}},
 		{
 			"limits",
 			[]string{"-max-memory", "512", "-max-processes", "64"},
-			governed.ShellPolicy{DataDir: "/d", Limits: sandbox.ResourceLimits{MemoryMiB: 512, MaxProcesses: 64}},
+			governed.ShellPolicy{DataDir: "/d", Limits: sandbox.ResourceLimits{MemoryMiB: 512, MaxProcesses: 64}, AllowCredentialReadsWhereUnhidable: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,5 +104,22 @@ func TestShippedRunPathsApplyDefaultEgress(t *testing.T) {
 				t.Errorf("the assembly's sandbox does not hide the data directory: %q", sb.UnreadablePaths())
 			}
 		})
+	}
+}
+
+// TestCredentialNoticeNamesOnlyThePlatformFallback: the operator is told when the platform,
+// and nothing they typed, left the credentials readable, and only then.
+func TestCredentialNoticeNamesOnlyThePlatformFallback(t *testing.T) {
+	fallback := governed.ShellPolicy{AllowCredentialReadsWhereUnhidable: true}
+	if got := credentialNotice(fallback); (got != "") != !sandbox.ReadDenySupported() {
+		t.Errorf("notice %q with ReadDenySupported = %v", got, sandbox.ReadDenySupported())
+	}
+	for name, p := range map[string]governed.ShellPolicy{
+		"strict":   {},
+		"operator": {AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true},
+	} {
+		if got := credentialNotice(p); got != "" {
+			t.Errorf("%s: notice %q, want none", name, got)
+		}
 	}
 }

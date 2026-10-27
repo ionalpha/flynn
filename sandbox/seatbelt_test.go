@@ -149,3 +149,26 @@ func TestSeatbeltProfileEgressAllowsOnlyProxy(t *testing.T) {
 		t.Fatalf("egress profile must not broaden the allow beyond the proxy port, got:\n%s", p)
 	}
 }
+
+// TestSeatbeltHiddenDeniesReadAndWriteLast proves a hidden path is denied both reads and
+// writes, and that the rule follows every grant in the composed profile: rules are
+// last-match-wins, so a write grant that came after it could reopen the path.
+func TestSeatbeltHiddenDeniesReadAndWriteLast(t *testing.T) {
+	if seatbeltHidden(nil) != "" {
+		t.Fatal("an empty hidden set must add no rule")
+	}
+	p := seatbeltProfile("/work", true, true, true, "", "/home/u/.cache") + seatbeltHidden([]string{"/home/u/.ssh", `/home/u/a"b`})
+	denyAt := strings.Index(p, "(deny file-read* file-write*")
+	if denyAt < 0 {
+		t.Fatalf("hidden paths must be denied reads and writes, got:\n%s", p)
+	}
+	for _, want := range []string{`(subpath "/home/u/.ssh")`, `(subpath "/home/u/a\"b")`} {
+		at := strings.LastIndex(p, want)
+		if at < denyAt {
+			t.Errorf("%s is not inside the trailing deny rule:\n%s", want, p)
+		}
+	}
+	if grantAt := strings.LastIndex(p, "(allow "); grantAt > denyAt {
+		t.Fatalf("an allow rule follows the hidden-path denial, so it could reopen a hidden path:\n%s", p)
+	}
+}
