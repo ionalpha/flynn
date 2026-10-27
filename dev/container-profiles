@@ -1,0 +1,78 @@
+#!/usr/bin/env sh
+# Refresh the container security profiles from Docker's own.
+#
+# The agent's command sandbox needs two things Docker's defaults refuse a container: the
+# calls that create namespaces (seccomp) and the launcher's mounts (AppArmor's
+# docker-default denies every mount). Docker takes a profile whole, so each profile we
+# ship is Docker's with one change:
+#
+#   deploy/seccomp/flynn.json           Docker's default seccomp profile plus a rule
+#                                       allowing clone, unshare and mount
+#   deploy/apparmor/flynn-container     docker-default, rendered from Docker's template,
+#                                       with "deny mount," replaced by the launcher's mounts
+#
+# This script fetches both upstream files at the pinned moby/profiles commit, checks
+# them against pinned checksums, and regenerates the shipped profiles; the deploy tests
+# then hold each to "upstream plus that one change".
+#
+# To move to a newer upstream: set MOBY_PROFILES_COMMIT to the commit of a moby/profiles
+# release tag, run this once with the checksums empty to print the new ones, set them,
+# and run it again.
+#
+#   ./dev/container-profiles          # fetch, verify, regenerate
+#   ./dev/container-profiles --check  # fetch and verify the committed copies only
+set -eu
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+
+# seccomp/v0.2.4 and apparmor/v0.2.3, both tagged on this commit (2026-09-29).
+MOBY_PROFILES_COMMIT="245180c51918481c0525424b3ee025d2b435d46c"
+SECCOMP_SHA256="785b2429264afba4d594320337cb17f144f3c7d51585f9805eef72e28f4f9334"
+APPARMOR_SHA256="cce1c730656ad73cb04b19bf25caa2351732a00e04a06eeaf3010105e1ba6a57"
+
+RAW="https://raw.githubusercontent.com/moby/profiles/$MOBY_PROFILES_COMMIT"
+
+sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  else
+    shasum -a 256 "$1" | cut -d' ' -f1
+  fi
+}
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+failed=0
+
+# fetch URL_PATH PINNED_SHA COMMITTED_COPY
+fetch() {
+  out="$TMP/$(basename "$3")"
+  echo "==> fetching moby/profiles $1 at $MOBY_PROFILES_COMMIT"
+  curl -fsSL "$RAW/$1" -o "$out"
+  got="$(sha256 "$out")"
+  if [ "$got" != "$2" ]; then
+    echo "checksum mismatch for $1: got $got, pinned $2" >&2
+    failed=1
+    return
+  fi
+  if [ "$CHECK" = 1 ]; then
+    if ! cmp -s "$out" "$3"; then
+      echo "$3 differs from upstream; run ./dev/container-profiles" >&2
+      failed=1
+    else
+      echo "==> $3 matches upstream"
+    fi
+  else
+    cp "$out" "$3"
+  fi
+}
+
+CHECK=0
+[ "${1:-}" = "--check" ] && CHECK=1
+fetch seccomp/default.json "$SECCOMP_SHA256" deploy/testdata/moby-default-seccomp.json
+fetch apparmor/template.go "$APPARMOR_SHA256" deploy/testdata/moby-apparmor-template.go.txt
+[ "$failed" = 0 ] || exit 1
+[ "$CHECK" = 1 ] && exit 0
+
+echo "==> regenerating the shipped profiles"
+go test ./deploy -run 'TestSeccompProfileIsDockerDefaultPlusSandbox|TestContainerAppArmorProfileIsDockerDefaultPlusMounts' -count=1 -update-profiles
+go test ./deploy -run 'TestSeccompProfile|TestContainerAppArmor' -count=1

@@ -103,10 +103,22 @@ for the durable state (SQLite store, credential vault, learned skills) so it sur
 container replacement, and pass a model key:
 
 ```sh
+base=https://github.com/ionalpha/flynn/releases/latest/download
+curl -fsSLO "$base/flynn-seccomp.json"
+curl -fsSLO "$base/flynn-apparmor-container"
+sudo apparmor_parser -r flynn-apparmor-container   # AppArmor hosts (Ubuntu, Debian)
 docker run -v flynn-data:/data \
+  --security-opt seccomp=flynn-seccomp.json \
+  --security-opt apparmor=flynn-container \
   -e ANTHROPIC_API_KEY=your-key \
   ghcr.io/ionalpha/flynn:latest
 ```
+
+The two profiles are Docker's own, each changed only so the agent's command sandbox can
+start: the seccomp profile allows `clone`, `unshare` and `mount`, and the AppArmor
+profile allows the sandbox's own mounts. Without them the agent refuses to run commands.
+On a host without AppArmor (Docker Desktop, Fedora), skip the AppArmor lines. See
+[`deploy/README.md`](deploy/README.md#the-sandbox-in-a-container).
 
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
 (`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;

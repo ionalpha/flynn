@@ -10,18 +10,23 @@
 # it never compiles. --platform=$BUILDPLATFORM keeps that step on the native builder so a
 # cross-arch build does not emulate it. The base is pinned by @sha256 alongside its tag,
 # matching the same digest used by the top-level Dockerfile.
-FROM --platform=$BUILDPLATFORM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS prep
+FROM --platform=$BUILDPLATFORM golang:1.26.10-trixie@sha256:909771fef53e3dcb0950255f0c9a8b4728c3b841e61509c7b29b098de7ee02d4 AS prep
 RUN install -d -o 65532 -g 65532 /data
 
-# distroless static: ~2 MB, no shell or package manager, runs as a non-root user
-# (uid 65532), and ships ca-certificates and tzdata so outbound HTTPS to model
-# providers and integrations works out of the box.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+# distroless static, debug variant: no libc and no package manager, runs as a non-root
+# user (uid 65532), ships ca-certificates and tzdata so outbound HTTPS to model providers
+# and integrations works, and carries busybox at /busybox (on PATH). The busybox shell is
+# what the agent's commands run in: the sandbox starts every command through sh, so an
+# image without one can run no command at all. The sandbox, not the image contents, is
+# the boundary around those commands, and in a container it needs the seccomp profile in
+# deploy/seccomp (see deploy/README.md). For real project work, copy this binary into an
+# image that has your toolchain instead; busybox is the out-of-the-box minimum.
+FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:c7b8faacc4439b8f5c41ca7ce4a3f8ff3e8520cb0c3444fae7292f687b00d0dd
 
 # APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
 # posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits
 # the image path's ownership, so /data is writable without a chown. Some hosts instead
-# mount the data volume root-owned and offer no shell to fix it at boot (Fly.io, where
+# mount the data volume root-owned and run no init step to fix it at boot (Fly.io, where
 # every app is its own isolated Firecracker microVM). Build those with
 # `--build-arg APP_USER=root` so the process can write the volume; the microVM is the
 # isolation boundary there, not the in-VM user.
