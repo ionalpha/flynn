@@ -10,7 +10,7 @@
 # it never compiles. --platform=$BUILDPLATFORM keeps that step on the native builder so a
 # cross-arch build does not emulate it. The base is pinned by @sha256 alongside its tag,
 # matching the same digest used by the top-level Dockerfile.
-FROM --platform=$BUILDPLATFORM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS prep
+FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 AS prep
 RUN install -d -o 65532 -g 65532 /data
 
 # distroless static, debug variant: no libc and no package manager, runs as a non-root
