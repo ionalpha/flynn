@@ -46,8 +46,15 @@ curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | sh
 irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 ```
 
-Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0`) or change the
-install directory with `FLYNN_INSTALL_DIR`.
+Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0-rc.1`) or change
+the install directory with `FLYNN_INSTALL_DIR`.
+
+The script installs the newest release, v0.1.3. This README describes `main`, which is
+the v0.2.0 release candidate: governed goals, the bundled skill pack and the new memory
+are in v0.2.0-rc.1 and not in v0.1.3. To try the candidate, install with
+`FLYNN_VERSION=v0.2.0-rc.1`, or run `flynn upgrade --pre` from v0.1.3. Read the
+[v0.2.0 notes](docs/releases/v0.2.0.md#upgrading-from-v013) before upgrading: commands
+the agent runs now have no network unless you pass `--allow-network`.
 
 After that, the binary updates itself:
 
@@ -94,6 +101,11 @@ The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
 (`:0.2.0`) instead of `latest`. The API listens on loopback inside the container. To
 reach the agent, add a channel (for example `-e TELEGRAM_BOT_TOKEN=... -e FLYNN_TELEGRAM_ALLOW=<your user id>`), or see
 [`deploy/README.md`](deploy/README.md) for remote access and hardening.
+
+Until v0.2.0 ships, `latest` (the image tag and the release download) is v0.1.3, which
+has no shell and no profiles. To run the release candidate, set
+`base=https://github.com/ionalpha/flynn/releases/download/v0.2.0-rc.1` and use the image
+`ghcr.io/ionalpha/flynn:0.2.0-rc.1`.
 
 Every published manifest is keyless-signed with cosign:
 
@@ -547,7 +559,8 @@ workspaces, SSO, and audit and backup.
 
 ## Status and roadmap
 
-The features above work today. Follow [@ionalpha_](https://x.com/ionalpha_) for
+The features above work today on `main` and in v0.2.0-rc.1; see [Install](#install)
+for what v0.1.3 lacks. Follow [@ionalpha_](https://x.com/ionalpha_) for
 progress.
 
 **In progress**
