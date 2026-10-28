@@ -1,7 +1,7 @@
 # Self-hosting Flynn
 
-Flynn ships as a single static binary, so it hosts itself anywhere a container runs
-with a persistent volume: a VPS with Docker, Fly.io, Render, Coolify, or any Kubernetes
+Flynn is a single static binary and runs anywhere a container runs with a persistent
+volume: a VPS with Docker, Fly.io, Render, Coolify, or any Kubernetes
 cluster. This directory holds a hardened `Dockerfile` and ready-to-edit configs.
 
 ## What the image is

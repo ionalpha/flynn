@@ -46,11 +46,11 @@ remote without a per-clone setup step, set it from a conditional include in
 
 Two rules, both in the same change as the interface.
 
-**Ship a producer, or write the reason.** An interface the engine depends on and
-nothing implements is a capability Flynn only has when somebody else turns up. Ship
-an implementation and wire it in the binary, or write in the doc comment why Flynn
-ships none and make its absence visible: stall or refuse by name, never a silent
-no-op that lets a run finish looking like it did the work. Then add the row to
+**Add a producer, or write the reason.** An interface the engine depends on with no
+implementation is a capability Flynn has only when a host supplies one. Add an
+implementation and wire it in the binary, or write in the doc comment why Flynn has
+none and make its absence visible: stall or refuse by name, never a silent no-op that
+lets a run finish looking like it did the work. Then add the row to
 [`docs/HOST_BOUNDARY.md`](docs/HOST_BOUNDARY.md). The test is whether the `flynn`
 binary plus a temp SQLite file can exercise the capability with no host present.
 

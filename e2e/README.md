@@ -3,15 +3,15 @@
 This package drives the real, compiled `flynn` binary as a subprocess and asserts on
 observable behavior: exit codes, files produced or withheld, refusal text, and the
 emitted verifiable record. It is a black box. Nothing here imports flynn's internal
-packages, so it exercises exactly what a user (or an attacker) reaches through the
-shipped artifact and its defaults, not the packages behind it.
+packages: it exercises what a user (or an attacker) reaches through the released
+binary and its defaults.
 
 ## How it works
 
 - `TestMain` compiles `./cmd/flynn` once, stamping `internal/version.Version` with the
   same `-ldflags -X` the release uses, and shares that binary across every test.
 - Each test runs in an `instance`: an isolated data directory, an isolated workspace
-  (the process working directory, where a goal's file artifacts land), and a scrubbed
+  (the process working directory, where a goal writes its files), and a scrubbed
   environment. Runs are hermetic, so tests neither touch a developer's real flynn state
   nor each other's.
 - A scripted, in-process OpenAI-compatible server (`fakeopenai_test.go`) makes runs
@@ -36,8 +36,8 @@ FLYNN_E2E_BIN=$PWD/dist/flynn_linux_amd64_v1/flynn FLYNN_E2E_VERSION=0.2.0 go te
 ```
 
 CI runs the suite twice: once over its own compile on every OS (`E2E`), and once over
-the binaries the release snapshot built (`E2E on release artifact`), which are the bytes
-a release ships: stripped, stamped, and cross-compiled by goreleaser.
+the binaries the release snapshot built (`E2E on release artifact`), the same bytes a
+release publishes: stripped, stamped, and cross-compiled by goreleaser.
 
 ## Coverage
 

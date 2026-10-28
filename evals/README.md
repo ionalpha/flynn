@@ -83,6 +83,6 @@ visible rather than averaged away.
 
 ## Why these files are not in the pack
 
-The agent can read a skill's own directory through `skill_resource`. A set shipped
+The agent can read a skill's own directory through `skill_resource`. A set stored
 beside the skill would be readable by the run being measured, which turns the eval
 into a target. Nothing here goes into the binary.
