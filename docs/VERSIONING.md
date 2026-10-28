@@ -28,7 +28,7 @@ none of them can reach you on a day you did not choose.
 
 | Tier | Packages | What you can expect |
 | --- | --- | --- |
-| Stable surface | the root `agent` facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`, `jobs`, `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, `chain` | The embedding contract. Breaks are gated in CI, and any break that ships was argued for in writing. |
+| Stable surface | the root `agent` facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`, `jobs`, `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, `chain` | The embedding contract. Breaks are gated in CI, and every accepted break has a written reason. |
 | Domain surface | `goal`, `mission`, `reconcile`, `session`, `runtime`, `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, `dispatch`, `approval`, `localmodel`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
 | `internal/` | everything under it | Not importable. No promise at all. |
 
@@ -43,9 +43,9 @@ makes, deliberately, because that surface is what a host builds against.
 
 ## The ports you implement, and the suites that certify them
 
-If you write a backend for one of the ports below, the promise covers what a
-correct backend is, and that is defined by the conformance suite, not by the
-interface alone. A signature can survive unchanged while the contract moves.
+If you write a backend for one of these ports, the promise covers what a correct
+backend is, and the conformance suite defines that. A signature can stay the same
+while the contract moves.
 
 | Port | Suite you run against your backend |
 | --- | --- |
@@ -55,46 +55,40 @@ interface alone. A signature can survive unchanged while the contract moves.
 | `state.MemoryStore`, and the other `state` ports | `memory/memorytest`, `state/statetest` |
 | the Provetrail record format | `chain/conformance` |
 
-A change to a suite that makes an implementation which passed fail is a break of
-the port, in the same way as a removed method, even though no signature moved.
-That includes adding a case: a new case that a passing backend fails is a break
-whether it was meant as a fix or not. So a suite tightens only with the same
-written argument a signature break needs, and the pull request says whether any
-backend that passed can now fail. A case added for behaviour the port already
-documented is argued the same way; being right about the documentation is the
-argument, and it is recorded, not assumed. The suites' own exported entry points
-(`RunSuite` and the harness types) are in the stable surface and are gated like any
+A suite change that makes a passing implementation fail is a break of the port, the
+same as a removed method. That includes a new case, whether it was meant as a fix or
+not, and a case for behaviour the port already documented. So a suite tightens only
+with the same written argument a signature break needs, and the pull request says
+whether a backend that passed can now fail. The suites' exported entry points
+(`RunSuite` and the harness types) are in the stable surface and gated like any
 other signature.
 
-`dev/apidiff` cannot judge behaviour, so it does the part a tool can: every run
-lists the suite files that changed since the last release, and the release notes
-carry the same list under "Conformance suites changed". A reviewer reads that
-list and the pull request says whether any backend that passed can now fail.
+`dev/apidiff` cannot judge behaviour, so it lists the suite files changed since the
+last release, and the release notes carry the same list under "Conformance suites
+changed".
 
-A port is promised when a suite can say what a correct backend is, and when every
-type its exported API names is itself stable. `resource.Store` returns a
-`resource.Resource` that embeds `envelope.Envelope` and is stamped by an
-`hlc.Clock`, so `envelope` and `hlc` are stable with it (`state` already named
-both). Six exposures of an unstable type remain and are listed, with reasons, in
-`internal/rigor`: `agent.Config.Agent` is an `*archetypes.Spec`, `agent.Config`
-takes `governed` and `mission` types and `Agent.GoalResult` returns a
-`governed.Result`, `tools` hands out `mission.Tool` values, `sandbox.WithEgress`
-takes a `netguard.Policy`, and `capability` implements the `dispatch` ports. Until
-those are settled, a change to `archetypes`, `governed`, `mission`, `netguard` or
-`dispatch` can change
-what a stable type means while `dev/apidiff` reports it as a domain change. Read
-those packages' lines in the release notes if you use the facade, the tools, the
-egress policy or the capability grants.
+A port is promised when a suite can say what a correct backend is and every type its
+exported API names is stable. `resource.Store` returns a `resource.Resource` that
+embeds `envelope.Envelope` and is stamped by an `hlc.Clock`, so `envelope` and `hlc`
+are stable with it. Six places where a stable package exposes an unstable type are
+listed, with reasons, in `internal/rigor`: `agent.Config.Agent` is an
+`*archetypes.Spec`, `agent.Config` takes `governed` and `mission` types and
+`Agent.GoalResult` returns a `governed.Result`, `tools` hands out `mission.Tool`
+values, `sandbox.WithEgress` takes a `netguard.Policy`, and `capability` implements
+the `dispatch` ports. Until those are settled, a change to `archetypes`, `governed`,
+`mission`, `netguard` or `dispatch` can change what a stable type means while
+`dev/apidiff` reports it as a domain change. If you use the facade, the tools, the
+egress policy or the capability grants, read those packages' lines in the release
+notes.
 
-Two ports are deliberately not in the stable surface, for the same reason: no suite
-yet states what a correct backend is. `approval` holds the nonce store, which must
-keep a spent nonce spent across a restart. `dispatch.Hook` and `dispatch.Admitter`
-are the governance gate every action passes through; what an admitter must do with
-an error or a panic is not yet pinned by a suite. A host that implements either
-should expect the signature to move. `memory` is also outside, but for a different
-reason: it is a concrete facade you call, not a port you implement, and the port it
-serves is `state.MemoryStore`. None of the three is hidden: all are importable, and
-all are listed in the release notes when they change.
+Two ports stay out of the stable surface because no suite yet states what a correct
+backend is. `approval` holds the nonce store, which must keep a spent nonce spent
+across a restart. `dispatch.Hook` and `dispatch.Admitter` are the governance gate
+every action passes through, and what an admitter must do with an error or a panic is
+not yet pinned down. If you implement either, expect the signature to change.
+`memory` is outside too, for a different reason: it is a concrete facade you call,
+and the port it serves is `state.MemoryStore`. All three are importable and appear in
+the release notes when they change.
 
 ## What counts as a break
 
@@ -113,7 +107,7 @@ SQLite schema), where the rule is the mirrored one: loosen what you accept, narr
 what you emit. The `chain/conformance` test vectors pin the record format for
 external verifiers; nothing else there is gated yet.
 
-## When a bad version ships
+## When a bad version is released
 
 A published version cannot be withdrawn. The module mirror keeps what it cached
 precisely so that a deletion upstream cannot break someone's build. The remedy is

@@ -1,6 +1,6 @@
 # Pinned trust anchors
 
-Both files in `trust/` are published anchors from the Sigstore public-good instance. Neither holds a secret and neither is a credential of ours, so there is nothing here to rotate or revoke on our side. They are committed deliberately and embedded with `go:embed`: a trust root fetched at verification time is only as trustworthy as the connection it arrived over, which is the thing release verification exists to defend against.
+Both files in `trust/` are published anchors from the Sigstore public-good instance. Neither holds a secret or a credential of ours, so there is nothing here to rotate or revoke on our side. They are committed and embedded with `go:embed`: a trust root fetched at verification time would be only as trustworthy as the connection it arrived over.
 
 `trust/fulcio.pem` holds two certificates and no key block. Together they are the Fulcio CA chain that issues release signing certificates.
 
@@ -13,9 +13,7 @@ Both files in `trust/` are published anchors from the Sigstore public-good insta
 
 ## Why the anchors have a package of their own
 
-Two packages verify against them. `internal/release` checks flynn's own releases and needs both files; `internal/sigstore` checks extension releases and needs the Fulcio chain. Neither imports the other, so before this package existed the chain was committed twice, as `internal/release/trust/fulcio.pem` and `internal/sigstore/fulcio_roots.pem`.
-
-That made rotation a trap. Both copies compile into every binary and each decides whether a downloaded artifact is accepted, but each package's tests only ever saw its own copy, so updating one file would have left the other path pinned to a retired CA with the whole suite green. One stored copy removes the condition instead of watching for it.
+Two packages verify against them. `internal/release` checks flynn's own releases and needs both files; `internal/sigstore` checks extension releases and needs the Fulcio chain. Neither imports the other. Keeping one copy here means a rotation updates both verification paths at once; with a copy in each package, updating one would leave the other pinned to a retired CA while every test still passed.
 
 ## Updating them
 

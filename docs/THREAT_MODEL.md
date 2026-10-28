@@ -2,9 +2,8 @@
 
 This document is the published threat model for Flynn: what it is built to defend
 against, where its trust boundaries are, and which defense is responsible for each class
-of attack. It is written against what the code actually enforces today. Where a defense
-is planned but not yet built, it is marked as such, so a reader can tell an enforced
-control from an intended one. Reporting instructions are in [SECURITY.md](../SECURITY.md).
+of attack. It describes what the code enforces today, and marks planned defenses as
+planned. Reporting instructions are in [SECURITY.md](../SECURITY.md).
 
 Flynn runs an autonomous agent that takes real actions (shell commands, file edits,
 network calls, and running local models) driven by a language model over untrusted input.
@@ -27,7 +26,7 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 - **Trusted**: the agent's own built-in tools (structured file operations, the model
   call). Runs at the process-jail floor and above.
 - **Semi-trusted**: model-authored content, primarily a shell command the model wrote.
-  Not hostile by construction, but not vetted. Requires the kernel-confined tier.
+  Not vetted. Requires the kernel-confined tier.
 - **Untrusted**: code or data from outside that we cannot vouch for: a downloaded model
   file parsed by a runtime with a history of memory-safety flaws, or an unsigned plugin.
   Requires the hardware-isolation tier, which needs a microVM runtime the host provides
@@ -62,16 +61,14 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
 6. **The inbound boundary.** Every listener Flynn opens is bound through a bind-safe gate
    (`bindguard`) that is loopback-only by default, refuses a wildcard bind (every
    interface) unconditionally, and refuses a non-loopback bind without an explicit
-   operator opt-in; a lint rule forbids opening a listener outside that gate. It is the
-   inbound mirror of the egress boundary: where egress controls where the agent may
-   connect, this controls who may reach what the agent exposes.
+   operator opt-in; a lint rule forbids opening a listener outside that gate.
 7. **The external-agent boundary.** A run can be driven by an external agent CLI in place of
    a native loop. The CLI is untrusted code run as a subprocess, so its own execution surface
    is locked down and the run's tools are offered to it only through a loopback Model Context
    Protocol bridge the run hosts. Every tool call it makes returns through that bridge and is
-   admitted, contained, and recorded at the dispatch boundary, the same waist a native loop
-   passes, so swapping in an external harness never widens what a run may do or escapes a
-   halt. Where the child runs in its own network namespace and cannot reach the host, the
+   admitted, contained, and recorded at the dispatch boundary, the same path a native loop
+   takes. An external harness cannot do more than a native run, and cannot escape a halt.
+   Where the child runs in its own network namespace and cannot reach the host, the
    bridge is reached through an inbound forward that exposes exactly the one loopback service
    the run hosts and nothing else on the host.
 
@@ -83,8 +80,7 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   unrecognized publisher, a raw URL, or a local file is classified untrusted by default;
   only a vetted, digest-pinned catalog entry is trusted, and a recognized first-party
   publisher is at most semi-trusted (`inference/modelsource`). A matching digest proves
-  integrity, not safety, so provenance and isolation, not the digest alone, decide whether
-  a model may run.
+  the file is the one that was vetted. Provenance and isolation decide whether it may run.
 - **A swapped model file after vetting.** Weights are verified against a pinned SHA-256
   before use; a source without a pinned digest is pinned on first use and a later mismatch
   is refused, so a registry that serves a different file than was vetted is rejected.
@@ -99,9 +95,8 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   own chat template. Flynn parses the file with its own hardened reader, never the
   runtime's parser, and forces a known, trusted template at run time, so a template
   embedded in hostile weights cannot rewrite the prompt contract.
-- **Tampering with the run record.** The mission event spine is append-only and ordered.
-  On its own that resists silent rewriting only as far as the operator of the store is
-  trusted. A run is therefore also sealed into a signed, tamper-evident record: its
+- **Tampering with the run record.** The event spine is append-only and ordered, which
+  protects it only as far as the store's operator is trusted. A run is also sealed into a signed, tamper-evident record: its
   events are committed to an append-only RFC 6962 Merkle log and the head is signed as a
   COSE_Sign1 checkpoint with the instance's Ed25519 key. Any alteration, a changed,
   reordered, dropped, or inserted event, no longer reproduces the signed root, so an
@@ -109,8 +104,7 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   host. The verifier rehashes the exact bytes the record carries rather than
   re-serializing, so verification holds across languages.
 
-- **Substituting the binary through the upgrade path.** A self-updating program is a
-  remote code execution path with a friendly name, so `flynn upgrade` trusts nothing it
+- **Substituting the binary through the upgrade path.** `flynn upgrade` trusts nothing it
   downloads. The release listing is used only to enumerate candidates. What is installed
   is decided by a SLSA provenance statement signed at build time by GitHub's OIDC
   identity for flynn's release workflow, verified in-process against a Sigstore
@@ -120,25 +114,24 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   repository and owner id as well as by URL. The signature must also be present in the
   public transparency log: the inclusion proof has to reconstruct a root the log
   operator signed, and the logged entry has to commit to this exact envelope, so a
-  forged release cannot be issued quietly to one victim. Only then is the archive
+  forged release cannot be issued in secret to one victim. Only then is the archive
   downloaded, pinned to the digest the signed provenance names and verified as it
-  streams. TLS is not the trust anchor at any point, so a hostile network, a
-  mis-issuing certificate authority, or a compromised mirror does not move the
-  attacker closer. There is no long-lived release signing key to steal. See
+  streams. TLS is never the trust anchor: a hostile network, a mis-issuing certificate
+  authority or a compromised mirror gains the attacker nothing. There is no long-lived release signing key to steal. See
   [UPGRADE.md](UPGRADE.md).
 - **Rollback and freeze through the upgrade path.** Both attacks use genuinely signed
   releases, so no signature check can catch them. flynn remembers the highest version it
   has ever verified and the newest it has ever been offered: it refuses to install
   anything below the former without an explicit `--allow-downgrade`, and it reports a
-  listing that withdraws a release it has already shown, which is what a machine being
-  held on a vulnerable version looks like from the inside.
+  listing that withdraws a release it has already shown, the sign of a machine being
+  held on a vulnerable version.
 - **Subverting the install itself.** The new binary is staged in the target's own
   directory and renamed into place, so the swap is atomic and no partially written
   binary is ever executable. The running executable's path is resolved through its
   symlinks before anything is written, so a link planted between the check and the write
   cannot redirect it. Nothing that has not verified is ever executed, and the new binary
   must run and report its own version before it is kept. An install owned by a package
-  manager is refused rather than trampled.
+  manager is refused.
 
 ### Repudiation (denying an action took place)
 
@@ -182,20 +175,16 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   inbound gate (`bindguard`), which binds the loopback interface by default, refuses a
   wildcard bind that would expose every interface, and refuses any non-loopback bind unless
   the operator explicitly opts in. The recommended way to reach a service from off the
-  machine is a tunnel to its loopback bind, so the safe shape is the default and exposure
-  is always a deliberate, auditable choice rather than an accident.
+  machine is a tunnel to its loopback bind. Exposing a service is always an explicit,
+  logged choice.
 - **An exposure that lingers after it is no longer needed.** Every listener opened through
   the inbound path is recorded in an exposure registry: logged on open and on close, and
   enumerable, so nothing is exposed silently. An exposure given a time-to-live is torn down
-  automatically when its lease ends rather than living until the process dies, so an
-  ephemeral opening (a preview server, a temporary tunnel) is bounded by construction.
-- **An unauthenticated service reachable by anyone.** Authentication is on by default, by
-  construction. The control-plane API resolves every request to a scoped principal through
-  an authenticator; a server built without one fails closed (it denies every request)
-  rather than serving openly, so an unauthenticated API is not representable by omission.
-  When no operator credential is supplied, a strong bearer token is generated and shown
-  once rather than the API running open, so the secured path is the zero-config default and
-  there is no reason to fall back to an unauthenticated one. A service the agent itself
+  automatically when its lease ends instead of lasting until the process exits.
+- **An unauthenticated service reachable by anyone.** Authentication is on by default.
+  The control-plane API resolves every request to a scoped principal through an
+  authenticator, and a server built without one denies every request. When no operator
+  credential is supplied, a strong bearer token is generated and shown once. A service the agent itself
   stands up as a child process (one whose internals Flynn cannot add auth to) is contained
   at the network boundary instead: bound loopback by default and, where the sandbox
   enforces it, run with its network confined, so an unauthenticated service it brings up is
@@ -214,8 +203,7 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   the confined command's job object on Windows today; the Linux and macOS floors record the
   limits but do not yet impose them (a per-run cgroup needs cgroup-v2 delegation that is not
   guaranteed for an unprivileged agent), so a command needing a hard memory or process cap
-  there runs under the container or hardware-isolation tier. That per-platform gap is the
-  remaining piece and is stated rather than implied (see Coverage).
+  there runs under the container or hardware-isolation tier (see Coverage).
 
 ### Elevation of privilege (gaining capability not granted)
 
@@ -233,8 +221,7 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   by the parent, reaped when the parent is cancelled or removed.
 - **Running model-authored or untrusted code on a host that cannot contain it.** Each work
   kind carries a trust level, and the containment gate refuses work whose trust needs
-  stronger isolation than the host provides, rather than silently running it at a weaker
-  tier. Semi-trusted work needs the kernel-confined tier; untrusted work needs the
+  stronger isolation than the host provides instead of running it at a weaker tier. Semi-trusted work needs the kernel-confined tier; untrusted work needs the
   hardware-isolation tier and is refused until one is available.
 - **Escaping the kernel-confined tier through a dangerous syscall.** The syscall filter
   denies the calls a working command has no honest need for and that would let it escalate
@@ -280,10 +267,9 @@ Enforced and tested today:
   filesystem-write, network, and syscall escapes it claims to.
 - A CI-gated governance benchmark that measures the dispatch waist's attack-success rate
   against a versioned prompt-injection and jailbreak corpus while holding a benign-request
-  pass floor, so the decision-layer guardrail is measured on every change rather than
-  asserted. It is the decision-layer analog of the containment matrix: the matrix proves
-  isolation, this measures how much the capability gate reduces a hostile instruction's
-  success over an ungoverned baseline.
+  pass floor. The containment matrix tests isolation; this measures how much the
+  capability gate lowers a hostile instruction's success rate against an ungoverned
+  baseline.
 - A per-run spend and token ceiling enforced at the dispatch boundary (an action is refused
   once the run's budget is reached, and a fan-out shares one ceiling), a runaway circuit
   breaker on both the single-conversation and fan-out paths, and best-effort memory and
@@ -305,7 +291,7 @@ Enforced and tested today:
   server built without an authenticator fails closed, and a missing operator credential is
   generated rather than dropped to open access.
 - An exposure registry that records every opened listener (logged and enumerable) and
-  tears down a leased exposure when its TTL expires, so nothing stays exposed silently.
+  tears down a leased exposure when its TTL expires.
 - The full model-source trust pipeline: classification, code-executing-format refusal,
   digest verification with pin-on-first-use, runtime version-floor gating, hardened
   file parsing, a forced trusted chat template, loopback-only serving, and explicit
@@ -337,7 +323,7 @@ Enforced and tested today:
 
 Planned, not yet enforced (a control in this list is not something to rely on today):
 
-- A user-space-kernel tier (gVisor), and a microVM runtime shipped with Flynn. The
+- A user-space-kernel tier (gVisor), and a microVM runtime bundled with Flynn. The
   container tier (Docker, Podman) and the hardware-isolation tier are built on Flynn's
   side: `sandbox/microvm_command.go` writes a manifest (guest image, resource caps,
   read-only mounts, no network device) and drives a runtime the host provides, with
@@ -345,7 +331,7 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   only where the host exposes the hardware boundary and `FLYNN_MICROVM_RUNTIME`,
   `FLYNN_MICROVM_KERNEL` and `FLYNN_MICROVM_ROOTFS` name a runtime and a guest image.
   Without them untrusted work (an arbitrary downloaded model, an unsigned plugin) is
-  refused rather than run, which is the safe failure, not a silent downgrade. The
+  refused. The
   runtime's own half of the contract (a jailed monitor, a unique uid per guest) is the
   host's to provide.
 - Host CPU, memory, and process-count caps at the always-present tier on Linux and macOS.
@@ -359,7 +345,7 @@ Planned, not yet enforced (a control in this list is not something to rely on to
 - Runtime anomaly detection and deception tripwires.
 - The run-creation wiring behind fan-out: spawning a child run is gated as a capability today,
   while the code that materializes each child run under the narrowed grant and the parent's
-  shared budget is being landed, so the narrowing and budget guarantees above are a contract of
+  shared budget is not finished, so the narrowing and budget guarantees above are a contract of
   the delegation interface rather than a property to rely on in a deployed run yet.
 - A defense that reduces prompt-injection and jailbreak success beyond what capability
   admission already gives. The Tampering section covers a hostile model file rewriting the
@@ -372,9 +358,9 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   isolation) is not yet built.
 - Two residuals of the promotion gate. A host that never marks its ingest path leaves taint
   to what provenance alone implies, and a promotion performed by an LLM review is itself
-  attack surface, which is why an untrusted-origin or tainted item is denied outright rather
-  than made promotable. The operator reviewing from the command line reads the finished
-  sentence too, so the gate rests on the taint marking, not on the review. The standalone
+  open to attack, so an untrusted-origin or tainted item cannot be promoted at all. The
+  operator reviewing from the command line sees only the finished sentence too, so the gate
+  depends on the taint marking. The standalone
   binary marks it coarsely: a note distilled from a run whose transcript calls the shell
   or spawns a child is tainted, because `--allow-network` opens the shell's network and nothing on the
   host tells a `curl` from a `go test`, and a child's transcript is not in the parent's.
@@ -390,14 +376,13 @@ Planned, not yet enforced (a control in this list is not something to rely on to
   channel it holds standing credentials for (a mailbox, a connected integration), an
   attacker who can place input on that channel can borrow the agent's authority without
   holding it. Capability admission bounds what any single action may do, but the binding
-  that would tie a requested action back to the principal actually allowed to ask for it is
+  that would tie a requested action back to the principal allowed to ask for it is
   not yet enforced.
 - A post-quantum migration path for the tamper-evident record. The sealed run record's
   integrity rests on Ed25519 signatures over an RFC 6962 Merkle log. That is sound against a
   classical adversary; a future cryptographically-relevant quantum computer would break the
   signature, though not the hash-based log structure. Signature agility (a post-quantum or
-  hybrid signature over the same checkpoint) is named here as the intended migration rather
-  than shipped.
+  hybrid signature over the same checkpoint) is the intended migration and is not built.
 - Supply-chain integrity for what the agent installs and for Flynn's own build. When the
   agent runs a package install (`npm`, `pip`, and the like) it pulls third-party code whose
   provenance Flynn does not yet verify; the egress and sandbox boundaries contain what that

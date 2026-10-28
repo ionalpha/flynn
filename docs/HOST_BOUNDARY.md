@@ -1,93 +1,72 @@
 # Host boundary register
 
-Flynn keeps its engine swappable by depending on an interface and letting whoever
-embeds it supply the implementation. This file records, for every place that
-happens, whether Flynn also ships something behind the interface and whether the
-binary wires it.
+Flynn depends on interfaces (ports) and lets whoever embeds it supply the
+implementation. This file lists every port in the public packages and records two
+things for each: whether Flynn has its own implementation (the producer), and whether
+the `flynn` binary wires it. [ARCHITECTURE.md](../ARCHITECTURE.md) explains the ports;
+this is the inventory.
 
-The register exists because the swappability question and the standalone question
-are different, and only the first one gets asked during review. A package that
-defines a port and ships no producer still reads as correct: the boundary is clean,
-the contract is small, a host can implement it. What it cannot do is work. Four
-memory packages landed that way, and a goal capability sat fully built and unwired
-for a release, because nothing in the repo asked the second question.
-
-`ARCHITECTURE.md` describes the ports and why they exist. This is the inventory
-behind them.
+A port with a clean contract and no producer passes review and still does nothing in
+the standalone binary. The register makes that visible.
 
 ## Verdicts
 
 Every row carries exactly one.
 
-- **shipped**: Flynn has an implementation and the binary wires it. The interface
-  stays, so a host replaces it and loses nothing. This is the target for anything
-  Flynn can do with what it already holds: the model port, a sandbox, a store, a
-  spine.
-- **justified**: Flynn ships nothing on purpose, the reason is written in the doc
-  comment, and the absence is visible. `goal.WithInvariantAudit` is the form to
-  copy: a goal that states terms with no auditor stalls and says which auditor is
-  missing, rather than running unaudited and finishing like a goal whose terms held.
-- **staged**: Flynn ships the implementation, the binary can wire it, and it is off
-  by default while confidence is built. A staged row states two things or it is not a
-  staged row: **the switch** that turns it on, and **the promotion condition** under
-  which it becomes the default, written specifically enough that somebody can later
-  check whether it has been met. "Revisit this" is not a promotion condition. The
-  state must also be visible from the binary, because a capability an operator cannot
-  see is how default-off becomes permanent without anyone deciding it should.
-- **gap**: neither. Every gap row has an open issue describing what to build. A gap
-  with no issue is how one becomes permanent without anyone deciding it should.
+- **shipped**: Flynn has an implementation and the binary wires it. A host can still
+  replace it. This is the target for anything Flynn can do with what it already has:
+  the model port, a sandbox, a store, a spine.
+- **justified**: Flynn has no implementation on purpose, the reason is in the doc
+  comment, and the absence is visible. `goal.WithInvariantAudit` is the example to
+  copy: a goal that states terms with no auditor stalls and names the missing auditor.
+- **staged**: Flynn has the implementation, the binary can wire it, and it is off by
+  default. A staged row names **the switch** that turns it on and **the promotion
+  condition** under which it becomes the default, specific enough to check later.
+  "Revisit this" is not a promotion condition. The binary must show the state, so an
+  operator can see that the capability exists and is off.
+- **gap**: none of the above. Every gap row links an open issue describing what to
+  build.
 
-The test behind a verdict: if the capability cannot be exercised by the `flynn`
-binary plus a temp SQLite file with no host present, it is `justified` with a
-written reason, or it is a `gap`.
+The test: if the `flynn` binary plus a temp SQLite file, with no host, cannot exercise
+the capability, it is `justified` with a written reason, or it is a `gap`.
 
 A default-off flag is not automatically `staged`. Most of the binary's off-by-default
-flags are the safe end state rather than a waypoint: `--endpoint-local`,
-`--api-expose` and `review --approve` widen something, and off is where they should
-stay. `runtime.Config.AllowAssertedEvidence` is the same shape, one level down: off
-means a check has to have been run, and a closed loop that runs checks is exactly
-what makes requiring execution satisfiable. `--fanout`, `--no-learn` and `--plain`
-select a mode. A row is `staged` only when off-by-default is a temporary position on
-something Flynn otherwise ships and wires, which today is two rows.
+flags are the intended end state: `--endpoint-local`, `--api-expose` and
+`review --approve` widen access, and they stay off. `runtime.Config.AllowAssertedEvidence`
+is the same one level down: off means a check has to have run. `--fanout`,
+`--no-learn` and `--plain` select a mode. A row is `staged` only when off-by-default is
+temporary, which today is two rows.
 
-## What a `justified` seam must do when it is absent
+## How a `justified` port behaves when absent
 
-A written reason is half of it. The other half is that the absence is visible, and
-the line is whether a reader of the finished run could tell the difference.
+The reason is written down, and the absence shows in the finished run.
 
-- **Outcome-affecting: stall or refuse, by name.** A seam whose absence changes what
-  a run means never degrades quietly. `WithInvariantAudit` stalls with
+- **Changes the outcome: stall or refuse, by name.** `WithInvariantAudit` stalls with
   `InvariantAuditorMissing`, `WithUnitSpawner` with `UnitSpawnerMissing`,
-  `WithSteerJudge` with `SteerJudgeMissing`, a declared
-  plan-window ceiling with no source with `WindowSourceMissing`, and
-  `memory/consolidate` refuses at construction with `ErrNoDistiller` rather than on a
-  nightly job nobody is watching. Each has a test asserting the condition an operator
-  would see, because the name is the sentence worth being able to say about the run
-  afterwards.
-- **Instrumentation: a documented no-op.** `mission.WithGenerationRecorder` falls
-  back to `nopGenerationRecorder`, a nil `goal.Cleaner` has nothing to tear down, and
-  a Hook with no `brakes.AnomalyDetector` still halts on the breakers it was
-  configured with. These change no outcome, they say so in their doc comments, and
-  each has a test that the absence costs nothing.
+  `WithSteerJudge` with `SteerJudgeMissing`, a declared plan-window ceiling with no
+  source with `WindowSourceMissing`, and `memory/consolidate` refuses at construction
+  with `ErrNoDistiller`. Each has a test asserting the condition an operator sees.
+- **Instrumentation: a documented no-op.** `mission.WithGenerationRecorder` falls back
+  to `nopGenerationRecorder`, a nil `goal.Cleaner` has nothing to tear down, and a Hook
+  with no `brakes.AnomalyDetector` still halts on its configured breakers. Each says so
+  in its doc comment and has a test that the absence changes no outcome.
 - **Timing only: say what is lost, and prove the outcome is not.** `goal.WithHalt` is
-  the one seam in this shape. With none wired an operator's kill still settles the goal
-  and no further step is dispatched; what is lost is that the stop reaches the dispatch
-  waist inside the running step. The doc comment says so and a test asserts the run is
-  stopped either way, so the seam buys promptness and never the decision.
+  the one port in this group. With none wired, an operator's kill still settles the
+  goal and no further step is dispatched; the stop just does not reach the step already
+  running. The doc comment says so, and a test asserts the run stops either way.
 
-A missing-producer stall is recoverable, which is what makes stalling the right
-answer rather than a refusal wearing a softer word. `Status.Unwired` marks a stall as
-describing the loop rather than the run, and those are the only stalls a later
-reconcile re-examines: wiring the thing the goal needed and reconciling again picks
-the work back up, where a spent budget or a run that got nowhere stays settled. A new
-`…Missing` stall belongs in `goal.unwiredStalls` on the commit that introduces it.
+A missing-producer stall is recoverable. `Status.Unwired` marks a stall as caused by
+the loop's wiring, not by the run, and only those stalls are re-examined by a later
+reconcile: wire the missing producer, reconcile again, and the work resumes. A spent
+budget or a run that made no progress stays settled. A new `*Missing` stall goes in
+`goal.unwiredStalls` in the commit that adds it.
 
 ## Foundation
 
-The backends a host genuinely owns. Every one has an in-process implementation for
-tests and a durable one for the binary.
+Backends a host can own. Each has an in-process implementation for tests and a durable
+one for the binary.
 
-| Deferral | Shipped producer | Wired at | Verdict |
+| Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `state.Provider` | `state.NewMemory`, `storage/sqlite.Store` | `cmd/flynn/runs.go` `openStore`, `agent.go` `New` | shipped |
 | `state.SessionStore` / `SkillStore` / `MemoryStore` | `state` in-memory set, `storage/sqlite`, `skill.Store`, `memory.Store` | via `state.Provider` | shipped |
@@ -104,40 +83,37 @@ tests and a durable one for the binary.
 | `allowance.Policy` | `allowance.Actions` | `governed/allowance.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
 
-A host that wants a model running on the same machine has `localmodel` and needs no port
-of its own for it: `localmodel.Open` takes a data directory and returns a host that
-classifies a source, installs a runtime behind the advisory gate, fetches weights against
-a catalog digest, serves them inside the sandbox on a loopback port behind a per-launch
-token, and stops them. The guards have no switch. A host that starts a model server
-itself (a runtime launched from a download) has none of them, which is why the package
-offers no way to supply a server binary, an address, a chat template, a runtime build or
-a lower floor. The served runtime keeps outbound network access under the local sandbox,
-so the loopback pin and the token are what keep the endpoint private.
+`allowance.Policy` marks nothing until the operator names an action with
+`--irreversible`. Dispatch sees an action's name and never its arguments, and one name
+covers both a command that lists a directory and one that deletes data, so the binary
+cannot work out which actions are irreversible on its own.
 
-Three things are the host's to decide, and each is checked in one direction only. A host
-can raise the advisory floor for its own `Host` with `RaiseFloor`; the floor never lowers,
-and one `Host` raising it does not change another. A host states the least isolation it
-accepts with `Config.MinContainment` (kernel confinement unless it says `"process"`), and
-`Serve` refuses a sandbox that provides less and reports the level it launched under. A
-server found already running is held to the same floor and isolation as a new one, and is
-stopped if it falls short. Before the token is sent anywhere, the listener has to refuse a
-request with no credential and one with a made-up credential, and accept one with a probe
-key only the launched runtime was given.
+A host that wants a model running on the same machine uses `localmodel` and needs no
+port for it. `localmodel.Open` takes a data directory and returns a host that
+classifies a source, installs a runtime behind the advisory gate, fetches weights
+against a catalog digest, serves them inside the sandbox on a loopback port behind a
+per-launch token, and stops them. The guards have no switch. A model server a host
+starts itself has none of them, so the package accepts no server binary, address,
+chat template, runtime build or lower floor. The served runtime keeps outbound network
+access under the local sandbox, so the loopback pin and the token keep the endpoint
+private.
 
-`allowance.Policy` is wired but marks nothing until the operator names an action, and
-that empty default is the intended answer rather than a gap. Which actions reach
-outside the workspace irreversibly is something the waist cannot derive: it governs an
-action's identity and never its arguments, and one action name covers both a command
-that lists a directory and a command that deletes what was not backed up. So the
-operator says, with `--irreversible`. A binary that guessed would be marking too much
-(stopping runs that were fine) or too little (a gate that reads as present and is not).
+The host decides three things, and each can only tighten. `RaiseFloor` raises the
+advisory floor for one `Host`; it never lowers, and does not change another `Host`.
+`Config.MinContainment` states the least isolation the host accepts (kernel
+confinement unless it says `"process"`), and `Serve` refuses a sandbox that provides
+less and reports the level it launched under. A server found already running is held
+to the same floor and isolation as a new one, and stopped if it falls short. Before the
+token is sent, the listener must refuse a request with no credential and one with a
+made-up credential, and accept one with a probe key only the launched runtime was
+given.
 
 ## The goal reconciler
 
-The reconciler takes its judgments as options. An option left unset changes what a
-run can do, so this is the group where an unwired producer costs the most.
+The reconciler takes its judgments as options. An unset option changes what a run can
+do.
 
-| Deferral | Shipped producer | Wired at | Verdict |
+| Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `goal.StepExecutor` | `mission.Executor`, `driver.Router` | `governed/assemble.go` `Assemble` | shipped |
 | `goal.StopEvaluator` | `mission.Convergence` | same | shipped |
@@ -154,21 +130,19 @@ run can do, so this is the group where an unwired producer costs the most.
 | `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `governed/assemble.go`, `agent.go` | shipped |
 | `runtime.Config.RequireLedgerProof` | `goal.EvidenceGate`, built by `runtime.New` | `governed/assemble.go` behind `governed.WithLedgerProof` (`--require-proof`); the fan-out build always, for a unit's child | staged |
 
-`RequireLedgerProof` is a `staged` row, and the two fields it owes:
+`RequireLedgerProof` is staged:
 
-- **Switch:** `--require-proof` on `flynn goal`. It is already on and not optional for
-  a unit's child, because a unit settles from its child's ledger and a child that
-  converged on the model's say-so fails the unit as unproven every time.
+- **Switch:** `--require-proof` on `flynn goal`. It is always on for a unit's child: a
+  unit settles from its child's ledger, and a child that converged on the model's word
+  alone would fail the unit as unproven.
 - **Promotion condition:** it becomes the default on a host whose sandbox can contain
-  semi-trusted work, when a planned run proves every ledger item it plans through an
-  executed check. Turning it on where a check cannot run stalls every planned goal for
-  a reason that says nothing about the goal, which reads to an operator as the loop
-  being broken rather than as the check being wrong.
+  semi-trusted work, once a planned run proves every ledger item through an executed
+  check. Where a check cannot run, turning it on would stall every planned goal for a
+  reason unrelated to the goal.
 
-The condition was measured on 2026-08-11 by
-`TestThePromotionConditionForLedgerProof`, which plans a goal whose item carries a
-check that exits 0, drives it through the assembly the binary uses, and reads the
-verdict off the goal the run leaves behind:
+`TestThePromotionConditionForLedgerProof` plans a goal whose item carries a check that
+exits 0, drives it through the binary's assembly, and reads the verdict. It runs on
+every CI run:
 
 | Platform | Sandbox containment | The planned item |
 |---|---|---|
@@ -176,65 +150,41 @@ verdict off the goal the run leaves behind:
 | `macos-latest` | kernel-confined | proven by its executed check |
 | `ubuntu-latest` | process-jail | unproven: `containment_gate: containment_insufficient` |
 
-The obstacle is named and it is not the loop. An item's check is model-authored, so it
-is dispatched as semi-trusted work, and GitHub's Ubuntu runner image forbids
-unprivileged user namespaces, so the sandbox falls back to a process jail and the
-containment gate refuses the check before it runs. No item can be proven on that host
-at all. Where the host can contain the work, the producer proved what it planned, which
-is the half of the original condition that was about this repository.
+An item's check is model-authored, so it runs as semi-trusted work. GitHub's Ubuntu
+runner forbids unprivileged user namespaces, the sandbox falls back to a process jail,
+and the containment gate refuses the check before it runs. Where the host can contain
+the work, every planned item was proven.
 
-That is why the condition above is a rewrite. The original asked for every platform CI
-runs on, which conflates two questions: whether the producer proves what it plans, and
-whether the host can run a model-authored command. The first is met. The second is not
-a property of the loop, and no amount of waiting changes it.
+The open decision: make the default depend on the host's containment (a run already
+reports which mode it is in), or leave `--require-proof` as the operator's switch.
 
-What is left is a decision rather than more evidence: either the default is conditioned
-on the host's containment, which is visible because a run already says which mode it is
-in, or it stays off and `--require-proof` stays the operator's switch. The measurement
-runs on every platform on every CI run, so the row cannot go stale without a red check.
-
-Verification itself is not staged and is not behind the flag: on every planned goal
-each item's declared check runs in the run's own sandbox and its verdict goes on the
-record. What the flag adds is the refusal that reads those verdicts. A run says which
-of the two it is before it starts (`ledgerLine` in `cmd/flynn/run.go`), so an
-operator can see from the run that proof is available and off rather than having to
-find this file.
+Verification itself is always on. On every planned goal, each item's check runs in the
+run's sandbox and its verdict goes on the record. The flag adds the refusal that reads
+those verdicts. A run prints which of the two applies before it starts (`ledgerLine`
+in `cmd/flynn/run.go`).
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
-true of the standalone binary. Child goals are reaped through owner references, not
-through this. Instrumentation-side of the line below: a delete with no cleaner
-completes rather than hanging on a finalizer nobody will clear
+true of the standalone binary. Child goals are removed through owner references. A
+delete with no cleaner completes instead of waiting on a finalizer
 (`TestGoalDeletionCompletesWithNoCleaner`).
 
-`goal.WindowSource`: a plan window is a quota a host meters, and Flynn has no
-equivalent to read. Every other spend bound (step budget, token and cost ceiling) is
-enforced without it.
+`goal.WindowSource`: a plan window is a quota a host meters, and Flynn has nothing
+equivalent to read. Every other spend bound (step budget, token and cost ceiling) works
+without it. A goal that declares no `WindowFraction` runs without a source. A goal that
+declares one, on a reconciler with no source, stalls with `WindowSourceMissing` and
+names the unmeasured ceiling. Otherwise a run that finished unchecked would look the
+same as one that stayed inside its ceiling.
 
-A goal that declares no `WindowFraction` asks nothing of the source and runs with
-none wired, which is the standalone case. A goal that declares one and meets a
-reconciler with no source stalls with `WindowSourceMissing` and names the ceiling
-that went unmeasured. It used to run unbounded, and that was the one declared bound
-in the register that could be passed over in silence: a run that finishes without its
-ceiling having been checked is indistinguishable from one that stayed inside it, and
-the operator who set the ceiling would read the second where the first happened.
-
-`goal.UnitSpawner` was the plain case for this register: the producer existed, the
-refusal when it was absent was honest (`UnitSpawnerMissing`), and the binary never
-handed it over, so a goal carrying a unit graph stalled on a capability that was
-already written. `orchestration.Governor` was the same gap seen from the other end,
-its producer being the dispatcher itself. Both are now wired, from one call:
-`orchestration.Units(spawner, orchestration.UnitGovernor(...))`, in the fan-out
-assembly and in the `agent` facade.
-
-Closing them moved the ledger loop too. A unit is settled from its child's ledger,
-so the fan-out assembly wires `ItemVerifier`, `Evidence` and ledger convergence for
-every goal on that path rather than only a planning one: without them a child
-converges the moment the model says it is finished, and the unit fails as unproven
-because the check the plan author wrote never got a turn to run.
+`goal.UnitSpawner` and `orchestration.Governor` are wired from one call,
+`orchestration.Units(spawner, orchestration.UnitGovernor(...))`, in the fan-out assembly
+and in the `agent` facade. A unit settles from its child's ledger, so the fan-out
+assembly wires `ItemVerifier`, `Evidence` and ledger convergence for every goal on that
+path. Without them a child would converge as soon as the model said it was done, and
+the unit would fail as unproven.
 
 ## The conversation executor
 
-| Deferral | Shipped producer | Wired at | Verdict |
+| Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `mission.Tool` | `tools` set, `tools/github`, extension tools | `mission.WithTools` | shipped |
 | `mission.ResultSummarizer` | `tools` bash, glob, grep, read | implicit on the tool | shipped |
@@ -245,45 +195,30 @@ because the check the plan author wrote never got a turn to run.
 | `brakes.Switch` | `brakes.MemSwitch` | `governed/assemble.go`, wired at every assembly | shipped |
 | `brakes.AnomalyDetector` | none | n/a | justified |
 
-`approval`: both halves were written and nothing connected them, so a run that
-should have paused for a person never paused. They are connected now, and the
-policy that decides which actions pause is the operator's: `--require-approval
-<action>`, repeatable, empty by default.
+`approval`: the operator chooses which actions pause with `--require-approval <action>`,
+repeatable and empty by default. A run's standing controls are its capability grant
+and its sandbox, which apply on every path. Approval is an extra gate for the actions
+an operator wants to see first. A default that paused something would deadlock every
+run with nobody to ask.
 
-Empty by default is a decision, not an omission. A run's standing controls are its
-capability grant and its sandbox, which apply on every path including the ones
-nobody is watching; approval is the second gate above them, for the actions a
-particular operator wants to see before they happen. A default that paused
-something would be a default that deadlocks every run with no one to ask.
+A run with a policy and no prompter refuses the listed action. The interactive shell
+installs the prompt; every other path (a one-shot `flynn goal`, a served conversation)
+has the gate without one. Every decision, granted or denied, is recorded on the run's
+stream as an `approval.decision` event and sealed with the rest of the run.
 
-The other half of that decision is what a run with a policy and no prompter does.
-It refuses the listed action rather than taking it: the interactive shell installs
-the modal prompt, and every other path (a one-shot `flynn goal`, a served
-conversation) carries the gate without one. Every decision, granted or denied, is
-recorded on the run's own stream as an `approval.decision` event, so it is sealed
-with the rest of what the run did.
+`mission.GenerationRecorder`: the only implementation discards. Nothing in the binary
+calls `mission.WithSampling`, so every model call is unpinned and a recorder would
+write the same empty envelope (no seed, no temperature) on every call. Pinning the
+sampling would change that, and it comes first; the reason is on
+`mission.GenerationRecorder` itself.
 
-`mission.GenerationRecorder`: the only implementation discards, and it stays that
-way. Nothing in the binary calls `mission.WithSampling`, so every model call a Flynn
-run makes is free-running and the envelope a recorder would write is the zero
-envelope on every call: not pinned, no seed, no temperature. Recording that once per
-model call would put a constant on the sealed stream and call it evidence, and the
-fact it encodes is one fact about the run rather than one per turn.
-
-What would change the answer is pinning the sampling, not wiring the recorder. Pin
-it and the envelope stops being a constant and becomes the half of a generation's
-identity the serving layer does not carry. That is a decision about Flynn's default
-decoding posture and it comes first; a recorder wired ahead of it records only the
-absence of one. The reason is written on `mission.GenerationRecorder` itself, so the
-next reader does not have to re-derive it from the call sites.
-
-`brakes.AnomalyDetector`: the doc comment says the default is no detector and the
-configured breakers carry in-process detection, so an absent one narrows the signal
-rather than removing the halt.
+`brakes.AnomalyDetector`: the default is no detector. The configured breakers still
+detect in process, so an absent detector narrows what triggers a halt and does not
+remove the halt.
 
 ## Learning and memory
 
-| Deferral | Shipped producer | Wired at | Verdict |
+| Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `learn.Distiller` | `learn.ModelDistiller` under `NewGovernedDistiller` | `governed/learning.go` `Distiller` | shipped |
 | `learn.Verifier` | `learn.SandboxVerifier` under `NewGovernedVerifier` | `governed/learning.go` `SkillVerifier` | shipped |
@@ -295,63 +230,48 @@ rather than removing the halt.
 | `memory/ridealong.Surfacer` (pull) | `memoryStack.skillNotes` behind `skilltool.Notes` | `governed/memory.go`, into `skilltool.New` at `learning.go` and `repl.go` | shipped |
 | `memory/ridealong` anchors | `state.SkillAnchor`, written by the curator from `Outcome.SkillsRead` | `learn.Curator.Curate` | shipped |
 
-`learn` is the pattern the other two should follow. The interface stays a port, the
-model-backed implementation ships beside it, the governed wrapper puts its model
-call through the dispatch waist, and the binary wires the pair.
+`learn` is the pattern: the interface stays a port, the model-backed implementation sits
+beside it, a governed wrapper sends its model call through `dispatch`, and the binary
+wires the pair.
 
-`memory/consolidate` made the same call and stopped at the interface. The reasoning
-in its doc comment holds: a lesson is a language judgment and the package should
-keep no model. The sibling that has one is now `memory/distil`, which stands to
-`consolidate` as `evidence` does to `goal`, and the pass is exercised end to end
-over a temp database in `storage/sqlite/distil_test.go`.
+`memory/consolidate` keeps no model; writing a lesson is a language judgment.
+`memory/distil` is the sibling that has one, as `evidence` is to `goal`. The pass runs
+end to end over a temp database in `storage/sqlite/distil_test.go`. The binary runs it
+as `flynn memory consolidate`, a separate command: distilling past failures spends
+model calls on material the current run is not about, and running it inside a session
+would charge that session.
 
-The binary wires it as `flynn memory consolidate`. Consolidation is a command
-rather than something a run does on its way past, because it is the one piece of
-memory work that is nobody's turn: distilling five failures into a lesson spends
-model calls on material the current run is not about, and hanging that off a
-session would charge whichever conversation happened to be open.
+The rest of the memory stack is assembled in one place, `governed/memory.go`.
+The digest offers what the write path curated: a subject whose fact was superseded has
+one current answer, while the raw store holds every version. A digest over an
+uncurated store would push contradictions at every reader.
 
-The rest of the memory stack is wired at `governed/memory.go`, in one
-assembly rather than three calls in three places, because the pieces only work
-together. The digest offers what the write path curated: a subject whose fact was
-superseded has one standing answer to offer, where the raw store has every version
-anyone ever wrote and no way to say which is current. A digest over an uncurated
-store would push contradictions at every reader unasked.
+`memory/ridealong` is the digest's pusher. A memory pushed to a reader is counted, and
+the run's scope is marked in the same step; the decay policy reads those counts.
 
-`memory/ridealong` is wired on the push side: it is the digest's pusher, so a
-memory that reaches a reader unasked is counted and the run's prime scope marked
-in the same step. That is what gives the decay policy a usage signal to read.
+The pull side uses `skill_read`. A lesson is anchored to the skills its run loaded, and
+loading a skill brings up what was learned while working from it, framed as background
+and counted as a use. Flynn issues the skill id and owns `skill_read`, so this works
+with no host. `cmd/flynn/ridealong_wiring_test.go` runs it over two missions and one
+store.
 
-The pull side rides on `skill_read`. A memory lesson is anchored to the skills the
-run that produced it loaded, and loading a skill surfaces what was learned while
-working from it, framed as background and counted as a use. Both ends are Flynn's:
-it issues the skill's id, and `skill_read` is its own tool, so the loop closes with
-no host present. `cmd/flynn/ridealong_wiring_test.go` runs it over two missions and
-one store.
+Skills are the only anchor. What someone learned the last time they applied a
+procedure is what the next person applying it wants, and they have no query to ask for
+it. A file path is a weaker anchor, and a run id anchors a lesson to a run that never
+reads it again.
 
-A skill was chosen over the other referents Flynn holds. A file path is cheaper to
-write and higher-traffic, and a memory about a path is worth less than one about a
-procedure: what somebody learned the last time they applied a procedure is exactly
-what the next reader about to apply it wants and has no query to ask for. A run id
-anchors a lesson to the one run that will never read it again. One mechanism
-exercised on a real read beats two half-wired ones, so only this one is wired.
+`state.AnchorKindSkill` is the one anchor kind this codebase names. An anchor is still
+an opaque `{Kind, ID}` pair that nothing resolves, and every other kind's vocabulary
+belongs to the host. A skill is a row in Flynn's own store under an id Flynn issued.
 
-`state.AnchorKindSkill` is the one anchor kind this codebase names, and it does not
-weaken the rule above it. An anchor stays an opaque `{Kind, ID}` pair that nothing
-resolves; the vocabulary is still the host's for every kind a host refers with. A
-skill is not another system's record. It is a row in Flynn's own store, under an id
-Flynn issued, which is the whole test for what belongs on this side of the boundary.
-
-The anchor is written from the skills the run loaded, not the ones it was offered.
-Loading is an act the run chose, which is the best evidence available that it was
-working on that procedure, and the caller already holds the list because
-reinforcement is credited from it. It is a proxy for aboutness rather than a
-judgment about it: a run that loads five procedures anchors its lesson to all five,
-and the surfacing cap is what keeps that from becoming a reader's problem.
+The anchor is written from the skills the run loaded, not the ones it was offered: the
+run chose to load them, and reinforcement already reads that list. A run that loads
+five procedures anchors its lesson to all five, and the surfacing cap limits what a
+reader sees.
 
 ## Channels, extensions, external agents
 
-| Deferral | Shipped producer | Wired at | Verdict |
+| Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `inbox.Source` / `Sink` | `internal/source/signalcli`, `internal/source/telegram` | `cmd/flynn/serve.go` `serveChannels` | shipped |
 | `inbox.Enqueuer` | `jobs` queues | `inbox` ingest | shipped |
@@ -366,14 +286,9 @@ and the surfacing cap is what keeps that from becoming a reader's problem.
 | `chain.NodeStore` / `CheckpointStore` | `storage/sqlite` merkle store | durable record path | shipped |
 | `harness.ProfileSource` | `harness.StaticProfiles`, `internal/profilestore.Source` | `cmd/flynn/modelrun.go` | shipped |
 
-## Seams the first audit missed
+## Other ports
 
-The drift guard was written after the register and found twenty-nine exported
-interfaces in the public band with nothing said about them. That is the finding, not
-a footnote: an audit done by hand once misses roughly a third of a surface this size,
-which is the whole argument for the check.
-
-| Deferral | Shipped producer | Wired at | Verdict |
+| Port | Producer | Wired at | Verdict |
 |---|---|---|---|
 | `bus.Bus` | `bus.NewMemory` | `runtime.New`, built alongside the store when none is supplied | shipped |
 | `dispatch.EventSink` | `internal/spinesink.Sink`, `dispatch.MemorySink`, `dispatch.DiscardSink` | `governed/assemble.go` at every assembly | shipped |
@@ -388,43 +303,33 @@ which is the whole argument for the check.
 | `sandbox.Transport` | none (only the test fake in `sandbox/remote_test.go`) | `sandbox.NewRemote` | justified |
 | `memory/hybrid.Embedder` | `llm/embed.Client` over any OpenAI-compatible embeddings endpoint | `cmd/flynn/embedder.go`, behind `FLYNN_EMBED_MODEL` | staged |
 
-`sandbox.Transport`: a remote sandbox backend (E2B, Daytona, Modal) is an account
-somebody has and Flynn does not, so no transport ships and the binary never builds a
-`Remote`. `Remote` is the adapter a host's transport plugs into; it adds a
-default-deny path check of its own on top of whatever the backend enforces, so
-confinement never depends on the backend alone, and with no transport there is simply
-no remote sandbox: the local and container backends are what the binary uses and both
-ship. Nothing degrades, because nothing is asked for.
+`sandbox.Transport`: a remote sandbox backend (E2B, Daytona, Modal) is an account the
+operator has and Flynn does not, so Flynn includes no transport and the binary never
+builds a `Remote`. `Remote` is the adapter a host's transport plugs into. It adds its
+own default-deny path check on top of whatever the backend enforces. With no
+transport, the binary uses the local and container backends.
 
-`memory/hybrid.Embedder` was the register's one `gap` and is now `staged`. Flynn
-ships `llm/embed.Client`, which speaks the one embedding wire format every hosted
-provider and every local server speaks, and `newMemoryStack` wraps the durable store
-in `hybrid` when an embedding model is named. The two fields a staged row owes:
+`memory/hybrid.Embedder` is staged. `llm/embed.Client` speaks the embedding wire format
+that hosted providers and local servers share, and `newMemoryStack` wraps the durable
+store in `hybrid` when an embedding model is named.
 
 - **Switch:** `FLYNN_EMBED_MODEL`, a provider:model spec resolved through the same
-  credential chain as the chat model. Unset is the default and leaves recall ranked
-  by words. It is an install-level variable rather than a per-run flag because a
-  corpus is embedded under one model, and switching per invocation would rank half a
-  corpus against vectors from another one.
-- **Promotion condition:** it becomes the default when the catalog carries an
-  embedding model Flynn provisions and serves itself, so ranking by meaning costs an
-  operator no account and no configured endpoint. Turning it on before that would
-  make every install without an API key print a notice about a capability it cannot
-  have, which is how a default becomes noise.
+  credential chain as the chat model. Unset by default, which ranks recall by words. It
+  is set per install, not per run, because a corpus is embedded under one model.
+- **Promotion condition:** it becomes the default when the catalog has an embedding
+  model Flynn provisions and serves itself, so ranking by meaning needs no account and
+  no endpoint. Before that, every install without an API key would print a notice about
+  a capability it cannot have.
 
-The state is visible from the binary: `/memory` opens with what recall is ranked by,
-naming the embedding model when there is one. A spec that does not resolve is
-reported once and dropped, so the run keeps its memory and loses only the ranking:
-`hybrid.Store` then ranks lexically and says so with `ErrNotFused`, which is the same
-answer the plain store gives.
+`/memory` says what recall is ranked by and names the embedding model if there is
+one. A spec that does not resolve is reported once and dropped: the run keeps its
+memory and ranks by words, and `hybrid.Store` says so with `ErrNotFused`, as the plain
+store does.
 
 ## Optional capabilities
 
-An interface a producer may also implement, found by type assertion rather than
-injected. Nothing is deferred through these: not implementing one is a supported
-answer, and what matters is the fallback. They are listed for the same reason a
-verdict is written down, which is that "what happens when this is absent" is the
-question the register exists to answer.
+An interface a producer may also implement, found by type assertion instead of being
+injected. Not implementing one is supported; the table gives the fallback.
 
 | Capability | Implemented by | Fallback when it is not |
 |---|---|---|
@@ -435,27 +340,21 @@ question the register exists to answer.
 | `mission.TrustedWork` | the shell tool and every tool that runs model-authored content | the tool is the agent's own trusted code and runs at any tier |
 | `extension.SelfPolicing` | `extension.RoutedSigner` | the host signer signs whatever it is handed, and the decision about what may be signed is nobody's |
 
-## Interfaces that are not deferrals
-
-Neither a seam nor an optional capability. Each is here with its reason, because an
-unexplained exclusion is how the register loses coverage without anyone deciding it
-should.
+## Interfaces that are not ports
 
 - `bus.Subscription`, `clock.Timer`, `observe.Span`, `observe.Counter`,
-  `observe.Histogram`: handles a port hands back. Whoever implements `bus.Bus`,
-  `clock.Timing` or `observe.Meter` implements these with it; there is no separate
-  decision and nothing to wire.
-- `reconcile.Reconciler`: the interface Flynn implements and the reconcile loop
-  consumes. It runs the other way, so there is nothing here for a host to supply.
-- `controlplane.Watcher`: a read-model surface Flynn ships an implementation of
-  (`PollWatcher`) and does not itself depend on. The served watch endpoint tails the
-  resource stream directly, so nothing defers through the port; it is there so an
-  embedder gets list, get and watch as one read model, and adding a streaming
-  transport later is a new implementation rather than a new query path.
+  `observe.Histogram`: handles a port returns. Whoever implements `bus.Bus`,
+  `clock.Timing` or `observe.Meter` implements these with it.
+- `reconcile.Reconciler`: Flynn implements it and the reconcile loop consumes it.
+  There is nothing for a host to supply.
+- `controlplane.Watcher`: a read model Flynn implements (`PollWatcher`) and does not
+  depend on. The served watch endpoint tails the resource stream directly. The
+  interface gives an embedder list, get and watch as one read model; a streaming
+  transport would be a new implementation of it.
 
-## Deferrals that are not interfaces
+## Host deferrals without an interface
 
-Places a doc comment hands the work to whoever embeds Flynn, without a port.
+Places where a doc comment leaves the work to whoever embeds Flynn, with no port.
 
 | Deferral | What Flynn does alone | Verdict |
 |---|---|---|
@@ -466,71 +365,68 @@ Places a doc comment hands the work to whoever embeds Flynn, without a port.
 ## The governed assembly
 
 A run is governed when its sandbox, grant, dispatch hooks, spine sink, auditors and
-probes are composed together. That composition is one function, `governed.Assemble`,
-and `cmd/flynn` is one caller of it. `internal/rigor`'s `TestBinaryDoesNotComposeAGovernedRun`
-fails the build if the binary starts building hooks or a sink itself, so an embedder
-and the binary cannot drift apart. The root `agent.Config` reaches the same function:
-it takes the host's `Resources`, `Jobs` and `Log` (all three or none), a `Sandbox`,
-`Secrets`, `Prompter`, `Reporter`, `Extensions`, `ExternalAgent` and a `Policy` holding
-the list-valued settings (`Tools`, `RequireApproval`, `Waivers`), and `Goal` has a
-sibling, `GoalResult`, that returns the run id, the stop reason and the record beside
-the text. The lists sit behind a `Policy` pointer so `Config` stays comparable.
+probes are composed together. One function does that, `governed.Assemble`, and
+`cmd/flynn` is one caller of it. `TestBinaryDoesNotComposeAGovernedRun` in
+`internal/rigor` fails the build if the binary starts building hooks or a sink itself,
+so an embedder and the binary cannot drift apart. The root `agent.Config` reaches the
+same function. It takes the host's `Resources`, `Jobs` and `Log` (all three or none), a
+`Sandbox`, `Secrets`, `Prompter`, `Reporter`, `Extensions`, `ExternalAgent`, and a
+`Policy` holding the list-valued settings (`Tools`, `RequireApproval`, `Waivers`).
+The lists sit behind a pointer so `Config` stays comparable. `GoalResult`, beside
+`Goal`, returns the run id, the stop reason and the record along with the text.
 
-Defaults are the governed ones: a zero option set gets the sandbox with its
+The defaults are the governed ones: a zero option set gets the sandbox with its
 containment gate, the approval gate, the brakes and the budget, the spine sink, the
 auditor and the probes. A run gets less only through `governed.Waive(guard, reason)`.
-The package exports no `Without...` function, a test scans for one, and a waiver
-without a reason is refused. Each waiver is written to the run's own stream as a
+The package exports no `Without...` function, a test scans for one, and a waiver with
+no reason is refused. Each waiver is written to the run's stream as a
 `governance.waived` event, and `Assemble` then writes a `governance.posture` event
-stating which guards the run was wired with and the budget and brake limits in force, so
-a sealed record carries the posture and a reader does not rely on the host's account of
-it. Both are written before `Assemble` returns, so they precede the run's first action
-on every path that starts one (`Run.Submit`, `Run.Resume`, `Run.Do`, or a caller driving
-`Run.Runtime` itself), and they precede `session.started` on the stream: a reader looks
-for the first session event, not the first event. The spend ceiling from `WithBudget` is
+listing the guards the run has and the budget and brake limits in force, so the sealed
+record carries the posture and a reader does not depend on the host's account of it.
+Both are written before `Assemble` returns, so they precede the run's first action on
+every path that starts one (`Run.Submit`, `Run.Resume`, `Run.Do`, or a caller driving
+`Run.Runtime` itself), and they precede `session.started`: a reader looks for the
+first session event, not the first event. The spend ceiling from `WithBudget` is
 opened in `Assemble` for the same reason.
 
 A nil or zero option never means no guard. A nil sandbox, a nil model without an
 external agent, an unrestricted grant on `WithToolset` and an approval policy with no
 prompter each refuse by name or deny; `TestOptionsNeverSilentlyWeaken` and
 `TestApprovalWithoutAPrompterDenies` hold them. The approval gate is always installed
-and passes everything when the policy is empty, so the posture event records
-`approval: true` with an empty action list in that case, and does not claim that
-approval was off. An external agent loop has no approval gate on its path, so its
-posture records `approval: false`. A `Kit`'s dispatcher refuses a call whose context
-carries no grant, where the capability package alone would admit it.
+and passes everything when the policy is empty, so the posture records
+`approval: true` with an empty action list. An external agent loop has no approval gate
+on its path, so its posture records `approval: false`. A `Kit`'s dispatcher refuses a
+call whose context carries no grant, where the capability package alone would admit
+it.
 
-A name in `WithApproval` or `WithAllowance` that the run's grant does not offer is
-refused, because a gate on an action that never occurs reads as protection and gives
-none. An external agent loop also refuses `WithCapabilities` and `WithExtensions`, since
-it brings its own tools and the grant could not bound them. `Config.Driver` with
-`Policy.Tools` is refused for the same reason: the driver would be dropped. A resumed
-run opens the budget pool its first assembly created, so the posture states the limits
-of that pool and not the ones passed to the later `WithBudget`.
+`WithApproval` and `WithAllowance` refuse a name the run's grant does not offer: a gate
+on an action that never occurs looks like protection and gives none. An external agent
+loop also refuses `WithCapabilities` and `WithExtensions`, since it brings its own
+tools and the grant could not bound them. `Config.Driver` with `Policy.Tools` is
+refused because the driver would be dropped. A resumed run opens the budget pool its
+first assembly created, so the posture states that pool's limits, not the ones passed
+to the later `WithBudget`.
 
-Where policy comes from. The assembly takes the grant, the dispatch hooks, the
-approval policy, the egress allow-list and the sandbox policy only from what the host
-passes in or from host-owned configuration (the binary's flags and environment). It reads no policy from the workspace, which the agent can write. The
-one file the operator hands the run is `--goal-file`, read once from the path the
-operator named, before the run starts. `TestWorkspacePolicyFilesDoNotWidenTheGrant`
-writes a policy-shaped file into the workspace and shows the grant and posture are
-unchanged.
+The assembly takes the grant, the dispatch hooks, the approval policy, the egress
+allow-list and the sandbox policy only from what the host passes in or from
+host-owned configuration (the binary's flags and environment). It reads no policy from
+the workspace, which the agent can write. The one file the operator hands the run is
+`--goal-file`, read once from the path the operator named, before the run starts.
+`TestWorkspacePolicyFilesDoNotWidenTheGrant` writes a policy-shaped file into the
+workspace and shows the grant and posture are unchanged.
 
-Two consequences for an embedder. A run the embedder builds from its own `tools` set
-(`WithToolset`) has no working tree to confine, so it states `Waive(GuardSandbox, ...)`
-and the waiver is recorded. A host-supplied sandbox is the host's to close; a sandbox
-the assembly built is closed with the run.
+For an embedder: a run built from its own `tools` set (`WithToolset`) has no working
+tree to confine, so it states `Waive(GuardSandbox, ...)` and the waiver is recorded. A
+host-supplied sandbox is the host's to close; a sandbox the assembly built is closed
+with the run.
 
 ## Standalone acceptance
 
-The rows above and the drift guard are static: they say a producer exists and is
-referenced. Neither proves the capability works from the binary, which is the claim
-the register is actually making. `cmd/flynn/standalone_acceptance_test.go` is that
-claim tested, one pass per capability, over a temp data directory with a scripted
-model and no host. The store is SQLite on disk, the sandbox is the local one with its
-confinement, every action crosses the dispatch waist, and the record is the run's own
-spine. Only the model is scripted, because the point is the absence of a host and not
-the absence of a model.
+The rows above say a producer exists and is wired. `cmd/flynn/standalone_acceptance_test.go`
+tests that each capability works from the binary, one pass per capability, over a temp
+data directory with a scripted model and no host. The store is SQLite on disk, the
+sandbox is the local one with confinement, every action goes through `dispatch`, and
+the record is the run's own spine. Only the model is scripted.
 
 | Capability | Pass |
 |---|---|
@@ -543,30 +439,16 @@ the absence of a model.
 | A run seals and its record verifies from the store alone | `TestStandaloneARunSealsAndItsRecordVerifies` |
 | The ride-along closes over two runs and one store | `TestRideAlongClosesTheLoopAcrossTwoRuns` |
 
-Writing the suite produced one finding, since closed. A goal's stated terms had no
-operator surface: the engine enforced them and nothing in `cmd/flynn` could set
-`goal.Spec.Invariants`, so the capability was reachable only by an embedder. An
-operator now states them in a goal spec file (`--goal-spec`, see below), and the
-pass starts from that file rather than from a hand-built spec.
-
-Writing the surface produced a second finding, also closed. The fan-out assembly
-wired no invariant auditor, so `flynn goal --fanout` over a spec file stalled at
-admission saying nobody could check the terms. It went unnoticed because the
-acceptance pass asserted only that a stated term stopped the goal, and that stall
-stops the goal: an honest refusal and a passing test that proved nothing. The pass
-now names the breached term, and the fan-out build wires the auditor the single
-conversation has always had.
-
-The invariant pass assembles and submits the way `flynn goal` does but does not go
-through `drive`, which cancels the run context as soon as the conversation converges.
-An audit runs on the reconcile that settles the step, so which of the two arrives
-first depends on how quickly the auditor's command starts. Only the cancellation is
-the test's; everything else on the path is the shipped one.
+The invariant pass starts from a goal spec file (`--goal-spec`), the way an operator
+sets `goal.Spec.Invariants`, and asserts that the breach names the term. It assembles
+and submits the way `flynn goal` does but skips `drive`, which cancels the run context
+as soon as the conversation converges and would race the audit. Everything else on the
+path is the binary's own.
 
 ### Stating the terms of a run
 
-`--goal-spec <file>` takes JSON, and it is the only way to set `goal.Spec.Invariants`
-from the command line:
+`--goal-spec <file>` takes JSON. It is the only way to set `goal.Spec.Invariants` from
+the command line:
 
 ```json
 {
@@ -583,88 +465,76 @@ from the command line:
 }
 ```
 
-A file rather than a repeatable flag, because a term's check is a shell command and a
-flag puts its author in a delimiter fight on the first check that carries a quote. The
-file decodes into a curated struct, not into `goal.Spec`: the model, the step budget,
-the grant and the unit graph belong to the run or to a flag, and an operator editing
-them by hand would be editing machinery they cannot see the effect of. Unknown fields
-are refused, because `"invariant"` for `"invariants"` would otherwise produce a run
-held to nothing that reads exactly like a run whose terms held.
+A check is a shell command, and quoting one inside a flag is error-prone, hence a
+file. The file decodes into its own struct, not `goal.Spec`: the model, step budget,
+grant and unit graph come from the run or from flags. Unknown fields are refused, so a
+typo such as `"invariant"` fails instead of producing a run held to nothing.
 
-A term with no `check` is ruled on by the model auditor from the run's record, which is
-the weaker of the two auditors. The run prints which of its terms carry a check and
-which do not before it starts, so the choice is visible at the point where it can still
-be changed.
+A term with no `check` is judged by the model auditor from the run's record, the weaker
+of the two auditors. Before it starts, the run prints which terms have a check.
 
-A check is dispatched as semi-trusted work, so it needs a host whose sandbox can
-contain that: on a host with only a process jail (a GitHub Actions runner, where
-unprivileged user namespaces are forbidden, is one) the containment gate refuses it and
-the run stops saying the check could not run. Writing the surface is what surfaced this:
-the auditor reported that refusal `Forbidden`, the goal reconciler settles a goal on a
-`Terminal` fault only, and the run was left going with a step in flight, no verdict on
-its terms, and nobody told. The auditor now reports it `Terminal`, so the run stops.
-Every test of the auditor supplied a fake sandbox, which is how it stayed invisible;
-`TestTheAuditorRunsAChecksCommandInTheRealSandbox` runs the wired auditor against the
-real one and asserts whichever of the two answers the host can give.
+A check runs as semi-trusted work and needs a sandbox that can contain it. On a host
+with only a process jail (a GitHub Actions runner, which forbids unprivileged user
+namespaces) the containment gate refuses it, the auditor reports `Terminal`, and the
+run stops saying the check could not run. `TestTheAuditorRunsAChecksCommandInTheRealSandbox`
+runs the wired auditor against the real sandbox and accepts either answer the host can
+give.
 
-Whether a host can contain confined work is something to ask before a run, not to learn
-from a refusal in the middle of one. `flynn sandbox check` (and
-[`sandbox.CheckConfinement`](../sandbox/readiness.go) for a host embedding Flynn) starts a
-real confined no-op child and returns a [`sandbox.Readiness`](../sandbox/readiness.go):
-a pass, or a named cause (a service unit's `RestrictNamespaces=`, disabled user
-namespaces, an AppArmor user-namespace restriction, a syscall filter) with the change
-that fixes it and the container or microVM tier as the alternative. A Local that asks for
-confinement runs that check before its first launch and refuses with the same result. The
-check has no off switch: no flag, environment variable or configuration accepts a
-refusal, and an outcome it cannot classify refuses.
+A host can find out before a run whether it can contain confined work.
+`flynn sandbox check` (and [`sandbox.CheckConfinement`](../sandbox/readiness.go) for a
+host embedding Flynn) starts a real confined no-op child and returns a
+[`sandbox.Readiness`](../sandbox/readiness.go): a pass, or a named cause (a service
+unit's `RestrictNamespaces=`, disabled user namespaces, an AppArmor user-namespace
+restriction, a syscall filter) with the change that fixes it and the container or
+microVM tier as the alternative. A Local that asks for confinement runs that check
+before its first launch and refuses with the same result. No flag, environment
+variable or configuration overrides a refusal, and an outcome the check cannot
+classify refuses.
 
-The default is fail closed. `WithDefaultConfinement` never runs a command unconfined: a
-host that cannot confine gets a refusal from `Exec`, `Capture`, `Stream`, `Serve` and
-`Session`. Running at the process-jail floor is a separate, named choice,
-`WithBestEffortConfinement(notice)`, made in code by the embedder. Each launch it lets
-through is counted (`ConfinementFallbacks`) and passed to the notice, which reaches
-standard error when it is nil. It is never offered for a Local that denies the network,
-governs egress, hides paths or holds a read grant the floor cannot honour.
+The default is fail closed. `WithDefaultConfinement` never runs a command unconfined:
+a host that cannot confine gets a refusal from `Exec`, `Capture`, `Stream`, `Serve` and
+`Session`. Running at the process-jail floor is a separate choice the embedder makes in
+code, `WithBestEffortConfinement(notice)`. Each launch it lets through is counted
+(`ConfinementFallbacks`) and passed to the notice, which goes to standard error when
+nil. It is never offered for a Local that denies the network, governs egress, hides
+paths or holds a read grant the floor cannot honour.
 
 An embedder hides a runner's own files from the commands it launches with
-`WithUnreadablePaths`: the paths read as empty inside the sandbox on Linux and are denied on
-macOS, and a Local that cannot do this (on Windows, without `WithReadOnlyFS`, or with a grant
-under a hidden path) refuses with `ErrReadDeny`; `sandbox.ReadDenySupported` says which
-platform this is before a launch refuses. The binary applies it, with `WithNetworkDenied`, to the
-shell of `flynn run`, `flynn serve` and the goal worker: the data directory, the runner's
-runtime directory and the account's credential locations are hidden, and the command has no
-network. `--allow-network` and `--allow-credential-reads` lift each, and the run's stream
-records which. On Windows the binary sets `ShellPolicy.AllowCredentialReadsWhereUnhidable`, so
-the shell runs with the credentials readable and the posture event says the platform was the
-reason; `--require-credential-hiding` keeps the refusal. An embedder that builds its own Local
+`WithUnreadablePaths`: the paths read as empty inside the sandbox on Linux and are
+denied on macOS. A Local that cannot do this (on Windows, without `WithReadOnlyFS`, or
+with a grant under a hidden path) refuses with `ErrReadDeny`, and
+`sandbox.ReadDenySupported` reports the platform's answer before a launch refuses.
+The binary applies it, with `WithNetworkDenied`, to the shell of `flynn run`,
+`flynn serve` and the goal worker: the data directory, the runner's runtime directory
+and the account's credential locations are hidden, and the command has no network.
+`--allow-network` and `--allow-credential-reads` lift each, and the run's stream
+records which. On Windows the binary sets
+`ShellPolicy.AllowCredentialReadsWhereUnhidable`, so the shell runs with the
+credentials readable and the posture event names the platform as the reason;
+`--require-credential-hiding` keeps the refusal. An embedder that builds its own Local
 gets none of this unless it asks, and the zero `ShellPolicy` refuses on Windows.
 
-`deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
-unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`
-explains each line.
+`deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the unit and
+profile that let the sandbox run on a hardened Linux host; `deploy/README.md` explains
+each line.
 
 ## How this list is derived
 
-Membership is mechanical. Only the verdict column is a judgment.
+Membership is mechanical. Only the verdict is a judgment.
 
-1. Exported interfaces declared in the public band (every package outside
-   `internal/`, excluding `_test.go` files), together with the named types in the
-   module whose method set covers each one.
+1. Exported interfaces in the public packages (every package outside `internal/`,
+   excluding `_test.go` files), together with the named types in the module whose
+   method set covers each one.
 2. Every `WithX` option and `Config` field whose absence changes what a run can do.
-3. Doc comments that hand work to a host or a caller, which is what puts the last
-   table here.
+3. Doc comments that hand work to a host or a caller (the last table).
 
-A producer counts as wired only when a non-test call site in `cmd/flynn`, `agent.go`
-or `runtime` passes it in. An implementation that exists and is never handed over is
-a gap, not a shipped default, because the difference is invisible to a reader of the
-package and decisive for an operator.
+A producer counts as wired only when a non-test call site in `cmd/flynn`, `agent.go` or
+`runtime` passes it in. An implementation that exists and is never passed in is a gap.
 
-`internal/portregister` is that check, and it runs in CI. Every exported interface in
-the public band has to be accounted for here, the register may name no package the
-tree has lost, and a `gap` row that says nothing about what to build is refused. Only
-membership and the code references are mechanical; the verdict stays a judgment,
-because a checker that guessed at one would be wrong in the cases that matter.
+`internal/portregister` checks this in CI. Every exported interface in the public
+packages must be accounted for here, the register may not name a package that no
+longer exists, and a `gap` row must say what to build. It does not judge verdicts.
 
-Being named anywhere in this document counts, not only in a row's first cell. Several
-interfaces are one deferral (the approval stack is four), and demanding a row each
-would push the register into a shape that hides the seam it is about.
+An interface counts as accounted for if it is named anywhere in this document, not only
+in a row's first cell. Several interfaces make up one port (the approval stack is
+four), and they share a row.

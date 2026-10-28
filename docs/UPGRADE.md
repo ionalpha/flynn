@@ -26,7 +26,7 @@ Install v0.1.3? [y/N]
 
 Useful flags: `--to vX.Y.Z` for an exact version, `--pre` to consider prereleases,
 `--check` to see the plan without installing, `--yes` for unattended runs, and
-`--allow-downgrade` for the rare case where going back is what you actually want.
+`--allow-downgrade` to install an older version on purpose.
 
 ## What is checked, and why you can believe it
 
@@ -57,7 +57,7 @@ When you upgrade, this binary:
    has to reconstruct a root hash that the log operator signed a checkpoint over, and
    the logged entry has to commit to this exact payload, signature, and certificate.
    **A signature that was never published is not accepted**, so nobody can forge one
-   quietly: a forgery has to be entered in a log the whole world can read.
+   unseen: a forgery has to be entered in a log the whole world can read.
 5. Only then downloads the archive, pinned to the sha256 the signed provenance gives it,
    verified as the bytes arrive.
 
@@ -73,7 +73,7 @@ when a listing stops offering a release it used to.
 The new binary is staged in the same directory as the one it replaces, so the swap is a
 rename within a single filesystem and is therefore atomic: at no point does the path
 hold a half-written file. The running binary's path is resolved through its symlinks
-first, so the write lands on the file that is really running, and no symlink planted in
+first, so the write goes to the file that is really running, and no symlink planted in
 the meantime can redirect it. The new binary is made to run and report its own version
 before it is kept. If it will not run, the old one stays exactly where it was.
 
@@ -95,8 +95,7 @@ original is put straight back. The displaced file is swept on the next start.
 
 ## Verifying a release yourself
 
-You do not have to take flynn's word for any of this. Every release ships the same
-bundle flynn checks (`flynn.intoto.jsonl`), and it verifies with the standard tooling:
+You can check a release without flynn. Every release publishes the bundle flynn checks (`flynn.intoto.jsonl`), and it verifies with the standard tooling:
 
 ```
 gh attestation verify flynn_linux_amd64.tar.gz --repo ionalpha/flynn
