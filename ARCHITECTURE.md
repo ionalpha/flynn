@@ -1,316 +1,395 @@
 # Architecture
 
-This document maps Flynn: the layers packages sit in, the ports a host can replace,
-the invariants that must hold, and the stability tiers that say what a host may rely
-on. Package doc comments are the reference for a single package (`go doc ./<pkg>`).
+This document is the map of Flynn: the layers packages sit in, the ports
+that keep the engine swappable, the invariants that must hold, and the stability
+tiers that say what a host may rely on. Package doc comments remain the source of
+truth for any single package (run `go doc ./<pkg>`); this file is how the pieces
+fit together and why.
 
-Where a rule here is enforced by golangci (`depguard`, `forbidigo`) or a test, the
-rule says which.
+It is also a contract. Several rules here are mechanically enforced (golangci
+`depguard`/`forbidigo`, tests). Where a rule is enforced, this document says how,
+so the doc and the code cannot quietly disagree.
 
-## Overview
+## The shape in one paragraph
 
-Flynn is a controller-reconciler engine over an event-sourced resource store, the
-model Kubernetes uses. State of record is in `resource`: an append-only event log
-with resources built from it. A `reconcile.Manager` runs a rate-limited work queue per
-resource kind and drives each resource toward its desired state. `goal` is the first
-such controller, and `mission` is the executor it runs, advancing a goal as a
-tool-using conversation through the `llm` port.
-
-Every model call and tool call passes through `dispatch`, which checks it against a
-capability grant, traces it, and brackets it with events on the spine (the event
-log). Time, identity and randomness come only from injected ports (`clock`, `ids`),
-which makes a run replayable. Persistence and observability are reached only through
-interfaces: the open agent runs standalone, and a host can supply its own backends
-without the engine importing the host.
+Flynn is a controller-reconciler engine over an event-sourced resource
+store, the same model Kubernetes uses. State of record lives in `resource` (an
+append-only event log with materialized resources). A `reconcile.Manager` runs a
+rate-limited work queue per resource kind and drives each resource toward its
+desired state; `goal` is the first such controller and `mission` is the executor
+it runs, advancing a goal as a tool-using conversation through the `llm` port.
+Every model call and tool call passes through one chokepoint, `dispatch`, which
+admits it against a capability grant, traces it, and brackets it with events on
+the spine. Time, identity, and randomness come only from injected ports
+(`clock`, `ids`), so a run is deterministically replayable. Persistence and
+observability are reached only through interfaces, so the open agent runs
+standalone and a richer host can supply its own backends without the engine
+depending on the host.
 
 ## Layers
 
-Packages form an acyclic dependency graph (`go vet` reports no import cycles). A
-package may import only packages in a lower layer. A package's layer is one plus the
-highest layer it imports.
+Packages form an acyclic dependency graph (verified: `go vet` reports no import
+cycles). A package may only import packages in a lower layer. The layer of a
+package is one plus the highest layer it imports.
 
 | Layer | Packages | Role |
 |-------|----------|------|
 | L0 foundation | `clock`, `fault`, `llm`, `observe` | Pure ports: time source, error taxonomy, the model port, the logging/tracing port. No internal imports. |
 | L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters. |
-| L2 core data | `state`, `resource`, `provider` | The host persistence interfaces, the event-sourced resource store, the model-adapter registry. |
-| L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill`, `chain` | The governance gate, the reconcile loop, the leased job queue, durable memory and skill stores, the verifiable-record encoder and signer over spine events. |
+| L2 core data | `state`, `resource`, `provider` | The host persistence boundary, the event-sourced resource store, the model-adapter registry. |
+| L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill`, `chain` | The governance waist, the reconcile loop, the leased job queue, durable memory and skill stores, the verifiable-record encoder and signer over spine events. |
 | L4 governance + domain | `capability`, `budget`, `internal/spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
 | L7 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade. |
 
-The rule that counts is direction: a primitive never imports a domain package.
-`depguard` enforces this for the core bands (see Invariants).
+The valuable property is the *direction*, not the count. A primitive must never
+reach up into a domain package; that inversion is what turns a clean graph into a
+ball of mud. That core-to-engine direction is enforced by `depguard` (see
+Invariants), so the core cannot silently invert into the engine above it.
 
-### Import direction and public API are separate controls
+### Surface and structure are two different controls
 
-- **Which package may import which** is set by the `depguard` layer rules above.
-  Folders cannot express import direction, so packages are not nested under an
-  `infra/`-style taxonomy. The layering is in the linter.
-- **What the module promises importers** is set by `internal/`. Every exported
-  package in a public Go module is API, and `internal/` is the one language tool that
-  takes a package out of that promise. The code stays readable on GitHub; it just
-  cannot be imported.
+Two separate questions get conflated in most repo layouts, and Flynn answers
+them with two separate mechanisms:
 
-The top level holds what an embedder should see: the root `agent` facade, the ports a
-host implements or consumes, and the product's domain packages. The machinery they are
-built from (parsers, guards, stores, probes, adapters) is under `internal/`, one level
-flat. Within each band packages stay flat. The only nesting is families of
-alternative implementations of one port (`llm/*`, `storage/*`).
+- **Internal structure** (which package may import which) is governed by the
+  `depguard` layer rules above. Folders cannot express import *direction*, so
+  nesting packages under an `infra/`-style taxonomy would change import paths
+  without changing the graph. The layering lives in the linter, not in folders.
+- **External API surface** (what the module promises importers) is governed by
+  `internal/`. A public Go module's every exported package is formally API;
+  `internal/` is the one language-level tool that removes a package from that
+  promise. It is not about visibility - the code stays world-readable on
+  GitHub - it only removes importability, i.e. the semver promise.
 
-A package is top-level if and only if:
+They are complementary, not alternatives. So the top level holds only the
+surface a visitor or embedder should see: the root `agent` facade, the ports a
+host implements or consumes, and the domain nouns of the product. The
+machinery those are built from (parsers, guards, stores, probes, adapters)
+lives under `internal/`, one level flat for the same scannability reason - no
+`internal/infra/...` taxonomy. Within each band the packages stay flat, and
+the only nesting is adapter families that are alternative implementations of
+one port (`llm/*`, `storage/*`).
 
-- (a) it appears in the exported signatures of a public package. `TestPublicAPINamesNoInternalType`
-  in `internal/rigor` audits every non-`internal/` package with `go/types`: an internal
-  type in a public signature compiles but is broken API. Known leaks are in an
-  allowlist the test lets shrink and never grow.
-- (b) it is a port third parties implement (`sandbox` backends, `state` stores, `llm`
-  adapters, `driver` loops, `inbox` sources), or
-- (c) it is a standard's reference implementation (`chain`, for Provetrail).
+The mechanical criterion for what stays public: a package is top-level iff
+(a) it appears in the exported signatures of a public package (checked by
+`TestPublicAPINamesNoInternalType` in `internal/rigor`, a `go/types` audit over
+every non-`internal/` package - an internal type leaking through a public
+signature compiles but is broken API, and the known leaks sit in an allowlist
+that the test shrinks but never grows), or (b) it is a port
+third parties implement (`sandbox` backends, `state` stores, `llm` adapters,
+`driver` loops, `inbox` sources), or (c) it is a standard's reference
+implementation (`chain`, for Provetrail). Everything else is a mechanism and
+goes under `internal/`.
 
-Everything else goes under `internal/`.
+## Ports (the interfaces that keep it swappable)
 
-## Ports
+A port is an interface the engine depends on so the thing behind it can change
+without touching the engine. The critical ones:
 
-A port is an interface the engine depends on, so the implementation behind it can
-change without touching the engine. The main ones:
-
-- **`state.Provider`** is the host persistence interface: a factory of
-  capability-scoped stores (`Sessions()`, `Skills()`, `Memory()`). The open agent
-  includes an in-memory implementation and a `storage/sqlite` one, and a host can
-  supply its own. Domain methods go on the sub-stores, never on `Provider`.
-- **`llm.Model`** is the model port. `provider` resolves a `provider:model` string to
-  a concrete adapter (`llm/anthropic`, `llm/openai`). The planned cost-aware router
-  will be an `llm.Model` decorator in front of the registry.
-- **`spine.Log`** is the append-only event store: a monotonic `Seq` per stream, and
-  events are never changed or deleted. It also keeps stream snapshots, which bound
-  the cost of a rebuild as a stream grows. Replay and audit read from it.
-- **`sandbox`** runs every command. The local backend exists today; remote backends
-  (E2B, Daytona, Modal) are planned as further adapters behind the same port.
-- **`observe`** is the logging and tracing port. Nothing else may import `log/slog`
+- **`state.Provider`** is the host persistence boundary: a factory of
+  capability-scoped stores (`Sessions()`, `Skills()`, `Memory()`), not a god
+  object. The open agent ships an in-memory implementation and a `storage/sqlite`
+  one; a commercial host supplies its own. Keep this small: domain methods go on
+  the sub-stores, never directly on `Provider`.
+- **`llm.Model`** is the model port. `provider` resolves a `provider:model`
+  string to a concrete adapter (`llm/anthropic`, `llm/openai`). A cost-aware
+  router will be a `llm.Model` decorator in front of the registry, so callers
+  stay unaware of which model ran.
+- **`spine.Log`** is the append-only event store: monotonic `Seq` per stream,
+  events never mutated or deleted. It also keeps stream snapshots (materialized
+  checkpoints) so a rebuild stays bounded as a stream grows. This is the foundation
+  for replay and audit.
+- **`sandbox`** is the isolation boundary every command execution crosses. Local
+  today; remote backends (E2B/Daytona/Modal) are intended as additional adapters
+  behind the same port.
+- **`observe`** is the logging/tracing port. Nothing else may import `log/slog`
   (enforced); everything logs through `observe.Logger`.
-- **`dispatch.Admitter`** admits or refuses every action. Budget enforcement is a
-  `dispatch` hook beside it (refuse before, charge after), not a second gate.
+- **`dispatch.Admitter`** is the governance gate every action is admitted through;
+  budget enforcement composes alongside it as a `dispatch` hook (charge after,
+  refuse before) rather than a second gate.
 
-### Every port has a producer or a written reason
+### A port lands with a producer or with a written reason
 
-A port answers whether the implementation can be replaced. It does not answer whether
-Flynn can do the work when no host supplies one. Each port therefore carries a
-verdict, recorded in [`docs/HOST_BOUNDARY.md`](docs/HOST_BOUNDARY.md):
+Depending on an interface answers whether the thing behind it can be replaced. It
+does not answer whether Flynn can do the work when nobody supplies one, and only the
+first question gets asked during review. A package that defines a port and ships no
+producer reads as correct: the boundary is clean, the contract is small, a host can
+implement it. What it cannot do is work. Four memory packages landed that way and a
+goal capability sat fully built and unwired for a release.
 
-- **shipped**: Flynn has an implementation and the binary wires it. A host can still
-  replace it.
-- **justified**: Flynn has no implementation on purpose, the reason is in the doc
-  comment, and the absence is visible. A goal that states terms with no auditor stalls
-  and names the missing auditor.
-- **staged**: Flynn has it, the binary can wire it, and it is off by default. The row
-  names the switch and the condition for making it the default.
+So every port carries one of three verdicts, recorded in
+[`docs/HOST_BOUNDARY.md`](docs/HOST_BOUNDARY.md):
 
-The test: **if the `flynn` binary plus a temp SQLite file, with no host, cannot
-exercise the capability, it is `justified` with a written reason, or it is a gap.**
-Deferring to a host is right for a backend the host owns. It is wrong for anything
-Flynn can do with the model port, the sandbox, the store and the spine.
+- **shipped**: Flynn has an implementation and the binary wires it. The interface
+  stays, so a host replaces it and loses nothing.
+- **justified**: Flynn ships nothing on purpose, the reason is in the doc comment,
+  and the absence is visible. A goal that states terms with no auditor stalls naming
+  the auditor it wanted; it does not run unaudited and finish like a goal whose terms
+  held.
+- **staged**: Flynn ships it, the binary can wire it, and it is off while confidence
+  is built. The row names the switch and the condition for promotion to the default.
 
-The pattern to copy: the rule is in the domain package, the producer is in a sibling
-package that may depend on a sandbox and a log, and the binary wires the pair. `goal`
-with `evidence` and `progress`; `learn` with its own model distiller;
-`memory/consolidate` with `memory/distil`.
+The test: **if the capability cannot be exercised by the `flynn` binary plus a temp
+SQLite file with no host present, it is `justified` with a written reason, or it is a
+gap.** The asymmetry is the point. Deferring to a host is right for a backend a host
+genuinely owns, and wrong for anything Flynn could do with the model port, the
+sandbox, the store and the spine it already has.
 
-The other half is host neutrality: a Flynn contract names only what Flynn owns, and
-anything belonging to a host is an opaque typed ref, stored and matched, never
-resolved. `internal/hostneutral` enforces this over the public packages. A contract
-that names a host's records cannot be exercised without a host.
+The shape to copy is already in the tree: the rule lives in the domain package, the
+producer lives in a sibling that may depend on a sandbox and a log, and the binary
+wires the pair. `goal` with `evidence` and `progress`; `learn` with its own model
+distiller; `memory/consolidate` with `memory/distil`.
 
-## The run
+This is one direction of the boundary. The other is host neutrality: a Flynn contract
+names only what Flynn owns, and anything belonging to a host is an opaque typed ref,
+stored and matched, never resolved. `internal/hostneutral` enforces that half over
+the public band. The two rules are the same rule read from each end. A contract that
+names a host's records cannot be exercised without a host, and a capability that only
+works when a host is present is not Flynn's.
 
-A run is the unit the engine governs. One id (a UUIDv7) names its event stream, names
-its goal resource, keys its budget, and is the owner a child run points at.
+## The run and its foundation
 
-- **Identity.** A run's session, goal and spine stream share one id. A run can be
-  replayed and audited by that id, which is stable across restarts and unique across
-  a fleet.
-- **Ownership.** A resource carries `OwnerReferences`, and one controlling owner drives
-  its lifecycle. A garbage collector removes a resource once its owner is gone or
-  terminating, so deleting a parent removes the subtree it created. A run with no
-  owner is a root.
-- **Budget.** A run's spend (tokens and cost) is a durable `Budget` resource keyed by
-  the run id. A `dispatch` hook charges every governed action against it and refuses
-  the next one once the ceiling is reached. One pool caps a run, or a whole fan-out
-  that shares it.
-- **Bounded replay.** State is a fold of the event log. A snapshot is a checkpoint at a
-  `Seq`: a rebuild starts from the latest snapshot and folds only the events after it.
-  Snapshots are a cache; a missing one makes a rebuild slower and nothing else.
-- **Attribution.** Every event carries a `Principal`: the identity on whose authority
-  it was produced (which agent in a fan-out, which person in a multi-user host).
-  `capability.Grant.Narrow` derives a child grant that is a subset of its parent, so
-  delegation cannot widen authority.
+A run is the unit the engine governs, and one stable id ties its pieces together:
+that id (a UUIDv7) names the run's event stream, names its goal resource, keys its
+budget, and is the owner a child run points at. Choosing one identity for all of
+them is what lets runs compose into trees later without reshaping the core.
 
-A single run is the n=1 case of each: no owner, no budget, one principal.
+- **Identity.** A run's session, its goal, and its spine stream share one id, so a
+  run is addressable for replay and audit by a single handle, stable across
+  restarts and unique across a fleet.
+- **Ownership.** A resource carries `OwnerReferences`; one controller owner drives
+  its lifecycle. A garbage collector reaps a resource once its owner is gone or
+  terminating, so deleting a parent cascades to the subtree it created. A run with
+  no owner is a root: the single-run case.
+- **Budget.** A run's spend (tokens and cost) is a durable `Budget` resource keyed
+  by the run id. A `dispatch` hook charges every governed action against it and
+  refuses one once the ceiling is reached, so one pool caps a whole run, or a whole
+  fan-out sharing it, with no per-call wiring.
+- **Bounded replay.** State is a fold of the event log, so a rebuild would grow
+  without bound as a stream grows. A snapshot is a materialized checkpoint at a
+  `Seq`; a rebuild resumes from the latest snapshot and folds only the events after
+  it. A snapshot is a derived cache, never a source of truth, so a missing one is
+  only slower.
+- **Attribution.** Every event carries a `Principal`: the identity on whose
+  authority it was produced (which agent in a fan-out, which human in a multi-user
+  host), distinct from the coarse actor kind. `capability.Grant.Narrow` derives a
+  child grant that is a subset of its parent, so delegation never escalates
+  authority.
+
+Each is built so a single run is the n=1 case: an un-owned, un-budgeted,
+single-principal run behaves exactly as before, and the multi-everything features
+(fan-out, fleet, multi-user, replay-to-regrade) insert without reshaping the core.
 
 ## Invariants
 
-1. **Every action goes through `dispatch`.** Every model call and every tool or command
-   execution is admitted against the run's capability grant, traced, and bracketed by
-   start and end events on the spine. A call that skips `dispatch` escapes governance,
-   audit and replay. *(Enforcement: review. A mechanical architecture test is a
-   candidate.)*
+These are the rules that make autonomy safe and replay sound. Each is enforced,
+not merely encouraged.
 
-2. **Determinism: no wall clock, no ad-hoc randomness.** Time comes from the injected
-   `clock.Clock`; identity and randomness from the seeded `ids.Generator`. A replay
-   re-seeds and re-reads the same clock and reproduces the run. *(Enforcement:
-   `forbidigo` forbids `time.Now`; `depguard` forbids `math/rand`, `math/rand/v2` and
-   `crypto/rand` outside `ids`. Indirect nondeterminism, such as map order reaching
-   output, is not caught by the linter and is covered by replay-equivalence tests.)*
+1. **Everything routes through the dispatch waist.** Every model call and every
+   tool/command execution goes through `dispatch`: admitted against the run's
+   capability grant, traced, and bracketed by start/end events on the spine. A
+   side channel straight into the sandbox or the model defeats governance, audit,
+   and replay at once. *(Enforcement: today upheld by review, and a candidate for
+   a mechanical architecture test. The `learn` skill-check verifier was migrated
+   onto the waist precisely to remove such a bypass.)*
 
-3. **Observability only through the port.** No `fmt.Print*`, no `log/slog` outside
-   `observe`. *(Enforcement: `forbidigo` and `depguard`.)*
+2. **Determinism: no wall-clock, no ad-hoc randomness.** Time comes from the
+   injected `clock.Clock`; identity and randomness from the seeded
+   `ids.Generator`. A replay re-seeds identically and re-reads the same clock, so
+   it reproduces the original run. *(Enforcement: `forbidigo` forbids `time.Now`,
+   `depguard` forbids `math/rand`, `math/rand/v2`, `crypto/rand` outside `ids`.
+   Indirect nondeterminism, such as map-iteration order leaking into output, is
+   not caught by the linter and is guarded by replay-equivalence testing.)*
+
+3. **Observability only through the port.** No `fmt.Print*`, no direct
+   `log/slog` outside `observe`. *(Enforcement: `forbidigo` + `depguard`.)*
 
 4. **Layer direction holds.** The graph is acyclic, and the core bands (foundation,
-   primitives, core data) never import the engine and domain bands above them.
-   *(Enforcement: the `depguard` `layer-direction` rule covers core to engine. Edges
-   between adjacent engine layers are convention.)*
+   primitives, core data) never import the engine and domain bands above them, so a
+   primitive cannot reach up into a domain package. *(Enforcement: the `depguard`
+   `layer-direction` rule guards the core-to-engine boundary; finer edges between
+   adjacent engine layers are convention, not mechanically gated.)*
 
 5. **The host boundary is interfaces only, and it runs one way.** The engine never
-   imports a concrete host; persistence and observability cross only through `state`
-   and `observe`. A Flynn contract names only what Flynn owns and can verify on its
-   own. A host's record is carried as an opaque typed ref: `state.Anchor` is a
-   `{Kind, ID}` pair that is stored, indexed and matched, and never resolved or checked
-   for referential integrity, so a ref to a deleted record matches nothing. Naming a
-   host's record type in a Flynn contract would make Flynn's correctness depend on a
-   record only the host can produce. The test for an acceptance criterion: if Flynn
-   plus a temp SQLite file with no host cannot exercise it, it belongs to the host.
-   *(Enforcement: `internal/hostneutral` fails the build when an exported name or
-   serialized property in the public packages names a host record type, or when a
-   ref-shaped type closes its vocabulary with a named `Kind`. The shared memory vectors
-   in `memory/memorytest` require every backend to store and match an anchor that
-   resolves to nothing.)*
+   imports a concrete host; persistence and observability cross only through
+   `state` and `observe`. The same boundary read from the other side is host
+   neutrality: a Flynn contract names only what Flynn owns and can verify on its
+   own. A record belonging to whoever embeds Flynn is carried as an opaque typed
+   ref (`state.Anchor` is the shape: a `{Kind, ID}` pair, stored, indexed and
+   matched, never resolved and never checked for referential integrity), so a ref
+   to something that no longer exists simply matches nothing. Handing work out to
+   a host through an interface is the intended direction; naming a host's record
+   type in a Flynn contract is the leak, because it makes Flynn's correctness
+   depend on a record only the host can produce. The test for any acceptance
+   criterion: if it cannot be exercised by Flynn plus a temp SQLite file with no
+   host present, it is the host's criterion and does not belong in a Flynn
+   contract. *(Enforcement: `internal/hostneutral` fails the build when an
+   exported name or serialized property in the public band names a host record
+   type, or when a ref-shaped type closes its vocabulary with a named `Kind`; the
+   shared memory vectors in `memory/memorytest` hold every backend to storing and
+   matching an anchor that resolves to nothing.)*
 
-6. **Budgets bound spend.** A run's token and cost pool is charged in `dispatch` after
-   each action and checked before the next. Once the ceiling is reached the action is
-   refused with a `BudgetExceeded` fault. A run with no budget is unlimited, the
-   default. *(Enforcement: the budget hook in `dispatch`, property-tested, including
-   concurrent charges against a shared pool.)*
+6. **Budgets bound spend.** A run's token and cost pool is charged at the dispatch
+   waist after each action and checked before the next; an action is refused with a
+   `BudgetExceeded` fault once the ceiling is reached. A run with no budget bound is
+   unlimited (the zero-config default). *(Enforcement: the budget hook on the waist;
+   property-tested, including concurrent charges against a shared pool.)*
 
-7. **Process execution goes through the sandbox.** Every command and subprocess runs
-   through the `sandbox` port, never `os/exec` directly. Two exceptions read no
-   untrusted input: the hardware probe, which has to read the real host and runs a
-   fixed command, and the terminal's editor handoff, which opens the user's own editor
-   at their request. *(Enforcement: `depguard` forbids importing `os/exec` outside
-   `sandbox`, `hardware` and `internal/tui/term`.)*
+7. **Process execution routes through the sandbox boundary.** Every command and
+   subprocess runs through the `sandbox` port, never `os/exec` directly, so execution
+   is confined, governed, and auditable, and a single change to the boundary applies
+   everywhere. Two narrow exceptions read no untrusted input: the host hardware probe,
+   which must read the real host so it cannot be sandboxed and runs a fixed command, and
+   the terminal layer's editor handoff, which launches the user's own configured editor
+   on their own terminal at their explicit request. *(Enforcement: `depguard` forbids
+   importing `os/exec` outside `sandbox`, `hardware`, and `internal/tui/term`, so a new
+   bypass fails CI.)*
 
 ## Event evolution
 
-Events are read back by newer code than wrote them (replay-to-regrade, crash resume,
-audit, fleet sync). `spine.Event` carries identity fields for that:
+Events are the durable truth and are read back by *newer* code than wrote them
+(replay-to-regrade, crash-resume, audit, future fleet sync). `spine.Event` carries
+forward-compatible identity fields chosen so those features never force a refactor:
 `OriginInstanceID` (which instance produced it), `CausationID` (causal replay),
 `Principal` (on whose authority), and a `SchemaVersion` discriminator.
 
-The payload is `map[string]any`. Adding a key is safe. Renaming, removing or retyping
-one needs a new `SchemaVersion` and an upcaster per (type, version) that migrates the
-old payload to the current shape at read time. Upcasting must be deterministic
-(invariant 2).
+The payload is `map[string]any`, additively forward-compatible: new keys are safe,
+but renaming, removing, or retyping a key is not. That is what `SchemaVersion`
+exists to make safe: an upcaster per (type, version) migrates an old payload to the
+current shape at read time so new code recognises an old event instead of
+misreading it. Upcasting must be deterministic (invariant 2).
 
-Snapshots keep replay bounded. A `spine.Log` stores checkpoints of a stream, and a
-rebuild starts from the latest one and folds only the events after it. Events are the
-source of truth; a snapshot can always be rebuilt by folding from an earlier point.
+Snapshots keep replay bounded as the log grows. A `spine.Log` stores materialized
+checkpoints of a stream, and a rebuild resumes from the latest one and folds only
+the events after it. The events stay the immutable source of truth; a snapshot is a
+cache that can always be rebuilt by folding from an earlier point.
 
 ## Verifiable run records
 
-The spine makes a run replayable, and on its own you have to trust the operator not to
-rewrite it. The `chain` package turns a run into a signed, tamper-evident record that
-anyone can verify, in any language, without trusting the producer. The format is
+The append-only spine makes a run replayable, but on its own its integrity rests on
+trusting the operator not to rewrite history. The `chain` package adds the layer that
+removes that trust: it turns a run into a signed, tamper-evident record an independent
+party can verify, in any language, without trusting the producer. The record format is
 [Provetrail](https://github.com/ionalpha/provetrail), an open standard for verifiable
-execution provenance, and `chain` is its reference implementation. It uses existing
-standards throughout:
+execution provenance; this package is its reference implementation.
 
-1. **Canonical encoding.** Each event is encoded as deterministic CBOR (RFC 8949 Core
-   Deterministic Encoding): the same event always gives the same bytes, whatever the
-   map order or language.
-2. **Merkle log.** Each event's bytes are a leaf in an append-only Merkle log using the
-   RFC 6962 tree hash (domain-separated SHA-256, also used by RFC 9162). The log gives
+The pipeline is built from established primitives, not new cryptography:
+
+1. **Canonical encoding.** Each event is encoded to deterministic CBOR (RFC 8949 Core
+   Deterministic Encoding), so the same logical event always produces the same bytes
+   regardless of map order or language.
+2. **Merkle log.** Each event's canonical bytes are committed as a leaf in an
+   append-only Merkle log built on the RFC 6962 tree-hash construction (domain-separated
+   SHA-256, the same construction carried forward by RFC 9162, Certificate Transparency
+   2.0). The log yields
    inclusion proofs (an event is under a signed root) and consistency proofs (the log
-   only grew between two signed roots).
+   only ever appended between two signed roots).
 3. **Signed checkpoint.** The Merkle head is signed as a COSE_Sign1 (RFC 9052)
-   checkpoint with an Ed25519 key. The key id is the instance's self-certifying
-   principal id, so a verifier recovers the public key from the record.
-4. **Sealed record.** When a run converges it is sealed into a portable record (the
-   signed checkpoint plus every event's canonical bytes) and stored on the run's own
-   stream. The record is stored as captured. Re-deriving it from stored events would
-   change the bytes, because the store serializes payloads as JSON.
+   checkpoint with an Ed25519 key whose id is the instance's self-certifying principal
+   id, so a verifier recovers the public key from the record itself.
+4. **Sealed record.** On convergence a run is sealed into a portable record (the signed
+   checkpoint plus every event's canonical bytes) and persisted on the run's own stream,
+   so the run is verifiable from the durable store alone. The record is stored as
+   captured, not re-derived from the persisted events, because the store serializes
+   payloads as JSON and re-canonicalizing a read-back event would change its bytes.
 
-A verifier rehashes the exact bytes the record carries and never re-serializes, so
-implementations in different languages cannot disagree on encoding.
-`flynn spine verify <run>` is the reference verifier. `chain/conformance` holds the
-public test vectors (structural, signature and transparency tiers) that a second
-implementation can be checked against.
+A verifier follows the carry-the-bytes rule: the record carries the exact canonical
+bytes of each event and a verifier rehashes the bytes it is given rather than
+re-serializing, so cross-language verification cannot drift on encoding differences.
+`flynn spine verify <run>` is the reference verifier; `chain/conformance` holds a public
+test-vector suite (structural, signature, and transparency tiers) that pins the record
+format so a second implementation in any language can be checked against the same
+evidence.
 
 ## Stability tiers
 
-Every exported package in a public Go module is a promise. The layout sets three
-tiers:
+Flynn is a public Go module, so every exported package is, in principle, a
+promise. The layout makes the tiers physical:
 
-- **Stable** (the embedding contract): the root `agent` facade and the ports a host
-  implements or consumes: `state`, `observe`, `llm`, `capability`, `fault`, `tools`,
-  `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`, `storage/sqlite`, and
-  `chain` (external verifiers import it). Breaking one is a major-version change.
-- **Domain** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`, `session`,
-  `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
-  `orchestration`, ...): importable, and **unstable until 1.0**.
-- **Mechanisms** (`internal/...`): not importable, no promise.
+- **Stable surface** (the embedding contract): the root `agent` facade and the
+  ports a host implements or consumes, `state`, `observe`, `llm`, `capability`,
+  `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`,
+  `storage/sqlite`, and `chain` (the Provetrail reference implementation, which
+  external verifiers must be able to import). Keep these small and guarded;
+  breaking them is a major-version event.
+- **Domain surface** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`,
+  `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`,
+  `controlplane`, `orchestration`, ...): importable and visible, but **unstable
+  while pre-1.0**. These churn as the orchestration graph and router land.
+  Power users may import them with that understanding.
+- **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
+  guards, stores, probes, and adapters the surfaces are built from.
 
-`dev/apidiff` (a CI job, also runnable locally) compares the exported API of the
-newest release tag with the branch using `golang.org/x/exp/cmd/apidiff`, and gives
-each tier its own verdict: an incompatible change to the stable tier fails, one to the
-domain tier is reported, and `internal/` is skipped. A deliberate break goes in
-`dev/apidiff-accepted.txt` with its reason. Direction decides the verdict: adding a
-field to a struct a host reads is compatible; adding a method to a port a host
-implements is not.
+The tiers are checked rather than described. `dev/apidiff` (a CI job, and runnable
+locally) reads the exported API of the newest release tag and of the branch with
+`golang.org/x/exp/cmd/apidiff`, and gives each band its own verdict: an
+incompatible change to the stable surface fails, one to the domain surface is
+reported, and `internal/` is skipped by the tool without being told, which is the
+third tier paying for itself a second time. A deliberate break is recorded in
+`dev/apidiff-accepted.txt` with the reason it was worth making, so the argument
+lives in the repository rather than in a review thread. Direction is what decides
+the verdict, and the tool encodes it: adding a field to a struct a host reads is
+compatible, adding a method to a port a host implements is not.
 
-[docs/VERSIONING.md](docs/VERSIONING.md) explains this for importers, including how a
-bad version is retracted and what a v2 would cost.
+What this means for someone importing the module, including how a bad version is
+retracted and what a v2 would cost them, is `docs/VERSIONING.md`.
 
-`dev/apidiff` compares shape, not behaviour. It also does not cover formats that cross
-a process boundary: envelope records, chain records, the SQLite schema. Those follow
-the same rule (accept more, emit less) and are covered only by the `chain/conformance`
+Two things it does not see, stated so nobody reads a green run as more than it
+is. It compares shape, never behaviour. And it says nothing about the formats
+that cross a process boundary rather than a link boundary: envelope records,
+chain records, the sqlite schema. Those carry the same asymmetry (loosen what you
+accept, narrow what you emit) and are covered today only by the `chain/conformance`
 test vectors.
+
+Pre-1.0 Go semver already permits breaking changes, so the domain surface stays
+refactorable while remaining visible. The mechanism band moved under
+`internal/` pre-launch, while the module had no external importers - the
+cheapest such a move can ever be - so godoc shows exactly the curated surface
+and nothing below it ever enters the compatibility promise.
 
 ## Concurrency and lifecycle
 
-The runtime is a set of long-lived loops started with a `context.Context` and stopped
-by cancelling it: the `reconcile.Manager` resync loop, the `goal.Worker` poll loop,
-and the `bus` subscribers. The work queue (`reconcile.Queue`, rate-limited with
-backoff, modelled on client-go) is drained and then `ShutDown()`. Whoever starts a
-loop owns its lifetime and ties it to the context it was given. New long-lived
-goroutines follow the same rule. The race detector runs in CI.
+The runtime is a set of long-lived loops started with a `context.Context` and
+stopped by cancelling it: the `reconcile.Manager` resync loop, the `goal.Worker`
+poll loop, and the `bus` subscribers. The work queue (`reconcile.Queue`, a
+rate-limited, backoff-aware queue in the client-go mould) is drained and then
+`ShutDown()`. Goroutine ownership is explicit: whoever starts a loop owns its
+lifetime and ties it to the passed context. New long-lived goroutines must follow
+the same rule, so shutdown stays clean and races stay absent (the race detector
+is part of CI).
 
-## Package map
+## Map of the territory
 
-- **`cmd/flynn`** the binary. `flynn` with no arguments starts an interactive session,
-  `flynn goal "..."` drives one objective to a result, and `flynn inspect`, `runs` and
-  `resume` replay, list and continue past runs. **Root `agent`** is the embedding
-  facade: `Goal(ctx, objective)` assembles the runtime and sandboxed toolset and runs
-  one objective.
-- **`session`** conversational front door and event stream; **`runtime`** wires the
-  controller, worker, store and bus together.
-- **`goal`** the controller and worker; **`mission`** the conversation executor;
-  **`reconcile`** the loop they run on.
-- **`resource`** event-sourced state of record; **`spine`** the event log;
-  **`storage/sqlite`** the durable backend; **`state`** the host persistence
-  interfaces.
-- **`dispatch`** the governance gate; **`capability`** grants; **`budget`** the per-run
-  spend ceiling; **`internal/spinesink`** writes dispatched actions to the spine.
-- **`chain`** verifiable records: canonical CBOR, the RFC 6962 Merkle log, COSE
-  signing, sealed run records, and the verifier behind `flynn spine verify`.
-- **`learn`** the learning loop (capture, verify, reinforce, regrade); **`memory`** and
-  **`skill`** its stores.
-- **`llm`**, `llm/anthropic`, `llm/openai` and **`provider`** the model port and
-  adapters; **`tools`** the default toolset; **`sandbox`** isolation.
-- **`clock`**, **`ids`**, **`hlc`** determinism; **`fault`** error taxonomy;
-  **`observe`** logging and tracing; **`bus`** in-process event bus; **`jobs`** leased
-  job queue.
-- **`internal/...`** mechanisms: model handling (`inference`, `gguf`, `gbnf`,
-  `modelformat`, `modeltrust`, `huggingface`, `hardware`, `acquire`), network and
-  credential guards (`bindguard`, `vault`, `credential`), the extension engine
-  (`integrations`, `catalog`, `flow`, `ops`, `service`, `playbook`, `dependency`,
-  `fetch`, `source`), and the rest. Not importable; see Stability tiers.
+- **`cmd/flynn`** the binary: `flynn` with no arguments starts an interactive
+  session (chat turn by turn), `flynn goal "..."` drives a single objective to a
+  result, and `flynn inspect`/`runs`/`resume` replay, list, and continue past runs,
+  all over the durable store and learning loop. **root `agent`** the embedding facade
+  a host imports, where `Goal(ctx, objective)` assembles the runtime and sandboxed
+  toolset and runs one objective to its answer.
+- **`session`** conversational front door and event stream; **`runtime`** wires
+  the controller, worker, store, and bus together.
+- **`goal`** the controller + worker; **`mission`** the conversation executor;
+  **`reconcile`** the generic loop they run on.
+- **`resource`** event-sourced state of record; **`spine`** the raw event log;
+  **`storage/sqlite`** the durable backend; **`state`** the host boundary.
+- **`dispatch`** the governance waist; **`capability`** grants; **`budget`** the
+  per-run spend ceiling; **`internal/spinesink`** routes dispatched actions onto
+  the spine.
+- **`chain`** the verifiable-record layer: canonical CBOR encoding, the RFC 6962
+  Merkle log, COSE signing, sealed run records, and the verifier behind
+  `flynn spine verify`.
+- **`learn`** the closed learning loop (capture, verify, reinforce, regrade);
+  **`memory`** and **`skill`** its durable stores.
+- **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
+  adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation.
+- **`clock`**, **`ids`**, **`hlc`** the determinism ports; **`fault`** the error
+  taxonomy; **`observe`** logging/tracing; **`bus`** the in-process event bus;
+  **`jobs`** the leased job queue.
+- **`internal/...`** the mechanism band: model plumbing (`inference`, `gguf`,
+  `gbnf`, `modelformat`, `modeltrust`, `huggingface`, `hardware`, `acquire`),
+  network and credential guards (`bindguard`, `vault`, `credential`), the
+  extension machinery (`integrations`, `catalog`, `flow`, `ops`, `service`,
+  `playbook`, `dependency`, `fetch`, `source`), and the rest of the plumbing.
+  Not importable; see Stability tiers.

@@ -1,6 +1,6 @@
 <h1 align="center">Flynn</h1>
 
-<p align="center"><strong>A self-improving agent operating system in a single Go binary. Bring your own model and give it a goal. Every action runs sandboxed, inside the budget and approvals you set, and is sealed into a tamper-evident record anyone can verify.</strong></p>
+<p align="center"><strong>A secure, self-improving agent operating system in a single Go binary. Bring your own model, point it at a goal, and grant it real authority, because every action is sandboxed, governed, and sealed into a verifiable, tamper-evident record.</strong></p>
 
 <p align="center">
   <a href="https://scorecard.dev/viewer/?uri=github.com/ionalpha/flynn"><img src="https://api.securityscorecards.dev/projects/github.com/ionalpha/flynn/badge" alt="OpenSSF Scorecard"></a>
@@ -26,15 +26,44 @@
 
 ---
 
-Flynn is an agent runtime written in Go. It runs as one static binary on anything
-from a laptop to a $5 VPS, works with any model provider, hosted or local, and keeps
-its state in one SQLite file on your machine. You can also import it as a Go module
-and embed it in your own application.
+Flynn is a lightweight agent runtime and operating system written in Go. It
+runs standalone as a single static binary from a laptop to a $5 VPS, works with any
+model provider, and stores all of its state locally, so you own it.
+
+Four ideas run through everything it does:
+
+1. **It compounds.** A closed learning loop turns each session into durable
+   skills and memory, reinforced by whether the work actually succeeded.
+2. **It scales past one task.** A goals-and-missions engine plans, fans out, and
+   governs many agent runs toward a single objective.
+3. **It owns its cost.** Per-run token and cost budgets (`--max-cost`, `--max-tokens`)
+   are hard ceilings once you set them, and they are opt-in: both default to 0, which is
+   unlimited. Native support for local open-weight models keeps continuous operation
+   affordable.
+4. **You can trust it with autonomy.** Every action is governed, contained, and sealed
+   into a verifiable, tamper-evident record, so giving it real authority is a decision
+   you can audit, not a gamble.
+
+## Why Flynn
+
+- **One binary, no runtime.** No Python, no Node, no virtualenv, no
+  `node_modules`. `curl | sh` drops a single file. Cross-compiles to Windows,
+  macOS, Linux, and ARM, and ships in a container measured in megabytes.
+- **Bring your own model.** Provider-agnostic across hosted and local models, with a
+  curated open-weight catalog and hardware-fit checks for running fully local. No lock-in.
+- **Learns from your work.** Captures skills and memory as you go and reinforces them
+  based on real outcomes.
+- **Orchestrates, does not just chat.** Turns an instruction into a plan and fans it
+  out into concurrent, governed runs under a shared budget.
+- **Extends itself.** Writes its own skills, validates them in a sandbox, and puts
+  them to work without a redeploy.
+- **Useful inside and outside a larger system.** Run it on its own, or import it
+  as a Go module and embed it in your own application.
 
 ## Install
 
-The install script downloads the prebuilt binary for your OS and architecture and
-checks its checksum before installing it.
+One line, no toolchain needed. The script downloads a prebuilt binary for your OS and
+architecture and verifies its checksum before installing.
 
 ```sh
 # Linux and macOS
@@ -49,28 +78,29 @@ irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0`) or change the
 install directory with `FLYNN_INSTALL_DIR`.
 
-After that, the binary updates itself:
+That is the last time you need the script. From then on the binary maintains itself:
 
 ```sh
-flynn version list   # list the releases
+flynn version list   # what releases exist
 flynn upgrade        # install the newest one
 ```
 
-`flynn upgrade` needs no cosign or gh. It checks the release signature against a
-Sigstore trust root compiled into the binary, requires the signer to be this
-repository's release workflow on a version tag, and requires the signature to be in
-the public Rekor transparency log. Only then does it download the archive, pinned to
-the digest the signed provenance names. It refuses downgrades, leaves package-manager
-installs alone, and keeps the old binary if the new one fails to start. See
-[docs/UPGRADE.md](docs/UPGRADE.md).
+`flynn upgrade` verifies a release before installing it, with no cosign, no gh, and no
+trust placed in the network: it checks the signature against a Sigstore trust root
+compiled into the binary, requires the signing identity to be this repository's release
+workflow on a version tag, requires the signature to be present in the public Rekor
+transparency log, and only then downloads the archive, pinned to the digest the signed
+provenance names. It refuses downgrades, will not trample a package-manager install, and
+keeps the old binary if the new one does not run. See [docs/UPGRADE.md](docs/UPGRADE.md).
 
-Every method below installs the same release.
+Prefer another method? Each option below installs the same release.
 
 <details>
 <summary><b>Docker (GHCR or Docker Hub)</b></summary>
 
-Images for amd64 and arm64 are published with each release. Mount a volume for the
-durable state (SQLite store, credential vault, learned skills) and pass a model key:
+Multi-architecture images (amd64, arm64) are published on each release. Mount a volume
+for the durable state (SQLite store, credential vault, learned skills) so it survives
+container replacement, and pass a model key:
 
 ```sh
 docker run -v flynn-data:/data \
@@ -79,11 +109,11 @@ docker run -v flynn-data:/data \
 ```
 
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
-(`:0.2.0`) instead of `latest`. The API listens on loopback inside the container. To
-reach the agent, add a channel (for example `-e TELEGRAM_BOT_TOKEN=...`), or see
+(`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;
+add a channel (for example `-e TELEGRAM_BOT_TOKEN=...`) to reach the agent, or see
 [`deploy/README.md`](deploy/README.md) for remote access and hardening.
 
-Every published manifest is keyless-signed with cosign:
+Every published manifest is keyless-signed with cosign and can be verified:
 
 ```sh
 cosign verify ghcr.io/ionalpha/flynn:latest \
@@ -96,7 +126,7 @@ cosign verify ghcr.io/ionalpha/flynn:latest \
 <details>
 <summary><b>Linux packages (deb, rpm, apk)</b></summary>
 
-Packages for Debian/Ubuntu, Fedora/RHEL and Alpine are attached to every
+Native packages for Debian/Ubuntu, Fedora/RHEL, and Alpine are attached to every
 [release](https://github.com/ionalpha/flynn/releases). Download the one for your
 distribution and architecture, then:
 
@@ -111,7 +141,7 @@ sudo apk add --allow-untrusted flynn_*_linux_amd64.apk   # Alpine
 <details>
 <summary><b>Go toolchain (build from source)</b></summary>
 
-Needs Go 1.26 or later:
+Needs Go 1.26+:
 
 ```sh
 go install github.com/ionalpha/flynn/cmd/flynn@latest
@@ -122,9 +152,9 @@ go install github.com/ionalpha/flynn/cmd/flynn@latest
 <details>
 <summary><b>Manual download and verify</b></summary>
 
-Binaries for Windows, macOS, Linux and ARM are attached to every
-[release](https://github.com/ionalpha/flynn/releases) with a `checksums.txt`. The
-checksum file is signed with cosign. Verify it before trusting a binary:
+Prebuilt binaries for Windows, macOS, Linux, and ARM are attached to every
+[release](https://github.com/ionalpha/flynn/releases) alongside a `checksums.txt`. The
+checksum file is signed with cosign; verify it before trusting a binary:
 
 ```sh
 cosign verify-blob checksums.txt \
@@ -145,274 +175,359 @@ flynn --model anthropic:claude-opus-4-8     # start an interactive session
 flynn --version
 ```
 
-Store your model API key once. It is encrypted at rest in your OS keychain, or in a
-passphrase-sealed file where there is no keychain, and is used only to call the
-model. It never appears in a prompt, a log or a command's environment.
+Store your model API key once. It is encrypted at rest in your OS keychain (or a
+passphrase-sealed file where there is no keychain) and revealed only to call the
+model, never written to a prompt, a log, or a command's environment:
 
 ```sh
 flynn auth set openai     # prompts for the key without echoing it
 ```
 
-Give it a goal:
+Give it a goal and let it work the problem and report back:
 
 ```sh
 flynn goal "audit the repo for security issues and open a PR with the fixes"
 ```
 
-Run it as a service that answers your chat channels:
+Run it as a long-lived service that answers messages from your chat channels:
 
 ```sh
-flynn serve     # answers Telegram and Signal messages, each driven as a goal
+flynn serve     # answers Telegram and Signal messages, triaged and driven as goals
 ```
 
-Flynn is configured with flags (`flynn --help`) and environment variables. The model
-you pick with `flynn models use` or `/model` is remembered.
+Building from source: `go build -o flynn ./cmd/flynn`.
+
+## Failure modes designed out
+
+A handful of bugs recur across agent implementations: session and message state
+drifting out of sync or going missing, context compaction overwriting earlier work,
+a config change quietly disabling a safety check, a misclassified provider error
+retrying into a long hang, and crashes that loop on restart. Flynn is built so that
+several of these are hard to express in the first place, not because they are caught
+after the fact, but because the structure does not contain the boundary they live in.
+
+- **One source of truth for state.** Sessions, messages, skills, and memory are
+  projections of a single append-only event log, so there is no second copy to
+  drift from and nothing is overwritten in place.
+- **No silent loss.** Every change is an ordered, acknowledged, replayable event; a
+  failed write is a retryable event rather than a dropped one, and compaction is a
+  view over the log, so the original is always recoverable.
+- **Deny by default.** Tools are scoped by capability rather than by a blocklist, so
+  a config change can remove access but never accidentally grant it.
+- **Typed failures.** Errors carry a class set at the adapter boundary, so a
+  permanent failure such as a bad key or an unavailable model stops quickly instead
+  of retrying into a hang.
+- **One static binary.** No language runtime and no native add-ons, which removes
+  the install-time and crash-on-startup failure modes that come with them.
+
+This is the project's main bet: the discipline that makes autonomy safe to grant, an
+event-sourced, governed, replayable foundation, is the same discipline that keeps the
+ordinary failure modes from arising. The foundation comes first, and every capability
+below is built as a typed resource on top of it.
 
 ## Features
 
-<details>
-<summary><b>Goals:</b> an objective becomes a ledger of items, each with a check that runs and is recorded</summary>
+The sections below describe Flynn's capabilities by area. For what runs today
+versus what is in progress or planned, see [Status and roadmap](#status-and-roadmap).
 
-- `flynn goal "<objective>"` plans before it builds. Each ledger item carries a check,
-  and `--require-proof` holds the run to those checks.
-- `flynn goal --goal-spec terms.json` states what must stay true while the run works,
-  each term with the command that checks it. Terms are checked after every step, and a
-  breach stops the run and names the term.
-- With `--fanout`, a goal hands sub-goals to concurrent child agents under one shared
-  budget and folds their results into one sealed record. A goal's spec can also carry a
-  unit graph (Go API only, for now), run as child goals in dependency order.
-- A reconciler drives each goal toward its declared end state and picks it up again
-  after a failure or restart.
+### Agents and capabilities
 
-</details>
+Flynn runs as an **agent**: a system prompt, the model and loop it runs on, and a
+set of **capabilities** that map to the concrete tools the agent is allowed to
+use, so it only ever has the surface it needs. Agents are versioned resources and
+compose (one can extend another), and a delegated sub-agent is granted a subset of
+its parent's authority. By default Flynn runs a general-purpose agent.
 
-<details>
-<summary><b>Limits and approvals:</b> budgets, approvals and allowances stop a run before it overreaches</summary>
+### Goals, missions, and orchestration
 
-- `--max-cost` and `--max-tokens` set per-run ceilings. Both default to 0, which means
-  unlimited. Once set, a run that reaches one stops.
-- `--require-approval <action>` pauses that action for a person. An action marked
-  `--irreversible` runs only where `--allow` declares it.
-- A rate brake limits how fast a run can act.
-- `flynn kill <run>` stops a running goal from another terminal. `flynn steer <run> "..."`
-  redirects it, and the run cannot report success until it says what it did about the
-  redirect.
-- A run whose steps stop changing anything is stopped.
+- **Goals.** A *goal* is one objective with a verifiable end-state. It plans before
+  it builds: the objective becomes an append-only ledger of items, each with a check
+  that runs and is recorded, and `--require-proof` holds the run to it.
+- **Terms of a run.** `flynn goal --goal-spec terms.json` states what must stay true
+  while the run works, each with the command that checks it. Terms are checked after
+  every step, and a breach stops the run naming the term.
+- **Plan and dispatch.** With `--fanout` the goal delegates sub-goals to concurrent,
+  governed child agents under the shared budget, folded into one sealed record. A
+  goal's spec can also carry a declarative unit graph (Go API), run as child goals in
+  dependency order.
+- **A governor.** Every run is bounded by a shared budget pool (tokens and cost), a
+  rate brake, and the approvals and allowances its operator set:
+  `--require-approval <action>` pauses an action for a person, and an action marked
+  `--irreversible` runs only where `--allow` declared it.
+- **Stop and redirect.** `flynn kill <run>` stops a running goal from another
+  terminal; `flynn steer <run> "..."` redirects it, and the run cannot report success
+  until it says what it did about the redirect. A run whose steps stop changing
+  anything is stopped rather than left to burn its budget.
+- **A mission event spine.** Every decision, tool call, message, approval, and
+  checkpoint is an ordered, immutable event that replays for a full audit trail
+  and rolls up into live progress.
+- **Isolation.** Runs execute in a sandbox, so parallel agents never collide.
+- **Declarative and self-healing.** You declare a goal's desired end-state; a
+  reconciler drives toward it and converges again after a failure or restart,
+  instead of losing the thread mid-task.
 
-</details>
+### The interactive session
 
-<details>
-<summary><b>Sandbox and network:</b> commands run kernel-confined, and outbound traffic is denied by default</summary>
+The terminal is not a chat box bolted onto an API. The session is the typed event
+spine rendered live, so you watch the agent work with the governance and record
+layers in view rather than hidden behind it.
 
-- Commands run in a kernel-confined sandbox (read-only host, syscall filter) on Linux,
-  macOS and Windows. A red-team containment matrix runs in CI. Where a tier is not
-  available, Flynn refuses the work instead of running it with less isolation.
-- Container (Docker, Podman) and hardware tiers sit above it. The hardware tier boots a
-  guest kernel through a microVM runtime the host provides (`FLYNN_MICROVM_RUNTIME`).
-  Without one, untrusted work is refused.
-- Outbound requests go through a deny-by-default egress gate that blocks private,
-  loopback and cloud-metadata addresses.
-- Listeners bind loopback by default and refuse a wildcard bind. Every non-loopback
-  opening needs explicit opt-in and is logged with an expiring lease.
-- Lint rules fail the build on any code that dials or listens without going through
-  these gates.
-- Tools are granted by capability. A config change can remove a tool and cannot add one.
-- Credentials stay in the vault and are applied at call time.
+- **The governed stream, on screen.** Governance decisions and record events are
+  projected onto the conversation as they happen. A governance overlay (Ctrl+O) shows
+  the run's current posture: what was admitted, what was denied, and why.
+- **Seal and verify without leaving the shell.** `/seal` seals the current run and
+  `/verify` checks it, with a record badge showing the run's verifiable state inline.
+- **Replay in place.** `/replay` re-renders a recorded run from its events, and run
+  pickers badge each run with its record state.
+- **Built for real terminals.** An alternate-screen fallback for hostile emulators,
+  cross-emulator key handling (`modifyOtherKeys`), image paste into the composer, and
+  `@`-completion ranked by frecency.
 
-The [threat model](docs/THREAT_MODEL.md) lists the trust boundaries and which defense
-covers each class of attack, and marks what is planned. To report a vulnerability, see
-the [security policy](SECURITY.md).
+### The learning loop
 
-</details>
+- **Skills from experience.** After a run converges, the agent distils reusable
+  skills from it; a skill's own check runs in the sandbox before it is kept.
+- **A bundled pack.** Thirteen engineering skills ship in the binary (systematic
+  debugging, test-first, untrusted input, dependencies, and more). A run is offered
+  skills by name and description and reads one with `skill_read`, and a skill is
+  graded on the runs that read it. `flynn skill ls` lists them, `flynn skill show`
+  prints one, and `flynn skill ab <skill>` measures whether it helps.
+- **Memory.** Durable facts about you and your work. A memory has a subject, and a
+  new fact supersedes the old one on it. A run wakes with a digest of what you wrote
+  down or reviewed, and recalls what its objective matches. Recall is ranked by words out of the box; set
+  `FLYNN_EMBED_MODEL` to a provider:model spec (`openai:text-embedding-3-small`, or
+  `llamacpp:<model>` against a local server) and it is ranked by meaning as well.
+  With none set, and with an endpoint that fails, recall is exactly what it was.
+  What the agent learns for itself waits for you before it is pushed:
+  `flynn memory ls --pending` lists it with where it came from, and
+  `flynn memory promote <id>` puts one in every later run's wake digest. A memory
+  from a run that used the shell or spawned a child is never pushed and cannot be
+  promoted, since the shell may have fetched what it says; it is still recalled.
+  `flynn memory forget <id>` deletes an item, `flynn memory usage` shows what was
+  pushed and what was used, and `flynn memory consolidate` distils a subject's
+  episodes into one lesson.
+- **A curator.** An outcome-driven pass decays and archives skills that stop working,
+  so the library stays sharp instead of sprawling. Nothing is ever silently deleted.
+- **Reinforced by outcomes.** Skills and memory are strengthened or decayed by real
+  signals (tests passing, a task accepted, no correction on the next turn), so the
+  agent learns what works, not what it merely tried.
+- **Provenance.** Every captured skill or memory is versioned and attributable, so
+  you can see which version produced a result, and roll it back.
 
-<details>
-<summary><b>Verifiable records:</b> each run is sealed into a signed record that a third party can check</summary>
+### Self-extension
 
-- Every model call, tool call, message, approval and checkpoint is an event in one
-  ordered, append-only log. Sessions, messages, skills and memory are built from that
-  log, and nothing is overwritten in place.
-- Every model and tool call passes through one dispatcher, which checks it against the
-  agent's capability grant, traces it and records it.
-- A run's events are committed to a Merkle log under a COSE-signed checkpoint.
-  `flynn spine verify <run>` reports the record tier by tier: integrity, governance and
-  ground truth.
-- The record uses the open [Provetrail](https://provetrail.org) format. Flynn is its
-  reference implementation and includes the reference verifier and the public
-  [conformance vectors](https://github.com/ionalpha/provetrail), so any conformant
-  verifier can check a Flynn run without trusting the host that produced it.
-- `flynn inspect <run>` replays a run from its events. The [`demo/`](demo/) directory
-  walks through a record that verifies and records that are rejected.
+The agent treats its own capabilities as data it can author.
 
-</details>
+- **Integrations are specs, not code.** A new API integration is a catalog entry plus
+  a declarative endpoint contract, executed by one generic engine with auth, rate
+  limits, and safety built in.
+- **It writes its own skills.** When it hits a gap, the agent can author a new skill,
+  validate it in a sandbox, and put it to work without a redeploy or a recompile.
+- **Extensions run out of process.** An extension is a separate binary that speaks MCP,
+  launched confined, so a third-party tool never shares the agent's address space. The
+  client is strictly one-directional: an extension answers calls, it cannot drive the
+  agent. `flynn extensions dev <name> <binary>` links a locally built one for authoring,
+  and `flynn extensions call` runs a single tool confined.
+- **Portable.** Every skill is a versioned, attributable resource, and Flynn reads
+  and writes the open Agent Skills (`SKILL.md`) format. An export command is on the
+  [roadmap](#status-and-roadmap).
 
-<details>
-<summary><b>Learning:</b> skills and memory are drawn from finished runs and kept or decayed by outcome</summary>
+### Code review
 
-- After a run converges, the agent writes reusable skills from it. A skill's own check
-  runs in the sandbox before the skill is kept.
-- Thirteen engineering skills are built into the binary (systematic debugging,
-  test-first, untrusted input, dependencies and more). A run sees each skill's name and
-  description and reads one with `skill_read`. A skill is graded on the runs that read
-  it. `flynn skill ab <skill>` measures whether it helps.
-- A memory has a subject, and a new fact on a subject supersedes the old one. A run
-  starts with a digest of what you wrote down or reviewed, and recalls what matches its
-  objective.
-- Recall ranks by words. Set `FLYNN_EMBED_MODEL` to a `provider:model` spec
-  (`openai:text-embedding-3-small`, or `llamacpp:<model>` against a local server) to
-  rank by meaning as well. If the endpoint fails, recall falls back to words.
-- Memories the agent writes for itself wait for your review: `flynn memory ls --pending`
-  lists them with their source, and `flynn memory promote <id>` adds one to every later
-  run's starting digest. A memory from a run that used the shell or spawned a child
-  cannot be promoted, since the shell may have fetched what it says. It is still
-  recalled.
-- Skills and memory are strengthened or decayed by outcomes (tests passing, a task
-  accepted, no correction on the next turn). Skills that stop working are archived.
-  Nothing is deleted without you.
-- Every skill and memory is versioned and attributed, so you can see which version
-  produced a result and roll it back. Skills use the open Agent Skills (`SKILL.md`)
-  format.
+- **A formal verdict, not a comment.** `flynn review <owner>/<repo>#<n>` reviews a pull
+  request under the reviewer archetype: one pass over every changed file, then a sweep
+  for what the per-file passes missed. Each finding lands on the line it concerns, and
+  the verdict links to it.
+- **Findings that persist across pushes.** A standing finding is handed back to the
+  reviewer on the next run so it is rechecked rather than repeated, and a conversation
+  resolves once the finding it raised is gone.
+- **Authority is bounded.** Approval is gated behind an explicit `--approve --as`; by
+  default the reviewer can request changes and comment but never approve. The command
+  exits non-zero when it requests changes, so it drops straight into a pipeline.
 
-</details>
+### External agent backends
 
-<details>
-<summary><b>Models:</b> any provider, local open-weight models, or another coding agent as the backend</summary>
+Flynn can drive another coding agent as the model behind a run (`--model claude` or
+`--model codex`) while keeping its own governance around it. The external harness is
+locked to Flynn's bridge: its native tool surface is denied, and only the tools Flynn
+bridges to it are callable, so every action still passes the dispatch waist and lands
+in the run's record as attested events. Governed egress is enforced on Linux and macOS.
+On native Windows there is no such leg yet, so `--model claude` and `--model codex`
+refuse and say so rather than running the child with its network open; run Flynn inside
+a WSL2 distribution to use them there.
 
-- Anthropic and OpenAI adapters, and any OpenAI-compatible endpoint, behind a
-  `provider:model` registry.
-- Local models: a curated open-weight catalog, hardware-fit checks, one-command fetch
-  and run, a model pool, and grammar-constrained decoding so a local model cannot emit a
-  malformed tool call. `flynn models probe <id>` measures a model's tool-use reliability.
-- `--model claude` or `--model codex` lets another coding agent drive the run. Its own
-  tools are denied, and it can call only the tools Flynn bridges to it, so every action
-  is still checked and recorded. This works on Linux, macOS and WSL2. Native Windows
-  refuses it, since Flynn cannot yet gate the child's network there.
+Either backend drives a one-shot goal, a pull-request review, or an interactive
+session:
 
-```sh
-flynn --model claude                            # interactive session through the CLI
+```bash
+flynn --model claude                            # chat, turn by turn, through the CLI
 flynn --model codex:gpt-5-codex goal "fix the flaky test"
 flynn review owner/repo#123 --model claude
 ```
 
-In a session the CLI holds the conversation, and Flynn keeps the sealed record.
-`/model claude:<other-model>` changes the model from the next turn. Switching to a
-different harness mid-run is refused: start a new session. Runs driven by an external
-agent do not feed Flynn's skills and memory, `/compact` does not apply, and
-`flynn serve` and `flynn watch` do not accept an external backend.
+In a session the conversation belongs to the CLI: each turn continues the conversation
+the harness itself holds, so it answers with the context of the turns before it. The
+run is still one durable, sealed record on Flynn's side. `/model claude:<other-model>`
+retargets the model the CLI drives from the next turn on, without disturbing that
+conversation. Switching to a different harness mid-run is refused: a record declares
+the one harness that drove it, so the swap belongs in a new session.
 
-</details>
+A session driven by an external agent does not learn back into Flynn's skills and
+memory, and `/compact` does not apply to it: the harness holds the conversation and
+manages its own context. `flynn serve` and `flynn watch` do not take an external
+backend, because a server's independent requests have no single conversation to
+continue.
 
-<details>
-<summary><b>Code review:</b> <code>flynn review</code> posts findings on the lines they concern and a formal verdict</summary>
+### Channels and computer use
 
-- `flynn review <owner>/<repo>#<n>` reviews every changed file, then sweeps for what the
-  per-file passes missed. Each finding is posted on its line, and the verdict links to
-  it.
-- A finding still standing is rechecked on the next push instead of repeated, and its
-  conversation resolves once the problem is gone.
-- The reviewer can comment and request changes. Approving needs `--approve --as`.
-- The command exits non-zero when it requests changes, for use in a pipeline.
+- **Real tools on a real machine.** A sandboxed, path-confined toolset for the
+  terminal and filesystem: run commands, read, edit, glob, and grep, each admitted
+  at the dispatch waist against a capability grant.
+- **Lives where you do.** Run it from the terminal, or as a service (`flynn serve`)
+  that answers Telegram and Signal messages, each triaged and driven as a goal.
 
-</details>
+Wider reach (Discord, Slack, voice, a built-in browser, desktop GUI, and mobile
+control) is on the [roadmap](#status-and-roadmap).
 
-<details>
-<summary><b>Channels and extensions:</b> terminal, Telegram, Signal, file markers, MCP</summary>
+### Ambient triggers
 
-- `flynn serve` answers Telegram and Signal messages, each triaged and driven as a goal.
-- `flynn watch` picks up `ai!` and `ai?` markers in your files and runs each as a
-  governed goal.
-- `flynn mcp serve` exposes the agent's tools to any MCP client over stdio.
-- An extension is a separate binary that speaks MCP and runs confined. It answers calls
-  and cannot drive the agent. `flynn extensions dev <name> <binary>` links one for
-  local development.
-- A new API integration is a catalog entry and a declarative endpoint contract, run by
-  one engine that handles auth and rate limits.
+- **React to markers.** A `flynn watch` mode picks up inbound `ai!` / `ai?` markers
+  in your files and turns them into governed goals, so work can start without a
+  prompt at the terminal.
 
-</details>
+Autonomy that forms its own goals from monitored signals is on the
+[roadmap](#status-and-roadmap).
 
-<details>
-<summary><b>Interactive session:</b> the terminal shows governance decisions and record state as the agent works</summary>
+### Cost control
 
-- Governance decisions and record events appear in the conversation as they happen.
-  Ctrl+O opens an overlay showing what was admitted, what was denied, and why.
-- `/seal` seals the current run and `/verify` checks it. A badge shows the record state.
-- `/replay` re-renders a recorded run from its events.
-- Cross-emulator key handling (`modifyOtherKeys`), an alternate-screen fallback, image
-  paste, and `@`-completion ranked by frecency.
+- **Hard budgets.** The governor enforces spend ceilings per goal and per mission,
+  in tokens and in real money, with full per-run accounting. Once a ceiling is set
+  (`--max-cost`, `--max-tokens`; both default to 0, unlimited) a run cannot exceed it;
+  it stops.
 
-</details>
+### Tools and standards
 
-<details>
-<summary><b>Testing:</b> property, chaos, replay and fuzz tests, and an end-to-end suite on the release binaries</summary>
+- **MCP server.** Expose the agent's own tools to any Model Context Protocol client
+  (`flynn mcp serve`). Consuming external MCP servers as a client is on the roadmap.
+- **Provetrail.** Emits every run as a portable, third-party-verifiable record in the
+  open [Provetrail](https://provetrail.org) format. See
+  [Verifiable provenance](#verifiable-provenance-provetrail).
 
-- Property-based tests check the planner, governor and budget logic against invariants
-  over generated inputs.
-- Chaos tests inject faults into tools, providers and the network, and kill and resume
-  runs.
-- Golden missions replay in CI, so a behavior change shows up as a diff.
-- Tool inputs, manifests and protocol messages are fuzzed.
-- Every pull request builds the release in snapshot form and runs the end-to-end suite
-  against those binaries on Linux, macOS and Windows.
-- The concurrent orchestrator runs under the race detector.
+### Verifiable provenance (Provetrail)
 
-See [TESTING.md](TESTING.md).
+Flynn is the reference implementation of [Provetrail](https://provetrail.org), an open
+standard for verifiable execution provenance: a portable, third-party-verifiable record
+of what an agent did, in what order, and under what authority. Flynn ships the reference
+verifier and the standard's public [conformance vectors](https://github.com/ionalpha/provetrail),
+so any run's record can be checked by any conformant verifier, in any language, without
+trusting the host that produced it.
 
-</details>
+## Trust and safety
 
-<details>
-<summary><b>Observability:</b> tokens, cost, latency and outcome per run, and sealed profile bundles</summary>
+Flynn is built to be handed real authority over untrusted input and real tools.
 
-- Every run reports tokens, cost, latency and outcome. The event log maps onto spans and
-  structured events through an OpenTelemetry-style port. The default build has a no-op
-  exporter.
-- `--profile <dir>` writes a sealed bundle (CPU, heap, goroutines and a sampled
-  timeline under a hashed manifest), with CPU samples attributed to the action that
-  caused them.
+- **Capability-scoped tools.** An agent only ever has the tools its capabilities grant.
+- **Sandboxed runs.** Commands execute in a kernel-confined sandbox (read-only host,
+  syscall filter) with per-platform adapters, proven by a red-team containment matrix
+  in CI; plugins run read-only by default. Container (Docker, Podman) and
+  hardware-isolation tiers sit above it; the hardware tier boots a guest with its own
+  kernel through a microVM runtime the host provides (`FLYNN_MICROVM_RUNTIME`), and
+  without one untrusted work is refused. Remote sandbox backends (E2B, Daytona, Modal) behind the
+  same port are on the roadmap.
+- **Contained network.** The agent's outbound requests go through a default-deny egress
+  gate that blocks private, loopback, and cloud-metadata destinations; inbound listeners
+  bind loopback-only by default and refuse a wildcard bind. Both are enforced by lint
+  rules, so no code can dial or listen around them.
+- **Governed autonomy.** Budgets, required approvals and declared allowances mean a
+  risky action pauses for a human, or stops the run with the ask, instead of
+  proceeding silently.
+- **Secrets stay out of context.** Credentials live in a vault and are applied at
+  call time, never placed in prompts or logs.
+- **Verifiable execution.** Each run is sealed into a signed, tamper-evident record:
+  every event is committed to an append-only Merkle log under a signed checkpoint, so
+  an independent party can confirm what the agent did, and that the record was not
+  altered, without trusting the host. `flynn spine verify <run>` checks a run from the
+  durable store alone, and the record follows the open [Provetrail](https://provetrail.org)
+  format so any conformant verifier can check it. The [`demo/`](demo/) directory is a
+  runnable walkthrough: a signed but ungoverned or unproven record is rejected, a real
+  one verifies.
 
-</details>
+The [threat model](docs/THREAT_MODEL.md) sets out the trust boundaries and which defense
+covers each class of attack, marking what is enforced today versus planned. To report a
+vulnerability, see the [security policy](SECURITY.md).
+
+## Reproducible by design
+
+Because the mission event spine is ordered and immutable, a run is not a black box.
+Fork-from-event and run-diff time-travel are on the [roadmap](#status-and-roadmap).
+
+- **Deterministic replay.** Re-run any mission from its recorded events.
+- **Verifiable, not just replayable.** A run is sealed into a signed record a
+  standalone verifier checks (`flynn spine verify`), so replay rests on tamper-evidence
+  a third party can confirm, not on trusting the operator.
+
+## Declarative core
+
+Everything Flynn is (every agent, skill, tool, integration, policy, route,
+and goal) is a typed, versioned, schema-checked resource, not hard-coded
+behavior. Engines reconcile those resources toward their declared state, which is
+what makes the agent self-authoring, shareable across a fleet, replayable, and
+safe to change: a new capability is a spec, not a release.
+
+## Engineering and reliability
+
+Most agent projects test the happy path and ship. Flynn is built with the
+methods used for systems people depend on.
+
+- **Property-based testing.** The planner, governor, and budget logic are checked
+  against invariants over generated inputs, not just hand-picked cases.
+- **Chaos engineering.** Faults are injected into tools, providers, and the network,
+  and runs are killed and resumed, to prove the agent degrades and recovers cleanly.
+- **Deterministic replay harness.** Golden missions replay in CI so behavior changes
+  are caught as diffs.
+- **Fuzzing.** Tool inputs, manifests, and protocol messages are fuzzed for safety.
+- **Tested as shipped.** Every pull request builds the release in snapshot form and
+  runs the end-to-end suite against the release's own binaries on Linux, macOS, and
+  Windows.
+- **Enforced invariants.** Budgets are never exceeded, no action runs without a
+  capability, and the concurrent orchestrator is checked under the race detector.
 
 ## Command reference
 
-Run `flynn` with no arguments for an interactive session, or `flynn --help` for every
-flag.
+Run `flynn` with no arguments for an interactive session, or `flynn --help` for the
+full flag list.
 
-<details>
-<summary><b>Running work</b></summary>
+**Running work**
 
 | Command | What it does |
 | --- | --- |
 | `flynn` | Start an interactive session |
 | `flynn goal "<objective>"` | Drive a goal to completion in the current directory |
-| `flynn goal --goal-spec <file>` | The same, held to the terms in the file; `flynn help` shows its shape |
+| `flynn goal --goal-spec <file>` | The same, held to the terms the file states; `flynn help` shows its shape |
 | `flynn resume <run>` | Continue a parked or interrupted run |
-| `flynn steer <run> "..."` | Redirect a running goal |
-| `flynn kill <run> ["reason"]` | Stop a running goal at its next model or tool call |
-| `flynn watch` | Run each `ai!` / `ai?` marker in the working tree as a governed turn |
-| `flynn review <pr>` | Review a pull request and submit a verdict |
+| `flynn steer <run> "..."` | Redirect a run that is still going |
+| `flynn kill <run> ["reason"]` | Stop a run that is still going, at its next model or tool call once it reads the order |
+| `flynn watch` | Watch the working tree for `ai!` / `ai?` markers and run each as a governed turn |
+| `flynn review <pr>` | Review a pull request and submit a formal verdict |
 | `flynn playbook` | List the playbooks, or `playbook run <name>` to run one |
-| `flynn serve` | Answer chat messages (Telegram, Signal) and/or expose the read-only monitor API |
+| `flynn serve` | Run as a service: answer chat messages (Telegram, Signal) and/or expose the read-only monitor API |
 | `flynn mcp serve` | Expose the toolset to an MCP client over stdio, every call governed and recorded |
 
-</details>
-
-<details>
-<summary><b>Inspecting what happened</b></summary>
+**Inspecting what happened**
 
 | Command | What it does |
 | --- | --- |
 | `flynn runs` | List past runs (id, phase, objective) |
 | `flynn status [<run>]` | Show the live overview, or one run's phase and progress |
-| `flynn ps` | List instances with their heartbeat-aware state |
+| `flynn ps` | List instances with their live, heartbeat-aware state |
 | `flynn get <kind>` | List resources of a kind (instances, agents, runs, ...) |
 | `flynn describe <kind> <id>` | Show one resource's fields and recent change history |
 | `flynn diff <kind> <a> <b>` | Show the fields that differ between two resources |
 | `flynn inspect <run>` | Replay a past run's recorded events (alias: `replay`) |
 | `flynn spine verify <run>` | Report a run's record tier by tier: integrity, governance, ground truth |
-| `flynn spine export <run>` | Write a sealed run's record to a file for third-party verification |
+| `flynn spine export <run>` | Write a sealed run's portable record to a file for third-party verification |
 
-</details>
-
-<details>
-<summary><b>Capabilities and models</b></summary>
+**Capabilities and models**
 
 | Command | What it does |
 | --- | --- |
@@ -424,41 +539,33 @@ flag.
 | `flynn services` | List the managed services; `services rm <name>` removes one |
 | `flynn models` | Browse the model catalog (filter with `--local`, `--fit`, `--vram`, ...) |
 | `flynn models install [rt]` | Fetch and verify a pinned local runtime (default: llama.cpp) |
-| `flynn models run <id>` | Provision, serve and query a local model |
-| `flynn models probe <id>` | Measure a local model's tool-use reliability and record its profile |
-| `flynn models check` | Report installed local runtimes and known parser advisories |
+| `flynn models run <id>` | Provision, serve, and query a local model |
+| `flynn models probe <id>` | Measure a local model's agentic reliability and record its profile |
+| `flynn models check` | Report installed local runtimes and any known parser advisories |
 
-</details>
-
-<details>
-<summary><b>Skills and memory</b></summary>
+**Skills and memory**
 
 | Command | What it does |
 | --- | --- |
-| `flynn skill ls` | List the skills a run can be offered: the built-in pack and what this install learned |
-| `flynn skill show <skill>` | Print one skill: its purpose, how runs have used it, and its body |
-| `flynn skill ab <skill>` | Run a skill's exercises with and without it, paired, to measure whether it helps |
-| `flynn memory ls [--pending]` | List what this install remembers: ids, sources, and whether each is in the starting digest |
-| `flynn memory promote <id>` | Add one of the agent's own memories to every later run's starting digest (`revoke <id>` removes it) |
+| `flynn skill ls` | List the skills a run can be offered: the bundled pack and what this install learned |
+| `flynn skill show <skill>` | Print one skill: what it is for, how runs have taken it up, and its body |
+| `flynn skill ab <skill>` | Measure whether a skill helps: its exercises run with it and without it, paired |
+| `flynn memory ls [--pending]` | List what this install remembers: ids, sources, and whether each is pushed at wake |
+| `flynn memory promote <id>` | Review one of the agent's own memories into every later run's wake digest (`revoke <id>` takes it out) |
 | `flynn memory forget <id>` | Delete a memory, including one pinned with `/remember` |
-| `flynn memory usage` | Show which memories were offered to runs and which they used |
-| `flynn memory consolidate` | Merge each subject's accumulated episodes into one lesson |
+| `flynn memory usage` | Show what memory was pushed at readers and what they used |
+| `flynn memory consolidate` | Distil each subject's accumulated episodes into one lesson |
 | `flynn regrade` | Re-grade learned skills against the working directory |
 
-</details>
-
-<details>
-<summary><b>Maintenance</b></summary>
+**Maintenance**
 
 | Command | What it does |
 | --- | --- |
-| `flynn db reset` | Move an unusable database aside (backed up) so the next run creates a new one |
-| `flynn notices` | Show the signed security advisories and release notices for this build |
-| `flynn version list` | List the releases |
+| `flynn db reset` | Move an unusable database aside (backed up) so the next run recreates it |
+| `flynn notices` | Show the signed security advisories and release notices that apply to this build |
+| `flynn version list` | List the releases that exist |
 | `flynn upgrade` | Replace this binary with a newer, signature-verified release |
 | `flynn --version` | Print the version |
-
-</details>
 
 Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
 `--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
@@ -468,7 +575,8 @@ Run flags go before the objective: `flynn goal --require-approval shell "deploy 
 
 ## Use it as a library
 
-Import Flynn as a Go module (no submodule, no FFI):
+Flynn is a Go module, so a host application can embed it directly (no
+submodule, no FFI):
 
 ```go
 import agent "github.com/ionalpha/flynn"
@@ -477,88 +585,200 @@ a := agent.New(agent.Config{Model: "anthropic:claude-opus-4-8"})
 result, err := a.Goal(ctx, "audit the repo for TODOs and summarize them")
 ```
 
-The embedding contract is checked against compatibility breaks in CI. The domain
-packages are importable and unstable until 1.0, and `internal/` promises nothing. Each
-release's notes include the exported-API diff against the previous release. See
-[docs/VERSIONING.md](docs/VERSIONING.md).
+The exported packages are tiered: the embedding contract is gated against
+compatibility breaks in CI, the domain packages are importable but unstable while
+pre-1.0, and `internal/` promises nothing. Every release's notes carry the
+exported-API diff against the previous one, so an upgrade is a decision you can
+read before you make it. See [docs/VERSIONING.md](docs/VERSIONING.md).
 
-Flynn depends only on the interfaces in `state/` (persistence) and `observe/`
-(observability). This repository includes local implementations and no-op defaults.
-A host can supply its own, such as a graph-backed store or a multi-tenant backend; see
-[docs/HOST_BOUNDARY.md](docs/HOST_BOUNDARY.md).
+## Run it anywhere
+
+- **Locally** as a single binary.
+- **Docker.** A small static-binary image with no language runtime to bundle,
+  published multi-arch and signed as `ghcr.io/ionalpha/flynn` (also on Docker Hub as
+  `ionalpha/flynn`). See [Install](#install).
+- **A $5 VPS.** The tiny image and fast cold start make a continuously available
+  agent cheap to run.
+
+Kubernetes pod fan-out and serverless hibernation are on the
+[roadmap](#status-and-roadmap): because runs are isolated and governed, a mission can
+fan its worker runs out as pods once the control plane lands.
+
+## Observability
+
+Flynn exposes an OpenTelemetry-style observability port: the mission event spine maps
+directly onto spans and structured events, and every run reports tokens, cost, latency,
+and outcome. The default build ships a no-op implementation. Concrete OTLP and
+OpenInference export to agent-eval tools (Langfuse, Arize Phoenix), a VictoriaMetrics or
+Prometheus metrics backend, and Grafana dashboards are on the
+[roadmap](#status-and-roadmap).
+
+## Integrations
+
+| Area | Works with |
+| --- | --- |
+| Models | Any OpenAI-compatible or native endpoint, hosted or local; Anthropic and OpenAI adapters |
+| Local models | Curated open-weight catalog, hardware-fit checks, fetch-and-run, grammar-constrained decoding |
+| Messaging | Telegram, Signal, and the terminal |
+| Computer use | Terminal and filesystem, sandboxed and path-confined |
+| Tools | MCP server; Provetrail reference verifier |
+| Budgets | Per-goal and per-mission token and cost ceilings, with per-run accounting |
+| Storage | SQLite (local), or a host that implements the `state` interfaces |
+| Runtime | Local binary or Docker; kernel-confined command sandbox (per-platform) |
+
+Planned integrations (Discord, Slack, browser, desktop, mobile, voice, A2A, Zed ACP,
+external MCP servers, OpenTelemetry export, Postgres, remote sandbox backends) are
+tracked in [Status and roadmap](#status-and-roadmap).
 
 ## Architecture
 
 ```
 cmd/flynn/          standalone binary entry point
 agent.go            embedding facade (Config, Agent, Goal)
-state/              persistence interfaces a host implements
+state/              persistence interfaces (the host boundary)
 observe/            logging and tracing port (slog + tracer, no-op default)
-dispatch/           the one path every action takes: governance, tracing, events
-capability/         capability grants, checked by dispatch
+dispatch/           the action chokepoint: governance, tracing, events
+capability/         capability grants, admitted at the dispatch waist
 budget/             per-run token and cost ceiling
-spine/              the ordered event log (source of truth, replay)
-resource/           resources built from the log
+spine/              the canonical ordered event log (source of truth, replay)
+resource/           event-sourced resources materialized from the log
 reconcile/          the level-triggered controller loop
 goal/               the goal controller and worker
 mission/            the conversation executor that advances a goal
-learn/              the learning loop (capture, verify, reinforce)
+learn/              the closed learning loop (capture, verify, reinforce)
 skill/, memory/     durable skill and memory stores
 llm/, provider/     the model port and concrete adapters
-tools/              the default toolset
-sandbox/            isolation for command execution
+tools/              the default agentic toolset
+sandbox/            the isolation boundary for command execution
 clock/, ids/, hlc/  determinism: time source, sortable ids, write ordering
-fault/              typed, classified errors
-runtime/            wires controller, worker, store and bus together
+fault/              typed, classified error model
+runtime/            wires controller, worker, store, and bus together
 session/            conversational front door and event stream
-storage/sqlite/     the SQLite backend
-internal/           private machinery: model plumbing, guards, the
-                    integration and extension engine, and the rest
+storage/sqlite/     the durable SQLite backend
+internal/           the mechanism band: model plumbing, guards, the
+                    integration/extension engine, and other non-API machinery
 ```
 
-[ARCHITECTURE.md](ARCHITECTURE.md) has the layer map, the ports a host implements,
-and the invariants the engine enforces.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full layer map, the ports a host
+implements, and the invariants the engine enforces.
 
-## Ion Alpha
+The agent depends only on the interfaces in `state/` (persistence) and
+`observe/` (observability). Local implementations and no-op defaults ship in this
+repository; a host such as an Ion Alpha instance can supply a richer one (for
+example a graph-backed store or a hosted, multi-tenant backend), without this
+repository ever depending on the host.
 
-Flynn needs no host. [Ion Alpha](https://ionalpha.io) is the first product to embed it:
-every agent in Ion Alpha is a Flynn run, with Ion Alpha's own tools and screens on top.
-Through the `state/` and `observe/` interfaces it adds a skill and knowledge pool
-shared across people and projects, a typed knowledge graph as memory, team
-workspaces, SSO, and audit and backup.
+## Own your agent
 
-## Status and roadmap
+Your skills, memory, and the model of how you work belong to you. They live in one
+SQLite file in your data directory, and you can run the agent fully local with a
+local model and no external calls when you need sovereignty. A portable export is on
+the [roadmap](#status-and-roadmap).
 
-The features above work today. Follow [@ionalpha_](https://x.com/ionalpha_) for
-progress.
+## Configuration
 
-**In progress**
+Flynn is configured by command-line flags (`flynn --help` lists them) and
+environment variables, with API keys kept in the encrypted vault (`flynn auth set`).
+The model you choose with `flynn models use` or `/model` is remembered, so you need
+not repeat `--model`. A configuration file is on the [roadmap](#status-and-roadmap).
 
-- Missions that outlive a single session, and declaring a goal's unit graph from the CLI.
-- A cost-aware model router in front of the registry.
-- Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
-- Fork-from-event and run diff on top of replay.
-- An embedding model Flynn provisions and serves itself, so ranking by meaning needs no
-  account or endpoint.
+## Optional: Ion Alpha, the first consumer of embedded Flynn
 
-**Planned**
+None of this section is required. Flynn builds, runs, and stores its state locally in
+SQLite with no host at all.
 
-- Standards: A2A, Zed ACP, `agentskills.io` import, and Flynn as an MCP client.
-- More channels: Discord, Slack, voice, a built-in browser, desktop GUI and mobile.
-- Proactive operation: monitors, drives and self-formed goals within an autonomy level.
-- The agent writing and sandbox-testing its own API integrations.
-- A cross-machine control plane and Kubernetes pod fan-out.
-- OTLP and OpenInference export (Langfuse, Arize Phoenix), Prometheus metrics and
-  Grafana dashboards.
-- A Postgres backend and fleet-wide learning.
-- A configuration file, and export of skills and memory.
-- Dry runs for destructive steps, and undoing a recorded action.
-- A gVisor sandbox tier.
+[Ion Alpha](https://ionalpha.io) is the first consumer of Flynn as an embedded library,
+and it shows what Flynn can do when it powers a product's agent behaviour and
+capabilities. Ion Alpha runs a company end to end: projects and areas, tasks and
+sprints, notes and documents, a typed knowledge graph, source control and pull requests,
+structured data, code intelligence, skills, and long-lived goals dispatched across a
+fleet of instances. Every agent in it is a Flynn run.
+
+What a host gets from embedding Flynn, as Ion Alpha uses it:
+
+- **Governed actions.** Each model and tool call is admitted at the dispatch waist
+  against a capability grant, so the host decides what every agent may do.
+- **A verifiable record.** Each run's events go to the same event-sourced spine and can
+  be sealed into a signed run record, so what an agent did can be checked afterwards.
+- **The agent behaviour as shipped.** Goals, missions, skills, memory, and the learning
+  loop run inside the host's agents as they do in the standalone binary. The host adds
+  its own domain tools and screens.
+
+What Ion Alpha adds by implementing the interfaces in `state/` and `observe/`:
+
+- One permissioned, compounding pool of skills and knowledge shared across people and
+  projects, so every agent can build on every other agent's verified experience.
+- A typed knowledge graph as memory, able to connect facts and flag contradictions,
+  instead of flat recall.
+- Team workspaces, cross-project context, SSO, and full audit and backup.
+
+The agent depends only on those interfaces, a host implements them, and nothing in this
+repository depends on a host. To embed Flynn yourself, start with
+[Use it as a library](#use-it-as-a-library) and [docs/HOST_BOUNDARY.md](docs/HOST_BOUNDARY.md).
 
 ## Contributing
 
-Issues and pull requests are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) and
-[AGENTS.md](AGENTS.md) first.
+Issues and pull requests are welcome. See the open issues for the current roadmap
+and good first tasks.
+
+## Status and roadmap
+
+Flynn is being extracted from a much larger system and moves fast. The
+foundations are in place and a real agent loop runs today; the breadth described
+above is filling in on top of that foundation. Follow
+[@ionalpha_](https://x.com/ionalpha_) for progress.
+
+**Running today**
+
+- A single static Go binary, cross-compiled for Windows, macOS, Linux, and ARM.
+- An event-sourced spine with materialized resources and a self-healing reconcile loop.
+- The dispatch waist: every model and tool call admitted against a capability grant, traced, and bracketed by spine events.
+- Per-run token and cost budgets: hard ceilings once set, unlimited by default.
+- Deterministic replay, with golden missions guarding behavior in CI.
+- Signed, tamper-evident run records: each run's events are committed to an append-only Merkle log under a COSE signature, checkable by a standalone verifier (`flynn spine verify`), with a public conformance vector suite for the record format.
+- An interactive TUI that renders the typed session spine live: in-session `/seal` and `/verify` with a record badge, a governance overlay (Ctrl+O), `/replay`, and cross-emulator input handling with an alternate-screen fallback.
+- A real agent loop (`flynn goal "..."`) with sandboxed, path-confined terminal, filesystem, edit, glob, and grep tools.
+- Governed goals: a planned ledger whose checks run and are recorded, terms of a run checked after every step (`--goal-spec`), required approvals, declared allowances for irreversible actions, `flynn kill` and `flynn steer`, and no-progress detection.
+- A bundled pack of thirteen skills in the Agent Skills format, read on request and graded on the runs that read them, with `flynn skill ls`, `show` and `ab`.
+- Memory with subjects and supersession, a gated wake digest you review into (`flynn memory promote`), a recorded push and use per instance (`flynn memory usage`), and offline consolidation (`flynn memory consolidate`).
+- Provider-agnostic models: Anthropic and OpenAI adapters behind a `provider:model` registry.
+- Local models end to end: a curated open-weight catalog, hardware-fit checks, one-command fetch and run, a model pool, and grammar-constrained decoding so a local model cannot emit a malformed tool call.
+- The learning loop: skills and memory captured from work, reinforced by outcomes, with skills that stop working decayed and archived.
+- An MCP server (`flynn mcp serve`) that exposes the agent's own tools to any MCP client.
+- Out-of-process MCP extensions: a third-party tool runs as a separate confined binary, answering calls over a strictly one-directional client, with `flynn extensions dev` for authoring one locally.
+- Pull-request review (`flynn review`): per-file passes plus a sweep for what they missed, findings anchored to their lines and rechecked across pushes, with approval gated behind an explicit flag.
+- External agent backends (`--model claude`, `--model codex`): another coding agent drives the turn with its native tool surface denied, callable only through Flynn's bridged tools, recorded as attested events. Linux and macOS (and WSL2); native Windows refuses until its egress leg exists.
+- Replay and inspection surfaces: `flynn inspect`/`replay`, `flynn diff` between two resources, `flynn describe` with change history, and `flynn regrade` to re-grade learned skills.
+- Sealed runtime profile bundles (`--profile`): cpu, heap, goroutines, and a sampled timeline under a hashed manifest, with CPU samples attributed to the action that caused them.
+- Credentials sealed in an OS keychain or a passphrase vault, kept out of prompts and logs.
+- A kernel-confined execution sandbox (read-only host, syscall filter) with per-platform adapters on Linux, macOS, and Windows, proven by a red-team containment matrix in CI, refusing rather than silently downgrading where a tier is unavailable.
+- Default-deny outbound egress that blocks SSRF to private, loopback, and cloud-metadata addresses, lint-enforced so nothing dials around it.
+- Bind-safe inbound listeners (loopback by default, wildcard binds refused, non-loopback gated on explicit opt-in) with an exposure registry that logs and lease-expires every opening, lint-enforced.
+- Inbound over the terminal, Telegram, and Signal.
+- SQLite-durable state, and importable as a Go module.
+- A published threat model, an OpenSSF Scorecard, and property, chaos, and fuzz test tiers.
+
+**In progress**
+
+- Missions that outlive a single session, and declaring a goal's unit graph from the CLI (today it is the Go API).
+- A cost-aware model router in front of the registry.
+- Remote sandbox backends (E2B, Daytona, Modal) behind the same isolation port.
+- Time-travel on top of replay: fork-from-event and run diff.
+- An embedding model Flynn provisions and serves itself, so recall ranks by meaning
+  with no account and no endpoint to configure.
+
+**On the roadmap**
+
+- Standards: A2A, Zed ACP, and `agentskills.io` import.
+- More reach: Discord, Slack, voice, a built-in browser, desktop GUI, and mobile control.
+- Proactive operation: monitors, drives, and self-formed goals within an autonomy level.
+- The agent authoring and sandbox-testing its own API integrations.
+- A cross-machine control plane and Kubernetes pod fan-out.
+- OpenTelemetry export to agent-eval tools and Grafana dashboards.
+- A Postgres backend and federated, fleet-wide learning.
+- A configuration file, and a portable export of skills and memory.
+- Rehearsing a destructive step in a dry run, and undoing a recorded action.
+- A user-space-kernel tier (gVisor).
 
 ## License
 

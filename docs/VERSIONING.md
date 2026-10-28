@@ -28,7 +28,7 @@ none of them can reach you on a day you did not choose.
 
 | Tier | Packages | What you can expect |
 | --- | --- | --- |
-| Stable surface | the root facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`, `storage/sqlite`, `chain` | The embedding contract. Breaks are gated in CI, and every accepted break has a written reason. |
+| Stable surface | the root facade, `state`, `observe`, `llm`, `capability`, `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`, `storage/sqlite`, `chain` | The embedding contract. Breaks are gated in CI, and any break that ships was argued for in writing. |
 | Domain surface | `goal`, `mission`, `reconcile`, `resource`, `dispatch`, `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`, `orchestration`, and the rest | Importable, and unstable while pre-1.0. Import with that understanding. Breaks are reported in the release notes, not prevented. |
 | `internal/` | everything under it | Not importable. No promise at all. |
 
@@ -58,7 +58,7 @@ SQLite schema), where the rule is the mirrored one: loosen what you accept, narr
 what you emit. The `chain/conformance` test vectors pin the record format for
 external verifiers; nothing else there is gated yet.
 
-## When a bad version is released
+## When a bad version ships
 
 A published version cannot be withdrawn. The module mirror keeps what it cached
 precisely so that a deletion upstream cannot break someone's build. The remedy is
