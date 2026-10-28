@@ -5,6 +5,8 @@ import (
 	"io"
 	"testing"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/reliability"
@@ -23,7 +25,7 @@ func (m constModel) Generate(context.Context, llm.Request) (llm.Response, error)
 // profileStore builds an in-memory resource store with the ModelProfile kind registered.
 func profileStore(t *testing.T) resource.Store {
 	t.Helper()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}

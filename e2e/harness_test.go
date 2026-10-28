@@ -104,6 +104,7 @@ type instance struct {
 	t         *testing.T
 	dataDir   string
 	workspace string
+	home      string
 	env       []string
 	model     string
 }
@@ -125,6 +126,7 @@ func newInstance(t *testing.T) *instance {
 		t:         t,
 		dataDir:   data,
 		workspace: work,
+		home:      home,
 		env:       scrubbedEnv(home),
 		model:     "openai:gpt-e2e",
 	}
@@ -257,7 +259,8 @@ func (in *instance) start(args ...string) *running {
 		// A test that returns without killing must not leak the process.
 		_ = r.cmd.Process.Kill()
 		select {
-		case <-r.done:
+		case err := <-r.done:
+			in.t.Logf("process exited at cleanup: %v", err)
 		case <-time.After(5 * time.Second):
 		}
 	})
@@ -270,7 +273,8 @@ func (r *running) kill(t *testing.T) {
 	t.Helper()
 	_ = r.cmd.Process.Kill()
 	select {
-	case <-r.done:
+	case err := <-r.done:
+		t.Logf("process exited after kill: %v", err)
 	case <-time.After(10 * time.Second):
 		t.Fatal("process did not exit after kill")
 	}

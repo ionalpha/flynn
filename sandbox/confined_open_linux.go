@@ -20,10 +20,13 @@ import (
 // of the root) surfaces as ErrDenied, the same outcome resolve gives for a statically
 // escaping path. On a kernel too old for openat2 it falls back to a non-following open.
 func (l *Local) confinedOpen(abs string, flags int, perm os.FileMode) (*os.File, error) {
-	rel, err := filepath.Rel(l.root, abs)
+	rel, err := l.confinedRel(abs)
 	if err != nil {
-		return nil, ErrDenied
+		return nil, err
 	}
+	// The name the open paths use from here on is rebuilt from the checked relative path,
+	// so every one of them operates on a path confinedRel accepted.
+	abs = filepath.Join(l.root, rel)
 	// openat2 resolves relative to dirfd; "." opens the root directory itself.
 	rel = filepath.ToSlash(rel)
 
@@ -37,7 +40,7 @@ func (l *Local) confinedOpen(abs string, flags int, perm os.FileMode) (*os.File,
 	// EINVAL, where open would just ignore it. Mirror open's leniency so a caller passing
 	// a perm on a non-creating open is not rejected.
 	var mode uint64
-	if flags&(os.O_CREATE) != 0 {
+	if flags&os.O_CREATE != 0 {
 		mode = uint64(perm.Perm())
 	}
 	// RESOLVE_NO_SYMLINKS refuses every symlink component, matching the non-following

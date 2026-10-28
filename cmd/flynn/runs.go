@@ -10,20 +10,11 @@ import (
 	"path/filepath"
 	"sort"
 
-	budgetpkg "github.com/ionalpha/flynn/budget"
-	"github.com/ionalpha/flynn/extension"
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/goal"
-	"github.com/ionalpha/flynn/inbox"
-	"github.com/ionalpha/flynn/internal/archetype"
-	"github.com/ionalpha/flynn/internal/credential"
-	"github.com/ionalpha/flynn/internal/dependency"
-	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/internal/migrate"
-	"github.com/ionalpha/flynn/internal/playbook"
-	"github.com/ionalpha/flynn/internal/profilestore"
-	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/learn"
-	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/bundled"
 	"github.com/ionalpha/flynn/state"
@@ -117,7 +108,7 @@ func listRuns(out io.Writer, dataDir string) error {
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -198,7 +189,7 @@ func regradeSkills(out io.Writer, dataDir string) error {
 	}
 	defer func() { _ = store.Close() }()
 
-	verifier := governedVerifier(cwd)
+	verifier := governed.SkillVerifier(cwd)
 	res, err := learn.Regrade(ctx, store.Skills(), state.Scope{}, verifier)
 	if err != nil {
 		return err
@@ -206,48 +197,4 @@ func regradeSkills(out io.Writer, dataDir string) error {
 	_, _ = fmt.Fprintf(out, "regrade: %d checked, %d reconfirmed, %d retired\n",
 		res.Checked, len(res.Reconfirmed), len(res.Retired))
 	return nil
-}
-
-// missionRegistry builds the resource registry the durable store admits against:
-// the core kinds plus the Goal kind the runtime drives and the ModelProfile kind a
-// reliability measurement is recorded under.
-func missionRegistry() (*resource.Registry, error) {
-	reg := resource.NewRegistry()
-	if err := resource.RegisterCoreKinds(reg); err != nil {
-		return nil, err
-	}
-	if err := goal.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := budgetpkg.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := inbox.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := profilestore.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := archetype.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := instance.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := credential.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := extension.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := service.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := dependency.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	if err := playbook.RegisterKind(reg); err != nil {
-		return nil, err
-	}
-	return reg, nil
 }

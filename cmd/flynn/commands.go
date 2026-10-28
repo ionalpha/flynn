@@ -146,8 +146,8 @@ func sessionCommands() []sessionCommand {
 			name: "/memory",
 			desc: "show what the agent remembers across runs",
 			line: func(s *replSession, ctx context.Context, _ string) error {
-				s.memory().describeRecall(s.out)
-				renderMemory(ctx, s.out, s.memory().store)
+				s.memory().DescribeRecall(s.out)
+				renderMemory(ctx, s.out, s.memory().Store())
 				return nil
 			},
 			tui: func(h *sessionHost, ctx context.Context, _ string) { h.doMemory(ctx) },
@@ -156,7 +156,7 @@ func sessionCommands() []sessionCommand {
 			name: "/remember", arg: "<fact>",
 			desc: "pin a fact into memory, so it is recalled in later runs",
 			line: func(s *replSession, ctx context.Context, arg string) error {
-				rememberFact(ctx, s.out, s.memory().store, arg)
+				rememberFact(ctx, s.out, s.memory().Store(), arg)
 				return nil
 			},
 			tui: func(h *sessionHost, ctx context.Context, arg string) { h.doRemember(ctx, arg) },

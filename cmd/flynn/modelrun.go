@@ -2,25 +2,27 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
+
+	"github.com/ionalpha/flynn/governed"
 
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/bindguard"
 	"github.com/ionalpha/flynn/internal/catalog"
-	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/internal/hardware"
 	"github.com/ionalpha/flynn/internal/inference/launch"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
-	"github.com/ionalpha/flynn/internal/inference/provision"
 	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/llm/openai"
+	"github.com/ionalpha/flynn/localmodel"
 	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/secret"
 )
@@ -30,22 +32,30 @@ import (
 // path provisions and gates; a model is served by pointing it at the model's weights.
 const selfProvisionedRuntime = "llama.cpp"
 
-// localRunner makes a catalog model serveable and reachable: it provisions the runtime
-// and weights, builds a loopback serve plan, starts the server inside the sandbox, and
-// hands back a running endpoint. Its provisioning and serving steps are fields so the
-// whole lifecycle is exercised in tests with fakes and no live runtime; newLocalRunner
-// wires the real implementations.
+// localRunner makes a catalog model serveable and reachable: it classifies the source, gates
+// it on the isolation this host provides, and hands back a running endpoint. A llama.cpp
+// model is provisioned and served through [localmodel.Host], the public API that owns the
+// advisory gate, the digest checks, the loopback pin, the chat-template override, the
+// sandbox and the per-launch token. What stays here is what that API does not cover:
+// consent and risk presentation, the vLLM container path, and the pool's process management.
 type localRunner struct {
 	dataDir string
 	out     io.Writer
 
-	// ensureRuntime returns the path to a gated runtime server binary, provisioning it
-	// if absent.
+	// host provisions and serves the llama.cpp process path. newLocalRunner sets it; a test
+	// that stubs the process path leaves it nil and sets ensureRuntime instead.
+	host *localmodel.Host
+	// hostErr says why host is nil, so a runner that could not build one refuses to serve
+	// instead of falling back to an unguarded path.
+	hostErr error
+
+	// ensureRuntime and ensureWeights stand in for the host's provisioning in tests. They
+	// are nil in a runner built by newLocalRunner, and serveModel never reaches them when
+	// host is set.
 	ensureRuntime func(ctx context.Context, runtimeName string) (string, error)
-	// ensureWeights returns the path to the verified weights for a quantization,
-	// fetching them if absent.
 	ensureWeights func(ctx context.Context, m catalog.ModelSpec, q catalog.Quant) (string, error)
-	// manager starts, reuses, reports, and stops the server processes.
+	// manager lists, adopts, and stops server processes and containers. Its probes and
+	// stats readers use the host's client, which presents the per-launch token.
 	manager *serve.Manager
 	// freePort returns a free loopback TCP port for a new server.
 	freePort func() (int, error)
@@ -66,15 +76,25 @@ type localRunner struct {
 // on every invocation. A server the runner left running keeps the handles it already holds,
 // so a teardown failure here is not worth failing the command over.
 func (r *localRunner) Close() error {
-	if r == nil || r.sb == nil {
+	if r == nil {
 		return nil
 	}
-	return r.sb.Close()
+	var errs []error
+	if r.host != nil {
+		errs = append(errs, r.host.Close())
+	}
+	if r.sb != nil {
+		errs = append(errs, r.sb.Close())
+	}
+	return errors.Join(errs...)
 }
 
-// newLocalRunner builds a runner wired to the real runtime provisioner, weights fetcher,
-// and a serve manager whose servers run inside a sandbox rooted under the data directory.
+// newLocalRunner builds a runner over the public local-inference API and a serve manager
+// whose servers run inside a sandbox rooted under the data directory.
 func newLocalRunner(dataDir string, out io.Writer) *localRunner {
+	// The host is opened first: it creates the data tree owner-only, so the creations below
+	// find it in place.
+	host, hostErr := openHost(dataDir, out)
 	runDir := filepath.Join(dataDir, "run")
 	// The sandbox confines the server to this directory, so it must exist before the
 	// server is started (the process is launched with it as the working directory).
@@ -84,31 +104,79 @@ func newLocalRunner(dataDir string, out io.Writer) *localRunner {
 	// runtime parses untrusted weights, so it is started behind that boundary rather
 	// than as a bare child.
 	sb, _ := sandbox.NewLocal(runDir, sandbox.WithDefaultConfinement())
+	var client *http.Client
+	if host != nil {
+		client = host.Client()
+	}
 	mgr := serve.NewManager(
 		serve.SandboxLauncher{SB: sb},
-		serve.HTTPProbe(nil),
+		serve.HTTPProbe(client),
 		serve.OSKiller,
 		serve.NewRegistry(runDir),
 		// The self-provisioned runtime exposes a Prometheus endpoint, so its load can be
-		// read back to drive scheduling and reporting.
-		serve.WithStatsSource(selfProvisionedRuntime, serve.LlamaCppStatsSource(nil)),
+		// read back to drive scheduling and reporting. It requires the launch token, which
+		// the host's client presents.
+		serve.WithStatsSource(selfProvisionedRuntime, serve.LlamaCppStatsSource(client)),
 		// A container-backed server (vLLM) is stopped by driving the engine, since it has no
 		// host pid; the manager routes a container record's teardown here.
 		serve.WithContainerStopper(serve.EngineStopper),
 		serve.WithStatsSource("vllm", serve.VLLMStatsSource(nil)),
 	)
 	return &localRunner{
-		dataDir:       dataDir,
-		out:           out,
-		ensureRuntime: realEnsureRuntime(dataDir, out),
-		ensureWeights: realEnsureWeights(dataDir, out),
-		manager:       mgr,
-		freePort:      bindguard.FreeLoopbackPort,
-		sb:            sb,
-		ledger:        modelsource.NewLedger(filepath.Join(dataDir, "models")),
+		dataDir:  dataDir,
+		out:      out,
+		host:     host,
+		hostErr:  hostErr,
+		manager:  mgr,
+		freePort: bindguard.FreeLoopbackPort,
+		sb:       sb,
+		ledger:   modelsource.NewLedger(filepath.Join(dataDir, "models")),
 		// Detect the hardware once so the serve path can choose the runtime that fits.
 		box: hardware.Detect(context.Background()),
 	}
+}
+
+// openHost opens the public local-inference host over the data directory, with its
+// progress lines going to out.
+func openHost(dataDir string, out io.Writer) (*localmodel.Host, error) {
+	abs, err := filepath.Abs(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve the data directory: %w", err)
+	}
+	// The admission gate in gateAndServe has already decided, from the trust level and the
+	// isolation this host provides, whether the model may run, and told the user. The host
+	// is asked only to report what the sandbox achieved, so a platform that cannot confine
+	// further than a process jail is not refused a second time.
+	return localmodel.Open(localmodel.Config{DataDir: abs, Progress: out, MinContainment: "process"})
+}
+
+// httpClient is the client for a running local server. It presents the server's per-launch
+// token and reaches loopback only. A runner with no host returns nil, which leaves the
+// OpenAI adapter on its own client; that is the stubbed-test case, never the production one.
+func (r *localRunner) httpClient() *http.Client {
+	if r.host == nil {
+		return nil
+	}
+	return r.host.Client()
+}
+
+// stopModel ends the server for a model. A process server goes through the host, which also
+// deletes its token file; a container record (vLLM) has no token file and goes through the
+// manager, which drives the engine.
+func (r *localRunner) stopModel(ctx context.Context, id string) (bool, error) {
+	if r.host == nil {
+		return r.manager.Stop(id)
+	}
+	live, err := r.manager.Status(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, rec := range live {
+		if rec.ModelID == id && rec.ContainerID != "" {
+			return r.manager.Stop(id)
+		}
+	}
+	return r.host.Stop(id)
 }
 
 // consentPolicy says how gateAndServe obtains consent for a source that is not a
@@ -319,6 +387,62 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 		return serve.Endpoint{}, fmt.Errorf("%q has no pinned direct download, so Flynn cannot fetch and serve it yet (the catalog entry records the model but no verifiable weights source)", m.ID)
 	}
 
+	switch {
+	case r.host != nil:
+		return r.serveViaHost(ctx, m, ctxSize, cpuOnly)
+	case r.ensureRuntime == nil || r.ensureWeights == nil:
+		// No host and no stubs: refuse rather than start a server without the guards.
+		return serve.Endpoint{}, r.unavailable()
+	}
+	return r.serveStubbed(ctx, m, q, ctxSize, cpuOnly)
+}
+
+// provision installs the runtime and fetches the weights without starting a server. The host
+// path gates the runtime and checks both digests; the stubbed path calls the injected steps.
+func (r *localRunner) provision(ctx context.Context, m catalog.ModelSpec, q catalog.Quant) error {
+	if r.host != nil {
+		if _, err := r.host.EnsureRuntime(ctx); err != nil {
+			return err
+		}
+		_, err := r.host.EnsureWeights(ctx, m.ID, q.Name)
+		return err
+	}
+	if r.ensureRuntime == nil || r.ensureWeights == nil {
+		return r.unavailable()
+	}
+	if _, err := r.ensureRuntime(ctx, selfProvisionedRuntime); err != nil {
+		return err
+	}
+	_, err := r.ensureWeights(ctx, m, q)
+	return err
+}
+
+// unavailable is the refusal for a runner that has neither a host nor injected steps.
+func (r *localRunner) unavailable() error {
+	if r.hostErr != nil {
+		return fmt.Errorf("local inference is unavailable: %w", r.hostErr)
+	}
+	return errors.New("local inference is unavailable: no provisioning path is configured")
+}
+
+// serveViaHost serves a catalog model through the public API. The host applies the advisory
+// gate, the digest checks before and after the header parse, the loopback pin, the
+// chat-template override, the per-launch token and the sandbox; none of that is repeated here.
+func (r *localRunner) serveViaHost(ctx context.Context, m catalog.ModelSpec, ctxSize int, cpuOnly bool) (serve.Endpoint, error) {
+	ep, err := r.host.Serve(ctx, m.ID, localmodel.ServeOptions{CtxSize: ctxSize, CPUOnly: cpuOnly})
+	if err != nil {
+		return serve.Endpoint{}, err
+	}
+	if r.out != nil && !ep.Reused {
+		_, _ = fmt.Fprintf(r.out, "isolation: %s\n", ep.Containment)
+	}
+	return serve.Endpoint{ModelID: ep.ModelID, BaseURL: ep.BaseURL, Port: ep.Port, PID: ep.PID, Reused: ep.Reused}, nil
+}
+
+// serveStubbed is the process path with provisioning injected, for tests that exercise the
+// lifecycle with no runtime. It is unreachable from newLocalRunner, which always sets host or
+// leaves both stubs nil.
+func (r *localRunner) serveStubbed(ctx context.Context, m catalog.ModelSpec, q catalog.Quant, ctxSize int, cpuOnly bool) (serve.Endpoint, error) {
 	binPath, err := r.ensureRuntime(ctx, selfProvisionedRuntime)
 	if err != nil {
 		return serve.Endpoint{}, err
@@ -327,13 +451,10 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 	if err != nil {
 		return serve.Endpoint{}, err
 	}
-
 	port, err := r.freePort()
 	if err != nil {
 		return serve.Endpoint{}, fmt.Errorf("pick a loopback port: %w", err)
 	}
-	// The trusted template decision is read from the weights with the hardened reader,
-	// never the runtime's parser, and the plan forces the trusted template regardless.
 	decision, err := launch.InspectTemplate(weightsPath, m.ChatTemplate)
 	if err != nil {
 		return serve.Endpoint{}, fmt.Errorf("inspect weights before serving: %w", err)
@@ -351,7 +472,6 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 	if err != nil {
 		return serve.Endpoint{}, err
 	}
-
 	return r.manager.Ensure(ctx, serve.EnsureConfig{
 		ModelID: m.ID,
 		Runtime: selfProvisionedRuntime,
@@ -360,61 +480,17 @@ func (r *localRunner) serveModel(ctx context.Context, m catalog.ModelSpec, ctxSi
 	})
 }
 
-// realEnsureRuntime provisions and gates the self-provisioned runtime, reusing an
-// already-installed build. It returns the path to the runnable server binary.
-func realEnsureRuntime(dataDir string, out io.Writer) func(context.Context, string) (string, error) {
-	return func(ctx context.Context, name string) (string, error) {
-		rel, ok := provision.ReleaseFor(name, runtime.GOOS, runtime.GOARCH)
-		if !ok {
-			return "", fmt.Errorf("no pinned %s build for %s/%s", name, runtime.GOOS, runtime.GOARCH)
-		}
-		if err := rel.Gate(); err != nil {
-			return "", fmt.Errorf("refusing to install %s %s: %w", name, rel.Version, err)
-		}
-		res, err := provision.Install(ctx, fetch.New(), rel, filepath.Join(dataDir, "runtimes"))
-		if err != nil {
-			return "", fmt.Errorf("provision %s: %w", name, err)
-		}
-		if !res.FromCache {
-			_, _ = fmt.Fprintf(out, "provisioned %s %s (verified)\n", name, rel.Version)
-		}
-		return res.BinPath, nil
-	}
-}
-
-// realEnsureWeights fetches and verifies a quantization's weights if they are not already
-// on disk, returning their path. A present file is trusted because the fetch verified it
-// against the catalog digest when it was written.
-func realEnsureWeights(dataDir string, out io.Writer) func(context.Context, catalog.ModelSpec, catalog.Quant) (string, error) {
-	return func(ctx context.Context, m catalog.ModelSpec, q catalog.Quant) (string, error) {
-		if isCodeExecWeight(q.Format) {
-			return "", fmt.Errorf("%q quant %q uses a code-executing weight format and will not be fetched", m.ID, q.Name)
-		}
-		dest := filepath.Join(dataDir, "models", weightsFileName(m.ID, q))
-		if _, err := os.Stat(dest); err == nil {
-			return dest, nil
-		}
-		_, _ = fmt.Fprintf(out, "fetching %s (%s, %s)\n", m.ID, q.Name, humanBytes(q.SizeBytes))
-		res, err := fetch.New().Fetch(ctx, fetch.Request{
-			URL:          q.URL,
-			Dest:         dest,
-			ExpectSHA256: q.Digest,
-			MaxBytes:     sizeCeiling(q.SizeBytes),
-		})
-		if err != nil {
-			return "", fmt.Errorf("fetch weights: %w", err)
-		}
-		return res.Path, nil
-	}
-}
-
 // localModelClient builds an llm.Model that talks to a running local server over its
-// loopback endpoint, reusing the OpenAI-compatible adapter. No credential is needed: the
-// endpoint is loopback-only, and SafeBaseURL permits plaintext http there. The model
-// name is the catalog id, which the runtime echoes back but does not route on, since it
-// serves the single loaded model.
-func localModelClient(ep serve.Endpoint, modelID string, plan harness.Plan) llm.Model {
+// loopback endpoint, reusing the OpenAI-compatible adapter. The server demands a per-launch
+// token, which httpc presents (the host's client adds it for the port it addresses); a nil
+// httpc leaves the adapter on its own client, for a stubbed server that needs none.
+// SafeBaseURL permits plaintext http on loopback. The model name is the catalog id, which
+// the runtime echoes back but does not route on, since it serves the single loaded model.
+func localModelClient(ep serve.Endpoint, modelID string, plan harness.Plan, httpc *http.Client) llm.Model {
 	opts := []openai.Option{openai.WithBaseURL(ep.BaseURL), openai.WithModel(modelID)}
+	if httpc != nil {
+		opts = append(opts, openai.WithHTTPClient(httpc))
+	}
 	// A model whose tool-call reliability the plan does not trust is constrained to a
 	// grammar so a malformed call is structurally impossible. The local runtime honors the
 	// grammar request field; the option is a no-op against a backend that does not.
@@ -459,7 +535,7 @@ func resolveLocalModel(ctx context.Context, modelSpec, dataDir string) (llm.Mode
 	}
 	plan := localModelPlan(ctx, m, dataDir)
 	logPlan(os.Stderr, m.ID, plan)
-	return localModelClient(ep, m.ID, plan), plan, nil
+	return localModelClient(ep, m.ID, plan, runner.httpClient()), plan, nil
 }
 
 // localModelPlan decides how much scaffolding a local model is driven with. Until an evaluation
@@ -489,7 +565,7 @@ func localProfileSource(ctx context.Context, dataDir string) harness.ProfileSour
 		return harness.StaticProfiles{}
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return harness.StaticProfiles{}
 	}

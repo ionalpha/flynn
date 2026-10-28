@@ -277,14 +277,12 @@ type message struct {
 	Text string `json:"text"`
 }
 
-// sender returns a stable identifier for the author: the username when set,
-// otherwise the numeric id, for routing and audit.
+// sender returns the author's numeric user id, empty when the message names none. The id
+// never changes, while a username is the author's to rename and can be claimed by someone
+// else afterwards, so an allow-list that compares senders needs the id.
 func (m *message) sender() string {
 	if m.From == nil {
 		return ""
-	}
-	if m.From.Username != "" {
-		return m.From.Username
 	}
 	return strconv.FormatInt(m.From.ID, 10)
 }

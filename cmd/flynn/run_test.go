@@ -10,12 +10,15 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
@@ -104,7 +107,7 @@ func TestGoalCommandPlansBeforeItBuilds(t *testing.T) {
 		t.Fatalf("first model call was not the planner: %q", sys)
 	}
 	// A visible ledger was recorded on the goal, item and verify clause both.
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,6 +412,7 @@ func TestRunCreditsTheOutcomeToWhatItRead(t *testing.T) {
 // skill in the sandbox: a skill whose check fails is dropped (never stored), while
 // one whose check passes is kept and tagged verified.
 func TestRunVerifiesCapturedSkill(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	dir := t.TempDir()
 	store := memStore(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -495,8 +499,13 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 	if len(evs) == 0 {
 		t.Fatalf("run %s left no events on the durable spine after reopen", runID)
 	}
-	if evs[0].Type != string(session.KindSessionStarted) {
-		t.Fatalf("first spine event = %q, want %q", evs[0].Type, session.KindSessionStarted)
+	// The run's shell posture precedes its governance posture, and both precede the session
+	// they govern.
+	if evs[0].Type != governed.ShellPostureEventType {
+		t.Fatalf("first spine event = %q, want %q", evs[0].Type, governed.ShellPostureEventType)
+	}
+	if len(evs) < 3 || evs[1].Type != governed.PostureEventType || evs[2].Type != string(session.KindSessionStarted) {
+		t.Fatalf("the shell posture is followed by %v, want %q then %q", evs[1:], governed.PostureEventType, session.KindSessionStarted)
 	}
 	var converged bool
 	for _, e := range evs {
@@ -517,7 +526,7 @@ func TestRunSpineIsDurableAndAddressable(t *testing.T) {
 // mustRegistry builds the mission resource registry or fails the test.
 func mustRegistry(t *testing.T) *resource.Registry {
 	t.Helper()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}

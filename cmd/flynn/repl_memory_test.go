@@ -16,7 +16,7 @@ func forkTheSubject(t *testing.T, s *replSession) {
 	t.Helper()
 	ctx := context.Background()
 	for _, subject := range []string{"db-choice", "database-choice"} {
-		if _, err := s.memory().store.Write(ctx, state.MemoryItem{
+		if _, err := s.memory().Store().Write(ctx, state.MemoryItem{
 			Kind: "decision", Subject: subject, Content: "Postgres",
 		}); err != nil {
 			t.Fatalf("write %s: %v", subject, err)

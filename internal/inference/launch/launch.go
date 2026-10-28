@@ -169,6 +169,12 @@ type Config struct {
 	// APIKey, when set, is required by the server on every request, so even a local
 	// process cannot reach the model without the token the caller holds. Optional.
 	APIKey string
+	// APIKeyFile names a file holding the key, for llama.cpp's --api-key-file. Unlike
+	// APIKey it keeps the token out of the command line, which any local user can read
+	// from the process table, so a per-launch token stays private to the account that
+	// owns the file. It is refused for vLLM, which has no equivalent flag and would
+	// otherwise force the key into argv. Optional.
+	APIKeyFile string
 	// ModelEmbedsTemplate records that the weights carry their own chat template, a
 	// signal from inspecting the file. The plan overrides it regardless; the field only
 	// surfaces that an override was necessary. Optional.
@@ -283,6 +289,14 @@ func validateTuning(cfg Config) error {
 	if cfg.GPUMemoryUtilization < 0 || cfg.GPUMemoryUtilization > 1 {
 		return fault.New(fault.Terminal, "launch_bad_gpu_util", "launch: GPU memory utilization must be in (0,1]")
 	}
+	if cfg.APIKeyFile != "" && cfg.APIKey != "" {
+		return fault.New(fault.Terminal, "launch_key_conflict", "launch: set either APIKey or APIKeyFile, not both")
+	}
+	if cfg.APIKeyFile != "" {
+		if engine, ok := EngineForFormat(cfg.Format); ok && engine == EngineVLLM {
+			return fault.New(fault.Terminal, "launch_key_file_unsupported", "launch: the vLLM runtime has no key-file flag; refusing to put the key on the command line")
+		}
+	}
 	return nil
 }
 
@@ -333,6 +347,9 @@ func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 	}
 	if cfg.APIKey != "" {
 		argv = append(argv, "--api-key", cfg.APIKey)
+	}
+	if cfg.APIKeyFile != "" {
+		argv = append(argv, "--api-key-file", cfg.APIKeyFile)
 	}
 	return argv
 }

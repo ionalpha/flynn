@@ -9,6 +9,8 @@ import (
 	"os"
 	"os/signal"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -23,7 +25,7 @@ import (
 // session (unless learning is disabled). It assumes stdin is a terminal; the caller
 // falls back to usage when it is not. By default it runs the full-screen interface;
 // plain (or a non-terminal stdout) selects the line-based interface instead.
-func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string) error {
+func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool, reqApproval []string, shell governed.ShellPolicy) error {
 	ctx := context.Background()
 
 	cwd, err := os.Getwd()
@@ -63,7 +65,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		return err
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -81,7 +83,7 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 	// mirrors what a one-shot external run does.
 	var distiller learn.Distiller
 	if learnEnabled && extAgent == nil {
-		distiller = governedDistiller(model)
+		distiller = governed.Distiller(model)
 	}
 
 	keys, err := loadKeymap(dataDir)
@@ -112,13 +114,14 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		// The policy is the session's for its whole life; the prompter that resolves a
 		// pause is installed by whichever interface runs, because only one of them can ask.
 		gates: gateSetup{approve: reqApproval},
+		shell: shell,
 	}
 
 	// Every turn runs under a prime scope, so a memory the wake digest pushed is
 	// attributed as primed when it is used rather than as the session having gone
 	// and found it. It is the session's, not the turn's: the digest is built once at
 	// the opening line and what it primed stays primed for the conversation.
-	ctx = wakeContext(ctx)
+	ctx = governed.WakeContext(ctx)
 
 	// Front door: when prior runs exist, let the user resume one or start fresh. A
 	// resumed run is seeded so the session continues the same durable conversation.

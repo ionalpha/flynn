@@ -305,24 +305,42 @@ func TestServeExplicitConfineFailsClosed(t *testing.T) {
 	}
 }
 
-// TestServeDefaultConfinementDropsToFloor confirms the always-on baseline is the one
-// exception: WithDefaultConfinement carries no explicit request and no network control,
-// so a backgrounded server is allowed to run at the directory-jail floor rather than
-// being refused. The default never fails merely for asking, matching Exec's fallback.
-func TestServeDefaultConfinementDropsToFloor(t *testing.T) {
-	l, err := NewLocal(t.TempDir(), WithDefaultConfinement(), WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
+// TestServeBestEffortConfinementDropsToFloor confirms the explicit opt-in is the only way a
+// backgrounded server runs at the directory-jail floor. Windows cannot confine a background
+// process, and [WithDefaultConfinement] alone refuses it (see
+// TestServeDefaultConfinementRefusesOnWindows).
+func TestServeBestEffortConfinementDropsToFloor(t *testing.T) {
+	l, err := NewLocal(t.TempDir(), WithBestEffortConfinement(func(error) {}), WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = l.Close() })
 	p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
 	if err != nil {
-		t.Fatalf("the always-on baseline must drop to the floor, not refuse: %v", err)
+		t.Fatalf("the opt-in must drop to the floor, not refuse: %v", err)
 	}
 	defer func() { _ = p.Stop() }()
 	waitFor(t, time.Second, func() bool { return strings.Contains(p.Output(), "helper-up") })
 	if !p.Running() {
 		t.Fatal("the backgrounded server should be running at the floor")
+	}
+}
+
+// TestServeDefaultConfinementRefusesOnWindows is the fail-closed side: without the opt-in a
+// backgrounded server that cannot be confined is refused, not run at the floor.
+func TestServeDefaultConfinementRefusesOnWindows(t *testing.T) {
+	l, err := NewLocal(t.TempDir(), WithDefaultConfinement(), WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = l.Close() })
+	p, err := l.Serve(context.Background(), ServeSpec{Argv: []string{os.Args[0]}, Confine: true})
+	if err == nil {
+		_ = p.Stop()
+		t.Fatal("the default must refuse a background process it cannot confine")
+	}
+	if l.ConfinementFallbacks() != 0 {
+		t.Fatal("a refusal is not a fallback")
 	}
 }
 

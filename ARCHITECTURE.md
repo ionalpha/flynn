@@ -41,7 +41,8 @@ package is one plus the highest layer it imports.
 | L4 governance + domain | `capability`, `budget`, `internal/spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
 | L5 orchestration | `mission`, `runtime` | The conversation executor, the wired-up runtime. |
 | L6 composition | `tools`, `session` | The default toolset, the conversational session/stream front door. |
-| L7 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade. |
+| L7 assembly | `governed` | The one place a governed run is composed: sandbox, toolset, grant, dispatch hooks, spine sink, memory, learning and extensions. |
+| L8 entry | `cmd/flynn`, root `agent` | The binary and the embedding facade, each one caller of `governed`. |
 
 The valuable property is the *direction*, not the count. A primitive must never
 reach up into a domain package; that inversion is what turns a clean graph into a
@@ -310,17 +311,51 @@ promise. The layout makes the tiers physical:
 
 - **Stable surface** (the embedding contract): the root `agent` facade and the
   ports a host implements or consumes, `state`, `observe`, `llm`, `capability`,
-  `fault`, `tools`, `sandbox`, `secret`, `spine`, `clock`, `ids`, `provider`,
-  `storage/sqlite`, and `chain` (the Provetrail reference implementation, which
-  external verifiers must be able to import). Keep these small and guarded;
-  breaking them is a major-version event.
-- **Domain surface** (`goal`, `mission`, `reconcile`, `resource`, `dispatch`,
-  `session`, `runtime`, `learn`, `budget`, `memory`, `skill`, `extension`,
-  `controlplane`, `orchestration`, ...): importable and visible, but **unstable
+  `fault`, `tools`, `sandbox`, `secret`, `spine`, `resource`, `envelope`, `hlc`,
+  `jobs`, `clock`, `ids`, `provider`, `storage/sqlite`, `memory/memorytest`, and
+  `chain` (the Provetrail reference implementation, which external verifiers must
+  be able to import). Keep these small and guarded; breaking them is a
+  major-version event.
+- **Domain surface** (`goal`, `mission`, `reconcile`, `session`, `runtime`,
+  `governed`, `learn`, `budget`, `memory`, `skill`, `extension`, `controlplane`,
+  `orchestration`, `dispatch`, `approval`, ...): importable and visible, but **unstable
   while pre-1.0**. These churn as the orchestration graph and router land.
-  Power users may import them with that understanding.
+  Power users may import them with that understanding. `localmodel`, the public
+  face of local inference, is in this band and marked experimental: it may change
+  before it is listed as stable.
 - **Mechanisms** (`internal/...`): not importable, no promise at all. Parsers,
   guards, stores, probes, and adapters the surfaces are built from.
+
+A port is stable when a suite can say what a correct backend is, and when every
+type its exported API names is stable too. A host that implements
+`resource.Store` also holds the `resource.Resource` it returns, which embeds
+`envelope.Envelope`, and builds a stamper from an `hlc.Clock`; `state` already
+named both, so `envelope` and `hlc` are in the stable list with it. The ports an
+embedding host implements are `resource.Store` (with its optional `KeyLister` and
+`AnyScopeGetter`), `spine.Log`, `jobs.Queue` (with `Waker`) and
+`state.MemoryStore`, and `resourcetest`, `spinetest`, `jobstest`, `statetest` and
+`memory/memorytest` are the suites a backend of them must pass. The suites sit
+under the stable package they check, except `memory/memorytest`: the package named
+`memory` is a concrete facade a host calls and does not implement, its constructor
+and kinds are still moving, and the port it serves is already stable in `state`.
+`approval` stays in the domain band because the one port in it that holds state
+across a restart, the nonce store, has no conformance suite. `dispatch` stays
+there for the same reason: `Hook` and `Admitter` are the governance gate, and no
+suite yet states what a correct one does, so there is nothing to hold a host's
+implementation to. Each joins when its suite does. A method a backend must honour
+for safety is never added to a stable interface, because that breaks every
+implementation; it arrives as a separate optional interface found by type
+assertion, the way `KeyLister` and `Waker` extend their ports, and a caller that
+does not find it refuses.
+
+Six exposures of an unstable type by a stable package are known and listed with
+their reasons in `internal/rigor` (`ungatedExposures`): `agent.Config.Agent` is an
+`*archetypes.Spec`, `agent.Config` takes `governed` and `mission` types and
+`Agent.GoalResult` returns a `governed.Result`, `tools` hands out `mission.Tool`
+values, `sandbox.WithEgress` takes a `netguard.Policy`, and `capability` implements
+the `dispatch` ports. A break in those packages changes what the stable surface
+means while `dev/apidiff` reports it as a domain change. The test fails on a
+seventh, and on an entry that stops being true.
 
 The tiers are checked rather than described. `dev/apidiff` (a CI job, and runnable
 locally) reads the exported API of the newest release tag and of the branch with
@@ -331,17 +366,22 @@ third tier paying for itself a second time. A deliberate break is recorded in
 `dev/apidiff-accepted.txt` with the reason it was worth making, so the argument
 lives in the repository rather than in a review thread. Direction is what decides
 the verdict, and the tool encodes it: adding a field to a struct a host reads is
-compatible, adding a method to a port a host implements is not.
+compatible, adding a method to a port a host implements is not. The root facade
+is checked like any other stable package, and `internal/rigor` fails when the
+stable list here, the one in `docs/VERSIONING.md` and the one in `dev/apidiff`
+disagree.
 
 What this means for someone importing the module, including how a bad version is
 retracted and what a v2 would cost them, is `docs/VERSIONING.md`.
 
 Two things it does not see, stated so nobody reads a green run as more than it
-is. It compares shape, never behaviour. And it says nothing about the formats
-that cross a process boundary rather than a link boundary: envelope records,
-chain records, the sqlite schema. Those carry the same asymmetry (loosen what you
-accept, narrow what you emit) and are covered today only by the `chain/conformance`
-test vectors.
+is. It compares shape, never behaviour; for the one behaviour that is a promise,
+what a conformance suite accepts, it lists every suite file that changed since
+the release, and the pull request says whether a backend that passed can fail. And
+it says nothing about the formats that cross a process boundary rather than a link
+boundary: envelope records, chain records, the sqlite schema. Those carry the same
+asymmetry (loosen what you accept, narrow what you emit) and are covered today only
+by the `chain/conformance` test vectors.
 
 Pre-1.0 Go semver already permits breaking changes, so the domain surface stays
 refactorable while remaining visible. The mechanism band moved under
@@ -370,6 +410,12 @@ is part of CI).
   toolset and runs one objective to its answer.
 - **`session`** conversational front door and event stream; **`runtime`** wires
   the controller, worker, store, and bus together.
+- **`governed`** composes a governed run: `Assemble` takes options and returns a
+  `Run` with the posture it has. Defaults are the governed ones, and each
+  opt-out is a named `Waive` recorded on the spine. `cmd/flynn` and the root
+  `agent` call it and compose nothing else (`TestBinaryDoesNotComposeAGovernedRun`
+  in `internal/rigor` fails the binary if it does). `agent.Config` can carry a
+  host's backends, and `GoalResult` returns the run id, stop reason and record.
 - **`goal`** the controller + worker; **`mission`** the conversation executor;
   **`reconcile`** the generic loop they run on.
 - **`resource`** event-sourced state of record; **`spine`** the raw event log;
@@ -383,7 +429,11 @@ is part of CI).
 - **`learn`** the closed learning loop (capture, verify, reinforce, regrade);
   **`memory`** and **`skill`** its durable stores.
 - **`llm`** + `llm/anthropic`/`llm/openai` + **`provider`** the model port and
-  adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation.
+  adapters; **`tools`** the default agentic toolset; **`sandbox`** isolation;
+  **`localmodel`** runs a catalog model on this machine for a host (per-host advisory
+  floor, digest-pinned downloads, loopback-only and token-protected serving inside the
+  sandbox at a stated minimum isolation, with the listener attributed before the token
+  is sent), and `flynn models` is one of its clients.
 - **`clock`**, **`ids`**, **`hlc`** the determinism ports; **`fault`** the error
   taxonomy; **`observe`** logging/tracing; **`bus`** the in-process event bus;
   **`jobs`** the leased job queue.

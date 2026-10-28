@@ -13,6 +13,7 @@ import (
 
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/skill/skillab"
 	"github.com/ionalpha/flynn/state"
 )
@@ -54,6 +55,7 @@ func TestSkillABRefusesBeforeItSpends(t *testing.T) {
 // it. The model here says it is done without doing anything, so the exercise's own
 // command is what separates the pass from the failure.
 func TestSkillABTrialIsDecidedByTheVerifier(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

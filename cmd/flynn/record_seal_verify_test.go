@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/harness"
@@ -41,7 +43,7 @@ func TestSealFromStoreProducesVerifiableRecord(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = store.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -42,10 +42,9 @@ type CaptureSpec struct {
 //
 // Confinement follows the same rules as Exec: whatever isolation the Local was configured
 // for is applied (a governed-egress Local always takes the confined path so its OS-level
-// egress denial holds), and, unless this Local is the always-on best-effort baseline, a
-// confinement that cannot be established fails the launch rather than dropping to an
-// unconfined run. The best-effort fallback, when it applies, never weakens a
-// governed-egress or network-denied launch.
+// egress denial holds), and a confinement that cannot be established fails the launch
+// rather than dropping to an unconfined run. [WithBestEffortConfinement] is the only
+// exception, and it never weakens a governed-egress or network-denied launch.
 func (l *Local) Capture(ctx context.Context, spec CaptureSpec) (ExecResult, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return ExecResult{}, errors.New("sandbox: capture: no command")
@@ -57,21 +56,17 @@ func (l *Local) Capture(ctx context.Context, spec CaptureSpec) (ExecResult, erro
 	}
 	// Governed egress fails closed on a platform without an enforcement leg, before any
 	// launch (the Windows path does not run through confine).
-	if err := l.guardEgress(); err != nil {
+	if err := l.guardLaunch(); err != nil {
 		return ExecResult{}, err
 	}
 	// Egress requires the confined path (its OS-level denial composes into confine), and
 	// like Exec any configured isolation confines the run. A network control is never
-	// weakened by the best-effort fallback below.
+	// weakened by the opt-in fallback below.
 	confined := l.denyNetwork || l.readonlyFS || l.seccomp || l.egress != nil
 	res, err := l.captureRun(ctx, spec, confined)
-	// A confined launch that could not start (an error, not a non-zero exit) under the
-	// always-on baseline falls back to the floor, exactly as Exec does; the failed attempt
-	// never ran, so there is nothing to undo. The controls Exec refuses to weaken are
-	// excluded here too: a governed-egress or network-denied launch, and a sandbox that
-	// reports the kernel-confined tier the trust gate already relied on, fail closed rather
-	// than dropping to an unconfined run.
-	if err != nil && confined && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
+	// A confined launch that could not start (an error, not a non-zero exit) runs again at
+	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	if l.fallBack(err, confined) {
 		return l.captureRun(ctx, spec, false)
 	}
 	return res, err

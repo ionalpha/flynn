@@ -5,14 +5,9 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/ionalpha/flynn/state"
 )
 
-// countingEmbedder is an embedder that answers every text with the same vector and
-// counts the calls, which is all a wiring test needs: whether the read path reaches
-// an embedder at all is the thing this file can get wrong, and how the vectors rank
-// is memory/hybrid's own tested concern.
+// countingEmbedder is an embedder that answers every text with the same vector.
 type countingEmbedder struct {
 	calls int
 	model string
@@ -28,62 +23,6 @@ func (c *countingEmbedder) Embed(_ context.Context, texts []string) ([][]float32
 }
 
 func (c *countingEmbedder) Model() string { return c.model }
-
-// An embedder reaches the read path through the curated store, which is the wiring
-// that could have been got wrong: hybrid has to sit against the durable store, not
-// over the write policy, or the digest and the ride-along would read the lexical
-// order while a single command saw the fused one.
-func TestMemoryStackRanksThroughTheCuratedStore(t *testing.T) {
-	ctx := context.Background()
-	emb := &countingEmbedder{model: "text-embedding-3-small"}
-	mem := newMemoryStack(state.NewMemory().Memory(), nil, withEmbedder(emb))
-
-	if _, err := mem.store.Write(ctx, state.MemoryItem{Kind: "fact", Subject: "deploy", Content: "the migration runs first"}); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if _, err := mem.store.Recall(ctx, state.RecallQuery{Query: "how does the deploy go"}); err != nil {
-		t.Fatalf("recall: %v", err)
-	}
-	if emb.calls == 0 {
-		t.Fatal("the embedder was never reached, so recall is still ranked by words alone")
-	}
-
-	var out bytes.Buffer
-	mem.describeRecall(&out)
-	if got := out.String(); !strings.Contains(got, "meaning") || !strings.Contains(got, emb.model) {
-		t.Fatalf("describeRecall = %q, want it to name meaning and the model", got)
-	}
-}
-
-// With no embedder the stack is what it always was, and says so. The line is the
-// staged capability's visibility: an operator who has not turned ranking by meaning
-// on can see that they have not.
-func TestMemoryStackWithoutAnEmbedderSaysSo(t *testing.T) {
-	var out bytes.Buffer
-	newMemoryStack(state.NewMemory().Memory(), nil).describeRecall(&out)
-	if got := out.String(); got != "ranked by words\n" {
-		t.Fatalf("describeRecall = %q, want the lexical line", got)
-	}
-
-	// A nil stack is a session whose memory was never built. It answers the same way
-	// rather than panicking on a command that only reports.
-	out.Reset()
-	var nilStack *memoryStack
-	nilStack.describeRecall(&out)
-	if got := out.String(); got != "ranked by words\n" {
-		t.Fatalf("describeRecall on a nil stack = %q, want the lexical line", got)
-	}
-}
-
-// An embedder that cannot say which model it is still ranks by meaning, and the line
-// says that much rather than inventing a name for it.
-func TestMemoryStackNamesAnUnnamedEmbedder(t *testing.T) {
-	var out bytes.Buffer
-	newMemoryStack(state.NewMemory().Memory(), nil, withEmbedder(&countingEmbedder{})).describeRecall(&out)
-	if got := out.String(); got != "ranked by words and meaning\n" {
-		t.Fatalf("describeRecall = %q, want meaning with no model named", got)
-	}
-}
 
 func TestConfiguredEmbedderIsOffUntilNamed(t *testing.T) {
 	t.Setenv(embedModelEnv, "")

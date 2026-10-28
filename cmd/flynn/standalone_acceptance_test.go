@@ -14,6 +14,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
@@ -21,6 +22,7 @@ import (
 	"github.com/ionalpha/flynn/memory/curate"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
@@ -141,23 +143,27 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	  ]
 	}`)
 
-	run, err := assembleMission(alwaysDone{}, harness.Plan{}, t.TempDir(), defaultSystemPrompt,
-		rstore, store.Jobs(), store.Log(), nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
+	// Through the exported assembly with nothing but its defaults, which is what an
+	// embedder gets and what the binary adds its own levers to.
+	run, err := governed.Assemble(ctx, alwaysDone{},
+		governed.Backends{Resources: rstore, Jobs: store.Jobs(), Log: store.Log()},
+		governed.WithWorkDir(t.TempDir()), governed.WithSystem(defaultSystemPrompt),
+		governed.WithShellPolicy(checkShell))
 	if err != nil {
 		t.Fatalf("assemble the mission the binary assembles: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
-	go func() { _ = run.rt.Start(ctx) }()
+	go func() { _ = run.Runtime().Start(ctx) }()
 
-	if _, err := run.sess.Submit(ctx, run.rt, goal.Spec{
+	if _, err := run.Submit(ctx, goal.Spec{
 		Objective:     spec.Objective,
-		StopCondition: stopCondition(spec.StopCondition),
+		StopCondition: spec.StopCondition,
 		Invariants:    spec.Invariants,
 	}); err != nil {
 		t.Fatalf("submit a goal that states its terms: %v", err)
 	}
 
-	status := waitForBreach(ctx, t, rstore, run.sess.ID())
+	status := waitForBreach(ctx, t, rstore, run.ID())
 	if status.Phase != goal.PhaseStalled {
 		t.Fatalf("a stated term did not stop the goal: %+v", status)
 	}
@@ -166,7 +172,7 @@ func TestStandaloneAStatedTermIsAuditedAndABreachStopsTheRun(t *testing.T) {
 	// jail refuses to run it. There the capability is the refusal: the run stops saying
 	// the check could not run, rather than finishing as though the term held. Asserting
 	// the breach on such a host would be asserting something the binary cannot do there.
-	if sandbox.ContainmentOf(run.parts.sandbox) < sandbox.Required(sandbox.TrustSemi) {
+	if sandbox.ContainmentOf(run.Sandbox()) < sandbox.Required(sandbox.TrustSemi) {
 		if !strings.Contains(status.Message, "the check could not run") {
 			t.Fatalf("a host that cannot run the check stopped the run for some other reason: %+v", status)
 		}
@@ -231,6 +237,7 @@ func waitForBreach(ctx context.Context, t *testing.T, rstore resource.Store, nam
 // skills and expects one. Learning something broken is worse than learning nothing:
 // the next run reaches for it.
 func TestStandaloneAConvergedRunIsDistilledWithItsCheckRun(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	_, store := dataDir(t)
 	work := t.TempDir()
 	ctx := acceptCtx(t)
@@ -280,10 +287,10 @@ func TestStandaloneAConvergedRunIsDistilledWithItsCheckRun(t *testing.T) {
 // telling a memory that earns its place from one that is merely offered.
 func TestStandaloneASessionWakesWithADigestAndCountsThePush(t *testing.T) {
 	_, store := dataDir(t)
-	ctx := wakeContext(acceptCtx(t))
-	mem := newMemoryStack(store.Memory(), nil)
+	ctx := governed.WakeContext(acceptCtx(t))
+	mem := governed.NewMemoryStack(store.Memory(), nil)
 
-	written, err := mem.store.Write(ctx, state.MemoryItem{
+	written, err := mem.Store().Write(ctx, state.MemoryItem{
 		Kind: curate.KindPreference, Subject: "review-style",
 		Content: "state the risk before the fix", Sources: []string{rememberSource},
 	})
@@ -291,11 +298,11 @@ func TestStandaloneASessionWakesWithADigestAndCountsThePush(t *testing.T) {
 		t.Fatalf("pin a preference: %v", err)
 	}
 
-	system := withWake(ctx, mem, defaultSystemPrompt, nil)
+	system := governed.WithWake(ctx, mem, defaultSystemPrompt, nil)
 	if !strings.Contains(system, "state the risk before the fix") {
 		t.Fatalf("the wake digest did not reach the standing instructions:\n%s", system)
 	}
-	usage, err := mem.store.Usage(ctx, []string{written.ID})
+	usage, err := mem.Store().Usage(ctx, []string{written.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -316,14 +323,14 @@ func TestStandaloneASessionWakesWithADigestAndCountsThePush(t *testing.T) {
 func TestStandaloneASeriesConsolidatesIntoALesson(t *testing.T) {
 	_, store := dataDir(t)
 	ctx := acceptCtx(t)
-	mem := newMemoryStack(store.Memory(), nil)
+	mem := governed.NewMemoryStack(store.Memory(), nil)
 
 	for _, what := range []string{
 		"the deploy failed: the migration ran before the schema lock",
 		"the deploy failed again: same migration, same lock",
 		"the deploy failed a third time on the migration",
 	} {
-		if _, err := mem.store.Write(ctx, state.MemoryItem{
+		if _, err := mem.Store().Write(ctx, state.MemoryItem{
 			Kind: "episode", Subject: "deploy", Content: what, Sources: []string{"agent:run-1"},
 		}); err != nil {
 			t.Fatalf("write an episode: %v", err)

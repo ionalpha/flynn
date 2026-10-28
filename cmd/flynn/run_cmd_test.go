@@ -11,12 +11,14 @@ import (
 
 	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/externagent"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/sandbox"
+	"github.com/ionalpha/flynn/sandbox/sandboxtest"
 	"github.com/ionalpha/flynn/session"
 	"github.com/ionalpha/flynn/skill/skilltool"
 	"github.com/ionalpha/flynn/spine"
@@ -112,6 +114,7 @@ func TestInspectRunReplaysTheRecordedRun(t *testing.T) {
 // TestRegradeSkillsReportsTheTally: regrade re-runs every stored skill's check and
 // reports what it reconfirmed and what it retired, which is the command's whole output.
 func TestRegradeSkillsReportsTheTally(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx := context.Background()
 	dataDir := t.TempDir()
 
@@ -160,21 +163,15 @@ func TestDriveOptionsApplyToTheRunConfig(t *testing.T) {
 		t.Fatalf("cost ceiling not applied: %+v", cfg.budget)
 	}
 
-	withResourceLimits(sandbox.ResourceLimits{MaxProcesses: 4})(&cfg)
-	if cfg.resLimits.MaxProcesses != 4 {
-		t.Fatalf("resource limits not applied: %+v", cfg.resLimits)
+	withShellPolicy(governed.ShellPolicy{Limits: sandbox.ResourceLimits{MaxProcesses: 4}, AllowNetwork: true})(&cfg)
+	if cfg.shell.Limits.MaxProcesses != 4 || !cfg.shell.AllowNetwork {
+		t.Fatalf("shell policy not applied: %+v", cfg.shell)
 	}
 
 	ea := &externAgent{model: "gpt-5-codex"}
 	withExternalAgent(ea)(&cfg)
 	if cfg.extAgent != ea {
 		t.Fatal("the external agent backend was not applied")
-	}
-	if externalModel(cfg.extAgent) != "gpt-5-codex" {
-		t.Fatalf("externalModel = %q", externalModel(cfg.extAgent))
-	}
-	if externalModel(nil) != "" {
-		t.Fatal("a native run must name no external model")
 	}
 
 	ts := &boundToolset{}
@@ -250,6 +247,7 @@ func TestDriveRefusesToResumeARunThatIsNotThere(t *testing.T) {
 // the run's own stream, and when the log cannot take it the run says so rather than
 // reporting a check that is not in the record.
 func TestRunGroundTruthReportsAnUnrecordableCheck(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx := context.Background()
 	var out bytes.Buffer
 	recordGroundTruth(ctx, &out, refusingLog{}, "run/x", t.TempDir(), "exit 0")
@@ -302,7 +300,7 @@ var errRefusedAppend = errors.New("the log refused the event")
 func TestGovernedDistillerRunsThroughTheWaist(t *testing.T) {
 	ctx := context.Background()
 	model := llmtest.NewScripted(llmtest.SayText("nothing worth keeping here"))
-	d := governedDistiller(model)
+	d := governed.Distiller(model)
 	if d == nil {
 		t.Fatal("no distiller built")
 	}
@@ -341,22 +339,6 @@ func TestChildModelResolverResolvesAHostedChild(t *testing.T) {
 	}
 }
 
-// TestMissionRunCloseIsSafeOnAToolsetRun: a toolset run has no sandbox to release, and
-// closing it (or a nil run) is still correct, because every caller closes what it owns.
-func TestMissionRunCloseIsSafeOnAToolsetRun(t *testing.T) {
-	var nilRun *missionRun
-	if err := nilRun.Close(); err != nil {
-		t.Fatalf("closing a nil run: %v", err)
-	}
-	var parts *missionParts
-	if err := parts.Close(); err != nil {
-		t.Fatalf("closing nil parts: %v", err)
-	}
-	if err := (&missionParts{}).Close(); err != nil {
-		t.Fatalf("closing parts with no sandbox: %v", err)
-	}
-}
-
 // TestAssembleExternalMissionWithholdsSpawn: an external harness owns its own loop, so
 // the run it drives is assembled with the same sandbox, session, toolset, and governance
 // recording as a native run, but without the spawn action: an external run cannot fan
@@ -371,17 +353,19 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	}
 	t.Cleanup(ea.close)
 
-	run, err := assembleExternalMission(ea, t.TempDir(), defaultSystemPrompt,
-		store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "", sandbox.ResourceLimits{})
+	run, err := assembly{
+		workdir: t.TempDir(), system: defaultSystemPrompt, ext: ea,
+		rstore: store.Resources(reg), jq: store.Jobs(), log: store.Log(), skills: skilltool.New(store.Skills()),
+	}.assemble(context.Background())
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
-	if run.sess == nil || run.rt == nil {
+	if run.Session() == nil || run.Runtime() == nil {
 		t.Fatal("the external run was assembled without a session or a runtime")
 	}
-	grant := run.parts.grant
+	grant := run.Grant()
 	if grant.Allows(mission.ActionSpawn) {
 		t.Fatal("an external run was granted the spawn action; its harness owns the loop and must not fan out")
 	}
@@ -393,14 +377,16 @@ func TestAssembleExternalMissionWithholdsSpawn(t *testing.T) {
 	}
 
 	// A native fan-out run, by contrast, is granted the delegation it exists to make.
-	fan, err := assembleFanoutMission(llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{},
-		t.TempDir(), defaultSystemPrompt, store.Resources(reg), store.Jobs(), store.Log(), skilltool.New(store.Skills()), "",
-		nil, sandbox.ResourceLimits{}, gateSetup{})
+	fan, err := assembly{
+		model: llmtest.NewScripted(llmtest.SayText("done")), workdir: t.TempDir(), system: defaultSystemPrompt,
+		rstore: store.Resources(reg), jq: store.Jobs(), log: store.Log(), skills: skilltool.New(store.Skills()),
+		fanout: &fanoutConfig{},
+	}.assemble(context.Background())
 	if err != nil {
 		t.Fatalf("assemble fan-out: %v", err)
 	}
 	t.Cleanup(func() { _ = fan.Close() })
-	if !fan.parts.grant.Allows(mission.ActionSpawn) {
+	if !fan.Grant().Allows(mission.ActionSpawn) {
 		t.Fatal("a fan-out run cannot delegate under its own grant")
 	}
 }
@@ -435,6 +421,7 @@ func TestRankMemoryOrdersByRelevanceThenRecency(t *testing.T) {
 // sealed into a signed record on its own stream and the resource projection is
 // snapshotted, so the run verifies from the durable store alone afterwards.
 func TestRunLearningMissionSealsAndVerifiesItsOwnRun(t *testing.T) {
+	sandboxtest.RequireConfinement(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	dataDir := t.TempDir()

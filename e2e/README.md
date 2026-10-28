@@ -56,6 +56,7 @@ end against the built binary.
 | Egress | outbound to private, link-local, and cloud-metadata addresses is refused at the dial | covered |
 | Inbound / bind | wildcard and non-loopback binds refused; an operator token is generated when none is given | covered |
 | Credential | `auth set` refuses a piped secret; the key never appears in output; a child process env is scrubbed of it | covered |
+| Credential | the default shell runs a command on every OS; `~/.ssh` is hidden from it on Linux and macOS, and on Windows the record and a notice say it was readable, and `--require-credential-hiding` refuses | covered |
 | Credential | at-rest sealed-file encryption via the CLI | not covered (see gaps) |
 | Budgets / DoS | a token ceiling halts the run with state intact; a zero ceiling is unlimited | covered |
 | Budgets / DoS | fan-out shares one ceiling; runaway circuit breaker | not covered |

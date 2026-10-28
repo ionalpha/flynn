@@ -95,7 +95,7 @@ func TestMountPointsReadsTheHostMounts(t *testing.T) {
 // them would see the sandbox's internals.
 func TestStrippedEnvRemovesEveryControlVariable(t *testing.T) {
 	controls := []string{
-		envConfine, envDir, envArgv, envReadonly, envSeccomp, envWritable,
+		envConfine, envDir, envArgv, envReadonly, envSeccomp, envWritable, envHidden,
 		envEgress, envEgressFD, envForward, envForwardFD,
 	}
 	for _, k := range controls {
@@ -285,5 +285,17 @@ func TestDecodeArgvRoundTripsAndRefusesGarbage(t *testing.T) {
 	}
 	if _, err := decodeArgv("not-base64!!"); err == nil {
 		t.Fatal("a corrupted encoding must be refused, never exec'd")
+	}
+}
+
+// confinedOpen repeats the containment check at the point of use, so a path outside the
+// root is denied even when a caller skipped resolve.
+func TestConfinedOpenDeniesAPathOutsideTheRoot(t *testing.T) {
+	l := newTestLocal(t)
+	if f, err := l.confinedOpen(filepath.Join(filepath.Dir(l.Root()), "x"), os.O_RDONLY, 0); !errors.Is(err, ErrDenied) {
+		if err == nil {
+			_ = f.Close()
+		}
+		t.Fatalf("a path outside the root must be denied, got %v", err)
 	}
 }

@@ -4,17 +4,20 @@
 # agent can host itself on any container platform with a persistent volume.
 #
 # The store driver is pure Go (modernc.org/sqlite, no cgo), so the binary builds fully
-# static with CGO_ENABLED=0 and runs on a distroless base that has no libc, no shell,
-# and no package manager to attack. Build:
+# static with CGO_ENABLED=0 and runs on a distroless base that has no libc and no
+# package manager, only busybox for the agent's commands. Build:
 #
 #   docker build -t flynn:local --build-arg VERSION=v0.1.0 .
 #
 # Both base images are pinned by @sha256 digest so a build is byte-for-byte reproducible
 # and cannot be changed under the tag; the tag is kept alongside the digest for
-# readability. Update the digest together with the tag when moving to a new base.
+# readability. Update the digest together with the tag when moving to a new base. The
+# builder's Go version matches the toolchain line in go.mod: the official golang images
+# set GOTOOLCHAIN=local, so an older image compiles with its own older Go and silently
+# misses the standard library fixes the toolchain line asks for.
 
 # ---- build stage --------------------------------------------------------------
-FROM golang:1.26.4-bookworm@sha256:b305420a68d0f229d91eb3b3ed9e519fcf2cf5461da4bef997bf927e8c0bfd2b AS build
+FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
 WORKDIR /src
 
 # Download modules first so the layer caches across source-only changes.
@@ -41,15 +44,20 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
 RUN install -d -o 65532 -g 65532 /data
 
 # ---- runtime stage ------------------------------------------------------------
-# distroless static: ~2 MB, no shell or package manager, runs as a non-root user
-# (uid 65532), and ships ca-certificates and tzdata so outbound HTTPS to model
-# providers and integrations works out of the box.
-FROM gcr.io/distroless/static-debian12:nonroot@sha256:d093aa3e30dbadd3efe1310db061a14da60299baff8450a17fe0ccc514a16639
+# distroless static, debug variant: no libc and no package manager, runs as a non-root
+# user (uid 65532), ships ca-certificates and tzdata so outbound HTTPS to model providers
+# and integrations works, and carries busybox at /busybox (on PATH). The busybox shell is
+# what the agent's commands run in: the sandbox starts every command through sh, so an
+# image without one can run no command at all. The sandbox, not the image contents, is
+# the boundary around those commands, and in a container it needs the seccomp profile in
+# deploy/seccomp (see deploy/README.md). For real project work, copy this binary into an
+# image that has your toolchain instead; busybox is the out-of-the-box minimum.
+FROM gcr.io/distroless/static-debian13:debug-nonroot@sha256:c7b8faacc4439b8f5c41ca7ce4a3f8ff3e8520cb0c3444fae7292f687b00d0dd
 
 # APP_USER selects the runtime user. The default `nonroot` (uid 65532) is the hardened
 # posture for shared-kernel hosts (Docker, Kubernetes): a Docker named volume inherits
 # the image path's ownership, so /data is writable without a chown. Some hosts instead
-# mount the data volume root-owned and offer no shell to fix it at boot (Fly.io, where
+# mount the data volume root-owned and run no init step to fix it at boot (Fly.io, where
 # every app is its own isolated Firecracker microVM). Build those with
 # `--build-arg APP_USER=root` so the process can write the volume; the microVM is the
 # isolation boundary there, not the in-VM user.
@@ -69,7 +77,8 @@ VOLUME ["/data"]
 # address (every interface) on purpose, so the API is reachable inside the container
 # (via `docker exec` or a tunnel) and is never silently exposed. Auth is on by default:
 # a bearer token is generated and logged when FLYNN_API_TOKEN is unset. To have the
-# agent answer messages, add a channel (TELEGRAM_BOT_TOKEN) and a model key
-# (ANTHROPIC_API_KEY); see deploy/README.md for remote access and hardening.
+# agent answer messages, add a channel (TELEGRAM_BOT_TOKEN) with the user ids allowed to
+# start a run (FLYNN_TELEGRAM_ALLOW) and a model key (ANTHROPIC_API_KEY); see
+# deploy/README.md for remote access and hardening.
 ENTRYPOINT ["flynn"]
 CMD ["serve", "--data-dir=/data", "--api-addr=127.0.0.1:7575"]

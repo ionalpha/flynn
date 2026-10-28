@@ -34,3 +34,34 @@ func (l *Local) revalidateOpened(f *os.File, abs string) (*os.File, error) {
 	}
 	return f, nil
 }
+
+// confinedRel returns abs relative to the root, or ErrDenied when it is not a local path
+// beneath it. resolve has already checked containment; this repeats the check at the point
+// of use, so every open and mkdir is given a path that [filepath.IsLocal] accepted rather
+// than one whose safety depends on a check made in another function. On Windows IsLocal
+// also refuses a reserved device name (NUL, COM1), which would open a device instead of a
+// file.
+func (l *Local) confinedRel(abs string) (string, error) {
+	rel, err := filepath.Rel(l.root, abs)
+	if err != nil || !filepath.IsLocal(rel) {
+		return "", ErrDenied
+	}
+	return rel, nil
+}
+
+// mkdirParents creates the missing parent directories of abs through an [os.Root] on the
+// sandbox root. A plain [os.MkdirAll] follows symlinks, so a parent swapped to a symlink
+// pointing out of the root after resolve ran would have the directories created outside
+// it; the root handle refuses any resolution that leaves the root, on every platform.
+func (l *Local) mkdirParents(abs string) error {
+	rel, err := l.confinedRel(filepath.Dir(abs))
+	if err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(l.root)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = root.Close() }()
+	return root.MkdirAll(rel, 0o750)
+}

@@ -103,14 +103,26 @@ for the durable state (SQLite store, credential vault, learned skills) so it sur
 container replacement, and pass a model key:
 
 ```sh
+base=https://github.com/ionalpha/flynn/releases/latest/download
+curl -fsSLO "$base/flynn-seccomp.json"
+curl -fsSLO "$base/flynn-apparmor-container"
+sudo apparmor_parser -r flynn-apparmor-container   # AppArmor hosts (Ubuntu, Debian)
 docker run -v flynn-data:/data \
+  --security-opt seccomp=flynn-seccomp.json \
+  --security-opt apparmor=flynn-container \
   -e ANTHROPIC_API_KEY=your-key \
   ghcr.io/ionalpha/flynn:latest
 ```
 
+The two profiles are Docker's own, each changed only so the agent's command sandbox can
+start: the seccomp profile allows `clone`, `unshare` and `mount`, and the AppArmor
+profile allows the sandbox's own mounts. Without them the agent refuses to run commands.
+On a host without AppArmor (Docker Desktop, Fedora), skip the AppArmor lines. See
+[`deploy/README.md`](deploy/README.md#the-sandbox-in-a-container).
+
 The same image is on Docker Hub as `ionalpha/flynn:latest`. Pin a version by tag
 (`:0.2.0`) instead of `latest`. The API binds loopback inside the container on purpose;
-add a channel (for example `-e TELEGRAM_BOT_TOKEN=...`) to reach the agent, or see
+add a channel (for example `-e TELEGRAM_BOT_TOKEN=... -e FLYNN_TELEGRAM_ALLOW=<your user id>`) to reach the agent, or see
 [`deploy/README.md`](deploy/README.md) for remote access and hardening.
 
 Every published manifest is keyless-signed with cosign and can be verified:
@@ -570,7 +582,12 @@ full flag list.
 Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
 `--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
 `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`, `--max-memory`,
-`--max-processes`, `--no-learn`, `--no-bundled-skills`, `--data-dir`, `--profile <dir>`.
+`--max-processes`, `--allow-network`, `--allow-credential-reads`,
+`--require-credential-hiding`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
+`--profile <dir>`. A command the agent runs has no network and, on Linux and macOS, cannot
+read `~/.ssh`, cloud and CLI login tokens or the data directory unless the matching
+`--allow-` flag is set. Windows cannot hide those paths: there they stay readable, Flynn says
+so when a run starts, and `--require-credential-hiding` refuses to run commands instead.
 Run flags go before the objective: `flynn goal --require-approval shell "deploy it"`.
 
 ## Use it as a library

@@ -66,8 +66,42 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 
-	dest := filepath.Join(dataDir, "models", weightsFileName(id, q))
-	_, _ = fmt.Fprintf(out, "fetching %s (%s, %s) from %s\n", id, q.Name, humanBytes(q.SizeBytes), q.URL)
+	path, err := fetchWeights(ctx, dataDir, m, q, out)
+	if err != nil {
+		return fmt.Errorf("models fetch: %w", err)
+	}
+
+	// Read the weights with the hardened GGUF reader, never the runtime's parser, and
+	// settle the chat template before the model is ever run. This catches a file our own
+	// reader cannot parse (so the runtime's CVE-prone parser is never handed something
+	// malformed) and surfaces whether the model ships its own template, which is
+	// overridden by the trusted one at serve time regardless.
+	_, _ = fmt.Fprintln(out, inspectWeights(path, m.ChatTemplate))
+
+	_, _ = fmt.Fprintln(out, "not started: a downloaded model is run only inside the isolation sandbox. Start it with `flynn models run "+id+"`.")
+	return nil
+}
+
+// fetchWeights downloads a quantization and returns where it landed. A single-file GGUF goes
+// through `localmodel.Host`, which refuses a quantization the catalog does not pin to a digest
+// and checks the file against it. Any other format (safetensors for the container path) is
+// fetched against its digest by the generic downloader and, as before, not opened by anything.
+func fetchWeights(ctx context.Context, dataDir string, m catalog.ModelSpec, q catalog.Quant, out io.Writer) (string, error) {
+	if q.Format == catalog.FormatGGUF && !q.MultiFile() {
+		host, err := openHost(dataDir, out)
+		if err != nil {
+			return "", err
+		}
+		defer func() { _ = host.Close() }()
+		w, err := host.EnsureWeights(ctx, m.ID, q.Name)
+		if err != nil {
+			return "", err
+		}
+		_, _ = fmt.Fprintf(out, "fetched and verified: %s\n  sha256:%s, pinned to the catalog digest\n", w.Path, w.SHA256[:12])
+		return w.Path, nil
+	}
+	dest := filepath.Join(dataDir, "models", weightsFileName(m.ID, q))
+	_, _ = fmt.Fprintf(out, "fetching %s (%s, %s)\n", m.ID, q.Name, humanBytes(q.SizeBytes))
 	res, err := fetch.New().Fetch(ctx, fetch.Request{
 		URL:          q.URL,
 		Dest:         dest,
@@ -75,24 +109,14 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 		MaxBytes:     sizeCeiling(q.SizeBytes),
 	})
 	if err != nil {
-		return fmt.Errorf("models fetch: %w", err)
+		return "", err
 	}
-
 	trust := "pinned to the catalog digest"
 	if !res.Pinned {
 		trust = "pinned on first fetch (the catalog entry had no digest, lower trust)"
 	}
 	_, _ = fmt.Fprintf(out, "fetched and verified: %s\n  %s, sha256:%s, %s\n", res.Path, humanBytes(res.Bytes), res.SHA256[:12], trust)
-
-	// Read the weights with the hardened GGUF reader, never the runtime's parser, and
-	// settle the chat template before the model is ever run. This catches a file our own
-	// reader cannot parse (so the runtime's CVE-prone parser is never handed something
-	// malformed) and surfaces whether the model ships its own template, which is
-	// overridden by the trusted one at serve time regardless.
-	_, _ = fmt.Fprintln(out, inspectWeights(res.Path, m.ChatTemplate))
-
-	_, _ = fmt.Fprintln(out, "not started: a downloaded model is run only inside the isolation sandbox. Start it with `flynn models run "+id+"`.")
-	return nil
+	return res.Path, nil
 }
 
 // inspectWeights parses the fetched weights with the hardened GGUF reader and returns a

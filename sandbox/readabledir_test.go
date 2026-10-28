@@ -35,6 +35,7 @@ func withContainerReads() LocalOption {
 func TestReadableDirGrantsConfinedRead(t *testing.T) {
 	ext, secret := writeExternalSecret(t)
 	l := newTestLocal(t, WithDefaultConfinement(), withContainerReads(), WithReadableDir(ext))
+	requireConfinedRun(t, l)
 	// The confined child can exec only a binary it can read: copy the helper into the
 	// workspace, the one location the confinement grants it outright.
 	bin := copyHelperInto(t, l.Root())
@@ -59,6 +60,7 @@ func TestReadableDirGrantsConfinedRead(t *testing.T) {
 func TestDefaultConfinementReadsTheHost(t *testing.T) {
 	_, secret := writeExternalSecret(t)
 	l := newTestLocal(t, WithDefaultConfinement())
+	requireConfinedRun(t, l)
 	bin := copyHelperInto(t, l.Root())
 	res, err := l.Capture(context.Background(), CaptureSpec{
 		Argv: []string{bin, "-test.run=TestHelperProcess"},

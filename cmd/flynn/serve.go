@@ -11,26 +11,28 @@ import (
 	"sync"
 	"time"
 
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/ids"
 	"github.com/ionalpha/flynn/inbox"
+	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/bindguard"
 	"github.com/ionalpha/flynn/internal/exposure"
-	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/internal/ops"
 	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/internal/source/signalcli"
 	"github.com/ionalpha/flynn/internal/source/telegram"
+	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/internal/version"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/reconcile"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/runtime"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -39,20 +41,21 @@ import (
 // in the working directory, and answered on the same conversation) and/or exposes
 // the read-only control-plane API for remote monitoring. Telegram and Signal are
 // the available channels today; the triage boundary accepts more sources as
-// adapters are added. Goals run with the full sandboxed toolset under the run's
-// budget; the learning loop is not yet wired into the served path.
+// adapters are added. Only senders the operator allowed start a goal. Goals run with the
+// full sandboxed toolset under the same approval and allowance gates a terminal run takes
+// and a per-goal budget; the learning loop is not yet wired into the served path.
 //
 // It blocks until interrupted (Ctrl-C), then stops the control loops.
-func runServe(args []string, modelSpec, dataDir string) error {
+func runServe(args []string, modelSpec, dataDir string, gov serveGovernance) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return runServeContext(ctx, args, modelSpec, dataDir)
+	return runServeContext(ctx, args, modelSpec, dataDir, gov)
 }
 
 // runServeContext is runServe with the shutdown signal supplied rather than installed, so the
 // server's whole lifecycle (bring-up, bind, shutdown) is drivable without sending the
 // process a signal. Cancelling ctx stops it exactly as Ctrl-C does.
-func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string) error {
+func runServeContext(ctx context.Context, args []string, modelSpec, dataDir string, gov serveGovernance) error {
 	cfg, err := parseServeConfig(args)
 	if err != nil {
 		return err
@@ -94,7 +97,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		}()
 	}
 
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -132,7 +135,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	// through its provider and a service marked stopped is torn down and retired. This
 	// runs in every mode, channels or monitor-only, because a deployed app must be
 	// supervised regardless of whether this process also answers messages.
-	_, opsLoader, err := wireExtensions(rstore, dataDir)
+	opsLoader, err := governed.OpenIntegrations(rstore, vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)))
 	if err != nil {
 		return err
 	}
@@ -144,6 +147,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 	// Assemble the configured channels as inbox sources and sinks.
 	var sources []inbox.Source
 	var sinks []inbox.Sink
+	allow := senderAllowList{}
 	if cfg.telegramToken != "" {
 		bot, err := telegram.New(cfg.telegramToken)
 		if err != nil {
@@ -151,6 +155,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		}
 		sources = append(sources, bot)
 		sinks = append(sinks, bot)
+		allow.add(bot.Name(), cfg.telegramAllow)
 	}
 	if cfg.signalTCP != "" {
 		sig, err := signalcli.New(cfg.signalTCP)
@@ -159,6 +164,7 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		}
 		sources = append(sources, sig)
 		sinks = append(sinks, sig)
+		allow.add(sig.Name(), cfg.signalAllow)
 	}
 
 	if len(sources) == 0 && cfg.apiAddr == "" {
@@ -178,15 +184,21 @@ func runServeContext(ctx context.Context, args []string, modelSpec, dataDir stri
 		return nil
 	}
 
-	return serveChannels(ctx, modelSpec, dataDir, rstore, store.Jobs(), servedLog, sources, sinks)
+	return serveChannels(ctx, modelSpec, dataDir, rstore, store.Jobs(), servedLog, sources, sinks, allow, gov)
 }
 
 // serveConfig is the parsed `flynn serve` configuration: the channel credentials and the
 // control-plane API's address, its auth (a static token or a delegation issuer key), and its
 // exposure. A flag wins over its environment fallback.
+//
+// Each channel carries the senders the operator allowed on it, and parseServeConfig refuses a
+// channel with none: the sender writes the goal's objective, so a channel open to everyone
+// hands the agent's tools to anyone who finds the bot.
 type serveConfig struct {
 	telegramToken string
+	telegramAllow []string
 	signalTCP     string
+	signalAllow   []string
 	apiAddr       string
 	apiToken      string
 	apiIssuer     string
@@ -200,7 +212,11 @@ type serveConfig struct {
 func parseServeConfig(args []string) (serveConfig, error) {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	tgToken := fs.String("telegram-token", "", "Telegram bot token (or set TELEGRAM_BOT_TOKEN)")
+	tgAllow := &stringList{}
+	fs.Var(tgAllow, "telegram-allow", "Telegram user id allowed to start a run (repeat for more, or set FLYNN_TELEGRAM_ALLOW to a comma separated list); required with --telegram-token. Numeric ids only: a username can be changed or reassigned.")
 	signalTCP := fs.String("signal-tcp", "", "signal-cli JSON-RPC daemon address, e.g. 127.0.0.1:7583")
+	sigAllow := &stringList{}
+	fs.Var(sigAllow, "signal-allow", "Signal number (+15551234567) allowed to start a run (repeat for more, or set FLYNN_SIGNAL_ALLOW to a comma separated list); required with --signal-tcp.")
 	apiAddr := fs.String("api-addr", "", "expose the read-only control-plane API here, loopback recommended, e.g. 127.0.0.1:7575")
 	apiToken := fs.String("api-token", "", "bearer token for the control-plane API (or set FLYNN_API_TOKEN)")
 	apiIssuer := fs.String("api-issuer", "", "accept delegated capability tokens issued under this operator public key (ed25519:...); enables scope-attenuated remote drive instead of a static read-only token")
@@ -226,14 +242,45 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if apiIss != "" && apiTok != "" {
 		return serveConfig{}, errors.New("serve: --api-token and --api-issuer are mutually exclusive: a static bearer is capped at read scope, an issuer key accepts scope-attenuated delegated tokens; choose one trust model")
 	}
-	return serveConfig{
+	cfg := serveConfig{
 		telegramToken: token,
 		signalTCP:     *signalTCP,
 		apiAddr:       *apiAddr,
 		apiToken:      apiTok,
 		apiIssuer:     apiIss,
 		apiExpose:     *apiExpose,
-	}, nil
+	}
+	var err error
+	if cfg.telegramAllow, err = channelAllow("telegram", token != "", tgAllow.values, "FLYNN_TELEGRAM_ALLOW", parseTelegramAllow); err != nil {
+		return serveConfig{}, err
+	}
+	if cfg.signalAllow, err = channelAllow("signal", *signalTCP != "", sigAllow.values, "FLYNN_SIGNAL_ALLOW", parseSignalAllow); err != nil {
+		return serveConfig{}, err
+	}
+	return cfg, nil
+}
+
+// channelAllow resolves one channel's allow-list: the flag's values, or the environment
+// fallback when the flag was not given. A configured channel with no allowed sender is
+// refused by name, which is the fail-closed half of the rule: there is no default that lets
+// everyone in. An allow-list on a channel that is not configured is ignored, since nothing
+// reads it.
+func channelAllow(channel string, configured bool, flagValues []string, env string, parse func([]string) ([]string, error)) ([]string, error) {
+	if !configured {
+		return nil, nil
+	}
+	values := flagValues
+	if len(values) == 0 {
+		values = splitList(os.Getenv(env))
+	}
+	ids, err := parse(values)
+	if err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("serve: the %s channel needs an allow-list: name who may start a run with --%s-allow (or %s); a message from anyone else would run with this agent's tools", channel, channel, env)
+	}
+	return ids, nil
 }
 
 // startControlPlaneAPI opens the read-only control-plane API on cfg.apiAddr and serves it until
@@ -305,11 +352,11 @@ func startControlPlaneAPI(ctx context.Context, rstore resource.Store, servedLog 
 	return nil
 }
 
-// serveChannels drives the message-answering path: it resolves the model and goal runtime, then
-// records every inbound message from sources, triages each into a goal run in the working
-// directory, and replies with the answer on the channel it arrived from. It blocks until ctx is
-// cancelled.
-func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink) error {
+// serveChannels drives the message-answering path: it resolves the model, then records every
+// inbound message from an allowed sender on sources, triages each into a goal run in the
+// working directory, and replies with the answer on the channel it arrived from. It blocks
+// until ctx is cancelled.
+func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resource.Store, jq jobs.Queue, servedLog spine.Log, sources []inbox.Source, sinks []inbox.Sink, allow senderAllowList, gov serveGovernance) error {
 	// Channels need a model and the goal runtime that executes a triaged entry.
 	model, plan, _, err := resolveModelOrOnboard(ctx, modelSpec, modelSpecExplicit, dataDir)
 	if err != nil {
@@ -319,35 +366,10 @@ func serveChannels(ctx context.Context, modelSpec, dataDir string, rstore resour
 	if err != nil {
 		return err
 	}
-	// A served conversation has no operator at a terminal, so it carries no approval
-	// policy and no prompter. Adding one here would need a way to reach whoever is on
-	// the other end of the channel, which is a different mechanism from a modal prompt.
-	mr, err := assembleMission(model, plan, workdir, "", rstore, jq, servedLog, nil, "", sandbox.ResourceLimits{}, false, false, gateSetup{})
-	if err != nil {
-		return err
-	}
-	defer func() { _ = mr.Close() }()
-	rt := mr.rt
-
-	// Triage turns each recorded entry into a goal and replies with its answer on the
-	// channel it arrived from.
-	worker := &goalWorker{rt: rt, store: rstore}
-	triage := inbox.NewTriage(rstore, worker, inbox.NewSinks(sinks...), clock.System{})
-	mgr := reconcile.NewManager(rstore)
-	mgr.Register(inbox.Kind, triage)
-
-	// Ingest records inbound messages from every source and enqueues them for triage.
-	ingest := inbox.NewIngest(rstore, mgr, clock.System{}, sources,
-		inbox.WithIngestErrorHandler(func(e error) { fmt.Fprintln(os.Stderr, "serve:", e) }))
-
-	go func() { _ = rt.Start(ctx) }()
-	go func() { mgr.Start(ctx) }()
-
-	fmt.Fprintln(os.Stderr, "flynn serve: answering messages; press Ctrl-C to stop")
-	if err := ingest.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		return err
-	}
-	return nil
+	return serveIntake{
+		model: model, plan: plan, workdir: workdir, rstore: rstore, jq: jq, log: servedLog,
+		sources: sources, sinks: sinks, allow: allow, gov: gov, notice: os.Stderr,
+	}.run(ctx)
 }
 
 // instanceReporter derives this process's live run-state from the goals it owns. A
@@ -393,13 +415,28 @@ func instanceReporter(store resource.Store, instanceID string) instance.Reporter
 type goalWorker struct {
 	rt    *runtime.Runtime
 	store resource.Store
+	// budgets and limits give each goal its own spend ceiling. A goal with no pool is
+	// unlimited, and a pool shared by every goal would let one message spend what the
+	// rest were owed.
+	budgets *budgetpkg.Ledger
+	limits  budgetpkg.Limits
+	// allowances are the irreversible actions the operator declared in advance with --allow.
+	allowances []goal.Allowance
 }
 
-// Start submits the objective as a goal and returns the goal's name as the handle.
-func (w *goalWorker) Start(ctx context.Context, _, objective string) (string, error) {
+// Start submits the objective as a goal charged to a budget pool of its own, and returns the
+// goal's name as the handle. The pool is named after the entry, and opening one that exists
+// returns it, so a start retried after a failed write reuses the pool and its spend.
+func (w *goalWorker) Start(ctx context.Context, entry, objective string) (string, error) {
+	pool := servedPoolPrefix + entry
+	if _, err := w.budgets.Open(ctx, pool, resource.Scope{}, w.limits); err != nil {
+		return "", fmt.Errorf("serve: open goal budget: %w", err)
+	}
 	g, err := w.rt.SubmitGoal(ctx, "", goal.Spec{
 		Objective:     objective,
-		StopCondition: defaultStopCondition,
+		StopCondition: governed.DefaultStopCondition,
+		BudgetPool:    pool,
+		Allowances:    w.allowances,
 	})
 	if err != nil {
 		return "", err

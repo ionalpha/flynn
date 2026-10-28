@@ -12,9 +12,10 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/extension"
 	"github.com/ionalpha/flynn/extension/catalog"
-	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
@@ -216,8 +217,8 @@ func parseCallArgs(args []string) (callRequest, error) {
 // runtimeOptions builds the runtime grants the request asks for. The signer grant reads
 // *routed when the worker mounts, not now, so the caller assigns it after mounting the
 // signer.
-func (r callRequest) runtimeOptions(routed *extension.HostSigner) ([]extRuntimeOption, error) {
-	opts := []extRuntimeOption{withEgressGrant(r.egress)}
+func (r callRequest) runtimeOptions(routed *extension.HostSigner) ([]governed.ExtensionOption, error) {
+	opts := []governed.ExtensionOption{governed.WithExtensionEgress(r.egress)}
 	if r.signer != "" {
 		o, err := r.signerOption(routed)
 		if err != nil {
@@ -240,12 +241,12 @@ func (r callRequest) runtimeOptions(routed *extension.HostSigner) ([]extRuntimeO
 // No policy is configured, and none exists to configure. The signer holds the key AND
 // the parser, so it judges the payload itself; a policy here would mean this process
 // understood the transaction format, which is exactly what routing the key away removes.
-func (r callRequest) signerOption(routed *extension.HostSigner) (extRuntimeOption, error) {
+func (r callRequest) signerOption(routed *extension.HostSigner) (governed.ExtensionOption, error) {
 	if r.signer == r.name {
 		return nil, errors.New("extensions: an extension cannot be its own signer: the component that builds " +
 			"a transaction must not be the one that decides to sign it, or it is vouching for its own work")
 	}
-	return withHostSigner(func(ext, tool string) extension.HostSigner {
+	return governed.WithExtensionSigner(func(ext, tool string) extension.HostSigner {
 		if r.isCalledTool(ext, tool) {
 			return *routed
 		}
@@ -256,7 +257,7 @@ func (r callRequest) signerOption(routed *extension.HostSigner) (extRuntimeOptio
 // fetcherOption lends the called tool the host's network access to the one endpoint. The
 // grant is for THIS tool only. Every other mounted tool gets nil, so it borrows no network
 // at all: default-deny, one authority, one destination.
-func (r callRequest) fetcherOption() (extRuntimeOption, error) {
+func (r callRequest) fetcherOption() (governed.ExtensionOption, error) {
 	var fopts []extension.FetcherOption
 	if r.localEndpoint {
 		fopts = append(fopts, extension.WithPrivateEndpoint())
@@ -265,7 +266,7 @@ func (r callRequest) fetcherOption() (extRuntimeOption, error) {
 	if err != nil {
 		return nil, err
 	}
-	return withHostFetcher(func(ext, tool string) extension.HostFetcher {
+	return governed.WithExtensionFetcher(func(ext, tool string) extension.HostFetcher {
 		if r.isCalledTool(ext, tool) {
 			return fetcher
 		}
@@ -590,117 +591,31 @@ type extensionRuntime struct {
 	close          func() error
 }
 
-// extRuntimeOptions configures a runtime built by openExtensionRuntime.
-type extRuntimeOptions struct {
-	egressGrant []string
-	hostSigner  func(ext, tool string) extension.HostSigner
-	hostFetcher func(ext, tool string) extension.HostFetcher
-}
-
-// extRuntimeOption customizes the runtime.
-type extRuntimeOption func(*extRuntimeOptions)
-
-// withEgressGrant sets the operator's outbound host allow-list for a launched
-// extension. The effective egress is this grant intersected with the spec's request, so
-// a grant can only narrow what the spec asks for, never widen it, and the default (no
-// grant) launches every extension with egress fully denied.
-func withEgressGrant(hosts []string) extRuntimeOption {
-	return func(o *extRuntimeOptions) { o.egressGrant = hosts }
-}
-
-// withHostSigner grants a host-held signing key to specific mounted tools. fn returns the
-// signer a tool may obtain signatures from, or nil for a tool that does not sign. The key
-// stays in the host; a tool that builds something needing a signature hands out the bytes and
-// receives only the signature back. The default (no fn) leaves every tool non-signing.
-func withHostSigner(fn func(ext, tool string) extension.HostSigner) extRuntimeOption {
-	return func(o *extRuntimeOptions) { o.hostSigner = fn }
-}
-
-// withHostFetcher grants a host-held endpoint to specific mounted tools. fn returns the fetcher a
-// tool may send requests through, or nil for a tool that borrows no network. The endpoint stays in
-// the host: a tool that needs to reach a service hands out the request bytes and receives the
-// response, and it never names, and cannot influence, the destination. This is how an extension
-// speaks to a service while running with its own egress fully denied. The default (no fn) leaves
-// every tool network-free.
-func withHostFetcher(fn func(ext, tool string) extension.HostFetcher) extRuntimeOption {
-	return func(o *extRuntimeOptions) { o.hostFetcher = fn }
-}
-
-// openExtensionRuntime opens the durable store, syncs the bundled catalog, and wires a
-// loader whose only surface handler is the process handler: it resolves a released
-// extension by downloading it and proving its origin (ReleaseResolver, pinned signing
-// identity), or a dev extension by its local path (DevResolver, unsigned but explicitly
-// opted in here), and launches whichever it got confined (SandboxLauncher,
-// refuse-rather-than-downgrade). A spec that declares a release is never satisfied by a
-// local binary, so this path cannot be talked into running unverified remote code. The
-// scratch jail for each launch lives under the data directory and is removed when the
-// connection stops.
-func openExtensionRuntime(ctx context.Context, dataDir string, opts ...extRuntimeOption) (*extensionRuntime, error) {
-	var cfg extRuntimeOptions
-	for _, opt := range opts {
-		opt(&cfg)
-	}
-
+// openExtensionRuntime opens the durable store and builds the extension runtime over it
+// with [governed.OpenExtensions], which owns how an extension is resolved, launched and
+// confined. What stays here is the store's lifetime.
+func openExtensionRuntime(ctx context.Context, dataDir string, opts ...governed.ExtensionOption) (*extensionRuntime, error) {
 	durable, err := openDataStore(ctx, dataDir)
 	if err != nil {
 		return nil, err
 	}
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		_ = durable.Close()
 		return nil, err
 	}
 	store := durable.Resources(reg)
-	// Sync the bundled catalog, so an official extension shipped with this binary is
-	// listable and callable out of the box, exactly like a bundled API integration. A
-	// bundled process extension names a signed release and resolves through verification;
-	// syncing it installs nothing and downloads nothing, it only records that flynn knows
-	// of it.
-	if _, err := catalog.Sync(ctx, store); err != nil {
-		_ = durable.Close()
-		return nil, err
-	}
-
-	workRoot := filepath.Join(dataDir, "extension-run")
-	if err := os.MkdirAll(workRoot, 0o700); err != nil {
-		_ = durable.Close()
-		return nil, fmt.Errorf("extensions: create run directory: %w", err)
-	}
-
-	ereg := extension.NewRegistry()
-	procOpts := []extension.ProcessOption{
-		extension.WithEgressGrant(cfg.egressGrant),
-	}
-	if cfg.hostSigner != nil {
-		procOpts = append(procOpts, extension.WithHostSigner(cfg.hostSigner))
-	}
-	if cfg.hostFetcher != nil {
-		procOpts = append(procOpts, extension.WithHostFetcher(cfg.hostFetcher))
-	}
-	// A published extension resolves through signature verification against the pinned
-	// first-party origin; a dev-linked one resolves only under the explicit dev opt-in.
-	// A spec that declares a release is never satisfied by a local binary, so a stray dev
-	// block cannot downgrade a signed extension to an unsigned one.
-	handler := extension.NewProcessHandler(
-		extension.NewSandboxLauncher(workRoot),
-		extension.SourceResolver{
-			Release: extension.ReleaseResolver{
-				Origin:     extension.DefaultOrigin,
-				Dir:        filepath.Join(dataDir, "extensions"),
-				Downloader: fetch.New(),
-			},
-			Dev: extension.DevResolver{Enabled: true},
-		},
-		procOpts...,
-	)
-	if err := ereg.Register(handler); err != nil {
+	// The binary is the developer's own tool: `extensions link` names a local build, so it
+	// opts into dev sources, which an embedder of governed.OpenExtensions does not by default.
+	exts, err := governed.OpenExtensions(ctx, store, dataDir, append([]governed.ExtensionOption{governed.WithDevExtensions()}, opts...)...)
+	if err != nil {
 		_ = durable.Close()
 		return nil, err
 	}
 	return &extensionRuntime{
 		store:          store,
-		loader:         extension.NewLoader(ereg),
-		procs:          handler,
+		loader:         exts.Loader,
+		procs:          exts.Process,
 		grantSignerKey: sandbox.GrantSealedKeyReadable,
 		close:          durable.Close,
 	}, nil

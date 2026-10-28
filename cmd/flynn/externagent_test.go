@@ -122,17 +122,6 @@ func TestReadinessError(t *testing.T) {
 	})
 }
 
-// TestExternalModel returns the CLI's model string for an external backend and empty
-// for a native run, so the submitted goal pins the model only when one was selected.
-func TestExternalModel(t *testing.T) {
-	if got := externalModel(nil); got != "" {
-		t.Errorf("externalModel(nil) = %q, want empty", got)
-	}
-	if got := externalModel(&externAgent{model: "gpt-5-codex"}); got != "gpt-5-codex" {
-		t.Errorf("externalModel = %q, want gpt-5-codex", got)
-	}
-}
-
 // TestNewExternalAgent builds a driver for a known backend and refuses an unknown one,
 // so a misnamed backend fails at assembly rather than running the wrong loop. The CLIs
 // are taken off the PATH: assembly must not depend on what this machine has installed,

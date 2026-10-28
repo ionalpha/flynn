@@ -16,8 +16,8 @@ import (
 // confinement is applied through a blocking launch that yields no backgroundable handle).
 // Serve refuses rather than starting the server at the directory-jail floor while the
 // sandbox reports the confined tier. It is a governance refusal (Forbidden), like the
-// other confinement-unsupported refusals; the always-on best-effort baseline is exempt
-// and drops to the floor instead.
+// other confinement-unsupported refusals; only [WithBestEffortConfinement] drops to the
+// floor instead.
 var errServeConfineUnsupported = fault.New(fault.Forbidden, "sandbox_serve_confine_unsupported",
 	"sandbox: kernel confinement cannot be applied to a background process on this platform; refusing rather than serving the process unconfined")
 
@@ -73,39 +73,34 @@ const tailBufferCap = 16 << 10 // 16 KiB
 // Where a platform cannot carry its confinement onto a backgroundable handle (Windows,
 // whose AppContainer is applied through a blocking launch), an explicitly confined Serve is
 // refused rather than started at the directory-jail floor under a tier the trust gate relied
-// on; only the always-on best-effort baseline may drop to the floor, as in Exec.
+// on; only [WithBestEffortConfinement] may drop to the floor, as in Exec.
 func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return nil, errors.New("sandbox: serve: no command")
 	}
 	// Governed egress fails closed on a platform without an enforcement leg.
-	if err := l.guardEgress(); err != nil {
+	if err := l.guardLaunch(); err != nil {
 		return nil, err
 	}
 	// Egress requires the confined path (its OS-level denial composes into confine)
 	// whenever it is configured, regardless of spec.Confine, and like Exec is never
-	// weakened by the best-effort fallback.
+	// weakened by the opt-in fallback.
 	confine := l.egress != nil || (spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp))
 	// On a platform that cannot apply its kernel confinement to a backgrounded process,
 	// startProcess would run the server unconfined while the sandbox still reported the
-	// confined tier. Rather than that silent drop, refuse the launch. The always-on
-	// baseline alone (best-effort, with no egress and no explicit network denial) is
-	// allowed to fall to the directory-jail floor, exactly as Exec's fallback permits;
-	// an explicit request, governed egress, or a network denial fails closed here.
+	// confined tier. Rather than that silent drop, refuse the launch. Only the opt-in
+	// (with no egress and no network denial) falls to the directory-jail floor, and it
+	// reports having done so.
 	if confine && !backgroundConfinementExpressible() {
-		if l.egress != nil || l.denyNetwork || !l.confineBestEffort {
+		if !l.fallBackUnexpressible(errServeConfineUnsupported) {
 			return nil, errServeConfineUnsupported
 		}
 		return l.startProcess(spec.Argv, false)
 	}
 	p, err := l.startProcess(spec.Argv, confine)
-	// A confined server that could not start under the always-on baseline falls back to
-	// the directory-jail floor, exactly as Exec does: the failed attempt never ran, so
-	// there is nothing to undo. The same controls Exec refuses to weaken are excluded:
-	// egress and an explicit network denial must not drop to an open-network run, and a
-	// sandbox reporting the kernel-confined tier must fail closed rather than serve a
-	// process unconfined under a guarantee the trust gate already relied on.
-	if err != nil && confine && l.confineBestEffort && l.egress == nil && !l.denyNetwork && !l.kernelConfinementEnforceable() && !errors.Is(err, ErrReadGrant) {
+	// A confined launch that could not start (an error, not a non-zero exit) runs again at
+	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	if l.fallBack(err, confine) {
 		return l.startProcess(spec.Argv, false)
 	}
 	return p, err

@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bufio"
 	"context"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,19 @@ import (
 	"testing"
 	"time"
 )
+
+// reportDial connects to "network:address" and reports "dialed" or "dialerr", for the tests
+// that check an endpoint of the host cannot be reached from inside the sandbox.
+func reportDial(spec string) {
+	network, address, _ := strings.Cut(spec, ":")
+	conn, err := net.DialTimeout(network, address, 2*time.Second)
+	if err != nil {
+		_, _ = os.Stdout.WriteString("dialerr\n")
+		return
+	}
+	_ = conn.Close()
+	_, _ = os.Stdout.WriteString("dialed\n")
+}
 
 // TestHelperProcess is the child end of the streaming tests: re-executed as a subprocess
 // (never a real test), it emits lines, optionally sleeps, optionally echoes a granted
@@ -38,6 +52,9 @@ func TestHelperProcess(_ *testing.T) {
 		} else {
 			_, _ = os.Stdout.WriteString("readerr\n")
 		}
+	}
+	if spec := os.Getenv("HELPER_DIAL"); spec != "" {
+		reportDial(spec)
 	}
 	if p := os.Getenv("HELPER_WRITEFILE"); p != "" {
 		// Report whether a file outside the workspace can be written, for the writable-dir
@@ -164,6 +181,7 @@ func TestStreamGrantsEnvButScrubsHost(t *testing.T) {
 
 func TestStreamConfinedProducesOutput(t *testing.T) {
 	l := newTestLocal(t, WithDefaultConfinement())
+	requireConfinedRun(t, l)
 	p, err := l.Stream(context.Background(), StreamSpec{Argv: echoArgv("confined-ok"), Confine: true})
 	if err != nil {
 		t.Fatalf("Stream confined: %v", err)
@@ -179,6 +197,7 @@ func TestStreamConfinedProducesOutput(t *testing.T) {
 
 func TestStreamConfinedCancelKills(t *testing.T) {
 	l := newTestLocal(t, WithDefaultConfinement())
+	requireConfinedRun(t, l)
 	// A confined child can exec only a binary it can read: on Windows the AppContainer
 	// cannot read the test binary in its temp dir, so copy the helper into the working
 	// directory, the one location the confinement grants it.

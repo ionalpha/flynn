@@ -4,9 +4,13 @@ package sandbox
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -269,7 +273,8 @@ func namespaceUnavailable(msg string) bool {
 		strings.Contains(msg, "permission denied") ||
 		strings.Contains(msg, "invalid argument") ||
 		strings.Contains(msg, "no such") ||
-		strings.Contains(msg, "clone")
+		strings.Contains(msg, "clone") ||
+		strings.Contains(msg, "confinement refused")
 }
 
 // confinementEnforceable reports whether this host actually sets up the kernel
@@ -285,4 +290,98 @@ func confinementEnforceable(t *testing.T) bool {
 	}
 	_, err = sb.Exec(context.Background(), Command{Line: "true"})
 	return err == nil
+}
+
+// TestKeepRestrictiveSelectsOnlyFlagsThatTakeAwayCapability holds the mask to the flags
+// that restrict a mount: keeping a flag across a remount can never grant anything, so the
+// mask must not pass the read-only flag (the one the launcher changes on purpose) or any
+// flag that loosens a mount.
+func TestKeepRestrictiveSelectsOnlyFlagsThatTakeAwayCapability(t *testing.T) {
+	tests := []struct {
+		name  string
+		flags uint64
+		want  uintptr
+	}{
+		{"none", 0, 0},
+		{"nosuid", syscall.MS_NOSUID, syscall.MS_NOSUID},
+		{"nosuid nodev noexec", syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC, syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC},
+		{"noatime nodiratime", syscall.MS_NOATIME | syscall.MS_NODIRATIME, syscall.MS_NOATIME | syscall.MS_NODIRATIME},
+		{"read-only is not kept", syscall.MS_RDONLY | syscall.MS_NOSUID, syscall.MS_NOSUID},
+		{"relatime and sync are not kept", syscall.MS_RELATIME | syscall.MS_SYNCHRONOUS | syscall.MS_MANDLOCK, 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := keepRestrictive(tc.flags); got != tc.want {
+				t.Fatalf("keepRestrictive(%#x) = %#x, want %#x", tc.flags, got, tc.want)
+			}
+		})
+	}
+}
+
+// envLockedMountDir marks the helper process of
+// TestReadOnlyFSSucceedsOnAMountWithLockedFlags and names the directory it works in.
+const envLockedMountDir = "FLYNN_TEST_LOCKED_MOUNT_DIR"
+
+// exitHelperUnavailable is the helper's exit code when it cannot build the situation the
+// test needs (its own namespaces or mount), as against the launch under test failing.
+const exitHelperUnavailable = 77
+
+// TestReadOnlyFSSucceedsOnAMountWithLockedFlags reproduces what a service unit with
+// NoNewPrivileges=true does to the launcher: the working directory sits on a nosuid mount
+// that was made outside the launcher's user namespace, so the kernel locks the flag. A
+// remount that clears it fails with EPERM, and the launcher refused every launch. The
+// helper process stands in for the service: it mounts a nosuid tmpfs in its own user and
+// mount namespaces, then runs a confined command whose working directory is on it.
+func TestReadOnlyFSSucceedsOnAMountWithLockedFlags(t *testing.T) {
+	if dir := os.Getenv(envLockedMountDir); dir != "" {
+		os.Exit(lockedMountHelper(dir))
+	}
+	//nolint:gosec // re-executing the test binary is the helper-process pattern
+	c := exec.Command(os.Args[0], "-test.run=^TestReadOnlyFSSucceedsOnAMountWithLockedFlags$")
+	c.Env = append(os.Environ(), envLockedMountDir+"="+t.TempDir())
+	c.SysProcAttr = &syscall.SysProcAttr{
+		Cloneflags:  syscall.CLONE_NEWUSER | syscall.CLONE_NEWNS,
+		UidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}},
+		GidMappings: []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}},
+	}
+	out, err := c.CombinedOutput()
+	var exit *exec.ExitError
+	switch {
+	case err == nil:
+	case !errors.As(err, &exit):
+		t.Skipf("cannot start a process in new user and mount namespaces here: %v", err)
+	case exit.ExitCode() == exitHelperUnavailable:
+		t.Skipf("cannot build a nosuid mount in a user namespace here:\n%s", out)
+	default:
+		t.Fatalf("a confined command on a mount with locked flags failed: %v\n%s", err, out)
+	}
+}
+
+// lockedMountHelper is the body of the helper process. It returns the process exit code.
+func lockedMountHelper(dir string) int {
+	fail := func(code int, format string, args ...any) int {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+		return code
+	}
+	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
+		return fail(exitHelperUnavailable, "make mounts private: %v", err)
+	}
+	if err := syscall.Mount("tmpfs", dir, "tmpfs", syscall.MS_NOSUID|syscall.MS_NODEV, ""); err != nil {
+		return fail(exitHelperUnavailable, "mount nosuid tmpfs: %v", err)
+	}
+	l, err := NewLocal(dir, withoutGate(), WithReadOnlyFS())
+	if err != nil {
+		return fail(1, "new local: %v", err)
+	}
+	res, err := l.Exec(context.Background(), Command{Line: "echo ok > made.txt"})
+	if err != nil {
+		return fail(1, "exec: %v", err)
+	}
+	if res.ExitCode != 0 {
+		return fail(1, "exit %d:\n%s", res.ExitCode, res.Output)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "made.txt")); err != nil {
+		return fail(1, "the write did not land: %v", err)
+	}
+	return 0
 }

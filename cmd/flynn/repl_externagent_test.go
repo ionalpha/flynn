@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/externagent"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
@@ -27,7 +29,7 @@ func extSession(t *testing.T, backend, cliModel string) *replSession {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = store.Close() })
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		t.Fatal(err)
 	}

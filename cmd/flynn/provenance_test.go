@@ -10,6 +10,7 @@ import (
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/externagent"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -104,7 +105,7 @@ func TestAttestedSinkRoundTrip(t *testing.T) {
 
 	const stream = "run/attested"
 	const line = `{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}`
-	sink := &attestedSink{log: store.Log(), stream: stream}
+	sink := governed.NewAttestedSink(store.Log(), stream)
 	if err := sink.Record(ctx, externagent.Event{
 		Kind: externagent.EventText,
 		Tier: externagent.TierAttested,
@@ -150,7 +151,7 @@ func TestAttestedSinkTruncatesLargeLines(t *testing.T) {
 
 	const stream = "run/big"
 	line := `{"text":"` + strings.Repeat("x", 2*chain.AttestedRawLimit) + `"}`
-	sink := &attestedSink{log: store.Log(), stream: stream}
+	sink := governed.NewAttestedSink(store.Log(), stream)
 	if err := sink.Record(ctx, externagent.Event{Kind: externagent.EventText, Tier: externagent.TierAttested, Raw: json.RawMessage(line)}); err != nil {
 		t.Fatalf("Record: %v", err)
 	}
@@ -193,9 +194,9 @@ func TestAttestedDeclarationMatchesRecordedEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newExternalAgent: %v", err)
 	}
-	recordAttestedEvents(ea, store.Log(), stream)
+	governed.RecordAttested(ea.driver, store.Log(), stream)
 
-	sink := &attestedSink{log: store.Log(), stream: stream}
+	sink := governed.NewAttestedSink(store.Log(), stream)
 	lines := []string{`{"type":"thread.started"}`, `{"type":"item.completed"}`, `{"type":"turn.completed"}`}
 	for _, line := range lines {
 		if rerr := sink.Record(ctx,

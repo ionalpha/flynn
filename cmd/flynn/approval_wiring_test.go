@@ -15,7 +15,6 @@ import (
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -190,25 +189,27 @@ func driveRun(t *testing.T, appr gateSetup) (string, spine.Log, string) {
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi"}`)),
 		llmtest.SayText("done"),
 	)
-	run, err := assembleMission(model, harness.Plan{}, dir, defaultSystemPrompt,
-		rstore, store.Jobs(), log, nil, "", sandbox.ResourceLimits{}, false, false, appr)
+	run, err := assembly{
+		model: model, workdir: dir, system: defaultSystemPrompt,
+		rstore: rstore, jq: store.Jobs(), log: log, gates: appr,
+	}.assemble(ctx)
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
 	done := make(chan struct{})
-	go func() { _ = run.rt.Start(ctx); close(done) }()
+	go func() { _ = run.Runtime().Start(ctx); close(done) }()
 	defer func() { cancel(); <-done }()
 
-	if _, err := run.rt.SubmitGoal(ctx, run.sess.ID(), goal.Spec{
+	if _, err := run.Runtime().SubmitGoal(ctx, run.ID(), goal.Spec{
 		Objective:     "write hello.txt",
 		StopCondition: "the file is written",
 	}); err != nil {
 		t.Fatalf("submit: %v", err)
 	}
-	waitForSettled(ctx, t, rstore, run.sess.ID())
-	return dir, log, run.sess.ID()
+	waitForSettled(ctx, t, rstore, run.ID())
+	return dir, log, run.ID()
 }
 
 // waitForSettled polls until the goal stops running, either way. A refused action is a
@@ -261,4 +262,59 @@ func lastApprovalDecision(t *testing.T, log spine.Log, stream string) map[string
 		t.Fatal("the gate reached a decision and recorded nothing")
 	}
 	return events[len(events)-1].Payload
+}
+
+// TestRunRefusesAGateNamingAnActionItDoesNotOffer is the binary's side of the refusal: a
+// --require-approval or --irreversible name that no tool carries gates nothing, so the
+// run is not assembled, and the error lists the actions it does offer. "shell" is the
+// name the help once suggested and no tool answers to it.
+func TestRunRefusesAGateNamingAnActionItDoesNotOffer(t *testing.T) {
+	tests := []struct {
+		name  string
+		gates gateSetup
+		want  string
+	}{
+		{"approval", gateSetup{approve: []string{"shell"}}, "WithApproval names shell"},
+		{"irreversible", gateSetup{outside: []string{"shell"}}, "WithAllowance names shell"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := memStore(t)
+			run, err := assembly{
+				model: llmtest.NewScripted(llmtest.SayText("unreachable")), workdir: t.TempDir(),
+				system: defaultSystemPrompt, rstore: store.Resources(mustRegistry(t)),
+				jq: store.Jobs(), log: store.Log(), gates: tt.gates,
+			}.assemble(context.Background())
+			if err == nil {
+				_ = run.Close()
+				t.Fatal("a gate naming an action the run does not offer was accepted")
+			}
+			if !strings.Contains(err.Error(), tt.want) || !strings.Contains(err.Error(), "bash") {
+				t.Fatalf("err = %q, want %q and the offered actions", err, tt.want)
+			}
+		})
+	}
+}
+
+// TestAllowNamesMustBeMarked: --allow authorizes an action only where --irreversible marks
+// it, so a name that nothing marks is refused instead of reading as an authorization.
+func TestAllowNamesMustBeMarked(t *testing.T) {
+	tests := []struct {
+		name             string
+		outside, allowed []string
+		ok               bool
+	}{
+		{"paired", []string{"bash"}, []string{"bash"}, true},
+		{"padding ignored", []string{"bash"}, []string{" bash "}, true},
+		{"nothing allowed", []string{"bash"}, nil, true},
+		{"allowed but not marked", nil, []string{"bash"}, false},
+		{"a different action marked", []string{"write"}, []string{"bash"}, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := checkAllowedAreMarked(tt.outside, tt.allowed); (err == nil) != tt.ok {
+				t.Fatalf("err = %v, want ok=%v", err, tt.ok)
+			}
+		})
+	}
 }

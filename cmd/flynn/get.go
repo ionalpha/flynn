@@ -10,12 +10,14 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/controlplane"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/inbox"
+	"github.com/ionalpha/flynn/instance"
 	"github.com/ionalpha/flynn/internal/archetype"
 	"github.com/ionalpha/flynn/internal/credential"
-	"github.com/ionalpha/flynn/internal/instance"
 	"github.com/ionalpha/flynn/internal/profilestore"
 	"github.com/ionalpha/flynn/internal/service"
 	"github.com/ionalpha/flynn/internal/version"
@@ -148,7 +150,7 @@ func getResources(out io.Writer, args []string, dataDir string) error {
 		return err
 	}
 	defer func() { _ = durable.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -186,7 +188,7 @@ func describeResource(out io.Writer, args []string, dataDir string) error {
 		return err
 	}
 	defer func() { _ = durable.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}
@@ -227,7 +229,7 @@ func diffResources(out io.Writer, args []string, dataDir string) error {
 		return err
 	}
 	defer func() { _ = durable.Close() }()
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return err
 	}

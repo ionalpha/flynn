@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/chain"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/theme"
@@ -50,7 +51,7 @@ type replSession struct {
 	// mem is the session's memory: the curated write path and the wake digest over
 	// it. Every read and write of memory in a session goes through this rather than
 	// through store.Memory(), which is the raw durable store with no write policy.
-	mem   *memoryStack
+	mem   *governed.MemoryStack
 	reg   *resource.Registry
 	keys  editor.Keymap // composer bindings; nil selects the default map
 	theme *theme.Theme  // session theme; nil selects the default theme
@@ -60,6 +61,11 @@ type replSession struct {
 	// failing. dataDir roots the store the run is verified from.
 	signer  chain.RootSigner
 	dataDir string
+
+	// shell is what the commands every turn's tools run are kept away from. It is the
+	// session's for its whole life, so a turn cannot assemble a looser sandbox than the
+	// session was started with.
+	shell governed.ShellPolicy
 
 	// modelSpec is the "provider:model" string of the model the session currently
 	// drives, shown by /model and updated when /model switches it.
@@ -119,9 +125,9 @@ type replSession struct {
 // notice sink is not known when the session is constructed, and because a session
 // assembled by hand (a test, a host embedding the shell) then gets the same
 // memory the front door does rather than none.
-func (s *replSession) memory() *memoryStack {
+func (s *replSession) memory() *governed.MemoryStack {
 	if s.mem == nil {
-		s.mem = newMemoryStack(s.store.Memory(), func(_ context.Context, n curate.Notice) {
+		s.mem = governed.NewMemoryStack(s.store.Memory(), func(_ context.Context, n curate.Notice) {
 			if s.notice != nil {
 				s.notice("memory: " + n.Detail)
 				return

@@ -71,16 +71,17 @@ jobs:
       fail-fast: false
       matrix:
         os: ${{ fromJSON(needs.setup.outputs.platforms) }}
-        # Floor is Go 1.26: it makes the Green Tea GC the default and adds
-        # crypto/hpke to the standard library, and satisfies modernc.org/sqlite.
-        go: ["1.26"]
+        # The toolchain line in go.mod (the Go the release is built with). The go
+        # line stays at 1.26, the floor for an importer: it makes the Green Tea GC
+        # the default, adds crypto/hpke, and satisfies modernc.org/sqlite.
+        go: ["1.27"]
     steps:
       # Actions are pinned to a full commit SHA; Dependabot (.github/dependabot.yml) bumps them.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}
-          # A `1.26` spec alone resolves to whatever 1.26.x the runner already has
+          # A `1.27` spec alone resolves to whatever 1.27.x the runner already has
           # cached, so a patch release that fixes a standard-library advisory is
           # never picked up and `govulncheck` fails on a toolchain nobody chose.
           # check-latest queries for the newest matching patch on every run.
@@ -107,6 +108,19 @@ jobs:
           } catch {
             Write-Host "Could not set Defender exclusions (continuing): $_"
           }
+      # Ubuntu 24.04 runners forbid unprivileged user namespaces through AppArmor, and
+      # the sandbox needs one to confine a command, so every test that runs a real
+      # command confined would skip here. Lift the restriction and set
+      # FLYNN_TEST_REQUIRE_CONFINEMENT so sandboxtest.RequireConfinement fails rather
+      # than skips: a runner image that stops allowing confinement turns the suite red
+      # instead of green with the confined paths unexercised.
+      - name: Let the sandbox confine
+        if: runner.os == 'Linux'
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "FLYNN_TEST_REQUIRE_CONFINEMENT=1" >> "$GITHUB_ENV"
       # Resolve the module and build cache directories for this OS so the cache
       # step works identically on Linux, macOS, and Windows (their paths differ).
       - id: goenv
@@ -144,11 +158,11 @@ jobs:
       # ubuntu alone: build tags change which files compile, so the percentage is
       # only comparable against itself on one platform.
       - name: Coverage floor
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27'
         run: ./dev/coverfloor
 
       - name: Upload coverage
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27'
         uses: codecov/codecov-action@303a32d7a59b442fa8d48b6a1cc6825c09c847a5 # v7
         with:
           files: coverage.out
@@ -157,7 +171,7 @@ jobs:
       # The same profile, kept inside the repository's own trust boundary so the
       # badge job can read it without depending on a third-party service being up.
       - name: Keep the coverage profile for the badge job
-        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.26'
+        if: matrix.os == 'ubuntu-latest' && matrix.go == '1.27'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: coverage-profile
@@ -178,7 +192,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
       - name: Exclude Go paths from Windows Defender
         if: runner.os == 'Windows'
@@ -189,6 +203,14 @@ jobs:
           } catch {
             Write-Host "Could not set Defender exclusions (continuing): $_"
           }
+      # Same as the test job: lift the user-namespace restriction and require confinement.
+      - name: Let the sandbox confine
+        if: runner.os == 'Linux'
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "FLYNN_TEST_REQUIRE_CONFINEMENT=1" >> "$GITHUB_ENV"
       # The e2e suite compiles ./cmd/flynn itself and drives it as a subprocess against a
       # scripted, in-process model server, so it needs no secrets and no network. On a
       # failure it writes the run's stdout, stderr, and a copy of the data dir under
@@ -227,7 +249,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
@@ -249,6 +271,64 @@ jobs:
           got="$(docker run --rm "ghcr.io/ionalpha/flynn:${VERSION}-amd64" --version)"
           echo "image reports: $got"
           [ "$got" = "$VERSION" ]
+      # The agent's commands run in the image's sandbox, so the image must pass the same
+      # self-test a host does. The runner is Ubuntu 24.04, an AppArmor host like most
+      # Docker hosts, so the image runs three ways: under Docker's defaults, with only
+      # the shipped seccomp profile, and with both shipped profiles. The first two must
+      # refuse and name the missing profile; the last must pass, which runs a confined
+      # child and the escape canaries through the image's shell. A pass with a profile
+      # missing fails the step: it would mean that profile grants more than the runtime
+      # now requires, and it should shrink.
+      - name: Load the container AppArmor profile
+        run: sudo apparmor_parser -r deploy/apparmor/flynn-container
+      - name: Container sandbox needs the shipped profiles
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          img="ghcr.io/ionalpha/flynn:${VERSION}-amd64"
+          seccomp="--security-opt seccomp=deploy/seccomp/flynn.json"
+          apparmor="--security-opt apparmor=flynn-container"
+          # Each failure is an annotation carrying the check's one-line JSON, so the cause
+          # reads from the pull request without opening the log.
+          fail=0
+          # refuses TITLE WANT [docker run options...]: the check must refuse and its fix
+          # must contain WANT.
+          refuses() {
+            title="$1" want="$2"
+            shift 2
+            if out="$(docker run --rm "$@" "$img" sandbox check --json)"; then
+              echo "::error title=$title passed::$(jq -c . <<<"$out")"
+              fail=1
+            elif ! jq -e --arg w "$want" '.fix | contains($w)' <<<"$out" >/dev/null; then
+              echo "::error title=$title refusal does not name $want::$(jq -c . <<<"$out")"
+              fail=1
+            fi
+          }
+          refuses "Docker defaults" "flynn-seccomp.json"
+          # shellcheck disable=SC2086 # the option strings split into flag and value on purpose
+          refuses "Seccomp profile only" "apparmor=flynn-container" $seccomp
+          # shellcheck disable=SC2086
+          if ! out="$(docker run --rm $seccomp $apparmor "$img" sandbox check --json)"; then
+            echo "::error title=Refused with both profiles::$(jq -c . <<<"$out")"
+            fail=1
+          fi
+          exit "$fail"
+      # A refused mount reaches the check only as EPERM; the kernel log names the exact
+      # operation, flags and path AppArmor matched, which is what a profile fix needs.
+      - name: AppArmor denials
+        if: failure()
+        run: |
+          sudo dmesg | grep 'apparmor="DENIED"' | grep 'flynn-container' | tail -n 20 |
+            while IFS= read -r line; do echo "::error title=AppArmor denial::$line"; done
+      # The source Dockerfile is what `docker build .` and deploy/compose.yaml use, and
+      # goreleaser never builds it, so build it here and hold it to the same self-test.
+      - name: Source Dockerfile builds and passes the sandbox check
+        run: |
+          docker build -t flynn:source --build-arg VERSION=0.0.0-ci .
+          if ! out="$(docker run --rm --security-opt seccomp=deploy/seccomp/flynn.json --security-opt apparmor=flynn-container flynn:source sandbox check --json)"; then
+            echo "::error title=Source image refused with both profiles::$(jq -c . <<<"$out")"
+            exit 1
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-binaries
@@ -281,7 +361,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
       - name: Exclude Go paths from Windows Defender
         if: runner.os == 'Windows'
@@ -292,6 +372,14 @@ jobs:
           } catch {
             Write-Host "Could not set Defender exclusions (continuing): $_"
           }
+      # Same as the test job: lift the user-namespace restriction and require confinement.
+      - name: Let the sandbox confine
+        if: runner.os == 'Linux'
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "FLYNN_TEST_REQUIRE_CONFINEMENT=1" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: release-binaries
@@ -314,7 +402,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           # Caching is handled by the explicit actions/cache step below, which one
           # cache covers all three lint passes (linux, windows, darwin); setup-go's
@@ -343,10 +431,10 @@ jobs:
             ${{ steps.goenv.outputs.gomodcache }}
             ${{ steps.goenv.outputs.gobuildcache }}
             ~/.cache/golangci-lint
-          key: go-lint-${{ runner.os }}-1.26-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
+          key: go-lint-${{ runner.os }}-1.27-${{ hashFiles('**/go.sum') }}-${{ github.sha }}
           restore-keys: |
-            go-lint-${{ runner.os }}-1.26-${{ hashFiles('**/go.sum') }}-
-            go-lint-${{ runner.os }}-1.26-
+            go-lint-${{ runner.os }}-1.27-${{ hashFiles('**/go.sum') }}-
+            go-lint-${{ runner.os }}-1.27-
       # Run golangci-lint from its prebuilt release binary instead of compiling it
       # from source every run. Keep the version in sync with the GOLANGCI_VERSION pin
       # in dev/lint so local and CI results match; it reads the same .golangci.yml, so
@@ -355,7 +443,7 @@ jobs:
       # objects the platform passes build are saved and restored with everything else.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.15.0
           skip-cache: true
       # The action above lints the host target only (GOOS=linux), so build-tagged
       # platform files (_windows.go, _darwin.go) never reach a maintainer. Re-run the
@@ -379,7 +467,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - run: ./dev/vuln
@@ -400,7 +488,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - run: ./dev/apidiff
@@ -417,7 +505,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - run: ./dev/secrets
@@ -436,7 +524,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - run: ./dev/osv
@@ -473,7 +561,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -495,7 +583,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - run: BENCHTIME=100x ./dev/bench
@@ -533,7 +621,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       - if: github.event_name == 'pull_request'
@@ -593,7 +681,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27"
           check-latest: true
           cache: true
       # Pinned to match the GREMLINS_VERSION in dev/mutate so CI and local runs
@@ -659,7 +747,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: '1.26'
+          go-version: '1.27'
       - name: Fetch the coverage profile from this run
         env:
           GH_TOKEN: ${{ github.token }}

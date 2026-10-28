@@ -9,21 +9,26 @@
 set -eu
 cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
-# Pin the version so local and CI results match.
-SKILLS_REF_VERSION="0.1.5"
+# dev/skills-ref holds the version and a lockfile with an integrity hash for every
+# package in the tree, so local and CI install the same bytes and a republished
+# version fails the install instead of running.
+LOCKDIR="dev/skills-ref"
 
-if ! command -v npx >/dev/null 2>&1; then
-  echo "npx not found. Install Node.js to run the reference validator." >&2
+if ! command -v npm >/dev/null 2>&1; then
+  echo "npm not found. Install Node.js to run the reference validator." >&2
   exit 1
 fi
 
 # Install into a scratch prefix rather than the repository: this is a check, not a
-# dependency, and nothing in the Go module should gain a node_modules beside it.
-PREFIX="${TMPDIR:-/tmp}/flynn-skills-ref-$SKILLS_REF_VERSION"
+# dependency, and nothing in the Go module should gain a node_modules beside it. The
+# prefix is keyed by the lockfile's hash so a changed pin never reuses an old install.
+LOCKSUM=$(cksum <"$LOCKDIR/package-lock.json" | cut -d' ' -f1)
+PREFIX="${TMPDIR:-/tmp}/flynn-skills-ref-$LOCKSUM"
 if [ ! -x "$PREFIX/node_modules/.bin/skills-ref" ]; then
-  echo "==> installing skills-ref@$SKILLS_REF_VERSION"
+  echo "==> installing skills-ref from $LOCKDIR/package-lock.json"
   mkdir -p "$PREFIX"
-  npm install --silent --prefix "$PREFIX" "skills-ref@$SKILLS_REF_VERSION" >/dev/null
+  cp "$LOCKDIR/package.json" "$LOCKDIR/package-lock.json" "$PREFIX/"
+  npm ci --silent --ignore-scripts --prefix "$PREFIX" >/dev/null
 fi
 
 PATH="$PREFIX/node_modules/.bin:$PATH"

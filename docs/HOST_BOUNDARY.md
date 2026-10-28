@@ -93,16 +93,36 @@ tests and a durable one for the binary.
 | `state.SessionStore` / `SkillStore` / `MemoryStore` | `state` in-memory set, `storage/sqlite`, `skill.Store`, `memory.Store` | via `state.Provider` | shipped |
 | `spine.Log` | `spine.MemoryLog`, `storage/sqlite` event log | `store.Log()` at every entry point | shipped |
 | `spine.SnapshotCodec` | `chain.SnapshotSealer` | `cmd/flynn/spine.go` | shipped |
-| `resource.Store` | `resource.NewMemory`, `storage/sqlite` resource store | `cmd/flynn/mission.go` `runtimeConfig` | shipped |
+| `resource.Store` | `resource.NewMemory`, `storage/sqlite` resource store | `governed/assemble.go` | shipped |
 | `resource.SchemaCompiler` / `Validator` | `resource.builtinCompiler`, `resource.Registry` | `resource` kind registration | shipped |
 | `jobs.Queue` / `Waker` | `jobs.MemoryQueue`, `storage/sqlite` job queue | `store.Jobs()`, `agent.go` | shipped |
-| `llm.Model` | `llm/anthropic`, `llm/openai`, local serving | `provider.Resolve` | shipped |
+| `llm.Model` | `llm/anthropic`, `llm/openai`, local serving (`localmodel.Host` starts the server, `llm/openai` talks to it) | `provider.Resolve`, `cmd/flynn/modelrun.go` `newLocalRunner` | shipped |
 | `sandbox.Sandbox` | `sandbox.Local`, `sandbox.MicroVM` (`BootMicroVM`); `sandbox.Remote` (`NewRemote`) is the adapter for a host-supplied `sandbox.Transport` and is unused until one exists | `sandbox.NewLocal` at each assembly | shipped |
 | `observe.Logger` / `Tracer` / `Meter` | `observe.slogLogger`, the `Nop` set | `observe.Default`, `cmd/flynn/main.go` | shipped |
 | `secret.Source` | `secret.EnvSource`, `secret.chain`, vault store | `cmd/flynn/main.go` `credentialSource` | shipped |
-| `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `cmd/flynn/mission.go`, `learning.go` | shipped |
-| `allowance.Policy` | `allowance.Actions` | `cmd/flynn/mission.go`, `fanout.go`, from `--irreversible` | shipped |
+| `dispatch.Admitter` | `capability.Admitter`, `dispatch.AllowAll` | `governed/assemble.go`, `governed/learning.go` | shipped |
+| `allowance.Policy` | `allowance.Actions` | `governed/allowance.go`, from `--irreversible` | shipped |
 | `clock.Clock` / `Timing` | `clock.System`, `clock.Manual` | everywhere a clock is taken | shipped |
+
+A host that wants a model running on the same machine has `localmodel` and needs no port
+of its own for it: `localmodel.Open` takes a data directory and returns a host that
+classifies a source, installs a runtime behind the advisory gate, fetches weights against
+a catalog digest, serves them inside the sandbox on a loopback port behind a per-launch
+token, and stops them. The guards have no switch. A host that starts a model server
+itself (a runtime launched from a download) has none of them, which is why the package
+offers no way to supply a server binary, an address, a chat template, a runtime build or
+a lower floor. The served runtime keeps outbound network access under the local sandbox,
+so the loopback pin and the token are what keep the endpoint private.
+
+Three things are the host's to decide, and each is checked in one direction only. A host
+can raise the advisory floor for its own `Host` with `RaiseFloor`; the floor never lowers,
+and one `Host` raising it does not change another. A host states the least isolation it
+accepts with `Config.MinContainment` (kernel confinement unless it says `"process"`), and
+`Serve` refuses a sandbox that provides less and reports the level it launched under. A
+server found already running is held to the same floor and isolation as a new one, and is
+stopped if it falls short. Before the token is sent anywhere, the listener has to refuse a
+request with no credential and one with a made-up credential, and accept one with a probe
+key only the launched runtime was given.
 
 `allowance.Policy` is wired but marks nothing until the operator names an action, and
 that empty default is the intended answer rather than a gap. Which actions reach
@@ -119,20 +139,20 @@ run can do, so this is the group where an unwired producer costs the most.
 
 | Deferral | Shipped producer | Wired at | Verdict |
 |---|---|---|---|
-| `goal.StepExecutor` | `mission.Executor`, `driver.Router` | `cmd/flynn/mission.go` `assembleMission` | shipped |
+| `goal.StepExecutor` | `mission.Executor`, `driver.Router` | `governed/assemble.go` `Assemble` | shipped |
 | `goal.StopEvaluator` | `mission.Convergence` | same | shipped |
 | `goal.Planner` | `mission.Planner` | same, planning runs only | shipped |
 | `goal.ProgressProbe` | `progress.SpineProbe` | same | shipped |
-| `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; `fanout.go` too | shipped |
-| `goal.SteerJudge` | `evidence.ModelSteerJudge` | same; `fanout.go` too | shipped |
-| `goal.Halter` | `brakes.Hook` | same brake the executor dispatches under; `fanout.go` too | shipped |
+| `goal.InvariantAuditor` | `evidence.CommandAuditor` | same; the fan-out build too | shipped |
+| `goal.SteerJudge` | `evidence.ModelSteerJudge` | same; the fan-out build too | shipped |
+| `goal.Halter` | `brakes.Hook` | same brake the executor dispatches under; the fan-out build too | shipped |
 | `goal.RefusalProbe` | `refusal.SpineProbe` | same | shipped |
-| `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); `fanout.go` always | shipped |
-| `goal.UnitSpawner` | `orchestration.UnitFanout` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
+| `goal.ItemVerifier` + `goal.Evidence` | `evidence.CommandVerifier`, `evidence.SpineEvidence` | same (planning runs); the fan-out build always | shipped |
+| `goal.UnitSpawner` | `orchestration.UnitFanout` | `governed/assemble.go`, `agent.go` | shipped |
 | `goal.Cleaner` | none | n/a | justified |
 | `goal.WindowSource` | none | n/a | justified |
-| `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `cmd/flynn/fanout.go`, `agent.go` | shipped |
-| `runtime.Config.RequireLedgerProof` | `goal.EvidenceGate`, built by `runtime.New` | `cmd/flynn/mission.go` behind `--require-proof`; `fanout.go` always, for a unit's child | staged |
+| `orchestration.Governor` | `dispatch.Dispatcher` (via `orchestration.UnitGovernor`) | `governed/assemble.go`, `agent.go` | shipped |
+| `runtime.Config.RequireLedgerProof` | `goal.EvidenceGate`, built by `runtime.New` | `governed/assemble.go` behind `governed.WithLedgerProof` (`--require-proof`); the fan-out build always, for a unit's child | staged |
 
 `RequireLedgerProof` is a `staged` row, and the two fields it owes:
 
@@ -218,11 +238,11 @@ because the check the plan author wrote never got a turn to run.
 |---|---|---|---|
 | `mission.Tool` | `tools` set, `tools/github`, extension tools | `mission.WithTools` | shipped |
 | `mission.ResultSummarizer` | `tools` bash, glob, grep, read | implicit on the tool | shipped |
-| `mission.Fanout` | `orchestration.Spawner` | `cmd/flynn/fanout.go`, `agent.go` | shipped |
+| `mission.Fanout` | `orchestration.Spawner` | `governed/assemble.go`, `agent.go` | shipped |
 | `mission.Reporter` | `session.reporter` | `mission.WithObserver` | shipped |
-| `mission.ApprovalPrompter` + `approval.Gate` (with `approval.Policy`, `approval.Signer`, `approval.NonceStore`) | `cmd/flynn.approvalPrompter`, `approval.Requirements`, `spinesink.ApprovalSink`, `approval.Ed25519Signer`, `approval.MemStore` | `cmd/flynn/approval_gate.go`, wired at every assembly | shipped |
+| `mission.ApprovalPrompter` + `approval.Gate` (with `approval.Policy`, `approval.Signer`, `approval.NonceStore`) | `cmd/flynn.approvalPrompter`, `approval.Requirements`, `spinesink.ApprovalSink`, `approval.Ed25519Signer`, `approval.MemStore` | `governed/approval.go`, wired at every assembly | shipped |
 | `mission.GenerationRecorder` | `nopGenerationRecorder` only | n/a | justified |
-| `brakes.Switch` | `brakes.MemSwitch` | `cmd/flynn/fanout.go` `defaultBrakes` | shipped |
+| `brakes.Switch` | `brakes.MemSwitch` | `governed/assemble.go`, wired at every assembly | shipped |
 | `brakes.AnomalyDetector` | none | n/a | justified |
 
 `approval`: both halves were written and nothing connected them, so a run that
@@ -265,14 +285,14 @@ rather than removing the halt.
 
 | Deferral | Shipped producer | Wired at | Verdict |
 |---|---|---|---|
-| `learn.Distiller` | `learn.ModelDistiller` under `NewGovernedDistiller` | `cmd/flynn/learning.go` `governedDistiller` | shipped |
-| `learn.Verifier` | `learn.SandboxVerifier` under `NewGovernedVerifier` | `cmd/flynn/learning.go` `governedVerifier` | shipped |
+| `learn.Distiller` | `learn.ModelDistiller` under `NewGovernedDistiller` | `governed/learning.go` `Distiller` | shipped |
+| `learn.Verifier` | `learn.SandboxVerifier` under `NewGovernedVerifier` | `governed/learning.go` `SkillVerifier` | shipped |
 | `memory/consolidate.Distiller` | `memory/distil.ModelDistiller` under `NewGoverned` | `cmd/flynn/memory_cmd.go` `consolidateDistiller` | shipped |
-| `memory/digest.Builder` | n/a, the digest is Flynn's own | `cmd/flynn/memorystack.go` `newMemoryStack`, built at wake | shipped |
+| `memory/digest.Builder` | n/a, the digest is Flynn's own | `governed/memory.go` `NewMemoryStack`, built at wake | shipped |
 | `memory/digest.Pusher` | `memory/ridealong.Surfacer` | `digest.New`'s default, via `newMemoryStack` | shipped |
-| `memory/curate` write policy | `curate.Wrap` | `cmd/flynn/memorystack.go` `newMemoryStack` | shipped |
+| `memory/curate` write policy | `curate.Wrap` | `governed/memory.go` `NewMemoryStack` | shipped |
 | `memory/guard.PromotionReader` | every memory store | via the store | shipped |
-| `memory/ridealong.Surfacer` (pull) | `memoryStack.skillNotes` behind `skilltool.Notes` | `cmd/flynn/memorystack.go`, into `skilltool.New` at `learning.go` and `repl.go` | shipped |
+| `memory/ridealong.Surfacer` (pull) | `memoryStack.skillNotes` behind `skilltool.Notes` | `governed/memory.go`, into `skilltool.New` at `learning.go` and `repl.go` | shipped |
 | `memory/ridealong` anchors | `state.SkillAnchor`, written by the curator from `Outcome.SkillsRead` | `learn.Curator.Curate` | shipped |
 
 `learn` is the pattern the other two should follow. The interface stays a port, the
@@ -291,7 +311,7 @@ memory work that is nobody's turn: distilling five failures into a lesson spends
 model calls on material the current run is not about, and hanging that off a
 session would charge whichever conversation happened to be open.
 
-The rest of the memory stack is wired at `cmd/flynn/memorystack.go`, in one
+The rest of the memory stack is wired at `governed/memory.go`, in one
 assembly rather than three calls in three places, because the pieces only work
 together. The digest offers what the write path curated: a subject whose fact was
 superseded has one standing answer to offer, where the raw store has every version
@@ -337,7 +357,7 @@ and the surfacing cap is what keeps that from becoming a reader's problem.
 | `inbox.Enqueuer` | `jobs` queues | `inbox` ingest | shipped |
 | `driver.Driver` | `driver.defaultDriver`, `singleShotDriver`, `externagent.Driver` | `driver.NewRouter` | shipped |
 | `externagent.Spawner` / `Adapter` / `Process` | `SandboxSpawner`, `Claude`, `Codex` | `cmd/flynn/externagent.go` | shipped |
-| `extension.Resolver` / `Launcher` / `ToolSource` | `ReleaseResolver`, `SourceResolver`, `SandboxLauncher`, `Loader` | `cmd/flynn/extensions.go` | shipped |
+| `extension.Resolver` / `Launcher` / `ToolSource` | `ReleaseResolver`, `SourceResolver`, `SandboxLauncher`, `Loader` | `governed/extensions.go`, `cmd/flynn/extensions.go` | shipped |
 | `extension.HostSigner` / `SignerChannel` | `RoutedSigner`, `mcpSignerChannel` | `cmd/flynn/extensions.go` | shipped |
 | `extension.HostFetcher` | `HTTPHostFetcher` | `cmd/flynn/extensions.go` | shipped |
 | `controlplane.Authenticator` | `TokenAuthenticator`, `PossessionAuthenticator`, `DelegationAuthenticator`, `DenyAll` | `cmd/flynn/serve.go` | shipped |
@@ -356,11 +376,12 @@ which is the whole argument for the check.
 | Deferral | Shipped producer | Wired at | Verdict |
 |---|---|---|---|
 | `bus.Bus` | `bus.NewMemory` | `runtime.New`, built alongside the store when none is supplied | shipped |
-| `dispatch.EventSink` | `internal/spinesink.Sink`, `dispatch.MemorySink`, `dispatch.DiscardSink` | `cmd/flynn/mission.go` at every assembly | shipped |
-| `dispatch.Hook` | `brakes.Hook`, `budget.Hook`, `approval.Gate`, `capability.ContainmentGate` | `cmd/flynn/fanout.go`, `mission.go` | shipped |
+| `dispatch.EventSink` | `internal/spinesink.Sink`, `dispatch.MemorySink`, `dispatch.DiscardSink` | `governed/assemble.go` at every assembly | shipped |
+| `dispatch.Hook` | `brakes.Hook`, `budget.Hook`, `approval.Gate`, `capability.ContainmentGate` | `governed/assemble.go` | shipped |
 | `inbox.Worker` | `cmd/flynn.goalWorker` | `cmd/flynn/serve.go` | shipped |
 | `externagent.Recorder` | `cmd/flynn.attestedSink` | `cmd/flynn/externagent.go` | shipped |
-| `extension.Point` | `extension.Registry`'s registered handlers | `cmd/flynn/extensions.go` | shipped |
+| `extension.Point` | `extension.Registry`'s registered handlers | `governed/extensions.go`, `cmd/flynn/extensions.go` | shipped |
+| `governed.ToolBridge` | `extension.Loader`, through `Tools()` | `governed.WithExtensions` | shipped |
 | `extension.Conn` | `extension.sessionConn` over a sandbox session | `extension.SandboxLauncher` | shipped |
 | `sandbox.ContainerDriver` | `sandbox.NewContainerDriver` over an `OCIEngine` | `RegisterContainerDriver` at init, for Docker and Podman | shipped |
 | `sandbox.Machine` / `Driver` / `Serving` | `sandbox.commandMachine`, the per-platform drivers registered in `init`, `sandbox.containerServing` | `sandbox.BootMicroVM`, container exec | shipped |
@@ -442,6 +463,64 @@ Places a doc comment hands the work to whoever embeds Flynn, without a port.
 | `archetypes/review`: an empty model field defers to the host's configured model | the binary's configured model applies | justified |
 | `state.Scope` levels (instance, project, workspace) | defined in Flynn's own terms, not a host's | justified |
 
+## The governed assembly
+
+A run is governed when its sandbox, grant, dispatch hooks, spine sink, auditors and
+probes are composed together. That composition is one function, `governed.Assemble`,
+and `cmd/flynn` is one caller of it. `internal/rigor`'s `TestBinaryDoesNotComposeAGovernedRun`
+fails the build if the binary starts building hooks or a sink itself, so an embedder
+and the binary cannot drift apart. The root `agent.Config` reaches the same function:
+it takes the host's `Resources`, `Jobs` and `Log` (all three or none), a `Sandbox`,
+`Secrets`, `Prompter`, `Reporter`, `Extensions`, `ExternalAgent` and a `Policy` holding
+the list-valued settings (`Tools`, `RequireApproval`, `Waivers`), and `Goal` has a
+sibling, `GoalResult`, that returns the run id, the stop reason and the record beside
+the text. The lists sit behind a `Policy` pointer so `Config` stays comparable.
+
+Defaults are the governed ones: a zero option set gets the sandbox with its
+containment gate, the approval gate, the brakes and the budget, the spine sink, the
+auditor and the probes. A run gets less only through `governed.Waive(guard, reason)`.
+The package exports no `Without...` function, a test scans for one, and a waiver
+without a reason is refused. Each waiver is written to the run's own stream as a
+`governance.waived` event, and `Assemble` then writes a `governance.posture` event
+stating which guards the run was wired with and the budget and brake limits in force, so
+a sealed record carries the posture and a reader does not rely on the host's account of
+it. Both are written before `Assemble` returns, so they precede the run's first action
+on every path that starts one (`Run.Submit`, `Run.Resume`, `Run.Do`, or a caller driving
+`Run.Runtime` itself), and they precede `session.started` on the stream: a reader looks
+for the first session event, not the first event. The spend ceiling from `WithBudget` is
+opened in `Assemble` for the same reason.
+
+A nil or zero option never means no guard. A nil sandbox, a nil model without an
+external agent, an unrestricted grant on `WithToolset` and an approval policy with no
+prompter each refuse by name or deny; `TestOptionsNeverSilentlyWeaken` and
+`TestApprovalWithoutAPrompterDenies` hold them. The approval gate is always installed
+and passes everything when the policy is empty, so the posture event records
+`approval: true` with an empty action list in that case, and does not claim that
+approval was off. An external agent loop has no approval gate on its path, so its
+posture records `approval: false`. A `Kit`'s dispatcher refuses a call whose context
+carries no grant, where the capability package alone would admit it.
+
+A name in `WithApproval` or `WithAllowance` that the run's grant does not offer is
+refused, because a gate on an action that never occurs reads as protection and gives
+none. An external agent loop also refuses `WithCapabilities` and `WithExtensions`, since
+it brings its own tools and the grant could not bound them. `Config.Driver` with
+`Policy.Tools` is refused for the same reason: the driver would be dropped. A resumed
+run opens the budget pool its first assembly created, so the posture states the limits
+of that pool and not the ones passed to the later `WithBudget`.
+
+Where policy comes from. The assembly takes the grant, the dispatch hooks, the
+approval policy, the egress allow-list and the sandbox policy only from what the host
+passes in or from host-owned configuration (the binary's flags and environment). It reads no policy from the workspace, which the agent can write. The
+one file the operator hands the run is `--goal-file`, read once from the path the
+operator named, before the run starts. `TestWorkspacePolicyFilesDoNotWidenTheGrant`
+writes a policy-shaped file into the workspace and shows the grant and posture are
+unchanged.
+
+Two consequences for an embedder. A run the embedder builds from its own `tools` set
+(`WithToolset`) has no working tree to confine, so it states `Waive(GuardSandbox, ...)`
+and the waiver is recorded. A host-supplied sandbox is the host's to close; a sandbox
+the assembly built is closed with the run.
+
 ## Standalone acceptance
 
 The rows above and the drift guard are static: they say a producer exists and is
@@ -475,7 +554,7 @@ wired no invariant auditor, so `flynn goal --fanout` over a spec file stalled at
 admission saying nobody could check the terms. It went unnoticed because the
 acceptance pass asserted only that a stated term stopped the goal, and that stall
 stops the goal: an honest refusal and a passing test that proved nothing. The pass
-now names the breached term, and `fanout.go` wires the auditor the single
+now names the breached term, and the fan-out build wires the auditor the single
 conversation has always had.
 
 The invariant pass assembles and submits the way `flynn goal` does but does not go
@@ -527,6 +606,42 @@ its terms, and nobody told. The auditor now reports it `Terminal`, so the run st
 Every test of the auditor supplied a fake sandbox, which is how it stayed invisible;
 `TestTheAuditorRunsAChecksCommandInTheRealSandbox` runs the wired auditor against the
 real one and asserts whichever of the two answers the host can give.
+
+Whether a host can contain confined work is something to ask before a run, not to learn
+from a refusal in the middle of one. `flynn sandbox check` (and
+[`sandbox.CheckConfinement`](../sandbox/readiness.go) for a host embedding Flynn) starts a
+real confined no-op child and returns a [`sandbox.Readiness`](../sandbox/readiness.go):
+a pass, or a named cause (a service unit's `RestrictNamespaces=`, disabled user
+namespaces, an AppArmor user-namespace restriction, a syscall filter) with the change
+that fixes it and the container or microVM tier as the alternative. A Local that asks for
+confinement runs that check before its first launch and refuses with the same result. The
+check has no off switch: no flag, environment variable or configuration accepts a
+refusal, and an outcome it cannot classify refuses.
+
+The default is fail closed. `WithDefaultConfinement` never runs a command unconfined: a
+host that cannot confine gets a refusal from `Exec`, `Capture`, `Stream`, `Serve` and
+`Session`. Running at the process-jail floor is a separate, named choice,
+`WithBestEffortConfinement(notice)`, made in code by the embedder. Each launch it lets
+through is counted (`ConfinementFallbacks`) and passed to the notice, which reaches
+standard error when it is nil. It is never offered for a Local that denies the network,
+governs egress, hides paths or holds a read grant the floor cannot honour.
+
+An embedder hides a runner's own files from the commands it launches with
+`WithUnreadablePaths`: the paths read as empty inside the sandbox on Linux and are denied on
+macOS, and a Local that cannot do this (on Windows, without `WithReadOnlyFS`, or with a grant
+under a hidden path) refuses with `ErrReadDeny`; `sandbox.ReadDenySupported` says which
+platform this is before a launch refuses. The binary applies it, with `WithNetworkDenied`, to the
+shell of `flynn run`, `flynn serve` and the goal worker: the data directory, the runner's
+runtime directory and the account's credential locations are hidden, and the command has no
+network. `--allow-network` and `--allow-credential-reads` lift each, and the run's stream
+records which. On Windows the binary sets `ShellPolicy.AllowCredentialReadsWhereUnhidable`, so
+the shell runs with the credentials readable and the posture event says the platform was the
+reason; `--require-credential-hiding` keeps the refusal. An embedder that builds its own Local
+gets none of this unless it asks, and the zero `ShellPolicy` refuses on Windows.
+
+`deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the
+unit and profile that let the sandbox run on a hardened Linux host; `deploy/README.md`
+explains each line.
 
 ## How this list is derived
 

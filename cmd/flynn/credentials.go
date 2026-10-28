@@ -9,6 +9,8 @@ import (
 	"os"
 	"strings"
 
+	"github.com/ionalpha/flynn/governed"
+
 	"github.com/ionalpha/flynn/internal/credential"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/secret"
@@ -22,7 +24,7 @@ func openCredentialStore(ctx context.Context, dataDir string) (*credential.Store
 	if err != nil {
 		return nil, nil, err
 	}
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		_ = durable.Close()
 		return nil, nil, err

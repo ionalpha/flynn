@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/chain"
-	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/driver"
+	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/learn"
 	"github.com/ionalpha/flynn/llm"
@@ -28,7 +27,7 @@ import (
 // back into skills and memory so the next run starts ahead. Progress is written to
 // out; the model's final summary is returned.
 func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool, fanout *fanoutConfig, opts ...driveOption) (string, error) {
-	reg, err := missionRegistry()
+	reg, err := governed.Registry()
 	if err != nil {
 		return "", err
 	}
@@ -44,19 +43,19 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	for _, o := range opts {
 		o(&cfg)
 	}
-	mem := newMemoryStack(store.Memory(), noticeWriter(out), withEmbedder(cfg.emb))
-	memories := mem.store
+	mem := governed.NewMemoryStack(store.Memory(), governed.NoticeWriter(out), governed.WithMemoryEmbedder(cfg.emb))
+	memories := mem.Store()
 
 	// The run carries a prime scope from here on, so a memory the digest pushed is
 	// attributed as primed when it is used rather than as the run having found it.
-	ctx = wakeContext(ctx)
+	ctx = governed.WakeContext(ctx)
 
 	// Two halves of memory, in the order they matter. The digest is the push: what
 	// this install knows, offered whether or not the objective mentions it, which is
 	// the half a pull-only store cannot do. Recall is the pull: what this objective's
 	// own words match, plus the skills to offer, and which of them were surfaced so
 	// the run can be told what it was shown.
-	system := withWake(ctx, mem, defaultSystemPrompt, out)
+	system := governed.WithWake(ctx, mem, defaultSystemPrompt, out)
 	block, recalled, _ := recallContext(ctx, skills, memories, objective)
 	if block != "" {
 		system += "\n\n" + block
@@ -81,7 +80,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// Loading a skill also surfaces what past runs learned while working from it, and
 	// counts that as a use of those memories. It is the pull half of the ride-along,
 	// against the same store the digest pushes from.
-	skillset := skilltool.New(skills, skilltool.WithNotes(mem.skillNotes()))
+	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()))
 	opts = append([]driveOption{withSkills(skillset)}, opts...)
 	result, source, transcript, err := driveRequest{
 		out:       out,
@@ -261,7 +260,7 @@ type externalProvenance struct {
 // session's compacted turns), so a summary cannot launder what it summarised.
 func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distiller, skills state.SkillStore, memories state.MemoryStore, workdir string, outcome learn.Outcome, carried ...string) {
 	ctx = taintFromTranscript(ctx, outcome.Transcript, carried...)
-	curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(governedVerifier(workdir)))
+	curator := learn.NewCurator(distiller, skills, memories, learn.WithVerifier(governed.SkillVerifier(workdir)))
 	if captured, err := curator.Curate(ctx, outcome); err == nil {
 		if n := len(captured.Skills) + len(captured.Memories); n > 0 {
 			_, _ = fmt.Fprintf(out, "  (learned %d skill(s), %d memory item(s))\n", len(captured.Skills), len(captured.Memories))
@@ -321,27 +320,6 @@ func taintReasons(transcript []llm.Message) []string {
 		}
 	}
 	return reasons
-}
-
-// governedVerifier builds the skill-check verifier the CLI uses: a sandbox verifier
-// that runs each check at dir, wrapped so the check is dispatched through the waist.
-// Routing it through dispatch means a verification is admitted against the run's
-// grant and traced like every tool call, rather than executing a model-proposed
-// command on a side channel that bypasses governance. With no grant bound the
-// admitter is permissive, so a standalone run still verifies, just ungoverned.
-func governedVerifier(dir string) learn.Verifier {
-	inner := learn.NewSandboxVerifier(func(context.Context) (sandbox.Sandbox, error) {
-		return sandbox.NewLocal(dir, sandbox.WithDefaultConfinement())
-	})
-	return learn.NewGovernedVerifier(inner, dispatch.WithAdmitter(capability.Admitter{}))
-}
-
-// governedDistiller wraps the model distiller so its model call runs through the
-// dispatch waist, like the agent's own model calls and the governed verifier. With
-// no grant bound the admitter is permissive, so a standalone run still distills,
-// just ungoverned.
-func governedDistiller(model llm.Model) learn.Distiller {
-	return learn.NewGovernedDistiller(learn.NewModelDistiller(model), dispatch.WithAdmitter(capability.Admitter{}))
 }
 
 // childModelResolver builds the model resolver the Router consults for a delegated

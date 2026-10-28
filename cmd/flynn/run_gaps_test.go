@@ -13,7 +13,6 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 	"github.com/ionalpha/flynn/resource"
-	"github.com/ionalpha/flynn/sandbox"
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
@@ -95,19 +94,19 @@ func TestAssembleBuildsAnExternalAgentRun(t *testing.T) {
 		rstore:  store.Resources(reg),
 		jq:      store.Jobs(),
 		log:     store.Log(),
-		cfg:     driveConfig{extAgent: ea, skills: skilltool.New(store.Skills()), resLimits: sandbox.ResourceLimits{}},
+		cfg:     driveConfig{extAgent: ea, skills: skilltool.New(store.Skills()), shell: checkShell},
 	}
 
-	run, err := req.assemble()
+	run, err := req.assembly().assemble(context.Background())
 	if err != nil {
 		t.Fatalf("assemble: %v", err)
 	}
 	t.Cleanup(func() { _ = run.Close() })
 
-	if run.sess == nil || run.rt == nil {
+	if run.Session() == nil || run.Runtime() == nil {
 		t.Fatal("the external run was assembled without a session or a runtime")
 	}
-	if run.parts.grant.Allows("spawn") {
+	if run.Grant().Allows("spawn") {
 		t.Fatal("an external run was assembled as a fan-out run")
 	}
 }
@@ -138,7 +137,7 @@ func TestDeclareProvenanceOnADrivenRun(t *testing.T) {
 				log:     store.Log(),
 				cfg:     driveConfig{extAgent: codexAgent(t), skills: skilltool.New(store.Skills())},
 			}
-			run, err := req.assemble()
+			run, err := req.assembly().assemble(context.Background())
 			if err != nil {
 				t.Fatalf("assemble: %v", err)
 			}
