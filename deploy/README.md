@@ -34,7 +34,7 @@ container two things this needs:
   inside its own namespaces.
 
 Under the defaults the agent refuses to run commands, and `flynn sandbox check` says so
-and names the fix. Flynn ships one profile for each, and each is Docker's own with one
+and names the fix. Each release includes one profile for each, and each is Docker's own with one
 change:
 
 | File | Release asset | Change from Docker's |
