@@ -17,7 +17,7 @@
 # misses the standard library fixes the toolchain line asks for.
 
 # ---- build stage --------------------------------------------------------------
-FROM golang:1.27.2-trixie@sha256:47667934874913a449b96faa7ef4777fa285d9ec29126ee80ed61c45b7cccf0e AS build
+FROM golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 AS build
 WORKDIR /src
 
 # Download modules first so the layer caches across source-only changes.
