@@ -2,6 +2,7 @@
 # Lint and format checks. Mirrors the CI "Lint & format" job:
 #   1. `go mod tidy` leaves go.mod/go.sum unchanged
 #   2. golangci-lint (govet, staticcheck, gosec, formatting, ...) is clean
+#   3. every script under dev/ is committed executable
 #
 # CI pins golangci-lint to this version via golangci-lint-action; we pin the
 # same version here so local results match CI exactly. Run `dev/fmt` to fix
@@ -30,3 +31,17 @@ git diff --exit-code -- go.mod go.sum
 
 echo "==> golangci-lint run"
 "$golangci" run
+
+# Workflows call these as ./dev/<name>. Windows ignores the mode bit, so a
+# script committed from there without +x passes every local run and fails
+# only on a Linux or macOS runner. For release.yml's upgrade check that
+# runner is after the release has published.
+echo "==> dev/ scripts are executable in the index"
+bad=0
+for f in $(git ls-files -s -- dev | awk '$1 != "100755" { print $4 }'); do
+  if [ "$(head -c 2 "$f")" = "#!" ]; then
+    echo "$f is not executable; fix with: git update-index --chmod=+x $f" >&2
+    bad=1
+  fi
+done
+[ "$bad" = 0 ]

@@ -8,7 +8,7 @@
 # for this OS and architecture (default: the newest release before <tag>), checked
 # against its signed checksums. It upgrades to <tag> and requires that the binary then
 # reports <tag> and still opens the data directory the old one wrote. Run it after a
-# release or candidate is published; .github/workflows/upgrade-check.yml does.
+# release or candidate is published; the upgrade-check job in release.yml does.
 set -eu
 
 tag="${1:?usage: dev/upgrade-check <tag> [from]}"
