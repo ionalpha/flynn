@@ -166,6 +166,10 @@ func Open(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := refuseNewerSchema(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	readDB, err := sqlitex.OpenReadPool(dsn, 0)
 	if err != nil {
 		_ = db.Close()
