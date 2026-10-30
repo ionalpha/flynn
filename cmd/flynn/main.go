@@ -2,7 +2,7 @@
 //
 // Build:  go build -o flynn ./cmd/flynn
 // Run a goal:  flynn goal "audit the repo for TODOs and write a summary to NOTES.md"
-// The model is chosen with --model provider:model (default anthropic:claude-opus-4-8);
+// The model is chosen with --model provider:model (default anthropic:claude-opus-5-5);
 // the provider's API key is read from its environment variable. State (skills and
 // memory the agent learns) persists under --data-dir, so each run starts ahead of
 // the last; --no-learn skips that capture step.
@@ -151,7 +151,7 @@ func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) 
 // after the program name, and the process's own streams.
 func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
-		model       = fs.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
+		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as provider:model")
 		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
 		noBundled   = fs.Bool("no-bundled-skills", false, "run without the skills shipped in the binary: the bundled set is removed from the store rather than merely left unseeded, so a run measures the learning loop against a clean baseline. Your own and learned skills are untouched.")
@@ -791,7 +791,11 @@ func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, ha
 	if isLocalModelID(modelSpec) {
 		return resolveLocalModel(ctx, modelSpec, dataDir)
 	}
-	model, err := provider.ResolveWith(ctx, modelSpec, credentialSource(dataDir))
+	src, err := modelSource(dataDir)
+	if err != nil {
+		return nil, harness.Plan{}, err
+	}
+	model, err := provider.ResolveWith(ctx, modelSpec, src)
 	if err != nil {
 		return nil, harness.Plan{}, err
 	}

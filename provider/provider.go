@@ -38,7 +38,7 @@ const (
 	localLlamaCPPBaseURL = "http://localhost:8080/v1"
 )
 
-// Resolve turns a "provider:model" string (e.g. "anthropic:claude-opus-4-8",
+// Resolve turns a "provider:model" string (e.g. "anthropic:claude-opus-5-5",
 // "openai:gpt-5.5") into an llm.Model, resolving credentials from the process
 // environment. It is the zero-config entry point; ResolveWith supplies a custom
 // secret.Source (a keychain, a file vault, a remote broker).
@@ -77,7 +77,7 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 		// by pointing at that base URL; the default model is the fast, low-cost tier.
 		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", geminiDefaultModel, openai.WithVision())
 	case "":
-		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
+		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-5-5)")
 	default:
 		if k, ok := localKindNamed(name); ok {
 			// A local model server speaking the OpenAI Chat Completions format. It runs on

@@ -34,6 +34,23 @@ func withProviderEndpoints(base secret.Source, dataDir string) (secret.Source, e
 	return provider.WithEndpoints(base, eps), nil
 }
 
+// modelSource is the credential chain with the data directory's named servers on top,
+// the one source every --model resolution reads. The root model and a delegated
+// child's model share it so a name that resolves for one resolves for the other.
+func modelSource(dataDir string) (secret.Source, error) {
+	return withProviderEndpoints(credentialSource(dataDir), dataDir)
+}
+
+// configuredServerNames lists the servers named in the providers file, sorted, so a
+// check that a spec names a provider accepts the same names resolution does.
+func configuredServerNames(dataDir string) ([]string, error) {
+	src, err := withProviderEndpoints(secret.EnvSource{}, dataDir)
+	if err != nil {
+		return nil, err
+	}
+	return provider.EndpointNames(src), nil
+}
+
 // renderDiscovered lists the models running local servers reported. They are labelled
 // unverified because the catalog has not seen them: the size and the tool capability
 // are the server's word.

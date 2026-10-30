@@ -50,7 +50,7 @@ When the objective is fully accomplished, stop and reply with a short summary of
 // standalone defaults so the agent always runs without external services. No field's
 // zero value removes a guard; [Policy.Waivers] is the only opt-out.
 type Config struct {
-	// Model is the provider:model identifier (e.g. "anthropic:claude-opus-4-8").
+	// Model is the provider:model identifier (e.g. "anthropic:claude-opus-5-5").
 	// Goal resolves it to a concrete model, reading the provider's API key from
 	// Secrets, or the environment when Secrets is nil.
 	Model string

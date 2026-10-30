@@ -182,7 +182,7 @@ sha256sum -c checksums.txt --ignore-missing
 ## Quick start
 
 ```sh
-flynn --model anthropic:claude-opus-4-8     # start an interactive session
+flynn --model anthropic:claude-opus-5-5     # start an interactive session
 flynn --version
 ```
 
@@ -564,7 +564,7 @@ Import Flynn as a Go module (no submodule, no FFI):
 ```go
 import agent "github.com/ionalpha/flynn"
 
-a := agent.New(agent.Config{Model: "anthropic:claude-opus-4-8"})
+a := agent.New(agent.Config{Model: "anthropic:claude-opus-5-5"})
 result, err := a.Goal(ctx, "audit the repo for TODOs and summarize them")
 ```
 

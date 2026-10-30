@@ -127,3 +127,86 @@ func TestDiscoverEnvLocalReadsTheEnvironment(t *testing.T) {
 		t.Fatalf("no server is listening, got %+v", got)
 	}
 }
+
+func writeProvidersFile(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, provider.ProvidersFile), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+const boxServer = `{"providers":{"box":{"kind":"ollama","base_url":"http://localhost:11434/v1"}}}`
+
+// TestResolveModelReadsTheProvidersFile is the wiring check: --model <name>:<model>
+// reaches a server declared in the data directory, and without the file the same
+// spec is an unknown provider.
+func TestResolveModelReadsTheProvidersFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	if _, _, err := resolveModel(ctx, "box:gpt-oss:20b", dir); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("without a providers file box is not a provider: %v", err)
+	}
+	writeProvidersFile(t, dir, boxServer)
+	if _, _, err := resolveModel(ctx, "box:gpt-oss:20b", dir); err != nil {
+		t.Fatalf("a configured name should resolve: %v", err)
+	}
+	writeProvidersFile(t, dir, `not json`)
+	if _, _, err := resolveModel(ctx, "box:gpt-oss:20b", dir); err == nil {
+		t.Fatal("a malformed providers file must be reported, not ignored")
+	}
+}
+
+func TestModelUseRecordsAConfiguredServer(t *testing.T) {
+	dir := t.TempDir()
+	if err := runModelUse([]string{"box:m"}, dir, &bytes.Buffer{}); err == nil {
+		t.Fatal("box is not configured yet, so the id is unknown")
+	}
+	writeProvidersFile(t, dir, boxServer)
+	var out bytes.Buffer
+	if err := runModelUse([]string{"box:gpt-oss:20b"}, dir, &out); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := readActiveModel(dir); !ok || got != "box:gpt-oss:20b" {
+		t.Fatalf("active model = %q (recorded: %v)", got, ok)
+	}
+	writeProvidersFile(t, dir, `not json`)
+	if err := runModelUse([]string{"box:m"}, dir, &out); err == nil || !strings.Contains(err.Error(), provider.ProvidersFile) {
+		t.Fatalf("a malformed providers file should be named in the error: %v", err)
+	}
+}
+
+func TestKnownProviderSpecAcceptsConfiguredServers(t *testing.T) {
+	if !knownProviderSpec("box:m", []string{"box"}) {
+		t.Error("a configured server name is a provider")
+	}
+	if knownProviderSpec("box:m", []string{"other"}) {
+		t.Error("a name that is not configured must not be accepted")
+	}
+	if knownProviderSpec(":m", []string{""}) {
+		t.Error("an empty name is never a provider")
+	}
+}
+
+func TestConfiguredServerNames(t *testing.T) {
+	dir := t.TempDir()
+	if got, err := configuredServerNames(dir); err != nil || len(got) != 0 {
+		t.Fatalf("no file: %v %v", got, err)
+	}
+	writeProvidersFile(t, dir, `{"providers":{"b":{"kind":"ollama","base_url":"http://localhost:1/v1"},"a":{"kind":"lmstudio","base_url":"http://localhost:2/v1"}}}`)
+	if got, err := configuredServerNames(dir); err != nil || strings.Join(got, ",") != "a,b" {
+		t.Fatalf("got %v, %v; want a,b", got, err)
+	}
+	writeProvidersFile(t, dir, `not json`)
+	if _, err := configuredServerNames(dir); err == nil {
+		t.Fatal("a malformed file must be reported")
+	}
+}
+
+// TestModelFlagDefaultIsTheProviderDefault keeps the --model default in step with the
+// model a bare "anthropic" resolves to, so changing one cannot leave the other behind.
+func TestModelFlagDefaultIsTheProviderDefault(t *testing.T) {
+	got := runCLI(t, "-h")
+	if want := `(default "` + provider.CanonicalSpec("anthropic") + `")`; !strings.Contains(got.stderr, want) {
+		t.Fatalf("--model default is not %s:\n%s", want, got.stderr)
+	}
+}
