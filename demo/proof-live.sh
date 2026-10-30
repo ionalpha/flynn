@@ -48,10 +48,12 @@ hr() { printf '\n\033[1m%s\033[0m\n' "$*"; }
 
 # run_goal CHECK OBJECTIVE: drive one goal in the work directory with an independent
 # verification check, and remember its run id. All flags precede the `goal` subcommand.
+# A goal whose check does not pass exits 1 (scenario B is built to), so the exit status is
+# expected here and the verdict is read from the printed record and from `spine verify`.
 ids=()
 run_goal() {
   local out
-  out="$( cd "$work" && "$flynn" "${model_arg[@]}" --data-dir "$data" --no-learn --verify "$1" goal "$2" 2>&1 )"
+  out="$( cd "$work" && "$flynn" "${model_arg[@]}" --data-dir "$data" --no-learn --verify "$1" goal "$2" 2>&1 )" || true
   printf '%s\n' "$out"
   ids+=( "$(printf '%s\n' "$out" | grep -oE 'run [0-9a-f-]{36}' | head -1 | awk '{print $2}')" )
 }
