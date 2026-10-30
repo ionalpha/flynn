@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os/exec"
 
+	"github.com/ionalpha/flynn/internal/procexec"
 	"github.com/ionalpha/flynn/procs"
 )
 
@@ -95,7 +96,7 @@ func runCounted(c *exec.Cmd) error {
 
 func (l *Local) captureExec(ctx context.Context, spec CaptureSpec, confined bool) (ExecResult, error) {
 	//nolint:gosec // running the gated external CLI is this primitive's purpose; isolation is the sandbox's job, applied by confine below
-	c := exec.CommandContext(ctx, spec.Argv[0], spec.Argv[1:]...)
+	c := procexec.CommandContext(ctx, spec.Argv[0], spec.Argv[1:]...)
 	c.Dir = l.root
 	// Deny-by-default environment plus the caller's explicit grants; the host's is never
 	// inherited, so no agent secret leaks in.

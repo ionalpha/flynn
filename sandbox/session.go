@@ -5,10 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"sync"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // errSessionConfineUnsupported is returned when a confined duplex session is requested on
@@ -159,7 +159,7 @@ func (l *Local) Session(ctx context.Context, spec SessionSpec) (*Session, error)
 func (l *Local) startSessionExec(ctx context.Context, spec SessionSpec, confined bool) (*Session, error) {
 	sctx, cancel := context.WithCancel(ctx)
 	//nolint:gosec // running the gated, signature-verified extension binary is this primitive's purpose; isolation is the sandbox's job, applied by confine below
-	c := exec.CommandContext(sctx, spec.Argv[0], spec.Argv[1:]...)
+	c := procexec.CommandContext(sctx, spec.Argv[0], spec.Argv[1:]...)
 	c.Dir = l.root
 	// Deny-by-default environment plus the caller's explicit grants; the host's is never
 	// inherited, so no agent secret leaks into an untrusted extension.

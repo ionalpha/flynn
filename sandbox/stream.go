@@ -6,9 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"strings"
 
+	"github.com/ionalpha/flynn/internal/procexec"
 	"github.com/ionalpha/flynn/procs"
 )
 
@@ -108,7 +108,7 @@ func (l *Local) Stream(ctx context.Context, spec StreamSpec) (*StreamProcess, er
 // exec.Cmd, so it takes its own path.
 func (l *Local) startStreamExec(ctx context.Context, spec StreamSpec, confined bool) (*StreamProcess, error) {
 	//nolint:gosec // running the gated external CLI is this primitive's purpose; isolation is the sandbox's job, applied by confine below
-	c := exec.CommandContext(ctx, spec.Argv[0], spec.Argv[1:]...)
+	c := procexec.CommandContext(ctx, spec.Argv[0], spec.Argv[1:]...)
 	c.Dir = l.root
 	// Deny-by-default environment plus the caller's explicit grants; the host's is never
 	// inherited, so no agent secret leaks in and a bridge token reaches the child only

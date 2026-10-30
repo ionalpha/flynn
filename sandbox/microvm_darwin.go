@@ -3,8 +3,9 @@
 package sandbox
 
 import (
-	"os/exec"
 	"strings"
+
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // init registers the Hypervisor-framework microVM driver on macOS. Detection and boot are
@@ -16,7 +17,7 @@ func init() { RegisterDriver(commandDriver{name: "hvf", hardware: detectHVF}) }
 // virtualization boundary. The kernel advertises support through a sysctl; a value of 1
 // means a guest can be created here.
 func detectHVF() Availability {
-	out, err := exec.Command("sysctl", "-n", "kern.hv_support").Output()
+	out, err := procexec.Command("sysctl", "-n", "kern.hv_support").Output()
 	if err != nil {
 		return Availability{Detail: "could not query hypervisor support: " + err.Error()}
 	}

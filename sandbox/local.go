@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // Local is the in-process sandbox tier: the floor that runs everywhere with no
@@ -535,7 +537,7 @@ func (l *Local) execOnce(ctx context.Context, cmd Command, confined bool) (ExecR
 // see runShell.
 func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, stdin []byte, confined bool) (ExecResult, error) {
 	//nolint:gosec // running a model-supplied command is the bash tool's purpose; isolation is this sandbox's job, hardened by the stronger tiers
-	c := exec.CommandContext(ctx, name, args...)
+	c := procexec.CommandContext(ctx, name, args...)
 	c.Dir = l.root
 	// A command that reads a secret on stdin (a credential import) gets it from a pipe,
 	// not its arguments, so the value is never on the command line or in a log.

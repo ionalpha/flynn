@@ -16,6 +16,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/procexec"
 	"github.com/ionalpha/flynn/procs"
 )
 
@@ -157,8 +158,8 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	if err != nil {
 		return ExecResult{}, err
 	}
-	defer func() { _ = os.Remove(manPath) }()           //nolint:gosec // manPath is from os.CreateTemp under the private control dir, not caller-controlled
-	cmd := exec.CommandContext(ctx, c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path; the guest, not this exec, is the boundary
+	defer func() { _ = os.Remove(manPath) }()               //nolint:gosec // manPath is from os.CreateTemp under the private control dir, not caller-controlled
+	cmd := procexec.CommandContext(ctx, c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path; the guest, not this exec, is the boundary
 	// runCounted brackets the child-process registry around a confirmed start, so a
 	// runtime that fails to launch is never counted as a live child.
 	var buf bytes.Buffer
@@ -203,7 +204,7 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 	}
 	// The server outlives the call, so it is not tied to ctx; ctx only bounds the wait
 	// for the forwarded address to appear.
-	cmd := exec.Command(c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path
+	cmd := procexec.Command(c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "microvm_serve_pipe", err)

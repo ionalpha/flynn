@@ -15,6 +15,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // checkTimeout bounds one pass of the ladder, so a wedged child cannot hang a launch.
@@ -57,7 +59,7 @@ func runStage(ctx context.Context, s stage, n needs) *failure {
 func runNamespaceStage(ctx context.Context, s stage) *failure {
 	name, args := shell("exit 0")
 	//nolint:gosec // the command is the fixed no-op from shell("exit 0"); starting it in the namespaces under test is the check
-	c := exec.CommandContext(ctx, name, args...)
+	c := procexec.CommandContext(ctx, name, args...)
 	c.Dir = "/"
 	c.Env = []string{}
 	sp := &syscall.SysProcAttr{}
