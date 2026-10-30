@@ -119,13 +119,13 @@ func TestRunModelUseRecordsAProviderModel(t *testing.T) {
 }
 
 func TestKnownProviderSpecRejectsBareNames(t *testing.T) {
-	if knownProviderSpec("gpt-5.5") {
+	if knownProviderSpec("gpt-5.5", nil) {
 		t.Error("a bare model name is not a provider spec")
 	}
-	if knownProviderSpec(":x") {
+	if knownProviderSpec(":x", nil) {
 		t.Error("an empty provider name is not a provider spec")
 	}
-	if knownProviderSpec("nosuchprovider:model") {
+	if knownProviderSpec("nosuchprovider:model", nil) {
 		t.Error("an unknown provider must not be accepted")
 	}
 }

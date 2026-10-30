@@ -3,7 +3,7 @@
 // keeps its single-binary, minimal-dependency shape and the adapter stays a thin,
 // fully-testable mapping between this package's neutral types and the wire format.
 //
-// The default model is Claude Opus 4.8 with adaptive thinking. The model's
+// The default model is Claude Opus 5.5 with adaptive thinking. The model's
 // reasoning blocks must be replayed to the API unchanged on the next turn, so they
 // are carried through the conversation as llm.KindOpaque blocks: decoded verbatim
 // from a response and spliced back verbatim into the next request, without the
@@ -24,7 +24,7 @@ import (
 
 const (
 	// DefaultModel is the model used when none is configured.
-	DefaultModel = "claude-opus-4-8"
+	DefaultModel = "claude-opus-5-5"
 	// DefaultMaxTokens bounds output when a request does not set its own ceiling.
 	DefaultMaxTokens = 16000
 	defaultBaseURL   = "https://api.anthropic.com"

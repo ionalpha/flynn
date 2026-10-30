@@ -9,7 +9,7 @@ import (
 func TestCanonicalSpec(t *testing.T) {
 	cases := map[string]string{
 		"openai":                    "openai:gpt-5.5",
-		"anthropic":                 "anthropic:claude-opus-4-8",
+		"anthropic":                 "anthropic:claude-opus-5-5",
 		"deepseek":                  "deepseek:deepseek-chat",
 		"gemini":                    "gemini:gemini-2.5-flash",
 		"openai:gpt-4o":             "openai:gpt-4o",             // a full spec is left alone

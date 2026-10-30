@@ -36,3 +36,8 @@
 # to change for the published suite to be identifiable as the published one.
 - ./chain/conformance.CryptoSuiteVersion: value changed from "0.1.0-draft" to "0.1.0"
 - ./chain/conformance.SuiteVersion: value changed from "0.1.0-draft" to "0.1.0"
+
+# The default Claude model moves to the current Opus. A host that relied on the
+# constant to name a specific model should name it itself; the constant is the
+# default a new run gets, and pinning it to a retired model serves nobody.
+- ./llm/anthropic.DefaultModel: value changed from "claude-opus-4-8" to "claude-opus-5-5"
