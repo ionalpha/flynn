@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/procexec"
 	"github.com/ionalpha/flynn/procs"
 )
 
@@ -110,7 +111,7 @@ func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 // when confined is true, and returns its handle.
 func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 	//nolint:gosec // running the gated runtime binary is this primitive's purpose; isolation is the sandbox's job, applied below
-	c := exec.Command(argv[0], argv[1:]...)
+	c := procexec.Command(argv[0], argv[1:]...)
 	c.Dir = l.root
 	// Deny-by-default environment: never inherit the host's, so no secret the agent
 	// holds reaches the server. It sees only the minimal baseline plus explicit grants.

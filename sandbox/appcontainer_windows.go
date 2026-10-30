@@ -539,6 +539,15 @@ func createConfinedProcess(appName, cmdline, dir string, env *uint16, token wind
 
 	var pi windows.ProcessInformation
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_UNICODE_ENVIRONMENT | windows.CREATE_SUSPENDED)
+	if token == 0 {
+		// A console child of a parent with no console would otherwise open a window of its
+		// own. The exec.Cmd tiers get the same flag from internal/procexec. The
+		// write-restricted child cannot take it: it dies initialising with
+		// STATUS_DLL_INIT_FAILED, because its restricting SIDs cannot reach the console host
+		// the flag creates. That tier does not start at all from a parent that has no
+		// console, with or without a console flag, so there is no window to suppress.
+		flags |= windows.CREATE_NO_WINDOW
+	}
 	var err error
 	if token != 0 {
 		err = windows.CreateProcessAsUser(token, appPtr, clPtr, nil, nil, true, flags, env, dirPtr, &si.StartupInfo, &pi)

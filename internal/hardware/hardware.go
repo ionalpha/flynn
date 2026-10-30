@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // Box is what was detected about the machine. A zero field means "not detected", so a
@@ -107,7 +109,7 @@ func Detect(ctx context.Context) Box {
 // Production always uses the real process.
 var runCommand = func(ctx context.Context, name string, args ...string) ([]byte, error) {
 	//nolint:gosec // name is one of the fixed probe binaries named in this file, never user input
-	return exec.CommandContext(ctx, name, args...).Output()
+	return procexec.CommandContext(ctx, name, args...).Output()
 }
 
 // lookPath reports whether an executable is on PATH. It is a package-level variable for the

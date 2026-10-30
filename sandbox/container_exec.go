@@ -4,13 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // This file is the concrete OCI backend for the container tier: it drives the host's docker
@@ -54,7 +54,7 @@ func execRunner(ctx context.Context, argv []string) (string, error) {
 	if len(argv) == 0 {
 		return "", fault.New(fault.Terminal, "container_no_argv", "container: empty engine command")
 	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv[0] is a fixed engine name (docker/podman); the container, not this exec, is the boundary
+	cmd := procexec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv[0] is a fixed engine name (docker/podman); the container, not this exec, is the boundary
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
