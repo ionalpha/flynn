@@ -475,6 +475,68 @@
       "trust": "blessed",
       "chatTemplate": "chatml",
       "notes": "AWQ int4 safetensors served by vLLM on a GPU; per-file digest-verified. 7B class: deep KV headroom on a 12GB card for concurrent multi-agent batching. Resolved with `flynn models bless`."
+    },
+    {
+      "id": "gemma4:12b",
+      "name": "Gemma 4 12B QAT Q4_0",
+      "kind": "local",
+      "source": {
+        "publisher": "google",
+        "url": "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 12,
+      "contextTokens": 262144,
+      "capabilities": {
+        "tools": true,
+        "vision": false,
+        "reasoning": true
+      },
+      "quants": [
+        {
+          "name": "Q4_0",
+          "format": "gguf",
+          "sizeBytes": 6975879296,
+          "ref": "gemma-4-12b-it-qat-q4_0.gguf",
+          "url": "https://huggingface.co/google/gemma-4-12B-it-qat-q4_0-gguf/resolve/main/gemma-4-12b-it-qat-q4_0.gguf",
+          "digest": "sha256:93567e57a8fe10b23569b9d9ec38cd005deedf71e29477c421a4b83f418a538b"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "gemma4",
+      "notes": "Google's quantization-aware q4_0 build of Gemma 4 12B. At 7 GB it leaves a 16 GB card room for a long context. Vision is not used because the entry fetches no multimodal projector. Resolved with `flynn models bless`."
+    },
+    {
+      "id": "gpt-oss-20b",
+      "name": "gpt-oss 20B (MoE)",
+      "kind": "local",
+      "source": {
+        "publisher": "ggml-org",
+        "url": "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 21,
+      "contextTokens": 131072,
+      "capabilities": {
+        "tools": true,
+        "vision": false,
+        "reasoning": true
+      },
+      "quants": [
+        {
+          "name": "MXFP4",
+          "format": "gguf",
+          "sizeBytes": 12109566624,
+          "ref": "gpt-oss-20b-MXFP4.gguf",
+          "url": "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf",
+          "digest": "sha256:27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "gpt-oss",
+      "notes": "OpenAI's open-weight mixture-of-experts model, 21B parameters with about 3.6B active per token, published natively in MXFP4. The 12 GB of weights fit a 16 GB card. Runs under the gpt-oss harmony template Flynn carries, which renders tool definitions and the reasoning effort. Resolved with `flynn models bless`."
     }
   ]
 }
