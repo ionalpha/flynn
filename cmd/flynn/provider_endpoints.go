@@ -15,7 +15,9 @@ import (
 // hold. It reads only the process environment, never the vault: a listing must not
 // stop to ask for a passphrase, and a server's address is configuration, not a
 // secret. It is a variable so a test can stand a fake in for the machine.
-var localDiscovery = func(ctx context.Context) []provider.LocalModel {
+var localDiscovery = discoverEnvLocal
+
+func discoverEnvLocal(ctx context.Context) []provider.LocalModel {
 	return provider.DiscoverLocal(ctx, secret.EnvSource{}, nil)
 }
 

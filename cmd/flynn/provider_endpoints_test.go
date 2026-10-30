@@ -117,3 +117,13 @@ func TestWithProviderEndpoints(t *testing.T) {
 		t.Fatal("a malformed providers file must be reported, not ignored")
 	}
 }
+
+// TestDiscoverEnvLocalReadsTheEnvironment runs the real discovery against addresses
+// nothing listens on, so it finds nothing and never reaches the developer's own servers.
+func TestDiscoverEnvLocalReadsTheEnvironment(t *testing.T) {
+	t.Setenv("OLLAMA_BASE_URL", "http://127.0.0.1:1/v1")
+	t.Setenv("LMSTUDIO_BASE_URL", "http://127.0.0.1:1/v1")
+	if got := discoverEnvLocal(context.Background()); len(got) != 0 {
+		t.Fatalf("no server is listening, got %+v", got)
+	}
+}

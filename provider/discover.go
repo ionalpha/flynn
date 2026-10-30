@@ -81,28 +81,17 @@ func localBase(ctx context.Context, src secret.Source, kind string) (string, boo
 	return strings.TrimRight(base, "/"), true
 }
 
-func getJSON(ctx context.Context, hc *http.Client, url string, v any) bool {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// requestJSON performs one probe and decodes a 200 answer into v. Any failure,
+// including a transport error, reports false: the caller treats it as "no such
+// server".
+func requestJSON(ctx context.Context, hc *http.Client, method, url string, body io.Reader, v any) bool {
+	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return false
 	}
-	return doJSON(hc, req, v)
-}
-
-func postJSON(ctx context.Context, hc *http.Client, url string, body, v any) bool {
-	raw, err := json.Marshal(body)
-	if err != nil {
-		return false
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
-	if err != nil {
-		return false
-	}
-	req.Header.Set("Content-Type", "application/json")
-	return doJSON(hc, req, v)
-}
-
-func doJSON(hc *http.Client, req *http.Request, v any) bool {
 	resp, err := hc.Do(req)
 	if err != nil {
 		return false
@@ -128,7 +117,7 @@ func discoverOllama(ctx context.Context, hc *http.Client, base string) []LocalMo
 			} `json:"details"`
 		} `json:"models"`
 	}
-	if !getJSON(ctx, hc, root+"/api/tags", &tags) {
+	if !requestJSON(ctx, hc, http.MethodGet, root+"/api/tags", nil, &tags) {
 		return nil
 	}
 	var out []LocalModel
@@ -145,7 +134,9 @@ func discoverOllama(ctx context.Context, hc *http.Client, base string) []LocalMo
 				} `json:"details"`
 				Capabilities []string `json:"capabilities"`
 			}
-			if postJSON(ctx, hc, root+"/api/show", map[string]string{"model": t.Name}, &show) {
+			var req bytes.Buffer
+			_ = json.NewEncoder(&req).Encode(map[string]string{"model": t.Name}) // a string map always encodes
+			if requestJSON(ctx, hc, http.MethodPost, root+"/api/show", &req, &show) {
 				if m.Params == "" {
 					m.Params = show.Details.ParameterSize
 				}
@@ -173,7 +164,7 @@ func discoverLMStudio(ctx context.Context, hc *http.Client, base string) []Local
 			ID string `json:"id"`
 		} `json:"data"`
 	}
-	if !getJSON(ctx, hc, base+"/models", &list) {
+	if !requestJSON(ctx, hc, http.MethodGet, base+"/models", nil, &list) {
 		return nil
 	}
 	var out []LocalModel

@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/provider"
+	"github.com/ionalpha/flynn/secret"
 )
 
 // wireRecorder is a chat server that records each request body and answers with a
@@ -212,6 +214,10 @@ func TestConfiguredEndpointWithKey(t *testing.T) {
 	if m, err := resolve("gw:some-model"); err != nil || m == nil {
 		t.Fatalf("keyed https endpoint: %v", err)
 	}
+	if m, err := withEndpoints(t, `{"providers":{"gw":{"kind":"openai","base_url":"https://gw.example.com/v1","key":"GW_KEY","vision":true}}}`,
+		mapSource{"GW_KEY": "secret"})("gw:m"); err != nil || m == nil {
+		t.Fatalf("keyed endpoint with vision: %v", err)
+	}
 	if _, err := resolve("plain:m"); err == nil {
 		t.Fatal("a key must not travel over plaintext http to a remote host")
 	}
@@ -328,5 +334,31 @@ func TestBaseURLEnvVarsAreTheOnesResolveReads(t *testing.T) {
 	}
 	if len(provider.VisionEnvVars()) != 3 {
 		t.Errorf("VisionEnvVars = %v", provider.VisionEnvVars())
+	}
+}
+
+// brokenSource fails every lookup with an error that is not "not found".
+type brokenSource struct{}
+
+func (brokenSource) Lookup(context.Context, string) (secret.Text, error) {
+	return secret.Text{}, errors.New("vault locked")
+}
+
+// TestConfiguredEndpointFailuresAreReported covers an endpoint that did not come
+// through LoadEndpoints, as a host embedding the package may build one: a base URL
+// that does not parse is refused, and a key store that fails is not mistaken for a
+// missing key.
+func TestConfiguredEndpointFailuresAreReported(t *testing.T) {
+	ctx := context.Background()
+	eps := provider.Endpoints{Providers: map[string]provider.Endpoint{
+		"bad":   {Kind: "ollama", BaseURL: "http://[::1"},
+		"keyed": {Kind: "openai", BaseURL: "https://gw.example.com/v1", Key: "GW_KEY"},
+	}}
+	if _, err := provider.ResolveWith(ctx, "bad:m", provider.WithEndpoints(mapSource{}, eps)); err == nil {
+		t.Error("a base_url that does not parse must be refused")
+	}
+	_, err := provider.ResolveWith(ctx, "keyed:m", provider.WithEndpoints(brokenSource{}, eps))
+	if err == nil || !strings.Contains(err.Error(), "vault locked") || errors.Is(err, provider.ErrCredentialNotSet) {
+		t.Errorf("a failing key store should surface its own error, got %v", err)
 	}
 }
