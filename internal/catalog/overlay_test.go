@@ -187,6 +187,59 @@ func TestAddAndRemoveRoundTrip(t *testing.T) {
 	}
 }
 
+func TestAddAndRemoveLeaveOtherEntriesAlone(t *testing.T) {
+	dir := t.TempDir()
+	for _, id := range []string{"a:1b", "b:1b", "c:1b"} {
+		if _, err := AddUser(dir, userModel(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := RemoveUser(dir, "B:1b"); err != nil {
+		t.Fatal(err)
+	}
+	user, err := ReadOverlay(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, u := range user {
+		ids = append(ids, u.ID)
+	}
+	if got := strings.Join(ids, ","); got != "a:1b,c:1b" {
+		t.Fatalf("overlay holds %q, want a:1b,c:1b", got)
+	}
+}
+
+func TestOverlayFailuresAreReportedNotSwallowed(t *testing.T) {
+	m := userModel("mine:1b")
+
+	t.Run("overlay path is a directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(OverlayPath(dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadOverlay(dir); err == nil {
+			t.Error("ReadOverlay accepted a directory")
+		}
+		if _, err := AddUser(dir, m); err == nil {
+			t.Error("AddUser wrote over a directory")
+		}
+		if err := RemoveUser(dir, m.ID); err == nil || errors.Is(err, ErrNotUserEntry) {
+			t.Errorf("RemoveUser = %v, want the read error", err)
+		}
+	})
+
+	t.Run("data directory is a file", func(t *testing.T) {
+		file := t.TempDir() + "/file"
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := AddUser(file, m); err == nil {
+			t.Error("AddUser created an overlay inside a file")
+		}
+	})
+}
+
 func TestAddRefusesABlessedIDAndWritesNothing(t *testing.T) {
 	dir := t.TempDir()
 	id := blessedID(t)

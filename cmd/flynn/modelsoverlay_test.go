@@ -163,6 +163,24 @@ func TestAddRejectsBadArguments(t *testing.T) {
 	}
 }
 
+func TestAddAndRemoveStopOnADamagedOverlay(t *testing.T) {
+	dir := overlayDir(t)
+	src, _ := writeGGUF(t, "tiny.gguf")
+	path := catalog.OverlayPath(dir)
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := runModelAdd([]string{"--yes", src}, dir, &bytes.Buffer{}); err == nil {
+		t.Error("add went ahead over a damaged overlay")
+	}
+	if err := runModelRemove([]string{"local:tiny"}, dir, &bytes.Buffer{}); err == nil {
+		t.Error("remove went ahead over a damaged overlay")
+	}
+	if b, err := os.ReadFile(path); err != nil || string(b) != "{not json" {
+		t.Errorf("the damaged file was rewritten: %q, %v", b, err)
+	}
+}
+
 func TestRemoveDeletesTheEntryAndItsWeights(t *testing.T) {
 	dir := overlayDir(t)
 	src, _ := writeGGUF(t, "tiny.gguf")
