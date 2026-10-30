@@ -147,6 +147,7 @@
       "license": "Apache-2.0",
       "paramsB": 7.6,
       "contextTokens": 32768,
+      "arch": {"attentionLayers": 28, "kvHeads": 4, "headDim": 128},
       "capabilities": { "tools": true, "vision": false, "reasoning": false },
       "quants": [
         { "name": "Q4_K_M", "format": "gguf", "sizeBytes": 4700000000, "ref": "qwen2.5-coder:7b" }
@@ -167,6 +168,7 @@
       "license": "Apache-2.0",
       "paramsB": 1.5,
       "contextTokens": 32768,
+      "arch": {"attentionLayers": 28, "kvHeads": 2, "headDim": 128},
       "capabilities": { "tools": true, "vision": false, "reasoning": false },
       "quants": [
         { "name": "Q4_K_M", "format": "gguf", "sizeBytes": 986000000, "ref": "qwen2.5-coder:1.5b" }
@@ -187,6 +189,7 @@
       "license": "Llama-3.2-Community",
       "paramsB": 3.2,
       "contextTokens": 131072,
+      "arch": {"attentionLayers": 28, "kvHeads": 8, "headDim": 128},
       "capabilities": { "tools": true, "vision": false, "reasoning": false },
       "quants": [
         { "name": "Q4_K_M", "format": "gguf", "sizeBytes": 2019000000, "ref": "llama3.2:3b" }
@@ -207,6 +210,7 @@
       "license": "Apache-2.0",
       "paramsB": 0.8,
       "contextTokens": 262144,
+      "arch": {"attentionLayers": 6, "kvHeads": 2, "headDim": 256},
       "capabilities": { "tools": true, "vision": false, "reasoning": true },
       "quants": [
         {
@@ -234,6 +238,7 @@
       "license": "Apache-2.0",
       "paramsB": 4,
       "contextTokens": 262144,
+      "arch": {"attentionLayers": 8, "kvHeads": 4, "headDim": 256},
       "capabilities": { "tools": true, "vision": false, "reasoning": true },
       "quants": [
         {
@@ -261,6 +266,7 @@
       "license": "Apache-2.0",
       "paramsB": 9,
       "contextTokens": 262144,
+      "arch": {"attentionLayers": 8, "kvHeads": 4, "headDim": 256},
       "capabilities": { "tools": true, "vision": false, "reasoning": true },
       "quants": [
         {
@@ -288,6 +294,7 @@
       "license": "Apache-2.0",
       "paramsB": 35,
       "contextTokens": 262144,
+      "arch": {"attentionLayers": 10, "kvHeads": 2, "headDim": 256, "experts": 256, "expertsPerToken": 8, "expertParamsB": 32.2},
       "capabilities": { "tools": true, "vision": false, "reasoning": true },
       "quants": [
         {
@@ -315,6 +322,7 @@
       "license": "Apache-2.0",
       "paramsB": 27,
       "contextTokens": 262144,
+      "arch": {"attentionLayers": 16, "kvHeads": 4, "headDim": 256},
       "capabilities": { "tools": true, "vision": false, "reasoning": true },
       "quants": [
         {
@@ -342,6 +350,7 @@
       "license": "Apache-2.0",
       "paramsB": 0.5,
       "contextTokens": 32768,
+      "arch": {"attentionLayers": 24, "kvHeads": 2, "headDim": 64},
       "capabilities": { "tools": true, "vision": false, "reasoning": false },
       "quants": [
         {

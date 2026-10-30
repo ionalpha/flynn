@@ -134,6 +134,34 @@ type Capabilities struct {
 	Reasoning bool `json:"reasoning"`
 }
 
+// Arch is what a hardware-fit estimate needs beyond the file size: how much cache a token
+// costs, and for a mixture-of-experts model how much of the weight is routed experts that
+// can live in system RAM. The numbers come from the publisher's config.json, so they can
+// be checked against it.
+type Arch struct {
+	// AttentionLayers is the number of layers that keep a key/value cache. It is smaller
+	// than the layer count for a hybrid model (Qwen3.5 and 3.6 use full attention in one
+	// layer of four and a fixed-size recurrent state in the rest).
+	AttentionLayers int `json:"attentionLayers"`
+	// KVHeads is the number of key/value heads per attention layer (grouped-query
+	// attention shares them across query heads).
+	KVHeads int `json:"kvHeads"`
+	// HeadDim is the width of one head.
+	HeadDim int `json:"headDim"`
+	// Experts is the number of routed experts per layer; zero for a dense model.
+	Experts int `json:"experts,omitempty"`
+	// ExpertsPerToken is how many routed experts run for each token.
+	ExpertsPerToken int `json:"expertsPerToken,omitempty"`
+	// ExpertParamsB is the parameter count, in billions, held by the routed experts. The
+	// rest (attention, embeddings, shared expert) runs for every token and so stays on
+	// the GPU when the experts are moved out.
+	ExpertParamsB float64 `json:"expertParamsB,omitempty"`
+}
+
+// MoE reports whether the architecture has routed experts that can be placed apart from
+// the dense part of the network.
+func (a Arch) MoE() bool { return a.Experts > 0 && a.ExpertsPerToken > 0 && a.ExpertParamsB > 0 }
+
 // ModelSpec is one catalog entry: how to select it, where it came from, what it costs,
 // and what it can do.
 type ModelSpec struct {
@@ -155,6 +183,10 @@ type ModelSpec struct {
 	ParamsB float64 `json:"paramsB,omitempty"`
 	// ContextTokens is the usable context window (0 when unknown).
 	ContextTokens int `json:"contextTokens,omitempty"`
+	// Arch is the memory-relevant shape of the network, read from the model's published
+	// config. Nil means unknown, and [ModelSpec.PlanFit] then falls back to a flat
+	// allowance over the weights for the cache.
+	Arch *Arch `json:"arch,omitempty"`
 	// Capabilities is what the model supports.
 	Capabilities Capabilities `json:"capabilities"`
 	// Quants are the downloadable quantizations (local models); empty for API models.
@@ -239,12 +271,32 @@ func (c Catalog) Validate() error {
 		case m.Kind == KindLocal && m.ChatTemplate == "":
 			return fault.New(fault.Terminal, "catalog_invalid", "catalog: local model "+m.ID+" has no chat template (it cannot be served with a trusted prompt contract)")
 		}
+		if err := validateArch(m); err != nil {
+			return err
+		}
 		for _, q := range m.Quants {
 			if q.Format != FormatSafetensors && q.Format != FormatGGUF && q.Format != FormatPickle {
 				return fault.New(fault.Terminal, "catalog_invalid", "catalog: "+m.ID+" quant "+q.Name+" has an unknown format")
 			}
 		}
 		seen[m.ID] = true
+	}
+	return nil
+}
+
+// validateArch checks a model's architecture is complete and consistent with the model it
+// describes, because the fit estimate divides and multiplies by every one of its fields.
+func validateArch(m ModelSpec) error {
+	a := m.Arch
+	switch {
+	case a == nil:
+		return nil
+	case a.AttentionLayers <= 0 || a.KVHeads <= 0 || a.HeadDim <= 0:
+		return fault.New(fault.Terminal, "catalog_invalid", "catalog: "+m.ID+" has an arch with a non-positive layer, head or head-width count")
+	case (a.Experts > 0 || a.ExpertsPerToken > 0 || a.ExpertParamsB > 0) && !a.MoE():
+		return fault.New(fault.Terminal, "catalog_invalid", "catalog: "+m.ID+" has a partial mixture-of-experts arch (experts, expertsPerToken and expertParamsB go together)")
+	case a.MoE() && (a.ExpertsPerToken > a.Experts || m.ParamsB <= a.ExpertParamsB):
+		return fault.New(fault.Terminal, "catalog_invalid", "catalog: "+m.ID+" has expert counts or parameters larger than the model")
 	}
 	return nil
 }
