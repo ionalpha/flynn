@@ -56,6 +56,23 @@ are in v0.2.0-rc.1 and not in v0.1.3. To try the candidate, install with
 [v0.2.0 notes](docs/releases/v0.2.0.md#upgrading-from-v013) before upgrading: commands
 the agent runs now have no network unless you pass `--allow-network`.
 
+**Testing a release candidate?** The lines above install the latest final release,
+because GitHub's "latest" never includes a release candidate. To get the candidate, set
+`FLYNN_PRERELEASE`; it takes the newest release of any kind:
+
+```sh
+# Linux and macOS
+curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | FLYNN_PRERELEASE=1 sh
+```
+
+```powershell
+# Windows (PowerShell)
+$env:FLYNN_PRERELEASE = '1'; irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
+```
+
+Already installed? `flynn upgrade --pre` moves to the newest candidate. Either way,
+`flynn version` tells you which release you ended up on.
+
 After that, the binary updates itself:
 
 ```sh

@@ -11,6 +11,8 @@
 
     Environment overrides:
         FLYNN_VERSION      install a specific tag (e.g. v0.1.0); default: the latest release
+        FLYNN_PRERELEASE   set to any value to take the newest release including a release
+                           candidate (the default skips them); ignored when FLYNN_VERSION is set
         FLYNN_INSTALL_DIR  install directory;                   default: %LOCALAPPDATA%\flynn\bin
 #>
 $ErrorActionPreference = 'Stop'
@@ -28,9 +30,14 @@ $arch = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64' -or $env:PROCESSOR_ARCHITEW6
 # --- resolve the version to install ---------------------------------------
 $version = $env:FLYNN_VERSION
 if (-not $version) {
+    # GitHub's "latest" release never includes a pre-release, so a release candidate is
+    # invisible to it. FLYNN_PRERELEASE asks for the newest release of any kind instead:
+    # the list endpoint returns releases newest first and does include pre-releases.
+    $url = "https://api.github.com/repos/$repo/releases/latest"
+    if ($env:FLYNN_PRERELEASE) { $url = "https://api.github.com/repos/$repo/releases?per_page=1" }
     try {
-        $release = Invoke-RestMethod -UseBasicParsing "https://api.github.com/repos/$repo/releases/latest"
-        $version = $release.tag_name
+        $release = Invoke-RestMethod -UseBasicParsing $url
+        $version = @($release)[0].tag_name
     } catch {
         throw "Could not resolve the latest release; set FLYNN_VERSION (e.g. `$env:FLYNN_VERSION='v0.1.0'`). $_"
     }
