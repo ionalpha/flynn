@@ -19,7 +19,6 @@ package gpu
 import (
 	"context"
 	"errors"
-	"os/exec" //nolint:depguard // a read-only query of the host's own graphics adapter, as internal/hardware makes; there is no agent command here for the sandbox to confine
 	"regexp"
 	"runtime"
 	"strconv"
@@ -27,6 +26,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/internal/inference"
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // Info is what detection found. The zero value means no usable GPU.
@@ -62,7 +62,7 @@ const probeTimeout = 10 * time.Second
 func ExecRunner(ctx context.Context, name string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
 	defer cancel()
-	return exec.CommandContext(ctx, name, args...).Output() //nolint:gosec // a fixed vendor tool name and fixed query arguments
+	return procexec.CommandContext(ctx, name, args...).Output() //nolint:gosec // a fixed vendor tool name and fixed query arguments
 }
 
 // Detect reports the GPU on this machine, or the zero Info when there is none. run nil
