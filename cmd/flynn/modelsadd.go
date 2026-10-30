@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ionalpha/flynn/internal/catalog"
+	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/huggingface"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/netguard"
@@ -363,8 +364,9 @@ func addLocalFile(dataDir string, args []string, autoApprove bool, out io.Writer
 	return recordAdd(dataDir, spec, out)
 }
 
-// copyIntoModels copies src to dataDir/models/name through a temporary file in the same
-// directory and returns the sha256 of the bytes it wrote. The digest is taken from the copy,
+// copyIntoModels copies src to dataDir/models/name with [fsatomic.WriteStream], so a failed
+// copy never leaves a partial weights file under the final name, and returns the sha256 of
+// the bytes it wrote. The digest is taken from the copy,
 // not from a separate read of the original, so it describes the file that will be served.
 func copyIntoModels(dataDir, src, name string) (digest string, err error) {
 	dir := filepath.Join(dataDir, "models")
@@ -376,25 +378,12 @@ func copyIntoModels(dataDir, src, name string) (digest string, err error) {
 		return "", err
 	}
 	defer func() { _ = in.Close() }()
-	tmp, err := os.CreateTemp(dir, ".add-*")
-	if err != nil {
-		return "", err
-	}
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-	}()
 	h := sha256.New()
-	if _, err := io.Copy(io.MultiWriter(tmp, h), in); err != nil {
-		return "", err
-	}
-	if err := tmp.Close(); err != nil {
-		return "", err
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return "", err
-	}
-	if err := os.Rename(tmp.Name(), filepath.Join(dir, name)); err != nil {
+	err = fsatomic.WriteStream(filepath.Join(dir, name), 0o600, func(w io.Writer) error {
+		_, err := io.Copy(io.MultiWriter(w, h), in)
+		return err
+	})
+	if err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
