@@ -30,12 +30,19 @@ import (
 // lifecycle from discovering a model on the Hub through provisioning, running, and
 // stopping a server.
 func dispatchModels(sub []string, dataDir string) error {
+	prev := catalogDataDir
+	setCatalogDataDir(dataDir)
+	defer setCatalogDataDir(prev)
 	if len(sub) == 0 {
 		return runModels(sub, dataDir, os.Stdout)
 	}
 	switch sub[0] {
 	case "search":
 		return runModelSearch(sub[1:], dataDir, os.Stdout)
+	case "add":
+		return runModelAdd(sub[1:], dataDir, os.Stdout)
+	case "remove":
+		return runModelRemove(sub[1:], dataDir, os.Stdout)
 	case "bless":
 		return runModelBless(sub[1:], dataDir, os.Stdout)
 	case "fetch":
@@ -237,7 +244,7 @@ func runModelInspect(args []string, dataDir string, out io.Writer) error {
 	runner := newLocalRunner(dataDir, out)
 	defer func() { _ = runner.Close() }()
 
-	src, err := modelsource.Parse(ref, isLocalModelID)
+	src, err := parseModelRef(ref)
 	if err != nil {
 		return fmt.Errorf("models inspect: %w", err)
 	}

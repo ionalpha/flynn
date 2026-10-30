@@ -38,7 +38,7 @@ func runModelFetch(args []string, dataDir string, out io.Writer) error {
 		return errors.New("models fetch: a model id is required")
 	}
 
-	cat, err := catalog.Load()
+	cat, err := loadCatalog()
 	if err != nil {
 		return err
 	}

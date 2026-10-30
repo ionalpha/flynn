@@ -147,7 +147,12 @@ func openHost(dataDir string, out io.Writer) (*localmodel.Host, error) {
 	// isolation this host provides, whether the model may run, and told the user. The host
 	// is asked only to report what the sandbox achieved, so a platform that cannot confine
 	// further than a process jail is not refused a second time.
-	return localmodel.Open(localmodel.Config{DataDir: abs, Progress: out, MinContainment: "process"})
+	// The host serves what it is given, so it is given the catalog the commands read, user
+	// entries included: a model added with `flynn models add` is fetched, digest-checked and
+	// served by the same path as a curated one. What a user entry is allowed to run under is
+	// decided by gateAndServe from where it came from, not by the host.
+	cat, _, _ := catalog.LoadWithOverlay(abs)
+	return localmodel.Open(localmodel.Config{DataDir: abs, Catalog: cat.Models, Progress: out, MinContainment: "process"})
 }
 
 // httpClient is the client for a running local server. It presents the server's per-launch
@@ -194,9 +199,11 @@ const (
 	consentPreapproved
 	// consentTrustGateOnly applies classification, provenance recording, and the
 	// containment gate, but neither prints the risk surface nor prompts. The goal
-	// path uses it because only catalog models resolve there today and a catalog
-	// model is not risky; if non-catalog sources ever resolve through that path,
-	// this value is the grep target for adding its consent surface.
+	// path uses it because only catalog models and the user's own entries resolve
+	// there. A catalog model is not risky, and a user entry was shown its risk and
+	// consented to at `flynn models add`, so asking again at run time would be
+	// asking a goal to prompt; if other non-catalog sources ever resolve through
+	// that path, this value is the grep target for adding their consent surface.
 	consentTrustGateOnly
 )
 
@@ -220,10 +227,11 @@ func consentFor(autoApprove bool) consentPolicy {
 // through to the serve (0, false for the defaults); the pool's degraded relaunch
 // uses them to shrink a model that ran out of memory.
 func (r *localRunner) gateAndServe(ctx context.Context, id string, consent consentPolicy, ctxSize int, cpuOnly bool) (catalog.ModelSpec, serve.Endpoint, error) {
-	src, err := modelsource.Parse(id, isLocalModelID)
+	src, err := parseModelRef(id)
 	if err != nil {
 		return catalog.ModelSpec{}, serve.Endpoint{}, err
 	}
+	_, userEntry := userModelEntry(id)
 	class, err := r.classifySource(src)
 	if err != nil {
 		return catalog.ModelSpec{}, serve.Endpoint{}, err
@@ -245,7 +253,7 @@ func (r *localRunner) gateAndServe(ctx context.Context, id string, consent conse
 			return catalog.ModelSpec{}, serve.Endpoint{}, err
 		}
 	}
-	if src.Kind != modelsource.KindCatalog {
+	if src.Kind != modelsource.KindCatalog && !userEntry {
 		// The source is admitted by the isolation gate and consented to, but is not a
 		// curated catalog entry. Serving an arbitrary downloaded model is delivered
 		// with the strong isolation tier it requires; until then the gate above
@@ -503,7 +511,7 @@ func localModelClient(ep serve.Endpoint, modelID string, plan harness.Plan, http
 // findLocalModel resolves a catalog id to a local model spec, with a clear error when the
 // id is unknown or names a hosted model.
 func findLocalModel(id string) (catalog.ModelSpec, error) {
-	cat, err := catalog.Load()
+	cat, err := loadCatalog()
 	if err != nil {
 		return catalog.ModelSpec{}, err
 	}
@@ -585,9 +593,11 @@ func logPlan(w io.Writer, modelID string, plan harness.Plan) {
 
 // isLocalModelID reports whether a model spec string names a local catalog model, so the
 // goal path can route a local selection through the serve lifecycle instead of the
-// hosted-provider resolver. An unknown id is not local.
+// hosted-provider resolver. An unknown id is not local. A model the user added counts, so it
+// routes to the serve lifecycle; that it is not a vetted catalog entry is decided later, by
+// [parseModelRef] and the admission gate, and never by this test.
 func isLocalModelID(spec string) bool {
-	cat, err := catalog.Load()
+	cat, err := loadCatalog()
 	if err != nil {
 		return false
 	}

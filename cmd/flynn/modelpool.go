@@ -39,7 +39,7 @@ func runModelPool(args []string, dataDir string, out io.Writer) error {
 		return errors.New("models pool: at least one model id is required (see `flynn models`)")
 	}
 
-	cat, err := catalog.Load()
+	cat, err := loadCatalog()
 	if err != nil {
 		return err
 	}

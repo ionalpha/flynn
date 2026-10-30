@@ -43,9 +43,12 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		return err
 	}
 
-	cat, err := catalog.Load()
+	cat, notes, err := loadCatalogNotes()
 	if err != nil {
 		return err
+	}
+	for _, n := range notes {
+		_, _ = fmt.Fprintln(out, "note: "+n)
 	}
 
 	q := catalog.Query{Capability: *capName, MaxParamsB: *maxParamB, Publisher: *publisher, SafeOnly: *safeOnly}
@@ -237,9 +240,18 @@ func renderModels(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec
 	_, _ = fmt.Fprintln(tw, "MODEL\tKIND\tSIZE\tCONTEXT\tCAPABILITIES\tTRUST\tLICENSE")
 	for _, m := range models {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.ID, m.Kind, sizeCol(m), contextCol(m.ContextTokens), capsCol(m.Capabilities), m.Trust, m.License)
+			m.ID, m.Kind, sizeCol(m), contextCol(m.ContextTokens), capsCol(m.Capabilities), trustCol(m), m.License)
 	}
 	_ = tw.Flush()
+}
+
+// trustCol is a model's vetting standing. An entry the user added is shown as unverified
+// whatever else it records, so it cannot be read as a curated one.
+func trustCol(m catalog.ModelSpec) string {
+	if m.Unverified() {
+		return "unverified"
+	}
+	return string(m.Trust)
 }
 
 // sizeCol is the on-disk footprint of a local model's smallest quant, or "-" for a

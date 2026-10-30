@@ -23,9 +23,9 @@ import (
 // maintainer step that turns an upstream reference into a curated entry without anyone
 // hashing files by hand: the file manifest and every large file's content digest are read
 // from the Hub, the small metadata files are fetched and hashed through the verified
-// download path, and the result is assembled into a `catalog.ModelSpec` and printed as
-// JSON. The catalog stays curated on purpose, so this prints the entry rather than
-// editing the shipped catalog: a human reviews the JSON and commits it.
+// download path, and the result is assembled into a `catalog.ModelSpec` and saved to the
+// user overlay. The shipped catalog stays curated on purpose: the saved entry is listed
+// as unverified and cannot replace an embedded id.
 //
 // The trust anchor is the registry's own content addressing, captured here, not a
 // hand-typed digest. A large weights file is pinned to the sha256 the Hub records as its
@@ -151,16 +151,43 @@ func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Download
 		ChatTemplate: chatTemplate,
 	}
 
-	entry, err := json.MarshalIndent(spec, "", "  ")
-	if err != nil {
-		return fmt.Errorf("models bless: encode entry: %w", err)
-	}
-
 	_, _ = fmt.Fprintf(out, "\nresolved %s: %d files, %s, format %s, quant %s, context %d\n",
 		repoPath, len(quantFiles), humanBytes(totalBytes), format, quantName, cfg.ContextTokens)
-	_, _ = fmt.Fprintf(out, "capabilities default to tools-only; run `flynn models probe %s` after committing to measure real agent reliability\n", id)
-	_, _ = fmt.Fprintln(out, "review and add this entry to the curated catalog (catalog/models.json):")
-	_, _ = fmt.Fprintln(out, string(entry))
+	_, _ = fmt.Fprintf(out, "capabilities default to tools-only; run `flynn models probe %s` to measure real agent reliability\n", id)
+	return saveBlessedEntry(catalogDataDir, spec, out)
+}
+
+// saveBlessedEntry writes a resolved entry to the user overlay under dataDir, where it is
+// listed as unverified and selectable like any catalog model. With no data directory (a
+// caller that is not running under the CLI) it prints the entry for review instead, so the
+// resolved JSON is never lost. An id the embedded catalog already holds is refused, naming
+// it, rather than written.
+func saveBlessedEntry(dataDir string, spec catalog.ModelSpec, out io.Writer) error {
+	if dataDir == "" {
+		entry, err := json.MarshalIndent(spec, "", "  ")
+		if err != nil {
+			return fmt.Errorf("models bless: encode entry: %w", err)
+		}
+		_, _ = fmt.Fprintln(out, "no data directory to save to; the resolved entry:")
+		_, _ = fmt.Fprintln(out, string(entry))
+		return nil
+	}
+	base, err := catalog.Load()
+	if err != nil {
+		return err
+	}
+	if _, refused := catalog.Merge(base, []catalog.ModelSpec{spec}); len(refused) > 0 {
+		return fmt.Errorf("models bless: %w", refused[0])
+	}
+	replaced, err := catalog.AddUser(dataDir, spec)
+	if err != nil {
+		return fmt.Errorf("models bless: %w", err)
+	}
+	verb := "saved"
+	if replaced {
+		verb = "updated"
+	}
+	_, _ = fmt.Fprintf(out, "%s %s in %s (listed as unverified)\n", verb, spec.ID, catalog.OverlayPath(dataDir))
 	return nil
 }
 
