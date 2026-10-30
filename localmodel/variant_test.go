@@ -17,6 +17,10 @@ import (
 // a driver new enough to load the newest pinned build.
 var rtx = localmodel.NVIDIAGPU("NVIDIA GeForce RTX 4070 Ti", "610.88", 13, 3, 8.9)
 
+// metal is true where the baseline build is compiled with Metal, so it offloads to the
+// machine's own GPU and is reported as using it whatever adapter was found.
+var metal = runtime.GOOS == "darwin" && runtime.GOARCH == "arm64"
+
 // variantWorld is a TLS origin serving a CPU build and a CUDA build with its runtime
 // libraries, and the release set that pins them.
 type variantWorld struct {
@@ -97,8 +101,8 @@ func TestRuntimeStatusReportsWhatInstallRuntimeInstalled(t *testing.T) {
 	if !after.Installed || after.BinPath != inst.BinPath || after.Variant != "cpu" || after.Problem != "" {
 		t.Fatalf("status after install = %+v, want the build at %s", after, inst.BinPath)
 	}
-	if after.UsesGPU {
-		t.Error("a CPU build on a machine with no GPU reported GPU use")
+	if after.UsesGPU != metal {
+		t.Errorf("UsesGPU = %v for a baseline build with no adapter found, want %v", after.UsesGPU, metal)
 	}
 }
 
@@ -161,8 +165,8 @@ func TestInstallRuntimeHonoursAnExplicitVariant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Variant != "cpu" || st.UsesGPU {
-		t.Fatalf("status = %+v, want the CPU build reported as not using the GPU", st)
+	if st.Variant != "cpu" || st.UsesGPU != metal {
+		t.Fatalf("status = %+v, want the baseline build reported as not using the NVIDIA GPU", st)
 	}
 
 	_, err = h.InstallRuntime(t.Context(), "cuda-9.9")
