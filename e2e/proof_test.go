@@ -1,6 +1,8 @@
 package e2e
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -57,4 +59,26 @@ func TestTheProducerRunsWithoutTheRefusal(t *testing.T) {
 	requireExit(t, ver, 0, "spine verify")
 	requireContains(t, ver.stdout, "VERIFIED", "verify integrity")
 	requireContains(t, ver.stdout, "governance:", "verify report")
+}
+
+// TestAFileStandingInForTheCheckIsRefusedAsTampering: the plan's check is `cd .`, which
+// passes on every host, and the workspace holds a file named `cd`. A shell resolves a bare
+// command through the working directory on some hosts, so that file would answer to the
+// check in place of the program and the check would measure what the agent wrote. The run
+// has to refuse it, by name and as tampering, rather than run it or report the item proven.
+// Without the refusal wired into the CLI's worker the check runs and passes, or on a host
+// that cannot confine it is reported as merely unrunnable; neither says tampering.
+func TestAFileStandingInForTheCheckIsRefusedAsTampering(t *testing.T) {
+	fake := newFakeOpenAI(t, finalText("All done, everything works."))
+	in := newInstance(t).withModel(fake)
+	if err := os.WriteFile(filepath.Join(in.workspace, "cd"), []byte("exit 0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res := in.run("-no-learn", "-require-proof", "goal", "state the answer")
+	if res.code == 0 {
+		t.Fatalf("a run whose check was answered by a workspace file exited 0:\n%s", res.stdout)
+	}
+	requireContains(t, res.combined(), "tampering", "the stall names the stand-in as tampering")
+	requireContains(t, res.combined(), "a file named cd", "the stall names the file")
 }
