@@ -244,6 +244,12 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	// background. Both are best-effort and neither can fail the command.
 	startupNotices(context.Background(), *dataDir)
 
+	// Point catalog reads at this data directory's user overlay, so a model added with
+	// `flynn models add` is selectable by --model like any catalog entry.
+	prevCatalogDir := catalogDataDir
+	setCatalogDataDir(*dataDir)
+	defer setCatalogDataDir(prevCatalogDir)
+
 	// The model to drive: an explicit --model wins; otherwise a previously chosen default
 	// (from onboarding, /model, or `flynn models use`) applies; otherwise the built-in
 	// default the flag carries. So a user need not repeat --model once one is chosen.

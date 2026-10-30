@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -241,11 +240,6 @@ func blessGGUF(ctx context.Context, req blessRequest, out io.Writer) error {
 		Trust:         catalog.TrustBlessed,
 		ChatTemplate:  chatTemplate,
 	}
-	entry, err := json.MarshalIndent(spec, "", "  ")
-	if err != nil {
-		return fmt.Errorf("models bless: encode entry: %w", err)
-	}
-
 	arch := meta.Architecture()
 	if arch == "" {
 		arch = "unknown"
@@ -255,10 +249,7 @@ func blessGGUF(ctx context.Context, req blessRequest, out io.Writer) error {
 	if !launch.NativeToolCalls(chatTemplate) {
 		_, _ = fmt.Fprintf(out, "the %s template runs without Jinja, so the server cannot offer native tool calls; tools is false\n", chatTemplate)
 	}
-	_, _ = fmt.Fprintf(out, "run `flynn models probe %s` after committing to measure real agent reliability\n", id)
-	_, _ = fmt.Fprintln(out, "review and add this entry to the curated catalog (catalog/models.json):")
-	_, _ = fmt.Fprintln(out, string(entry))
-	return nil
+	return saveBlessedEntry(catalogDataDir, spec, out)
 }
 
 // clampContext converts a context length from a model header to an int. The header is

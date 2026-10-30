@@ -20,13 +20,13 @@ import (
 )
 
 // runModelBless implements `flynn models bless <hf:owner/repo>`: resolve a Hugging Face
-// model into a verified, digest-pinned catalog entry and print it for review. It is the
-// maintainer step that turns an upstream reference into a curated entry without anyone
-// hashing files by hand: the file manifest and every large file's content digest are read
-// from the Hub, the small metadata files are fetched and hashed through the verified
-// download path, and the result is assembled into a `catalog.ModelSpec` and printed as
-// JSON. The catalog stays curated on purpose, so this prints the entry rather than
-// editing the shipped catalog: a human reviews the JSON and commits it.
+// model into a verified, digest-pinned catalog entry and save it to the user overlay. It
+// turns an upstream reference into an entry without anyone hashing files by hand: the file
+// manifest and every large file's content digest are read from the Hub, the small metadata
+// files are fetched and hashed through the verified download path, and the result is
+// assembled into a `catalog.ModelSpec`. The shipped catalog stays curated on purpose, so
+// the entry goes to the overlay and is listed as unverified; a maintainer who reviews it
+// can copy it from there into the shipped catalog.
 //
 // The trust anchor is the registry's own content addressing, captured here, not a
 // hand-typed digest. A large weights file is pinned to the sha256 the Hub records as its
@@ -193,16 +193,40 @@ func blessSafetensors(ctx context.Context, req blessRequest, dl *fetch.Downloade
 		ChatTemplate: chatTemplate,
 	}
 
-	entry, err := json.MarshalIndent(spec, "", "  ")
-	if err != nil {
-		return fmt.Errorf("models bless: encode entry: %w", err)
-	}
-
 	_, _ = fmt.Fprintf(out, "\nresolved %s: %d files, %s, format %s, quant %s, context %d, chat template %s, reasoning %v\n",
 		repoPath, len(quantFiles), humanBytes(totalBytes), format, quantName, cfg.ContextTokens, chatTemplate, reasoning)
-	_, _ = fmt.Fprintf(out, "run `flynn models probe %s` after committing to measure real agent reliability\n", id)
-	_, _ = fmt.Fprintln(out, "review and add this entry to the curated catalog (catalog/models.json):")
-	_, _ = fmt.Fprintln(out, string(entry))
+	return saveBlessedEntry(catalogDataDir, spec, out)
+}
+
+// saveBlessedEntry stores a blessed entry in the user overlay under dataDir, where it is
+// listed as unverified until a maintainer reviews it into the shipped catalog. An id the
+// shipped catalog already owns is refused before anything is written, because the overlay
+// could not list it anyway. With no data directory there is nowhere to save, so the entry
+// is printed as JSON for a maintainer to commit by hand.
+func saveBlessedEntry(dataDir string, spec catalog.ModelSpec, out io.Writer) error {
+	if dataDir == "" {
+		_, _ = fmt.Fprintf(out, "run `flynn models probe %s` after committing to measure real agent reliability\n", spec.ID)
+		_, _ = fmt.Fprintln(out, "review and add this entry to the curated catalog (catalog/models.json):")
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(spec); err != nil {
+			return fmt.Errorf("models bless: print entry: %w", err)
+		}
+		return nil
+	}
+	if err := catalog.CheckUser(spec); err != nil {
+		return fmt.Errorf("models bless: %w", err)
+	}
+	replaced, err := catalog.AddUser(dataDir, spec)
+	if err != nil {
+		return fmt.Errorf("models bless: %w", err)
+	}
+	verb := "saved"
+	if replaced {
+		verb = "updated"
+	}
+	_, _ = fmt.Fprintf(out, "%s %s in %s (listed as unverified)\n", verb, spec.ID, catalog.OverlayPath(dataDir))
+	_, _ = fmt.Fprintf(out, "run `flynn models probe %s` to measure real agent reliability\n", spec.ID)
 	return nil
 }
 

@@ -3,7 +3,6 @@ package main
 import (
 	"strings"
 
-	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/tui/app"
 	"github.com/ionalpha/flynn/internal/tui/fuzzy"
 )
@@ -90,7 +89,7 @@ func commandTakesArg(name string) bool {
 // /model completion. A catalog that cannot load yields no ids rather than an error; the
 // user can still type an id in full.
 func allCatalogModelIDs() []string {
-	cat, err := catalog.Load()
+	cat, err := loadCatalog()
 	if err != nil {
 		return nil
 	}
