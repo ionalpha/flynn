@@ -55,13 +55,33 @@ const (
 // can tell "this is not a GGUF file" apart from "this GGUF file is malformed".
 var ErrNotGGUF = errors.New("gguf: not a GGUF file")
 
-// Metadata is the string-valued metadata read from a GGUF header. Only string values
-// are retained, since the security-relevant fields (the chat template, the
-// architecture, the name) are strings; numeric and array values are validated and
-// skipped, not stored.
+// Metadata is the string and integer metadata read from a GGUF header. The
+// security-relevant fields (the chat template, the architecture, the name) are strings
+// and the sizing ones (the context length) are integers; floats, booleans and arrays
+// are validated and skipped, not stored, so the memory a header can claim stays bounded
+// by its own size.
 type Metadata struct {
 	Version uint32
 	strings map[string]string
+	ints    map[string]uint64
+}
+
+// Uint returns the value of an unsigned or non-negative signed integer metadata key.
+// A negative signed value is reported as absent rather than wrapped to a huge number.
+func (m *Metadata) Uint(key string) (uint64, bool) {
+	v, ok := m.ints[key]
+	return v, ok
+}
+
+// ContextLength returns the context length the model was trained for
+// (<architecture>.context_length), or 0 when the file does not say.
+func (m *Metadata) ContextLength() uint64 {
+	arch := m.Architecture()
+	if arch == "" {
+		return 0
+	}
+	v, _ := m.Uint(arch + ".context_length")
+	return v
 }
 
 // String returns the value of a string metadata key.
@@ -120,7 +140,7 @@ func ReadMetadata(r io.Reader) (*Metadata, error) {
 		return nil, fmt.Errorf("gguf: metadata count %d exceeds limit", kvCount)
 	}
 
-	m := &Metadata{Version: version, strings: make(map[string]string)}
+	m := &Metadata{Version: version, strings: make(map[string]string), ints: make(map[string]uint64)}
 	for i := range kvCount {
 		key, err := readString(br, maxKeyLen)
 		if err != nil {
@@ -138,11 +158,56 @@ func ReadMetadata(r io.Reader) (*Metadata, error) {
 			m.strings[key] = val
 			continue
 		}
+		if isInt, keep, n, err := readInteger(br, vtype); err != nil {
+			return nil, fmt.Errorf("gguf: read value of %q: %w", key, err)
+		} else if isInt {
+			if keep {
+				m.ints[key] = n
+			}
+			continue
+		}
 		if err := skipValue(br, vtype, 0); err != nil {
 			return nil, fmt.Errorf("gguf: skip value of %q: %w", key, err)
 		}
 	}
 	return m, nil
+}
+
+// readInteger consumes a value if it is an integer type. isInt reports that the value
+// was an integer and has been consumed; keep reports that it is non-negative and so
+// representable as the unsigned result. A negative signed value is consumed but not kept.
+func readInteger(br *bufio.Reader, vtype uint32) (isInt, keep bool, n uint64, err error) {
+	var signed bool
+	var size int
+	switch vtype {
+	case typeUint8:
+		size = 1
+	case typeUint16:
+		size = 2
+	case typeUint32:
+		size = 4
+	case typeUint64:
+		size = 8
+	case typeInt8:
+		size, signed = 1, true
+	case typeInt16:
+		size, signed = 2, true
+	case typeInt32:
+		size, signed = 4, true
+	case typeInt64:
+		size, signed = 8, true
+	default:
+		return false, false, 0, nil
+	}
+	var b [8]byte
+	if _, err := io.ReadFull(br, b[:size]); err != nil {
+		return true, false, 0, err
+	}
+	n = binary.LittleEndian.Uint64(b[:])
+	if signed && b[size-1]&0x80 != 0 {
+		return true, false, 0, nil
+	}
+	return true, true, n, nil
 }
 
 // skipValue advances past a non-string value of the given type without retaining it.
