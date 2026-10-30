@@ -51,6 +51,7 @@ func TestLedgerLoopIsWiredOnlyWhenBothHalvesArePresent(t *testing.T) {
 		{"both", Config{Verifier: stubVerifier{}, Evidence: stubEvidence{}}},
 		{"both, and the refusal on", Config{Verifier: stubVerifier{}, Evidence: stubEvidence{}, RequireLedgerProof: true}},
 		{"both, asserted evidence allowed", Config{Verifier: stubVerifier{}, Evidence: stubEvidence{}, AllowAssertedEvidence: true}},
+		{"both, with the directory checks run in", Config{Verifier: stubVerifier{}, Evidence: stubEvidence{}, CheckDir: "."}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := tc.cfg

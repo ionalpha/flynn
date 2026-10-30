@@ -37,6 +37,7 @@ func (g *Reconciler) settleLedger(ctx context.Context, r resource.Resource, stat
 		// The feedback describes a check that failed on an item now proven or moved
 		// past, so it must not ride into the next step.
 		status.ItemFeedback = ""
+		status.MissingCommand, status.MissingRepeat = "", 0
 	}
 	return recorded, nil
 }

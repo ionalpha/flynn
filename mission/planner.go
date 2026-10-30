@@ -86,7 +86,7 @@ func WithPlannerSampling(s *llm.Sampling) PlannerOption {
 
 // NewPlanner builds a model-backed planner over the llm port.
 func NewPlanner(model llm.Model, opts ...PlannerOption) *Planner {
-	p := &Planner{model: model, system: planSystem, maxTokens: DefaultPlannerMaxTokens}
+	p := &Planner{model: model, system: planSystem + "\n\n" + HostNote(), maxTokens: DefaultPlannerMaxTokens}
 	for _, o := range opts {
 		o(p)
 	}

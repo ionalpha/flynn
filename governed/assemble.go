@@ -445,6 +445,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 		// ledger item and nothing else would run it. The ledger, not the model's final
 		// answer, decides a goal that carries one.
 		cfg.Verifier = evidence.NewCommandVerifier(p.sb, contained(p.sb)...)
+		cfg.CheckDir = c.checkDir()
 		cfg.Evidence = evidence.NewSpineEvidence(b.Log)
 		cfg.RequireLedgerProof = true
 		post.Verifier, post.Evidence, post.LedgerProof = true, true, true
@@ -467,6 +468,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 			// ids, and the record then reads as one call both refused and completed. The
 			// verdict is on the record as the item-verified event the gate consumes.
 			cfg.Verifier = evidence.NewCommandVerifier(p.sb, contained(p.sb)...)
+			cfg.CheckDir = c.checkDir()
 			cfg.Evidence = evidence.NewSpineEvidence(b.Log)
 			cfg.RequireLedgerProof = c.ledgerProof
 			post.Verifier, post.Evidence, post.LedgerProof = true, true, c.ledgerProof
@@ -554,6 +556,18 @@ func (c *config) judges(cfg *runtime.Config, post *Posture, model llm.Model, log
 	cfg.Progress = progress.NewSpineProbe(log, c.progressDir())
 	cfg.Refusals = refusal.NewSpineProbe(log)
 	post.Progress, post.Refusals = true, true
+}
+
+// checkDir is the directory a ledger check runs in, which the worker searches for a file
+// standing in for the check's command. It is the run's working directory when governed
+// built the sandbox, and empty when the host supplied one, because a host sandbox has no
+// path the run chose and the process's directory would refuse checks for files the check
+// never sees.
+func (c *config) checkDir() string {
+	if c.sandbox != nil {
+		return ""
+	}
+	return c.progressDir()
 }
 
 // progressDir is the directory the progress probe reads git HEAD from. A host sandbox

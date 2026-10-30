@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ionalpha/flynn/bus"
@@ -88,6 +90,9 @@ type Worker struct {
 	lease     time.Duration
 	retryBase time.Duration
 	retryCeil time.Duration
+	// checkDir is the workspace a check runs in, searched for a file standing in for the
+	// check's command (see ShadowedCommands). Empty disables the search.
+	checkDir string
 }
 
 // WorkerOption configures a Worker.
@@ -112,6 +117,11 @@ func WithItemVerification(v ItemVerifier, e Evidence) WorkerOption {
 		w.evidence = e
 	}
 }
+
+// WithCheckDir names the workspace a ledger check runs in. A check whose command is
+// answered by a file in it, such as a test.bat beside a check that runs `test`, is refused
+// without being run: the file is the agent's, and a check it can write measures nothing.
+func WithCheckDir(dir string) WorkerOption { return func(w *Worker) { w.checkDir = dir } }
 
 // WithLease overrides the step lease duration.
 func WithLease(d time.Duration) WorkerOption {
@@ -319,7 +329,7 @@ func (w *Worker) runVerify(ctx context.Context, job jobs.Job, r resource.Resourc
 		return w.jobs.Complete(ctx, job.ID)
 	}
 
-	verdict, err := w.verifier.VerifyItem(ctx, r, item)
+	verdict, err := w.verifyItem(ctx, r, item)
 	if err != nil {
 		return w.fail(ctx, job, err)
 	}
@@ -333,6 +343,23 @@ func (w *Worker) runVerify(ctx context.Context, job jobs.Job, r resource.Resourc
 	}
 	w.signal(ctx, r)
 	return nil
+}
+
+// verifyItem runs the item's check and classifies how it ended. A check whose command a
+// workspace file stands in for is not run at all. One that ran and found its program
+// missing is reported as not run, so the host's lack of a program is never counted as the
+// work failing.
+func (w *Worker) verifyItem(ctx context.Context, r resource.Resource, item LedgerItem) (ItemVerdict, error) {
+	if shadowed := ShadowedCommands(item.Verify, w.checkDir); len(shadowed) > 0 {
+		return ItemVerdict{Detail: fmt.Sprintf("the check was not run: the workspace has a file named %s, which would answer to the check's command in place of the program. "+
+			"A check is not yours to rewrite, and a stand-in for its command is tampering with it. Delete the file and make the work pass the check as written.",
+			strings.Join(shadowed, ", "))}, nil
+	}
+	verdict, err := w.verifier.VerifyItem(ctx, r, item)
+	if err != nil {
+		return ItemVerdict{}, err
+	}
+	return classifyUnrunnable(item.Verify, verdict), nil
 }
 
 // markItemFeedback records what a check that did not pass reported, so the next build step
@@ -351,6 +378,7 @@ func (w *Worker) markItemFeedback(ctx context.Context, r resource.Resource, v It
 		} else {
 			status.ItemFeedback = v.Detail
 		}
+		status.observeMissing(v.Missing)
 		enc, err := status.Encode()
 		if err != nil {
 			return err

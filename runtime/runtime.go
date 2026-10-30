@@ -144,6 +144,14 @@ type Config struct {
 	// only for a run whose checks genuinely cannot be executed, knowing that what the
 	// ledger then records is a claim rather than a result.
 	AllowAssertedEvidence bool
+	// CheckDir is the workspace the Verifier's checks run in. A check whose command is
+	// answered by a file there, such as a test.bat beside a check that runs `test`, is
+	// refused without being run, because the agent can write that file and the check would
+	// then measure what it wrote. It is the Verifier's own workspace that has to be named:
+	// a Verifier that runs somewhere else is not protected by the directory beside the
+	// process, so leave it empty then and the search is off. It has no effect without
+	// Verifier and Evidence.
+	CheckDir string
 
 	// Store, Jobs, and Bus are the foundation ports. When Store is nil, an in-memory
 	// store, queue, and bus are built over Clock with a registry holding the core
@@ -409,6 +417,9 @@ func pairedOptions(cfg Config, ropts []goal.Option, wopts []goal.WorkerOption) (
 			ropts = append(ropts, goal.WithLedgerConvergence())
 		}
 		wopts = append(wopts, goal.WithItemVerification(cfg.Verifier, cfg.Evidence))
+		if cfg.CheckDir != "" {
+			wopts = append(wopts, goal.WithCheckDir(cfg.CheckDir))
+		}
 	}
 	return ropts, wopts, nil
 }

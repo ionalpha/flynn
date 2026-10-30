@@ -38,6 +38,11 @@ type ItemVerdict struct {
 	// Both are zero on a verdict nothing was run for, which has no execution to describe.
 	ExitCode int
 	Output   string
+	// Missing is the program the check named that the host does not have. It is set with
+	// Executed false: nothing was checked, so the verdict says nothing about the work. The
+	// worker sets it from an executed verdict that exited as a shell does for a program it
+	// cannot find (see MissingCommand); a verifier does not need to.
+	Missing string
 	// Detail is a short human-readable reason, shown to the next build step when a check
 	// did not pass so the agent is told what its own declared check reported.
 	Detail string
