@@ -32,7 +32,10 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		publisher = fs.String("publisher", "", "only models from this publisher")
 		safeOnly  = fs.Bool("safe", false, "drop models whose only weights use a code-executing format")
 		fit       = fs.Bool("fit", false, "show how each model fits this machine's GPU memory")
-		vramGB    = fs.Float64("vram", 0, "GPU memory budget in GB to judge fit against (default: auto-detect)")
+		vramGB    = fs.Float64("vram", 0, "free GPU memory in GB to judge fit against (default: auto-detect, minus what is in use)")
+		ramGB     = fs.Float64("ram", 0, "system RAM in GB a mixture-of-experts model may spill into (default: auto-detect)")
+		ctxTokens = fs.Int("ctx", catalog.DefaultContextTokens, "context length in tokens to size the KV cache for")
+		kvType    = fs.String("kv", string(catalog.KVF16), "KV cache precision: f16 or q8_0 (q8 is accepted)")
 	)
 	fs.Usage = func() {
 		_, _ = fmt.Fprintln(out, "usage: flynn models [filters]\nShow the model catalog. Filters:")
@@ -67,12 +70,16 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintln(out, "no models match")
 		return nil
 	}
-	if *fit || *vramGB > 0 {
+	if *fit || *vramGB > 0 || *ramGB > 0 {
+		set, err := fitSettingsFromFlags(*ctxTokens, *kvType)
+		if err != nil {
+			return err
+		}
 		// The fit view is two-axis: whether the model fits this machine, and whether it clears
 		// the agentic-reliability bar. The reliability axis reads a measured profile when one
 		// has been recorded, so the lookup is best-effort and never blocks the listing.
 		profiles := localProfileSource(context.Background(), dataDir)
-		renderFit(out, cat, models, resolveBudget(*vramGB), profiles)
+		renderFit(out, cat, models, resolveMachine(*vramGB, *ramGB), set, profiles)
 		return nil
 	}
 	renderModels(out, cat, models)
@@ -94,6 +101,23 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 	return nil
 }
 
+// fitSettingsFromFlags turns the --ctx and --kv flags into the settings a fit is sized
+// with, rejecting a value the KV-cache arithmetic cannot use rather than sizing against a
+// guess. "q8" is accepted as a spelling of "q8_0".
+func fitSettingsFromFlags(ctxTokens int, kv string) (catalog.FitSettings, error) {
+	set := catalog.FitSettings{ContextTokens: ctxTokens, KV: catalog.KVType(kv)}
+	if kv == "q8" {
+		set.KV = catalog.KVQ8
+	}
+	if !set.KV.Valid() {
+		return set, fmt.Errorf("models: --kv must be f16 or q8_0, got %q", kv)
+	}
+	if set.ContextTokens <= 0 {
+		return set, fmt.Errorf("models: --ctx must be positive, got %d", ctxTokens)
+	}
+	return set, nil
+}
+
 // parseModelFlags parses args for a `flynn models` subcommand. It reports done when the
 // caller must return err as it stands: a parse failure, or a nil err after -h, which is not
 // a failure (flag has already printed the usage). Every subcommand that builds its own
@@ -108,7 +132,8 @@ func parseModelFlags(fs *flag.FlagSet, args []string) (done bool, err error) {
 	return false, nil
 }
 
-// budget is the memory ceiling fit is judged against, and how it was determined.
+// budget is the memory ceiling a model pool is scheduled against, and how it was determined.
+// The fit view needs two pools and the memory already in use, so it uses [resolveMachine].
 type budget struct {
 	bytes  int64
 	source string // human description: "given", a detected GPU, or empty when unknown
@@ -150,29 +175,6 @@ func cpuInferenceBudget(ramBytes int64) int64 {
 	return ramBytes - reserve
 }
 
-// renderFit lists the models with a fit verdict against the budget and a single
-// recommendation, the "what can this machine actually run" view. When no budget is
-// known it says so and falls back to the plain listing.
-func renderFit(out io.Writer, cat catalog.Catalog, models []catalog.ModelSpec, b budget, profiles harness.ProfileSource) {
-	if b.bytes <= 0 {
-		_, _ = fmt.Fprintln(out, "could not detect GPU or system memory; pass --vram <GB> to judge fit.")
-		renderModels(out, cat, models)
-		return
-	}
-	_, _ = fmt.Fprintf(out, "fit for %s:\n\n", b.source)
-	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "MODEL\tKIND\tSIZE\tFIT\tRELIABILITY\tCAPABILITIES\tLICENSE")
-	for _, m := range models {
-		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			m.ID, m.Kind, sizeCol(m), m.FitFor(b.bytes), reliabilityCol(m, profiles), capsCol(m.Capabilities), m.License)
-	}
-	_ = tw.Flush()
-	if rec, ok := recommend(models, b.bytes); ok {
-		_, _ = fmt.Fprintf(out, "\nrecommended local model: %s\n", rec.ID)
-	}
-	_, _ = fmt.Fprintln(out, "\nreliability: a measured score where the model has been probed, otherwise a quant-floor estimate; run `flynn models probe <id>` to measure.")
-}
-
 // reliabilityCol renders a local model's standing on the agentic-reliability axis: the measured
 // tool-call reliability when the model has been probed, otherwise the a-priori reading from its
 // smallest quant against the quant floor. A hosted API model is not probed locally, so it shows a
@@ -197,23 +199,6 @@ func reliabilityCol(m catalog.ModelSpec, profiles harness.ProfileSource) string 
 	default:
 		return "unprobed"
 	}
-}
-
-// recommend picks a single default local model for the budget: the largest one that
-// fits comfortably (more parameters generally means more capable), so the suggestion
-// is the strongest model the machine can run without crowding memory.
-func recommend(models []catalog.ModelSpec, availBytes int64) (catalog.ModelSpec, bool) {
-	var best catalog.ModelSpec
-	found := false
-	for _, m := range models {
-		if !m.Local() || m.FitFor(availBytes) != catalog.FitFeasible {
-			continue
-		}
-		if !found || m.ParamsB > best.ParamsB {
-			best, found = m, true
-		}
-	}
-	return best, found
 }
 
 // withinSize keeps API models (no download) and local models whose smallest quant is

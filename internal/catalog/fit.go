@@ -20,8 +20,8 @@ const (
 
 // headroomNumer/headroomDenom express the runtime headroom reserved over the raw
 // weights for the key-value cache and activations, as a fraction (here one fifth, so
-// 20%). It is a deliberately simple, conservative estimate; a context-aware estimate
-// that scales the cache term with the target window is a later refinement.
+// 20%). It ignores the context length, so it suits a quick check against a single
+// number; [ModelSpec.PlanFit] sizes the cache from the window and the network's shape.
 const (
 	headroomNumer = 1
 	headroomDenom = 5
@@ -48,7 +48,9 @@ func Feasibility(availBytes, sizeBytes int64) Fit {
 
 // FitFor reports how a model fits a memory budget, judged by its smallest
 // quantization (the cheapest way to run it). An API model downloads nothing and is
-// always feasible; a local model with no size is unknown.
+// always feasible; a local model with no size is unknown. It does not see the context
+// length, memory already in use, or a GPU and RAM split: use [ModelSpec.PlanFit] when
+// those are known.
 func (m ModelSpec) FitFor(availBytes int64) Fit {
 	if !m.Local() {
 		return FitFeasible
