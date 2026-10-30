@@ -114,6 +114,28 @@ type Trust = catalog.Trust
 // Format is a weight file's encoding. Pickle is refused by every [Host] method.
 type Format = catalog.Format
 
+// Arch is the network shape of a [Model]: the layer and head counts that size its
+// key/value cache, and for a mixture-of-experts model the expert counts a GPU and RAM
+// split is planned from.
+type Arch = catalog.Arch
+
+// Machine is the free memory a [Model] is planned against: VRAM not already in use, and
+// the system RAM a split may spill into.
+type Machine = catalog.Machine
+
+// FitSettings chooses the context length and cache precision [Model.PlanFit] sizes for.
+type FitSettings = catalog.FitSettings
+
+// FitPlan is [Model.PlanFit]'s verdict with the memory arithmetic behind it.
+type FitPlan = catalog.FitPlan
+
+// KVType is the precision the key/value cache is stored in.
+type KVType = catalog.KVType
+
+// Placement is where [Model.PlanFit] runs a model: on the GPU, split across GPU and
+// system RAM, or on the CPU.
+type Placement = catalog.Placement
+
 // Config says where a [Host] keeps its files and, for a host that curates its own
 // catalog, what it may serve. The zero values of the optional fields give the catalog and
 // runtime pins that ship with this module.
