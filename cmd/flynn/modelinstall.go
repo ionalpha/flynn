@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -13,16 +14,30 @@ import (
 	"github.com/ionalpha/flynn/localmodel"
 )
 
-// runRuntimeInstall implements `flynn models install [runtime]`: fetch a pinned, gated
-// local inference runtime so a machine with none can run a model without any manual
-// setup. The default runtime is the one Flynn provisions itself, llama.cpp; its release
-// is small and ships for every common platform. The build is verified against a pinned
-// digest by the download path and gated on its version before it is offered, so an
-// install only ever places a known, safe runtime on disk. It does not start anything.
+// runRuntimeInstall implements `flynn models install [runtime] [--variant name]`: fetch a
+// pinned, gated local inference runtime so a machine with none can run a model without any
+// manual setup. The default runtime is the one Flynn provisions itself, llama.cpp, which
+// ships for every common platform. On a machine with an NVIDIA GPU the build is the CUDA
+// one, since the CPU build would leave the card idle; --variant picks a build by name
+// instead. Every archive is verified against a pinned digest by the download path, and the
+// version is gated before it is offered, so an install only ever places a known, safe
+// runtime on disk. It does not start anything.
 func runRuntimeInstall(args []string, dataDir string, out io.Writer) error {
 	name := localmodel.Runtime
-	if len(args) >= 1 && args[0] != "" {
-		name = args[0]
+	if len(args) >= 1 && !strings.HasPrefix(args[0], "-") {
+		if args[0] != "" {
+			name = args[0]
+		}
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("models install", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	variant := fs.String("variant", "", "build to install, such as cpu, cuda-13.3 or vulkan; the default fits this machine's GPU")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("models install: %w", err)
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("models install: unexpected argument %q (usage: flynn models install [runtime] [--variant name])", fs.Arg(0))
 	}
 
 	// Only the runtime the public API serves is installed here; it applies the advisory gate
@@ -41,16 +56,27 @@ func runRuntimeInstall(args []string, dataDir string, out io.Writer) error {
 	}
 	defer func() { _ = host.Close() }()
 	_, _ = fmt.Fprintf(out, "installing %s for %s/%s (verified against a pinned digest)\n", name, runtime.GOOS, runtime.GOARCH)
-	res, err := host.EnsureRuntime(ctx)
+	if st, err := host.RuntimeStatus(ctx); err == nil {
+		if st.GPU != "" {
+			_, _ = fmt.Fprintf(out, "detected GPU: %s\n", st.GPU)
+		} else {
+			_, _ = fmt.Fprintln(out, "no GPU detected")
+		}
+	}
+	res, err := host.InstallRuntime(ctx, *variant)
 	if err != nil {
 		return fmt.Errorf("models install: %w", err)
 	}
 	if res.Cached {
-		_, _ = fmt.Fprintf(out, "already installed: %s\n", res.BinPath)
-		return nil
+		_, _ = fmt.Fprintf(out, "already installed: %s (variant %s)\n", res.BinPath, res.Variant)
+	} else {
+		_, _ = fmt.Fprintf(out, "installed and verified: %s (variant %s)\n", res.BinPath, res.Variant)
+		_, _ = fmt.Fprintln(out, "the runtime is on disk, gate-approved, and not started: a model runs only inside the isolation sandbox.")
 	}
-	_, _ = fmt.Fprintf(out, "installed and verified: %s\n", res.BinPath)
-	_, _ = fmt.Fprintln(out, "the runtime is on disk, gate-approved, and not started: a model runs only inside the isolation sandbox.")
+	if st, err := host.RuntimeStatus(ctx); err == nil && st.GPU != "" && !st.UsesGPU {
+		_, _ = fmt.Fprintf(out, "note: the %s build runs on the CPU and leaves %s idle; `flynn models install %s --variant <name>` fetches another (%s)\n",
+			st.Variant, st.GPU, name, strings.Join(st.Variants, ", "))
+	}
 	return nil
 }
 

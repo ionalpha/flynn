@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ionalpha/flynn/internal/inference"
+	"github.com/ionalpha/flynn/internal/inference/gpu"
 	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -20,6 +22,23 @@ type Release = runtimeRelease
 func WithReleases(cfg Config, rs ...Release) Config {
 	cfg.releases = rs
 	return cfg
+}
+
+// Companion is an archive a pinned build needs beside its main one.
+type Companion = runtimeCompanion
+
+// GPU is the graphics hardware a test makes a Host see; the zero value is a machine with none.
+type GPU = gpu.Info
+
+// NVIDIAGPU is an NVIDIA adapter whose driver reports CUDA major.minor, with the given
+// compute capability.
+func NVIDIAGPU(name, driver string, major, minor int, computeCap float64) GPU {
+	return GPU{Name: name, Driver: driver, CUDA: inference.Version{major, minor}, ComputeCap: computeCap}
+}
+
+// SetGPU makes the Host see info as the machine's graphics hardware, instead of probing.
+func (h *Host) SetGPU(info GPU) {
+	h.detectGPU = func(context.Context) gpu.Info { return info }
 }
 
 // SetContainment makes the Host see the sandbox as providing level, to test a refusal on
