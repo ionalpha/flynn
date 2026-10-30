@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -314,6 +316,36 @@ func TestGGUFModelName(t *testing.T) {
 func TestReadGGUFHeaderRefusesPlainHTTP(t *testing.T) {
 	if _, err := readGGUFHeader(context.Background(), "http://example.com/m.gguf"); err == nil {
 		t.Fatal("a non-https URL must be refused")
+	}
+}
+
+func TestReadGGUFHeaderReportsATransportError(t *testing.T) {
+	srv := httptest.NewTLSServer(http.NotFoundHandler())
+	url := srv.URL + "/m.gguf"
+	prev := ggufHeaderClient
+	ggufHeaderClient = srv.Client()
+	t.Cleanup(func() { ggufHeaderClient = prev })
+	srv.Close()
+	if _, err := readGGUFHeader(context.Background(), url); err == nil {
+		t.Fatal("a server that is gone must be an error, not an empty header")
+	}
+}
+
+// TestModelBlessSafetensorsRefusesAnUnreadableIndex covers a weight index the tree lists
+// but the Hub will not serve: bless must stop rather than count every shard it can see.
+func TestModelBlessSafetensorsRefusesAnUnreadableIndex(t *testing.T) {
+	hub, dl := newBlessHub(t, blessRepo{
+		info: map[string]any{"cardData": map[string]any{"license": "mit"}},
+		tree: []map[string]any{
+			blessLFS("model-00001-of-00001.safetensors", 10, strings.Repeat("01", 32)),
+			blessSmall(weightIndexName, 40),
+		},
+		files: map[string][]byte{}, // the index answers 404
+	})
+	var out bytes.Buffer
+	err := modelBless(context.Background(), hub, dl, []string{"acme/tiny"}, &out)
+	if err == nil || !strings.Contains(err.Error(), weightIndexName) {
+		t.Fatalf("an unreadable weight index must be refused and named, got %v", err)
 	}
 }
 
