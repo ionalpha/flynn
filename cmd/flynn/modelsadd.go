@@ -114,22 +114,6 @@ func recordAdd(dataDir string, spec catalog.ModelSpec, out io.Writer) error {
 	return nil
 }
 
-// ggufQuantRe finds the quantization label in a GGUF file name.
-var ggufQuantRe = regexp.MustCompile(`(?i)(?:^|[-_.])((?:IQ|Q)\d[A-Z0-9_]*|BF16|F16|F32)(?:[-_.]|$)`)
-
-// shardRe matches a split GGUF file (model-00001-of-00004.gguf), which one download cannot serve.
-var shardRe = regexp.MustCompile(`(?i)-\d{5}-of-\d{5}\.gguf$`)
-
-// ggufQuantName reads the quantization label out of a GGUF file name (Q4_K_M, IQ3_XS, BF16),
-// falling back to "GGUF" when the name carries none.
-func ggufQuantName(file string) string {
-	stem := strings.TrimSuffix(filepath.Base(file), filepath.Ext(file))
-	if m := ggufQuantRe.FindAllStringSubmatch(stem, -1); len(m) > 0 {
-		return strings.ToUpper(m[len(m)-1][1])
-	}
-	return "GGUF"
-}
-
 // selectGGUF chooses the single-file GGUF to add from a repository's files. A file or quant the
 // user named must match; otherwise Q4_K_M is preferred, then the smallest. Projector files and
 // shards are never candidates, and a file the Hub gives no content digest for is refused, since
@@ -138,7 +122,7 @@ func selectGGUF(files []huggingface.File, file, quant string) (huggingface.File,
 	var cands []huggingface.File
 	for _, f := range files {
 		base := strings.ToLower(filepath.Base(f.Path))
-		if !strings.HasSuffix(base, ".gguf") || strings.Contains(base, "mmproj") || shardRe.MatchString(base) {
+		if !strings.HasSuffix(base, ".gguf") || strings.Contains(base, "mmproj") || shardedGGUF.MatchString(base) {
 			continue
 		}
 		if file != "" && f.Path != file && filepath.Base(f.Path) != file {
@@ -337,7 +321,7 @@ func addLocalFile(dataDir string, args []string, autoApprove bool, out io.Writer
 	}
 	quant := o.quant
 	if quant == "" {
-		quant = ggufQuantName(abs)
+		quant = ggufQuantName(filepath.Base(abs))
 	}
 	q := catalog.Quant{Name: quant, Format: catalog.FormatGGUF, SizeBytes: st.Size(), Ref: stem, URL: "file://" + filepath.ToSlash(abs)}
 	spec := userSpec(id, stem, paramsFromName(stem),
