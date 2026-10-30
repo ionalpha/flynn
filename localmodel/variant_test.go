@@ -1,6 +1,7 @@
 package localmodel_test
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -31,6 +32,16 @@ type variantWorld struct {
 	// libs is what the origin serves for the CUDA runtime libraries; a test swaps it to
 	// stand in for a tampered download.
 	libs atomic.Pointer[[]byte]
+	// cpuRel, cudaRel and vulkanRel are the pinned builds the origin serves. cfg pins the
+	// first two; a test that wants another set builds its own with [variantWorld.config].
+	cpuRel, cudaRel, vulkanRel localmodel.Release
+}
+
+// config is a Config that installs from exactly the releases given.
+func (w *variantWorld) config(rels ...localmodel.Release) localmodel.Config {
+	return localmodel.WithReleases(localmodel.Config{
+		DataDir: w.dataDir, HTTPClient: w.cfg.HTTPClient, MinContainment: "process",
+	}, rels...)
 }
 
 func newVariantWorld(t *testing.T) *variantWorld {
@@ -48,6 +59,8 @@ func newVariantWorld(t *testing.T) *variantWorld {
 	mux.HandleFunc("/cpu.tar.gz", func(rw http.ResponseWriter, _ *http.Request) { _, _ = rw.Write(cpu) })
 	mux.HandleFunc("/cuda.tar.gz", func(rw http.ResponseWriter, _ *http.Request) { _, _ = rw.Write(cuda) })
 	mux.HandleFunc("/cudart.tar.gz", func(rw http.ResponseWriter, _ *http.Request) { _, _ = rw.Write(*w.libs.Load()) })
+	vulkan := tarGz(t, w.binName, []byte("vulkan build"))
+	mux.HandleFunc("/vulkan.tar.gz", func(rw http.ResponseWriter, _ *http.Request) { _, _ = rw.Write(vulkan) })
 	srv := httptest.NewTLSServer(mux)
 	t.Cleanup(srv.Close)
 
@@ -58,6 +71,11 @@ func newVariantWorld(t *testing.T) *variantWorld {
 	cudaRel.Variant, cudaRel.CUDA = "cuda-13.3", "13.3"
 	cudaRel.Companions = []localmodel.Companion{{URL: srv.URL + "/cudart.tar.gz", SHA256: sum(libs), SizeBytes: int64(len(libs))}}
 
+	vulkanRel := base
+	vulkanRel.URL, vulkanRel.SHA256, vulkanRel.SizeBytes = srv.URL+"/vulkan.tar.gz", sum(vulkan), int64(len(vulkan))
+	vulkanRel.Variant = "vulkan"
+
+	w.cpuRel, w.cudaRel, w.vulkanRel = cpuRel, cudaRel, vulkanRel
 	w.cfg = localmodel.WithReleases(localmodel.Config{
 		DataDir: w.dataDir, HTTPClient: srv.Client(), MinContainment: "process",
 	}, cpuRel, cudaRel)
@@ -236,5 +254,129 @@ func TestRuntimeStatusReportsAChangedBinary(t *testing.T) {
 	}
 	if !st.Installed || st.Problem == "" {
 		t.Fatalf("status = %+v, want an installed build with a reported problem", st)
+	}
+}
+
+// A Vulkan build serves an AMD or Intel adapter, and is reported as idle on a machine with
+// no adapter it could use.
+func TestVulkanBuildIsReportedAsUsingTheAdapterItServes(t *testing.T) {
+	w := newVariantWorld(t)
+	w.cfg = w.config(w.cpuRel, w.vulkanRel)
+	radeon := localmodel.GPU{Vulkan: "AMD Radeon RX 7900 XTX"}
+
+	inst, err := w.open(radeon).InstallRuntime(t.Context(), "vulkan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inst.Variant != "vulkan" {
+		t.Fatalf("asked for vulkan, got %s", inst.Variant)
+	}
+	st, err := w.open(radeon).RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.UsesGPU || st.GPU != radeon.Vulkan {
+		t.Fatalf("status = %+v, want the Vulkan build using %s", st, radeon.Vulkan)
+	}
+
+	st, err = w.open(localmodel.GPU{}).RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.UsesGPU || st.GPU != "" {
+		t.Fatalf("status = %+v, want a Vulkan build with no adapter reported as idle", st)
+	}
+}
+
+// With no CPU baseline pinned and no GPU the machine can use, there is nothing to install,
+// and install and status both say so instead of choosing a build that cannot load.
+func TestNoBuildThatSuitsTheMachineIsAnError(t *testing.T) {
+	w := newVariantWorld(t)
+	w.cfg = w.config(w.cudaRel, w.vulkanRel)
+
+	h := w.open(localmodel.GPU{})
+	if _, err := h.InstallRuntime(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "suits this machine") {
+		t.Fatalf("InstallRuntime = %v, want a refusal that no build suits this machine", err)
+	}
+	if _, err := h.RuntimeStatus(t.Context()); err == nil || !strings.Contains(err.Error(), "suits this machine") {
+		t.Fatalf("RuntimeStatus = %v, want the same refusal", err)
+	}
+}
+
+// A platform with no pinned build is reported by every entry point, before anything is
+// fetched.
+func TestPlatformWithoutAPinnedBuildIsRefused(t *testing.T) {
+	w := newVariantWorld(t)
+	elsewhere := w.cpuRel
+	elsewhere.GOOS, elsewhere.GOARCH = "plan9", "mips"
+	w.cfg = w.config(elsewhere)
+
+	h := w.open(localmodel.GPU{})
+	if _, err := h.InstallRuntime(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "no pinned") {
+		t.Errorf("InstallRuntime = %v, want a refusal naming the missing pin", err)
+	}
+	if _, err := h.EnsureRuntime(t.Context()); err == nil {
+		t.Error("EnsureRuntime found a build for a platform with none pinned")
+	}
+	if _, err := h.RuntimeStatus(t.Context()); err == nil {
+		t.Error("RuntimeStatus found a build for a platform with none pinned")
+	}
+}
+
+// An install whose choice cannot be recorded fails rather than reporting a build later
+// commands would not use.
+func TestInstallRuntimeFailsWhenTheChoiceCannotBeRecorded(t *testing.T) {
+	w := newVariantWorld(t)
+	if err := os.MkdirAll(filepath.Join(w.dataDir, "runtimes", localmodel.Runtime, "active"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.open(localmodel.GPU{}).InstallRuntime(t.Context(), ""); err == nil || !strings.Contains(err.Error(), "record the chosen runtime build") {
+		t.Fatalf("InstallRuntime = %v, want a failure to record the choice", err)
+	}
+}
+
+func TestACompanionWithoutADigestIsRefusedAtOpen(t *testing.T) {
+	w := newVariantWorld(t)
+	rel := w.cudaRel
+	rel.Companions = []localmodel.Companion{{URL: w.cudaRel.Companions[0].URL}}
+
+	if _, err := localmodel.Open(w.config(w.cpuRel, rel)); !errors.Is(err, localmodel.ErrUnpinned) {
+		t.Fatalf("Open with an unpinned companion = %v, want ErrUnpinned", err)
+	}
+}
+
+// With no releases supplied a Host uses the pins in this module and probes the machine
+// itself, which is what the shipped command does.
+func TestRuntimeStatusUsesTheModulePinsAndProbesTheMachine(t *testing.T) {
+	h, err := localmodel.Open(localmodel.Config{DataDir: filepath.Join(t.TempDir(), "data"), MinContainment: "process"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = h.Close() })
+
+	st, err := h.RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Installed || st.Version == "" || len(st.Variants) == 0 || st.Variants[0] != "cpu" {
+		t.Fatalf("status = %+v, want an absent runtime with the CPU baseline pinned first", st)
+	}
+}
+
+func TestFormatBytes(t *testing.T) {
+	tests := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0 MiB"},
+		{1 << 20, "1 MiB"},
+		{525 << 20, "525 MiB"},
+		{1 << 30, "1.0 GiB"},
+		{3 << 29, "1.5 GiB"},
+	}
+	for _, tc := range tests {
+		if got := localmodel.FormatBytes(tc.n); got != tc.want {
+			t.Errorf("FormatBytes(%d) = %q, want %q", tc.n, got, tc.want)
+		}
 	}
 }

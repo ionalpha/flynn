@@ -55,6 +55,19 @@ func runRuntimeInstall(args []string, dataDir string, out io.Writer) error {
 		return fmt.Errorf("models install: %w", err)
 	}
 	defer func() { _ = host.Close() }()
+	return installRuntime(ctx, host, name, *variant, out)
+}
+
+// runtimeInstaller is what an install needs of a [localmodel.Host], so the messages it prints
+// are exercised against scripted outcomes without downloading a runtime.
+type runtimeInstaller interface {
+	RuntimeStatus(ctx context.Context) (localmodel.RuntimeStatus, error)
+	InstallRuntime(ctx context.Context, variant string) (localmodel.RuntimeInstall, error)
+}
+
+// installRuntime installs the named variant (empty for the build that fits the machine) and
+// tells the user which build was chosen, and when it leaves a detected GPU idle.
+func installRuntime(ctx context.Context, host runtimeInstaller, name, variant string, out io.Writer) error {
 	_, _ = fmt.Fprintf(out, "installing %s for %s/%s (verified against a pinned digest)\n", name, runtime.GOOS, runtime.GOARCH)
 	if st, err := host.RuntimeStatus(ctx); err == nil {
 		if st.GPU != "" {
@@ -63,7 +76,7 @@ func runRuntimeInstall(args []string, dataDir string, out io.Writer) error {
 			_, _ = fmt.Fprintln(out, "no GPU detected")
 		}
 	}
-	res, err := host.InstallRuntime(ctx, *variant)
+	res, err := host.InstallRuntime(ctx, variant)
 	if err != nil {
 		return fmt.Errorf("models install: %w", err)
 	}

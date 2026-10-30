@@ -126,12 +126,26 @@ func TestParseCUDAVersion(t *testing.T) {
 		{"CUDA Version:   12.10", inference.Version{12, 10}},
 		{"no version here", nil},
 		{"", nil},
+		// A number too large for an int is a version no driver prints; it must not read as one.
+		{"CUDA Version: 99999999999999999999.4", nil},
+		{"CUDA Version: 12.99999999999999999999", nil},
 	}
 	for _, tc := range tests {
 		got := parseCUDAVersion(tc.in)
 		if got.String() != tc.want.String() {
 			t.Errorf("parseCUDAVersion(%q) = %v, want %v", tc.in, got, tc.want)
 		}
+	}
+}
+
+// A row with no adapter name is skipped, so the adapter that follows it is still found.
+func TestParseQuerySkipsARowWithoutAName(t *testing.T) {
+	got, err := parseQuery(" , 560.94, 8.9\nNVIDIA GeForce RTX 4070 Ti, 560.94, 8.9\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != "NVIDIA GeForce RTX 4070 Ti" || got.ComputeCap != 8.9 {
+		t.Fatalf("parseQuery = %+v, want the named adapter", got)
 	}
 }
 

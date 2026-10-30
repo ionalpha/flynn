@@ -232,6 +232,119 @@ func TestInstallRefusesAVariantItDoesNotPin(t *testing.T) {
 	}
 }
 
+// An installed build below the advisory floor is reported as vulnerable, as a PATH one is.
+func TestReportRuntimesFlagsAnInstalledBuildWithAKnownAdvisory(t *testing.T) {
+	sb := &scriptedSandbox{replies: map[string]sandbox.ExecResult{}}
+	st := localmodel.RuntimeStatus{Installed: true, Version: "3000", Variant: "cpu", BinPath: "x"}
+	var out bytes.Buffer
+	if err := reportRuntimesWith(t.Context(), sb, ownStatus(st), &out); err != nil {
+		t.Fatal(err)
+	}
+	if block := llamaLine(t, out.String()); !strings.Contains(block, "VULNERABLE") {
+		t.Fatalf("an installed build with a known advisory was not flagged:\n%s", block)
+	}
+}
+
+// fakeInstaller scripts what a Host reports before and after an install.
+type fakeInstaller struct {
+	status    localmodel.RuntimeStatus
+	statusErr error
+	result    localmodel.RuntimeInstall
+	installed error
+	asked     string
+}
+
+func (f *fakeInstaller) RuntimeStatus(context.Context) (localmodel.RuntimeStatus, error) {
+	return f.status, f.statusErr
+}
+
+func (f *fakeInstaller) InstallRuntime(_ context.Context, variant string) (localmodel.RuntimeInstall, error) {
+	f.asked = variant
+	return f.result, f.installed
+}
+
+func TestInstallRuntimeTellsTheUserWhichBuildWasChosen(t *testing.T) {
+	variants := []string{"cpu", "cuda-13.3"}
+	tests := []struct {
+		name   string
+		f      fakeInstaller
+		asked  string
+		want   []string
+		absent []string
+	}{
+		{
+			"cuda build on an nvidia gpu",
+			fakeInstaller{
+				status: localmodel.RuntimeStatus{GPU: "NVIDIA GeForce RTX 4070 Ti", UsesGPU: true, Variant: "cuda-13.3", Variants: variants},
+				result: localmodel.RuntimeInstall{BinPath: "/r/llama-server", Variant: "cuda-13.3"},
+			},
+			"",
+			[]string{"detected GPU: NVIDIA GeForce RTX 4070 Ti", "installed and verified: /r/llama-server (variant cuda-13.3)", "not started"},
+			[]string{"note:", "no GPU detected"},
+		},
+		{
+			"no gpu",
+			fakeInstaller{result: localmodel.RuntimeInstall{BinPath: "/r/llama-server", Variant: "cpu"}},
+			"",
+			[]string{"no GPU detected", "variant cpu"},
+			[]string{"note:"},
+		},
+		{
+			"already installed",
+			fakeInstaller{result: localmodel.RuntimeInstall{BinPath: "/r/llama-server", Variant: "cpu", Cached: true}},
+			"",
+			[]string{"already installed: /r/llama-server (variant cpu)"},
+			[]string{"not started"},
+		},
+		{
+			"cpu build left on a machine with a gpu",
+			fakeInstaller{
+				status: localmodel.RuntimeStatus{GPU: "NVIDIA GeForce RTX 4070 Ti", Variant: "cpu", Variants: variants},
+				result: localmodel.RuntimeInstall{BinPath: "/r/llama-server", Variant: "cpu"},
+			},
+			"cpu",
+			[]string{"note: the cpu build runs on the CPU", "idle", "--variant", "cuda-13.3"},
+			nil,
+		},
+		{
+			"status unreadable",
+			fakeInstaller{statusErr: errors.New("no pinned build"), result: localmodel.RuntimeInstall{BinPath: "/r/llama-server", Variant: "cpu"}},
+			"",
+			[]string{"installed and verified"},
+			[]string{"detected GPU", "no GPU detected", "note:"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var out bytes.Buffer
+			if err := installRuntime(t.Context(), &tc.f, localmodel.Runtime, tc.asked, &out); err != nil {
+				t.Fatal(err)
+			}
+			if tc.f.asked != tc.asked {
+				t.Errorf("the host was asked for variant %q, want %q", tc.f.asked, tc.asked)
+			}
+			for _, w := range tc.want {
+				if !strings.Contains(out.String(), w) {
+					t.Errorf("output lacks %q:\n%s", w, out.String())
+				}
+			}
+			for _, a := range tc.absent {
+				if strings.Contains(out.String(), a) {
+					t.Errorf("output has %q:\n%s", a, out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestInstallRuntimeReportsAFailedInstall(t *testing.T) {
+	f := fakeInstaller{installed: errors.New("digest mismatch")}
+	err := installRuntime(t.Context(), &f, localmodel.Runtime, "", &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "models install") || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("err = %v, want the install failure under the command name", err)
+	}
+}
+
 func TestInstallRejectsStrayArguments(t *testing.T) {
 	err := runRuntimeInstall([]string{"llama.cpp", "extra"}, filepath.Join(t.TempDir(), "data"), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "unexpected argument") {

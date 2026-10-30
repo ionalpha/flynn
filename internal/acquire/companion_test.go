@@ -64,3 +64,14 @@ func TestInstallToRefusesATamperedCompanionAndLeavesNothing(t *testing.T) {
 		t.Fatalf("a refused companion must leave no directory at the target (stat err=%v)", err)
 	}
 }
+
+// An archive that cannot be staged is reported before anything is requested: the download
+// goes through a file beside the install directory, and a directory that is gone has none.
+func TestFetchAndExtractFailsWhenTheDownloadCannotBeStaged(t *testing.T) {
+	_, dl := serveByPath(t, nil)
+	gone := filepath.Join(t.TempDir(), "missing")
+	err := fetchAndExtract(t.Context(), dl, gone, t.TempDir(), "https://127.0.0.1:1/x", "00", 1, ArchiveZip)
+	if err == nil {
+		t.Fatal("an archive was fetched into a directory that does not exist")
+	}
+}

@@ -194,6 +194,12 @@ func (h *Host) release(ctx context.Context) (provision.Release, error) {
 	if err != nil {
 		return provision.Release{}, err
 	}
+	return h.releaseAmong(ctx, rels)
+}
+
+// releaseAmong is [Host.release] over the builds already listed, for a caller that needs the
+// list as well.
+func (h *Host) releaseAmong(ctx context.Context, rels []provision.Release) (provision.Release, error) {
 	if name, err := os.ReadFile(h.activeFile()); err == nil { //nolint:gosec // a path under the data directory
 		if r, ok := provision.ByVariant(rels, strings.TrimSpace(string(name))); ok {
 			return r, nil
@@ -286,7 +292,7 @@ func (h *Host) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 	if err != nil {
 		return RuntimeStatus{}, err
 	}
-	rel, err := h.release(ctx)
+	rel, err := h.releaseAmong(ctx, rels)
 	if err != nil {
 		return RuntimeStatus{}, err
 	}
@@ -312,15 +318,13 @@ func (h *Host) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 // offloads reports whether the build rel runs on the adapter hw describes. The macOS arm64
 // build is compiled with Metal, so the baseline there offloads to Apple silicon.
 func offloads(rel provision.Release, hw gpu.Info) bool {
-	switch rel.Accel {
-	case provision.AccelCUDA:
+	if rel.Accel == provision.AccelCUDA {
 		return hw.NVIDIA()
-	case provision.AccelVulkan:
-		return hw.NVIDIA() || hw.Vulkan != ""
-	case provision.AccelNone:
-		return rel.GOOS == "darwin" && rel.GOARCH == "arm64"
 	}
-	return false
+	if rel.Accel == provision.AccelVulkan {
+		return hw.NVIDIA() || hw.Vulkan != ""
+	}
+	return rel.GOOS == "darwin" && rel.GOARCH == "arm64"
 }
 
 // formatBytes renders a download size for a progress line.

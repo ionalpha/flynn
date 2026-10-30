@@ -115,6 +115,9 @@ func VerifiedTemplate(w Weights) error {
 	return err
 }
 
+// FormatBytes renders a download size for a progress line.
+func FormatBytes(n int64) string { return formatBytes(n) }
+
 // SizeCeiling is the download cap for a declared size.
 func SizeCeiling(size int64) int64 { return sizeCeiling(size) }
 
