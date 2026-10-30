@@ -4,8 +4,9 @@ package hardware
 
 import (
 	"context"
-	"os/exec"
 	"time"
+
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // systemRAMBytes queries the kernel for the physical memory total via sysctl, which is
@@ -15,7 +16,7 @@ import (
 func systemRAMBytes(ctx context.Context) int64 {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "sysctl", "-n", "hw.memsize").Output()
+	out, err := procexec.CommandContext(ctx, "sysctl", "-n", "hw.memsize").Output()
 	if err != nil {
 		return 0
 	}

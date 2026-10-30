@@ -19,8 +19,6 @@ const procexecDir = "internal/procexec/"
 // internal/procexec, each with the reason. The test fails on an entry whose file no longer
 // starts a process directly, so the list only shrinks.
 var procStartExemptions = map[string]string{
-	"internal/hardware/hardware.go":       "runs nvidia-smi, wmic and powershell for GPU and RAM probes; moves to procexec in a follow-up outside the sandbox change",
-	"internal/hardware/ram_darwin.go":     "runs sysctl on macOS, where no console window opens; moves to procexec with the rest of internal/hardware",
 	"internal/tui/term/editor.go":         "hands the user's own console to their editor, which is the one start that needs the window",
 	"internal/conformtest/conformtest.go": "re-executes the test binary inside conformance tests; not a path any command reaches",
 }
