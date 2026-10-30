@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 
@@ -20,6 +21,12 @@ import (
 	"github.com/ionalpha/flynn/state"
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
+
+// errGroundTruthFailed is what a run returns when its --verify command ran after the agent
+// stopped and did not pass. The run is still sealed and distilled first, because its record
+// honestly says the check failed; the error is only what a script sees, so a goal whose own
+// independent check disagrees with the agent does not exit 0.
+var errGroundTruthFailed = errors.New("the --verify check did not pass: the run's success is not grounded")
 
 // runLearningMission runs one objective end to end over a durable store: it recalls
 // what past runs learned into the prompt, drives the goal to a result through the
@@ -115,8 +122,9 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// model, so a sealed run that claims success is backed by a verdict the model
 	// could not have produced. This must run before the seal so the check and outcome
 	// events are part of the verifiable record.
+	groundTruthFailed := false
 	if verify != "" && rec != nil {
-		recordGroundTruth(ctx, out, rec, source, workdir, verify)
+		groundTruthFailed = !recordGroundTruth(ctx, out, rec, source, workdir, verify)
 	}
 
 	// Seal the run into a signed, verifiable record stored on its own stream, so it
@@ -151,6 +159,9 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 			SkillsRead: skillset.Reads(),
 		})
 	}
+	if groundTruthFailed {
+		return result, errGroundTruthFailed
+	}
 	return result, nil
 }
 
@@ -161,17 +172,21 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 // claims success is grounded in a check the agent could not have graded itself. A
 // failing or unrunnable check is recorded honestly, which makes the run's own record
 // fail the ground-truth check rather than overstate the outcome.
-func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream, workdir, verify string) {
+//
+// It returns the check's verdict whether or not the log took it, because the caller's exit
+// status follows the check and not the bookkeeping.
+func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream, workdir, verify string) bool {
 	passed := runVerification(ctx, workdir, verify)
 	if err := appendGroundTruth(ctx, log, stream, passed); err != nil {
 		_, _ = fmt.Fprintf(out, "  (ground-truth not recorded: %v)\n", err)
-		return
+		return passed
 	}
 	if passed {
 		_, _ = fmt.Fprintln(out, "  ground-truth check passed; the run's success is independently verifiable")
 	} else {
 		_, _ = fmt.Fprintln(out, "  ground-truth check did not pass; the run's success is not grounded")
 	}
+	return passed
 }
 
 // runVerification runs command in a confined sandbox at workdir and reports whether it
