@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"errors"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -389,4 +390,57 @@ func TestMergePropertyEmbeddedEntriesAreUntouched(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestWriteOverlayReportsEachFailure(t *testing.T) {
+	t.Run("data directory cannot be created", func(t *testing.T) {
+		file := t.TempDir() + "/file"
+		if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeOverlay(file+"/data", nil); err == nil {
+			t.Error("writeOverlay created a directory inside a file")
+		}
+	})
+
+	t.Run("an entry JSON cannot encode", func(t *testing.T) {
+		m := userModel("mine:1b")
+		m.ParamsB = math.NaN()
+		if err := writeOverlay(t.TempDir(), []ModelSpec{m}); err == nil {
+			t.Error("writeOverlay encoded a NaN")
+		}
+	})
+
+	t.Run("overlay path is a directory", func(t *testing.T) {
+		dir := t.TempDir()
+		if err := os.Mkdir(OverlayPath(dir), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := writeOverlay(dir, []ModelSpec{userModel("mine:1b")}); err == nil {
+			t.Error("writeOverlay replaced a directory")
+		}
+	})
+}
+
+func TestEmbeddedFailureStopsEveryUserWrite(t *testing.T) {
+	prev := seed
+	seed = []byte("{not json")
+	t.Cleanup(func() { seed = prev })
+
+	if err := CheckUser(userModel("mine:1b")); err == nil {
+		t.Error("CheckUser passed with no embedded catalog to check against")
+	}
+	if _, err := AddUser(t.TempDir(), userModel("mine:1b")); err == nil {
+		t.Error("AddUser wrote with no embedded catalog to check against")
+	}
+}
+
+func TestCheckUserRefusesABlessedIDOnly(t *testing.T) {
+	var refusal RefusalError
+	if err := CheckUser(userModel(blessedID(t))); !errors.As(err, &refusal) {
+		t.Errorf("CheckUser(blessed id) = %v, want a RefusalError", err)
+	}
+	if err := CheckUser(userModel("mine:1b")); err != nil {
+		t.Errorf("CheckUser(new id) = %v, want nil", err)
+	}
 }

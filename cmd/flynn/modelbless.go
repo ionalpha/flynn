@@ -214,12 +214,8 @@ func saveBlessedEntry(dataDir string, spec catalog.ModelSpec, out io.Writer) err
 		}
 		return nil
 	}
-	base, err := catalog.Load()
-	if err != nil {
+	if err := catalog.CheckUser(spec); err != nil {
 		return fmt.Errorf("models bless: %w", err)
-	}
-	if _, refused := catalog.Merge(base, []catalog.ModelSpec{spec}); len(refused) > 0 {
-		return fmt.Errorf("models bless: %w", refused[0])
 	}
 	replaced, err := catalog.AddUser(dataDir, spec)
 	if err != nil {

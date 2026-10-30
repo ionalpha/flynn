@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -103,17 +104,10 @@ func entryProblem(m ModelSpec, taken map[string]bool) string {
 // entries, not an error. The entries are returned as written; [Merge] is what checks them.
 func ReadOverlay(dataDir string) ([]ModelSpec, error) {
 	path := OverlayPath(dataDir)
-	info, err := os.Stat(path)
+	b, err := readCapped(path, maxOverlayBytes)
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fault.Wrap(fault.Terminal, "catalog_overlay_read", err)
-	}
-	if info.Size() > maxOverlayBytes {
-		return nil, fault.New(fault.Terminal, "catalog_overlay_read", fmt.Sprintf("catalog: %s is larger than %d bytes", path, maxOverlayBytes))
-	}
-	b, err := os.ReadFile(path) //nolint:gosec // the overlay path under the data directory, size-checked above
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "catalog_overlay_read", err)
 	}
@@ -122,6 +116,24 @@ func ReadOverlay(dataDir string) ([]ModelSpec, error) {
 		return nil, fault.New(fault.Terminal, "catalog_overlay_decode", fmt.Sprintf("catalog: %s is not valid: %v", path, err))
 	}
 	return o.Models, nil
+}
+
+// readCapped reads a file through one handle and fails if it holds more than limit bytes, so a
+// file that grows between a size check and the read cannot get past the cap.
+func readCapped(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path) //nolint:gosec // the overlay path under the data directory
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+	b, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(b)) > limit {
+		return nil, fmt.Errorf("larger than %d bytes", limit)
+	}
+	return b, nil
 }
 
 func writeOverlay(dataDir string, models []ModelSpec) error {
@@ -153,6 +165,20 @@ func LoadWithOverlay(dataDir string) (Catalog, []RefusalError, error) {
 	}
 	merged, refused := Merge(base, user)
 	return merged, refused, nil
+}
+
+// CheckUser reports whether the embedded catalog would refuse m as a user entry, with the
+// [RefusalError] [AddUser] would return. A command calls it before asking for consent or
+// copying weights, so a refused id costs the person nothing.
+func CheckUser(m ModelSpec) error {
+	base, err := Load()
+	if err != nil {
+		return err
+	}
+	if _, refused := Merge(base, []ModelSpec{m}); len(refused) > 0 {
+		return refused[0]
+	}
+	return nil
 }
 
 // AddUser records a user entry in the overlay, replacing an earlier overlay entry with the

@@ -19,6 +19,10 @@ import (
 // before the overlay existed.
 var catalogDataDir string
 
+// loadWithOverlay is [catalog.LoadWithOverlay], a variable so a test can make the embedded
+// list fail to load, which a shipped build never does.
+var loadWithOverlay = catalog.LoadWithOverlay
+
 // setCatalogDataDir points [loadCatalog] at a data directory's overlay.
 func setCatalogDataDir(dir string) { catalogDataDir = dir }
 
@@ -33,7 +37,7 @@ func loadCatalog() (catalog.Catalog, error) {
 // loadCatalogNotes is [loadCatalog] with a plain-language line for each thing the overlay
 // lost: an unreadable file, or an entry refused by [catalog.Merge].
 func loadCatalogNotes() (catalog.Catalog, []string, error) {
-	cat, refused, err := catalog.LoadWithOverlay(catalogDataDir)
+	cat, refused, err := loadWithOverlay(catalogDataDir)
 	var notes []string
 	for _, r := range refused {
 		notes = append(notes, "ignored your catalog entry "+r.Error())
@@ -54,10 +58,8 @@ func loadCatalogNotes() (catalog.Catalog, []string, error) {
 // source parsed as a catalog entry is classified trusted and pinned: a user's own entry must
 // never satisfy it, whatever it is called.
 func isBlessedModelID(spec string) bool {
-	cat, err := catalog.Load()
-	if err != nil {
-		return false
-	}
+	// A failed load is an empty catalog, which names no model: the test fails closed.
+	cat, _ := catalog.Load()
 	m, ok := findModel(cat, strings.TrimSpace(spec))
 	return ok && m.Local()
 }
@@ -65,10 +67,8 @@ func isBlessedModelID(spec string) bool {
 // userModelEntry returns the overlay entry a model id names. An embedded id is never a user
 // entry: [catalog.Merge] refuses an overlay entry that shares one.
 func userModelEntry(id string) (catalog.ModelSpec, bool) {
-	cat, err := loadCatalog()
-	if err != nil {
-		return catalog.ModelSpec{}, false
-	}
+	// A failed load is an empty catalog, which holds no entry.
+	cat, _ := loadCatalog()
 	m, ok := findModel(cat, strings.TrimSpace(id))
 	return m, ok && m.Local() && m.Unverified()
 }

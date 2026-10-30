@@ -84,12 +84,8 @@ func userSpec(id, name string, paramsB float64, src catalog.Source, license, tem
 // entry in the overlay. Consent is asked once, here, because the goal path serves a user entry
 // without asking again.
 func finishAdd(dataDir string, spec catalog.ModelSpec, autoApprove bool, out io.Writer) error {
-	base, err := catalog.Load()
-	if err != nil {
-		return err
-	}
-	if _, refused := catalog.Merge(base, []catalog.ModelSpec{spec}); len(refused) > 0 {
-		return fmt.Errorf("models add: %w", refused[0])
+	if err := catalog.CheckUser(spec); err != nil {
+		return fmt.Errorf("models add: %w", err)
 	}
 	if err := confirmAdd(out, userEntrySource(spec), autoApprove); err != nil {
 		return fmt.Errorf("models add: %w", err)
@@ -306,10 +302,9 @@ func addLocalFile(dataDir string, args []string, autoApprove bool, out io.Writer
 	if modelsource.DetectFormat(ref) != modelsource.FormatGGUF {
 		return fmt.Errorf("models add: %s: only GGUF files can be added from disk", ref)
 	}
-	abs, err := filepath.Abs(ref)
-	if err != nil {
-		return fmt.Errorf("models add: %w", err)
-	}
+	// Abs fails only when the working directory is gone; the empty path then fails the stat
+	// below, so the add is refused rather than guessed at.
+	abs, _ := filepath.Abs(ref)
 	st, err := os.Stat(abs)
 	if err != nil || !st.Mode().IsRegular() {
 		return fmt.Errorf("models add: %s is not a file", ref)
@@ -329,12 +324,8 @@ func addLocalFile(dataDir string, args []string, autoApprove bool, out io.Writer
 		o.license, o.template, q)
 
 	// Check the id, and ask for consent, before copying a multi-gigabyte file.
-	base, err := catalog.Load()
-	if err != nil {
-		return err
-	}
-	if _, refused := catalog.Merge(base, []catalog.ModelSpec{spec}); len(refused) > 0 {
-		return fmt.Errorf("models add: %w", refused[0])
+	if err := catalog.CheckUser(spec); err != nil {
+		return fmt.Errorf("models add: %w", err)
 	}
 	if err := confirmAdd(out, userEntrySource(spec), autoApprove); err != nil {
 		return fmt.Errorf("models add: %w", err)
