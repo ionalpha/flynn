@@ -76,22 +76,26 @@ func ResolveWith(ctx context.Context, spec string, src secret.Source) (llm.Model
 		// Gemini exposes an OpenAI-compatible endpoint, so the same adapter reaches it
 		// by pointing at that base URL; the default model is the fast, low-cost tier.
 		return openAICompatible(ctx, src, model, "GEMINI_API_KEY", "GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta/openai", geminiDefaultModel, openai.WithVision())
-	case "llamacpp":
-		// A local model server speaking the OpenAI Chat Completions format. It runs on
-		// the loopback host, so no API key is required and the base URL defaults to the
-		// server's usual address. Tool calls are grammar-constrained at decode time, so
-		// even a small local model can only emit a structurally valid call; the
-		// constraint is local-only because it rides the server's grammar request field.
-		return localOpenAI(ctx, src, model, "LLAMACPP_BASE_URL", "LLAMACPP_VISION", localLlamaCPPBaseURL)
 	case "":
 		return nil, errors.New("provider: empty spec; want provider:model (e.g. anthropic:claude-opus-4-8)")
 	default:
-		return nil, fmt.Errorf("provider: unknown provider %q (want one of %s)", name, strings.Join(Providers(), ", "))
+		if k, ok := localKindNamed(name); ok {
+			// A local model server speaking the OpenAI Chat Completions format. It runs on
+			// the loopback host, so no API key is required and the base URL defaults to the
+			// server's usual address. See [localKind] for how the kinds differ.
+			return resolveLocal(ctx, src, k, model)
+		}
+		if eps := endpointsOf(src); eps.Providers != nil {
+			if _, ok := eps.Providers[name]; ok {
+				return resolveEndpoint(ctx, src, eps, name, model)
+			}
+		}
+		return nil, fmt.Errorf("provider: unknown provider %q (want one of %s)", name, strings.Join(append(Providers(), EndpointNames(src)...), ", "))
 	}
 }
 
 // DefaultModelID returns the model id a bare provider name resolves to, and whether
-// the provider is known. A keyless local server (llamacpp) has no default id. The
+// the provider is known. A keyless local server (llamacpp, ollama, lmstudio) has no default id. The
 // values match the defaults ResolveWith hands each adapter.
 func DefaultModelID(name string) (string, bool) {
 	switch name {
@@ -103,9 +107,10 @@ func DefaultModelID(name string) (string, bool) {
 		return deepseekDefaultModel, true
 	case "gemini":
 		return geminiDefaultModel, true
-	case "llamacpp":
-		return "", true
 	default:
+		if _, ok := localKindNamed(name); ok {
+			return "", true
+		}
 		return "", false
 	}
 }
@@ -148,30 +153,6 @@ func openAICompatible(ctx context.Context, src secret.Source, model, keyRef, bas
 	return openai.New(key, opts...), nil
 }
 
-// localOpenAI resolves a local OpenAI-compatible model server: no API key is
-// required (the traffic never leaves the machine), the base URL defaults to the
-// server's usual loopback address and may be overridden by baseRef, and tool calls
-// are grammar-constrained so the model can only emit a structurally valid call. A
-// configured base URL that is not safe to send to (a plaintext non-loopback host)
-// is refused, so the local-only assumption cannot be silently broken. Vision is off
-// unless visionRef is set truthy: a local server can serve any model, so an image is
-// refused rather than sent to one that cannot see it, but an operator running a
-// vision model (llava-class) opts in to enable image input.
-func localOpenAI(ctx context.Context, src secret.Source, model, baseRef, visionRef, defaultBaseURL string) (llm.Model, error) {
-	baseURL := defaultBaseURL
-	if u, err := src.Lookup(ctx, baseRef); err == nil && u.Expose() != "" {
-		baseURL = u.Expose()
-	}
-	if !llm.SafeBaseURL(baseURL) {
-		return nil, fmt.Errorf("provider: %s must be https or http to localhost", baseRef)
-	}
-	opts := []openai.Option{openai.WithModel(model), openai.WithBaseURL(baseURL), openai.WithToolGrammar()}
-	if u, err := src.Lookup(ctx, visionRef); err == nil && truthy(u.Expose()) {
-		opts = append(opts, openai.WithVision())
-	}
-	return openai.New(secret.Text{}, opts...), nil
-}
-
 // truthy reports whether an environment value asks to turn a flag on. It accepts
 // the usual affirmatives so an operator can write LLAMACPP_VISION=1, =true, =on,
 // or =yes; anything else (including empty or unset) leaves the flag off.
@@ -206,8 +187,16 @@ func credentials(ctx context.Context, src secret.Source, keyRef, baseRef string)
 	return key, baseURL, nil
 }
 
-// Providers lists the supported provider names.
-func Providers() []string { return []string{"anthropic", "openai", "deepseek", "gemini", "llamacpp"} }
+// Providers lists the built-in provider names: the four hosted APIs and the keyless
+// local servers. Names an operator adds in the providers file are not included; see
+// [EndpointNames].
+func Providers() []string {
+	names := []string{"anthropic", "openai", "deepseek", "gemini"}
+	for _, k := range localKinds {
+		names = append(names, k.name)
+	}
+	return names
+}
 
 // KeyRef returns the reference a provider's API key is stored under, the same name
 // in the environment and in the vault, and whether the provider is known. The auth

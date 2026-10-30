@@ -209,6 +209,50 @@ flynn serve     # answers Telegram and Signal messages, each driven as a goal
 Flynn is configured with flags (`flynn --help`) and environment variables. The model
 you pick with `flynn models use` or `/model` is remembered.
 
+### Local model servers
+
+`llamacpp:`, `ollama:` and `lmstudio:` run a goal against a server on your machine. They
+need no API key and listen on localhost by default (llama.cpp on 8080, Ollama on 11434,
+LM Studio on 1234).
+
+```sh
+flynn goal --model ollama:gpt-oss:20b "fix the failing test"
+flynn models        # lists what a running Ollama or LM Studio already holds
+```
+
+The model gets the same tools whichever name reaches the server: the tool grant comes
+from the run's toolset, never from the provider name, and a test holds it so. What differs
+is only how the tools are sent. llama.cpp gets them as a decode-time grammar; Ollama and
+LM Studio ignore that field, so they get the standard `tools` field.
+
+`flynn models` asks a running Ollama (`/api/tags`, `/api/show`) and LM Studio (`/v1/models`)
+which models they hold and lists them as local and unverified: the size and tool support
+are the server's own report, not a catalog entry.
+
+Move a provider with its base-URL variable: `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`,
+`DEEPSEEK_BASE_URL`, `GEMINI_BASE_URL`, `LLAMACPP_BASE_URL`, `OLLAMA_BASE_URL`,
+`LMSTUDIO_BASE_URL`. A key is never sent over plaintext http to a host other than
+localhost. `LLAMACPP_VISION`, `OLLAMA_VISION` and `LMSTUDIO_VISION` turn image input on
+for a local server that serves a vision model.
+
+To name a server once and reuse it, put a `providers.json` in the data directory:
+
+```json
+{
+  "allow_hosts": ["gpu-box"],
+  "providers": {
+    "box": {"kind": "ollama", "base_url": "http://gpu-box:11434/v1"},
+    "gw": {"kind": "openai", "base_url": "https://gw.example.com/v1", "key": "GW_API_KEY"}
+  }
+}
+```
+
+Then `--model box:gpt-oss:20b` or `--model gw:some-model`. `kind` is `openai`, `llamacpp`,
+`ollama` or `lmstudio`. `key` names a secret in the vault or environment, found the way a
+built-in provider's key is. A server with no key is refused unless its host is localhost or
+listed in `allow_hosts`, because it would receive the conversation unauthenticated. A name
+that is already a built-in provider is refused.
+
 ## Features
 
 <details>

@@ -37,6 +37,7 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 	fs.Usage = func() {
 		_, _ = fmt.Fprintln(out, "usage: flynn models [filters]\nShow the model catalog. Filters:")
 		fs.PrintDefaults()
+		_, _ = fmt.Fprint(out, providerEndpointHelp())
 	}
 	if done, err := parseModelFlags(fs, args); done {
 		return err
@@ -72,6 +73,11 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 	renderModels(out, cat, models)
+	// Models a running server already holds have no catalog entry to filter on, so
+	// they are listed only when nothing narrows the catalog by what a model can do.
+	if q.Kind != catalog.KindAPI && *capName == "" && *maxParamB == 0 && *maxSizeGB == 0 && *publisher == "" && !*safeOnly {
+		renderDiscovered(out, localDiscovery(context.Background()))
+	}
 	// The external-agent backends are not catalog models (they are agent CLIs that
 	// bring their own harness and credentials), but they are selected through the same
 	// --model spec, so a listing that never named them left them undiscoverable.
