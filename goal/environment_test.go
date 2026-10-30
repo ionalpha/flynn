@@ -36,6 +36,7 @@ func TestMissingCommand(t *testing.T) {
 			"exit 1 with cmd wording but the wrong code is not trusted", "go test ./...", 1,
 			"'x' is not recognized as an internal or external command", "", false,
 		},
+		{"no text and no command word falls back to the whole check", "&&", 127, "", "&&", true},
 		{"a passing check", "go test ./...", 0, "ok", "", false},
 		{"an ordinary failure", "go test ./...", 2, "FAIL", "", false},
 	}
@@ -262,5 +263,26 @@ func TestAShadowedCheckIsRefusedNotRun(t *testing.T) {
 	st := h.status(t, ref)
 	if !strings.Contains(st.ItemFeedback, "curl") || !strings.Contains(st.ItemFeedback, "tampering") {
 		t.Fatalf("the agent was not told which file was refused and why: %q", st.ItemFeedback)
+	}
+}
+
+// TestCommandWords: only the first word of each command is a command. Empty commands, quoted
+// empties, assignments and the tail of a substitution are skipped rather than read as programs.
+func TestCommandWords(t *testing.T) {
+	cases := []struct {
+		check string
+		want  []string
+	}{
+		{"go build ./... && lint", []string{"go", "lint"}},
+		{"&& test -f x", []string{"test"}},
+		{`"" ; grep x`, []string{"grep"}},
+		{"FOO=bar make", nil},
+		{`test "$(python hello.py)" = "hello"`, []string{"test", "python"}},
+		{"", nil},
+	}
+	for _, c := range cases {
+		if got := commandWords(c.check); !slices.Equal(got, c.want) {
+			t.Fatalf("commandWords(%q) = %v, want %v", c.check, got, c.want)
+		}
 	}
 }
