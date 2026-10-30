@@ -5,8 +5,42 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/hardware"
 )
+
+// TestRenderFitDefaultsUnsetSettings: a caller that passes no settings gets the catalog's
+// default context and an f16 cache, named in the heading, rather than a zero-token fit.
+func TestRenderFitDefaultsUnsetSettings(t *testing.T) {
+	cat, err := catalog.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mc := fitMachine{Machine: catalog.Machine{VRAMFreeBytes: 16_000_000_000, RAMBytes: 16_000_000_000}, description: "a 16 GB card"}
+	var b strings.Builder
+	renderFit(&b, cat, cat.Find(catalog.Query{Kind: catalog.KindLocal}), mc, catalog.FitSettings{}, localProfileSource(context.Background(), ":memory:"))
+	if want := "context " + contextCol(catalog.DefaultContextTokens) + ", KV cache f16"; !strings.Contains(b.String(), want) {
+		t.Fatalf("heading missing %q:\n%s", want, b.String())
+	}
+}
+
+// TestPlacementColNamesEachPlacement covers the label for a plan that has no placement,
+// which is how a model with nothing known about its size is shown.
+func TestPlacementColNamesEachPlacement(t *testing.T) {
+	for _, tc := range []struct {
+		plan catalog.FitPlan
+		want string
+	}{
+		{catalog.FitPlan{Placement: catalog.PlacementGPU}, "gpu"},
+		{catalog.FitPlan{Placement: catalog.PlacementCPU}, "cpu"},
+		{catalog.FitPlan{Placement: catalog.PlacementSplit, ExpertsOnCPU: 0.25, RelativeSpeed: 0.6}, "gpu+ram (25% of experts on CPU, ~60% speed)"},
+		{catalog.FitPlan{}, "-"},
+	} {
+		if got := placementCol(tc.plan); got != tc.want {
+			t.Errorf("placementCol(%+v) = %q, want %q", tc.plan, got, tc.want)
+		}
+	}
+}
 
 // stubMachine makes the fit view see a described box instead of the one running the test.
 // freeBytes < 0 means the free-memory probe is unavailable.
@@ -38,7 +72,7 @@ func TestFitViewOnTheFieldTestBox(t *testing.T) {
 		"RTX 5080 Laptop", "in use", "context 32k, KV cache f16",
 		"ON GPU", "IN RAM", "KV CACHE",
 		"recommended local model: qwen3.6:35b-a3b (gpu+ram",
-		"largest that stays wholly on the GPU: qwen3.5:9b",
+		"largest that stays wholly on the GPU: gpt-oss-20b",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("fit view missing %q:\n%s", want, out)

@@ -497,6 +497,7 @@
       "license": "Apache-2.0",
       "paramsB": 12,
       "contextTokens": 262144,
+      "arch": {"attentionLayers": 8, "kvHeads": 1, "headDim": 512},
       "capabilities": {
         "tools": true,
         "vision": false,
@@ -528,6 +529,7 @@
       "license": "Apache-2.0",
       "paramsB": 21,
       "contextTokens": 131072,
+      "arch": {"attentionLayers": 12, "kvHeads": 8, "headDim": 64, "experts": 32, "expertsPerToken": 4, "expertParamsB": 19.1},
       "capabilities": {
         "tools": true,
         "vision": false,

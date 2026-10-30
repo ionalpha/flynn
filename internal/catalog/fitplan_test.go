@@ -70,15 +70,16 @@ func TestRankRealBoxes(t *testing.T) {
 	}{
 		// 20.4GB of weights cannot sit in 16GB, but the experts can: the dense 1.6GB and the
 		// cache stay on the card and the rest of the experts go to RAM. The best model that
-		// stays wholly on the card is the 9B.
-		{"16GB laptop GPU, 16GB RAM", "qwen3.6:35b-a3b", PlacementSplit, "qwen3.5:9b"},
-		{"12GB GPU, 64GB RAM", "qwen3.6:35b-a3b", PlacementSplit, "qwen3.5:9b"},
+		// stays wholly on a 16GB card is the 21B gpt-oss mixture of experts (12.1GB of weights); on
+		// 12GB it is the 12B Gemma, whose few global-attention layers keep its cache small.
+		{"16GB laptop GPU, 16GB RAM", "qwen3.6:35b-a3b", PlacementSplit, "gpt-oss-20b"},
+		{"12GB GPU, 64GB RAM", "qwen3.6:35b-a3b", PlacementSplit, "gemma4:12b"},
 		// The whole 35B mixture of experts (20.4GB plus cache and runtime) fits 23GB, and
 		// ranks above the dense 27B on parameter count.
 		{"24GB GPU, 32GB RAM", "qwen3.6:35b-a3b", PlacementGPU, "qwen3.6:35b-a3b"},
-		// Without a GPU the mixture-of-experts model runs from RAM; the dense 27B does not
-		// fit 12GB.
-		{"CPU only, 16GB RAM", "qwen3.5:9b", PlacementCPU, "qwen3.5:9b"},
+		// With 12GB of RAM to claim, the 35B and the 21B do not fit and the 12B Gemma is the
+		// largest model that does.
+		{"CPU only, 16GB RAM", "gemma4:12b", PlacementCPU, "gemma4:12b"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.box, func(t *testing.T) {
@@ -272,6 +273,23 @@ func TestSplitOverBudgetCases(t *testing.T) {
 	}
 }
 
+// TestSplitClampsExpertShareToTheWholeModel: [Catalog.Validate] rejects an entry whose
+// experts outweigh the model, but a caller can hand [ModelSpec.PlanFit] any spec. The split
+// must not then count more expert bytes than the file holds.
+func TestSplitClampsExpertShareToTheWholeModel(t *testing.T) {
+	m := mustModel(t, "qwen3.6:35b-a3b")
+	a := *m.Arch
+	a.ExpertParamsB = m.ParamsB * 2
+	m.Arch = &a
+	p := m.PlanFit(Machine{VRAMFreeBytes: 8 * gb, RAMBytes: 40 * gb}, FitSettings{})
+	if p.Placement != PlacementSplit {
+		t.Fatalf("plan = %+v, want a split", p)
+	}
+	if p.RAMBytes > p.WeightBytes {
+		t.Fatalf("RAM holds %d bytes of experts, more than the %d-byte file", p.RAMBytes, p.WeightBytes)
+	}
+}
+
 func TestRankOrder(t *testing.T) {
 	models := append(localModels(t), ModelSpec{ID: "api:x", Kind: KindAPI})
 	ranked := Rank(models, boxes["16GB laptop GPU, 16GB RAM"], FitSettings{})
@@ -294,6 +312,43 @@ func TestRankOrder(t *testing.T) {
 	}
 	if _, ok := Top(nil, true); ok {
 		t.Fatal("an empty ranking has no top")
+	}
+}
+
+// plainLocal is a local model with no architecture data, sized so a test can place it
+// exactly: the flat cache allowance is a fifth of the weights.
+func plainLocal(id string, paramsB float64, weights int64) ModelSpec {
+	return ModelSpec{
+		ID: id, Kind: KindLocal, ParamsB: paramsB,
+		Quants: []Quant{{Name: "Q4_K_M", Format: "gguf", SizeBytes: weights}},
+	}
+}
+
+// TestFeasibleRanksBeforeTightAndTopSkipsTight: a smaller model with room to spare is
+// listed ahead of a larger one that fits only by using the slack, and neither a tight model
+// nor a hosted one is named as the recommendation.
+func TestFeasibleRanksBeforeTightAndTopSkipsTight(t *testing.T) {
+	mc := Machine{VRAMFreeBytes: 10_000_000_000}
+	big := plainLocal("big", 30, 7_800_000_000)
+	small := plainLocal("small", 7, 4_000_000_000)
+	if p := big.PlanFit(mc, FitSettings{}); p.Fit != FitTight {
+		t.Fatalf("fixture: big = %s, want tight", p.Fit)
+	}
+	if p := small.PlanFit(mc, FitSettings{}); p.Fit != FitFeasible {
+		t.Fatalf("fixture: small = %s, want feasible", p.Fit)
+	}
+
+	ranked := Rank([]ModelSpec{big, small}, mc, FitSettings{})
+	if ranked[0].Model.ID != "small" || ranked[1].Model.ID != "big" {
+		t.Fatalf("order = %s, %s; want small then big", ranked[0].Model.ID, ranked[1].Model.ID)
+	}
+	if top, ok := Top(ranked, true); !ok || top.Model.ID != "small" {
+		t.Fatalf("top = %s (%v), want small", top.Model.ID, ok)
+	}
+
+	onlyTight := Rank([]ModelSpec{big, {ID: "api:x", Kind: KindAPI}}, mc, FitSettings{})
+	if top, ok := Top(onlyTight, true); ok {
+		t.Fatalf("top = %s, want none when nothing fits comfortably", top.Model.ID)
 	}
 }
 
