@@ -68,15 +68,9 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		return nil
 	}
 	if *fit || *vramGB > 0 || *ramGB > 0 {
-		set := catalog.FitSettings{ContextTokens: *ctxTokens, KV: catalog.KVType(*kvType)}
-		if *kvType == "q8" {
-			set.KV = catalog.KVQ8
-		}
-		if !set.KV.Valid() {
-			return fmt.Errorf("models: --kv must be f16 or q8_0, got %q", *kvType)
-		}
-		if set.ContextTokens <= 0 {
-			return fmt.Errorf("models: --ctx must be positive, got %d", *ctxTokens)
+		set, err := fitSettingsFromFlags(*ctxTokens, *kvType)
+		if err != nil {
+			return err
 		}
 		// The fit view is two-axis: whether the model fits this machine, and whether it clears
 		// the agentic-reliability bar. The reliability axis reads a measured profile when one
@@ -102,6 +96,23 @@ func runModels(args []string, dataDir string, out io.Writer) error {
 		_, _ = fmt.Fprintf(out, "\ndefault model: %s (change with `flynn models use <id>`, or /model in a session)\n", active)
 	}
 	return nil
+}
+
+// fitSettingsFromFlags turns the --ctx and --kv flags into the settings a fit is sized
+// with, rejecting a value the KV-cache arithmetic cannot use rather than sizing against a
+// guess. "q8" is accepted as a spelling of "q8_0".
+func fitSettingsFromFlags(ctxTokens int, kv string) (catalog.FitSettings, error) {
+	set := catalog.FitSettings{ContextTokens: ctxTokens, KV: catalog.KVType(kv)}
+	if kv == "q8" {
+		set.KV = catalog.KVQ8
+	}
+	if !set.KV.Valid() {
+		return set, fmt.Errorf("models: --kv must be f16 or q8_0, got %q", kv)
+	}
+	if set.ContextTokens <= 0 {
+		return set, fmt.Errorf("models: --ctx must be positive, got %d", ctxTokens)
+	}
+	return set, nil
 }
 
 // parseModelFlags parses args for a `flynn models` subcommand. It reports done when the

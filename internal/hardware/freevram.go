@@ -2,10 +2,11 @@ package hardware
 
 import (
 	"context"
-	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ionalpha/flynn/internal/procexec"
 )
 
 // FreeVRAM reports how much memory of the first NVIDIA GPU is unused right now. The
@@ -16,7 +17,7 @@ import (
 func FreeVRAM(ctx context.Context) (int64, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, "nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits").Output() //nolint:gosec // fixed command and arguments, no untrusted input
+	out, err := procexec.CommandContext(ctx, "nvidia-smi", "--query-gpu=memory.free", "--format=csv,noheader,nounits").Output() //nolint:gosec // fixed command and arguments, no untrusted input
 	if err != nil {
 		return 0, false
 	}
