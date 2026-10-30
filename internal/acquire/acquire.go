@@ -60,6 +60,24 @@ type Release struct {
 	// BinName is the executable to locate inside the extracted archive (for example
 	// "flynn" or "flyctl.exe"). Its sibling files are extracted alongside it.
 	BinName string
+	// Companions are further archives unpacked into the same directory as the main one,
+	// for a release whose upstream splits the executable from the libraries it needs (the
+	// CUDA llama.cpp build ships its CUDA runtime DLLs as a separate archive). Each is
+	// held to its own digest and size cap, and the install is atomic across all of them: a
+	// companion that fails verification leaves nothing at the target.
+	Companions []Companion
+}
+
+// Companion is an additional pinned archive installed beside a [Release]'s main one.
+type Companion struct {
+	// URL is the https source of the archive.
+	URL string
+	// SHA256 is the pinned digest the downloaded archive must match.
+	SHA256 string
+	// SizeBytes is the archive's known size, used as the download cap.
+	SizeBytes int64
+	// Archive is the archive's container format.
+	Archive ArchiveKind
 }
 
 // InstallTo ensures rel's binary is present at targetDir and returns the absolute path
@@ -80,31 +98,19 @@ func InstallTo(ctx context.Context, dl *fetch.Downloader, rel Release, targetDir
 		return "", false, fault.Wrap(fault.Terminal, "acquire_dest", err)
 	}
 
-	tmpArchive, err := os.CreateTemp(parent, ".acquire-*.archive")
-	if err != nil {
-		return "", false, fault.Wrap(fault.Terminal, "acquire_tmp", err)
-	}
-	archivePath := tmpArchive.Name()
-	_ = tmpArchive.Close()
-	defer func() { _ = os.Remove(archivePath) }()
-
-	if _, err := dl.Fetch(ctx, fetch.Request{
-		URL:          rel.URL,
-		Dest:         archivePath,
-		ExpectSHA256: rel.SHA256,
-		MaxBytes:     rel.SizeBytes + (1 << 20), // the pinned size plus a small margin
-	}); err != nil {
-		return "", false, err
-	}
-
 	staging, err := os.MkdirTemp(parent, ".staging-*")
 	if err != nil {
 		return "", false, fault.Wrap(fault.Terminal, "acquire_stage", err)
 	}
 	defer func() { _ = os.RemoveAll(staging) }()
 
-	if err := extract(rel.Archive, archivePath, staging); err != nil {
+	if err := fetchAndExtract(ctx, dl, parent, staging, rel.URL, rel.SHA256, rel.SizeBytes, rel.Archive); err != nil {
 		return "", false, err
+	}
+	for _, c := range rel.Companions {
+		if err := fetchAndExtract(ctx, dl, parent, staging, c.URL, c.SHA256, c.SizeBytes, c.Archive); err != nil {
+			return "", false, err
+		}
 	}
 	bin, ok := FindBinary(staging, rel.BinName)
 	if !ok {
@@ -124,6 +130,29 @@ func InstallTo(ctx context.Context, dl *fetch.Downloader, rel Release, targetDir
 		return "", false, fault.New(fault.Terminal, "acquire_missing", "acquire: binary missing after install")
 	}
 	return finalBin, false, nil
+}
+
+// fetchAndExtract downloads one archive into a temporary file under parent, verifies it
+// against sha256, and unpacks it into staging. The temporary file is removed on every
+// path, so a refused archive leaves no bytes behind.
+func fetchAndExtract(ctx context.Context, dl *fetch.Downloader, parent, staging, url, sha256 string, size int64, kind ArchiveKind) error {
+	tmpArchive, err := os.CreateTemp(parent, ".acquire-*.archive")
+	if err != nil {
+		return fault.Wrap(fault.Terminal, "acquire_tmp", err)
+	}
+	archivePath := tmpArchive.Name()
+	_ = tmpArchive.Close()
+	defer func() { _ = os.Remove(archivePath) }()
+
+	if _, err := dl.Fetch(ctx, fetch.Request{
+		URL:          url,
+		Dest:         archivePath,
+		ExpectSHA256: sha256,
+		MaxBytes:     size + (1 << 20), // the pinned size plus a small margin
+	}); err != nil {
+		return err
+	}
+	return extract(kind, archivePath, staging)
 }
 
 // extract unpacks the archive at src into destDir using the standard library for the

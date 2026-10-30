@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/inference"
+	"github.com/ionalpha/flynn/internal/inference/gpu"
 	"github.com/ionalpha/flynn/internal/inference/provision"
 )
 
@@ -38,6 +40,19 @@ type runtimeRelease struct {
 	Zip bool
 	// BinName is the server executable to locate in the extracted archive.
 	BinName string
+	// Variant names a GPU build ("cuda-13.3", "vulkan"); empty is the CPU baseline.
+	Variant string
+	// CUDA is the toolkit version of a CUDA variant, which makes it one.
+	CUDA string
+	// Companions are further archives unpacked beside the main one, pinned the same way.
+	Companions []runtimeCompanion
+}
+
+// runtimeCompanion is an archive a variant needs beside its main one.
+type runtimeCompanion struct {
+	URL       string
+	SHA256    string
+	SizeBytes int64
 }
 
 // RuntimeInstall describes an installed runtime build.
@@ -48,6 +63,34 @@ type RuntimeInstall struct {
 	Version string
 	// Cached is true when the build was already installed.
 	Cached bool
+	// Variant is the build flavor: "cpu", or a GPU build such as "cuda-13.3" or "vulkan".
+	Variant string
+}
+
+// RuntimeStatus describes the runtime build this host would serve with, found the way
+// [Host.EnsureRuntime] finds it. A command that reports whether the runtime is installed
+// reads this instead of looking for a binary itself, so the report cannot disagree with
+// the install.
+type RuntimeStatus struct {
+	// Installed is true when the build is on disk.
+	Installed bool
+	// BinPath is the server executable, empty when not installed.
+	BinPath string
+	// Version is the build's version.
+	Version string
+	// Variant is the build flavor: "cpu", or a GPU build such as "cuda-13.3" or "vulkan".
+	Variant string
+	// Variants are the builds pinned for this platform, the names [Host.InstallRuntime]
+	// accepts.
+	Variants []string
+	// GPU names the graphics adapter detected, empty when none was.
+	GPU string
+	// UsesGPU is true when the build offloads to the detected adapter: a CUDA build on an
+	// NVIDIA GPU, a Vulkan build on a Vulkan-capable one, or the Metal-enabled macOS build
+	// on Apple silicon.
+	UsesGPU bool
+	// Problem is non-empty when the installed build fails its integrity check.
+	Problem string
 }
 
 // pinnedReleases converts and checks the releases a test supplies. A release without a digest
@@ -66,46 +109,161 @@ func pinnedReleases(in []runtimeRelease) ([]provision.Release, error) {
 		if r.Zip {
 			kind = provision.ArchiveZip
 		}
-		out = append(out, provision.Release{
+		rel := provision.Release{
 			Runtime: r.Runtime, Version: v, GOOS: r.GOOS, GOARCH: r.GOARCH,
 			URL: r.URL, SHA256: r.SHA256, SizeBytes: r.SizeBytes, Archive: kind, BinName: r.BinName,
-		})
+			Variant: r.Variant,
+		}
+		switch {
+		case r.CUDA != "":
+			rel.Accel, rel.CUDA = provision.AccelCUDA, inference.ParseVersion(r.CUDA)
+		case r.Variant == "vulkan":
+			rel.Accel = provision.AccelVulkan
+		}
+		for _, c := range r.Companions {
+			if c.SHA256 == "" {
+				return nil, fmt.Errorf("%w: companion of release %s %s/%s", ErrUnpinned, r.Runtime, r.GOOS, r.GOARCH)
+			}
+			rel.Companions = append(rel.Companions, provision.Companion{URL: c.URL, SHA256: c.SHA256, SizeBytes: c.SizeBytes, Archive: kind})
+		}
+		out = append(out, rel)
 	}
 	return out, nil
 }
 
-// release picks the build for this platform: from the supplied set when there is one,
-// from the pins in this module otherwise.
-func (h *Host) release() (provision.Release, error) {
+// candidates are the builds pinned for this platform, the CPU baseline first: the supplied
+// set when there is one, the pins in this module otherwise.
+func (h *Host) candidates() ([]provision.Release, error) {
 	goos, goarch := platform()
+	var out []provision.Release
 	if len(h.releases) > 0 {
 		for _, r := range h.releases {
-			if r.GOOS == goos && r.GOARCH == goarch {
-				return r, nil
+			if r.GOOS != goos || r.GOARCH != goarch {
+				continue
+			}
+			if r.Variant == "" {
+				out = append([]provision.Release{r}, out...)
+			} else {
+				out = append(out, r)
 			}
 		}
-	} else if r, ok := provision.ReleaseFor(Runtime, goos, goarch); ok {
-		return r, nil
+	} else {
+		out = provision.ReleasesFor(Runtime, goos, goarch)
 	}
-	return provision.Release{}, fmt.Errorf("localmodel: no pinned %s build for %s/%s", Runtime, goos, goarch)
+	if len(out) == 0 {
+		return nil, fmt.Errorf("localmodel: no pinned %s build for %s/%s", Runtime, goos, goarch)
+	}
+	return out, nil
 }
 
-// EnsureRuntime installs the runtime build for this platform and returns where it is.
-// The build is refused if it is below the advisory floor, before anything is downloaded,
-// and a build already installed is held to the same floor. The archive must match its
-// pinned digest. The server binary's own hash is recorded when the verified archive is
-// unpacked and checked again by [Host.Serve] before each launch. A build found installed
-// without that record is refused, not recorded: a hash taken from a file nobody vouched
-// for would bless whatever is there.
+// adapter reports the GPU on this machine. The probe runs at most once per Host, and only
+// when a choice between builds depends on it.
+func (h *Host) adapter(ctx context.Context) gpu.Info {
+	h.gpuOnce.Do(func() {
+		detect := h.detectGPU
+		if detect == nil {
+			detect = func(ctx context.Context) gpu.Info { return gpu.Detect(ctx, nil) }
+		}
+		h.gpuInfo = detect(ctx)
+	})
+	return h.gpuInfo
+}
+
+// bestRelease is the build that makes the most of this machine's hardware.
+func (h *Host) bestRelease(ctx context.Context, rels []provision.Release) (provision.Release, error) {
+	if len(rels) == 1 {
+		return rels[0], nil
+	}
+	if r, ok := provision.Choose(rels, h.adapter(ctx)); ok {
+		return r, nil
+	}
+	return provision.Release{}, fmt.Errorf("localmodel: no pinned %s build suits this machine", Runtime)
+}
+
+// activeFile records which variant [Host.EnsureRuntime] serves with, beside the builds.
+func (h *Host) activeFile() string {
+	return filepath.Join(provision.RuntimesDir(h.dataDir), Runtime, "active")
+}
+
+// release picks the build this host serves with: the variant the last install chose, else
+// the CPU build already on disk (a runtime installed before variants existed keeps working
+// and is not replaced by a download nobody asked for), else the best build for the
+// hardware.
+func (h *Host) release(ctx context.Context) (provision.Release, error) {
+	rels, err := h.candidates()
+	if err != nil {
+		return provision.Release{}, err
+	}
+	return h.releaseAmong(ctx, rels)
+}
+
+// releaseAmong is [Host.release] over the builds already listed, for a caller that needs the
+// list as well.
+func (h *Host) releaseAmong(ctx context.Context, rels []provision.Release) (provision.Release, error) {
+	if name, err := os.ReadFile(h.activeFile()); err == nil { //nolint:gosec // a path under the data directory
+		if r, ok := provision.ByVariant(rels, strings.TrimSpace(string(name))); ok {
+			return r, nil
+		}
+	}
+	if base, ok := provision.ByVariant(rels, "cpu"); ok {
+		if _, found := provision.Lookup(base, provision.RuntimesDir(h.dataDir)); found {
+			return base, nil
+		}
+	}
+	return h.bestRelease(ctx, rels)
+}
+
+// EnsureRuntime installs the runtime build this host serves with and returns where it is.
+// That is the variant a previous install chose or, on a machine with none, the best build
+// for the hardware. The build is refused if it is below the advisory floor, before
+// anything is downloaded, and a build already installed is held to the same floor. Every
+// archive must match its pinned digest. The server binary's own hash is recorded when the
+// verified archives are unpacked and checked again by [Host.Serve] before each launch. A
+// build found installed without that record is refused, not recorded: a hash taken from a
+// file nobody vouched for would bless whatever is there.
 func (h *Host) EnsureRuntime(ctx context.Context) (RuntimeInstall, error) {
-	rel, err := h.release()
+	rel, err := h.release(ctx)
 	if err != nil {
 		return RuntimeInstall{}, err
 	}
+	return h.install(ctx, rel)
+}
+
+// InstallRuntime installs the named build of the runtime and makes it the one this host
+// serves with. An empty variant picks the best build for the hardware: a CUDA build for an
+// NVIDIA GPU whose driver can run it, the CPU build otherwise. A name from
+// [RuntimeStatus.Variants] selects that build whatever the hardware is, so a user can
+// install the CPU build on a machine with a GPU, or Vulkan on one detection passed over.
+// Verification is the same as [Host.EnsureRuntime].
+func (h *Host) InstallRuntime(ctx context.Context, variant string) (RuntimeInstall, error) {
+	rels, err := h.candidates()
+	if err != nil {
+		return RuntimeInstall{}, err
+	}
+	var rel provision.Release
+	if variant == "" {
+		if rel, err = h.bestRelease(ctx, rels); err != nil {
+			return RuntimeInstall{}, err
+		}
+	} else {
+		var ok bool
+		if rel, ok = provision.ByVariant(rels, variant); !ok {
+			return RuntimeInstall{}, fmt.Errorf("localmodel: no %s build named %q for this platform; choose one of: %s",
+				Runtime, variant, strings.Join(provision.Variants(rels), ", "))
+		}
+	}
+	return h.install(ctx, rel)
+}
+
+func (h *Host) install(ctx context.Context, rel provision.Release) (RuntimeInstall, error) {
 	if err := h.gate(rel.Version); err != nil {
 		return RuntimeInstall{}, h.fail(err)
 	}
-	inst, err := provision.Install(ctx, h.dl, rel, h.dataDirPath("runtimes"))
+	dest := provision.RuntimesDir(h.dataDir)
+	if _, found := provision.Lookup(rel, dest); !found {
+		h.say("downloading %s %s (%s, %s)", Runtime, rel.Version, rel.Name(), formatBytes(rel.DownloadBytes()))
+	}
+	inst, err := provision.Install(ctx, h.dl, rel, dest)
 	if err != nil {
 		return RuntimeInstall{}, h.fail(err)
 	}
@@ -115,12 +273,66 @@ func (h *Host) EnsureRuntime(ctx context.Context) (RuntimeInstall, error) {
 			return RuntimeInstall{}, err
 		}
 	} else {
-		h.say("installed %s %s (verified)", Runtime, inst.Version)
+		h.say("installed %s %s %s (verified)", Runtime, inst.Version, rel.Name())
 		if err := recordRuntimeBinary(inst.BinPath, sidecar); err != nil {
 			return RuntimeInstall{}, err
 		}
 	}
-	return RuntimeInstall{BinPath: inst.BinPath, Version: inst.Version.String(), Cached: inst.FromCache}, nil
+	if err := fsatomic.WriteFile(h.activeFile(), []byte(rel.Name()+"\n"), 0o600); err != nil {
+		return RuntimeInstall{}, fmt.Errorf("localmodel: record the chosen runtime build: %w", err)
+	}
+	return RuntimeInstall{BinPath: inst.BinPath, Version: inst.Version.String(), Cached: inst.FromCache, Variant: rel.Name()}, nil
+}
+
+// RuntimeStatus reports the runtime build this host would serve with and whether it is
+// installed. It finds the build exactly as [Host.EnsureRuntime] does, through the same
+// selection and the same install location, and downloads nothing.
+func (h *Host) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
+	rels, err := h.candidates()
+	if err != nil {
+		return RuntimeStatus{}, err
+	}
+	rel, err := h.releaseAmong(ctx, rels)
+	if err != nil {
+		return RuntimeStatus{}, err
+	}
+	hw := h.adapter(ctx)
+	st := RuntimeStatus{
+		Version: rel.Version.String(), Variant: rel.Name(), Variants: provision.Variants(rels),
+		GPU: hw.Name, UsesGPU: offloads(rel, hw),
+	}
+	if st.GPU == "" {
+		st.GPU = hw.Vulkan
+	}
+	inst, found := provision.Lookup(rel, provision.RuntimesDir(h.dataDir))
+	if !found {
+		return st, nil
+	}
+	st.Installed, st.BinPath = true, inst.BinPath
+	if err := verifyRuntimeBinary(inst.BinPath); err != nil {
+		st.Problem = err.Error()
+	}
+	return st, nil
+}
+
+// offloads reports whether the build rel runs on the adapter hw describes. The macOS arm64
+// build is compiled with Metal, so the baseline there offloads to Apple silicon.
+func offloads(rel provision.Release, hw gpu.Info) bool {
+	if rel.Accel == provision.AccelCUDA {
+		return hw.NVIDIA()
+	}
+	if rel.Accel == provision.AccelVulkan {
+		return hw.NVIDIA() || hw.Vulkan != ""
+	}
+	return rel.GOOS == "darwin" && rel.GOARCH == "arm64"
+}
+
+// formatBytes renders a download size for a progress line.
+func formatBytes(n int64) string {
+	if n >= 1<<30 {
+		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
+	}
+	return fmt.Sprintf("%d MiB", (n+1<<19)>>20)
 }
 
 // recordRuntimeBinary stores the hash of an installed server binary beside it, the

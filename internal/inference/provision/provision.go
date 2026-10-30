@@ -57,6 +57,76 @@ type Release struct {
 	// example "llama-server" or "llama-server.exe"). Its sibling libraries are extracted
 	// alongside it, so the located binary is runnable in place.
 	BinName string
+
+	// Variant names the build flavor within one runtime version and platform: empty for the
+	// CPU baseline, otherwise "cuda-13.3", "vulkan" and so on. Each variant has its own
+	// digest and its own install directory, so a CPU and a CUDA build of one version
+	// coexist and neither is mistaken for the other.
+	Variant string
+	// Accel is the GPU API the variant needs; the zero value is the CPU baseline.
+	Accel Accel
+	// CUDA is the toolkit version a CUDA variant was built with. A driver that supports an
+	// older CUDA cannot load it.
+	CUDA inference.Version
+	// MinComputeCap is the lowest CUDA compute capability the variant carries kernels for;
+	// zero means no floor.
+	MinComputeCap float64
+	// Companions are further pinned archives unpacked beside the main one: the CUDA
+	// runtime libraries upstream ships separately from the llama.cpp CUDA build.
+	Companions []Companion
+}
+
+// Accel is the GPU API a runtime build offloads through.
+type Accel int
+
+const (
+	// AccelNone is the CPU baseline, which runs everywhere.
+	AccelNone Accel = iota
+	// AccelCUDA needs an NVIDIA GPU and a driver at least as new as the build's CUDA.
+	AccelCUDA
+	// AccelVulkan runs on any GPU with a Vulkan driver, the fallback for AMD and Intel.
+	AccelVulkan
+)
+
+// Companion is an additional pinned archive installed into the same directory as a
+// release's main archive.
+type Companion struct {
+	// URL is the https source of the archive.
+	URL string
+	// SHA256 is the pinned digest the downloaded archive must match.
+	SHA256 string
+	// SizeBytes is the archive's known size, used as the download cap.
+	SizeBytes int64
+	// Archive is the archive's container format.
+	Archive ArchiveKind
+}
+
+// Name is the variant as shown to a user: "cpu" for the baseline.
+func (r Release) Name() string {
+	if r.Variant == "" {
+		return "cpu"
+	}
+	return r.Variant
+}
+
+// DownloadBytes is the total size of the archives an install of this release fetches.
+func (r Release) DownloadBytes() int64 {
+	n := r.SizeBytes
+	for _, c := range r.Companions {
+		n += c.SizeBytes
+	}
+	return n
+}
+
+// Dir is the directory under destDir the release installs into. The CPU baseline keeps
+// the layout builds had before variants existed, so an install made by an earlier Flynn is
+// still found; any other variant gets its own sibling.
+func (r Release) Dir(destDir string) string {
+	v := r.Version.String()
+	if r.Variant != "" {
+		v += "-" + r.Variant
+	}
+	return filepath.Join(destDir, r.Runtime, v)
 }
 
 // Gate reports the error from the version gate for this release, or nil when the build
@@ -70,6 +140,8 @@ type Installed struct {
 	BinPath string
 	// Version is the build's version.
 	Version inference.Version
+	// Variant is the build flavor, empty for the CPU baseline (see [Release.Variant]).
+	Variant string
 	// FromCache is true when the build was already installed and was reused.
 	FromCache bool
 }
@@ -83,16 +155,34 @@ func Install(ctx context.Context, dl *fetch.Downloader, rel Release, destDir str
 	if err := rel.Gate(); err != nil {
 		return Installed{}, err
 	}
-	buildDir := filepath.Join(destDir, rel.Runtime, rel.Version.String())
-	bin, reused, err := acquire.InstallTo(ctx, dl, acquire.Release{
+	ar := acquire.Release{
 		URL:       rel.URL,
 		SHA256:    rel.SHA256,
 		SizeBytes: rel.SizeBytes,
 		Archive:   rel.Archive,
 		BinName:   rel.BinName,
-	}, buildDir)
+	}
+	for _, c := range rel.Companions {
+		ar.Companions = append(ar.Companions, acquire.Companion(c))
+	}
+	bin, reused, err := acquire.InstallTo(ctx, dl, ar, rel.Dir(destDir))
 	if err != nil {
 		return Installed{}, err
 	}
-	return Installed{BinPath: bin, Version: rel.Version, FromCache: reused}, nil
+	return Installed{BinPath: bin, Version: rel.Version, Variant: rel.Variant, FromCache: reused}, nil
 }
+
+// Lookup reports the build of rel already installed under destDir, without fetching
+// anything. It finds exactly what [Install] places, because both locate it through
+// [Release.Dir], so a command that asks whether a runtime is installed cannot disagree
+// with the command that installed it.
+func Lookup(rel Release, destDir string) (Installed, bool) {
+	bin, ok := acquire.FindBinary(rel.Dir(destDir), rel.BinName)
+	if !ok {
+		return Installed{}, false
+	}
+	return Installed{BinPath: bin, Version: rel.Version, Variant: rel.Variant, FromCache: true}, true
+}
+
+// RuntimesDir is where a data directory keeps installed runtime builds.
+func RuntimesDir(dataDir string) string { return filepath.Join(dataDir, "runtimes") }

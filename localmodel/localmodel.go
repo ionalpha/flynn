@@ -77,6 +77,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/inference/gpu"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/internal/inference/provision"
 	"github.com/ionalpha/flynn/internal/inference/serve"
@@ -164,6 +165,12 @@ type Host struct {
 	// preLaunch, when a test sets it, runs just before the last digest check, with the port
 	// chosen for the server.
 	preLaunch func(port int)
+
+	// detectGPU, when a test sets it, stands in for the machine's GPU probe. gpuOnce keeps
+	// the probe to one run per Host.
+	detectGPU func(context.Context) gpu.Info
+	gpuOnce   sync.Once
+	gpuInfo   gpu.Info
 
 	floorMu sync.RWMutex
 	floor   hostFloor
