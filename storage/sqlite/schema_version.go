@@ -63,10 +63,13 @@ func refuseNewerSchema(ctx context.Context, db *sql.DB) error {
 // highestEmbeddedMigration is the largest NNNN prefix among the embedded migration
 // files, the same number the migration runner records as the version.
 func highestEmbeddedMigration() (int, error) {
-	names, err := fs.Glob(migrations, "migrations/*.sql")
-	if err != nil {
-		return 0, err
-	}
+	// The pattern is a constant, so Glob cannot report a malformed one.
+	names, _ := fs.Glob(migrations, "migrations/*.sql")
+	return highestVersion(names)
+}
+
+// highestVersion is the largest numeric prefix among migration file names.
+func highestVersion(names []string) (int, error) {
 	highest := 0
 	for _, n := range names {
 		base := strings.TrimPrefix(n, "migrations/")
