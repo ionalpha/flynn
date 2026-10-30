@@ -49,6 +49,23 @@ irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
 Pin a version with `FLYNN_VERSION` (for example `FLYNN_VERSION=v0.2.0`) or change the
 install directory with `FLYNN_INSTALL_DIR`.
 
+**Testing a release candidate?** The lines above install the latest final release,
+because GitHub's "latest" never includes a release candidate. To get the candidate, set
+`FLYNN_PRERELEASE`; it takes the newest release of any kind:
+
+```sh
+# Linux and macOS
+curl -fsSL https://raw.githubusercontent.com/ionalpha/flynn/main/install.sh | FLYNN_PRERELEASE=1 sh
+```
+
+```powershell
+# Windows (PowerShell)
+$env:FLYNN_PRERELEASE = '1'; irm https://raw.githubusercontent.com/ionalpha/flynn/main/install.ps1 | iex
+```
+
+Already installed? `flynn upgrade --pre` moves to the newest candidate. Either way,
+`flynn version` tells you which release you ended up on.
+
 After that, the binary updates itself:
 
 ```sh

@@ -10,6 +10,8 @@
 #
 # Environment overrides:
 #   FLYNN_VERSION      install a specific tag (e.g. v0.1.0); default: the latest release
+#   FLYNN_PRERELEASE   set to any value to take the newest release including a release
+#                      candidate (the default skips them); ignored when FLYNN_VERSION is set
 #   FLYNN_INSTALL_DIR  install directory;                   default: $HOME/.local/bin
 #
 # On Windows, use install.ps1 instead.
@@ -77,7 +79,15 @@ esac
 # --- resolve the version to install ---------------------------------------
 version="${FLYNN_VERSION:-}"
 if [ -z "$version" ]; then
-	version=$(fetch_stdout "https://api.github.com/repos/$REPO/releases/latest" |
+	# GitHub's "latest" release never includes a pre-release, so a release candidate is
+	# invisible to it. FLYNN_PRERELEASE asks for the newest release of any kind instead:
+	# the list endpoint returns releases newest first and does include pre-releases.
+	if [ -n "${FLYNN_PRERELEASE:-}" ]; then
+		releases_url="https://api.github.com/repos/$REPO/releases?per_page=1"
+	else
+		releases_url="https://api.github.com/repos/$REPO/releases/latest"
+	fi
+	version=$(fetch_stdout "$releases_url" |
 		sed -n 's/.*"tag_name" *: *"\([^"]*\)".*/\1/p' | head -n 1)
 	[ -n "$version" ] || err "could not resolve the latest release; set FLYNN_VERSION (e.g. FLYNN_VERSION=v0.1.0)"
 fi
