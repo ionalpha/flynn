@@ -508,7 +508,7 @@
       "notes": "Google's quantization-aware q4_0 build of Gemma 4 12B. At 7 GB it leaves a 16 GB card room for a long context. Vision is not used because the entry fetches no multimodal projector. Resolved with `flynn models bless`."
     },
     {
-      "id": "gpt-oss:20b",
+      "id": "gpt-oss-20b",
       "name": "gpt-oss 20B (MoE)",
       "kind": "local",
       "source": {
