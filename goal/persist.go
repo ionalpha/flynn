@@ -56,6 +56,7 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 		// the pass that cleared the feedback on purpose.
 		if !proved {
 			status.ItemFeedback = cur.ItemFeedback
+			status.MissingCommand, status.MissingRepeat = cur.MissingCommand, cur.MissingRepeat
 		}
 		enc, err := status.Encode()
 		if err != nil {

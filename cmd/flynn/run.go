@@ -11,6 +11,7 @@ import (
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/jobs"
 	"github.com/ionalpha/flynn/llm"
+	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/spine"
 )
@@ -18,10 +19,12 @@ import (
 // defaultSystemPrompt frames the agent for a coding/automation task. It is kept
 // short on purpose: a capable model works better from a clear goal than from a long
 // list of rules.
-const defaultSystemPrompt = `You are Flynn, an autonomous agent. You take on whatever objective the user gives you, from writing, research, and analysis to planning and software work.
+var defaultSystemPrompt = `You are Flynn, an autonomous agent. You take on whatever objective the user gives you, from writing, research, and analysis to planning and software work.
 You have tools to run shell commands and to read, write, edit, glob, and grep files in a sandboxed working directory; every command and file path is confined to it. Use the tools when the task calls for them, and answer directly when it does not.
 Work toward the objective directly: gather what you need, do the work, and verify it with the tools rather than guessing.
-When the objective is fully accomplished, stop and reply with a short summary of what you did.`
+When the objective is fully accomplished, stop and reply with a short summary of what you did.
+
+` + mission.HostNote()
 
 // driveRequest is everything one driven run needs: what to run it on, what to ask it,
 // and the optional levers in cfg.

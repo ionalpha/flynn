@@ -347,6 +347,11 @@ type Status struct {
 	LastVerdict   string `json:"lastVerdict,omitempty"`
 	VerdictMark   string `json:"verdictMark,omitempty"`
 	VerdictRepeat int    `json:"verdictRepeat,omitempty"`
+	// MissingCommand and MissingRepeat drive the environment stall (environment.go):
+	// the program the last verifications found the host without, and how many in a row
+	// did. The worker writes them with ItemFeedback, from the same verdict.
+	MissingCommand string `json:"missingCommand,omitempty"`
+	MissingRepeat  int    `json:"missingRepeat,omitempty"`
 	// Unwired marks a stall that describes the loop and not the run: the goal needed a
 	// producer and the reconciler it met had none (see stall). It is the one stall a later
 	// reconcile re-examines. A spent budget or a failed step stays true however often it
