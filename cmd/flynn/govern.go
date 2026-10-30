@@ -185,7 +185,7 @@ func checkAllowedAreMarked(outside, allowed []string) error {
 	}
 	for _, name := range allowed {
 		if name = strings.TrimSpace(name); name != "" && !marked[name] {
-			return fmt.Errorf("--allow %s names an action no --irreversible marks, so it would authorize nothing", name)
+			return fmt.Errorf("--allow %s names an action no --irreversible marks, so it would authorize nothing: --allow only lifts the hold --irreversible puts on an action, and does not widen what the run's normal grant permits; add --irreversible %s, or check the spelling", name, name)
 		}
 	}
 	return nil

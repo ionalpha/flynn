@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -308,7 +309,11 @@ func runModelUse(args []string, dataDir string, out io.Writer) error {
 		// Not a provisionable local catalog model. If it names a known provider
 		// (provider:model), record it as the default directly; its key is checked when a
 		// run uses it. Otherwise the id is genuinely unknown.
-		if knownProviderSpec(id) {
+		servers, serr := configuredServerNames(dataDir)
+		if serr != nil {
+			return fmt.Errorf("models use: %w", serr)
+		}
+		if knownProviderSpec(id, servers) {
 			if werr := writeActiveModel(dataDir, id); werr != nil {
 				return fmt.Errorf("models use: record selection: %w", werr)
 			}
@@ -346,18 +351,14 @@ func provisionAndSelect(ctx context.Context, runner *localRunner, m catalog.Mode
 
 // knownProviderSpec reports whether spec names a provider Flynn can resolve, in the
 // "provider:model" form, so a hosted model can be recorded as the default without the
-// local-catalog provisioning path.
-func knownProviderSpec(spec string) bool {
+// local-catalog provisioning path. servers are the names declared in the providers
+// file, which resolve the same way a built-in provider does.
+func knownProviderSpec(spec string, servers []string) bool {
 	name, _, ok := strings.Cut(spec, ":")
 	if !ok || name == "" {
 		return false
 	}
-	for _, p := range provider.Providers() {
-		if p == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(provider.Providers(), name) || slices.Contains(servers, name)
 }
 
 // runModelStatus implements `flynn models status`: list the local model servers that are

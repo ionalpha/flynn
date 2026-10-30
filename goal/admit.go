@@ -78,7 +78,9 @@ func admit(spec Spec, status *Status) error {
 // and the first to fire is the one the run settles under. Budget and spend come first
 // because a run that used up what it was given stopped for that reason whatever else
 // was true. No progress is next: a run that did nothing is better described that way
-// than by what it was told. Non-convergence is last, what remains when a run was busy,
+// than by what it was told. A check the host cannot run comes before that, since a run
+// that did nothing under a check that cannot pass is better described by the check.
+// Non-convergence is last, what remains when a run was busy,
 // within its allowance, and still got nowhere; it is the one that would otherwise
 // have spent the whole budget to be reached as a budget reason.
 func (g *Reconciler) stopGuard(ctx context.Context, r resource.Resource, spec Spec, status Status) (reason, message string, err error) {
@@ -93,6 +95,9 @@ func (g *Reconciler) stopGuard(ctx context.Context, r resource.Resource, spec Sp
 		if err != nil || reason != "" {
 			return reason, message, err
 		}
+	}
+	if status.StalledForEnvironment() {
+		return "CheckCannotRun", status.EnvironmentReason(), nil
 	}
 	if status.StalledForNoProgress() {
 		return "NoProgress", status.NoProgressReason(), nil

@@ -9,7 +9,8 @@ import (
 // TestHonestyUngroundedClaimRejected proves the headline honesty property through the
 // shipped binary: a run's success is grounded in an independent check, not in the
 // model's narrative. The model asserts everything works, but the bound -verify check
-// fails; the record must mark the success NOT GROUNDED and `spine verify` must reject it.
+// fails; the run exits non-zero, the record must mark the success NOT GROUNDED and
+// `spine verify` must reject it.
 // A downstream consumer gating on the record therefore cannot be fooled by a confident
 // but false completion claim, whatever the model said.
 func TestHonestyUngroundedClaimRejected(t *testing.T) {
@@ -18,8 +19,11 @@ func TestHonestyUngroundedClaimRejected(t *testing.T) {
 	in := newInstance(t).withModel(fake)
 
 	res := in.run("-no-learn", "-verify", "exit 1", "goal", "claim success without doing the work")
-	requireExit(t, res, 0, "goal completes but flags the ungrounded claim")
+	// The run is sealed and its record says the check failed, and the exit status follows
+	// the check, so a script gating on the exit code is not fooled either.
+	requireExit(t, res, 1, "goal flags the ungrounded claim and exits non-zero")
 	requireContains(t, res.stdout, "not grounded", "goal flags ungrounded success")
+	requireContains(t, res.stderr, "--verify check did not pass", "goal says why it exited non-zero")
 
 	ver := in.verify(in.runID(res))
 	if ver.code == 0 {

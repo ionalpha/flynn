@@ -29,7 +29,9 @@ const loopbackHost = "127.0.0.1"
 // runtime. Restricting to recognized names matters for safety: an unrecognized name
 // could make the runtime silently fall back to the template embedded in the weights,
 // which is exactly the model-controlled contract the override exists to prevent. A new
-// model family is supported by adding its template here once it is known good.
+// model family is supported by adding its template here once it is known good; see
+// templateArgs for how each name reaches the runtime, since a name llama.cpp does not
+// ship needs its reviewed source embedded as well.
 var knownChatTemplates = map[string]bool{
 	"chatml":     true,
 	"llama2":     true,
@@ -39,6 +41,8 @@ var knownChatTemplates = map[string]bool{
 	"phi3":       true,
 	"deepseek3":  true,
 	"zephyr":     true,
+	"gpt-oss":    true,
+	"gemma4":     true,
 }
 
 // KnownChatTemplate reports whether name is a trusted template a plan may use.
@@ -311,11 +315,11 @@ func buildLlamaCppArgv(cfg Config, tmpl string) []string {
 		"--model", cfg.WeightsPath,
 		"--host", loopbackHost,
 		"--port", strconv.Itoa(cfg.Port),
-		// Force the trusted contract; the model's embedded template is never used.
-		"--chat-template", tmpl,
 		// No browser UI: a headless agent server needs none, and it is attack surface.
 		"--no-webui",
 	}
+	// Force the trusted contract; the model's embedded template is never used.
+	argv = append(argv, templateArgs(tmpl)...)
 	if cfg.CtxSize > 0 {
 		argv = append(argv, "--ctx-size", strconv.Itoa(cfg.CtxSize))
 	}

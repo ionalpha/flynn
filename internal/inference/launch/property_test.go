@@ -38,7 +38,7 @@ func TestBuildPlanLoopbackInvariantProperty(t *testing.T) {
 				rt.Fatalf("argv binds a non-loopback host: %q", plan.Argv[i+1])
 			}
 		}
-		if !argvHasFlag(plan.Argv, "--chat-template", tmpl) {
+		if !containsRun(plan.Argv, templateArgs(tmpl)) {
 			rt.Fatalf("argv missing the forced template %q: %v", tmpl, plan.Argv)
 		}
 		if strings.Contains(strings.Join(plan.Argv, " "), "0.0.0.0") {

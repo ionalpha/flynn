@@ -15,6 +15,7 @@ import (
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/fetch"
 	"github.com/ionalpha/flynn/internal/huggingface"
+	"github.com/ionalpha/flynn/internal/inference/launch"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
 )
 
@@ -40,9 +41,8 @@ func runModelBless(args []string, _ string, out io.Writer) error {
 // printed entry are exercised against a stub Hub rather than the live one.
 func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Downloader, args []string, out io.Writer) error {
 	var idOverride, chatTemplate, licenseOverride, quantName string
-	chatTemplate = "chatml"
 	args, idOverride = takeValue(args, "--id")
-	args, chatTemplate = takeValueOr(args, "--chat-template", chatTemplate)
+	args, chatTemplate = takeValue(args, "--chat-template")
 	args, licenseOverride = takeValue(args, "--license")
 	args, quantName = takeValue(args, "--quant")
 
@@ -55,6 +55,9 @@ func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Download
 		return fmt.Errorf("models bless: %w", err)
 	}
 	repoPath := owner + "/" + repo
+	if chatTemplate != "" && !launch.KnownChatTemplate(chatTemplate) {
+		return fmt.Errorf("models bless: --chat-template %q is not a trusted template (one of %s)", chatTemplate, strings.Join(launch.TrustedChatTemplates(), ", "))
+	}
 
 	info, err := hub.Info(ctx, repoPath)
 	if err != nil {
@@ -69,7 +72,38 @@ func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Download
 		return fmt.Errorf("models bless: list files: %w", err)
 	}
 
-	selected, format, err := selectServeFiles(files)
+	req := blessRequest{
+		hub: hub, owner: owner, repo: repo, info: info, files: files,
+		idOverride: idOverride, chatTemplate: chatTemplate,
+		licenseOverride: licenseOverride, quantName: quantName,
+	}
+	if hasGGUF(files) {
+		return blessGGUF(ctx, req, out)
+	}
+	return blessSafetensors(ctx, req, dl, out)
+}
+
+// resolveLicense returns the license the entry records: the model card's, or the one the
+// caller confirmed with --license. A model with neither is refused, because the catalog
+// does not ship a model whose terms nobody read.
+func resolveLicense(req blessRequest) (string, error) {
+	license := req.info.License
+	if req.licenseOverride != "" {
+		license = req.licenseOverride
+	}
+	if license == "" {
+		return "", fmt.Errorf("models bless: %s/%s declares no license on its model card; pass --license <spdx-id> after confirming it", req.owner, req.repo)
+	}
+	return license, nil
+}
+
+// blessSafetensors builds the catalog entry for a repository that publishes safetensors
+// weights, the format the vLLM runtime loads. Every file the runtime needs is pinned to a
+// digest, and the model's own tokenizer files supply the chat template and reasoning
+// setting, which are matched against the trusted set and never run.
+func blessSafetensors(ctx context.Context, req blessRequest, dl *fetch.Downloader, out io.Writer) error {
+	repoPath := req.owner + "/" + req.repo
+	selected, format, err := selectServeFiles(req.files)
 	if err != nil {
 		return fmt.Errorf("models bless: %s: %w", repoPath, err)
 	}
@@ -82,64 +116,72 @@ func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Download
 	}
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
+	rs := &smallFileResolver{ctx: ctx, hub: req.hub, dl: dl, repoPath: repoPath, tmpDir: tmpDir, out: out}
+
+	// The weight index names the shards that make up the model. Reading it first drops
+	// a stray shard the repository also lists, which would otherwise be counted and
+	// downloaded as weights nothing loads.
+	if idx, ok := findFile(selected, weightIndexName); ok {
+		_, data, err := rs.resolve(idx)
+		if err != nil {
+			return fmt.Errorf("models bless: %w", err)
+		}
+		if selected, err = pruneToWeightIndex(selected, data); err != nil {
+			return fmt.Errorf("models bless: %s: %w", repoPath, err)
+		}
+	}
+
 	quantFiles := make([]catalog.QuantFile, 0, len(selected))
 	var totalBytes int64
-	var configBytes []byte
 	for _, f := range selected {
-		url := hub.FileURL(repoPath, f.Path)
-		qf := catalog.QuantFile{Name: f.Path, URL: url, SizeBytes: f.Size}
-		if f.SHA256 != "" {
-			qf.Digest = "sha256:" + f.SHA256
-		} else {
-			_, _ = fmt.Fprintf(out, "hashing %s (small file, fetched to verify)\n", f.Path)
-			res, err := dl.Fetch(ctx, fetch.Request{
-				URL:      url,
-				Dest:     filepath.Join(tmpDir, filepath.Base(f.Path)),
-				MaxBytes: f.Size + (1 << 20),
-			})
-			if err != nil {
-				return fmt.Errorf("models bless: hash %s: %w", f.Path, err)
-			}
-			qf.Digest = "sha256:" + res.SHA256
-			qf.SizeBytes = res.Bytes
-			if f.Path == "config.json" {
-				configBytes, _ = os.ReadFile(res.Path)
-			}
+		qf, _, err := rs.resolve(f)
+		if err != nil {
+			return fmt.Errorf("models bless: %w", err)
 		}
 		totalBytes += qf.SizeBytes
 		quantFiles = append(quantFiles, qf)
 	}
 
-	cfg := parseModelConfig(configBytes)
+	chatTemplate := req.chatTemplate
+	src := rs.templateSource()
+	if chatTemplate == "" {
+		if name, ok := launch.MatchTemplate(src); ok {
+			chatTemplate = name
+		} else {
+			chatTemplate = "chatml"
+			_, _ = fmt.Fprintln(out, "no chat template found in the repository that matches a trusted one; defaulting to chatml, pass --chat-template to choose another")
+		}
+	}
+	reasoning := launch.TemplateReasoning(src)
+
+	cfg := parseModelConfig(rs.data("config.json"))
+	quantName := req.quantName
 	if quantName == "" {
 		quantName = cfg.quantName()
 	}
-	license := info.License
-	if licenseOverride != "" {
-		license = licenseOverride
-	}
-	if license == "" {
-		return fmt.Errorf("models bless: %s declares no license on its model card; pass --license <spdx-id> after confirming it", repoPath)
+	license, err := resolveLicense(req)
+	if err != nil {
+		return err
 	}
 
-	id := idOverride
+	id := req.idOverride
 	if id == "" {
-		id = "vllm:" + strings.ToLower(repo)
+		id = "vllm:" + strings.ToLower(req.repo)
 	}
 
 	spec := catalog.ModelSpec{
 		ID:   id,
-		Name: repo,
+		Name: req.repo,
 		Kind: catalog.KindLocal,
 		Source: catalog.Source{
-			Publisher: owner,
+			Publisher: req.owner,
 			URL:       "https://huggingface.co/" + repoPath,
 			Registry:  "huggingface",
 		},
 		License:       license,
-		ParamsB:       paramsFromName(repo),
+		ParamsB:       paramsFromName(req.repo),
 		ContextTokens: cfg.ContextTokens,
-		Capabilities:  catalog.Capabilities{Tools: true},
+		Capabilities:  catalog.Capabilities{Tools: launch.NativeToolCalls(chatTemplate), Reasoning: reasoning},
 		Quants: []catalog.Quant{{
 			Name:      quantName,
 			Format:    format,
@@ -156,23 +198,29 @@ func modelBless(ctx context.Context, hub *huggingface.Client, dl *fetch.Download
 		return fmt.Errorf("models bless: encode entry: %w", err)
 	}
 
-	_, _ = fmt.Fprintf(out, "\nresolved %s: %d files, %s, format %s, quant %s, context %d\n",
-		repoPath, len(quantFiles), humanBytes(totalBytes), format, quantName, cfg.ContextTokens)
-	_, _ = fmt.Fprintf(out, "capabilities default to tools-only; run `flynn models probe %s` after committing to measure real agent reliability\n", id)
+	_, _ = fmt.Fprintf(out, "\nresolved %s: %d files, %s, format %s, quant %s, context %d, chat template %s, reasoning %v\n",
+		repoPath, len(quantFiles), humanBytes(totalBytes), format, quantName, cfg.ContextTokens, chatTemplate, reasoning)
+	_, _ = fmt.Fprintf(out, "run `flynn models probe %s` after committing to measure real agent reliability\n", id)
 	_, _ = fmt.Fprintln(out, "review and add this entry to the curated catalog (catalog/models.json):")
 	_, _ = fmt.Fprintln(out, string(entry))
 	return nil
 }
 
 // selectServeFiles keeps the files a runtime loads a model from (the weights, the
-// tokenizer, and the config) and drops the repository's documentation and media. It
-// refuses a repo whose only weights are a code-executing format, so an unsafe model is
+// tokenizer, the config and the chat template) at the repository root and drops the
+// repository's documentation, media and subdirectories. It refuses a repo whose only weights are a code-executing format, so an unsafe model is
 // never blessed; when a safetensors set is present, any stray unsafe file is simply left
 // out. It returns the kept files and the weight format they make up.
 func selectServeFiles(files []huggingface.File) ([]huggingface.File, catalog.Format, error) {
 	var safetensors, pickle bool
 	kept := make([]huggingface.File, 0, len(files))
 	for _, f := range files {
+		// A runtime loads a model from the repository root. A subdirectory holds
+		// another packaging of the same weights (original/, metal/), and carrying it
+		// would count and download them twice.
+		if strings.Contains(f.Path, "/") {
+			continue
+		}
 		ext := strings.ToLower(filepath.Ext(f.Path))
 		switch ext {
 		case ".safetensors":
@@ -211,6 +259,9 @@ func servingFile(path string) bool {
 			return false
 		}
 		return true
+	case ".jinja":
+		// The chat template a tokenizer ships beside its config.
+		return base == "chat_template.jinja"
 	}
 	return false
 }

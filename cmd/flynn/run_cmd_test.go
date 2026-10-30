@@ -457,3 +457,52 @@ func TestRunLearningMissionSealsAndVerifiesItsOwnRun(t *testing.T) {
 		t.Fatalf("the sealed run does not verify from the store: %v", err)
 	}
 }
+
+// TestRunLearningMissionFailsWhenItsVerifyCheckFails: --verify is the operator's independent
+// check, so a run whose check does not pass must not exit 0. It is still sealed with the
+// failing verdict recorded, and a passing check still returns no error.
+func TestRunLearningMissionFailsWhenItsVerifyCheckFails(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	for _, c := range []struct {
+		name, verify string
+		wantErr      bool
+	}{
+		{"failing check", "exit 7", true},
+		{"passing check", "exit 0", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !c.wantErr {
+				// Only a pass needs a host that can confine the check; one that cannot run counts
+				// as failed, so the failing case holds on every host.
+				sandboxtest.RequireConfinement(t)
+			}
+			signer, _ := spineSelfSigner(t, 31)
+			store, err := openDataStore(ctx, t.TempDir(), snapshotOptions(signer)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = store.Close() }()
+
+			var out bytes.Buffer
+			result, err := runLearningMission(ctx, &out, llmtest.NewScripted(llmtest.SayText("done")), harness.Plan{}, nil,
+				t.TempDir(), "reply done and stop", c.verify, store, signer, false, nil)
+			if !c.wantErr {
+				if err != nil {
+					t.Fatalf("a passing check failed the run: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, errGroundTruthFailed) {
+				t.Fatalf("err = %v, want errGroundTruthFailed", err)
+			}
+			if !strings.Contains(out.String(), "run sealed") {
+				t.Fatalf("a failed check must still seal the run's honest record:\n%s", out.String())
+			}
+			if result == "" {
+				t.Fatal("the agent's result was dropped along with the failure")
+			}
+		})
+	}
+}

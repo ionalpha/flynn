@@ -8,13 +8,13 @@ import (
 )
 
 func TestKnownProviderSpec(t *testing.T) {
-	for _, spec := range []string{"openai:gpt-5.5", "anthropic:claude-opus-4-8", "deepseek:", "gemini:x"} {
-		if !knownProviderSpec(spec) {
+	for _, spec := range []string{"openai:gpt-5.5", "anthropic:claude-opus-5-5", "deepseek:", "gemini:x"} {
+		if !knownProviderSpec(spec, nil) {
 			t.Errorf("knownProviderSpec(%q) = false, want true", spec)
 		}
 	}
 	for _, spec := range []string{"", "openai", "qwen2.5:0.5b-instruct", "notaprovider:x"} {
-		if knownProviderSpec(spec) {
+		if knownProviderSpec(spec, nil) {
 			t.Errorf("knownProviderSpec(%q) = true, want false", spec)
 		}
 	}
@@ -67,7 +67,7 @@ func TestShellModelSwitches(t *testing.T) {
 
 func TestEffectiveModelSpecPrecedence(t *testing.T) {
 	dir := t.TempDir()
-	const builtIn = "anthropic:claude-opus-4-8"
+	const builtIn = "anthropic:claude-opus-5-5"
 
 	// Nothing saved: the built-in default is used.
 	if got := effectiveModelSpec(builtIn, false, dir); got != builtIn {

@@ -75,6 +75,10 @@ func newBlessHub(t *testing.T, repo blessRepo) (*huggingface.Client, *fetch.Down
 		}
 	}))
 	t.Cleanup(srv.Close)
+	// A GGUF header is read through its own client, pointed at the same server.
+	prev := ggufHeaderClient
+	ggufHeaderClient = srv.Client()
+	t.Cleanup(func() { ggufHeaderClient = prev })
 	hub := huggingface.New(huggingface.WithHTTPClient(srv.Client()), huggingface.WithBaseURL(srv.URL))
 	return hub, fetch.New(fetch.WithHTTPClient(srv.Client()))
 }

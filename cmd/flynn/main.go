@@ -2,7 +2,7 @@
 //
 // Build:  go build -o flynn ./cmd/flynn
 // Run a goal:  flynn goal "audit the repo for TODOs and write a summary to NOTES.md"
-// The model is chosen with --model provider:model (default anthropic:claude-opus-4-8);
+// The model is chosen with --model provider:model (default anthropic:claude-opus-5-5);
 // the provider's API key is read from its environment variable. State (skills and
 // memory the agent learns) persists under --data-dir, so each run starts ahead of
 // the last; --no-learn skips that capture step.
@@ -151,7 +151,7 @@ func main() { os.Exit(run(flag.CommandLine, os.Args[1:], os.Stdout, os.Stderr)) 
 // after the program name, and the process's own streams.
 func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	var (
-		model       = fs.String("model", "anthropic:claude-opus-4-8", "model as provider:model")
+		model       = fs.String("model", "anthropic:claude-opus-5-5", "model as provider:model")
 		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
 		noBundled   = fs.Bool("no-bundled-skills", false, "run without the skills shipped in the binary: the bundled set is removed from the store rather than merely left unseeded, so a run measures the learning loop against a clean baseline. Your own and learned skills are untouched.")
@@ -175,14 +175,30 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		leakRepeat  = fs.Bool("leak-watch-repeat", false, "let --leak-watch dump a counter more than once; by default a counter dumps once per process, because the second dump of a leak that is still leaking says what the first already said")
 	)
 	fs.Var(reqApproval, "require-approval", "require a person to authorize this action before the run takes it (repeat for more than one, e.g. --require-approval bash; a name the run does not offer is refused). The action pauses at the dispatch waist and the interactive session asks; a run with nobody to ask refuses it rather than taking it. Every decision, allowed or refused, is recorded on the run's own stream. With no --require-approval nothing pauses, and the run's grant and sandbox are its controls as before.")
-	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible bash). The run takes it only where --allow declared it, and a run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
-	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow bash). It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
+	fs.Var(outside, "irreversible", "treat this action as reaching outside the workspace and not undoable (repeat for more than one, e.g. --irreversible bash). This adds a check on top of the run's normal grant and sandbox and takes none away: an action the grant refuses stays refused, and one it permits is now also held until --allow declares it. A run that reaches an undeclared one stops with the ask instead of being handed a refusal it would look for a way around. With no --irreversible nothing is marked and the run's grant and sandbox are its controls as before.")
+	fs.Var(allowed, "allow", "declare in advance that this run may take an action marked --irreversible (repeat for more than one, e.g. --allow bash). It only lifts the hold that --irreversible puts on that action, so it needs a matching --irreversible and grants nothing the run's normal grant and sandbox do not already permit. It is the standing form of a decision nobody is present to make: an irreversible action outside the workspace is authorized by a person who wrote it down, never inferred from the objective.")
 	if err := fs.Parse(args); err != nil {
 		// flag.CommandLine exits the process on a bad flag, so this is reached only by a
-		// flag set that was asked to hand parse errors back: a bad flag is a usage error.
+		// flag set that was asked to hand parse errors back: a bad flag is a usage error,
+		// and a request for help (which the flag package has already answered) is not.
+		if errors.Is(err, flag.ErrHelp) {
+			return 0
+		}
 		return 2
 	}
+	// Help is answered before anything else is done on the command's behalf. The flag
+	// package stops at the first word that is not a flag, so a help flag written after a
+	// subcommand is never seen by it, and would otherwise reach the model as an objective
+	// or run the command it was asked about.
+	if helpRequested(fs.Args()) {
+		printUsage(stdout)
+		return 0
+	}
 	rest, usageErr := goalArgs(fs, fs.Args())
+	if usageErr == flag.ErrHelp.Error() {
+		printUsage(stdout)
+		return 0
+	}
 	if usageErr != "" {
 		_, _ = fmt.Fprintln(stderr, usageErr)
 		return 2
@@ -287,6 +303,9 @@ func goalArgs(fs *flag.FlagSet, rest []string) ([]string, string) {
 	}
 	literal := slices.Contains(rest[1:], "--")
 	if err := fs.Parse(rest[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil, flag.ErrHelp.Error()
+		}
 		return nil, fmt.Sprintf("usage: %v", err)
 	}
 	objective := fs.Args()
@@ -298,6 +317,24 @@ func goalArgs(fs *flag.FlagSet, rest []string) ([]string, string) {
 		}
 	}
 	return append([]string{"goal"}, objective...), ""
+}
+
+// helpRequested reports whether the command line asks a known subcommand for help, by a
+// help flag as its first argument. Only that position counts, because everything after the
+// subcommand name is its own text, and an objective that mentions "-h" is still an
+// objective. The help command itself is not matched: it is an ordinary route, and the
+// flags written before it are still validated.
+func helpRequested(rest []string) bool {
+	if len(rest) < 2 || !slices.Contains([]string{"-h", "--help", "-help"}, rest[1]) {
+		return false
+	}
+	name := rest[0]
+	if target, ok := commandAliases[name]; ok {
+		name = target
+	}
+	_, invoked := invocationCommands[name]
+	_, dataDirOnly := dataDirCommands[name]
+	return invoked || dataDirOnly
 }
 
 // flagName returns the flag name an argument spells ("-v", "--goal-spec",
@@ -797,7 +834,11 @@ func resolveModel(ctx context.Context, modelSpec, dataDir string) (llm.Model, ha
 	if isLocalModelID(modelSpec) {
 		return resolveLocalModel(ctx, modelSpec, dataDir)
 	}
-	model, err := provider.ResolveWith(ctx, modelSpec, credentialSource(dataDir))
+	src, err := modelSource(dataDir)
+	if err != nil {
+		return nil, harness.Plan{}, err
+	}
+	model, err := provider.ResolveWith(ctx, modelSpec, src)
 	if err != nil {
 		return nil, harness.Plan{}, err
 	}
