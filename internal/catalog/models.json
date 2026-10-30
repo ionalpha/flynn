@@ -1,6 +1,6 @@
 {
   "version": "1",
-  "updated": "2026-06-26",
+  "updated": "2026-10-30",
   "models": [
     {
       "id": "anthropic:claude-opus-4-8",
@@ -29,6 +29,111 @@
       "license": "proprietary",
       "capabilities": { "tools": true, "vision": true, "reasoning": true },
       "trust": "blessed"
+    },
+    {
+      "id": "anthropic:claude-fable-5-1",
+      "name": "Claude Fable 5.1",
+      "kind": "api",
+      "source": {
+        "publisher": "Anthropic",
+        "url": "https://platform.claude.com/docs/en/models/overview",
+        "registry": "anthropic"
+      },
+      "license": "proprietary",
+      "contextTokens": 1000000,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "For demanding reasoning and long-horizon agentic work; the slowest and most expensive Claude tier."
+    },
+    {
+      "id": "anthropic:claude-opus-5-5",
+      "name": "Claude Opus 5.5",
+      "kind": "api",
+      "source": {
+        "publisher": "Anthropic",
+        "url": "https://platform.claude.com/docs/en/models/overview",
+        "registry": "anthropic"
+      },
+      "license": "proprietary",
+      "contextTokens": 1000000,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "Anthropic's recommended starting model for long-running agentic coding and knowledge work."
+    },
+    {
+      "id": "anthropic:claude-sonnet-5-5",
+      "name": "Claude Sonnet 5.5",
+      "kind": "api",
+      "source": {
+        "publisher": "Anthropic",
+        "url": "https://platform.claude.com/docs/en/models/overview",
+        "registry": "anthropic"
+      },
+      "license": "proprietary",
+      "contextTokens": 1000000,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "Fast tier with strong tool use; the cheaper choice for high-volume agent runs."
+    },
+    {
+      "id": "anthropic:claude-haiku-5-5",
+      "name": "Claude Haiku 5.5",
+      "kind": "api",
+      "source": {
+        "publisher": "Anthropic",
+        "url": "https://platform.claude.com/docs/en/models/overview",
+        "registry": "anthropic"
+      },
+      "license": "proprietary",
+      "contextTokens": 1000000,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "Smallest and fastest Claude tier, for latency-sensitive and bulk work."
+    },
+    {
+      "id": "openai:gpt-6-astra",
+      "name": "GPT-6 Astra",
+      "kind": "api",
+      "source": {
+        "publisher": "OpenAI",
+        "url": "https://developers.openai.com/api/docs/models",
+        "registry": "openai"
+      },
+      "license": "proprietary",
+      "contextTokens": 1050000,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "OpenAI's most capable model for the hardest end-to-end work."
+    },
+    {
+      "id": "openai:gpt-6.1-sol",
+      "name": "GPT-6.1 Sol",
+      "kind": "api",
+      "source": {
+        "publisher": "OpenAI",
+        "url": "https://developers.openai.com/api/docs/models",
+        "registry": "openai"
+      },
+      "license": "proprietary",
+      "contextTokens": 1050000,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "Complex coding and professional work at a lower price than GPT-6 Astra."
+    },
+    {
+      "id": "gemini:gemini-4-argon",
+      "name": "Gemini 4 Argon",
+      "kind": "api",
+      "source": {
+        "publisher": "Google",
+        "url": "https://ai.google.dev/gemini-api/docs/models/gemini-4-argon",
+        "registry": "gemini"
+      },
+      "license": "proprietary",
+      "contextTokens": 1048576,
+      "capabilities": { "tools": true, "vision": true, "reasoning": true },
+      "trust": "blessed",
+      "notes": "Google's flagship reasoning model; accepts text, image, video, audio and PDF input and returns text."
     },
     {
       "id": "ollama:qwen2.5-coder:7b",
@@ -89,6 +194,141 @@
       "trust": "blessed",
       "chatTemplate": "llama3",
       "notes": "Long context for its size; community license permits commercial use under its terms."
+    },
+    {
+      "id": "qwen3.5:0.8b",
+      "name": "Qwen3.5 0.8B",
+      "kind": "local",
+      "source": {
+        "publisher": "ggml-org",
+        "url": "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 0.8,
+      "contextTokens": 262144,
+      "capabilities": { "tools": true, "vision": false, "reasoning": true },
+      "quants": [
+        {
+          "name": "Q8_0",
+          "format": "gguf",
+          "sizeBytes": 833592096,
+          "ref": "Qwen3.5-0.8B-Q8_0.gguf",
+          "url": "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/main/Qwen3.5-0.8B-Q8_0.gguf",
+          "digest": "sha256:37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "CPU-only tier: 0.8 GB, runs without a GPU. Non-thinking by default. Vision is not used because the entry fetches no multimodal projector."
+    },
+    {
+      "id": "qwen3.5:4b",
+      "name": "Qwen3.5 4B",
+      "kind": "local",
+      "source": {
+        "publisher": "unsloth",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 4,
+      "contextTokens": 262144,
+      "capabilities": { "tools": true, "vision": false, "reasoning": true },
+      "quants": [
+        {
+          "name": "Q4_K_M",
+          "format": "gguf",
+          "sizeBytes": 2740937888,
+          "ref": "Qwen3.5-4B-Q4_K_M.gguf",
+          "url": "https://huggingface.co/unsloth/Qwen3.5-4B-GGUF/resolve/main/Qwen3.5-4B-Q4_K_M.gguf",
+          "digest": "sha256:00fe7986ff5f6b463e62455821146049db6f9313603938a70800d1fb69ef11a4"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "8 GB tier: 2.7 GB of weights leave room for a long context on an 8 GB card. Vision is not used because the entry fetches no multimodal projector."
+    },
+    {
+      "id": "qwen3.5:9b",
+      "name": "Qwen3.5 9B",
+      "kind": "local",
+      "source": {
+        "publisher": "unsloth",
+        "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 9,
+      "contextTokens": 262144,
+      "capabilities": { "tools": true, "vision": false, "reasoning": true },
+      "quants": [
+        {
+          "name": "Q4_K_M",
+          "format": "gguf",
+          "sizeBytes": 5680522464,
+          "ref": "Qwen3.5-9B-Q4_K_M.gguf",
+          "url": "https://huggingface.co/unsloth/Qwen3.5-9B-GGUF/resolve/main/Qwen3.5-9B-Q4_K_M.gguf",
+          "digest": "sha256:03b74727a860a56338e042c4420bb3f04b2fec5734175f4cb9fa853daf52b7e8"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "12 GB tier, and fits a 16 GB card with a large context. Vision is not used because the entry fetches no multimodal projector."
+    },
+    {
+      "id": "qwen3.6:35b-a3b",
+      "name": "Qwen3.6 35B-A3B (MoE)",
+      "kind": "local",
+      "source": {
+        "publisher": "ggml-org",
+        "url": "https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 35,
+      "contextTokens": 262144,
+      "capabilities": { "tools": true, "vision": false, "reasoning": true },
+      "quants": [
+        {
+          "name": "Q4_K_M",
+          "format": "gguf",
+          "sizeBytes": 20419565568,
+          "ref": "Qwen3.6-35B-A3B-Q4_K_M.gguf",
+          "url": "https://huggingface.co/ggml-org/Qwen3.6-35B-A3B-GGUF/resolve/main/Qwen3.6-35B-A3B-Q4_K_M.gguf",
+          "digest": "sha256:671e47e0ec53c665d048b98c3ecbfd5236b5ca9c3e02ed19fc8f81f7b85140c7"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "Mixture-of-experts with about 3B active parameters per token. The 20 GB of weights exceed a 16 GB card, so llama.cpp must keep some expert tensors in system RAM; speed holds up because few experts run per token."
+    },
+    {
+      "id": "qwen3.6:27b",
+      "name": "Qwen3.6 27B",
+      "kind": "local",
+      "source": {
+        "publisher": "ggml-org",
+        "url": "https://huggingface.co/ggml-org/Qwen3.6-27B-GGUF",
+        "registry": "huggingface"
+      },
+      "license": "Apache-2.0",
+      "paramsB": 27,
+      "contextTokens": 262144,
+      "capabilities": { "tools": true, "vision": false, "reasoning": true },
+      "quants": [
+        {
+          "name": "Q4_K_M",
+          "format": "gguf",
+          "sizeBytes": 19095766304,
+          "ref": "Qwen3.6-27B-Q4_K_M.gguf",
+          "url": "https://huggingface.co/ggml-org/Qwen3.6-27B-GGUF/resolve/main/Qwen3.6-27B-Q4_K_M.gguf",
+          "digest": "sha256:65b753ea835627f7b511143c6ceb976525c7f21f5df8c664bc0a9c23d1c49921"
+        }
+      ],
+      "trust": "blessed",
+      "chatTemplate": "chatml",
+      "notes": "24 GB tier: 19 GB of weights plus context fit one 24 GB card. Dense, so slower per token than the 35B-A3B mixture-of-experts entry."
     },
     {
       "id": "qwen2.5:0.5b-instruct",
