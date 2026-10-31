@@ -203,7 +203,7 @@ func newFixture(t *testing.T, o fixtureOpts) *fixture {
 	}
 	f.model = localmodel.Model{
 		ID: o.id, Name: "Test model", License: "mit", Kind: "local",
-		ChatTemplate: o.template,
+		Trust: localmodel.TrustBlessed, ChatTemplate: o.template,
 		Quants: []localmodel.Quant{{
 			Name: "Q4_K_M", Format: "gguf", SizeBytes: int64(len(o.weights)),
 			URL: f.srv.URL + "/weights.gguf?sig=SECRET-SIGNATURE", Digest: digest,

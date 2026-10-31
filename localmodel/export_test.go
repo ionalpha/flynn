@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/ionalpha/flynn/internal/hardware"
 	"github.com/ionalpha/flynn/internal/inference"
 	"github.com/ionalpha/flynn/internal/inference/gpu"
 	"github.com/ionalpha/flynn/internal/inference/serve"
@@ -40,6 +41,17 @@ func NVIDIAGPU(name, driver string, major, minor int, computeCap float64) GPU {
 func (h *Host) SetGPU(info GPU) {
 	h.detectGPU = func(context.Context) gpu.Info { return info }
 }
+
+// SetMachine makes the Host see hw as the machine's memory and free as the VRAM free now,
+// with ok false for a driver that cannot say, instead of probing.
+func (h *Host) SetMachine(hw Hardware, free int64, ok bool) {
+	box := hardware.Box{GPUName: hw.GPUName, VRAMBytes: hw.VRAMBytes, RAMBytes: hw.RAMBytes}
+	h.detectBox = func(context.Context) hardware.Box { return box }
+	h.freeVRAM = func(context.Context) (int64, bool) { return free, ok }
+}
+
+// CPUInferenceBudget is the share of system RAM a model may claim.
+func CPUInferenceBudget(ramBytes int64) int64 { return cpuInferenceBudget(ramBytes) }
 
 // SetContainment makes the Host see the sandbox as providing level, to test a refusal on
 // a platform that provides more.

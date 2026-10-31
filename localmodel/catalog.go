@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/internal/catalog"
-	"github.com/ionalpha/flynn/internal/hardware"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -36,6 +35,9 @@ type ModelQuery struct {
 	// SafeOnly drops models whose only weights use a format that executes code on load.
 	SafeOnly bool
 }
+
+// Ranked is a [Model] with the [FitPlan] that placed it in a [Host.Rank] ordering.
+type Ranked = catalog.Ranked
 
 // Hardware is what was detected about this machine. A zero field means not detected,
 // which a reader treats as unknown rather than as no capacity.
@@ -102,23 +104,65 @@ func (h *Host) Model(id string) (Model, error) {
 
 // Hardware detects this machine's accelerator and memory.
 func (h *Host) Hardware(ctx context.Context) Hardware {
-	b := hardware.Detect(ctx)
+	b := h.detectBox(ctx)
 	return Hardware{GPUName: b.GPUName, VRAMBytes: b.VRAMBytes, RAMBytes: b.RAMBytes}
 }
 
-// Fit judges the model's smallest quantization against GPU memory when a GPU is present
-// and against system memory otherwise, reserving headroom for the cache.
-func (h *Host) Fit(ctx context.Context, id string) (Fit, error) {
+// Machine is the memory this machine offers a model: the VRAM free now rather than the
+// card's total, because the desktop and other programs already hold some and a model sized
+// to the total fails to load, and the system RAM left after the share the OS keeps, which
+// is where a mixture-of-experts model's overflow experts go. It is the machine
+// `flynn models --fit` judges against, so a host and the command give the same verdicts.
+func (h *Host) Machine(ctx context.Context) Machine {
+	box := h.detectBox(ctx)
+	var mc Machine
+	if box.HasGPU() {
+		mc.VRAMFreeBytes = box.VRAMBytes
+		if free, ok := h.freeVRAM(ctx); ok && free >= 0 && free < box.VRAMBytes {
+			mc.VRAMFreeBytes = free
+		}
+	}
+	if box.HasRAM() {
+		mc.RAMBytes = cpuInferenceBudget(box.RAMBytes)
+	}
+	return mc
+}
+
+// cpuInferenceBudget is the share of system RAM a model may claim: all but a quarter, or
+// all but two gigabytes when that leaves more, since the OS and the programs around the
+// model need the memory too.
+func cpuInferenceBudget(ramBytes int64) int64 {
+	reserve := max(ramBytes/4, 2_000_000_000)
+	if reserve >= ramBytes {
+		return 0
+	}
+	return ramBytes - reserve
+}
+
+// PlanFit judges the model's smallest quantization against [Host.Machine] at the context
+// length and cache precision in s. The cache is counted at that context, memory already in
+// use is taken off, and a mixture-of-experts model that does not fit the GPU is also tried
+// with its experts in system RAM.
+func (h *Host) PlanFit(ctx context.Context, id string, s FitSettings) (FitPlan, error) {
 	m, err := h.Model(id)
 	if err != nil {
-		return FitUnknown, err
+		return FitPlan{Fit: FitUnknown, Placement: PlacementNone}, err
 	}
-	hw := h.Hardware(ctx)
-	budget := hw.RAMBytes
-	if hw.VRAMBytes > 0 {
-		budget = hw.VRAMBytes
-	}
-	return m.FitFor(budget), nil
+	return m.PlanFit(h.Machine(ctx), s), nil
+}
+
+// Fit is the verdict of [Host.PlanFit] at the default settings.
+func (h *Host) Fit(ctx context.Context, id string) (Fit, error) {
+	p, err := h.PlanFit(ctx, id, FitSettings{})
+	return p.Fit, err
+}
+
+// Rank lists the local models that match q, strongest first for this machine: those that
+// run, comfortable fits before tight ones and larger models before smaller, then those that
+// do not. On a machine with a GPU a model that runs only from system RAM ranks last among
+// those that run. The order is `flynn models --fit`'s.
+func (h *Host) Rank(ctx context.Context, q ModelQuery, s FitSettings) []Ranked {
+	return catalog.Rank(h.Models(q), h.Machine(ctx), s)
 }
 
 // Assessment is the outcome of classifying a model reference: how far its source is
@@ -156,7 +200,7 @@ func (h *Host) Classify(ref string) (Assessment, error) {
 
 // assess is Classify with the parsed source and classification a serve path needs.
 func (h *Host) assess(ref string) (modelsource.Source, modelsource.Classification, Assessment, error) {
-	src, err := modelsource.Parse(ref, h.isCatalogID)
+	src, err := h.parse(ref)
 	if err != nil {
 		return src, modelsource.Classification{}, Assessment{}, err
 	}
@@ -195,17 +239,34 @@ func (h *Host) assess(ref string) (modelsource.Source, modelsource.Classificatio
 	return src, class, a, nil
 }
 
-func (h *Host) isCatalogID(s string) bool {
-	m, err := h.Model(s)
-	return err == nil && m.Local()
+// parse reads a model reference into a source. Only a [TrustBlessed] entry parses as a
+// catalog source; an entry at any other tier is classified by the origin it names, so a
+// merged catalog cannot carry a user's entry into the pinned, trusted class by its id.
+func (h *Host) parse(ref string) (modelsource.Source, error) {
+	if m, err := h.Model(ref); err == nil && m.Unverified() {
+		return entrySource(m), nil
+	}
+	return modelsource.Parse(ref, h.isCatalogID)
 }
 
-// publishers returns the distinct publishers the catalog names, so a hub model from a
-// publisher a curator already vouched for is recognized.
+// isCatalogID reports whether s names a vetted local entry. A failed lookup, a hosted model
+// and an entry that is not [TrustBlessed] all answer false, so the test fails closed.
+func (h *Host) isCatalogID(s string) bool {
+	m, err := h.Model(s)
+	return err == nil && m.Local() && !m.Unverified()
+}
+
+// publishers returns the distinct publishers the vetted catalog entries name, so a hub
+// model from a publisher a curator already vouched for is recognized. An entry that is not
+// [TrustBlessed] is left out: a publisher it names is a claim, and counting it would let an
+// entry vouch for the next hub model from the same name.
 func (h *Host) publishers() []string {
 	seen := map[string]bool{}
 	var out []string
 	for _, m := range h.models {
+		if m.Unverified() {
+			continue
+		}
 		if p := m.Source.Publisher; p != "" && !seen[p] {
 			seen[p] = true
 			out = append(out, p)
