@@ -30,7 +30,8 @@ func writeGoalSpec(t *testing.T, body string) string {
 // names the broken term; on one that cannot, the run stops saying the check could not
 // run. Either way it does not finish as though the term held.
 func TestGoalSpecBreachStopsTheRunNamingTheTerm(t *testing.T) {
-	fake := newFakeOpenAIQueue(t,
+	fake := newFakeOpenAIQueue(
+		t,
 		toolCall("call_1", "write", `{"path":"a.txt","content":"x"}`),
 		finalText("Done."),
 	)
@@ -52,7 +53,8 @@ func TestGoalSpecBreachStopsTheRunNamingTheTerm(t *testing.T) {
 // TestGoalSpecTermsThatHoldLetTheRunFinish is the control for the breach: the same
 // command line with a term whose check passes converges.
 func TestGoalSpecTermsThatHoldLetTheRunFinish(t *testing.T) {
-	fake := newFakeOpenAIQueue(t,
+	fake := newFakeOpenAIQueue(
+		t,
 		toolCall("call_1", "write", `{"path":"a.txt","content":"x"}`),
 		finalText("Done."),
 	)
@@ -76,7 +78,8 @@ func TestGoalSpecTermsThatHoldLetTheRunFinish(t *testing.T) {
 // action that needs a person's authorization is refused rather than taken, and the
 // refusal is what the model is told.
 func TestRequiredApprovalWithNobodyToAskIsRefused(t *testing.T) {
-	fake := newFakeOpenAIQueue(t,
+	fake := newFakeOpenAIQueue(
+		t,
 		toolCall("call_1", "write", `{"path":"needs-approval.txt","content":"x"}`),
 		finalText("Could not write it."),
 	)
@@ -110,7 +113,8 @@ func TestRequiredApprovalWithNobodyToAskIsRefused(t *testing.T) {
 // confinement, so the gate under test is the one that speaks on every host.
 func TestUndeclaredIrreversibleActionStopsTheRun(t *testing.T) {
 	script := func() *fakeOpenAI {
-		return newFakeOpenAIQueue(t,
+		return newFakeOpenAIQueue(
+			t,
 			toolCall("call_1", "write", `{"path":"irreversible.txt","content":"x"}`),
 			finalText("Done."),
 		)
