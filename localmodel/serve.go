@@ -69,7 +69,12 @@ type Server struct {
 // the load is unknown, not zero.
 type Stats = serve.RuntimeStats
 
-// Serve brings a catalog model up and returns its endpoint. Calls for one model run one
+// Serve brings a model in the host's catalog up and returns its endpoint. An entry at any
+// trust tier is served, but one that is not [TrustBlessed] is first classified by the origin
+// it names (a file, a URL or a Hub repository), so it needs the isolation that origin needs
+// and is refused with [ErrNotAdmitted] where the host gives less. A reference that is not an
+// entry of the catalog, such as an hf: reference, a URL or a path, is [ErrNotServable]: there
+// is nothing pinned to fetch it by. Calls for one model run one
 // at a time, so a server is never started twice or stopped by a racing call. A server
 // already running is adopted only if it was started from a build at or above the current
 // floor, under at least the isolation [Config.MinContainment] asks for, with a key file
@@ -91,12 +96,9 @@ func (h *Host) Serve(ctx context.Context, ref string, opts ServeOptions) (Endpoi
 	if !a.Admitted {
 		return Endpoint{}, h.fail(fmt.Errorf("%w: %s", ErrNotAdmitted, a.Refusal))
 	}
-	if !a.Catalog {
-		return Endpoint{}, h.fail(fmt.Errorf("%w: %s is %s and only catalog models serve", ErrNotServable, a.Ref, a.Trust))
-	}
 	m, err := h.Model(ref)
 	if err != nil {
-		return Endpoint{}, h.fail(err)
+		return Endpoint{}, h.fail(fmt.Errorf("%w: %s is %s and is not a local model in this catalog", ErrNotServable, a.Ref, a.Trust))
 	}
 	unlock, err := h.locks.lock(ctx, m.ID)
 	if err != nil {

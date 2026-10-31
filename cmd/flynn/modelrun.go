@@ -149,8 +149,9 @@ func openHost(dataDir string, out io.Writer) (*localmodel.Host, error) {
 	// further than a process jail is not refused a second time.
 	// The host serves what it is given, so it is given the catalog the commands read, user
 	// entries included: a model added with `flynn models add` is fetched, digest-checked and
-	// served by the same path as a curated one. What a user entry is allowed to run under is
-	// decided by gateAndServe from where it came from, not by the host.
+	// served by the same path as a curated one. The host classifies a user entry by the origin
+	// it names, never as a curated one, and admits it only under the isolation that origin
+	// needs, the decision gateAndServe made from the same entry and explained to the user.
 	cat, _, _ := catalog.LoadWithOverlay(abs)
 	return localmodel.Open(localmodel.Config{DataDir: abs, Catalog: cat.Models, Progress: out, MinContainment: "process"})
 }

@@ -19,7 +19,8 @@ func entryAt(f *fixture, id string, tier localmodel.Trust, origin localmodel.Sou
 
 // TestNonBlessedEntryIsNeverACatalogSource is the guarantee behind [localmodel.Config.Catalog]:
 // whatever an entry is called and whatever origin it records, a tier short of blessed is
-// classified by that origin and never as the pinned catalog source Serve runs.
+// classified by that origin and never as the pinned catalog source, so a host that gives no
+// microvm refuses it.
 func TestNonBlessedEntryIsNeverACatalogSource(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	repo := "https://huggingface.co/acme/tiny/resolve/main/tiny.gguf"
@@ -57,8 +58,8 @@ func TestNonBlessedEntryIsNeverACatalogSource(t *testing.T) {
 			if a.Catalog || a.Trust == "trusted" {
 				t.Fatalf("a %q-tier entry was classified as a catalog source: %+v", tc.tier, a)
 			}
-			if _, err := h.Serve(t.Context(), m.ID, localmodel.ServeOptions{}); !errors.Is(err, localmodel.ErrNotServable) && !errors.Is(err, localmodel.ErrNotAdmitted) {
-				t.Fatalf("Serve = %v; want ErrNotServable or ErrNotAdmitted", err)
+			if _, err := h.Serve(t.Context(), m.ID, localmodel.ServeOptions{}); !errors.Is(err, localmodel.ErrNotAdmitted) {
+				t.Fatalf("Serve = %v; want ErrNotAdmitted", err)
 			}
 			if f.hits.Load() != 0 {
 				t.Fatal("a non-blessed entry caused downloads")
@@ -178,7 +179,7 @@ func fitModel(id string, sizeBytes int64) localmodel.Model {
 	}
 }
 
-func openFit(t *testing.T, box localmodel.Hardware, free int64, ok bool, models ...localmodel.Model) *localmodel.Host {
+func openFit(t *testing.T, box localmodel.Hardware, free int64, models ...localmodel.Model) *localmodel.Host {
 	t.Helper()
 	f := newFixture(t, fixtureOpts{})
 	cfg := f.config()
@@ -188,7 +189,7 @@ func openFit(t *testing.T, box localmodel.Hardware, free int64, ok bool, models 
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = h.Close() })
-	h.SetMachine(box, free, ok)
+	h.SetMachine(box, free)
 	return h
 }
 
@@ -197,7 +198,7 @@ func openFit(t *testing.T, box localmodel.Hardware, free int64, ok bool, models 
 // the old flat check did, this model would be feasible at every window.
 func TestPlanFitCountsCacheAndFreeVRAM(t *testing.T) {
 	box := localmodel.Hardware{GPUName: "test gpu", VRAMBytes: 8 * gb, RAMBytes: 4 * gb}
-	h := openFit(t, box, 6*gb, true, fitModel("m:4b", 4*gb))
+	h := openFit(t, box, 6*gb, fitModel("m:4b", 4*gb))
 
 	short, err := h.PlanFit(t.Context(), "m:4b", localmodel.FitSettings{ContextTokens: 8192})
 	if err != nil {
@@ -240,18 +241,17 @@ func TestMachineMatchesFitViewDetection(t *testing.T) {
 		name string
 		box  localmodel.Hardware
 		free int64
-		ok   bool
 		want localmodel.Machine
 	}{
-		{"free VRAM below the total", localmodel.Hardware{VRAMBytes: 8 * gb, RAMBytes: 32 * gb}, 6 * gb, true, localmodel.Machine{VRAMFreeBytes: 6 * gb, RAMBytes: 24 * gb}},
-		{"probe cannot say", localmodel.Hardware{VRAMBytes: 8 * gb, RAMBytes: 32 * gb}, 0, false, localmodel.Machine{VRAMFreeBytes: 8 * gb, RAMBytes: 24 * gb}},
-		{"probe reports more than the total", localmodel.Hardware{VRAMBytes: 8 * gb, RAMBytes: 32 * gb}, 9 * gb, true, localmodel.Machine{VRAMFreeBytes: 8 * gb, RAMBytes: 24 * gb}},
-		{"no GPU", localmodel.Hardware{RAMBytes: 8 * gb}, 6 * gb, true, localmodel.Machine{RAMBytes: 6 * gb}},
-		{"nothing detected", localmodel.Hardware{}, 0, false, localmodel.Machine{}},
+		{"free VRAM below the total", localmodel.Hardware{VRAMBytes: 8 * gb, RAMBytes: 32 * gb}, 6 * gb, localmodel.Machine{VRAMFreeBytes: 6 * gb, RAMBytes: 24 * gb}},
+		{"driver cannot say", localmodel.Hardware{VRAMBytes: 8 * gb, RAMBytes: 32 * gb}, 0, localmodel.Machine{VRAMFreeBytes: 8 * gb, RAMBytes: 24 * gb}},
+		{"driver reports more than the total", localmodel.Hardware{VRAMBytes: 8 * gb, RAMBytes: 32 * gb}, 9 * gb, localmodel.Machine{VRAMFreeBytes: 8 * gb, RAMBytes: 24 * gb}},
+		{"no GPU", localmodel.Hardware{RAMBytes: 8 * gb}, 6 * gb, localmodel.Machine{RAMBytes: 6 * gb}},
+		{"nothing detected", localmodel.Hardware{}, 0, localmodel.Machine{}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			h := openFit(t, tc.box, tc.free, tc.ok, fitModel("m:4b", 4*gb))
+			h := openFit(t, tc.box, tc.free, fitModel("m:4b", 4*gb))
 			if got := h.Machine(t.Context()); got != tc.want {
 				t.Fatalf("Machine = %+v; want %+v", got, tc.want)
 			}
@@ -277,7 +277,7 @@ func TestCPUInferenceBudget(t *testing.T) {
 func TestRankOrdersByFitForThisMachine(t *testing.T) {
 	box := localmodel.Hardware{GPUName: "test gpu", VRAMBytes: 8 * gb, RAMBytes: 4 * gb}
 	big, small := fitModel("big:30b", 30*gb), fitModel("small:4b", 4*gb)
-	h := openFit(t, box, 6*gb, true, big, small)
+	h := openFit(t, box, 6*gb, big, small)
 
 	ranked := h.Rank(t.Context(), localmodel.ModelQuery{}, localmodel.FitSettings{ContextTokens: 8192})
 	if len(ranked) != 2 || ranked[0].Model.ID != "small:4b" || ranked[1].Model.ID != "big:30b" {
@@ -295,7 +295,7 @@ func TestRankOrdersByFitForThisMachine(t *testing.T) {
 // Hardware reports the box the host detected, the same one Machine plans against.
 func TestHardwareReportsTheDetectedBox(t *testing.T) {
 	box := localmodel.Hardware{GPUName: "Test GPU", VRAMBytes: 8 * gb, RAMBytes: 16 * gb}
-	h := openFit(t, box, 6*gb, true)
+	h := openFit(t, box, 6*gb)
 	if got := h.Hardware(t.Context()); got != box {
 		t.Fatalf("Hardware = %+v; want %+v", got, box)
 	}

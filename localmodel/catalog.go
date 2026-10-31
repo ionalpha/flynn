@@ -118,7 +118,7 @@ func (h *Host) Machine(ctx context.Context) Machine {
 	var mc Machine
 	if box.HasGPU() {
 		mc.VRAMFreeBytes = box.VRAMBytes
-		if free, ok := h.freeVRAM(ctx); ok && free >= 0 && free < box.VRAMBytes {
+		if free := box.VRAMFreeBytes; free > 0 && free < box.VRAMBytes {
 			mc.VRAMFreeBytes = free
 		}
 	}
@@ -171,7 +171,9 @@ type Assessment struct {
 	// Ref is the reference as given, with any URL reduced to its host: a reference can
 	// carry a credential, and an Assessment is built to be displayed.
 	Ref string
-	// Catalog is true for a vetted catalog entry, the only kind [Host.Serve] runs.
+	// Catalog is true for a vetted catalog entry, the pinned source [TrustBlessed] makes. An
+	// entry at another tier is in the host's catalog and is served, but is false here and
+	// carries the trust its origin implies.
 	Catalog bool
 	// Trust is "trusted", "semi-trusted" or "untrusted", with Reason in plain language.
 	Trust  string
@@ -221,7 +223,7 @@ func (h *Host) assess(ref string) (modelsource.Source, modelsource.Classificatio
 		integ = modelsource.IntegrityTOFU
 	}
 	rs := modelsource.DescribeRisk(src, class, integ)
-	need, have := sandbox.Required(class.Trust), sandbox.ContainmentOf(h.sb)
+	need, have := sandbox.Required(class.Trust), h.provided()
 	a := Assessment{
 		Ref:      redactText(ref),
 		Catalog:  src.Kind == modelsource.KindCatalog,
@@ -229,7 +231,7 @@ func (h *Host) assess(ref string) (modelsource.Source, modelsource.Classificatio
 		Reason:   class.Reason,
 		Required: need.String(),
 		Provided: have.String(),
-		Admitted: sandbox.Admit(h.sb, class.Trust) == nil,
+		Admitted: have >= need,
 		Risk:     redactLines(rs.Lines()),
 		Risky:    rs.Risky(),
 	}

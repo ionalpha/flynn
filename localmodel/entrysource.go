@@ -1,6 +1,8 @@
 package localmodel
 
 import (
+	"net/url"
+	"path"
 	"strings"
 
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
@@ -36,9 +38,11 @@ func entrySource(m Model) modelsource.Source {
 
 // fetchedFromRepo reports whether every download an entry names is under the Hub repository
 // it claims as its origin. An entry that names no download has no evidence of a fetch, so
-// it does not count.
+// it does not count. The path is cleaned before it is compared, because a prefix test on the
+// text would accept "/acme/tiny/../other/x.gguf" as a file of acme/tiny while the Hub serves
+// it from other.
 func fetchedFromRepo(m Model, src modelsource.Source) bool {
-	prefix := "https://huggingface.co/" + src.Owner + "/" + src.Repo + "/"
+	prefix := "/" + src.Owner + "/" + src.Repo + "/"
 	n := 0
 	for _, q := range m.Quants {
 		urls := []string{q.URL}
@@ -50,7 +54,7 @@ func fetchedFromRepo(m Model, src modelsource.Source) bool {
 				continue
 			}
 			n++
-			if !strings.HasPrefix(u, prefix) {
+			if !inRepo(u, prefix) {
 				return false
 			}
 		}
@@ -58,6 +62,16 @@ func fetchedFromRepo(m Model, src modelsource.Source) bool {
 	return n > 0
 }
 
+// inRepo reports whether u is an https URL on the Hub whose cleaned path is under prefix.
+func inRepo(u, prefix string) bool {
+	p, err := url.Parse(u)
+	if err != nil || p.Scheme != "https" || p.Host != "huggingface.co" || p.User != nil {
+		return false
+	}
+	return strings.HasPrefix(path.Clean("/"+p.Path), prefix)
+}
+
+// firstQuantURL is the first download an entry names, or empty when it names none.
 func firstQuantURL(m Model) string {
 	for _, q := range m.Quants {
 		if q.URL != "" {

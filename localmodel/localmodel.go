@@ -112,7 +112,8 @@ type Kind = catalog.Kind
 // Trust is how far a [Model] entry has been vetted.
 type Trust = catalog.Trust
 
-// The Trust values. Only [TrustBlessed] makes a [Config.Catalog] entry a catalog model.
+// The Trust values. Only [TrustBlessed] makes a [Config.Catalog] entry a pinned catalog
+// source; the others are classified by the origin the entry names.
 const (
 	TrustBlessed    = catalog.TrustBlessed
 	TrustDiscovered = catalog.TrustDiscovered
@@ -168,11 +169,12 @@ type Config struct {
 	DataDir string
 	// Catalog replaces the embedded catalog when non-empty. Every entry is validated, so
 	// a local model without a known chat template is rejected at [Open]. Only an entry
-	// whose Trust is [TrustBlessed] is a catalog model that [Host.Serve] runs and
-	// [Host.Classify] reports as pinned. An entry at any other tier (including the zero
-	// value) is classified by the origin it names, as a file, a URL or a Hub repository, and
-	// is not served, so a catalog merged from a user's own entries cannot carry them into
-	// the trusted class.
+	// whose Trust is [TrustBlessed] is reported by [Host.Classify] as a pinned catalog
+	// model. An entry at any other tier (including the zero value) is classified by the
+	// origin it names, as a file, a URL or a Hub repository, so a catalog merged from a
+	// user's own entries cannot carry them into the trusted class. [Host.Serve] runs both
+	// kinds, but the second only where the host's sandbox gives the isolation that origin
+	// needs.
 	Catalog []Model
 	// MinContainment is the weakest isolation the host accepts for a model server:
 	// "kernel" (the default) requires kernel-enforced confinement of the runtime, and
@@ -222,10 +224,13 @@ type Host struct {
 	gpuOnce   sync.Once
 	gpuInfo   gpu.Info
 
-	// detectBox and freeVRAM are the two reads of the machine behind [Host.Machine]. A test
-	// sets them to describe a machine other than the one it runs on.
+	// detectBox is the read of the machine behind [Host.Machine]. A test sets it to describe
+	// a machine other than the one it runs on.
 	detectBox func(context.Context) hardware.Box
-	freeVRAM  func(context.Context) (int64, bool)
+
+	// provided reads the isolation the sandbox gives, which [Host.Classify] and [Host.Serve]
+	// admit a source against. A test sets it to stand a weaker or stronger host in.
+	provided func() sandbox.Containment
 
 	floorMu sync.RWMutex
 	floor   hostFloor
@@ -323,7 +328,7 @@ func Open(cfg Config) (*Host, error) {
 		minContainment: minContainment,
 		containment:    containment,
 		detectBox:      hardware.Detect,
-		freeVRAM:       hardware.FreeVRAM,
+		provided:       func() sandbox.Containment { return sandbox.ContainmentOf(sb) },
 	}
 	h.mgr = h.newManager(serve.SandboxLauncher{SB: sb})
 	return h, nil

@@ -7,6 +7,7 @@ import (
 	"github.com/ionalpha/flynn/internal/hardware"
 	"github.com/ionalpha/flynn/internal/inference"
 	"github.com/ionalpha/flynn/internal/inference/gpu"
+	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/internal/inference/serve"
 	"github.com/ionalpha/flynn/sandbox"
 )
@@ -43,11 +44,16 @@ func (h *Host) SetGPU(info GPU) {
 }
 
 // SetMachine makes the Host see hw as the machine's memory and free as the VRAM free now,
-// with ok false for a driver that cannot say, instead of probing.
-func (h *Host) SetMachine(hw Hardware, free int64, ok bool) {
-	box := hardware.Box{GPUName: hw.GPUName, VRAMBytes: hw.VRAMBytes, RAMBytes: hw.RAMBytes}
+// with zero for a driver that cannot say, instead of probing.
+func (h *Host) SetMachine(hw Hardware, free int64) {
+	box := hardware.Box{GPUName: hw.GPUName, VRAMBytes: hw.VRAMBytes, VRAMFreeBytes: free, RAMBytes: hw.RAMBytes}
 	h.detectBox = func(context.Context) hardware.Box { return box }
-	h.freeVRAM = func(context.Context) (int64, bool) { return free, ok }
+}
+
+// SetProvided makes the Host admit sources as if its sandbox gave level, to test the
+// admission of a source that needs more isolation than the machine running the tests has.
+func (h *Host) SetProvided(level sandbox.Containment) {
+	h.provided = func() sandbox.Containment { return level }
 }
 
 // CPUInferenceBudget is the share of system RAM a model may claim.
@@ -137,4 +143,22 @@ func SizeCeiling(size int64) int64 { return sizeCeiling(size) }
 func SmallestServable(m Model) error {
 	_, err := smallestServable(m)
 	return err
+}
+
+// EntrySource names the source an entry that is not blessed is classified by: its kind
+// ("catalog", "hub", "url" or "file") and what the kind points at (the Hub repository as
+// owner/repo, the URL, or the path).
+func EntrySource(m Model) (kind, target string) {
+	src := entrySource(m)
+	switch src.Kind {
+	case modelsource.KindCatalog:
+		return "catalog", src.Raw
+	case modelsource.KindHuggingFace:
+		return "hub", src.Owner + "/" + src.Repo
+	case modelsource.KindURL:
+		return "url", src.URL
+	case modelsource.KindFile:
+		return "file", src.Path
+	}
+	return "unknown", ""
 }
