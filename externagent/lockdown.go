@@ -70,8 +70,8 @@ type Lockdown struct {
 	Commands Strip
 	// HostConfig is how the operator's own CLI configuration (their MCP servers, hooks,
 	// plugins and settings) is kept out of the episode. StripDenied is a CLI told to read
-	// none of it; StripContained is a CLI pointed at a per-episode home holding only what
-	// it needs to authenticate.
+	// none of it; StripContained is a CLI pointed at a home kept apart from the operator's,
+	// holding only what it needs to authenticate and its own state.
 	HostConfig Strip
 	// Reason states, in one line, why a class is impossible, and is required whenever one
 	// is. It is what the refusal says out loud, so an operator meets an integration gap
