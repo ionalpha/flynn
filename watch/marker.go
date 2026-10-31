@@ -1,6 +1,6 @@
 // Package watch turns in-tree source comments into governed run inputs. It tails a
-// working tree for aider-style ai! and ai? markers left in trailing comments; when
-// one appears it becomes a turn the agent runs, and the marker's file and line are
+// working tree for trailing comments that open with an ai! marker (change the code) or
+// an ai? marker (answer a question); when one appears it becomes a turn the agent runs, and the marker's file and line are
 // carried onto the run so its provenance lands in the sealed record like any other
 // input. The marker is cleared once picked up so the same request never fires twice.
 package watch
