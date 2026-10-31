@@ -133,7 +133,35 @@ func statusError(name string, code int, body []byte) error {
 	}
 	quota := e.Error.Type == "insufficient_quota" || e.Error.Code == "insufficient_quota" ||
 		text.ContainsAny(strings.ToLower(msg), "credit", "billing", "quota")
-	return fault.New(llm.RetryClass(code, quota), name+"_status", fmt.Sprintf("%s: HTTP %d: %s", name, code, msg))
+	full := fmt.Sprintf("%s: HTTP %d: %s", name, code, msg)
+	if isContextOverflow(code, e.Error.Type, e.Error.Code, msg) {
+		return fault.Wrap(fault.Terminal, name+"_status", overflowError(full))
+	}
+	return fault.New(llm.RetryClass(code, quota), name+"_status", full)
+}
+
+// overflowError is a refused-for-length response whose text is the provider's own message, so the
+// error prints as it did before it was classified and still matches [llm.ErrContextOverflow].
+type overflowError string
+
+func (e overflowError) Error() string { return string(e) }
+
+func (overflowError) Is(target error) bool { return target == llm.ErrContextOverflow }
+
+// isContextOverflow reports whether an error response says the prompt was longer than the context
+// window. Each server words it differently and none shares a code with another, so the signals are
+// listed here, once, instead of in every caller: llama.cpp reports type exceed_context_size_error
+// and says "exceeds the available context size", vLLM says "maximum context length", and OpenAI
+// sets the code context_length_exceeded. Only a 400 or 413 can be one; a 5xx or 429 that happens to
+// mention a context is a different failure and keeps its retry class.
+func isContextOverflow(status int, errType, errCode, msg string) bool {
+	if status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge {
+		return false
+	}
+	if errType == "exceed_context_size_error" || errCode == "context_length_exceeded" {
+		return true
+	}
+	return text.ContainsAny(strings.ToLower(msg), "exceeds the available context size", "maximum context length")
 }
 
 // defaultClient selects the client for an endpoint no caller overrode. Loopback
