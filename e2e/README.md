@@ -73,6 +73,8 @@ end against the built binary.
 | Local models | catalog browse and filters; fetch refuses an off-catalog source; runtime inventory | covered (offline) |
 | Local models | digest-pinned fetch and run of a real model | not covered (network + runtime; opt-in) |
 | Providers | a permanent failure (bad key, exhausted quota) fails fast with a typed error, one call, no retry | covered |
+| Providers | the same fake server under `openai:`, `llamacpp:`, `ollama:` and `lmstudio:` gets the same tools, and no request reports `capability_denied` | covered |
+| Providers | a server named in `providers.json` is selected as `--model <name>:<model>` and the request reaches it; an unnamed one is refused | covered |
 | Crash / resume | a hard kill leaves the store intact and the run resumable; a fresh run on the same data dir works; resume replays a converged run | covered |
 | Crash / resume | resume continues a run interrupted mid model call | not covered (see gaps: hang) |
 | State persistence | two runs across separate invocations both persist and verify independently | covered |

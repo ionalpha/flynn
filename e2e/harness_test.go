@@ -24,6 +24,8 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/ionalpha/flynn/provider"
 )
 
 // stampedVersion is the version the binary under test reports, so a test can assert
@@ -349,10 +351,14 @@ func scrubbedEnv(home string) []string {
 		"OPENAI_API_KEY": true, "OPENAI_BASE_URL": true,
 		"DEEPSEEK_API_KEY": true, "DEEPSEEK_BASE_URL": true,
 		"GEMINI_API_KEY": true, "GEMINI_BASE_URL": true,
-		"LLAMACPP_BASE_URL": true, "LLAMACPP_VISION": true,
 		"GITHUB_TOKEN": true, "GITHUB_API_URL": true,
 		"FLYNN_GITHUB_APP_ISSUER": true, "FLYNN_GITHUB_APP_INSTALLATION": true,
 		"FLYNN_GITHUB_APP_KEY": true, "FLYNN_GITHUB_APP_KEY_FILE": true,
+	}
+	// Every base-URL and vision variable a built-in provider reads comes from the provider
+	// package, so a provider added there is scrubbed here without a hand edit.
+	for _, v := range append(provider.BaseURLEnvVars(), provider.VisionEnvVars()...) {
+		drop[v] = true
 	}
 	var out []string
 	for _, e := range os.Environ() {
