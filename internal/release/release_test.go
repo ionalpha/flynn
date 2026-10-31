@@ -237,11 +237,11 @@ func TestIdentityPolicyRejectsForeignSigners(t *testing.T) {
 	cases := map[string]func(p *policy){
 		"a fork of the same repository, same workflow path": func(p *policy) { p.repositoryID = "999999" },
 		"a repository name reclaimed after a rename":        func(p *policy) { p.repositoryURI = "https://github.com/ionalpha/flynn-old" },
-		"a different owner":                       func(p *policy) { p.ownerID = "999999" },
-		"a different workflow in this repository": func(p *policy) { p.workflowPath = ".github/workflows/ci.yml" },
-		"a different identity provider":           func(p *policy) { p.oidcIssuer = "https://accounts.google.com" },
-		"a self-hosted runner":                    func(p *policy) { p.runnerEnv = "self-hosted" },
-		"a branch build rather than a tag":        func(p *policy) { p.tagRefPrefix = "refs/heads/" },
+		"a different owner":                                 func(p *policy) { p.ownerID = "999999" },
+		"a different workflow in this repository":           func(p *policy) { p.workflowPath = ".github/workflows/ci.yml" },
+		"a different identity provider":                     func(p *policy) { p.oidcIssuer = "https://accounts.google.com" },
+		"a self-hosted runner":                              func(p *policy) { p.runnerEnv = "self-hosted" },
+		"a branch build rather than a tag":                  func(p *policy) { p.tagRefPrefix = "refs/heads/" },
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
