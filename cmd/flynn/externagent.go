@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -176,34 +177,46 @@ var claudeAllowedHosts = []string{
 	".claude.ai",
 }
 
-// claudeSeedPaths are the files the confined child needs to authenticate on the owner's
-// subscription, gathered into one credential home. Claude Code splits them: its config
-// lives in the home directory (.claude.json) and its OAuth token in a subdirectory
-// (.claude/.credentials.json), and pointing the CLI at a single CLAUDE_CONFIG_DIR makes it
-// look for both, flat, under that directory. So the two are seeded by base name into one
-// per-episode home the run writes and deletes; nothing else from the home (history, caches,
-// project state) is copied, so the operator's hooks, plugins and settings are not on the
-// child's path to find. The config file is seeded because the CLI reads its onboarding and
-// account state from it and reports itself unusable without it; the MCP servers it also
-// carries are neutralized by --strict-mcp-config, which is what lets the adapter declare the
-// operator's configuration denied. CLAUDE_CONFIG_DIR overrides where both files live, matching
-// the CLI's own resolution. Empty when no home directory is resolvable, which seeds nothing and
-// leaves detection to report the CLI as logged out.
-func claudeSeedPaths() []string {
-	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
-		return []string{
-			filepath.Join(v, ".claude.json"),
-			filepath.Join(v, ".credentials.json"),
-		}
+// claudeHome is the Claude Code home Flynn keeps for the claude backend, apart from the
+// user's own. The user signs the CLI in to it once with the CLI's own login
+// ([claudeLoginCommand]), and every probe and episode points the CLI at it through
+// CLAUDE_CONFIG_DIR. Flynn never reads, copies or stores the token inside: the CLI writes it
+// at sign-in and refreshes it in place, and the sign-in completes in the CLI's own flow.
+//
+// Keeping it apart from the user's home is what makes it safe to grant an episode write on
+// it ([externagent.SandboxConfig.AuthDirWritable]): the worst a harness can do there is sign
+// Flynn's copy of the CLI out. It also means none of the user's own settings, hooks,
+// plugins or MCP servers are in it to steer an episode. It sits under the per-user data
+// directory, so a development build and a release build keep separate sign-ins. A variable
+// so tests can point it at a temporary directory.
+var claudeHome = defaultClaudeHome
+
+// defaultClaudeHome is where [claudeHome] points outside tests.
+func defaultClaudeHome() string { return filepath.Join(defaultDataDir(), "claude") }
+
+// claudeLoginCommand is the command that signs the claude CLI in to home with its own
+// subscription login, written for the shell the user is most likely in. The PowerShell form
+// clears the variable afterwards, so the user's next plain `claude` in that shell is back on
+// their own home.
+func claudeLoginCommand(home string) string {
+	if runtime.GOOS == "windows" {
+		return "$env:CLAUDE_CONFIG_DIR = '" + strings.ReplaceAll(home, "'", "''") +
+			"'; claude auth login --claudeai; Remove-Item Env:CLAUDE_CONFIG_DIR"
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+	return "CLAUDE_CONFIG_DIR='" + strings.ReplaceAll(home, "'", `'\''`) + "' claude auth login --claudeai"
+}
+
+// withClaudeLogin rewrites a not-signed-in readiness for the claude backend so its next step
+// signs in Flynn's own Claude Code home rather than the user's: the adapter's generic advice
+// (`claude auth login`) would sign in the home Flynn does not use and leave the backend
+// reporting itself logged out. A refusal, a missing install, and a ready CLI pass through.
+func withClaudeLogin(r externagent.Readiness, home string) externagent.Readiness {
+	if !r.Available || r.Refuse || r.LoggedIn {
+		return r
 	}
-	return []string{
-		filepath.Join(home, ".claude.json"),
-		filepath.Join(home, ".claude", ".credentials.json"),
-	}
+	r.Reason = "claude is not signed in to a Claude subscription for Flynn. Flynn keeps its own Claude Code sign-in, separate from yours, at " +
+		home + ". Sign in to it once with Claude Code's own login: " + claudeLoginCommand(home)
+	return r
 }
 
 // externalProbeTimeout caps a single detection probe (a version or auth-status check)
@@ -245,12 +258,20 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
 			return nil, err
 		}
+		// The CLI would create its home at sign-in, but detection grants the child read on it
+		// before then, and a grant on a directory that does not exist fails the probe that
+		// reports how to sign in.
+		home := claudeHome()
+		if err := os.MkdirAll(home, 0o700); err != nil {
+			return nil, fmt.Errorf("claude home: %w", err)
+		}
 		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
-			AllowedHosts:  claudeAllowedHosts,
-			AuthEnv:       "CLAUDE_CONFIG_DIR",
-			AuthSeedPaths: claudeSeedPaths(),
-			ProgramDirs:   prog.ReadableDirs,
-			ProbeTimeout:  externalProbeTimeout,
+			AllowedHosts:    claudeAllowedHosts,
+			AuthDir:         home,
+			AuthEnv:         "CLAUDE_CONFIG_DIR",
+			AuthDirWritable: true,
+			ProgramDirs:     prog.ReadableDirs,
+			ProbeTimeout:    externalProbeTimeout,
 			// Claude Code ships as a single compiled native binary that canonicalizes paths on
 			// startup, the same operation no process can perform inside a Windows AppContainer,
 			// so it runs under the tier that confines its writes to the workspace and leaves the
@@ -336,6 +357,9 @@ func resolveExternalAgent(ctx context.Context, name, model, workdir string) (*ex
 	r, err := adapter.Detect(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("detect %s: %w", name, err)
+	}
+	if name == "claude" {
+		r = withClaudeLogin(r, claudeHome())
 	}
 	if rerr := readinessError(name, r); rerr != nil {
 		return nil, rerr

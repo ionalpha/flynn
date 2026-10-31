@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -194,30 +196,65 @@ func TestCodexAuthDirFollowsTheCLIsOwnResolution(t *testing.T) {
 	}
 }
 
-// TestClaudeSeedPathsGatherBothCredentialFiles checks the two files the confined child needs
-// to authenticate are seeded by base name into one home: with the config dir overridden they
-// are both taken from it, flat, matching where the CLI looks for them.
-func TestClaudeSeedPathsGatherBothCredentialFiles(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", dir)
-	got := claudeSeedPaths()
-	want := []string{filepath.Join(dir, ".claude.json"), filepath.Join(dir, ".credentials.json")}
-	if len(got) != len(want) {
-		t.Fatalf("claudeSeedPaths = %v, want both credential files", got)
+// TestClaudeHomeIsFlynnsOwnAndNeverTheUsers checks the claude backend runs the CLI against
+// the home Flynn keeps for it, whatever the user's own CLAUDE_CONFIG_DIR says, and that the
+// home exists once the spawner is built so detection can be granted read on it before the
+// user has signed in.
+func TestClaudeHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
+	withNoExecutables(t)
+	home := filepath.Join(t.TempDir(), "claude")
+	prev := claudeHome
+	claudeHome = func() string { return home }
+	t.Cleanup(func() { claudeHome = prev })
+	userDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", userDir)
+
+	if _, err := externalSpawner("claude"); err != nil {
+		t.Fatalf("externalSpawner(claude): %v", err)
 	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("seed path %d = %q, want %q", i, got[i], want[i])
+	if fi, err := os.Stat(home); err != nil || !fi.IsDir() {
+		t.Fatalf("the claude home must exist after the spawner is built: %v", err)
+	}
+	def := defaultClaudeHome()
+	if filepath.Dir(def) != defaultDataDir() {
+		t.Errorf("the default claude home %q must sit under the data directory", def)
+	}
+	if def == userDir {
+		t.Errorf("the claude home must not follow the user's CLAUDE_CONFIG_DIR, got %q", def)
+	}
+}
+
+// TestClaudeLoginSignsInFlynnsHome checks a not-signed-in claude is pointed at a login that
+// signs in Flynn's home through the CLI's own subscription flow, and that the other
+// readiness states pass through untouched.
+func TestClaudeLoginSignsInFlynnsHome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "it's here")
+	out := withClaudeLogin(externagent.Readiness{Available: true, Reason: "run `claude auth login`"}, home)
+	for _, want := range []string{"CLAUDE_CONFIG_DIR", "claude auth login --claudeai", "separate from yours"} {
+		if !strings.Contains(out.Reason, want) {
+			t.Errorf("login reason %q lacks %q", out.Reason, want)
 		}
 	}
-
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	def := claudeSeedPaths()
-	if len(def) != 2 {
-		t.Fatalf("the default must still seed both files, got %v", def)
+	if strings.Contains(strings.ToLower(out.Reason), "api key") {
+		t.Errorf("the login must never ask for an API key, got %q", out.Reason)
 	}
-	if filepath.Base(def[0]) != ".claude.json" || filepath.Base(def[1]) != ".credentials.json" {
-		t.Errorf("the default seed paths name the wrong files: %v", def)
+	cmd := claudeLoginCommand(home)
+	if runtime.GOOS == "windows" {
+		if !strings.Contains(cmd, "it''s here") || !strings.HasSuffix(cmd, "Remove-Item Env:CLAUDE_CONFIG_DIR") {
+			t.Errorf("PowerShell login must quote the path and clear the variable, got %q", cmd)
+		}
+	} else if !strings.Contains(cmd, `it'\''s here`) {
+		t.Errorf("sh login must quote the path, got %q", cmd)
+	}
+
+	for _, r := range []externagent.Readiness{
+		{Available: false, Reason: "install it"},
+		{Available: true, Refuse: true, Reason: "update it"},
+		{Available: true, LoggedIn: true},
+	} {
+		if got := withClaudeLogin(r, home); got != r {
+			t.Errorf("withClaudeLogin(%+v) = %+v, want it unchanged", r, got)
+		}
 	}
 }
 
@@ -251,7 +288,6 @@ func TestResolveExternalAgentReportsAMissingCLI(t *testing.T) {
 	// simply not installed.
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 
 	for _, name := range externalAgentNames() {
 		ea, err := resolveExternalAgent(context.Background(), name, "", t.TempDir())
