@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -224,5 +225,28 @@ func TestDispatchModelsRoutesSubcommands(t *testing.T) {
 	}
 	if err := dispatchModels([]string{"qwen"}, dataDir); err != nil {
 		t.Errorf("an unknown verb should browse the catalog, got %v", err)
+	}
+}
+
+// TestModelsCheckReadsTheDataDirectoryItIsGiven is the wiring check for
+// `flynn --data-dir X models check`: a runtime installed under X is reported as installed,
+// which the platform default directory cannot show.
+func TestModelsCheckReadsTheDataDirectoryItIsGiven(t *testing.T) {
+	// The platform default directory is pointed at an empty place, so a check that ignores
+	// --data-dir cannot pass by finding a runtime installed on the developer's own machine.
+	empty := t.TempDir()
+	t.Setenv("APPDATA", empty)
+	t.Setenv("XDG_CONFIG_HOME", empty)
+	t.Setenv("HOME", empty)
+	dataDir := filepath.Join(t.TempDir(), "data")
+	installLikeTheCommand(t, dataDir)
+
+	readStdout := captureStdout(t)
+	if err := dispatchModels([]string{"check"}, dataDir); err != nil {
+		t.Fatal(err)
+	}
+	block := llamaLine(t, readStdout())
+	if !strings.Contains(block, "variant: cpu (installed by flynn)") {
+		t.Errorf("check ignored --data-dir; the runtime installed under it is not reported:\n%s", block)
 	}
 }
