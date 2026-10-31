@@ -23,6 +23,11 @@ type Box struct {
 	GPUName string
 	// VRAMBytes is the detected GPU memory in bytes, 0 if none was found.
 	VRAMBytes int64
+	// VRAMFreeBytes is the GPU memory not in use when the probe ran, in bytes, 0 if the
+	// driver did not report it or reported none free. The desktop and other programs already
+	// hold part of the card, so a model sized to VRAMBytes can fail to load; a fit is judged
+	// against this figure when it is set.
+	VRAMFreeBytes int64
 	// RAMBytes is the total system memory in bytes, 0 if it could not be read. A
 	// CPU-only run is bounded by this, not by VRAM, so it decides fit on the common
 	// machine that has no usable GPU.
@@ -90,7 +95,7 @@ func Detect(ctx context.Context) Box {
 	var b Box
 	if out, ok := runNvidiaSMI(ctx); ok {
 		if gpu, ok := parseNvidiaSMI(out); ok {
-			b.GPUName, b.VRAMBytes = gpu.GPUName, gpu.VRAMBytes
+			b.GPUName, b.VRAMBytes, b.VRAMFreeBytes = gpu.GPUName, gpu.VRAMBytes, gpu.VRAMFreeBytes
 			b.ComputeCapability, b.DriverVersion = gpu.ComputeCapability, gpu.DriverVersion
 			b.GPUArch = archForComputeCap(b.ComputeCapability)
 		}
@@ -120,12 +125,13 @@ var lookPath = exec.LookPath
 // runNvidiaSMI queries the NVIDIA management tool for the per-GPU fields, returning false
 // when the tool is missing or errors (no GPU, no driver, not installed). Memory and name
 // have always been queried; compute capability and driver version are added so the box's
-// architecture and CUDA reach are known, not just its size.
+// architecture and CUDA reach are known, not just its size. Free memory is the last column,
+// so the positional fields before it keep their order.
 func runNvidiaSMI(ctx context.Context) (string, bool) {
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	out, err := runCommand(ctx, "nvidia-smi",
-		"--query-gpu=memory.total,name,compute_cap,driver_version", "--format=csv,noheader,nounits")
+		"--query-gpu=memory.total,name,compute_cap,driver_version,memory.free", "--format=csv,noheader,nounits")
 	if err != nil {
 		return "", false
 	}
@@ -133,7 +139,8 @@ func runNvidiaSMI(ctx context.Context) (string, bool) {
 }
 
 // runNvidiaSMIHeader runs nvidia-smi with no query, whose banner carries the maximum CUDA
-// version the driver supports ("CUDA Version: 12.4"). That number is not available from
+// version the driver supports ("CUDA Version: 12.4", or "CUDA UMD Version: 13.3" on current
+// drivers). That number is not available from
 // the per-GPU query, so it is read from the default output. Returns false when the tool
 // is absent or errors.
 func runNvidiaSMIHeader(ctx context.Context) (string, bool) {
@@ -147,7 +154,7 @@ func runNvidiaSMIHeader(ctx context.Context) (string, bool) {
 }
 
 // parseNvidiaSMI reads the first usable GPU row of the query output
-// ("<MiB>, <name>, <compute_cap>, <driver_version>") into a Box. Memory is reported in
+// ("<MiB>, <name>, <compute_cap>, <driver_version>, <free MiB>") into a Box. Memory is reported in
 // mebibytes with the nounits format, so it is scaled to bytes. Older nvidia-smi builds
 // or a trimmed query may print fewer columns, so the extra fields are read only when
 // present. It returns false when no row yields a memory total.
@@ -171,6 +178,13 @@ func parseNvidiaSMI(out string) (Box, bool) {
 		}
 		if len(cols) > 3 {
 			b.DriverVersion = strings.TrimSpace(cols[3])
+		}
+		if len(cols) > 4 {
+			// A free figure above the total, or a non-positive one, is not a reading this
+			// probe can use, so the field stays unset rather than describing the card wrongly.
+			if free, err := strconv.ParseInt(strings.TrimSpace(cols[4]), 10, 64); err == nil && free > 0 && free <= mib {
+				b.VRAMFreeBytes = free * 1024 * 1024
+			}
 		}
 		return b, true
 	}
@@ -232,16 +246,28 @@ func archForComputeCap(cc string) string {
 	}
 }
 
+// cudaLabels are the banner labels the maximum CUDA version is printed under. Older drivers
+// print "CUDA Version"; current ones print "CUDA UMD Version", the user-mode driver's figure,
+// which is the same number for this purpose. Neither label is a substring of the other, so
+// the order does not change which one matches.
+var cudaLabels = []string{"CUDA Version:", "CUDA UMD Version:"}
+
 // parseCUDAVersion reads the maximum supported CUDA version out of the nvidia-smi banner,
-// which prints it as "CUDA Version: 12.4" near the driver version. It returns an empty
-// string when the banner does not carry it.
+// which prints it as "CUDA Version: 12.4" or "CUDA UMD Version: 13.3" near the driver
+// version. It returns an empty string when the banner carries neither label.
 func parseCUDAVersion(out string) string {
-	const marker = "CUDA Version:"
-	i := strings.Index(out, marker)
-	if i < 0 {
-		return ""
+	for _, label := range cudaLabels {
+		if i := strings.Index(out, label); i >= 0 {
+			return cudaVersionAfter(out[i+len(label):])
+		}
 	}
-	rest := strings.TrimSpace(out[i+len(marker):])
+	return ""
+}
+
+// cudaVersionAfter reads the dotted version that follows a banner label, or returns empty when
+// the text after the label is not a version.
+func cudaVersionAfter(rest string) string {
+	rest = strings.TrimSpace(rest)
 	end := strings.IndexFunc(rest, func(r rune) bool {
 		return r != '.' && (r < '0' || r > '9')
 	})
