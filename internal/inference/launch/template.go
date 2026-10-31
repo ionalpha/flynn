@@ -24,15 +24,17 @@ import (
 // from the model.
 
 // gptOSSTemplate is OpenAI's published chat template for gpt-oss (the chat_template.jinja
-// in openai/gpt-oss-20b, Apache-2.0), byte for byte the template the ggml-org GGUF
+// in openai/gpt-oss-20b at revision 6cee5e81ee83917806bbde320786a8fb61efebee,
+// Apache-2.0, attributed in NOTICE), byte for byte the template the ggml-org GGUF
 // conversion embeds. It renders the harmony format, including tool definitions and the
 // reasoning_effort setting.
 //
 //go:embed templates/gpt-oss.jinja
 var gptOSSTemplate string
 
-// gemma4Template is Google's canonical Gemma 4 chat template (Apache-2.0), as embedded in
-// google/gemma-4-12B-it-qat-q4_0-gguf. llama.cpp has no built-in name for Gemma 4; it
+// gemma4Template is Google's canonical Gemma 4 chat template (the chat_template.jinja in
+// google/gemma-4-12B-it at revision 43c9d014b231474fa7212dbb48a762566c2b255d, Apache-2.0,
+// attributed in NOTICE), as embedded in google/gemma-4-12B-it-qat-q4_0-gguf. llama.cpp has no built-in name for Gemma 4; it
 // recognises the family from the template source, so the source has to be supplied.
 //
 //go:embed templates/gemma4.jinja
