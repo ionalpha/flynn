@@ -613,6 +613,46 @@ func TestAttestFailsClosedWhenTheListenerCannotBeAsked(t *testing.T) {
 	}
 }
 
+// The accepted probe reaches the model, so it must not ask for a generation. The fake
+// answers as llama-server does: it refuses a missing or unknown key at once, and for the
+// right key it generates until max_tokens, here outlasting the handshake's bound when
+// no cap is sent. Without the cap the launched server is reported as the wrong listener.
+func TestAttestAsksTheModelForOneToken(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+
+	var asked atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer probe" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		var body struct {
+			MaxTokens *int `json:"max_tokens"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.MaxTokens == nil {
+			asked.Store(-1)
+			select {
+			case <-r.Context().Done():
+			case <-time.After(10 * time.Second):
+			}
+			return
+		}
+		asked.Store(int64(*body.MaxTokens))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"finish_reason":"length","message":{"role":"assistant","content":"x"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	if err := h.Attest(t.Context(), srv.URL+"/v1", "probe"); err != nil {
+		t.Fatalf("a server that generates until max_tokens: %v", err)
+	}
+	if n := asked.Load(); n != 1 {
+		t.Fatalf("the accepted probe asked for max_tokens %d (-1 means none); want 1", n)
+	}
+}
+
 // Calls that name no running or servable model fail without starting anything.
 func TestNothingRunningIsReportedAsSuch(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})

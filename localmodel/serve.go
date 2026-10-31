@@ -401,12 +401,19 @@ func refused(status int) bool {
 	return status == http.StatusUnauthorized || status == http.StatusForbidden
 }
 
-// chatStatus posts an empty chat request to baseURL with the bearer key, or none when key
-// is empty, and returns the status. It never attaches the session token.
+// attestBody is the chat request the handshake sends. It asks for one token: a request
+// the server accepts reaches the model, and with no cap a chat model given an empty
+// conversation writes a full answer of its own (42 seconds for a 12B model on a 12 GB
+// GPU), so the accepted probe outlived the 5 second bound and a working server was
+// reported as the wrong listener.
+const attestBody = `{"model":"probe","messages":[],"max_tokens":1}`
+
+// chatStatus posts [attestBody] to baseURL with the bearer key, or none when key is
+// empty, and returns the status. It never attaches the session token.
 func (h *Host) chatStatus(ctx context.Context, baseURL, key string) (int, error) {
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", strings.NewReader(`{"model":"probe","messages":[]}`))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/chat/completions", strings.NewReader(attestBody))
 	if err != nil {
 		return 0, err
 	}
