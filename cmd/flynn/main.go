@@ -50,6 +50,7 @@ var dataDirCommands = map[string]func(args []string, dataDir string) error{
 	"deploy":       runDeploy,
 	"services":     runServices,
 	"models":       dispatchModels,
+	"init":         runInit,
 	"notices":      runNotices,
 	"get":          dispatchGet,
 	"mcp":          runMCP,
@@ -622,7 +623,10 @@ func printUsage(w io.Writer) {
   flynn deploy <extension>   deploy through a hosting extension and track the result as a managed service
   flynn services             list the managed services; 'services rm <name>' removes one
   flynn models               browse the model catalog (filter with --local, --fit, --vram, ...)
-  flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry and print it for review
+  flynn init --local         set up a model on this machine: detect the hardware, recommend what fits, fetch or adopt one, probe it and make it the default
+  flynn models add <hf:owner/repo | ollama:name | path>  add a model to your own catalog (unverified until blessed)
+  flynn models remove <id>   remove a model you added
+  flynn models bless <ref>   resolve a Hugging Face model into a verified catalog entry, print it for review and save it to the user overlay
   flynn models fetch <id>    download and verify a model's weights (does not run it)
   flynn models check         report installed local runtimes and any known parser advisories
   flynn models install [rt]  fetch and verify a pinned local runtime (default: llama.cpp)
