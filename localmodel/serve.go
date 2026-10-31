@@ -69,14 +69,14 @@ type Server struct {
 // the load is unknown, not zero.
 type Stats = serve.RuntimeStats
 
-// Serve brings a catalog model up and returns its endpoint. Calls for one model run one
-// at a time, so a server is never started twice or stopped by a racing call. A server
-// already running is adopted only if it was started from a build at or above the current
-// floor, under at least the isolation [Config.MinContainment] asks for, with a key file
-// still readable, and if its listener passes the handshake below; otherwise it is stopped
-// and replaced. A launch installs the runtime behind the advisory gate, fetches the weights
-// against their digest, replaces any embedded chat template, and checks the weights and the
-// runtime binary once more before starting the server on a loopback port.
+// Serve brings a model in the host's catalog up and returns its endpoint. An entry that is
+// not [TrustBlessed] is classified by the origin it names, so it needs the isolation that
+// origin needs and is refused with [ErrNotAdmitted] where the host gives less. A reference
+// that is not a catalog entry has nothing pinned to fetch it by and is [ErrNotServable].
+// Calls for one model run one at a time. A server already running is adopted only if it was
+// started from a build at or above the current floor, under at least the isolation
+// [Config.MinContainment] asks for, with a key file still readable, and if its listener
+// passes the handshake below; otherwise it is stopped and replaced.
 //
 // Another process can take the chosen port before the runtime binds it, so the token goes
 // nowhere until the listener is attributed: Serve sends it a request with no credential and
@@ -91,12 +91,9 @@ func (h *Host) Serve(ctx context.Context, ref string, opts ServeOptions) (Endpoi
 	if !a.Admitted {
 		return Endpoint{}, h.fail(fmt.Errorf("%w: %s", ErrNotAdmitted, a.Refusal))
 	}
-	if !a.Catalog {
-		return Endpoint{}, h.fail(fmt.Errorf("%w: %s is %s and only catalog models serve", ErrNotServable, a.Ref, a.Trust))
-	}
 	m, err := h.Model(ref)
 	if err != nil {
-		return Endpoint{}, h.fail(err)
+		return Endpoint{}, h.fail(fmt.Errorf("%w: %s is %s and is not a local model in this catalog", ErrNotServable, a.Ref, a.Trust))
 	}
 	unlock, err := h.locks.lock(ctx, m.ID)
 	if err != nil {

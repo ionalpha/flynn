@@ -70,6 +70,39 @@ func TestParseNvidiaSMICapability(t *testing.T) {
 	}
 }
 
+// TestParseNvidiaSMIFreeVRAM reads the free-memory column the query appends after the
+// existing fields. Each case is a figure the driver can print: a reading, a hidden one, a
+// query that predates the column, and rows a reader must not trust.
+func TestParseNvidiaSMIFreeVRAM(t *testing.T) {
+	const mib = 1024 * 1024
+	cases := []struct {
+		name     string
+		out      string
+		wantFree int64
+	}{
+		{"free is the fifth column", "24564, NVIDIA GeForce RTX 4090, 8.9, 550.54.14, 20000\n", 20000 * mib},
+		{"crlf row", "24564, NVIDIA GeForce RTX 4090, 8.9, 550.54.14, 20000\r\n", 20000 * mib},
+		{"free equal to total", "8192, A, 8.9, 550.54.14, 8192", 8192 * mib},
+		{"hidden figure", "24564, A, 8.9, 550.54.14, [N/A]\n", 0},
+		{"query without the column", "16384, A, 8.9, 550.54.14\n", 0},
+		{"zero free is not reported", "16384, A, 8.9, 550.54.14, 0\n", 0},
+		{"negative free", "16384, A, 8.9, 550.54.14, -5\n", 0},
+		{"above the total is dropped", "8192, A, 8.9, 550.54.14, 9000\n", 0},
+		{"first row's free, not a later gpu's", "16384, A, 8.9, 550.54.14, 1000\n8192, B, 8.6, 550.54.14, 5000\n", 1000 * mib},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			b, ok := parseNvidiaSMI(tc.out)
+			if !ok {
+				t.Fatalf("should parse %q", tc.out)
+			}
+			if b.VRAMFreeBytes != tc.wantFree {
+				t.Fatalf("VRAMFreeBytes = %d, want %d", b.VRAMFreeBytes, tc.wantFree)
+			}
+		})
+	}
+}
+
 func TestArchForComputeCap(t *testing.T) {
 	cases := map[string]string{
 		"":     "",
@@ -100,6 +133,10 @@ func TestParseCUDAVersion(t *testing.T) {
 		{"CUDA Version: 12 ", "12"},
 		{"no cuda banner here", ""},
 		{"CUDA Version: N/A", ""},
+		// Drivers 610 and later print the user-mode driver's figure under a different label.
+		{"| NVIDIA-SMI 610.88                 KMD Version: 610.88        CUDA UMD Version: 13.3     |", "13.3"},
+		{"CUDA UMD Version: 13.3\n", "13.3"},
+		{"CUDA UMD Version: N/A", ""},
 	}
 	for _, tc := range cases {
 		if got := parseCUDAVersion(tc.in); got != tc.want {

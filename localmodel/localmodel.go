@@ -77,6 +77,7 @@ import (
 
 	"github.com/ionalpha/flynn/internal/catalog"
 	"github.com/ionalpha/flynn/internal/fetch"
+	"github.com/ionalpha/flynn/internal/hardware"
 	"github.com/ionalpha/flynn/internal/inference/gpu"
 	"github.com/ionalpha/flynn/internal/inference/modelsource"
 	"github.com/ionalpha/flynn/internal/inference/provision"
@@ -111,6 +112,14 @@ type Kind = catalog.Kind
 // Trust is how far a [Model] entry has been vetted.
 type Trust = catalog.Trust
 
+// The Trust values. Only [TrustBlessed] makes a [Config.Catalog] entry a pinned catalog
+// source; the others are classified by the origin the entry names.
+const (
+	TrustBlessed    = catalog.TrustBlessed
+	TrustDiscovered = catalog.TrustDiscovered
+	TrustLocal      = catalog.TrustLocal
+)
+
 // Format is a weight file's encoding. Pickle is refused by every [Host] method.
 type Format = catalog.Format
 
@@ -132,9 +141,24 @@ type FitPlan = catalog.FitPlan
 // KVType is the precision the key/value cache is stored in.
 type KVType = catalog.KVType
 
+// The KVType values.
+const (
+	KVF16 = catalog.KVF16
+	KVQ8  = catalog.KVQ8
+)
+
 // Placement is where [Model.PlanFit] runs a model: on the GPU, split across GPU and
 // system RAM, or on the CPU.
 type Placement = catalog.Placement
+
+// The Placement values.
+const (
+	PlacementAPI   = catalog.PlacementAPI
+	PlacementGPU   = catalog.PlacementGPU
+	PlacementSplit = catalog.PlacementSplit
+	PlacementCPU   = catalog.PlacementCPU
+	PlacementNone  = catalog.PlacementNone
+)
 
 // Config says where a [Host] keeps its files and, for a host that curates its own
 // catalog, what it may serve. The zero values of the optional fields give the catalog and
@@ -144,7 +168,13 @@ type Config struct {
 	// registry and the per-launch token files. It is created owner-only. Required.
 	DataDir string
 	// Catalog replaces the embedded catalog when non-empty. Every entry is validated, so
-	// a local model without a known chat template is rejected at [Open].
+	// a local model without a known chat template is rejected at [Open]. Only an entry
+	// whose Trust is [TrustBlessed] is reported by [Host.Classify] as a pinned catalog
+	// model. An entry at any other tier (including the zero value) is classified by the
+	// origin it names, as a file, a URL or a Hub repository, so a catalog merged from a
+	// user's own entries cannot carry them into the trusted class. [Host.Serve] runs both
+	// kinds, but the second only where the host's sandbox gives the isolation that origin
+	// needs.
 	Catalog []Model
 	// MinContainment is the weakest isolation the host accepts for a model server:
 	// "kernel" (the default) requires kernel-enforced confinement of the runtime, and
@@ -193,6 +223,14 @@ type Host struct {
 	detectGPU func(context.Context) gpu.Info
 	gpuOnce   sync.Once
 	gpuInfo   gpu.Info
+
+	// detectBox is the read of the machine behind [Host.Machine]. A test sets it to describe
+	// a machine other than the one it runs on.
+	detectBox func(context.Context) hardware.Box
+
+	// provided reads the isolation the sandbox gives, which [Host.Classify] and [Host.Serve]
+	// admit a source against. A test sets it to stand a weaker or stronger host in.
+	provided func() sandbox.Containment
 
 	floorMu sync.RWMutex
 	floor   hostFloor
@@ -289,6 +327,8 @@ func Open(cfg Config) (*Host, error) {
 
 		minContainment: minContainment,
 		containment:    containment,
+		detectBox:      hardware.Detect,
+		provided:       func() sandbox.Containment { return sandbox.ContainmentOf(sb) },
 	}
 	h.mgr = h.newManager(serve.SandboxLauncher{SB: sb})
 	return h, nil
