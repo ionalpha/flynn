@@ -7,3 +7,18 @@ The syntax-highlighting definitions in internal/tui/render/lexers are generated
 from the lexers of Chroma (https://github.com/alecthomas/chroma), Copyright (C)
 2017 Alec Thomas, used under the MIT license. See internal/tui/render/lexers for
 that license text and for how the files are regenerated.
+
+The chat templates in internal/inference/launch/templates are copied unchanged
+from their publishers and used under the Apache License, Version 2.0:
+gpt-oss.jinja is the gpt-oss chat template published by OpenAI at
+https://huggingface.co/openai/gpt-oss-20b; gemma4.jinja is the Gemma 4 chat
+template published by Google at https://huggingface.co/google/gemma-4-12B-it.
+The revision of each is recorded in internal/inference/launch/template.go.
+
+The container security profiles in deploy/seccomp/flynn.json and
+deploy/apparmor/flynn-container are Docker's default seccomp profile and
+AppArmor template from moby/profiles (https://github.com/moby/profiles),
+Copyright The Moby Authors, used under the Apache License, Version 2.0. Each
+is modified by one rule, described in dev/container-profiles, which also
+pins the upstream commit. Unchanged copies of the upstream files are in
+deploy/testdata.
