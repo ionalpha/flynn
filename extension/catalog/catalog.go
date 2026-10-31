@@ -12,12 +12,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-	"path"
-	"sort"
-	"strings"
 	"sync"
 
 	"github.com/ionalpha/flynn/extension"
+	"github.com/ionalpha/flynn/internal/embeddedspecs"
 	"github.com/ionalpha/flynn/resource"
 )
 
@@ -43,11 +41,7 @@ const (
 // Entry is one official extension from the embedded catalog: its name (the resource
 // name it syncs under), the decoded spec, and the raw spec bytes stored verbatim so
 // the resource carries exactly what shipped.
-type Entry struct {
-	Name string
-	Spec extension.Spec
-	Raw  json.RawMessage
-}
+type Entry = embeddedspecs.Entry[extension.Spec]
 
 // state caches the once-parsed catalog. Keeping it in a struct rather than loose
 // package variables keeps the cached error a field, not a package-level error var.
@@ -75,36 +69,7 @@ func load() {
 // it the embedded catalog, whose specs the build-time gate keeps valid, so a test drives
 // the error paths a valid embedded catalog can never reach by feeding a crafted fs.
 func parseCatalog(fsys fs.FS) ([]Entry, map[string]bool, error) {
-	files, err := fs.ReadDir(fsys, "specs")
-	if err != nil {
-		return nil, nil, fmt.Errorf("catalog: read embedded specs: %w", err)
-	}
-	reserved := map[string]bool{}
-	var entries []Entry
-	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
-			continue
-		}
-		raw, err := fs.ReadFile(fsys, path.Join("specs", f.Name()))
-		if err != nil {
-			return nil, nil, fmt.Errorf("catalog: read %s: %w", f.Name(), err)
-		}
-		var spec extension.Spec
-		if err := json.Unmarshal(raw, &spec); err != nil {
-			return nil, nil, fmt.Errorf("catalog: decode %s: %w", f.Name(), err)
-		}
-		name := strings.TrimSuffix(f.Name(), ".json")
-		if reserved[name] {
-			return nil, nil, fmt.Errorf("catalog: duplicate official extension name %q", name)
-		}
-		if err := checkProcessSource(name, spec); err != nil {
-			return nil, nil, err
-		}
-		reserved[name] = true
-		entries = append(entries, Entry{Name: name, Spec: spec, Raw: append(json.RawMessage(nil), raw...)})
-	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
-	return entries, reserved, nil
+	return embeddedspecs.Parse(fsys, embeddedspecs.Naming{Prefix: "catalog", Noun: "extension"}, checkProcessSource)
 }
 
 // checkProcessSource enforces the one thing a bundled extension may never be: a path to
