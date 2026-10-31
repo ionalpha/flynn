@@ -67,6 +67,53 @@ func TestNonBlessedEntryIsNeverACatalogSource(t *testing.T) {
 	}
 }
 
+// A directory model names its downloads as files rather than one URL. Where those files
+// come from decides whether the Hub repository an entry claims is believed, and an entry
+// with no download at all has nothing to vouch for the claim.
+func TestNonBlessedEntryReadsMultiFileDownloads(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	repo := "https://huggingface.co/acme/tiny/resolve/main/"
+	claim := localmodel.Source{Publisher: "acme", URL: "https://huggingface.co/acme/tiny"}
+	cases := []struct {
+		name  string
+		quant localmodel.Quant
+	}{
+		{"every file from the repository", localmodel.Quant{Name: "bf16", Format: "safetensors", Files: []localmodel.QuantFile{
+			{Name: "model.safetensors", URL: repo + "model.safetensors"}, {Name: "tokenizer.json", URL: repo + "tokenizer.json"},
+		}}},
+		{"one file from elsewhere", localmodel.Quant{Name: "bf16", Format: "safetensors", Files: []localmodel.QuantFile{
+			{Name: "model.safetensors", URL: repo + "model.safetensors"}, {Name: "tokenizer.json", URL: "https://example.test/tokenizer.json"},
+		}}},
+		{"only files from elsewhere", localmodel.Quant{Name: "bf16", Format: "safetensors", Files: []localmodel.QuantFile{
+			{Name: "model.safetensors", URL: "https://example.test/model.safetensors"},
+		}}},
+		{"no download at all", localmodel.Quant{Name: "bf16", Format: "safetensors"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m := entryAt(f, "mine:1b", localmodel.TrustLocal, claim)
+			m.Quants = []localmodel.Quant{tc.quant}
+			cfg := f.config()
+			cfg.Catalog = []localmodel.Model{m}
+			h, err := localmodel.Open(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = h.Close() }()
+			a, err := h.Classify(m.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a.Catalog {
+				t.Fatalf("classified as a catalog source: %+v", a)
+			}
+			if a.Trust == "trusted" {
+				t.Fatalf("classified as trusted: %+v", a)
+			}
+		})
+	}
+}
+
 // A blessed entry beside a non-blessed one keeps the catalog class, so the guard narrows
 // the trusted set instead of emptying it.
 func TestBlessedEntryKeepsCatalogClassBesideUnverified(t *testing.T) {
@@ -242,5 +289,14 @@ func TestRankOrdersByFitForThisMachine(t *testing.T) {
 	only := h.Rank(t.Context(), localmodel.ModelQuery{MaxParamsB: 5}, localmodel.FitSettings{})
 	if len(only) != 1 || only[0].Model.ID != "small:4b" {
 		t.Fatalf("ranked under the query = %+v", only)
+	}
+}
+
+// Hardware reports the box the host detected, the same one Machine plans against.
+func TestHardwareReportsTheDetectedBox(t *testing.T) {
+	box := localmodel.Hardware{GPUName: "Test GPU", VRAMBytes: 8 * gb, RAMBytes: 16 * gb}
+	h := openFit(t, box, 6*gb, true)
+	if got := h.Hardware(t.Context()); got != box {
+		t.Fatalf("Hardware = %+v; want %+v", got, box)
 	}
 }
