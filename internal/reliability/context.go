@@ -32,18 +32,14 @@ const (
 // which is often shorter than its advertised one, and shrinks under quantization. Candidates are
 // tried in ascending order and the search stops at the first failure, since recall falls off with
 // length and does not recover, so the result is the last length that passed. Zero means the model
-// failed even the smallest candidate, so no usable window was measured. Each probe pins decoding,
-// so the measurement is reproducible. Candidates that are not positive are ignored.
+// failed even the smallest candidate. Each probe pins decoding, so the measurement reproduces.
+// Candidates that are not positive are ignored.
 //
-// A server that refuses a prompt as longer than its context ([llm.ErrContextOverflow]) has shown
-// where its window ends, which is the same answer as a failed recall, so it ends the search with
-// the last length that passed. Any other error is returned: a dropped connection says nothing
-// about the window.
-//
-// The result is never larger than what was sent. When the server reports the prompt's token count
-// the result is capped at it, and later rungs are sized from the ratio it implies, so a tokenizer
-// that packs fewer characters into a token than [charsPerToken] assumes does not turn a 64k rung
-// into a 75k prompt.
+// A refusal as too long ([llm.ErrContextOverflow]) shows where the server's window ends, which is
+// the same answer as a failed recall, so it ends the search too. Any other error is returned: a
+// dropped connection says nothing about the window. The result never exceeds what was sent: it is
+// capped at the token count the server reports, and later rungs are sized from the ratio that
+// count implies, because [charsPerToken] is only the first guess.
 func MeasureEffectiveContext(ctx context.Context, model llm.Model, candidates []int) (int, error) {
 	best := 0
 	cpt := charsPerToken
