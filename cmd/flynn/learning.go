@@ -340,16 +340,21 @@ func taintReasons(transcript []llm.Message) []string {
 // childModelResolver builds the model resolver the Router consults for a delegated
 // child goal that names a model other than the run's default. A local catalog model
 // is provisioned and served on demand; a hosted model resolves through the same
-// credential chain (vault then environment) as the root model, so a child runs on
-// whatever its archetype pins without any extra setup. The child's scaffolding plan
-// is not threaded through (the Router shares one base plan across loops), so a local
-// child runs on the shared defaults.
+// source as the root model (the credential chain, plus the servers named in the
+// data directory's providers file), so a child runs on whatever its archetype pins
+// without any extra setup. The child's scaffolding plan is not threaded through (the
+// Router shares one base plan across loops), so a local child runs on the shared
+// defaults.
 func childModelResolver(ctx context.Context, dataDir string) driver.ModelResolver {
 	return func(id string) (llm.Model, error) {
 		if isLocalModelID(id) {
 			m, _, err := resolveLocalModel(ctx, id, dataDir)
 			return m, err
 		}
-		return provider.ResolveWith(ctx, id, credentialSource(dataDir))
+		src, err := modelSource(dataDir)
+		if err != nil {
+			return nil, err
+		}
+		return provider.ResolveWith(ctx, id, src)
 	}
 }

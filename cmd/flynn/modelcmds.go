@@ -49,7 +49,7 @@ func dispatchModels(sub []string, dataDir string) error {
 	case "fetch":
 		return runModelFetch(sub[1:], dataDir, os.Stdout)
 	case "check":
-		return runRuntimeCheck(os.Stdout)
+		return runRuntimeCheckAt(dataDir, os.Stdout)
 	case "install":
 		return runRuntimeInstall(sub[1:], dataDir, os.Stdout)
 	case "inspect":
