@@ -371,8 +371,8 @@ the [security policy](SECURITY.md).
   tools are denied, and it can call only the tools Flynn bridges to it, so every action
   is still checked and recorded. This works on Linux, macOS and WSL2. Native Windows
   refuses it, since Flynn cannot yet gate the child's network there. Flynn runs `claude`
-  against a Claude Code home of its own, kept in Flynn's data directory and separate from
-  yours. The first run prints the command that signs it in with Claude Code's own login;
+  and `codex` against homes of their own, kept in Flynn's data directory and separate from
+  yours. The first run prints the command that signs the CLI in with its own login;
   Flynn never reads or copies the credential.
 
 ```sh

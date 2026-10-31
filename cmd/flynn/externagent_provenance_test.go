@@ -180,19 +180,45 @@ func TestExternalAdapterIsBuiltForEveryBackend(t *testing.T) {
 	}
 }
 
-// TestCodexAuthDirFollowsTheCLIsOwnResolution checks the credential home granted to the
-// confined child: CODEX_HOME wins, and the default is the CLI's own home directory.
-func TestCodexAuthDirFollowsTheCLIsOwnResolution(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("CODEX_HOME", home)
-	if got := codexAuthDir(); got != home {
-		t.Errorf("codexAuthDir = %q, want the CODEX_HOME override", got)
-	}
+// TestCodexHomeIsFlynnsOwnAndNeverTheUsers checks the codex backend runs the CLI against the
+// home Flynn keeps for it, whatever the user's own CODEX_HOME says, that the home exists once
+// the spawner is built (the CLI refuses a CODEX_HOME that does not), and that a config.toml
+// left in it is gone before any episode can read it while the sign-in beside it is kept.
+func TestCodexHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
+	withNoExecutables(t)
+	home := filepath.Join(t.TempDir(), "codex")
+	prev := codexHome
+	codexHome = func() string { return home }
+	t.Cleanup(func() { codexHome = prev })
+	userDir := t.TempDir()
+	t.Setenv("CODEX_HOME", userDir)
 
-	t.Setenv("CODEX_HOME", "")
-	got := codexAuthDir()
-	if got != "" && filepath.Base(got) != ".codex" {
-		t.Errorf("codexAuthDir = %q, want the CLI's default home", got)
+	if _, err := externalSpawner("codex"); err != nil {
+		t.Fatalf("externalSpawner(codex): %v", err)
+	}
+	if fi, err := os.Stat(home); err != nil || !fi.IsDir() {
+		t.Fatalf("the codex home must exist after the spawner is built: %v", err)
+	}
+	for name, body := range map[string]string{"config.toml": "[mcp_servers.x]\n", "auth.json": "{}"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := externalSpawner("codex"); err != nil {
+		t.Fatalf("externalSpawner(codex): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "config.toml")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("a config.toml in Flynn's codex home must be removed before an episode, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "auth.json")); err != nil {
+		t.Errorf("the sign-in in Flynn's codex home must be left alone: %v", err)
+	}
+	def := defaultCodexHome()
+	if filepath.Dir(def) != defaultDataDir() {
+		t.Errorf("the default codex home %q must sit under the data directory", def)
+	}
+	if def == userDir {
+		t.Errorf("the codex home must not follow the user's CODEX_HOME, got %q", def)
 	}
 }
 
@@ -224,58 +250,53 @@ func TestClaudeHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
 	}
 }
 
-// TestClaudeLoginSignsInFlynnsHome checks a not-signed-in claude is pointed at a login that
-// signs in Flynn's home through the CLI's own subscription flow, and that the other
-// readiness states pass through untouched.
-func TestClaudeLoginSignsInFlynnsHome(t *testing.T) {
-	home := filepath.Join(t.TempDir(), "it's here")
-	out := withClaudeLogin(externagent.Readiness{Available: true, Reason: "run `claude auth login`"}, home)
-	for _, want := range []string{"CLAUDE_CONFIG_DIR", "claude auth login --claudeai", "separate from yours"} {
-		if !strings.Contains(out.Reason, want) {
-			t.Errorf("login reason %q lacks %q", out.Reason, want)
-		}
-	}
-	if strings.Contains(strings.ToLower(out.Reason), "api key") {
-		t.Errorf("the login must never ask for an API key, got %q", out.Reason)
-	}
-	cmd := claudeLoginCommand(home)
-	if runtime.GOOS == "windows" {
-		if !strings.Contains(cmd, "it''s here") || !strings.HasSuffix(cmd, "Remove-Item Env:CLAUDE_CONFIG_DIR") {
-			t.Errorf("PowerShell login must quote the path and clear the variable, got %q", cmd)
-		}
-	} else if !strings.Contains(cmd, `it'\''s here`) {
-		t.Errorf("sh login must quote the path, got %q", cmd)
-	}
-
-	for _, r := range []externagent.Readiness{
-		{Available: false, Reason: "install it"},
-		{Available: true, Refuse: true, Reason: "update it"},
-		{Available: true, LoggedIn: true},
+// TestLoginSignsInFlynnsHome checks a not-signed-in claude or codex is pointed at a login
+// that signs in Flynn's home for that CLI through the CLI's own subscription flow, and that
+// the other readiness states pass through untouched.
+func TestLoginSignsInFlynnsHome(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		home  *func() string
+		env   string
+		login string
+	}{
+		{"claude", &claudeHome, "CLAUDE_CONFIG_DIR", "claude auth login --claudeai"},
+		{"codex", &codexHome, "CODEX_HOME", "codex login"},
 	} {
-		if got := withClaudeLogin(r, home); got != r {
-			t.Errorf("withClaudeLogin(%+v) = %+v, want it unchanged", r, got)
-		}
-	}
-}
+		t.Run(tc.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "it's here")
+			prev := *tc.home
+			*tc.home = func() string { return home }
+			t.Cleanup(func() { *tc.home = prev })
 
-// TestCodexSeedCarriesTheCredentialAndNoOperatorConfig is the host half of the codex
-// adapter's declared host-config posture. The adapter states that an episode's child runs
-// under a per-episode home holding the credential and nothing else; the seed list is where
-// that is either true or quietly false. config.toml is the file that would break it: it is
-// where a codex user keeps their MCP servers, model providers and settings, so seeding it
-// would hand the harness servers this run neither hosts nor governs and let the launching
-// operator's configuration steer the episode.
-func TestCodexSeedCarriesTheCredentialAndNoOperatorConfig(t *testing.T) {
-	if len(codexAuthSeedFiles) != 1 || codexAuthSeedFiles[0] != "auth.json" {
-		t.Fatalf("codexAuthSeedFiles = %v, want only the credential", codexAuthSeedFiles)
-	}
-	for _, f := range codexAuthSeedFiles {
-		if f == "config.toml" {
-			t.Error("the operator's codex config must not be seeded into an episode's home")
-		}
-	}
-	if got := externagent.NewCodex("codex", nil).Lockdown().HostConfig; !got.Stripped() {
-		t.Errorf("codex host-config posture = %v, want a stripped one to match the seed", got)
+			out := withHomeLogin(tc.name, externagent.Readiness{Available: true, Reason: "run the CLI's login"})
+			for _, want := range []string{tc.env, tc.login, "separate from yours"} {
+				if !strings.Contains(out.Reason, want) {
+					t.Errorf("login reason %q lacks %q", out.Reason, want)
+				}
+			}
+			if strings.Contains(strings.ToLower(out.Reason), "api key") {
+				t.Errorf("the login must never ask for an API key, got %q", out.Reason)
+			}
+			cmd := homeLoginCommand(tc.env, home, tc.login)
+			if runtime.GOOS == "windows" {
+				if !strings.Contains(cmd, "it''s here") || !strings.HasSuffix(cmd, "Remove-Item Env:"+tc.env) {
+					t.Errorf("PowerShell login must quote the path and clear the variable, got %q", cmd)
+				}
+			} else if !strings.Contains(cmd, `it'\''s here`) {
+				t.Errorf("sh login must quote the path, got %q", cmd)
+			}
+
+			for _, r := range []externagent.Readiness{
+				{Available: false, Reason: "install it"},
+				{Available: true, Refuse: true, Reason: "update it"},
+				{Available: true, LoggedIn: true},
+			} {
+				if got := withHomeLogin(tc.name, r); got != r {
+					t.Errorf("withHomeLogin(%+v) = %+v, want it unchanged", r, got)
+				}
+			}
+		})
 	}
 }
 
