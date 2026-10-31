@@ -69,19 +69,14 @@ type Server struct {
 // the load is unknown, not zero.
 type Stats = serve.RuntimeStats
 
-// Serve brings a model in the host's catalog up and returns its endpoint. An entry at any
-// trust tier is served, but one that is not [TrustBlessed] is first classified by the origin
-// it names (a file, a URL or a Hub repository), so it needs the isolation that origin needs
-// and is refused with [ErrNotAdmitted] where the host gives less. A reference that is not an
-// entry of the catalog, such as an hf: reference, a URL or a path, is [ErrNotServable]: there
-// is nothing pinned to fetch it by. Calls for one model run one
-// at a time, so a server is never started twice or stopped by a racing call. A server
-// already running is adopted only if it was started from a build at or above the current
-// floor, under at least the isolation [Config.MinContainment] asks for, with a key file
-// still readable, and if its listener passes the handshake below; otherwise it is stopped
-// and replaced. A launch installs the runtime behind the advisory gate, fetches the weights
-// against their digest, replaces any embedded chat template, and checks the weights and the
-// runtime binary once more before starting the server on a loopback port.
+// Serve brings a model in the host's catalog up and returns its endpoint. An entry that is
+// not [TrustBlessed] is classified by the origin it names, so it needs the isolation that
+// origin needs and is refused with [ErrNotAdmitted] where the host gives less. A reference
+// that is not a catalog entry has nothing pinned to fetch it by and is [ErrNotServable].
+// Calls for one model run one at a time. A server already running is adopted only if it was
+// started from a build at or above the current floor, under at least the isolation
+// [Config.MinContainment] asks for, with a key file still readable, and if its listener
+// passes the handshake below; otherwise it is stopped and replaced.
 //
 // Another process can take the chosen port before the runtime binds it, so the token goes
 // nowhere until the listener is attributed: Serve sends it a request with no credential and
