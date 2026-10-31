@@ -96,3 +96,40 @@ func TestExplicitModelWithoutCredentialIsRefused(t *testing.T) {
 		t.Errorf("resolved spec = %q, want the configured provider %q", spec, configured)
 	}
 }
+
+// TestOnboardListsConfiguredServers: a server named in providers.json is offered in the
+// first-run pick list, because it needs no key and is the way a user with a model server
+// already running gets started.
+func TestOnboardListsConfiguredServers(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+		want string
+	}{
+		{"a configured server is named", boxServer, "configured servers: box; type <name>:<model>"},
+		{"no providers file names no server", "", ""},
+		{"a malformed file leaves the list out", "{not json", ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.file != "" {
+				writeProvidersFile(t, dir, tc.file)
+			}
+			var out strings.Builder
+			spec, err := onboardModel(context.Background(), strings.NewReader("ollama:m\n"), &out, "", dir)
+			if err != nil || spec != "ollama:m" {
+				t.Fatalf("onboardModel = %q, %v", spec, err)
+			}
+			if got := strings.Contains(out.String(), "configured servers"); got != (tc.want != "") {
+				t.Fatalf("mentions configured servers = %v, want %v:\n%s", got, tc.want != "", out.String())
+			}
+			if tc.want != "" && !strings.Contains(out.String(), tc.want) {
+				t.Errorf("output missing %q:\n%s", tc.want, out.String())
+			}
+			if !strings.Contains(out.String(), "flynn init --local") {
+				t.Errorf("the pick list does not point at `flynn init --local`:\n%s", out.String())
+			}
+		})
+	}
+}
