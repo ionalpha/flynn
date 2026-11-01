@@ -166,12 +166,12 @@ exercise, with the reason and, where relevant, a suggested fix.
    secret, which is the correct security default), so a key cannot be written through
    the CLI and the sealed file inspected without a pseudo-terminal in the harness.
 
-3. **The memory push path needs a terminal.** A distilled memory is the agent's own
-   note, which waits for a reviewed promotion before the wake digest pushes it, and the
-   binary has no command to promote one; only an operator-written memory is pushed, and
-   `/remember` is reachable only from the interactive session, which needs a TTY. The
-   in-process `TestStandaloneASessionWakesWithADigestAndCountsThePush` covers the push;
-   a memory review command would make it reachable here.
+3. **An operator-written memory needs a terminal.** `/remember` is reachable only from
+   the interactive session, which needs a TTY. A distilled memory waits for a reviewed
+   promotion, which `flynn memory promote` does; the live lane promotes one that way and
+   checks that the next run is pushed it, but only against a model that distils a memory.
+   The in-process `TestStandaloneASessionWakesWithADigestAndCountsThePush` covers the push
+   deterministically.
 
 4. **Fan-out is not exercised.** Delegation grant-subset enforcement, a shared budget
    ceiling across a delegated tree, and the runaway circuit breaker on the fan-out path
