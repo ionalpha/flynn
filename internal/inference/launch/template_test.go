@@ -1,6 +1,8 @@
 package launch
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"testing"
 )
@@ -172,5 +174,25 @@ func TestNativeToolCallsFollowsTheRoute(t *testing.T) {
 	}
 	if NativeToolCalls("llama3") {
 		t.Error("llama3 runs with --no-jinja and cannot take tools")
+	}
+}
+
+// TestEmbeddedTemplatesAreThePublishersOwn holds each embedded template to the SHA-256 of
+// the file its publisher ships at the revision recorded on its variable. NOTICE states the
+// templates are copied unchanged, and an edit made here would break that statement and
+// leave Flynn serving a prompt format no upstream model was trained on. Updating a template
+// means taking the publisher's newer file whole, then updating the revision and this digest.
+func TestEmbeddedTemplatesAreThePublishersOwn(t *testing.T) {
+	for name, want := range map[string]string{
+		"gpt-oss": "a4c9919cbbd4acdd51ccffe22da049264b1b73e59055fa58811a99efbd7c8146",
+		"gemma4":  "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+	} {
+		sum := sha256.Sum256([]byte(embeddedTemplates[name]))
+		if got := hex.EncodeToString(sum[:]); got != want {
+			t.Errorf("%s template sha256 = %s, want the publisher's %s", name, got, want)
+		}
+	}
+	if len(embeddedTemplates) != 2 {
+		t.Errorf("embedded templates = %d, want 2: a new one needs its publisher's digest here and a NOTICE entry", len(embeddedTemplates))
 	}
 }
