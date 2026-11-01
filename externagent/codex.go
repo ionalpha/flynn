@@ -40,8 +40,8 @@ func (*Codex) Name() string { return "codex" }
 // the honest posture to declare, and it is why claude and codex declare different ones
 // from the same contract.
 //
-// The operator's own configuration is contained: the child runs under a per-episode
-// CODEX_HOME holding the credential and nothing else, so the MCP servers, model providers
+// The operator's own configuration is contained: the host points the child at a CODEX_HOME
+// kept apart from the operator's own and holding no config.toml, so the MCP servers, model providers
 // and settings in the operator's own codex config are not on the child's path to find, and
 // the only server it loads is the one this episode configures on the command line.
 func (*Codex) Lockdown() Lockdown {

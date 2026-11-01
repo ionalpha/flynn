@@ -131,6 +131,12 @@ func onboardModel(ctx context.Context, in io.Reader, out io.Writer, modelSpec, d
 		_, _ = fmt.Fprintf(out, "  %d) %s\n", i+1, id)
 	}
 	_, _ = fmt.Fprintln(out, "  (or type a provider:model, or a local model id from `flynn models`)")
+	// A malformed providers file is reported when a model is resolved; the pick list
+	// just leaves the names out.
+	if servers, err := configuredServerNames(dataDir); err == nil && len(servers) > 0 {
+		_, _ = fmt.Fprintf(out, "  (configured servers: %s; type <name>:<model>)\n", strings.Join(servers, ", "))
+	}
+	_, _ = fmt.Fprintln(out, "  (no API key? `flynn init --local` sets up a model that runs on this machine)")
 
 	r := bufio.NewReader(in)
 	choice, err := promptVisible(r, out, fmt.Sprintf("Model [%s]: ", def))

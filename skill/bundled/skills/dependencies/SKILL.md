@@ -1,9 +1,9 @@
 ---
 name: dependencies
-description: Use when adding, choosing, pinning, upgrading or auditing a third-party package, library, SDK, action, or base image, and when deciding whether to write the thing yourself instead. Covers what a dependency costs across its whole life rather than at the install, which questions decide whether to take it, reading the licence before the code, who gets to choose the version and when, what a lockfile does and does not promise, upgrading so the breakage arrives in the test run rather than in production, and what to do when a package is abandoned. Carries one rule above the others: a package name or version written from memory is a guess, and it is resolved against the registry before it lands in a manifest.
+description: Use when adding, choosing, pinning, upgrading or auditing a third-party package, library, SDK, action, or base image, when deciding whether to write the thing yourself instead, and when copying, porting or pasting code, a template or a config taken from an outside project, repository or model card. Covers what a dependency costs across its whole life rather than at the install, which questions decide whether to take it, reading the licence before the code, which sources can never be copied from and how to record where copied code came from, who gets to choose the version and when, what a lockfile does and does not promise, upgrading so the breakage arrives in the test run rather than in production, and what to do when a package is abandoned. Carries one rule above the others: a package name or version written from memory is a guess, and it is resolved against the registry before it lands in a manifest.
 metadata:
   flynnhq.com/title: Dependencies
-  flynnhq.com/tags: '["dependencies","supply-chain","upgrades","licensing","security"]'
+  flynnhq.com/tags: '["dependencies","supply-chain","upgrades","licensing","security","provenance","attribution"]'
 ---
 
 # Dependencies
@@ -94,6 +94,50 @@ part of the legal answer.
 The same rule covers copying: code adapted from a source whose licence you have not
 read does not go into the tree. Attribution obligations survive copying, and they
 survive rewording.
+
+## Copying code from another project
+
+A function lifted from another repository, a template taken from a model card, a
+profile generated from someone else's: each is a dependency with no manifest line, and
+it carries its source's licence into the tree. The difference from a package is that
+nothing records it unless you do, so the obligation is easy to lose and hard to find
+again.
+
+Some sources are a no whatever the code is worth:
+
+- **No licence at all.** Code published without a licence is all rights reserved. A
+  public repository is visible, not reusable.
+- **Source-available terms.** Business Source, Functional Source, Server Side Public,
+  Elastic, and anything with a Commons Clause or a field-of-use restriction. Readable,
+  and they restrict exactly the uses an open-source project promises its users.
+- **Proprietary code.** Vendor SDKs and samples under custom terms, code from a product
+  you have access to, and anything you saw under an agreement.
+- **Leaked code**, and anything whose provenance you cannot establish.
+- **Copyleft into a project under permissive terms.** GPL or AGPL code changes what the
+  whole program's users receive. That is the project owner's decision to make, never a
+  side effect of one change.
+
+Permissive licences (MIT, BSD, Apache-2.0, ISC) are a yes, with their conditions met
+in the same change:
+
+- Keep any licence header the source carries.
+- Put a comment at the top of the copied file, or beside the copied code, giving the
+  source URL, the exact commit or version, and the SPDX licence identifier. Name a
+  commit or a version, never a branch, so the claim can be checked later against
+  something that does not move.
+- Add an entry to the project's `NOTICE` or third-party file when the licence asks for
+  one. Apache-2.0 does, for the source's own `NOTICE`.
+- Where the file cannot carry a comment because a program reads it as-is (a chat
+  template, a JSON profile), put the record in the code that loads it and in `NOTICE`.
+
+A pattern is not a copy. The standard way to walk a syntax tree, mount a filesystem or
+harden a service is how everyone writes it, and needs no record. The line is whether
+you took text from a particular place. If you did, record it, even when you reworded
+it.
+
+Describe a design by what it does, not by whose it resembles. "Markers are comments
+ending in `ai!`" tells the reader the syntax. "Like project X" tells them where to look
+for it, and invites the question of what else came from there.
 
 ## Who chooses the version, and when
 
@@ -195,6 +239,10 @@ State the things a reviewer cannot get from the diff:
   in this session.
 - No dependency added without a recorded reason and an identified licence.
 - No code copied from a source whose licence has not been read.
+- No code copied from an unlicensed, source-available, proprietary or leaked source,
+  and no copyleft code in a permissively licensed project without the owner's decision.
+- No copied code without its source, its commit or version, and its licence recorded
+  in the same change.
 - No lockfile edited by hand, and no install in CI that is allowed to update one.
 - No upgrade committed before the suite has run against the new version.
 - No claim that a signature makes a package safe.
