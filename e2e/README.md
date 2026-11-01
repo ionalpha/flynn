@@ -20,15 +20,16 @@ binary and its defaults.
   key or the network. The server records every request, so a test can assert what the
   binary sent (tools advertised, system prompt, injected content), and can script
   tool-call turns, error statuses, and a mid-run block for crash testing.
-- Exactly one lane hits a real hosted model (`TestRealModelSmoke`), skipped unless
-  `FLYNN_E2E_REAL` is set. It runs a benign happy-path only; every adversarial scenario
-  stays on the scripted lane.
+- Two lanes reach a real model, both skipped unless `FLYNN_E2E_REAL=1`: the plain-reply
+  smoke test (`TestRealModelSmoke`) and the live-model lane described below. Every
+  adversarial scenario stays on the scripted lane.
 
 Run it:
 
 ```sh
 go test ./e2e/                 # offline, deterministic
 FLYNN_E2E_REAL=1 go test ./e2e/ -run TestRealModelSmoke   # opt-in real model
+FLYNN_E2E_REAL=1 go test ./e2e/ -run TestLive -v          # the live-model lane
 FLYNN_E2E_ARTIFACTS=/tmp/e2e go test ./e2e/               # dump logs + data dir on failure
 
 # against a prebuilt binary (an absolute path) instead of a fresh compile
@@ -38,6 +39,67 @@ FLYNN_E2E_BIN=$PWD/dist/flynn_linux_amd64_v1/flynn FLYNN_E2E_VERSION=0.2.0 go te
 CI runs the suite twice: once over its own compile on every OS (`E2E`), and once over
 the binaries the release snapshot built (`E2E on release artifact`), the same bytes a
 release publishes: stripped, stamped, and cross-compiled by goreleaser.
+
+## The live-model lane
+
+`TestLive*` (in `live_*_test.go`) runs real tasks against a real model through the binary
+under test. Point `FLYNN_E2E_BIN` (an absolute path) and `FLYNN_E2E_VERSION` at a
+published release binary to test the bytes that ship.
+
+A model's wording varies from run to run, so no assertion reads it. A scenario asserts on
+the sealed run record (the tools called, the actions refused, whether the run converged;
+`spine verify` must report the record intact and every action admitted) and on what the
+host sees without the model's help: a file on disk, a connection a listener did or did not
+receive. Every goal runs under a cost and a token cap, with a bound on each invocation.
+
+| Variable | Meaning |
+| --- | --- |
+| `FLYNN_E2E_REAL=1` | switches the lane on; without it every `TestLive*` skips and says so |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` | a hosted provider is covered when its key is present; only the key of the provider under test reaches the binary |
+| `FLYNN_E2E_REAL_MODEL` | the `provider:model` the scenarios share; by default the first provider with a key, in the order above |
+| `FLYNN_E2E_REAL_MODEL_<NAME>` | replaces a hosted provider's default model (for example `FLYNN_E2E_REAL_MODEL_OPENAI`), since providers retire model names |
+| `FLYNN_E2E_LOCAL_MODEL` | `provider:model` for one local model (`ollama:`, `llamacpp:` or `lmstudio:`); the runtime is yours to start |
+| `OLLAMA_BASE_URL`, `LLAMACPP_BASE_URL`, `LMSTUDIO_BASE_URL` | where that runtime listens, passed through to the binary |
+| `FLYNN_E2E_REAL_MAX_COST`, `FLYNN_E2E_REAL_MAX_TOKENS` | replace the per-goal caps (0.50 and 400000) |
+| `FLYNN_E2E_REAL_TIMEOUT` | bound on one invocation, a Go duration (default 8m); raise it for a slow local model |
+
+```sh
+ANTHROPIC_API_KEY=... FLYNN_E2E_REAL=1 go test ./e2e/ -run TestLive -v
+
+# a local model through a running llama-server
+FLYNN_E2E_REAL=1 FLYNN_E2E_REAL_MODEL=llamacpp:my-model FLYNN_E2E_LOCAL_MODEL=llamacpp:my-model \
+  LLAMACPP_BASE_URL=http://127.0.0.1:8080/v1 FLYNN_E2E_REAL_TIMEOUT=15m go test ./e2e/ -run TestLive -v
+```
+
+A scenario whose prerequisite is missing (no key, no `curl`, no model named) skips and
+says which. A hosted provider without a key is a skipped subtest named for it, so a run
+reports the providers it did not cover. The tool-driven scenarios need a model that calls
+tools; one that answers in prose fails them with a message saying it never called a tool,
+since a pass there would prove nothing.
+
+| Scenario | What it asserts |
+| --- | --- |
+| edit a file and run its tests | the model fixes a bug in a scratch module and runs `go test` in the sandbox; the host's `go test` then passes and the tests were not edited |
+| network and credentials | by default a listener is not reached and a planted credential is not read, and the record's posture says so; `-allow-network` opens the network only and `-allow-credential-reads` opens the credential only |
+| approval | with `-require-approval write` and nobody to ask, the write is refused in the record and no file appears |
+| kill and steer | a second process steers and then kills a live goal; the goal exits with the operator's reason, leaves later work undone and its record verifies |
+| resume | after a hard kill the work done is kept, `resume` finishes the objective and the record verifies |
+| spend cap | a token ceiling stops a long task with a budget reason and a non-zero exit |
+| memory and skills | a second run is pushed the memory and reads the skill the first left |
+| `serve` | a channel message is answered, and the API refuses a missing or wrong token and lists the run |
+| MCP | the full server writes and reads; the read-only server denies a write and a shell command |
+| hosted providers | each provider with a key carries a tool call through its wire format |
+| local model | the model `FLYNN_E2E_LOCAL_MODEL` names answers, its record verifies, and a tool call it makes is held to the hosted standard |
+
+On Windows the default sandbox records that it denies the network but does not enforce
+it. The network scenario asserts what the record claims there, and when the model's
+request reaches the listener anyway it skips with the words `KNOWN FAILURE`, so the
+output carries the gap instead of a silent pass. If the request is not reached, it fails
+so the marker gets removed.
+
+The record decoder the lane relies on is itself checked in the default run
+(`TestRecordDecoderReadsToolCallsRefusalsAndPosture`), against a scripted model, so a
+change to the record's shape fails there and not as a live scenario that sees nothing.
 
 ## Coverage
 

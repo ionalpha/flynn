@@ -109,7 +109,14 @@ type instance struct {
 	home      string
 	env       []string
 	model     string
+	// timeout bounds one run through the instance; zero means defaultRunTimeout. The live
+	// lane raises it, since a real model's turns take longer than a scripted server's.
+	timeout time.Duration
 }
+
+// defaultRunTimeout bounds one run against a scripted server, which answers at once, so
+// a run that outlives it is hung.
+const defaultRunTimeout = 90 * time.Second
 
 // newInstance builds an isolated instance with no model server attached. Attach a
 // scripted server with withModel before running a goal.
@@ -190,7 +197,11 @@ func (in *instance) baseFlags() []string {
 func (in *instance) runInput(stdin []byte, args ...string) result {
 	in.t.Helper()
 	full := append(in.baseFlags(), args...)
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	limit := in.timeout
+	if limit == 0 {
+		limit = defaultRunTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), limit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, flynnBin, full...)
 	cmd.Dir = in.workspace
