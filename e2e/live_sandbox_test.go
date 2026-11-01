@@ -100,9 +100,9 @@ func probeSandbox(t *testing.T, spec string, flags ...string) sandboxProbe {
 // two are the positive controls (the flag's gap must be open, in the record and in fact),
 // and the default run must have both closed where the platform can close them.
 //
-// Where it cannot, the record says so and the test marks the gap as a known failure
-// rather than passing quietly: on Windows the default tier does not stop a command's
-// network access, and it cannot hide the credential directories.
+// Where it cannot, the test holds the record to saying so with the platform as the
+// reason: on Windows the default tier does not stop a command's network access, and it
+// cannot hide the credential directories.
 func TestLiveNetworkAndCredentialsAreClosedByDefaultAndEachGrantOpensItsGap(t *testing.T) {
 	spec := liveModel(t)
 	have(t, "curl")
@@ -130,41 +130,50 @@ func TestLiveNetworkAndCredentialsAreClosedByDefaultAndEachGrantOpensItsGap(t *t
 		if !p.sawCanary {
 			t.Error("the record claims credentials are readable but the planted key was not read")
 		}
-		if p.posture["network"] != "denied" {
-			t.Errorf("posture = %v, want network still denied under -allow-credential-reads", p.posture)
-		}
+		requireDefaultNetwork(t, p)
 	})
 
 	t.Run("default closes both", func(t *testing.T) {
 		p := probeSandbox(t, spec)
 		requireProbeRan(t, p)
-		if p.posture["network"] != "denied" {
-			t.Errorf("posture = %v, want network denied by default", p.posture)
-		}
+		requireDefaultNetwork(t, p)
 		if runtime.GOOS != "windows" {
 			if p.posture["credentials"] != "hidden" {
 				t.Errorf("posture = %v, want credentials hidden by default", p.posture)
-			}
-			if p.netHits != 0 {
-				t.Errorf("the default sandbox let a command reach the listener (%d connection(s))", p.netHits)
 			}
 			if p.sawCanary {
 				t.Error("the default sandbox let a command read the planted key")
 			}
 			return
 		}
-		// Windows: the record's claims are asserted above and must hold; the behaviour does
-		// not, so the test reports it instead of passing.
 		if p.posture["credentials"] != "readable" || p.posture["credentials_reason"] != "platform" {
 			t.Errorf("posture = %v, want credentials readable because of the platform", p.posture)
 		}
-		if p.netHits == 0 {
-			t.Error("the sandbox now denies the network on Windows: remove the known-failure branch below")
-			return
-		}
-		t.Skipf("KNOWN FAILURE: the record claims network=denied but the listener saw %d connection(s); "+
-			"the Windows write-restricted-token tier does not enforce network denial", p.netHits)
 	})
+}
+
+// requireDefaultNetwork checks the network half of a run that did not pass -allow-network.
+// Linux and macOS deny it, so the record says denied and the listener sees nothing. The
+// Windows default tier cannot deny it, so the record must say open with the platform as
+// the reason, and the listener's connection is what makes that claim true rather than a
+// guess.
+func requireDefaultNetwork(t *testing.T, p sandboxProbe) {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		if p.posture["network"] != "denied" {
+			t.Errorf("posture = %v, want network denied", p.posture)
+		}
+		if p.netHits != 0 {
+			t.Errorf("the sandbox let a command reach the listener (%d connection(s))", p.netHits)
+		}
+		return
+	}
+	if p.posture["network"] != "open" || p.posture["network_reason"] != "platform" {
+		t.Errorf("posture = %v, want network open because of the platform", p.posture)
+	}
+	if p.netHits == 0 {
+		t.Error("the record says the platform left the network open but the listener saw no connection")
+	}
 }
 
 // requireProbeRan fails the test when the model skipped either half of the probe. A run in
