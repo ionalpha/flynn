@@ -83,6 +83,12 @@ func liveModel(t *testing.T) string {
 	t.Helper()
 	requireLive(t)
 	if v := os.Getenv("FLYNN_E2E_REAL_MODEL"); v != "" {
+		provider, _, _ := strings.Cut(v, ":")
+		for _, p := range hostedProviders {
+			if p.name == provider && !p.hasKey() {
+				t.Skipf("FLYNN_E2E_REAL_MODEL names the %s provider but %s is not set", provider, p.keyEnv)
+			}
+		}
 		return v
 	}
 	for _, p := range hostedProviders {

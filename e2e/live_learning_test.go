@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,9 @@ func TestLiveSecondRunRecallsWhatTheFirstLeft(t *testing.T) {
 	}
 	var localSkill string
 	for _, line := range strings.Split(ls.stdout, "\n") {
-		if f := strings.Fields(line); len(f) > 0 && strings.Contains(line, "local") {
+		// The SOURCE column, not any word of the description: a bundled skill whose text
+		// mentions "local" is not something the first run left.
+		if f := strings.Fields(line); len(f) > 1 && f[1] == "local" {
 			localSkill = f[0]
 		}
 	}
@@ -74,7 +77,7 @@ func TestLiveSecondRunRecallsWhatTheFirstLeft(t *testing.T) {
 	if memoryID != "" {
 		usage := in.run("memory", "usage")
 		requireExit(t, usage, 0, "memory usage")
-		if !strings.Contains(usage.stdout, "pushed 1") {
+		if !regexp.MustCompile(`\bpushed 1\b`).MatchString(usage.stdout) {
 			t.Errorf("the promoted memory was not pushed at the second run:\n%s", usage.stdout)
 		}
 	}

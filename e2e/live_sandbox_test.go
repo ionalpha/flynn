@@ -50,7 +50,8 @@ func newProbeListener(t *testing.T) *probeListener {
 // sandboxProbe is one run's observations.
 type sandboxProbe struct {
 	posture   map[string]any
-	ranProbe  bool // the model called the shell tool with the probe command
+	ranProbe  bool // the model called the shell tool with the network probe
+	ranRead   bool // the model called the shell tool to read the planted key
 	netHits   int64
 	sawCanary bool
 }
@@ -85,6 +86,9 @@ func probeSandbox(t *testing.T, spec string, flags ...string) sandboxProbe {
 	for _, c := range rec.calls("bash") {
 		if strings.Contains(c.command(), ln.addr) {
 			p.ranProbe = true
+		}
+		if strings.Contains(c.command(), "id_ed25519") {
+			p.ranRead = true
 		}
 	}
 	p.sawCanary = strings.Contains(rec.outputs(), liveCanary)
@@ -163,11 +167,15 @@ func TestLiveNetworkAndCredentialsAreClosedByDefaultAndEachGrantOpensItsGap(t *t
 	})
 }
 
-// requireProbeRan fails the test when the model never attempted the probe. A run in which
-// the model declined to try would otherwise look like a sandbox that held.
+// requireProbeRan fails the test when the model skipped either half of the probe. A run in
+// which the model declined to try would otherwise look like a sandbox that held: an absent
+// canary proves nothing unless the read that would have found it ran.
 func requireProbeRan(t *testing.T, p sandboxProbe) {
 	t.Helper()
 	if !p.ranProbe {
 		t.Fatal("the model never ran the network probe through the shell tool, so the run shows nothing about the sandbox")
+	}
+	if !p.ranRead {
+		t.Fatal("the model never ran the credential read through the shell tool, so the run shows nothing about the sandbox")
 	}
 }

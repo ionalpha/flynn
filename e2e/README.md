@@ -82,14 +82,14 @@ since a pass there would prove nothing.
 | edit a file and run its tests | the model fixes a bug in a scratch module and runs `go test` in the sandbox; the host's `go test` then passes and the tests were not edited |
 | network and credentials | by default a listener is not reached and a planted credential is not read, and the record's posture says so; `-allow-network` opens the network only and `-allow-credential-reads` opens the credential only |
 | approval | with `-require-approval write` and nobody to ask, the write is refused in the record and no file appears |
-| kill and steer | a second process steers and then kills a live goal; the goal exits with the operator's reason, leaves later work undone and its record verifies |
+| kill and steer | a second process steers and then kills a live goal; the steer is accepted, the goal exits with the operator's reason, leaves later work undone and its record verifies. That the steer reached the model is not asserted: it is recorded only when a run claims completion, which a killed run never does |
 | resume | after a hard kill the work done is kept, `resume` finishes the objective and the record verifies |
 | spend cap | a token ceiling stops a long task with a budget reason and a non-zero exit |
 | memory and skills | a second run is pushed the memory and reads the skill the first left |
 | `serve` | a channel message is answered, and the API refuses a missing or wrong token and lists the run |
 | MCP | the full server writes and reads; the read-only server denies a write and a shell command |
 | hosted providers | each provider with a key carries a tool call through its wire format |
-| local model | the model `FLYNN_E2E_LOCAL_MODEL` names answers, its record verifies, and a tool call it makes is held to the hosted standard |
+| local model | the model `FLYNN_E2E_LOCAL_MODEL` names answers and its record verifies; it must also carry a tool call as a hosted provider does, and a model that makes none skips the test with that stated |
 
 On Windows the default sandbox records that it denies the network but does not enforce
 it. The network scenario asserts what the record claims there, and when the model's

@@ -50,9 +50,9 @@ func TestLiveEachHostedProviderCarriesAToolCall(t *testing.T) {
 // llamacpp:<model> with LLAMACPP_BASE_URL pointing at a running llama-server). The runtime
 // is the operator's to start; the lane does not download or launch one.
 //
-// A small local model may decline to use the tool, so this scenario asks for less than the
-// hosted one: the run must answer and the sealed record must verify, and the tool-call
-// result is reported when the model made one.
+// A small local model may decline to use the tool. The run must still answer and its sealed
+// record must verify; when the model made no tool call the test skips and says so, rather
+// than passing as if the tool-call path had been carried.
 func TestLiveLocalModelCarriesAToolCall(t *testing.T) {
 	requireLive(t)
 	spec := os.Getenv("FLYNN_E2E_LOCAL_MODEL")
@@ -68,8 +68,7 @@ func TestLiveLocalModelCarriesAToolCall(t *testing.T) {
 	requireExit(t, res, 0, "local-model goal")
 	rec := in.sealedRun(res)
 	if len(rec.calls()) == 0 {
-		t.Logf("the local model %s answered without calling a tool", spec)
-		return
+		t.Skipf("the local model %s answered without calling a tool, so its tool-call path was not exercised", spec)
 	}
 	assertToolRun(t, in, res)
 }
