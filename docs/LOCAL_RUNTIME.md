@@ -2,6 +2,10 @@
 
 `flynn models install` fetches the llama.cpp server that `flynn models run` serves a model with. This page covers which build it fetches, how to choose another, and how `flynn models check` reports what is installed.
 
+## First run
+
+`flynn init --local` takes a fresh install to a default model that runs on this machine. It reports the GPU, free VRAM, RAM and any running Ollama or LM Studio server, offers up to three catalog models that fit (judged the same way as `flynn models --local --fit`), and lists the models a running server already holds so you can adopt one instead of downloading. It asks before every download and shows the size first; it installs this runtime if none is present, probes the model, and only then makes it the default, so a declined prompt or Ctrl-C leaves the default unchanged. `--yes` accepts the first recommendation and every download prompt, `--model <id>` picks a model without the menu, and `--data-dir` (before `init`) keeps the whole setup in another directory. It finishes by printing a `flynn goal` command to try.
+
 ## Builds
 
 llama.cpp ships one archive per hardware target. Flynn pins a SHA-256 digest for each build it can install, inside the binary. The model catalog Flynn fetches at run time carries no runtime digests, so a compromised catalog cannot change what gets installed.
