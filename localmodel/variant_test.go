@@ -380,3 +380,89 @@ func TestFormatBytes(t *testing.T) {
 		}
 	}
 }
+
+// A runtime installed by v0.1.3 has no hash record beside it. Nobody vouched for that
+// binary, so it is fetched again through the verified install instead of being refused or
+// hashed where it lies.
+func TestEnsureRuntimeReplacesAnInstallWithNoHashRecord(t *testing.T) {
+	w := newVariantWorld(t)
+	inst, err := w.open(localmodel.GPU{}).InstallRuntime(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sidecar := inst.BinPath + ".sha256"
+	if err := os.Remove(sidecar); err != nil {
+		t.Fatal(err)
+	}
+	// What an earlier flynn left: a binary that was never checked against anything.
+	if err := os.WriteFile(inst.BinPath, []byte("unverified"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(filepath.Dir(inst.BinPath), "left-by-old-install")
+	if err := os.WriteFile(stale, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := w.open(localmodel.GPU{}).RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.NeedsReinstall || st.Problem != "" {
+		t.Fatalf("status = %+v, want NeedsReinstall and no Problem", st)
+	}
+
+	again, err := w.open(localmodel.GPU{}).EnsureRuntime(t.Context())
+	if err != nil {
+		t.Fatalf("EnsureRuntime refused an install with no hash record: %v", err)
+	}
+	if again.Cached {
+		t.Error("the unrecorded build was reused instead of fetched again")
+	}
+	got, err := os.ReadFile(again.BinPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "cpu build" {
+		t.Errorf("binary = %q, want the verified download", got)
+	}
+	if _, err := os.Stat(sidecar); err != nil {
+		t.Errorf("the hash record was not written: %v", err)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("the old install directory was not replaced (stat err=%v)", err)
+	}
+	after, err := w.open(localmodel.GPU{}).RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.NeedsReinstall || after.Problem != "" {
+		t.Fatalf("status after the re-fetch = %+v, want a healthy install", after)
+	}
+}
+
+// A hash record that exists and disagrees with the binary is tampering or damage, not an
+// old install: it stays refused.
+func TestEnsureRuntimeRefusesABinaryThatDisagreesWithItsHashRecord(t *testing.T) {
+	w := newVariantWorld(t)
+	inst, err := w.open(localmodel.GPU{}).InstallRuntime(t.Context(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inst.BinPath, []byte("replaced"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.open(localmodel.GPU{}).EnsureRuntime(t.Context()); !errors.Is(err, localmodel.ErrDigestMismatch) {
+		t.Fatalf("EnsureRuntime = %v; want ErrDigestMismatch", err)
+	}
+	got, err := os.ReadFile(inst.BinPath)
+	if err != nil || string(got) != "replaced" {
+		t.Fatalf("the changed binary was touched (%q, %v)", got, err)
+	}
+	st, err := w.open(localmodel.GPU{}).RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.NeedsReinstall || st.Problem == "" {
+		t.Fatalf("status = %+v, want a Problem and no NeedsReinstall", st)
+	}
+}
