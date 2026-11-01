@@ -49,6 +49,37 @@ type ShellPolicy struct {
 	// shell runs, and the run's posture event says the credentials were readable and that
 	// the platform was the reason. The binary sets it so a first run works on every OS.
 	AllowCredentialReadsWhereUnhidable bool
+	// AllowNetworkWhereUndeniable gives the commands the host's network only on a platform
+	// whose confinement cannot deny it ([sandbox.NetworkDenySupported] is false: Windows
+	// today), and denies it everywhere else. Without it such a platform refuses every launch
+	// that asks for no network, because the alternative is a command that can send out what
+	// it reads while the record says it could not; with it the shell runs, and the run's
+	// posture event says the network was open and that the platform was the reason. It has
+	// no effect when AllowNetwork is set.
+	AllowNetworkWhereUndeniable bool
+}
+
+// Posture reasons recorded on a [ShellPostureEventType] event whose network is open: the
+// policy asked for it, or the platform could not deny it and the policy accepted that.
+const (
+	NetworkOpenByPolicy   = "policy"
+	NetworkOpenByPlatform = "platform"
+)
+
+// NetworkOpen reports whether the commands will have the host's network on this platform,
+// and which posture reason the run will record for it. Like [ShellPolicy.CredentialsReadable]
+// it is the one decision the sandbox options and the posture event both read, so a caller
+// that warns an operator says what the record will say. A policy that asks for no network
+// on a platform that cannot deny it, and does not accept that, reports false here and the
+// launch refuses.
+func (p ShellPolicy) NetworkOpen() (open bool, reason string) {
+	switch {
+	case p.AllowNetwork:
+		return true, NetworkOpenByPolicy
+	case p.AllowNetworkWhereUndeniable && !sandbox.NetworkDenySupported():
+		return true, NetworkOpenByPlatform
+	}
+	return false, ""
 }
 
 // Posture reasons recorded on a [ShellPostureEventType] event whose credentials are
@@ -90,6 +121,9 @@ func (p ShellPolicy) options() []sandbox.LocalOption {
 	}
 	if !p.AllowNetwork {
 		opts = append(opts, sandbox.WithNetworkDenied())
+		if p.AllowNetworkWhereUndeniable {
+			opts = append(opts, sandbox.WithOpenNetworkWhereUndeniable())
+		}
 	}
 	if readable, _ := p.CredentialsReadable(); !readable {
 		opts = append(opts, sandbox.WithUnreadablePaths(p.hiddenPaths()...))
@@ -199,10 +233,11 @@ func dedupe(paths []string) []string {
 // declareShellPosture records on stream what sb keeps its commands away from, read from the
 // sandbox that will launch them. A relaxation the operator asked for, or one the platform
 // forced, is therefore in the sealed record next to the actions that ran under it, with
-// reason naming which (see [ShellPolicy.CredentialsReadable]). A record that cannot be
+// reason naming which (see [ShellPolicy.CredentialsReadable]) and networkReason doing the
+// same for an open network (see [ShellPolicy.NetworkOpen]). A record that cannot be
 // written fails the assembly: a run must not start under a relaxed policy it cannot account
 // for.
-func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *sandbox.Local, reason string) error {
+func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *sandbox.Local, reason, networkReason string) error {
 	network := "open"
 	if sb.NetworkDenied() {
 		network = "denied"
@@ -216,6 +251,9 @@ func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *
 		"tier":        sb.ConfinementTier(),
 		"network":     network,
 		"credentials": credentials,
+	}
+	if network == "open" && networkReason != "" {
+		payload["network_reason"] = networkReason
 	}
 	if len(hidden) > 0 {
 		payload["hidden"] = hidden

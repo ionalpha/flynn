@@ -52,13 +52,16 @@ func ReadDenySupported() bool { return readDenyEnforceable() }
 func (l *Local) UnreadablePaths() []string { return append([]string(nil), l.unreadable...) }
 
 // guardLaunch refuses a launch the Local cannot honour before any dispatch: confinement
-// the platform lacks, governed egress without an enforcement leg, and a read-deny set that
-// cannot be applied. Every launch path calls it first, so none has a check of its own.
+// the platform lacks, governed egress without an enforcement leg, a network denial the
+// tier cannot enforce, and a read-deny set that cannot be applied. Every launch path calls it first, so none has a check of its own.
 func (l *Local) guardLaunch() error {
 	if err := l.guardUnsupported(); err != nil {
 		return err
 	}
 	if err := l.guardEgress(); err != nil {
+		return err
+	}
+	if err := l.guardNetworkDeny(); err != nil {
 		return err
 	}
 	return l.guardReadDeny()

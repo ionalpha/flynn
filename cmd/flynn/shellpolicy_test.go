@@ -12,10 +12,11 @@ import (
 )
 
 // checkShell is the policy for a test of what a command's result means (an audit, a proof, a
-// unit graph) rather than of where the command may read. The default policy makes every
-// launch refuse on a platform that cannot hide a path, and these tests would then be
-// asserting on that refusal instead of on what they are about.
-var checkShell = governed.ShellPolicy{AllowCredentialReads: true}
+// unit graph) rather than of where the command may read or reach. The default policy makes
+// every launch refuse on a platform that cannot hide a path or deny the network, and these
+// tests would then be asserting on that refusal instead of on what they are about. The
+// network fallback denies it wherever the platform can.
+var checkShell = governed.ShellPolicy{AllowCredentialReads: true, AllowNetworkWhereUndeniable: true}
 
 // useHome points the process's notion of a home directory at a fresh one, on every platform
 // os.UserHomeDir reads, and returns it.
@@ -35,14 +36,15 @@ func TestShellFlagsBuildThePolicy(t *testing.T) {
 		args []string
 		want governed.ShellPolicy
 	}{
-		{"no flags", nil, governed.ShellPolicy{DataDir: "/d", AllowCredentialReadsWhereUnhidable: true}},
-		{"network", []string{"-allow-network"}, governed.ShellPolicy{DataDir: "/d", AllowNetwork: true, AllowCredentialReadsWhereUnhidable: true}},
-		{"credentials", []string{"-allow-credential-reads"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true}},
-		{"strict", []string{"-require-credential-hiding"}, governed.ShellPolicy{DataDir: "/d"}},
+		{"no flags", nil, governed.ShellPolicy{DataDir: "/d", AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
+		{"network", []string{"-allow-network"}, governed.ShellPolicy{DataDir: "/d", AllowNetwork: true, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
+		{"credentials", []string{"-allow-credential-reads"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
+		{"strict credentials", []string{"-require-credential-hiding"}, governed.ShellPolicy{DataDir: "/d", AllowNetworkWhereUndeniable: true}},
+		{"strict network", []string{"-require-network-denial"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReadsWhereUnhidable: true}},
 		{
 			"limits",
 			[]string{"-max-memory", "512", "-max-processes", "64"},
-			governed.ShellPolicy{DataDir: "/d", Limits: sandbox.ResourceLimits{MemoryMiB: 512, MaxProcesses: 64}, AllowCredentialReadsWhereUnhidable: true},
+			governed.ShellPolicy{DataDir: "/d", Limits: sandbox.ResourceLimits{MemoryMiB: 512, MaxProcesses: 64}, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -97,8 +99,10 @@ func TestShippedRunPathsApplyDefaultEgress(t *testing.T) {
 			if !ok {
 				t.Fatalf("the run's sandbox is %T, want the confined local one", run.Sandbox())
 			}
-			if !sb.NetworkDenied() {
-				t.Error("the assembly's sandbox has the host's network")
+			// The strict policy asks for no network. A platform that can deny it does; one that
+			// cannot reports the network open (and refuses the launch, see the sandbox tests).
+			if sb.NetworkDenied() != sandbox.NetworkDenySupported() {
+				t.Errorf("NetworkDenied = %v with NetworkDenySupported = %v", sb.NetworkDenied(), sandbox.NetworkDenySupported())
 			}
 			if !slices.Contains(sb.UnreadablePaths(), dataDir) {
 				t.Errorf("the assembly's sandbox does not hide the data directory: %q", sb.UnreadablePaths())
@@ -119,6 +123,23 @@ func TestCredentialNoticeNamesOnlyThePlatformFallback(t *testing.T) {
 		"operator": {AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true},
 	} {
 		if got := credentialNotice(p); got != "" {
+			t.Errorf("%s: notice %q, want none", name, got)
+		}
+	}
+}
+
+// TestNetworkNoticeNamesOnlyThePlatformFallback: the operator is told when the platform, and
+// nothing they typed, left the network open, and only then.
+func TestNetworkNoticeNamesOnlyThePlatformFallback(t *testing.T) {
+	fallback := governed.ShellPolicy{AllowNetworkWhereUndeniable: true}
+	if got := networkNotice(fallback); (got != "") != !sandbox.NetworkDenySupported() {
+		t.Errorf("notice %q with NetworkDenySupported = %v", got, sandbox.NetworkDenySupported())
+	}
+	for name, p := range map[string]governed.ShellPolicy{
+		"strict":   {},
+		"operator": {AllowNetwork: true, AllowNetworkWhereUndeniable: true},
+	} {
+		if got := networkNotice(p); got != "" {
 			t.Errorf("%s: notice %q, want none", name, got)
 		}
 	}
