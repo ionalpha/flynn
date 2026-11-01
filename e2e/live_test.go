@@ -1,15 +1,20 @@
 package e2e
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/fxamacker/cbor/v2"
+
+	"github.com/ionalpha/flynn/internal/vault"
 )
 
 // The live-model lane runs real tasks against a real model through the binary under test,
@@ -73,8 +78,47 @@ func (p hostedProvider) spec() string {
 	return p.name + ":" + model
 }
 
-// hasKey reports whether the environment carries this provider's key.
-func (p hostedProvider) hasKey() bool { return os.Getenv(p.keyEnv) != "" }
+// hasKey reports whether this provider's key can be found (see [providerKey]).
+func (p hostedProvider) hasKey() bool { return providerKey(p.keyEnv) != "" }
+
+// vaultKeys holds each key [providerKey] read from the operator's vault, so the keychain
+// or sealed file is opened once per key and not once per scenario.
+var vaultKeys sync.Map // keyEnv -> string ("" when the vault has none)
+
+// providerKey returns the value of a hosted provider's key: the environment variable when
+// it is set, otherwise the entry `flynn auth set` stored under the same name in the
+// operator's vault, or "" when neither has it. The vault is the one at
+// FLYNN_E2E_VAULT_DIR, or the release install's data directory by default.
+//
+// The vault is read only with the lane switched on, so the default run never touches a
+// keychain. The key it finds is passed to the binary under test in its environment,
+// because every instance has its own empty data directory and so an empty vault of its
+// own.
+func providerKey(keyEnv string) string {
+	if v := os.Getenv(keyEnv); v != "" {
+		return v
+	}
+	if os.Getenv(liveGate) != "1" {
+		return ""
+	}
+	if v, ok := vaultKeys.Load(keyEnv); ok {
+		return v.(string)
+	}
+	dir := os.Getenv("FLYNN_E2E_VAULT_DIR")
+	if dir == "" {
+		cfg, err := os.UserConfigDir()
+		if err != nil {
+			return ""
+		}
+		dir = filepath.Join(cfg, "flynn")
+	}
+	val := ""
+	if s, err := vault.New(dir).Lookup(context.Background(), keyEnv); err == nil {
+		val = s.Expose()
+	}
+	vaultKeys.Store(keyEnv, val)
+	return val
+}
 
 // liveModel returns the model spec the scenarios share: FLYNN_E2E_REAL_MODEL when set,
 // otherwise the first hosted provider whose key is present. It skips the test when there
@@ -86,7 +130,7 @@ func liveModel(t *testing.T) string {
 		provider, _, _ := strings.Cut(v, ":")
 		for _, p := range hostedProviders {
 			if p.name == provider && !p.hasKey() {
-				t.Skipf("FLYNN_E2E_REAL_MODEL names the %s provider but %s is not set", provider, p.keyEnv)
+				t.Skipf("FLYNN_E2E_REAL_MODEL names the %s provider but %s is neither set nor in the vault", provider, p.keyEnv)
 			}
 		}
 		return v
@@ -96,7 +140,7 @@ func liveModel(t *testing.T) string {
 			return p.spec()
 		}
 	}
-	t.Skip("no hosted provider key in the environment (set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY) and FLYNN_E2E_REAL_MODEL is unset")
+	t.Skip("no hosted provider key in the environment or the vault (set or `flynn auth set` one of ANTHROPIC_API_KEY, OPENAI_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY) and FLYNN_E2E_REAL_MODEL is unset")
 	return ""
 }
 
@@ -118,7 +162,7 @@ func liveInstance(t *testing.T, spec string) *instance {
 	provider, _, _ := strings.Cut(spec, ":")
 	for _, p := range hostedProviders {
 		if p.name == provider {
-			if v := os.Getenv(p.keyEnv); v != "" {
+			if v := providerKey(p.keyEnv); v != "" {
 				in.setEnv(p.keyEnv, v)
 			}
 		}
