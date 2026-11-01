@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
+	"math/rand/v2"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
@@ -38,6 +40,10 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if err := connect(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlitex: open: %w", err)
+	}
 
 	sub, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {
@@ -49,6 +55,39 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 		return nil, fmt.Errorf("sqlitex: migrate: %w", err)
 	}
 	return db, nil
+}
+
+// connectWait bounds how long [Open] keeps retrying its first connection.
+const connectWait = 5 * time.Second
+
+// connect makes the first connection, retrying while another process holds the file.
+//
+// The first connection on a new file switches it to WAL. That switch needs the file
+// to itself, and when it meets another process doing the same, or one opening the
+// file in the old journal mode, SQLite returns SQLITE_BUSY at once without consulting
+// busy_timeout. Two processes that start together on a fresh data directory both
+// reach this point, so the loser retries until the winner has finished; by then the
+// file is already WAL and the switch is a no-op.
+func connect(ctx context.Context, db *sql.DB) error {
+	deadline := time.Now().Add(connectWait)
+	for {
+		err := db.PingContext(ctx)
+		if err == nil || !isBusy(err) || time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(10*time.Millisecond + time.Duration(rand.IntN(40))*time.Millisecond):
+		}
+	}
+}
+
+// isBusy reports whether err is SQLite's lock contention (SQLITE_BUSY or
+// SQLITE_LOCKED), which the driver reports as text.
+func isBusy(err error) bool {
+	msg := err.Error()
+	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "SQLITE_LOCKED")
 }
 
 // dsnPragmas is the shared per-connection configuration. Beyond the write-side

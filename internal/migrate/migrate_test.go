@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"path/filepath"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -143,5 +145,63 @@ func TestRunRejectsDuplicateAndBadNames(t *testing.T) {
 	bad := fstest.MapFS{"init.sql": {Data: []byte(`CREATE TABLE a(id INTEGER);`)}}
 	if err := migrate.Run(ctx, openMem(t), bad); err == nil {
 		t.Fatal("expected a bad-name error")
+	}
+}
+
+// TestRunConcurrentProcessesOnOneFresh opens one fresh file database from several
+// independent handles (one per goroutine, standing in for one per process) and runs
+// the same migrations on all of them at once. A migration that drops a column cannot
+// be applied twice, so any caller that applies a version another already applied fails.
+func TestRunConcurrentProcessesOnOneFresh(t *testing.T) {
+	ctx := context.Background()
+	fsys := fstest.MapFS{
+		"0001_init.sql":      {Data: []byte(`CREATE TABLE t(id INTEGER PRIMARY KEY, uses TEXT, keep TEXT);`)},
+		"0002_move.sql":      {Data: []byte(`ALTER TABLE t ADD COLUMN moved TEXT; UPDATE t SET moved = uses;`)},
+		"0003_drop_uses.sql": {Data: []byte(`ALTER TABLE t DROP COLUMN uses;`)},
+		"0004_more.sql":      {Data: []byte(`ALTER TABLE t ADD COLUMN extra TEXT;`)},
+	}
+	path := filepath.Join(t.TempDir(), "fresh.db")
+	dsn := path + "?_pragma=busy_timeout(30000)"
+
+	const procs = 8
+	dbs := make([]*sql.DB, procs)
+	for i := range dbs {
+		db, err := sql.Open("sqlite", dsn)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db.SetMaxOpenConns(1)
+		t.Cleanup(func() { _ = db.Close() })
+		dbs[i] = db
+	}
+
+	start := make(chan struct{})
+	errs := make([]error, procs)
+	var wg sync.WaitGroup
+	for i, db := range dbs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs[i] = migrate.Run(ctx, db, fsys)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("process %d: %v", i, err)
+		}
+	}
+	if n := countApplied(t, dbs[0]); n != 4 {
+		t.Fatalf("applied = %d, want 4", n)
+	}
+	var distinct int
+	if err := dbs[0].QueryRow(`SELECT count(DISTINCT version) FROM schema_migrations`).Scan(&distinct); err != nil {
+		t.Fatal(err)
+	}
+	if distinct != 4 {
+		t.Fatalf("distinct versions = %d, want 4", distinct)
 	}
 }
