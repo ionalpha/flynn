@@ -3,6 +3,8 @@ package mission
 import (
 	"context"
 	"encoding/json"
+	"os/exec"
+	"slices"
 	"strings"
 	"testing"
 
@@ -131,6 +133,122 @@ func TestPlannerIsShownTheExistingLedger(t *testing.T) {
 	}
 	if !strings.Contains(strings.ToLower(body), "only items that are not already covered") {
 		t.Fatalf("planner was not told to return only new items: %q", body)
+	}
+}
+
+// toolPlanner is a planner that knows the run's tool names, on a host where a lookup finds
+// only the programs in have, and whose OS is goos.
+func toolPlanner(model llm.Model, goos string, have ...string) *Planner {
+	p := NewPlanner(model, WithPlannerTools("skill_read", "bash", "read"))
+	p.goos = goos
+	p.lookPath = func(name string) (string, error) {
+		if slices.Contains(have, name) {
+			return name, nil
+		}
+		return "", exec.ErrNotFound
+	}
+	return p
+}
+
+// TestPlannerRefusesACheckThatCallsAToolAndSaysWhy: the field failure. The model planned
+// `skill_read systematic-debugging >NUL` as a check; a shell cannot start a tool, so the check
+// could only report the program missing and the goal stalled on it. The planner sends the
+// plan back with the reason, and takes the corrected plan.
+func TestPlannerRefusesACheckThatCallsAToolAndSaysWhy(t *testing.T) {
+	model := llmtest.NewScripted(
+		llmtest.SayText(`[{"item":"read the debugging skill","verify":"skill_read systematic-debugging >NUL"}]`),
+		llmtest.SayText(`[{"item":"read the debugging skill","verify":"findstr /c:\"hypothesis\" notes.md"}]`),
+	)
+	items, err := toolPlanner(model, "windows").Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"}))
+	if err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if len(items) != 1 || strings.Contains(items[0].Verify, "skill_read") {
+		t.Fatalf("items = %+v, want the corrected check", items)
+	}
+
+	reqs := model.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("model called %d times, want 2 (plan, then the correction)", len(reqs))
+	}
+	msgs := reqs[1].Messages
+	if len(msgs) != 3 || msgs[1].Role != llm.RoleAssistant || msgs[2].Role != llm.RoleUser {
+		t.Fatalf("correction turn shape = %+v, want the first request, the model's plan, then the refusal", msgs)
+	}
+	refusal := msgs[2].TextContent()
+	for _, want := range []string{"skill_read", "tool", "recorded result"} {
+		if !strings.Contains(refusal, want) {
+			t.Fatalf("refusal does not say %q: %q", want, refusal)
+		}
+	}
+	if !strings.Contains(reqs[0].System, "skill_read") {
+		t.Fatalf("the planning prompt does not name the tools that are not programs: %q", reqs[0].System)
+	}
+}
+
+// TestPlannerRefusesAPosixShellOnWindows: `bash -c` exited 256 for every check in a field run,
+// because Git's bash cannot start under the confined token. The tool of that name is refused
+// as a check there even though a program called bash is on the path.
+func TestPlannerRefusesAPosixShellOnWindows(t *testing.T) {
+	bad := `[{"item":"i","verify":"bash -c \"echo hi\" > out.log 2>&1"}]`
+	good := `[{"item":"i","verify":"findstr hi out.log"}]`
+
+	model := llmtest.NewScripted(llmtest.SayText(bad), llmtest.SayText(good))
+	if _, err := toolPlanner(model, "windows", "bash").Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"})); err != nil {
+		t.Fatalf("Plan: %v", err)
+	}
+	if n := len(model.Requests()); n != 2 {
+		t.Fatalf("model called %d times on windows, want 2: bash must be refused there", n)
+	}
+
+	model = llmtest.NewScripted(llmtest.SayText(bad))
+	items, err := toolPlanner(model, "linux", "bash").Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"}))
+	if err != nil || len(items) != 1 || len(model.Requests()) != 1 {
+		t.Fatalf("a real bash on linux was refused: items=%v err=%v calls=%d", items, err, len(model.Requests()))
+	}
+}
+
+// TestPlannerAllowsAToolNameThatIsAlsoAProgram: grep, read and the like are programs on many
+// hosts, and a check that runs the real one is fine. Only a name the host does not have is
+// refused.
+func TestPlannerAllowsAToolNameThatIsAlsoAProgram(t *testing.T) {
+	plan := `[{"item":"i","verify":"read x"}]`
+	model := llmtest.NewScripted(llmtest.SayText(plan))
+	items, err := toolPlanner(model, "linux", "read").Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"}))
+	if err != nil || len(items) != 1 {
+		t.Fatalf("a check running a program the host has was refused: items=%v err=%v", items, err)
+	}
+
+	model = llmtest.NewScripted(llmtest.SayText(plan), llmtest.SayText(plan), llmtest.SayText(plan))
+	if _, err = toolPlanner(model, "linux").Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"})); err == nil {
+		t.Fatal("a check running a name the host lacks was accepted")
+	}
+}
+
+// TestPlannerThatKeepsNamingATool is transient after the correction budget: the retry ladder
+// samples the model again, and the goal does not record a check that cannot run.
+func TestPlannerThatKeepsNamingATool(t *testing.T) {
+	plan := `[{"item":"i","verify":"skill_read x"}]`
+	model := llmtest.NewScripted(llmtest.SayText(plan), llmtest.SayText(plan), llmtest.SayText(plan))
+	_, err := toolPlanner(model, "windows").Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"}))
+	if err == nil {
+		t.Fatal("expected an error when the model kept planning a tool as a check")
+	}
+	if fault.Classify(err) != fault.Transient {
+		t.Fatalf("class = %q, want transient", fault.Classify(err))
+	}
+	if n := len(model.Requests()); n != 1+plannerCorrections {
+		t.Fatalf("model called %d times, want %d (the plan and %d corrections)", n, 1+plannerCorrections, plannerCorrections)
+	}
+}
+
+// TestPlannerWithoutToolsAcceptsAnyCheck keeps the planner's old behaviour for a caller that
+// does not say what the tools are.
+func TestPlannerWithoutToolsAcceptsAnyCheck(t *testing.T) {
+	model := llmtest.NewScripted(llmtest.SayText(`[{"item":"i","verify":"skill_read x"}]`))
+	items, err := NewPlanner(model).Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"}))
+	if err != nil || len(items) != 1 {
+		t.Fatalf("items=%v err=%v", items, err)
 	}
 }
 
