@@ -333,11 +333,11 @@ func TestResolveExternalAgentReportsAMissingCLI(t *testing.T) {
 	}
 }
 
-// TestClearCodexHomeReportsAnUnreadableHome checks a home that cannot be listed for a reason
+// TestClearOwnHomeReportsAnUnreadableHome checks a home that cannot be listed for a reason
 // other than being absent is an error rather than a silent pass, since a config left in it
 // would then steer the next episode; an absent home has nothing to clear.
-func TestClearCodexHomeReportsAnUnreadableHome(t *testing.T) {
-	if err := clearCodexHome(filepath.Join(t.TempDir(), "absent")); err != nil {
+func TestClearOwnHomeReportsAnUnreadableHome(t *testing.T) {
+	if err := clearOwnHome("codex", filepath.Join(t.TempDir(), "absent"), codexAuthFiles); err != nil {
 		t.Errorf("an absent home has nothing to clear, got %v", err)
 	}
 	if runtime.GOOS == "windows" {
@@ -347,14 +347,14 @@ func TestClearCodexHomeReportsAnUnreadableHome(t *testing.T) {
 	if err := os.WriteFile(file, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := clearCodexHome(file); err == nil || !strings.Contains(err.Error(), "codex home") {
+	if err := clearOwnHome("codex", file, codexAuthFiles); err == nil || !strings.Contains(err.Error(), "codex home") {
 		t.Errorf("a home that is a file must be reported, got %v", err)
 	}
 }
 
-// TestClearCodexHomeReportsAnUnremovableEntry checks a leftover the process cannot delete is
+// TestClearOwnHomeReportsAnUnremovableEntry checks a leftover the process cannot delete is
 // reported: a read-only directory's contents cannot be unlinked on unix.
-func TestClearCodexHomeReportsAnUnremovableEntry(t *testing.T) {
+func TestClearOwnHomeReportsAnUnremovableEntry(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("directory permissions do not block removal here")
 	}
@@ -367,7 +367,7 @@ func TestClearCodexHomeReportsAnUnremovableEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
-	if err := clearCodexHome(home); err == nil {
+	if err := clearOwnHome("codex", home, codexAuthFiles); err == nil {
 		t.Error("an entry that cannot be removed must be reported")
 	}
 }
@@ -480,5 +480,34 @@ func TestExternalSpawnerRefusesAHomeItCannotPrepare(t *testing.T) {
 	t.Cleanup(func() { codexHome = prev })
 	if _, err := externalSpawner("codex"); err == nil {
 		t.Error("a codex home that cannot be cleared must fail the spawner")
+	}
+}
+
+// TestClaudeHomeKeepsOnlyItsSignIn checks everything a harness could leave in Flynn's claude
+// home to steer a later run is gone once the spawner is built, while the sign-in survives.
+func TestClaudeHomeKeepsOnlyItsSignIn(t *testing.T) {
+	withNoExecutables(t)
+	home := filepath.Join(t.TempDir(), "claude")
+	prev := claudeHome
+	claudeHome = func() string { return home }
+	t.Cleanup(func() { claudeHome = prev })
+	if err := os.MkdirAll(filepath.Join(home, "agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".credentials.json", "settings.json", "CLAUDE.md", ".claude.json", filepath.Join("agents", "x.md")} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := externalSpawner("claude"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"settings.json", "CLAUDE.md", ".claude.json", "agents"} {
+		if _, err := os.Stat(filepath.Join(home, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s in Flynn's claude home must be removed before an episode, got %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".credentials.json")); err != nil {
+		t.Errorf("the sign-in in Flynn's claude home must be left alone: %v", err)
 	}
 }

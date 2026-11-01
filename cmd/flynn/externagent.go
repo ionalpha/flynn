@@ -142,7 +142,7 @@ var codexAllowedHosts = []string{
 // providers and settings, is never on the child's path, so whatever the person who
 // launched the run happens to carry cannot steer an episode or hand the harness servers
 // this run neither hosts nor governs. Anything but the sign-in found in Flynn's own home is removed
-// before a spawner is built ([clearCodexHome]), because nothing Flynn does writes one
+// before a spawner is built ([clearOwnHome]), because nothing Flynn does writes one
 // there. A variable so tests can point it at a temporary directory.
 var codexHome = defaultCodexHome
 
@@ -155,32 +155,39 @@ func codexLoginCommand(home string) string {
 	return homeLoginCommand("CODEX_HOME", home, "codex login")
 }
 
-// codexAuthFiles are the entries of Flynn's codex home that [clearCodexHome] keeps: the
-// sign-in the CLI writes with its file credential store. Everything else the CLI keeps
-// there (config.toml, AGENTS.md, prompts, skills, history, caches) is rebuilt by the CLI
-// when it needs it, and is also what a harness would write to steer a later run.
-var codexAuthFiles = map[string]bool{"auth.json": true}
+// codexAuthFiles and claudeAuthFiles are the entries of Flynn's own CLI homes that
+// [clearOwnHome] keeps: the sign-in each CLI writes with its file credential store.
+// Everything else a CLI keeps there is rebuilt when it needs it, and is also what a harness
+// would write to steer a later run: config.toml, AGENTS.md, prompts and skills for codex;
+// settings.json (hooks, permission allow rules), CLAUDE.md, agents, commands, plugins and
+// .claude.json (user-scoped MCP servers and trust decisions) for claude. Claude's account
+// details also live in .claude.json, but the token is in .credentials.json, so losing it
+// costs the CLI a re-read of the account and nothing else.
+var (
+	codexAuthFiles  = map[string]bool{"auth.json": true}
+	claudeAuthFiles = map[string]bool{".credentials.json": true}
+)
 
-// clearCodexHome removes everything from Flynn's codex home except the sign-in, so an
-// episode's configuration and instructions are what its command line passes and nothing
-// else. An episode's child may write the home it runs in, so without this a harness could
-// leave a config.toml, AGENTS.md, prompt or skill there that steers every later run. A
-// sign-in held in the OS keyring is outside the home and untouched. A home that does not
-// exist has nothing to clear.
-func clearCodexHome(home string) error {
+// clearOwnHome removes everything from one of Flynn's CLI homes except the entries in keep,
+// so an episode's configuration and instructions are what its command line passes and
+// nothing else. An episode's child may write the home it runs in, so without this a harness
+// could leave settings, instructions or plugins there that steer every later run. A sign-in
+// held in the OS keyring is outside the home and untouched. A home that does not exist has
+// nothing to clear.
+func clearOwnHome(label, home string, keep map[string]bool) error {
 	entries, err := os.ReadDir(home)
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("codex home: %w", err)
+		return fmt.Errorf("%s home: %w", label, err)
 	}
 	for _, e := range entries {
-		if codexAuthFiles[e.Name()] {
+		if keep[e.Name()] {
 			continue
 		}
 		if err := os.RemoveAll(filepath.Join(home, e.Name())); err != nil {
-			return fmt.Errorf("codex home: %w", err)
+			return fmt.Errorf("%s home: %w", label, err)
 		}
 	}
 	return nil
@@ -221,10 +228,12 @@ var claudeAllowedHosts = []string{
 // CLAUDE_CONFIG_DIR. Flynn never reads, copies or stores the token inside: the CLI writes it
 // at sign-in and refreshes it in place, and the sign-in completes in the CLI's own flow.
 //
-// Keeping it apart from the user's home is what makes it safe to grant an episode write on
-// it ([externagent.SandboxConfig.AuthDirWritable]): the worst a harness can do there is sign
-// Flynn's copy of the CLI out. It also means none of the user's own settings, hooks,
-// plugins or MCP servers are in it to steer an episode. It sits under the per-user data
+// Keeping it apart from the user's home means none of the user's own settings, hooks,
+// plugins or MCP servers are in it to steer an episode, which is what makes it acceptable
+// to grant an episode write on it ([externagent.SandboxConfig.AuthDirWritable]). The grant
+// still lets a harness sign Flynn's copy out or leave settings, CLAUDE.md, agents, commands
+// or plugins behind, so everything but the sign-in is removed before a spawner is built
+// ([clearOwnHome]). It sits under the per-user data
 // directory, so a development build and a release build keep separate sign-ins. A variable
 // so tests can point it at a temporary directory.
 var claudeHome = defaultClaudeHome
@@ -297,7 +306,7 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		if err := ensureOwnHome("codex", home); err != nil {
 			return nil, err
 		}
-		if err := clearCodexHome(home); err != nil {
+		if err := clearOwnHome("codex", home, codexAuthFiles); err != nil {
 			return nil, err
 		}
 		return externagent.NewSandboxSpawner(codexSandboxConfig(home, prog)), nil
@@ -311,6 +320,9 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		// reports how to sign in.
 		home := claudeHome()
 		if err := ensureOwnHome("claude", home); err != nil {
+			return nil, err
+		}
+		if err := clearOwnHome("claude", home, claudeAuthFiles); err != nil {
 			return nil, err
 		}
 		return externagent.NewSandboxSpawner(claudeSandboxConfig(home, prog)), nil
