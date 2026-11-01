@@ -43,13 +43,11 @@ func TestPlacementColNamesEachPlacement(t *testing.T) {
 }
 
 // stubMachine makes the fit view see a described box instead of the one running the test.
-// freeBytes < 0 means the free-memory probe is unavailable.
-func stubMachine(t *testing.T, box hardware.Box, freeBytes int64) {
+func stubMachine(t *testing.T, box hardware.Box) {
 	t.Helper()
-	oldBox, oldFree := detectBox, probeFreeVRAM
-	t.Cleanup(func() { detectBox, probeFreeVRAM = oldBox, oldFree })
+	old := detectBox
+	t.Cleanup(func() { detectBox = old })
 	detectBox = func(context.Context) hardware.Box { return box }
-	probeFreeVRAM = func(context.Context) (int64, bool) { return freeBytes, freeBytes >= 0 }
 }
 
 func fitOutput(t *testing.T, args ...string) string {
@@ -66,7 +64,7 @@ func fitOutput(t *testing.T, args ...string) string {
 // list as a labelled split, and the largest model that stays on the card is named beside it.
 func TestFitViewOnTheFieldTestBox(t *testing.T) {
 	const gb = 1 << 30
-	stubMachine(t, hardware.Box{GPUName: "RTX 5080 Laptop", VRAMBytes: 16 * gb, RAMBytes: 16 * 1_000_000_000}, 16*gb-1_100_000_000)
+	stubMachine(t, hardware.Box{GPUName: "RTX 5080 Laptop", VRAMBytes: 16 * gb, VRAMFreeBytes: 16*gb - 1_100_000_000, RAMBytes: 16 * 1_000_000_000})
 	out := fitOutput(t)
 	for _, want := range []string{
 		"RTX 5080 Laptop", "in use", "context 32k, KV cache f16",
@@ -86,21 +84,18 @@ func TestFitViewTable(t *testing.T) {
 	cases := []struct {
 		name  string
 		box   hardware.Box
-		free  int64
 		args  []string
 		want  string
 		wants []string
 	}{
 		{
 			name: "12GB card, 64GB RAM",
-			box:  hardware.Box{GPUName: "RTX 4070", VRAMBytes: 12 * gb, RAMBytes: 64 * gb},
-			free: 11 * gb,
+			box:  hardware.Box{GPUName: "RTX 4070", VRAMBytes: 12 * gb, VRAMFreeBytes: 11 * gb, RAMBytes: 64 * gb},
 			want: "recommended local model: qwen3.6:35b-a3b (gpu+ram",
 		},
 		{
 			name: "CPU only",
 			box:  hardware.Box{RAMBytes: 16 * gb},
-			free: -1,
 			want: "recommended local model: ",
 			wants: []string{
 				"system RAM", "usable",
@@ -108,14 +103,12 @@ func TestFitViewTable(t *testing.T) {
 		},
 		{
 			name: "24GB card holds the 35B whole",
-			box:  hardware.Box{GPUName: "RTX 4090", VRAMBytes: 24 * gb, RAMBytes: 32 * gb},
-			free: 23 * gb,
+			box:  hardware.Box{GPUName: "RTX 4090", VRAMBytes: 24 * gb, VRAMFreeBytes: 23 * gb, RAMBytes: 32 * gb},
 			want: "recommended local model: qwen3.6:35b-a3b (gpu)",
 		},
 		{
 			name:  "a q8_0 cache at 131k tokens leaves the 35B tight where f16 leaves it over budget",
-			box:   hardware.Box{GPUName: "RTX 4090", VRAMBytes: 24 * gb},
-			free:  23 * gb,
+			box:   hardware.Box{GPUName: "RTX 4090", VRAMBytes: 24 * gb, VRAMFreeBytes: 23 * gb},
 			args:  []string{"--ctx", "131072", "--kv", "q8"},
 			want:  "KV cache q8_0",
 			wants: []string{"tight"},
@@ -123,7 +116,7 @@ func TestFitViewTable(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			stubMachine(t, tc.box, tc.free)
+			stubMachine(t, tc.box)
 			out := fitOutput(t, tc.args...)
 			for _, want := range append([]string{tc.want}, tc.wants...) {
 				if !strings.Contains(out, want) {
@@ -135,7 +128,7 @@ func TestFitViewTable(t *testing.T) {
 }
 
 func TestFitViewRejectsBadSettings(t *testing.T) {
-	stubMachine(t, hardware.Box{RAMBytes: 16_000_000_000}, -1)
+	stubMachine(t, hardware.Box{RAMBytes: 16_000_000_000})
 	for _, args := range [][]string{{"--kv", "f32"}, {"--ctx", "0"}, {"--ctx", "-5"}} {
 		var b strings.Builder
 		if err := runModels(append([]string{"--local", "--fit"}, args...), "", &b); err == nil {
@@ -146,7 +139,7 @@ func TestFitViewRejectsBadSettings(t *testing.T) {
 
 // TestFitViewWithNothingDetected says so rather than ranking against zero memory.
 func TestFitViewWithNothingDetected(t *testing.T) {
-	stubMachine(t, hardware.Box{}, -1)
+	stubMachine(t, hardware.Box{})
 	out := fitOutput(t)
 	if !strings.Contains(out, "could not detect") {
 		t.Fatalf("expected the undetected message:\n%s", out)
@@ -157,7 +150,7 @@ func TestFitViewWithNothingDetected(t *testing.T) {
 // same answer on a laptop with 16 GB of RAM and a workstation with 256 GB, and --ram opts
 // into a split.
 func TestGivenVRAMIgnoresThisMachinesRAM(t *testing.T) {
-	stubMachine(t, hardware.Box{GPUName: "big", VRAMBytes: 80_000_000_000, RAMBytes: 256_000_000_000}, -1)
+	stubMachine(t, hardware.Box{GPUName: "big", VRAMBytes: 80_000_000_000, RAMBytes: 256_000_000_000})
 	without := fitOutput(t, "--vram", "16")
 	if strings.Contains(without, "gpu+ram (") || !strings.Contains(without, "no system RAM") {
 		t.Fatalf("--vram alone must not borrow this machine's RAM:\n%s", without)
@@ -168,12 +161,27 @@ func TestGivenVRAMIgnoresThisMachinesRAM(t *testing.T) {
 	}
 }
 
-// TestFreeVRAMProbeAbsentFallsBackToTotal: with no probe the detected total is used and
-// the line does not claim anything is in use.
-func TestFreeVRAMProbeAbsentFallsBackToTotal(t *testing.T) {
-	stubMachine(t, hardware.Box{GPUName: "X", VRAMBytes: 16_000_000_000, RAMBytes: 8_000_000_000}, -1)
-	m := resolveMachine(0, 0)
-	if m.VRAMFreeBytes != 16_000_000_000 || strings.Contains(m.description, "in use") {
-		t.Fatalf("machine = %+v", m)
+// TestFitJudgesVRAMAgainstTheFreeFigure: the fit uses the free memory Detect reports, and
+// falls back to the total when the figure is unreported or not below the total, so the
+// line only claims memory is in use when the probe showed it.
+func TestFitJudgesVRAMAgainstTheFreeFigure(t *testing.T) {
+	const gb = 1_000_000_000
+	for _, tc := range []struct {
+		name  string
+		box   hardware.Box
+		want  int64
+		inUse bool
+	}{
+		{"free figure used", hardware.Box{GPUName: "X", VRAMBytes: 16 * gb, VRAMFreeBytes: 11 * gb, RAMBytes: 8 * gb}, 11 * gb, true},
+		{"unreported falls back to the total", hardware.Box{GPUName: "X", VRAMBytes: 16 * gb, RAMBytes: 8 * gb}, 16 * gb, false},
+		{"figure above the total is ignored", hardware.Box{GPUName: "X", VRAMBytes: 16 * gb, VRAMFreeBytes: 17 * gb, RAMBytes: 8 * gb}, 16 * gb, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stubMachine(t, tc.box)
+			m := resolveMachine(0, 0)
+			if m.VRAMFreeBytes != tc.want || strings.Contains(m.description, "in use") != tc.inUse {
+				t.Fatalf("machine = %+v, description %q", m, m.description)
+			}
+		})
 	}
 }

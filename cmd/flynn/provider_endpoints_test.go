@@ -51,11 +51,13 @@ func TestModelsListsServerModelsAsLocalAndUnverified(t *testing.T) {
 }
 
 func TestModelsOmitsServerModelsWhenFilteredOrAPIOnly(t *testing.T) {
-	fakeDiscovery(t, provider.LocalModel{Server: "ollama", ID: "gpt-oss:20b"})
+	// The id is one no shipped catalog entry uses, so the assertion does not constrain
+	// which models the catalog may add.
+	fakeDiscovery(t, provider.LocalModel{Server: "ollama", ID: "fake-server-model:1b"})
 	for _, args := range [][]string{{"--api"}, {"--cap", "tools"}, {"--max-params", "70"}, {"--publisher", "meta"}, {"--safe"}, {"--max-size", "100"}} {
 		var out bytes.Buffer
 		_ = runModels(args, t.TempDir(), &out)
-		if strings.Contains(out.String(), "gpt-oss:20b") {
+		if strings.Contains(out.String(), "fake-server-model:1b") {
 			t.Errorf("%v: unverified server models cannot satisfy this filter:\n%s", args, out.String())
 		}
 	}
@@ -152,6 +154,25 @@ func TestResolveModelReadsTheProvidersFile(t *testing.T) {
 	}
 	writeProvidersFile(t, dir, `not json`)
 	if _, _, err := resolveModel(ctx, "box:gpt-oss:20b", dir); err == nil {
+		t.Fatal("a malformed providers file must be reported, not ignored")
+	}
+}
+
+// TestChildModelResolverReadsTheProvidersFile is the wiring check for a delegated child:
+// an archetype that pins box:<model> resolves the same way the root model does.
+func TestChildModelResolverReadsTheProvidersFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	resolve := childModelResolver(ctx, dir)
+	if _, err := resolve("box:gpt-oss:20b"); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("without a providers file box is not a provider: %v", err)
+	}
+	writeProvidersFile(t, dir, boxServer)
+	if _, err := resolve("box:gpt-oss:20b"); err != nil {
+		t.Fatalf("a configured name should resolve for a child: %v", err)
+	}
+	writeProvidersFile(t, dir, `not json`)
+	if _, err := resolve("box:gpt-oss:20b"); err == nil {
 		t.Fatal("a malformed providers file must be reported, not ignored")
 	}
 }

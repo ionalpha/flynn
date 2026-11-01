@@ -12,13 +12,10 @@ import (
 	"github.com/ionalpha/flynn/internal/hardware"
 )
 
-// detectBox and probeFreeVRAM are the two reads of the real machine behind `flynn models
-// --fit`. They are variables so the fit view can be driven from a described box, which is
-// how its ranking is tested on a machine with a different GPU.
-var (
-	detectBox     = hardware.Detect
-	probeFreeVRAM = hardware.FreeVRAM
-)
+// detectBox is the read of the real machine behind `flynn models --fit`. It is a variable so
+// the fit view can be driven from a described box, which is how its ranking is tested on a
+// machine with a different GPU.
+var detectBox = hardware.Detect
 
 // fitMachine is the machine a fit is judged against and how it was determined.
 type fitMachine struct {
@@ -50,7 +47,7 @@ func resolveMachine(vramGB, ramGB float64) fitMachine {
 	case box.HasGPU():
 		m.VRAMFreeBytes = box.VRAMBytes
 		desc := fmt.Sprintf("%s, %s VRAM", box.GPUName, humanBytes(box.VRAMBytes))
-		if free, ok := probeFreeVRAM(ctx); ok && free >= 0 && free < box.VRAMBytes {
+		if free := box.VRAMFreeBytes; free > 0 && free < box.VRAMBytes {
 			m.VRAMFreeBytes = free
 			desc = fmt.Sprintf("%s, %s free of %s VRAM, %s in use", box.GPUName, humanBytes(free), humanBytes(box.VRAMBytes), humanBytes(box.VRAMBytes-free))
 		}
