@@ -15,7 +15,11 @@ import (
 // container tier, after the workspace grant. A failure to grant fails the launch rather
 // than starting a child whose writes will silently fail partway through an episode.
 func (l *Local) grantWritableDirs(sid *windows.SID) error {
-	for _, dir := range l.writableDirs {
+	dirs, err := l.writableTargets()
+	if err != nil {
+		return err
+	}
+	for _, dir := range dirs {
 		if err := grantDir(dir, sid); err != nil {
 			// Wrapped in ErrWriteGrant so the best-effort fallback refuses to absorb it, for
 			// the same reason the read grant refuses: a directory this process cannot grant
@@ -33,7 +37,11 @@ func (l *Local) grantWritableDirs(sid *windows.SID) error {
 // the child exactly when it carries an entry for that SID, which is what the workspace
 // grant already does for the root (see restricted_windows.go).
 func (l *Local) grantRestrictedWritableDirs() error {
-	for _, dir := range l.writableDirs {
+	dirs, err := l.writableTargets()
+	if err != nil {
+		return err
+	}
+	for _, dir := range dirs {
 		if err := grantRestrictedDir(dir, l.root); err != nil {
 			return fmt.Errorf("%w: %s: %w", ErrWriteGrant, dir, err)
 		}

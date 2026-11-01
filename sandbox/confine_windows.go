@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -52,17 +53,18 @@ func (l *Local) confine(_ *exec.Cmd) error { return nil }
 // a caller cannot see any other way. A run that ends without Close, or that crashes,
 // still leaves one behind; CleanStaleProfiles is what collects those.
 func (l *Local) closePlatform() error {
+	scratchErr := l.removeScratch()
 	if l.hostReadable {
 		// The write-restricted tier registers no container profile and needs no read
 		// grants: its access entries are the workspace write grant and any extra write
 		// grants, all removed here.
 		_ = revokeRestrictedDir(l.root, l.root)
 		l.revokeWritableDirs()
-		return nil
+		return scratchErr
 	}
 	l.revokeReadableDirs()
 	l.revokeWritableDirs()
-	return deleteAppContainerProfile(appContainerMoniker(l.root))
+	return errors.Join(deleteAppContainerProfile(appContainerMoniker(l.root)), scratchErr)
 }
 
 // runShell runs a shell command, choosing the execution path by whether confinement
@@ -172,9 +174,8 @@ var acProfileEnvKeys = []string{
 
 // appContainerEnv builds the environment block for a contained command: the sandbox's
 // scrubbed baseline plus the profile-location variables AppContainer requires, with
-// the temporary directory pointed at the working tree so a command that needs scratch
-// space writes it inside the one writable location rather than failing against the
-// read-only host.
+// the temporary directory and toolchain caches pointed at the sandbox's scratch directory
+// (see [Local.scratchDir]).
 func (l *Local) appContainerEnv() *uint16 {
 	return l.appContainerEnvBlock(l.env())
 }
@@ -182,7 +183,7 @@ func (l *Local) appContainerEnv() *uint16 {
 // appContainerEnvBlock builds the AppContainer environment block from a base KEY=VALUE
 // environment (the sandbox's scrubbed baseline, optionally overlaid with a streamed
 // process's explicit grants), plus the profile-location variables AppContainer requires
-// and the temporary directory redirected into the working tree. It is the shared builder
+// and the temporary directory and caches redirected into the scratch directory. It is the shared builder
 // behind appContainerEnv (the one-shot path, base = env()) and the streaming path
 // (base = streamEnv(grants)).
 func (l *Local) appContainerEnvBlock(base []string) *uint16 {
@@ -200,8 +201,9 @@ func (l *Local) appContainerEnvBlock(base []string) *uint16 {
 			m[k] = v
 		}
 	}
-	m["TEMP"] = l.root
-	m["TMP"] = l.root
+	if scratch, err := l.scratchDir(); err == nil {
+		withScratchEnv(m, scratch, os.Getenv)
+	}
 	return envBlock(m)
 }
 

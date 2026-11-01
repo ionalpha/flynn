@@ -122,7 +122,7 @@ func createWriteRestrictedToken(workspaceSID *windows.SID) (windows.Token, error
 
 	var base windows.Token
 	err = windows.OpenProcessToken(windows.CurrentProcess(),
-		windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY|windows.TOKEN_ASSIGN_PRIMARY, &base)
+		windows.TOKEN_DUPLICATE|windows.TOKEN_QUERY|windows.TOKEN_ASSIGN_PRIMARY|windows.TOKEN_ADJUST_DEFAULT, &base)
 	if err != nil {
 		return 0, fmt.Errorf("open process token: %w", err)
 	}
@@ -146,7 +146,45 @@ func createWriteRestrictedToken(workspaceSID *windows.SID) (windows.Token, error
 	if r == 0 {
 		return 0, fmt.Errorf("CreateRestrictedToken: %w", e)
 	}
+	if err := grantDefaultDacl(restricted, workspaceSID); err != nil {
+		_ = restricted.Close()
+		return 0, err
+	}
 	return restricted, nil
+}
+
+// grantDefaultDacl adds the workspace's restricting SID to the token's default DACL, the
+// access list Windows stamps on every object the child creates without naming one: pipes,
+// events, sections. A write-restricted token checks each access against the restricting
+// SIDs as well as the user, and the inherited default DACL names only the user, SYSTEM and
+// administrators, so a pipe the child creates for itself would refuse the child's own
+// write end. Go's os.Pipe fails that way ("pipe: Access is denied"), which stops `go
+// build` before it compiles anything. The entry names the per-workspace SID alone, which
+// no other principal holds, so it opens nothing outside this sandbox's own objects.
+func grantDefaultDacl(token windows.Token, workspaceSID *windows.SID) error {
+	var n uint32
+	_ = windows.GetTokenInformation(token, windows.TokenDefaultDacl, nil, 0, &n)
+	if n == 0 {
+		return errors.New("sandbox: size token default access list")
+	}
+	buf := make([]byte, n)
+	if err := windows.GetTokenInformation(token, windows.TokenDefaultDacl, &buf[0], n, &n); err != nil {
+		return fmt.Errorf("sandbox: read token default access list: %w", err)
+	}
+	existing := (*struct{ DefaultDacl *windows.ACL })(unsafe.Pointer(&buf[0])).DefaultDacl
+	merged, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{{
+		AccessPermissions: windows.GENERIC_ALL,
+		AccessMode:        windows.GRANT_ACCESS,
+		Trustee:           sidTrustee(workspaceSID, windows.TRUSTEE_IS_GROUP),
+	}}, existing)
+	if err != nil {
+		return fmt.Errorf("sandbox: merge token default access list: %w", err)
+	}
+	info := struct{ DefaultDacl *windows.ACL }{merged}
+	if err := windows.SetTokenInformation(token, windows.TokenDefaultDacl, (*byte)(unsafe.Pointer(&info)), uint32(unsafe.Sizeof(info))); err != nil {
+		return fmt.Errorf("sandbox: set token default access list: %w", err)
+	}
+	return nil
 }
 
 // logonSessionSID returns the logon-session SID from a token: the group carrying the
