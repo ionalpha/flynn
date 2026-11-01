@@ -18,6 +18,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/url"
 	"strings"
@@ -218,6 +219,13 @@ type Response struct {
 type Model interface {
 	Generate(ctx context.Context, req Request) (Response, error)
 }
+
+// ErrContextOverflow marks a refusal because the prompt is longer than the context window the
+// server was started with or the model supports. An adapter wraps it around the provider's own
+// error when it recognises the refusal, so a caller tests for it with [errors.Is] and does not
+// parse provider message text. It is terminal: resending the same prompt cannot succeed, so the
+// caller's choices are to shorten the prompt or stop.
+var ErrContextOverflow = errors.New("llm: prompt exceeds the context window")
 
 // RetryClass classifies an HTTP status from a model API into a fault.Class that
 // tells the caller whether to retry. 5xx (a server fault) and 429 (rate limited)

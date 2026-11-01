@@ -2,6 +2,7 @@ package reliability
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -9,10 +10,15 @@ import (
 	"github.com/ionalpha/flynn/llm"
 )
 
-// charsPerToken is the rough characters-per-token ratio used to size a prompt to a target token
-// count. It does not need to be exact: the goal is to grow the prompt across a meaningful range, so
-// a coarse, model-independent estimate is enough and keeps the probe free of a tokenizer.
-const charsPerToken = 4
+// charsPerToken is the characters-per-token ratio a prompt is first sized with, before any server
+// has said how many tokens a prompt really was. It is a guess: this filler runs nearer 3.5 on some
+// tokenizers, so [MeasureEffectiveContext] replaces it with the ratio the server reports after the
+// first rung and sizes every later rung from that.
+const charsPerToken = 4.0
+
+// replyHeadroom is the room left in the served context for the model's answer and the chat
+// template around the prompt, so a rung sized to the whole context is not refused for a few tokens.
+const replyHeadroom = 256
 
 // needle is the fact hidden inside the filler. It is distinctive enough that a model cannot answer
 // by chance, so a correct answer means the model actually retained it across the surrounding text.
@@ -26,10 +32,17 @@ const (
 // which is often shorter than its advertised one, and shrinks under quantization. Candidates are
 // tried in ascending order and the search stops at the first failure, since recall falls off with
 // length and does not recover, so the result is the last length that passed. Zero means the model
-// failed even the smallest candidate, so no usable window was measured. Each probe pins decoding,
-// so the measurement is reproducible. Candidates that are not positive are ignored.
+// failed even the smallest candidate. Each probe pins decoding, so the measurement reproduces.
+// Candidates that are not positive are ignored.
+//
+// A refusal as too long ([llm.ErrContextOverflow]) shows where the server's window ends, which is
+// the same answer as a failed recall, so it ends the search too. Any other error is returned: a
+// dropped connection says nothing about the window. The result never exceeds what was sent: it is
+// capped at the token count the server reports, and later rungs are sized from the ratio that
+// count implies, because [charsPerToken] is only the first guess.
 func MeasureEffectiveContext(ctx context.Context, model llm.Model, candidates []int) (int, error) {
 	best := 0
+	cpt := charsPerToken
 	for _, tokens := range ascending(candidates) {
 		if tokens <= 0 {
 			continue
@@ -37,39 +50,60 @@ func MeasureEffectiveContext(ctx context.Context, model llm.Model, candidates []
 		if err := ctx.Err(); err != nil {
 			return 0, err
 		}
-		ok, err := recallsAt(ctx, model, tokens)
+		r, err := recallsAt(ctx, model, tokens, cpt)
+		if errors.Is(err, llm.ErrContextOverflow) {
+			break // the server's window ends below this rung; the previous pass is the answer
+		}
 		if err != nil {
 			return 0, err
 		}
-		if !ok {
+		if r.sent > 0 {
+			cpt = float64(r.chars) / float64(r.sent)
+		}
+		if !r.recalled {
 			break // recall is monotone in length; the previous pass is the effective window
 		}
 		best = tokens
+		if r.sent > 0 {
+			best = min(tokens, r.sent)
+		}
 	}
 	return best, nil
+}
+
+// recall is the outcome of one rung: whether the needle came back, how many characters were sent,
+// and the token count the server reported for them (zero when it reports none).
+type recall struct {
+	recalled bool
+	chars    int
+	sent     int
 }
 
 // recallsAt builds a prompt of about tokens tokens with the needle buried in the middle, asks the
 // model to retrieve it, and reports whether it did. The needle sits in the middle because that is
 // the hardest place to retain, so the measurement reflects whole-window coherence rather than just
-// the recent tail.
-func recallsAt(ctx context.Context, model llm.Model, tokens int) (bool, error) {
-	prompt := buildHaystack(tokens)
+// the recent tail. cpt is the characters-per-token ratio to size the prompt with.
+func recallsAt(ctx context.Context, model llm.Model, tokens int, cpt float64) (recall, error) {
+	prompt := buildHaystack(tokens, cpt)
 	resp, err := model.Generate(ctx, llm.Request{
 		Messages: []llm.Message{llm.Text(llm.RoleUser, prompt)},
 		Sampling: probeSeed,
 	})
 	if err != nil {
-		return false, err
+		return recall{}, err
 	}
-	return strings.Contains(resp.Message.TextContent(), needleValue), nil
+	return recall{
+		recalled: strings.Contains(resp.Message.TextContent(), needleValue),
+		chars:    len(prompt),
+		sent:     resp.Usage.InputTokens,
+	}, nil
 }
 
 // buildHaystack returns a prompt of roughly the target token count: filler sentences with the
-// needle inserted near the middle, followed by the retrieval question. The filler is deterministic,
-// so the same target always produces the same prompt and the measurement reproduces.
-func buildHaystack(tokens int) string {
-	targetChars := tokens * charsPerToken
+// needle inserted near the middle, followed by the retrieval question, sized at cpt characters per
+// token. The filler is deterministic, so the same target always produces the same prompt and the measurement reproduces.
+func buildHaystack(tokens int, cpt float64) string {
+	targetChars := int(float64(tokens) * cpt)
 	const filler = "The quarterly logistics report notes routine throughput across all regional depots. "
 	var b strings.Builder
 	half := targetChars / 2
@@ -104,15 +138,27 @@ func ascending(candidates []int) []int {
 // advertised: a fixed ladder of powers of two up to and including the advertised window, so the
 // search spans the realistic range without overshooting the claim. An advertised window of zero or
 // less yields no candidates, since there is nothing to measure against.
-func ContextCandidates(advertised int) []int {
+//
+// served is the context the server was actually started with, when known (zero when not). The
+// advertised window is what the model supports, but a server is often launched with less, and a
+// prompt past it is refused rather than answered, so the ladder ends at what the server can hold
+// less [replyHeadroom] for the answer.
+func ContextCandidates(advertised, served int) []int {
 	if advertised <= 0 {
 		return nil
 	}
+	limit := advertised
+	if served > 0 && served-replyHeadroom < limit {
+		limit = served - replyHeadroom
+	}
 	var out []int
-	for n := 2048; n < advertised; n *= 2 {
+	for n := 2048; n < limit; n *= 2 {
 		out = append(out, n)
 	}
-	return append(out, advertised)
+	if limit > 0 {
+		out = append(out, limit)
+	}
+	return out
 }
 
 // DescribeContext renders an effective-context measurement against the advertised window, for a
