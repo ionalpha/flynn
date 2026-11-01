@@ -466,20 +466,26 @@ func TestExternalSpawnerRefusesAHomeItCannotPrepare(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		return
 	}
-	home := t.TempDir()
-	sub := filepath.Join(home, "skills")
-	if err := os.MkdirAll(filepath.Join(sub, "x"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(sub, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
-	prev := codexHome
-	codexHome = func() string { return home }
-	t.Cleanup(func() { codexHome = prev })
-	if _, err := externalSpawner("codex"); err == nil {
-		t.Error("a codex home that cannot be cleared must fail the spawner")
+	for _, tc := range []struct {
+		name string
+		home *func() string
+	}{{"claude", &claudeHome}, {"codex", &codexHome}} {
+		home := t.TempDir()
+		sub := filepath.Join(home, "skills")
+		if err := os.MkdirAll(filepath.Join(sub, "x"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(sub, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+		prev := *tc.home
+		*tc.home = func() string { return home }
+		_, err := externalSpawner(tc.name)
+		*tc.home = prev
+		if err == nil {
+			t.Errorf("a %s home that cannot be cleared must fail the spawner", tc.name)
+		}
 	}
 }
 
