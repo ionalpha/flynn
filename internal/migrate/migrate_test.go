@@ -205,3 +205,28 @@ func TestRunConcurrentProcessesOnOneFresh(t *testing.T) {
 		t.Fatalf("distinct versions = %d, want 4", distinct)
 	}
 }
+
+// TestRunRefusesAVersionRecordedMeanwhileWithAnotherChecksum covers a process that
+// loses the race to one running different migration files: the version it was about
+// to apply turns up recorded with another checksum once it holds the write lock, and
+// it must refuse as it would have before applying anything, not skip it silently.
+func TestRunRefusesAVersionRecordedMeanwhileWithAnotherChecksum(t *testing.T) {
+	ctx := context.Background()
+	db := openMem(t)
+	// Applying 0001 stands in for the other process: it records 0002 with a checksum
+	// that is not this build's, after Run has already decided 0002 is pending.
+	fsys := fstest.MapFS{
+		"0001_a.sql": {Data: []byte(`CREATE TABLE a(id INTEGER);
+			INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (2, '0002_b.sql', 'other-build', 'now');`)},
+		"0002_b.sql": {Data: []byte(`CREATE TABLE b(id INTEGER);`)},
+	}
+
+	err := migrate.Run(ctx, db, fsys)
+	var incompat *migrate.IncompatibleSchemaError
+	if !errors.As(err, &incompat) {
+		t.Fatalf("expected *IncompatibleSchemaError, got %T: %v", err, err)
+	}
+	if _, err := db.Exec(`INSERT INTO b(id) VALUES (1)`); err == nil {
+		t.Fatal("0002 must not be applied over a differing record")
+	}
+}
