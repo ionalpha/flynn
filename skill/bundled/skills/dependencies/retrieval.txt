@@ -5,3 +5,8 @@ there is a security advisory against something we depend on | dependencies |
 this library has not been updated in three years | dependencies |
 can we use this package with its licence | dependencies |
 should I pin this version or use a range | dependencies |
+copy this function from another repository into our code | dependencies |
+port a file from an open source project into this one | dependencies |
+can I paste this snippet I found on GitHub | dependencies |
+how do we credit a chat template we took from a model card | dependencies |
+move this function into another file in the same package | structural-boundaries | dependencies
