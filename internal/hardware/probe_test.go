@@ -231,6 +231,25 @@ func TestEngineRuntimeMatchIsCaseInsensitive(t *testing.T) {
 	}
 }
 
+// TestDetectReadsFreeVRAMAndUMDBanner checks both fields come from probes the box already
+// runs: the free memory from the per-GPU query, and the CUDA version from a banner that uses
+// the "CUDA UMD Version" label.
+func TestDetectReadsFreeVRAMAndUMDBanner(t *testing.T) {
+	const umdBanner = "| NVIDIA-SMI 610.88                 KMD Version: 610.88        CUDA UMD Version: 13.3     |"
+	h := &fakeHost{cmdOut: map[string]string{
+		"nvidia-smi": "16376, NVIDIA GeForce RTX 5080 Laptop, 12.0, 610.88, 11264\n" + umdBanner,
+	}}
+	h.install(t)
+
+	b := Detect(context.Background())
+	if b.VRAMBytes != 16376*1024*1024 || b.VRAMFreeBytes != 11264*1024*1024 {
+		t.Fatalf("VRAMBytes=%d VRAMFreeBytes=%d, want the total and free figures from the query", b.VRAMBytes, b.VRAMFreeBytes)
+	}
+	if b.CUDAVersion != "13.3" {
+		t.Fatalf("CUDAVersion = %q, want 13.3 from the UMD banner", b.CUDAVersion)
+	}
+}
+
 // TestRunNvidiaSMIReportsAbsence checks the two nvidia-smi probes surface a missing or
 // failing tool as (\"\", false) rather than an empty success, which is what keeps the
 // GPU fields unset instead of zeroed.
