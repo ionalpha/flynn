@@ -135,9 +135,15 @@ harden a service is how everyone writes it, and needs no record. The line is whe
 you took text from a particular place. If you did, record it, even when you reworded
 it.
 
-Describe a design by what it does, not by whose it resembles. "Markers are comments
-ending in `ai!`" tells the reader the syntax. "Like project X" tells them where to look
-for it, and invites the question of what else came from there.
+Using an idea is not copying it. Copyright covers the code, text and files a project
+published, not the ideas, conventions or methods they implement, so an approach seen in
+another project can be built on in new code. Saying where an idea came from is fine and
+often useful: name the project in a comment or the docs when that helps a reader.
+Attribution becomes required when material was taken. Code, a template or a config
+that was copied, translated into another language, or closely followed while writing is
+derived from its source, and its licence applies: record and attribute it as above.
+Patents and trademarks (a product's name, for one) are separate from copyright; take a
+question about either to the maintainer.
 
 ## Who chooses the version, and when
 

@@ -511,8 +511,18 @@ and the account's credential locations are hidden, and the command has no networ
 records which. On Windows the binary sets
 `ShellPolicy.AllowCredentialReadsWhereUnhidable`, so the shell runs with the
 credentials readable and the posture event names the platform as the reason;
-`--require-credential-hiding` keeps the refusal. An embedder that builds its own Local
-gets none of this unless it asks, and the zero `ShellPolicy` refuses on Windows.
+`--require-credential-hiding` keeps the refusal.
+
+The network is the same shape. The default Windows confinement is a write-restricted
+token, which has no network control, so `WithNetworkDenied` there fails every launch with
+`ErrNetworkDeny` (`WithBestEffortConfinement` does not absorb it), and
+`Local.NetworkDenied` reports false, so a record built from the Local never claims a denial
+that was not enforced. `sandbox.NetworkDenySupported` reports the platform's answer before a
+launch refuses, and `WithOpenNetworkWhereUndeniable` is the explicit acceptance. The binary
+sets `ShellPolicy.AllowNetworkWhereUndeniable`, so on Windows the shell runs with the host's
+network, prints a notice, and records `network: open` with `network_reason: platform` on the
+posture event; `--require-network-denial` keeps the refusal. An embedder that builds its own
+Local gets none of this unless it asks, and the zero `ShellPolicy` refuses on Windows.
 
 `deploy/systemd/flynn-runner.service` and `deploy/apparmor/flynn` are the unit and
 profile that let the sandbox run on a hardened Linux host; `deploy/README.md` explains

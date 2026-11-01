@@ -34,10 +34,13 @@ type Local struct {
 	resLimits   ResourceLimits    // host memory/process caps applied where the platform can (see WithResourceLimits)
 	granted     map[string]string // env vars explicitly granted into commands
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
-	readonlyFS  bool              // run commands with a read-only host (see WithReadOnlyFS)
-	seccomp     bool              // run commands under a syscall filter (see WithSeccomp)
-	egress      *egressConfig     // govern child egress through a netguard proxy (see WithEgress)
-	forward     *forwardConfig    // forward one host-loopback address into the child's namespace (see WithLoopbackForward)
+	// networkOpenOK accepts the host's network on a tier that cannot deny it, instead of
+	// refusing the launch (see WithOpenNetworkWhereUndeniable).
+	networkOpenOK bool
+	readonlyFS    bool           // run commands with a read-only host (see WithReadOnlyFS)
+	seccomp       bool           // run commands under a syscall filter (see WithSeccomp)
+	egress        *egressConfig  // govern child egress through a netguard proxy (see WithEgress)
+	forward       *forwardConfig // forward one host-loopback address into the child's namespace (see WithLoopbackForward)
 	// readableDirs are directories outside the workspace that a confined child may read,
 	// granted to it on launch and revoked on Close (see WithReadableDir). They let a
 	// governed external CLI read its own auth or config home, which lives outside the
@@ -158,15 +161,19 @@ func WithEnv(vars map[string]string) LocalOption {
 // enforced by the kernel, by running the command in a network namespace with no
 // interfaces, so the command sees only a down loopback and no routes. On a platform
 // or host that cannot provide it, a command run under this option fails rather than
-// running with the network silently still open.
+// running with the network silently still open: on Windows the write-restricted token
+// that [WithDefaultConfinement] selects has no network control, so the launch refuses with
+// [ErrNetworkDeny] unless [WithOpenNetworkWhereUndeniable] accepts the open network.
 func WithNetworkDenied() LocalOption {
 	return func(l *Local) { l.denyNetwork = true }
 }
 
-// NetworkDenied reports whether [WithNetworkDenied] (or [WithKernelConfinement]) was
-// applied, so a record of the run can state whether its commands were kept off the network
-// from the sandbox that launches them and not from the options its caller meant to pass.
-func (l *Local) NetworkDenied() bool { return l.denyNetwork }
+// NetworkDenied reports whether the commands this Local launches run with no network:
+// [WithNetworkDenied] (or [WithKernelConfinement]) was applied and the tier enforces it.
+// It is false on a tier that cannot deny the network (see [NetworkDenySupported]) even
+// when the denial was asked for, so a record of the run states what the sandbox that
+// launches the commands does and not what its caller meant to pass.
+func (l *Local) NetworkDenied() bool { return l.networkDenied() }
 
 // WithReadOnlyFS runs commands against a read-only view of the host: the command can
 // read what the host user can, but the only thing it can write is its own working

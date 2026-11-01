@@ -122,8 +122,9 @@ func TestShellPolicyOptionsRelaxOnlyWhatWasAsked(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = sb.Close() })
 
-			if got := sb.NetworkDenied(); got == tc.allowNetwork {
-				t.Errorf("NetworkDenied = %v with AllowNetwork = %v", got, tc.allowNetwork)
+			// The denial is reported only where the platform enforces it.
+			if want := !tc.allowNetwork && sandbox.NetworkDenySupported(); sb.NetworkDenied() != want {
+				t.Errorf("NetworkDenied = %v with AllowNetwork = %v, want %v", sb.NetworkDenied(), tc.allowNetwork, want)
 			}
 			hidden := sb.UnreadablePaths()
 			for _, must := range []string{dataDir, filepath.Join(home, ".ssh"), filepath.Join(home, ".aws")} {
@@ -179,6 +180,15 @@ func toStrings(v any) []string {
 	return nil
 }
 
+// wantDeniedNetwork is the posture a policy that asks for no network records on this
+// platform: "denied" where the confinement can deny it, "open" where it cannot.
+func wantDeniedNetwork() string {
+	if sandbox.NetworkDenySupported() {
+		return "denied"
+	}
+	return "open"
+}
+
 // TestRunsRecordTheShellPosture is the record of a relaxation: whichever way a run is
 // assembled, its stream states whether its commands had the network and whether the
 // credential locations were hidden, so an opt-in is in the sealed history rather than only on
@@ -186,15 +196,16 @@ func toStrings(v any) []string {
 func TestRunsRecordTheShellPosture(t *testing.T) {
 	useHome(t)
 	dataDir := filepath.Join(t.TempDir(), "flynn-data")
+	denied := wantDeniedNetwork()
 
 	for _, tc := range []struct {
 		name                         string
 		policy                       ShellPolicy
 		wantNetwork, wantCredentials string
 	}{
-		{"default", ShellPolicy{DataDir: dataDir}, "denied", "hidden"},
+		{"default", ShellPolicy{DataDir: dataDir}, denied, "hidden"},
 		{"network opt-in", ShellPolicy{DataDir: dataDir, AllowNetwork: true}, "open", "hidden"},
-		{"credential opt-in", ShellPolicy{DataDir: dataDir, AllowCredentialReads: true}, "denied", "readable"},
+		{"credential opt-in", ShellPolicy{DataDir: dataDir, AllowCredentialReads: true}, denied, "readable"},
 		{"both opt-ins", ShellPolicy{DataDir: dataDir, AllowNetwork: true, AllowCredentialReads: true}, "open", "readable"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -264,6 +275,72 @@ func TestRunsRecordWhyTheCredentialsWereReadable(t *testing.T) {
 	}
 }
 
+// TestRunsRecordWhyTheNetworkWasOpen: a posture whose network is open says whether the policy
+// asked for it or the platform could not deny it, and a denied network records no reason.
+func TestRunsRecordWhyTheNetworkWasOpen(t *testing.T) {
+	useHome(t)
+	dataDir := filepath.Join(t.TempDir(), "flynn-data")
+	fallback, fallbackReason := "denied", ""
+	if !sandbox.NetworkDenySupported() {
+		fallback, fallbackReason = "open", NetworkOpenByPlatform
+	}
+	for _, tc := range []struct {
+		name                 string
+		policy               ShellPolicy
+		wantNetwork, wantWhy string
+	}{
+		{"network opt-in", ShellPolicy{DataDir: dataDir, AllowNetwork: true}, "open", NetworkOpenByPolicy},
+		{"platform fallback", ShellPolicy{DataDir: dataDir, AllowNetworkWhereUndeniable: true}, fallback, fallbackReason},
+		{"both", ShellPolicy{DataDir: dataDir, AllowNetwork: true, AllowNetworkWhereUndeniable: true}, "open", NetworkOpenByPolicy},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if open, reason := tc.policy.NetworkOpen(); open != (tc.wantNetwork == "open") || reason != tc.wantWhy {
+				t.Fatalf("NetworkOpen = %v, %q; want network %s with reason %q", open, reason, tc.wantNetwork, tc.wantWhy)
+			}
+			b, _ := memBackends(t)
+			run, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithShellPolicy(tc.policy))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = run.Close() })
+			got := postureOf(t, b.Log, run.ID())
+			why, _ := got["network_reason"].(string)
+			if got["network"] != tc.wantNetwork || why != tc.wantWhy {
+				t.Fatalf("posture = %v, want network %q with reason %q", got, tc.wantNetwork, tc.wantWhy)
+			}
+		})
+	}
+}
+
+// TestStrictPolicyRefusesWhereThePlatformCannotDeny: without the fallback, a platform that
+// cannot deny the network refuses the command rather than running it with the host's network
+// while the record claims otherwise.
+func TestStrictPolicyRefusesWhereThePlatformCannotDeny(t *testing.T) {
+	if sandbox.NetworkDenySupported() {
+		t.Skip("this platform denies the network, so the strict policy runs commands")
+	}
+	useHome(t)
+	strict := ShellPolicy{AllowCredentialReadsWhereUnhidable: true}
+	sb, err := sandbox.NewLocal(t.TempDir(), strict.options()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = sb.Close() })
+	if _, err := sb.Exec(ctxT(t), sandbox.Command{Line: "echo ran"}); !errors.Is(err, sandbox.ErrNetworkDeny) {
+		t.Fatalf("got %v, want ErrNetworkDeny", err)
+	}
+	strict.AllowNetworkWhereUndeniable = true
+	ok, err := sandbox.NewLocal(t.TempDir(), strict.options()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ok.Close() })
+	res, err := ok.Exec(ctxT(t), sandbox.Command{Line: "echo ran"})
+	if err != nil || !strings.Contains(res.Output, "ran") {
+		t.Fatalf("the fallback did not run the command: %v, %q", err, res.Output)
+	}
+}
+
 // TestStrictPolicyRefusesWhereThePlatformCannotHide: without the fallback, a platform that
 // cannot hide a path refuses the command rather than running it with the credentials in
 // view, so an embedder that never opted in gets no silent relaxation.
@@ -272,7 +349,9 @@ func TestStrictPolicyRefusesWhereThePlatformCannotHide(t *testing.T) {
 		t.Skip("this platform hides paths, so the strict policy runs commands")
 	}
 	useHome(t)
-	sb, err := sandbox.NewLocal(t.TempDir(), ShellPolicy{}.options()...)
+	// The network fallback is on so the credentials are the only thing the launch can refuse
+	// over.
+	sb, err := sandbox.NewLocal(t.TempDir(), ShellPolicy{AllowNetworkWhereUndeniable: true}.options()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,7 +359,7 @@ func TestStrictPolicyRefusesWhereThePlatformCannotHide(t *testing.T) {
 	if _, err := sb.Exec(ctxT(t), sandbox.Command{Line: "echo ran"}); !errors.Is(err, sandbox.ErrReadDeny) {
 		t.Fatalf("got %v, want ErrReadDeny", err)
 	}
-	ok, err := sandbox.NewLocal(t.TempDir(), ShellPolicy{AllowCredentialReadsWhereUnhidable: true}.options()...)
+	ok, err := sandbox.NewLocal(t.TempDir(), ShellPolicy{AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}.options()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,15 +382,15 @@ func TestEmbedderGetsTheSecureShellByDefault(t *testing.T) {
 		if !ok {
 			t.Fatalf("the run's sandbox is %T, want the one it builds", sb)
 		}
-		if !local.NetworkDenied() {
-			t.Error("a run with no shell policy has the host's network")
+		if local.NetworkDenied() != sandbox.NetworkDenySupported() {
+			t.Errorf("NetworkDenied = %v for a run with no shell policy, NetworkDenySupported = %v", local.NetworkDenied(), sandbox.NetworkDenySupported())
 		}
 		if !slices.Contains(local.UnreadablePaths(), filepath.Join(home, ".ssh")) {
 			t.Errorf("a run with no shell policy can read ~/.ssh: hidden = %q", local.UnreadablePaths())
 		}
 		got := postureOf(t, log, stream)
-		if got["network"] != "denied" || got["credentials"] != "hidden" {
-			t.Errorf("posture = %v, want the network denied and the credentials hidden", got)
+		if got["network"] != wantDeniedNetwork() || got["credentials"] != "hidden" {
+			t.Errorf("posture = %v, want the network %s and the credentials hidden", got, wantDeniedNetwork())
 		}
 	}
 

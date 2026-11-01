@@ -86,6 +86,10 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 // tier for a program the container's deny-by-default reads would break (see
 // restricted_windows.go); the command line is composed exactly as the container path
 // composes it, so the two tiers run identical text.
+//
+// The token restricts writes only, so the child has the host's network whatever
+// denyNetwork says. [Local.NetworkDenied] reports that, and guardNetworkDeny refuses a
+// denial request here unless the Local accepted the open network.
 func (l *Local) runWriteRestricted(ctx context.Context, args []string, stdin []byte) (ExecResult, error) {
 	comspec := os.Getenv("ComSpec")
 	if comspec == "" {

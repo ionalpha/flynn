@@ -114,8 +114,20 @@ func TestGoalAndResumeRecordTheOperatorsShellPolicy(t *testing.T) {
 	provide()
 	_ = resumeRun("openai:gpt-test", runID, dataDir, false, checkShell)
 	got = storedPostures(t, dataDir, runID)
-	if len(got) != 2 || got[1]["network"] != "denied" || got[1]["credentials"] != "readable" {
-		t.Fatalf("postures after the resume = %v, want a second one with the network denied and credentials readable", got)
+	// Where the platform cannot deny the network the resume's record says it was open, with the
+	// platform as the reason; a goal that relaxed it by flag says policy.
+	wantNet, wantWhy := "denied", ""
+	if !sandbox.NetworkDenySupported() {
+		wantNet, wantWhy = "open", governed.NetworkOpenByPlatform
+	}
+	if len(got) != 2 || got[1]["network"] != wantNet || got[1]["credentials"] != "readable" {
+		t.Fatalf("postures after the resume = %v, want a second one with the network %s and credentials readable", got, wantNet)
+	}
+	if why, _ := got[1]["network_reason"].(string); why != wantWhy {
+		t.Fatalf("resume network_reason = %q, want %q", why, wantWhy)
+	}
+	if got[0]["network_reason"] != governed.NetworkOpenByPolicy {
+		t.Fatalf("goal network_reason = %v, want %q", got[0]["network_reason"], governed.NetworkOpenByPolicy)
 	}
 }
 
@@ -213,12 +225,16 @@ func TestMCPServerRecordsTheDefaultShellPosture(t *testing.T) {
 
 	got := storedPostures(t, dataDir, m[1])
 	if !sandbox.ReadDenySupported() {
-		// The served shell runs where nothing can be hidden, and its record and the log say why.
-		if len(got) != 1 || got[0]["network"] != "denied" || got[0]["credentials"] != "readable" || got[0]["credentials_reason"] != governed.CredentialsReadableByPlatform {
-			t.Fatalf("MCP postures = %v, want one with the network denied and credentials readable by the platform", got)
+		// The served shell runs where nothing can be hidden or denied, and its record and the
+		// log say why.
+		if len(got) != 1 || got[0]["network"] != "open" || got[0]["network_reason"] != governed.NetworkOpenByPlatform ||
+			got[0]["credentials"] != "readable" || got[0]["credentials_reason"] != governed.CredentialsReadableByPlatform {
+			t.Fatalf("MCP postures = %v, want one with the network open and credentials readable, both by the platform", got)
 		}
-		if !strings.Contains(logw.String(), "cannot hide paths") {
-			t.Errorf("the server did not tell the operator the credentials are readable: %q", logw.String())
+		for _, notice := range []string{"cannot hide paths", "cannot deny the network"} {
+			if !strings.Contains(logw.String(), notice) {
+				t.Errorf("the server did not tell the operator %q: %q", notice, logw.String())
+			}
 		}
 		return
 	}
