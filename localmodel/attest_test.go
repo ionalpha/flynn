@@ -504,6 +504,32 @@ func TestCachedRuntimeWithoutRecordIsFetchedAgainNotAdopted(t *testing.T) {
 	}
 }
 
+// When the fresh download fails, the unrecorded build is not kept as a fallback: the call
+// fails and nothing is left installed for a later call to pick up unverified.
+func TestUnrecordedRuntimeIsNotKeptWhenTheRefetchFails(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+	rt, err := h.EnsureRuntime(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(rt.BinPath + ".sha256"); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.Close()
+
+	if _, err := h.EnsureRuntime(t.Context()); err == nil {
+		t.Fatal("EnsureRuntime succeeded with the download server gone")
+	}
+	st, err := h.RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Installed {
+		t.Fatalf("the unverified build is still installed after a failed refetch: %+v", st)
+	}
+}
+
 // A host outside the module cannot name the runtime build it runs: the version is a claim
 // about a binary this package never executes, and the advisory gate compares against it.
 func TestHostCannotSupplyARuntimeBuild(t *testing.T) {
