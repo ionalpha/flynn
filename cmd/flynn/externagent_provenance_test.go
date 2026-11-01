@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -178,67 +180,125 @@ func TestExternalAdapterIsBuiltForEveryBackend(t *testing.T) {
 	}
 }
 
-// TestCodexAuthDirFollowsTheCLIsOwnResolution checks the credential home granted to the
-// confined child: CODEX_HOME wins, and the default is the CLI's own home directory.
-func TestCodexAuthDirFollowsTheCLIsOwnResolution(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("CODEX_HOME", home)
-	if got := codexAuthDir(); got != home {
-		t.Errorf("codexAuthDir = %q, want the CODEX_HOME override", got)
-	}
+// TestCodexHomeIsFlynnsOwnAndNeverTheUsers checks the codex backend runs the CLI against the
+// home Flynn keeps for it, whatever the user's own CODEX_HOME says, that the home exists once
+// the spawner is built (the CLI refuses a CODEX_HOME that does not), and that a config.toml,
+// AGENTS.md or skills directory left in it is gone before any episode can read it while the sign-in beside it is kept.
+func TestCodexHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
+	withNoExecutables(t)
+	home := filepath.Join(t.TempDir(), "codex")
+	prev := codexHome
+	codexHome = func() string { return home }
+	t.Cleanup(func() { codexHome = prev })
+	userDir := t.TempDir()
+	t.Setenv("CODEX_HOME", userDir)
 
-	t.Setenv("CODEX_HOME", "")
-	got := codexAuthDir()
-	if got != "" && filepath.Base(got) != ".codex" {
-		t.Errorf("codexAuthDir = %q, want the CLI's default home", got)
+	if _, err := externalSpawner("codex"); err != nil {
+		t.Fatalf("externalSpawner(codex): %v", err)
+	}
+	if fi, err := os.Stat(home); err != nil || !fi.IsDir() {
+		t.Fatalf("the codex home must exist after the spawner is built: %v", err)
+	}
+	for name, body := range map[string]string{"config.toml": "[mcp_servers.x]\n", "auth.json": "{}"} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := externalSpawner("codex"); err != nil {
+		t.Fatalf("externalSpawner(codex): %v", err)
+	}
+	for _, name := range []string{"config.toml", "AGENTS.md", "skills"} {
+		if _, err := os.Stat(filepath.Join(home, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s in Flynn's codex home must be removed before an episode, got %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, "auth.json")); err != nil {
+		t.Errorf("the sign-in in Flynn's codex home must be left alone: %v", err)
+	}
+	def := defaultCodexHome()
+	if filepath.Dir(def) != defaultDataDir() {
+		t.Errorf("the default codex home %q must sit under the data directory", def)
+	}
+	if def == userDir {
+		t.Errorf("the codex home must not follow the user's CODEX_HOME, got %q", def)
 	}
 }
 
-// TestClaudeSeedPathsGatherBothCredentialFiles checks the two files the confined child needs
-// to authenticate are seeded by base name into one home: with the config dir overridden they
-// are both taken from it, flat, matching where the CLI looks for them.
-func TestClaudeSeedPathsGatherBothCredentialFiles(t *testing.T) {
-	dir := t.TempDir()
-	t.Setenv("CLAUDE_CONFIG_DIR", dir)
-	got := claudeSeedPaths()
-	want := []string{filepath.Join(dir, ".claude.json"), filepath.Join(dir, ".credentials.json")}
-	if len(got) != len(want) {
-		t.Fatalf("claudeSeedPaths = %v, want both credential files", got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("seed path %d = %q, want %q", i, got[i], want[i])
-		}
-	}
+// TestClaudeHomeIsFlynnsOwnAndNeverTheUsers checks the claude backend runs the CLI against
+// the home Flynn keeps for it, whatever the user's own CLAUDE_CONFIG_DIR says, and that the
+// home exists once the spawner is built so detection can be granted read on it before the
+// user has signed in.
+func TestClaudeHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
+	withNoExecutables(t)
+	home := filepath.Join(t.TempDir(), "claude")
+	prev := claudeHome
+	claudeHome = func() string { return home }
+	t.Cleanup(func() { claudeHome = prev })
+	userDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", userDir)
 
-	t.Setenv("CLAUDE_CONFIG_DIR", "")
-	def := claudeSeedPaths()
-	if len(def) != 2 {
-		t.Fatalf("the default must still seed both files, got %v", def)
+	if _, err := externalSpawner("claude"); err != nil {
+		t.Fatalf("externalSpawner(claude): %v", err)
 	}
-	if filepath.Base(def[0]) != ".claude.json" || filepath.Base(def[1]) != ".credentials.json" {
-		t.Errorf("the default seed paths name the wrong files: %v", def)
+	if fi, err := os.Stat(home); err != nil || !fi.IsDir() {
+		t.Fatalf("the claude home must exist after the spawner is built: %v", err)
+	}
+	def := defaultClaudeHome()
+	if filepath.Dir(def) != defaultDataDir() {
+		t.Errorf("the default claude home %q must sit under the data directory", def)
+	}
+	if def == userDir {
+		t.Errorf("the claude home must not follow the user's CLAUDE_CONFIG_DIR, got %q", def)
 	}
 }
 
-// TestCodexSeedCarriesTheCredentialAndNoOperatorConfig is the host half of the codex
-// adapter's declared host-config posture. The adapter states that an episode's child runs
-// under a per-episode home holding the credential and nothing else; the seed list is where
-// that is either true or quietly false. config.toml is the file that would break it: it is
-// where a codex user keeps their MCP servers, model providers and settings, so seeding it
-// would hand the harness servers this run neither hosts nor governs and let the launching
-// operator's configuration steer the episode.
-func TestCodexSeedCarriesTheCredentialAndNoOperatorConfig(t *testing.T) {
-	if len(codexAuthSeedFiles) != 1 || codexAuthSeedFiles[0] != "auth.json" {
-		t.Fatalf("codexAuthSeedFiles = %v, want only the credential", codexAuthSeedFiles)
-	}
-	for _, f := range codexAuthSeedFiles {
-		if f == "config.toml" {
-			t.Error("the operator's codex config must not be seeded into an episode's home")
-		}
-	}
-	if got := externagent.NewCodex("codex", nil).Lockdown().HostConfig; !got.Stripped() {
-		t.Errorf("codex host-config posture = %v, want a stripped one to match the seed", got)
+// TestLoginSignsInFlynnsHome checks a not-signed-in claude or codex is pointed at a login
+// that signs in Flynn's home for that CLI through the CLI's own subscription flow, and that
+// the other readiness states pass through untouched.
+func TestLoginSignsInFlynnsHome(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		home  *func() string
+		env   string
+		login string
+	}{
+		{"claude", &claudeHome, "CLAUDE_CONFIG_DIR", "claude auth login --claudeai"},
+		{"codex", &codexHome, "CODEX_HOME", "codex login"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := filepath.Join(t.TempDir(), "it's here")
+			prev := *tc.home
+			*tc.home = func() string { return home }
+			t.Cleanup(func() { *tc.home = prev })
+
+			out := withHomeLogin(tc.name, externagent.Readiness{Available: true, Reason: "run the CLI's login"})
+			for _, want := range []string{tc.env, tc.login, "separate from yours"} {
+				if !strings.Contains(out.Reason, want) {
+					t.Errorf("login reason %q lacks %q", out.Reason, want)
+				}
+			}
+			if strings.Contains(strings.ToLower(out.Reason), "api key") {
+				t.Errorf("the login must never ask for an API key, got %q", out.Reason)
+			}
+			cmd := homeLoginCommand(tc.env, home, tc.login)
+			if runtime.GOOS == "windows" {
+				if !strings.Contains(cmd, "it''s here") || !strings.HasSuffix(cmd, "Remove-Item Env:"+tc.env) {
+					t.Errorf("PowerShell login must quote the path and clear the variable, got %q", cmd)
+				}
+			} else if !strings.Contains(cmd, `it'\''s here`) {
+				t.Errorf("sh login must quote the path, got %q", cmd)
+			}
+
+			for _, r := range []externagent.Readiness{
+				{Available: false, Reason: "install it"},
+				{Available: true, Refuse: true, Reason: "update it"},
+				{Available: true, LoggedIn: true},
+			} {
+				if got := withHomeLogin(tc.name, r); got != r {
+					t.Errorf("withHomeLogin(%+v) = %+v, want it unchanged", r, got)
+				}
+			}
+		})
 	}
 }
 
@@ -251,7 +311,6 @@ func TestResolveExternalAgentReportsAMissingCLI(t *testing.T) {
 	// simply not installed.
 	t.Setenv("PATH", t.TempDir())
 	t.Setenv("CODEX_HOME", t.TempDir())
-	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 
 	for _, name := range externalAgentNames() {
 		ea, err := resolveExternalAgent(context.Background(), name, "", t.TempDir())
@@ -271,5 +330,190 @@ func TestResolveExternalAgentReportsAMissingCLI(t *testing.T) {
 		if strings.Contains(strings.ToLower(msg), "api key") {
 			t.Errorf("%s: external onboarding must never ask for an API key, got %v", name, err)
 		}
+	}
+}
+
+// TestClearOwnHomeReportsAnUnreadableHome checks a home that cannot be listed for a reason
+// other than being absent is an error rather than a silent pass, since a config left in it
+// would then steer the next episode; an absent home has nothing to clear.
+func TestClearOwnHomeReportsAnUnreadableHome(t *testing.T) {
+	if err := clearOwnHome("codex", filepath.Join(t.TempDir(), "absent"), codexAuthFiles); err != nil {
+		t.Errorf("an absent home has nothing to clear, got %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports listing a file as a missing path")
+	}
+	file := filepath.Join(t.TempDir(), "home")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearOwnHome("codex", file, codexAuthFiles); err == nil || !strings.Contains(err.Error(), "codex home") {
+		t.Errorf("a home that is a file must be reported, got %v", err)
+	}
+}
+
+// TestClearOwnHomeReportsAnUnremovableEntry checks a leftover the process cannot delete is
+// reported: a read-only directory's contents cannot be unlinked on unix.
+func TestClearOwnHomeReportsAnUnremovableEntry(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory permissions do not block removal here")
+	}
+	home := t.TempDir()
+	sub := filepath.Join(home, "skills")
+	if err := os.MkdirAll(filepath.Join(sub, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+	if err := clearOwnHome("codex", home, codexAuthFiles); err == nil {
+		t.Error("an entry that cannot be removed must be reported")
+	}
+}
+
+// TestExternalHomesAreOwnerOnly checks an existing home left with a wider mode is tightened
+// to 0700 when the spawner is built, since MkdirAll leaves it as it found it.
+func TestExternalHomesAreOwnerOnly(t *testing.T) {
+	withNoExecutables(t)
+	for _, tc := range []struct {
+		name string
+		home *func() string
+	}{{"claude", &claudeHome}, {"codex", &codexHome}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), tc.name)
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			prev := *tc.home
+			*tc.home = func() string { return dir }
+			t.Cleanup(func() { *tc.home = prev })
+			if _, err := externalSpawner(tc.name); err != nil {
+				t.Fatal(err)
+			}
+			if runtime.GOOS == "windows" {
+				t.Skip("Windows permission bits do not express owner-only access")
+			}
+			fi, err := os.Stat(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fi.Mode().Perm() != 0o700 {
+				t.Errorf("home mode = %v, want 0700", fi.Mode().Perm())
+			}
+		})
+	}
+}
+
+// TestEnsureOwnHomeReportsAFailure checks a home that cannot be created is an error that
+// names the backend.
+func TestEnsureOwnHomeReportsAFailure(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureOwnHome("claude", filepath.Join(file, "home")); err == nil || !strings.Contains(err.Error(), "claude home") {
+		t.Errorf("got %v", err)
+	}
+}
+
+// TestOwnHomeSpawnersGrantWriteOnTheirHome checks the claude and codex envelopes mark their
+// home writable and point the CLI at it. Both CLIs refresh their token in place, so a read-only
+// home would sign Flynn out at the first refresh; the grant is safe only because the home is
+// Flynn's own, which is why it must not be dropped or copied to a backend that uses the
+// user's.
+func TestOwnHomeSpawnersGrantWriteOnTheirHome(t *testing.T) {
+	home := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		cfg  externagent.SandboxConfig
+		env  string
+	}{
+		{"claude", claudeSandboxConfig(home, externagent.Program{}), "CLAUDE_CONFIG_DIR"},
+		{"codex", codexSandboxConfig(home, externagent.Program{}), "CODEX_HOME"},
+	} {
+		if !tc.cfg.AuthDirWritable {
+			t.Errorf("%s: AuthDirWritable must be true", tc.name)
+		}
+		if tc.cfg.AuthDir != home || tc.cfg.AuthEnv != tc.env {
+			t.Errorf("%s: AuthDir/AuthEnv = %q/%q, want %q/%q", tc.name, tc.cfg.AuthDir, tc.cfg.AuthEnv, home, tc.env)
+		}
+	}
+}
+
+// TestExternalSpawnerRefusesAHomeItCannotPrepare checks a home that cannot be created, or a
+// codex home that cannot be cleared, fails the spawner instead of running an episode against
+// an unprepared one.
+func TestExternalSpawnerRefusesAHomeItCannotPrepare(t *testing.T) {
+	withNoExecutables(t)
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		home *func() string
+	}{{"claude", &claudeHome}, {"codex", &codexHome}} {
+		prev := *tc.home
+		*tc.home = func() string { return filepath.Join(file, "home") }
+		_, err := externalSpawner(tc.name)
+		*tc.home = prev
+		if err == nil || !strings.Contains(err.Error(), tc.name+" home") {
+			t.Errorf("%s: got %v", tc.name, err)
+		}
+	}
+
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return
+	}
+	for _, tc := range []struct {
+		name string
+		home *func() string
+	}{{"claude", &claudeHome}, {"codex", &codexHome}} {
+		home := t.TempDir()
+		sub := filepath.Join(home, "skills")
+		if err := os.MkdirAll(filepath.Join(sub, "x"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(sub, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+		prev := *tc.home
+		*tc.home = func() string { return home }
+		_, err := externalSpawner(tc.name)
+		*tc.home = prev
+		if err == nil {
+			t.Errorf("a %s home that cannot be cleared must fail the spawner", tc.name)
+		}
+	}
+}
+
+// TestClaudeHomeKeepsOnlyItsSignIn checks everything a harness could leave in Flynn's claude
+// home to steer a later run is gone once the spawner is built, while the sign-in survives.
+func TestClaudeHomeKeepsOnlyItsSignIn(t *testing.T) {
+	withNoExecutables(t)
+	home := filepath.Join(t.TempDir(), "claude")
+	prev := claudeHome
+	claudeHome = func() string { return home }
+	t.Cleanup(func() { claudeHome = prev })
+	if err := os.MkdirAll(filepath.Join(home, "agents"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".credentials.json", "settings.json", "CLAUDE.md", ".claude.json", filepath.Join("agents", "x.md")} {
+		if err := os.WriteFile(filepath.Join(home, name), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := externalSpawner("claude"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"settings.json", "CLAUDE.md", ".claude.json", "agents"} {
+		if _, err := os.Stat(filepath.Join(home, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s in Flynn's claude home must be removed before an episode, got %v", name, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(home, ".credentials.json")); err != nil {
+		t.Errorf("the sign-in in Flynn's claude home must be left alone: %v", err)
 	}
 }

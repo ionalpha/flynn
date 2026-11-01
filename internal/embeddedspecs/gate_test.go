@@ -12,9 +12,7 @@ import (
 
 // exempt lists the functions that read a directory of JSON specs without going through
 // [embeddedspecs.Parse], keyed by "<path>:<func>" with the reason.
-var exempt = map[string]string{
-	"extension/catalog/catalog.go:parseCatalog": "predates this package and is the third copy of the sequence; it moves onto Parse in its own change, which deletes this entry",
-}
+var exempt = map[string]string{}
 
 // TestSpecDirectoriesAreReadThroughParse is the gate for this package's reason to exist.
 // Dependencies and playbooks carried byte-for-byte copies of the read-decode-reserve-sort

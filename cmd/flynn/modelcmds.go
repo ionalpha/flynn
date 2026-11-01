@@ -168,7 +168,7 @@ func modelProbe(ctx context.Context, runner *localRunner, consent consentPolicy,
 	// Probe the raw model: no plan, so no grammar or other scaffolding shapes the answer and the
 	// score measures the model's own reliability.
 	client := localModelClient(ep, m.ID, harness.Plan{}, runner.httpClient())
-	return probeAndStore(ctx, client, m, selfProvisionedRuntime, store.Resources(reg), out)
+	return probeAndStoreWithin(ctx, client, m, selfProvisionedRuntime, servedContext(ctx, runner.httpClient(), ep.BaseURL), store.Resources(reg), out)
 }
 
 // probeAndStore runs the reliability battery against a served model, records the resulting profile
@@ -176,6 +176,14 @@ func modelProbe(ctx context.Context, runner *localRunner, consent consentPolicy,
 // caveat. It is the core of `flynn models probe`, separated from the serving setup so it is
 // exercised directly with a scripted model and an in-memory store.
 func probeAndStore(ctx context.Context, model llm.Model, m catalog.ModelSpec, runtimeName string, rs resource.Store, out io.Writer) error {
+	return probeAndStoreWithin(ctx, model, m, runtimeName, 0, rs, out)
+}
+
+// probeAndStoreWithin is [probeAndStore] for a server whose started context is known. servedCtx
+// is that context in tokens, or zero when unknown; the context measurement stops there because a
+// server refuses a prompt past it, and a refusal at that point would otherwise be the first the
+// probe heard of it.
+func probeAndStoreWithin(ctx context.Context, model llm.Model, m catalog.ModelSpec, runtimeName string, servedCtx int, rs resource.Store, out io.Writer) error {
 	rep, err := reliability.Score(ctx, model)
 	if err != nil {
 		return fmt.Errorf("models probe: %w", err)
@@ -184,7 +192,7 @@ func probeAndStore(ctx context.Context, model llm.Model, m catalog.ModelSpec, ru
 
 	// Measure the usable context window separately: how far the model stays coherent, which is
 	// often shorter than its advertised window and is the cap the harness applies.
-	effCtx, err := reliability.MeasureEffectiveContext(ctx, model, reliability.ContextCandidates(m.ContextTokens))
+	effCtx, err := reliability.MeasureEffectiveContext(ctx, model, reliability.ContextCandidates(m.ContextTokens, servedCtx))
 	if err != nil {
 		return fmt.Errorf("models probe: %w", err)
 	}
