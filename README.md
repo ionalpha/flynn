@@ -54,7 +54,8 @@ the v0.2.0 release candidate: governed goals, the bundled skill pack and the new
 are in v0.2.0-rc.1 and not in v0.1.3. To try the candidate, install with
 `FLYNN_VERSION=v0.2.0-rc.1`, or run `flynn upgrade --pre` from v0.1.3. Read the
 [v0.2.0 notes](docs/releases/v0.2.0.md#upgrading-from-v013) before upgrading: commands
-the agent runs now have no network unless you pass `--allow-network`.
+the agent runs now have no network unless you pass `--allow-network`, except on Windows,
+which cannot deny it (see Sandbox and network).
 
 **Testing a release candidate?** The lines above install the latest final release,
 because GitHub's "latest" never includes a release candidate. To get the candidate, set
@@ -287,11 +288,15 @@ that is already a built-in provider is refused.
 </details>
 
 <details>
-<summary><b>Sandbox and network:</b> commands run kernel-confined, and outbound traffic is denied by default</summary>
+<summary><b>Sandbox and network:</b> commands run kernel-confined, and outbound traffic is denied by default on Linux and macOS</summary>
 
 - Commands run in a kernel-confined sandbox (read-only host, syscall filter) on Linux,
   macOS and Windows. A red-team containment matrix runs in CI. Where a tier is not
   available, Flynn refuses the work instead of running it with less isolation.
+- Windows is the exception for the network: its default confinement restricts writes and
+  has no network control, so commands there keep the host's network, with a notice at
+  startup and `"network": "open"` on the run's posture event. `--require-network-denial`
+  refuses to run commands there instead.
 - Container (Docker, Podman) and hardware tiers sit above it. The hardware tier boots a
   guest kernel through a microVM runtime the host provides (`FLYNN_MICROVM_RUNTIME`).
   Without one, untrusted work is refused.
@@ -549,12 +554,15 @@ Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
 `--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
 `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`, `--max-memory`,
 `--max-processes`, `--allow-network`, `--allow-credential-reads`,
-`--require-credential-hiding`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
-`--profile <dir>`. A command the agent runs has no network and, on Linux and macOS,
+`--require-credential-hiding`, `--require-network-denial`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
+`--profile <dir>`. A command the agent runs has no network on Linux and macOS and, there too,
 cannot read `~/.ssh`, cloud and CLI login tokens or the data directory unless the
 matching `--allow-` flag is set. Windows cannot hide those paths: they stay readable,
 Flynn says so when a run starts, and `--require-credential-hiding` makes it refuse to
-run commands instead.
+run commands instead. Windows cannot deny the network either (its default confinement
+restricts writes and has no network control): commands there reach the network, the run's
+`sandbox.posture` event records `"network": "open"` with `"network_reason": "platform"`,
+and `--require-network-denial` makes it refuse to run commands instead.
 Run flags go before the objective: `flynn goal --require-approval shell "deploy it"`.
 
 ## Use it as a library
