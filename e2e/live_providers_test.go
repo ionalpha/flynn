@@ -37,7 +37,7 @@ func TestLiveEachHostedProviderCarriesAToolCall(t *testing.T) {
 	for _, p := range hostedProviders {
 		t.Run(p.name, func(t *testing.T) {
 			if !p.hasKey() {
-				t.Skipf("%s is not set, so the %s provider is not covered", p.keyEnv, p.name)
+				t.Skipf("%s is neither set nor in the vault, so the %s provider is not covered", p.keyEnv, p.name)
 			}
 			in := liveInstance(t, p.spec())
 			assertToolRun(t, in, in.liveGoal(providerTask))

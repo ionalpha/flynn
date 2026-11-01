@@ -55,7 +55,8 @@ receive. Every goal runs under a cost and a token cap, with a bound on each invo
 | Variable | Meaning |
 | --- | --- |
 | `FLYNN_E2E_REAL=1` | switches the lane on; without it every `TestLive*` skips and says so |
-| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` | a hosted provider is covered when its key is present; only the key of the provider under test reaches the binary |
+| `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY` | a hosted provider is covered when its key is present, in the environment or stored with `flynn auth set` in your vault; only the key of the provider under test reaches the binary |
+| `FLYNN_E2E_VAULT_DIR` | the data directory whose vault a key missing from the environment is read from; by default the release install's (`flynn` under the user config directory) |
 | `FLYNN_E2E_REAL_MODEL` | the `provider:model` the scenarios share; by default the first provider with a key, in the order above |
 | `FLYNN_E2E_REAL_MODEL_<NAME>` | replaces a hosted provider's default model (for example `FLYNN_E2E_REAL_MODEL_OPENAI`), since providers retire model names |
 | `FLYNN_E2E_LOCAL_MODEL` | `provider:model` for one local model (`ollama:`, `llamacpp:` or `lmstudio:`); the runtime is yours to start |
