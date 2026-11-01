@@ -14,16 +14,18 @@ import (
 type shellFlags struct {
 	maxMemory, maxProcs                 *int
 	allowNet, allowCreds, requireHidden *bool
+	requireNetDenial                    *bool
 }
 
 // registerShellFlags declares the shell policy flags on fs.
 func registerShellFlags(fs *flag.FlagSet) shellFlags {
 	return shellFlags{
-		maxMemory:     fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today)."),
-		maxProcs:      fs.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop."),
-		allowNet:      fs.Bool("allow-network", false, "give the commands the agent runs the host's network. By default they run with none, so a command cannot send what it reads anywhere; this is needed for git over the network, package installs and anything else a command fetches. The choice is recorded on the run's stream."),
-		allowCreds:    fs.Bool("allow-credential-reads", false, "leave the Flynn data directory and the host's credential locations (~/.ssh, cloud and CLI login tokens, keychain sockets) readable to the commands the agent runs. By default they are hidden on Linux and macOS; Windows cannot hide a path from a command, so there they stay readable unless --require-credential-hiding is passed. The choice is recorded on the run's stream."),
-		requireHidden: fs.Bool("require-credential-hiding", false, "refuse to run a command where the platform cannot hide the Flynn data directory and the credential locations from it (Windows today), rather than running it with them readable. Has no effect on Linux and macOS, which always hide them unless --allow-credential-reads is passed."),
+		maxMemory:        fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today)."),
+		maxProcs:         fs.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop."),
+		allowNet:         fs.Bool("allow-network", false, "give the commands the agent runs the host's network. By default they run with none, so a command cannot send what it reads anywhere; this is needed for git over the network, package installs and anything else a command fetches. Windows cannot deny the network, so there they have it unless --require-network-denial is passed. The choice is recorded on the run's stream."),
+		allowCreds:       fs.Bool("allow-credential-reads", false, "leave the Flynn data directory and the host's credential locations (~/.ssh, cloud and CLI login tokens, keychain sockets) readable to the commands the agent runs. By default they are hidden on Linux and macOS; Windows cannot hide a path from a command, so there they stay readable unless --require-credential-hiding is passed. The choice is recorded on the run's stream."),
+		requireHidden:    fs.Bool("require-credential-hiding", false, "refuse to run a command where the platform cannot hide the Flynn data directory and the credential locations from it (Windows today), rather than running it with them readable. Has no effect on Linux and macOS, which always hide them unless --allow-credential-reads is passed."),
+		requireNetDenial: fs.Bool("require-network-denial", false, "refuse to run a command where the platform cannot deny it the network (Windows today), rather than running it with the host's network. Has no effect on Linux and macOS, which always deny it unless --allow-network is passed."),
 	}
 }
 
@@ -39,7 +41,18 @@ func (f shellFlags) policy(dataDir string) governed.ShellPolicy {
 		// the shell with the credentials readable and says so, rather than refusing every
 		// command, unless the operator asked for the refusal.
 		AllowCredentialReadsWhereUnhidable: !*f.requireHidden,
+		AllowNetworkWhereUndeniable:        !*f.requireNetDenial,
 	}
+}
+
+// networkNotice is what an operator is told before a run whose commands have the host's
+// network only because this platform cannot deny it, or "" for any other run. The posture
+// event records it with the reason.
+func networkNotice(p governed.ShellPolicy) string {
+	if _, reason := p.NetworkOpen(); reason != governed.NetworkOpenByPlatform {
+		return ""
+	}
+	return "notice: this platform cannot deny the network to the commands the agent runs, so they can reach it and send out anything they can read. The run's record says so."
 }
 
 // credentialNotice is what an operator is told before a run whose commands can read the
@@ -58,5 +71,8 @@ func credentialNotice(p governed.ShellPolicy) string {
 func (inv invocation) noteShellPosture() {
 	if n := credentialNotice(inv.shell); n != "" {
 		_, _ = fmt.Fprintln(inv.stderr, n, "Pass --require-credential-hiding to refuse to run commands instead.")
+	}
+	if n := networkNotice(inv.shell); n != "" {
+		_, _ = fmt.Fprintln(inv.stderr, n, "Pass --require-network-denial to refuse to run commands instead.")
 	}
 }
