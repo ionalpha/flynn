@@ -2,10 +2,13 @@ package sqlitex_test
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/ionalpha/flynn/internal/sqlitex"
 )
@@ -47,5 +50,34 @@ func TestOpenConcurrentlyOnAFreshFile(t *testing.T) {
 		if err != nil {
 			t.Errorf("open %d: %v", i, err)
 		}
+	}
+}
+
+// TestOpenGivesUpWhenItsContextEnds: a file another process holds exclusively keeps Open
+// retrying, and the caller's deadline, not the retry budget, ends the wait.
+func TestOpenGivesUpWhenItsContextEnds(t *testing.T) {
+	dsn := filepath.Join(t.TempDir(), "held.db")
+	holder, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = holder.Close() })
+	holder.SetMaxOpenConns(1)
+	for _, stmt := range []string{`CREATE TABLE x (v)`, `BEGIN EXCLUSIVE`, `INSERT INTO x VALUES (1)`} {
+		if _, err := holder.Exec(stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	fsys := fstest.MapFS{"migrations/0001_init.sql": {Data: []byte(`CREATE TABLE t (id INTEGER PRIMARY KEY);`)}}
+	db, err := sqlitex.Open(ctx, dsn, fsys)
+	if err == nil {
+		_ = db.Close()
+		t.Fatal("Open succeeded on a file another connection holds exclusively")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Open = %v, want the caller's deadline", err)
 	}
 }

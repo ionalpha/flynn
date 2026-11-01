@@ -9,12 +9,13 @@ package sqlitex
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
-	"strings"
 	"time"
 
-	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
+	"modernc.org/sqlite" // registers the pure-Go "sqlite" driver
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/migrate"
@@ -90,10 +91,15 @@ func connect(ctx context.Context, db *sql.DB) error {
 }
 
 // isBusy reports whether err is SQLite's lock contention (SQLITE_BUSY or
-// SQLITE_LOCKED), which the driver reports as text.
+// SQLITE_LOCKED). The primary code is the low byte; an extended code such as
+// SQLITE_BUSY_SNAPSHOT is still contention.
 func isBusy(err error) bool {
-	msg := err.Error()
-	return strings.Contains(msg, "SQLITE_BUSY") || strings.Contains(msg, "SQLITE_LOCKED")
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	code := se.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 // dsnPragmas is the shared per-connection configuration. Beyond the write-side
