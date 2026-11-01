@@ -14,9 +14,10 @@
 //   - Order-checked: a new migration whose version sits below the latest applied
 //     one (an out-of-order insertion) is rejected rather than silently skipped.
 //
-// The schema_migrations table is portable, so the same runner serves SQLite and
-// (later) Postgres. Concurrency is guarded by the version primary key: two
-// racing runs cannot both record the same migration; the loser fails safely.
+// Concurrency: each migration is applied under SQLite's write lock after a re-check
+// of schema_migrations, so processes opening the same database at once take turns and
+// the later ones skip what the first applied. The version primary key stays as the
+// backstop against a double record.
 package migrate
 
 import (
@@ -24,6 +25,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"sort"
@@ -174,21 +176,59 @@ func readApplied(ctx context.Context, db *sql.DB) (map[int]string, error) {
 	return applied, rows.Err()
 }
 
-func apply(ctx context.Context, db *sql.DB, m migration) error {
-	tx, err := db.BeginTx(ctx, nil)
+// apply runs m in a write-locking transaction and records it, unless the version is
+// already recorded.
+//
+// Run chose what is pending from a read outside any lock, so another process opening
+// the same database may have applied m since; applying it again fails for a migration
+// that is not idempotent (one that drops a column). BEGIN IMMEDIATE takes the write
+// lock first, so the loser waits out the busy timeout and then sees the winner's row.
+// A deferred transaction cannot do this: SQLite refuses its read-to-write upgrade at
+// once when another writer committed in between. A recorded version is still held to
+// its checksum. The statement is raw, on a pinned connection, because database/sql
+// cannot ask this driver for an immediate transaction per call.
+func apply(ctx context.Context, db *sql.DB, m migration) (err error) {
+	conn, err := db.Conn(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { _ = tx.Rollback() }() // no-op once committed
-	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
+	defer func() { _ = conn.Close() }()
+
+	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
 		return err
 	}
-	if _, err := tx.ExecContext(
+	committed := false
+	defer func() {
+		if !committed {
+			// The caller's context may be what failed; the lock must still be released.
+			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
+		}
+	}()
+
+	var sum string
+	switch err := conn.QueryRowContext(ctx, `SELECT checksum FROM schema_migrations WHERE version = ?`, m.version).Scan(&sum); {
+	case err == nil:
+		if sum != m.checksum {
+			return &IncompatibleSchemaError{Migration: m.name, Reason: "changed after it was applied (checksum mismatch)"}
+		}
+		return nil
+	case !errors.Is(err, sql.ErrNoRows):
+		return err
+	}
+
+	if _, err := conn.ExecContext(ctx, m.sql); err != nil {
+		return err
+	}
+	if _, err := conn.ExecContext(
 		ctx,
 		`INSERT INTO schema_migrations(version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
 		m.version, m.name, m.checksum, time.Now().UTC().Format(time.RFC3339Nano),
 	); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
