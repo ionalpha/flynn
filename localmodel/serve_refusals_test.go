@@ -15,7 +15,8 @@ import (
 )
 
 // A source outside the catalog is classified, and when the host admits it, Serve still
-// refuses it by name: only catalog models carry a pinned digest to serve from.
+// refuses it by name: a reference that names no catalog entry has no pinned digest to be
+// fetched by.
 func TestServeRefusesAnAdmittedSourceOutsideTheCatalog(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	h := f.open()
