@@ -85,6 +85,14 @@ Run `./dev/check` until it is green before opening a PR.
   cannot run, such as a platform or privilege the runner lacks). A test harness that
   lives outside `_test.go` files (the `*test` conformance packages, fault doubles) goes
   in `codecov.yml`'s ignore list with its reason, rather than being tested itself.
+- **Copied code:** code, templates or profiles taken from another project come only from
+  sources under an OSI-approved licence, never from unlicensed, source-available,
+  proprietary or leaked code. The CLA (section 2) promises every contributor that Flynn
+  stays under OSI-approved terms, and one file under other terms would break that
+  promise for the whole project. Record the source URL, the commit or version, and the
+  SPDX licence identifier beside the copy, and add a `NOTICE` entry when the licence
+  asks for one, in the same PR (CLA section 4.4). Copyleft code needs the maintainer's
+  agreement first. The bundled `dependencies` skill has the details.
 - **Security:** never commit secrets. Report vulnerabilities privately (see `SECURITY.md`).
 
 ## Out of scope here
