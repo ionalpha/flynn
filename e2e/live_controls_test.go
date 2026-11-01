@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -16,6 +17,30 @@ import (
 const manyFiles = "Create the 20 files part01.txt through part20.txt in the current directory, each " +
 	"containing its own number. Use the write tool, one call per file, and wait for each result " +
 	"before writing the next. Do not use any other tool."
+
+// waitForLiveRun is [waitForRun] for a goal started with liveStart: it returns the id of
+// the run whose objective contains objective, and if the goal exits before that run is
+// listed it fails with the goal's own output, which is the only place the reason is.
+// The output is read only after the process has exited, since it is still being written
+// until then.
+func waitForLiveRun(t *testing.T, in *instance, goal *running, objective string) string {
+	t.Helper()
+	for range pollAttempts {
+		for _, line := range scanLines(in.run("runs").stdout) {
+			if strings.Contains(line, objective) {
+				return strings.Fields(line)[0]
+			}
+		}
+		select {
+		case err := <-goal.done:
+			goal.done <- err
+			t.Fatalf("the goal exited (%v) before a run for %q was listed\nstdout:\n%s\nstderr:\n%s", err, objective, goal.out.String(), goal.errb.String())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+	t.Fatalf("no run for %q appeared", objective)
+	return ""
+}
 
 // waitForWorkfile polls the workspace until name exists. It fails at once if the goal exits
 // without having written it, since a model that answers without a tool call would
@@ -72,7 +97,7 @@ func TestLiveKillAndSteerFromASecondProcess(t *testing.T) {
 	in := liveInstance(t, liveModel(t))
 	goal := in.liveStart(manyFiles)
 
-	id := waitForRun(t, in, "part01.txt")
+	id := waitForLiveRun(t, in, goal, "part01.txt")
 	waitForWorkfile(t, in, goal, "part01.txt", 3*time.Minute)
 
 	steer := in.run("steer", id, "Also put the word steered in every file you have not written yet.")
@@ -109,7 +134,7 @@ func TestLiveResumeAfterAHardKill(t *testing.T) {
 		"containing its own name. Use the write tool, one call per file, one at a time."
 	goal := in.liveStart(objective)
 
-	id := waitForRun(t, in, "one.txt")
+	id := waitForLiveRun(t, in, goal, "one.txt")
 	waitForWorkfile(t, in, goal, "one.txt", 3*time.Minute)
 	goal.kill(t)
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -30,7 +31,10 @@ const (
 )
 
 var (
-	cmdNotFound = regexp.MustCompile(`'([^']+)' is not recognized as an internal or external command`)
+	// cmdNotFound is cmd.exe's own sentence. It is anchored to a line start because cmd
+	// prints it as a line of its own, and a test that quotes the phrase inside a longer line
+	// has run its check.
+	cmdNotFound = regexp.MustCompile(`(?m)^'([^']+)' is not recognized as an internal or external command`)
 	shNotFound  = regexp.MustCompile(`(?m)([^\s:]+): (?:command )?not found\s*$`)
 	// psNotFound is PowerShell's wording, which carries no distinctive exit code (it is 1),
 	// so the text is the only evidence and the phrase has to be PowerShell's own.
@@ -40,15 +44,20 @@ var (
 // MissingCommand reports the program a check named that the host could not find, and false
 // when the check ran, or failed for another reason.
 //
-// The exit code decides before the text does. cmd.exe exits 9009 and a POSIX shell 127 for
-// a program they cannot find, and those two are trusted on the code alone; the output only
-// names the program. A bare "not found" in the output of a check that exited 1 is not
-// evidence, because a test run that prints "route: not found" has run its check and been
-// refused by it. PowerShell exits 1, so for it the text is the evidence.
+// cmd.exe prints the same sentence whatever it then exits with: 9009 for a bare program,
+// but 1 when the missing program is the left side of a redirect or a chain (a field run
+// saw `skill_read x >NUL` exit 1). So cmd's sentence is evidence at any non-zero exit, and
+// 9009 is evidence even when the text was lost. A POSIX shell's "not found" is not: it is
+// common in the output of a check that ran, so it counts only at 127. PowerShell exits 1
+// with its own phrase, so the phrase is the evidence.
 func MissingCommand(check string, exitCode int, output string) (string, bool) {
-	switch exitCode {
-	case 0:
+	if exitCode == 0 {
 		return "", false
+	}
+	if m := cmdNotFound.FindStringSubmatch(output); m != nil {
+		return m[1], true
+	}
+	switch exitCode {
 	case exitCmdNotFound:
 		return firstSubmatch(cmdNotFound, output, check), true
 	case exitShNotFound:
@@ -154,6 +163,20 @@ func ShadowedCommands(check, dir string) []string {
 		}
 	}
 	return shadowed
+}
+
+// NamedCommands returns the programs a check runs whose name is among names, in order and
+// once each. It is how a planner notices a check that calls one of the run's own tools: a
+// tool is a function the model calls, not a program a shell can start, so such a check can
+// only ever report the program missing.
+func NamedCommands(check string, names []string) []string {
+	var found []string
+	for _, word := range commandWords(check) {
+		if slices.Contains(names, word) && !slices.Contains(found, word) {
+			found = append(found, word)
+		}
+	}
+	return found
 }
 
 // commandSeparators split a check into the segments each of which starts with a program.

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/llm"
 	"github.com/ionalpha/flynn/resource"
+	"github.com/ionalpha/flynn/sandbox"
 )
 
 // DefaultPlannerMaxTokens bounds the planner's single call. A ledger is a short list
@@ -45,6 +47,11 @@ Example:
 
 If the objective genuinely needs no work — it is already satisfied, or it is not a work request — respond with an empty array []. Do not invent filler items to look busy. Every item you return will be held to its verify clause.`
 
+// plannerCorrections is how many times the planner sends a plan back to the model for a
+// check that cannot run before it gives the sample up as a transient failure. One round
+// usually settles it; the second is for a model that fixed one check and kept another.
+const plannerCorrections = 2
+
 // Planner expands a goal's objective into its ledger with a single model call, against
 // the provider-agnostic llm port. It is the model-backed implementation of goal.Planner
 // the runtime pairs with the reconciler's planning gate; without it a goal runs
@@ -54,6 +61,13 @@ type Planner struct {
 	system    string
 	maxTokens int
 	sampling  *llm.Sampling
+
+	// tools are the names of the run's own tools, which a shell cannot start. lookPath and
+	// goos are the host facts that decide whether a check naming one is still runnable, and
+	// are fields so a test can stand in for a host it is not running on.
+	tools    []string
+	lookPath func(string) (string, error)
+	goos     string
 }
 
 // PlannerOption configures a Planner.
@@ -84,9 +98,18 @@ func WithPlannerSampling(s *llm.Sampling) PlannerOption {
 	return func(p *Planner) { p.sampling = s }
 }
 
+// WithPlannerTools names the run's own tools, so the planner can refuse a check that calls
+// one. A tool is a function the model calls, and a check is a command line a shell runs:
+// `skill_read x` as a check can only report the program missing, which stalls the goal on a
+// check that never ran. An action taken through a tool is proven by the tool's recorded
+// result, so the model is sent back to plan a check on the action's effect.
+func WithPlannerTools(names ...string) PlannerOption {
+	return func(p *Planner) { p.tools = names }
+}
+
 // NewPlanner builds a model-backed planner over the llm port.
 func NewPlanner(model llm.Model, opts ...PlannerOption) *Planner {
-	p := &Planner{model: model, system: planSystem + "\n\n" + HostNote(), maxTokens: DefaultPlannerMaxTokens}
+	p := &Planner{model: model, system: planSystem + "\n\n" + HostNote(), maxTokens: DefaultPlannerMaxTokens, lookPath: sandbox.LookPath, goos: runtime.GOOS}
 	for _, o := range opts {
 		o(p)
 	}
@@ -108,21 +131,74 @@ func (p *Planner) Plan(ctx context.Context, r resource.Resource) ([]goal.LedgerI
 		return nil, fault.Wrap(fault.Terminal, "planner_spec_decode", err)
 	}
 
-	resp, err := p.model.Generate(ctx, llm.Request{
-		System:    p.system,
-		Messages:  []llm.Message{userTurn(p.prompt(spec), spec.Attachments)},
-		MaxTokens: p.maxTokens,
-		Sampling:  p.sampling,
-	})
-	if err != nil {
-		return nil, err // the model classifies its own errors; the worker retries transient ones
-	}
+	messages := []llm.Message{userTurn(p.prompt(spec), spec.Attachments)}
+	for attempt := 0; ; attempt++ {
+		resp, err := p.model.Generate(ctx, llm.Request{
+			System:    p.systemPrompt(),
+			Messages:  messages,
+			MaxTokens: p.maxTokens,
+			Sampling:  p.sampling,
+		})
+		if err != nil {
+			return nil, err // the model classifies its own errors; the worker retries transient ones
+		}
 
-	items, err := parsePlan(resp.Message.TextContent())
-	if err != nil {
-		return nil, fault.Wrap(fault.Transient, "planner_bad_output", err)
+		items, err := parsePlan(resp.Message.TextContent())
+		if err != nil {
+			return nil, fault.Wrap(fault.Transient, "planner_bad_output", err)
+		}
+		refusal := p.refuseToolChecks(items)
+		if refusal == "" {
+			return items, nil
+		}
+		if attempt == plannerCorrections {
+			return nil, fault.New(fault.Transient, "planner_unrunnable_check", refusal)
+		}
+		messages = append(messages, resp.Message, userTurn(refusal, nil))
 	}
-	return items, nil
+}
+
+// systemPrompt is the standing prompt, with the run's tool names added when they are known
+// so the model is told up front what the correction would otherwise have to tell it.
+func (p *Planner) systemPrompt() string {
+	if len(p.tools) == 0 {
+		return p.system
+	}
+	return p.system + "\n\nYour own tools (" + strings.Join(p.tools, ", ") + ") are functions you call, not programs: a check is run by a shell, which cannot start them, so a check that names one can never pass. " +
+		"An action you take through a tool is proven by that tool's recorded result. Plan the check on what the action leaves behind instead."
+}
+
+// refuseToolChecks is the message that sends a plan back, or "" when every check can be
+// started by a shell. A check is refused when its command word is one of the run's tools and
+// the host has no program of that name. On Windows a POSIX shell is refused even where one is
+// installed: the check runs confined, and Git's bash fails to start under that token with a
+// status that carries no text to classify, so it reports 256 for every line it is given.
+func (p *Planner) refuseToolChecks(items []goal.LedgerItem) string {
+	var b strings.Builder
+	for _, it := range items {
+		for _, name := range goal.NamedCommands(it.Verify, p.tools) {
+			if p.runsAsProgram(name) {
+				continue
+			}
+			fmt.Fprintf(&b, "- %q is checked by %q, which is the name of one of your own tools and not a program a shell on this host can start.\n", it.Item, name)
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return "These checks cannot run, so they would prove nothing and the goal would stall on them:\n" + b.String() +
+		"A check is a shell command, and a tool is not one. An action taken through a tool is proven by the tool's recorded result, so do not plan a check that calls it. " +
+		"Plan a command that tests what the action leaves behind (a file that exists, a test that passes, a program that exits 0). " +
+		"Return the whole JSON array again, with every check fixed."
+}
+
+// runsAsProgram reports whether a shell on this host would start a program of this name.
+func (p *Planner) runsAsProgram(name string) bool {
+	if p.goos == "windows" && (name == "bash" || name == "sh") {
+		return false
+	}
+	_, err := p.lookPath(name)
+	return err == nil
 }
 
 // prompt builds the planner's user turn: the objective, its stop condition, and — when

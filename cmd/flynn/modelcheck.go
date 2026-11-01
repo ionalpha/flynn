@@ -98,6 +98,9 @@ func reportRuntimesWith(ctx context.Context, sb sandbox.Sandbox, own ownRuntimeS
 func reportOwnRuntime(out io.Writer, rt inference.Runtime, st localmodel.RuntimeStatus) {
 	ver := inference.ParseVersion(st.Version)
 	switch {
+	case st.NeedsReinstall:
+		_, _ = fmt.Fprintf(out, "  %-10s %-8s NEEDS REINSTALL: installed by an earlier flynn, so it cannot be verified (run `flynn models install %s`)\n",
+			rt.Name, ver, rt.Name)
 	case st.Problem != "":
 		_, _ = fmt.Fprintf(out, "  %-10s %-8s CORRUPT: %s (remove %s and run `flynn models install %s` again)\n",
 			rt.Name, ver, st.Problem, filepath.Dir(st.BinPath), rt.Name)

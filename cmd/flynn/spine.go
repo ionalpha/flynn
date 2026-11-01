@@ -15,9 +15,12 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/controlplane"
+	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/internal/fsatomic"
 	"github.com/ionalpha/flynn/internal/vault"
 	"github.com/ionalpha/flynn/spine"
@@ -130,6 +133,76 @@ func sealRun(ctx context.Context, store *sqlite.Store, rec *chain.RecordingLog, 
 		Payload: map[string]any{"record": base64.StdEncoding.EncodeToString(record)},
 	})
 	return err
+}
+
+// The results a run that did not converge records for itself. None is chain.ResultSuccess,
+// so the ground-truth tier asks nothing of them: a record that says the run was stopped
+// has no success to back.
+const (
+	resultBudget    = "budget_exceeded"
+	resultKilled    = "killed"
+	resultCancelled = "cancelled"
+	resultStalled   = "stalled"
+	resultError     = "error"
+
+	// outcomeReasonKey holds, on a recorded outcome, the error the run ended with.
+	outcomeReasonKey = "reason"
+)
+
+// stoppedOutcome classifies the error a run ended with into the result its record carries.
+// The stream flattens a stall into text, so a kill and a budget stop are told apart by the
+// message the stopping side wrote; a typed fault is honoured first.
+func stoppedOutcome(runErr error) string {
+	msg := runErr.Error()
+	switch {
+	case fault.Classify(runErr) == fault.BudgetExceeded, strings.Contains(msg, string(fault.BudgetExceeded)):
+		return resultBudget
+	case strings.Contains(msg, goal.KillMessage(goal.Kill{})):
+		return resultKilled
+	case errors.Is(runErr, context.Canceled):
+		return resultCancelled
+	case strings.HasPrefix(msg, "goal stalled"):
+		return resultStalled
+	}
+	return resultError
+}
+
+// sealReported seals a run's recorded stream and says on out whether that worked. A
+// sealing failure is reported and never fails the run: the run's own result is already
+// decided, and a missing record is visible to whoever asks for it.
+func sealReported(ctx context.Context, out io.Writer, store *sqlite.Store, rec *chain.RecordingLog, runID string, signer chain.RootSigner) {
+	if serr := sealRun(ctx, store, rec, runID, signer); serr != nil {
+		_, _ = fmt.Fprintf(out, "  (run not sealed: %v)\n", serr)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", runID)
+}
+
+// sealStopped records how a run that did not converge ended, then seals it. The outcome
+// goes on the stream first, through the recorder, so it is inside the chain the seal
+// signs and the record says how the run ended instead of reading as one that simply
+// stopped. The run's error is the caller's to return unchanged.
+//
+// It is what makes the stopped runs verifiable. A stall, a budget stop, an operator's
+// kill and a provider failure all return an error, and they are the runs someone goes
+// back to check. The seal runs on a context detached from ctx, because an interrupt
+// cancels ctx and a record that needs a live context to be written is lost on exactly the
+// runs that were interrupted.
+func sealStopped(ctx context.Context, out io.Writer, store *sqlite.Store, rec *chain.RecordingLog, runID string, signer chain.RootSigner, runErr error) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if _, err := rec.Append(ctx, spine.AppendInput{
+		Stream: runID,
+		Type:   chain.OutcomeRecorded,
+		Actor:  spine.ActorSystem,
+		Payload: map[string]any{
+			chain.OutcomeResultKey: stoppedOutcome(runErr),
+			outcomeReasonKey:       runErr.Error(),
+		},
+	}); err != nil {
+		_, _ = fmt.Fprintf(out, "  (outcome not recorded: %v)\n", err)
+	}
+	sealReported(ctx, out, store, rec, runID, signer)
 }
 
 // sealRunFromStore seals a run's current durable stream into a signed record stored on
@@ -435,6 +508,12 @@ func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed
 		_, _ = fmt.Fprintln(out, "  governance:   OK (no action ran without admission)")
 	}
 
+	// A run that stopped says so here, so a record that verifies is not read as one that
+	// succeeded: integrity attests the record is faithful, not that the run finished.
+	if result, reason, ok := stoppedBy(events); ok {
+		_, _ = fmt.Fprintf(out, "  outcome:      %s (%s)\n", result, reason)
+	}
+
 	gt := chain.VerifyGroundTruth(events)
 	switch {
 	case !claimsSuccess(events):
@@ -561,6 +640,23 @@ func claimsSuccess(events []spine.Event) bool {
 		}
 	}
 	return false
+}
+
+// stoppedBy returns the last outcome a run recorded that is not a success, which is how a
+// run that did not converge says it ended. A run that recorded none reports false.
+func stoppedBy(events []spine.Event) (result, reason string, ok bool) {
+	for _, e := range events {
+		if e.Type != chain.OutcomeRecorded {
+			continue
+		}
+		r, _ := e.Payload[chain.OutcomeResultKey].(string)
+		if r == "" || r == chain.ResultSuccess {
+			continue
+		}
+		reason, _ = e.Payload[outcomeReasonKey].(string)
+		result, ok = r, true
+	}
+	return result, reason, ok
 }
 
 // recordFromEvents extracts the signed record stored on a run's stream.

@@ -9,12 +9,15 @@ package sqlitex
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"io/fs"
 	"time"
 
-	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
+	"modernc.org/sqlite" // registers the pure-Go "sqlite" driver
+	sqlite3 "modernc.org/sqlite/lib"
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/migrate"
 )
 
@@ -38,6 +41,10 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
 	}
 	db.SetMaxOpenConns(1)
+	if err := connect(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("sqlitex: open: %w", err)
+	}
 
 	sub, err := fs.Sub(migrationsFS, "migrations")
 	if err != nil {
@@ -49,6 +56,50 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 		return nil, fmt.Errorf("sqlitex: migrate: %w", err)
 	}
 	return db, nil
+}
+
+// connectAttempts and connectStep bound how long [Open] keeps retrying its first
+// connection: the wait before attempt n is n*connectStep up to connectMaxWait, about
+// five seconds in all.
+const (
+	connectAttempts = 60
+	connectStep     = 10 * time.Millisecond
+	connectMaxWait  = 100 * time.Millisecond
+)
+
+// connect makes the first connection, retrying while another process holds the file.
+//
+// The first connection on a new file switches it to WAL. That switch needs the file
+// to itself, and when it meets another process doing the same, or one opening the
+// file in the old journal mode, SQLite returns SQLITE_BUSY at once without consulting
+// busy_timeout. Two processes that start together on a fresh data directory both
+// reach this point, so the loser retries until the winner has finished; by then the
+// file is already WAL and the switch is a no-op.
+func connect(ctx context.Context, db *sql.DB) error {
+	var clk clock.Timing = clock.System{}
+	for attempt := 1; ; attempt++ {
+		err := db.PingContext(ctx)
+		if err == nil || !isBusy(err) || attempt >= connectAttempts {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-clk.After(min(time.Duration(attempt)*connectStep, connectMaxWait)):
+		}
+	}
+}
+
+// isBusy reports whether err is SQLite's lock contention (SQLITE_BUSY or
+// SQLITE_LOCKED). The primary code is the low byte; an extended code such as
+// SQLITE_BUSY_SNAPSHOT is still contention.
+func isBusy(err error) bool {
+	var se *sqlite.Error
+	if !errors.As(err, &se) {
+		return false
+	}
+	code := se.Code() & 0xff
+	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
 // dsnPragmas is the shared per-connection configuration. Beyond the write-side

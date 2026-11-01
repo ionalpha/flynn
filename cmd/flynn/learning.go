@@ -114,6 +114,11 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		_ = learn.Reinforce(ctx, skills, skillset.Reads(), err == nil)
 	}
 	if err != nil {
+		// A run that stopped is sealed too, with how it ended on the record before the
+		// seal. Without a run id nothing was started, so there is no stream to seal.
+		if rec != nil && source != "" {
+			sealStopped(ctx, out, store, rec, source, signer, err)
+		}
 		return "", err
 	}
 
@@ -131,11 +136,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	// can be checked later from the durable store alone. Best effort: a sealing
 	// failure is reported but never fails the run.
 	if rec != nil {
-		if serr := sealRun(ctx, store, rec, source, signer); serr != nil {
-			_, _ = fmt.Fprintf(out, "  (run not sealed: %v)\n", serr)
-		} else {
-			_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", source)
-		}
+		sealReported(ctx, out, store, rec, source, signer)
 		// Checkpoint the resource projection alongside the sealed run, so a later
 		// rebuild resumes from a verified snapshot instead of folding the whole
 		// stream. Best effort, like the seal: a snapshot is a derived cache, and a

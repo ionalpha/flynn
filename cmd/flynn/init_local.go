@@ -151,7 +151,7 @@ func liveInitEnv(dataDir string, in io.Reader, out io.Writer, yes bool) initEnv 
 			if err != nil {
 				return initRuntimeState{}, err
 			}
-			res := initRuntimeState{Installed: st.Installed, Variant: st.Variant, Problem: st.Problem}
+			res := initRuntimeState{Installed: st.Installed && !st.NeedsReinstall, Variant: st.Variant, Problem: st.Problem}
 			rels := provision.ReleasesFor(localmodel.Runtime, runtime.GOOS, runtime.GOARCH)
 			if rel, ok := provision.ByVariant(rels, st.Variant); ok {
 				res.DownloadBytes = rel.DownloadBytes()
