@@ -33,9 +33,18 @@ func TestMissingCommand(t *testing.T) {
 		},
 		{"exit 1 with not found in the output ran its check", "go test ./...", 1, "route: not found", "", false},
 		{
-			"exit 1 with cmd wording but the wrong code is not trusted", "go test ./...", 1,
-			"'x' is not recognized as an internal or external command", "", false,
+			"cmd wording names the program whatever the exit code", "skill_read systematic-debugging >NUL", 1,
+			"'skill_read' is not recognized as an internal or external command,\noperable program or batch file.", "skill_read", true,
 		},
+		{
+			"cmd wording behind a non-zero code that is neither 1 nor 9009", "x", 255,
+			"'x' is not recognized as an internal or external command", "x", true,
+		},
+		{
+			"cmd wording quoted mid-line by a check that ran is not a missing program", "go test ./...", 1,
+			"--- FAIL: TestShell: got \"'x' is not recognized as an internal or external command\"", "", false,
+		},
+		{"a raw 256 with nothing to read stays an ordinary failure", "bash -c true", 256, "", "", false},
 		{"no text and no command word falls back to the whole check", "&&", 127, "", "&&", true},
 		{"a passing check", "go test ./...", 0, "ok", "", false},
 		{"an ordinary failure", "go test ./...", 2, "FAIL", "", false},
@@ -284,5 +293,111 @@ func TestCommandWords(t *testing.T) {
 		if got := commandWords(c.check); !slices.Equal(got, c.want) {
 			t.Fatalf("commandWords(%q) = %v, want %v", c.check, got, c.want)
 		}
+	}
+}
+
+// runChecksTo drives EnvironmentRepeatLimit rounds of build, verify and observe against a
+// planned two-item ledger whose verifier returns the given verdict every time.
+func runChecksTo(t *testing.T, v ItemVerdict, rounds int) (Status, *fakeEvidence) {
+	t.Helper()
+	ev := &fakeEvidence{}
+	ver := &fakeVerifier{verdicts: []ItemVerdict{v}}
+	h, w := producerHarness(t, ver, ev)
+	ref := h.plannedGoal(t, "checks", twoItemLedger(t))
+	h.setStatus(t, ref, func(st *Status) { st.Planned = true })
+	for range rounds {
+		h.reconcile(t, ref)
+		if _, err := w.ProcessOnce(h.ctx); err != nil {
+			t.Fatalf("build step: %v", err)
+		}
+		h.reconcile(t, ref)
+		if _, err := w.ProcessOnce(h.ctx); err != nil {
+			t.Fatalf("verify step: %v", err)
+		}
+		h.reconcile(t, ref)
+	}
+	return h.status(t, ref), ev
+}
+
+// TestAnAgentToolNamedInACheckStopsAsAnEnvironmentProblem is the first field failure: the
+// model wrote `skill_read systematic-debugging >NUL` as a check, cmd.exe printed that the
+// program is not recognized, and the exit code was 1 and not 9009. The goal stopped as not
+// converging on a check that never found its program. It must stop naming the program and
+// saying the work was not judged, as it does for a 9009.
+func TestAnAgentToolNamedInACheckStopsAsAnEnvironmentProblem(t *testing.T) {
+	st, ev := runChecksTo(t, ItemVerdict{
+		Executed: true, ExitCode: 1,
+		Output: "'skill_read' is not recognized as an internal or external command,\noperable program or batch file.",
+		Detail: "exit 1: 'skill_read' is not recognized as an internal or external command",
+	}, EnvironmentRepeatLimit)
+
+	if len(ev.recs) == 0 || ev.recs[0].Provenance == ProvenanceExecuted {
+		t.Fatalf("recorded %+v: a check that never ran must not be on the record as executed", ev.recs)
+	}
+	if st.Phase != PhaseStalled {
+		t.Fatalf("phase = %q, want %q (message %q)", st.Phase, PhaseStalled, st.Message)
+	}
+	if reason := stalledReason(st); reason != "CheckCannotRun" {
+		t.Fatalf("stalled reason = %q, want CheckCannotRun (message %q)", reason, st.Message)
+	}
+	if !strings.Contains(st.Message, `"skill_read"`) {
+		t.Fatalf("stall message does not name the missing program: %q", st.Message)
+	}
+	if st.Ledger[0].Proven {
+		t.Fatal("an item was proven by a check that never ran")
+	}
+}
+
+// TestACheckThatRanAndFailedAtExitOneStillCountsAsNotConverging is the control for the
+// change above: a program that exists, runs, exits 1 and prints ordinary failure text is
+// the work being wrong, and the convergence rule must still see it.
+func TestACheckThatRanAndFailedAtExitOneStillCountsAsNotConverging(t *testing.T) {
+	st, ev := runChecksTo(t, ItemVerdict{
+		Executed: true, ExitCode: 1, Output: "FAIL: TestHealth: got 500, want 200", Detail: "exit 1: FAIL",
+	}, VerdictRepeatLimit)
+
+	if len(ev.recs) == 0 || ev.recs[0].Provenance != ProvenanceExecuted {
+		t.Fatalf("recorded %+v: a check that ran must stay on the record as executed", ev.recs)
+	}
+	if st.MissingCommand != "" || st.MissingRepeat != 0 {
+		t.Fatalf("a check that ran was read as a missing program: %q x%d", st.MissingCommand, st.MissingRepeat)
+	}
+	if reason := stalledReason(st); reason == "CheckCannotRun" {
+		t.Fatalf("a failing check was classified as the environment: %q", st.Message)
+	}
+	if st.Ledger[0].Proven {
+		t.Fatal("an item was proven by a failing check")
+	}
+}
+
+// TestNamedCommands: the programs a check runs that are among the given names, in order and
+// once each. A name that is only an argument is not a command, so a check that greps for a
+// tool's name in a file is left alone.
+func TestNamedCommands(t *testing.T) {
+	tools := []string{"skill_read", "bash", "read", "github_issue_get"}
+	cases := []struct {
+		name, check string
+		want        []string
+	}{
+		{"the tool is the whole check", "skill_read systematic-debugging >NUL", []string{"skill_read"}},
+		{"the tool after a chain", "go build ./... && skill_read x", []string{"skill_read"}},
+		{"bash wrapping the command", `bash -c "echo hi" > "%TEMP%un1.log" 2>&1 && findstr hi "%TEMP%un1.log"`, []string{"bash"}},
+		{"quoted command word", `"bash" -c true`, []string{"bash"}},
+		{"two tools, each once", "read a; read b | skill_read c", []string{"read", "skill_read"}},
+		{"a tool name as an argument", "findstr skill_read notes.txt", nil},
+		{"a tool name inside a longer word", "reader --check", nil},
+		{"a path-qualified command is a file, not the tool", "./read.sh", nil},
+		{"no tools given", "skill_read x", nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			names := tools
+			if c.name == "no tools given" {
+				names = nil
+			}
+			if got := NamedCommands(c.check, names); !slices.Equal(got, c.want) {
+				t.Fatalf("NamedCommands(%q) = %v, want %v", c.check, got, c.want)
+			}
+		})
 	}
 }
