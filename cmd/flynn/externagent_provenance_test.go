@@ -182,8 +182,8 @@ func TestExternalAdapterIsBuiltForEveryBackend(t *testing.T) {
 
 // TestCodexHomeIsFlynnsOwnAndNeverTheUsers checks the codex backend runs the CLI against the
 // home Flynn keeps for it, whatever the user's own CODEX_HOME says, that the home exists once
-// the spawner is built (the CLI refuses a CODEX_HOME that does not), and that a config.toml
-// left in it is gone before any episode can read it while the sign-in beside it is kept.
+// the spawner is built (the CLI refuses a CODEX_HOME that does not), and that a config.toml,
+// AGENTS.md or skills directory left in it is gone before any episode can read it while the sign-in beside it is kept.
 func TestCodexHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
 	withNoExecutables(t)
 	home := filepath.Join(t.TempDir(), "codex")
@@ -207,8 +207,10 @@ func TestCodexHomeIsFlynnsOwnAndNeverTheUsers(t *testing.T) {
 	if _, err := externalSpawner("codex"); err != nil {
 		t.Fatalf("externalSpawner(codex): %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "config.toml")); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("a config.toml in Flynn's codex home must be removed before an episode, got %v", err)
+	for _, name := range []string{"config.toml", "AGENTS.md", "skills"} {
+		if _, err := os.Stat(filepath.Join(home, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s in Flynn's codex home must be removed before an episode, got %v", name, err)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(home, "auth.json")); err != nil {
 		t.Errorf("the sign-in in Flynn's codex home must be left alone: %v", err)
@@ -328,5 +330,155 @@ func TestResolveExternalAgentReportsAMissingCLI(t *testing.T) {
 		if strings.Contains(strings.ToLower(msg), "api key") {
 			t.Errorf("%s: external onboarding must never ask for an API key, got %v", name, err)
 		}
+	}
+}
+
+// TestClearCodexHomeReportsAnUnreadableHome checks a home that cannot be listed for a reason
+// other than being absent is an error rather than a silent pass, since a config left in it
+// would then steer the next episode; an absent home has nothing to clear.
+func TestClearCodexHomeReportsAnUnreadableHome(t *testing.T) {
+	if err := clearCodexHome(filepath.Join(t.TempDir(), "absent")); err != nil {
+		t.Errorf("an absent home has nothing to clear, got %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports listing a file as a missing path")
+	}
+	file := filepath.Join(t.TempDir(), "home")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := clearCodexHome(file); err == nil || !strings.Contains(err.Error(), "codex home") {
+		t.Errorf("a home that is a file must be reported, got %v", err)
+	}
+}
+
+// TestClearCodexHomeReportsAnUnremovableEntry checks a leftover the process cannot delete is
+// reported: a read-only directory's contents cannot be unlinked on unix.
+func TestClearCodexHomeReportsAnUnremovableEntry(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("directory permissions do not block removal here")
+	}
+	home := t.TempDir()
+	sub := filepath.Join(home, "skills")
+	if err := os.MkdirAll(filepath.Join(sub, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+	if err := clearCodexHome(home); err == nil {
+		t.Error("an entry that cannot be removed must be reported")
+	}
+}
+
+// TestExternalHomesAreOwnerOnly checks an existing home left with a wider mode is tightened
+// to 0700 when the spawner is built, since MkdirAll leaves it as it found it.
+func TestExternalHomesAreOwnerOnly(t *testing.T) {
+	withNoExecutables(t)
+	for _, tc := range []struct {
+		name string
+		home *func() string
+	}{{"claude", &claudeHome}, {"codex", &codexHome}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), tc.name)
+			if err := os.Mkdir(dir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			prev := *tc.home
+			*tc.home = func() string { return dir }
+			t.Cleanup(func() { *tc.home = prev })
+			if _, err := externalSpawner(tc.name); err != nil {
+				t.Fatal(err)
+			}
+			if runtime.GOOS == "windows" {
+				t.Skip("Windows permission bits do not express owner-only access")
+			}
+			fi, err := os.Stat(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fi.Mode().Perm() != 0o700 {
+				t.Errorf("home mode = %v, want 0700", fi.Mode().Perm())
+			}
+		})
+	}
+}
+
+// TestEnsureOwnHomeReportsAFailure checks a home that cannot be created is an error that
+// names the backend.
+func TestEnsureOwnHomeReportsAFailure(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ensureOwnHome("claude", filepath.Join(file, "home")); err == nil || !strings.Contains(err.Error(), "claude home") {
+		t.Errorf("got %v", err)
+	}
+}
+
+// TestOwnHomeSpawnersGrantWriteOnTheirHome checks the claude and codex envelopes mark their
+// home writable and point the CLI at it. Both CLIs refresh their token in place, so a read-only
+// home would sign Flynn out at the first refresh; the grant is safe only because the home is
+// Flynn's own, which is why it must not be dropped or copied to a backend that uses the
+// user's.
+func TestOwnHomeSpawnersGrantWriteOnTheirHome(t *testing.T) {
+	home := t.TempDir()
+	for _, tc := range []struct {
+		name string
+		cfg  externagent.SandboxConfig
+		env  string
+	}{
+		{"claude", claudeSandboxConfig(home, externagent.Program{}), "CLAUDE_CONFIG_DIR"},
+		{"codex", codexSandboxConfig(home, externagent.Program{}), "CODEX_HOME"},
+	} {
+		if !tc.cfg.AuthDirWritable {
+			t.Errorf("%s: AuthDirWritable must be true", tc.name)
+		}
+		if tc.cfg.AuthDir != home || tc.cfg.AuthEnv != tc.env {
+			t.Errorf("%s: AuthDir/AuthEnv = %q/%q, want %q/%q", tc.name, tc.cfg.AuthDir, tc.cfg.AuthEnv, home, tc.env)
+		}
+	}
+}
+
+// TestExternalSpawnerRefusesAHomeItCannotPrepare checks a home that cannot be created, or a
+// codex home that cannot be cleared, fails the spawner instead of running an episode against
+// an unprepared one.
+func TestExternalSpawnerRefusesAHomeItCannotPrepare(t *testing.T) {
+	withNoExecutables(t)
+	file := filepath.Join(t.TempDir(), "f")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		home *func() string
+	}{{"claude", &claudeHome}, {"codex", &codexHome}} {
+		prev := *tc.home
+		*tc.home = func() string { return filepath.Join(file, "home") }
+		_, err := externalSpawner(tc.name)
+		*tc.home = prev
+		if err == nil || !strings.Contains(err.Error(), tc.name+" home") {
+			t.Errorf("%s: got %v", tc.name, err)
+		}
+	}
+
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		return
+	}
+	home := t.TempDir()
+	sub := filepath.Join(home, "skills")
+	if err := os.MkdirAll(filepath.Join(sub, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+	prev := codexHome
+	codexHome = func() string { return home }
+	t.Cleanup(func() { codexHome = prev })
+	if _, err := externalSpawner("codex"); err == nil {
+		t.Error("a codex home that cannot be cleared must fail the spawner")
 	}
 }

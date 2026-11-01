@@ -141,8 +141,8 @@ var codexAllowedHosts = []string{
 // adapter declares. The user's config.toml, where they keep their MCP servers, model
 // providers and settings, is never on the child's path, so whatever the person who
 // launched the run happens to carry cannot steer an episode or hand the harness servers
-// this run neither hosts nor governs. A config.toml found in Flynn's own home is removed
-// before a spawner is built ([clearCodexConfig]), because nothing Flynn does writes one
+// this run neither hosts nor governs. Anything but the sign-in found in Flynn's own home is removed
+// before a spawner is built ([clearCodexHome]), because nothing Flynn does writes one
 // there. A variable so tests can point it at a temporary directory.
 var codexHome = defaultCodexHome
 
@@ -155,14 +155,48 @@ func codexLoginCommand(home string) string {
 	return homeLoginCommand("CODEX_HOME", home, "codex login")
 }
 
-// clearCodexConfig removes a config.toml from Flynn's codex home, so an episode's
-// configuration is what its command line passes and nothing else. An episode's child may
-// write the home it runs in, so without this a harness could leave a config there that
-// steers every later run.
-func clearCodexConfig(home string) error {
-	err := os.Remove(filepath.Join(home, "config.toml"))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
+// codexAuthFiles are the entries of Flynn's codex home that [clearCodexHome] keeps: the
+// sign-in the CLI writes with its file credential store. Everything else the CLI keeps
+// there (config.toml, AGENTS.md, prompts, skills, history, caches) is rebuilt by the CLI
+// when it needs it, and is also what a harness would write to steer a later run.
+var codexAuthFiles = map[string]bool{"auth.json": true}
+
+// clearCodexHome removes everything from Flynn's codex home except the sign-in, so an
+// episode's configuration and instructions are what its command line passes and nothing
+// else. An episode's child may write the home it runs in, so without this a harness could
+// leave a config.toml, AGENTS.md, prompt or skill there that steers every later run. A
+// sign-in held in the OS keyring is outside the home and untouched. A home that does not
+// exist has nothing to clear.
+func clearCodexHome(home string) error {
+	entries, err := os.ReadDir(home)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
 		return fmt.Errorf("codex home: %w", err)
+	}
+	for _, e := range entries {
+		if codexAuthFiles[e.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(home, e.Name())); err != nil {
+			return fmt.Errorf("codex home: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureOwnHome creates a CLI home Flynn keeps and sets it to owner-only. MkdirAll leaves
+// an existing directory with the mode it already had, and the home holds a bearer token,
+// so the mode is set explicitly. On Windows Chmod changes only the read-only attribute and
+// the directory's access comes from its ACL, which the per-user data directory sets.
+func ensureOwnHome(label, home string) error {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return fmt.Errorf("%s home: %w", label, err)
+	}
+	//nolint:gosec // G302: 0700 is the owner-only mode for a directory; gosec's 0600 ceiling is for files
+	if err := os.Chmod(home, 0o700); err != nil {
+		return fmt.Errorf("%s home: %w", label, err)
 	}
 	return nil
 }
@@ -260,26 +294,13 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		// The CLI refuses a CODEX_HOME that does not exist, and the user's first sign-in runs
 		// against the path Flynn prints, so the home is created before anything points at it.
 		home := codexHome()
-		if err := os.MkdirAll(home, 0o700); err != nil {
-			return nil, fmt.Errorf("codex home: %w", err)
-		}
-		if err := clearCodexConfig(home); err != nil {
+		if err := ensureOwnHome("codex", home); err != nil {
 			return nil, err
 		}
-		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
-			AllowedHosts:    codexAllowedHosts,
-			AuthDir:         home,
-			AuthEnv:         "CODEX_HOME",
-			AuthDirWritable: true,
-			ProgramDirs:     prog.ReadableDirs,
-			ProbeTimeout:    externalProbeTimeout,
-			// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
-			// process can do inside a Windows AppContainer, so it runs under the tier that
-			// confines its writes to the workspace and leaves the host readable. Its writes,
-			// its egress, and its tools stay gated; only the read posture is traded, and the
-			// episode records the tier that ran.
-			HostReadable: true,
-		}), nil
+		if err := clearCodexHome(home); err != nil {
+			return nil, err
+		}
+		return externagent.NewSandboxSpawner(codexSandboxConfig(home, prog)), nil
 	case "claude":
 		prog, err := externagent.LocateClaude("")
 		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
@@ -289,25 +310,54 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		// before then, and a grant on a directory that does not exist fails the probe that
 		// reports how to sign in.
 		home := claudeHome()
-		if err := os.MkdirAll(home, 0o700); err != nil {
-			return nil, fmt.Errorf("claude home: %w", err)
+		if err := ensureOwnHome("claude", home); err != nil {
+			return nil, err
 		}
-		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
-			AllowedHosts:    claudeAllowedHosts,
-			AuthDir:         home,
-			AuthEnv:         "CLAUDE_CONFIG_DIR",
-			AuthDirWritable: true,
-			ProgramDirs:     prog.ReadableDirs,
-			ProbeTimeout:    externalProbeTimeout,
-			// Claude Code ships as a single compiled native binary that canonicalizes paths on
-			// startup, the same operation no process can perform inside a Windows AppContainer,
-			// so it runs under the tier that confines its writes to the workspace and leaves the
-			// host readable. Its writes, its egress, and its tools stay gated; only the read
-			// posture is traded, and the episode records the tier that ran.
-			HostReadable: true,
-		}), nil
+		return externagent.NewSandboxSpawner(claudeSandboxConfig(home, prog)), nil
 	default:
 		return nil, fmt.Errorf("unknown external agent backend %q", name)
+	}
+}
+
+// codexSandboxConfig is the confinement envelope for the codex backend over its own home. The
+// home is granted write ([externagent.SandboxConfig.AuthDirWritable]) because the CLI
+// refreshes its token in place there. That grant is safe only because the home is Flynn's
+// own and holds nothing of the user's, so a test holds it to true here.
+func codexSandboxConfig(home string, prog externagent.Program) externagent.SandboxConfig {
+	return externagent.SandboxConfig{
+		AllowedHosts:    codexAllowedHosts,
+		AuthDir:         home,
+		AuthEnv:         "CODEX_HOME",
+		AuthDirWritable: true,
+		ProgramDirs:     prog.ReadableDirs,
+		ProbeTimeout:    externalProbeTimeout,
+		// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
+		// process can do inside a Windows AppContainer, so it runs under the tier that
+		// confines its writes to the workspace and leaves the host readable. Its writes,
+		// its egress, and its tools stay gated; only the read posture is traded, and the
+		// episode records the tier that ran.
+		HostReadable: true,
+	}
+}
+
+// claudeSandboxConfig is the confinement envelope for the claude backend over its own home. The
+// home is granted write ([externagent.SandboxConfig.AuthDirWritable]) because the CLI
+// refreshes its token in place there. That grant is safe only because the home is Flynn's
+// own and holds nothing of the user's, so a test holds it to true here.
+func claudeSandboxConfig(home string, prog externagent.Program) externagent.SandboxConfig {
+	return externagent.SandboxConfig{
+		AllowedHosts:    claudeAllowedHosts,
+		AuthDir:         home,
+		AuthEnv:         "CLAUDE_CONFIG_DIR",
+		AuthDirWritable: true,
+		ProgramDirs:     prog.ReadableDirs,
+		ProbeTimeout:    externalProbeTimeout,
+		// Claude Code ships as a single compiled native binary that canonicalizes paths on
+		// startup, the same operation no process can perform inside a Windows AppContainer,
+		// so it runs under the tier that confines its writes to the workspace and leaves the
+		// host readable. Its writes, its egress, and its tools stay gated; only the read
+		// posture is traded, and the episode records the tier that ran.
+		HostReadable: true,
 	}
 }
 
