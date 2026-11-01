@@ -60,6 +60,8 @@ func TestReportRuntimesShowsTheInstalledVariantAndGPUUse(t *testing.T) {
 	noGPU.GPU = ""
 	corrupt := cuda
 	corrupt.Problem = "the runtime binary changed after it was installed"
+	older := cuda
+	older.NeedsReinstall = true
 
 	tests := []struct {
 		name string
@@ -70,6 +72,7 @@ func TestReportRuntimesShowsTheInstalledVariantAndGPUUse(t *testing.T) {
 		{"cpu build on a machine with a gpu", cpuOnGPU, []string{"variant: cpu", "not used by this build", "--variant"}},
 		{"cpu build and no gpu", noGPU, []string{"variant: cpu", "none detected"}},
 		{"changed binary", corrupt, []string{"CORRUPT", "changed after it was installed"}},
+		{"installed by an earlier flynn", older, []string{"NEEDS REINSTALL", "earlier flynn", "flynn models install"}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

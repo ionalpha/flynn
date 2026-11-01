@@ -91,6 +91,10 @@ type RuntimeStatus struct {
 	UsesGPU bool
 	// Problem is non-empty when the installed build fails its integrity check.
 	Problem string
+	// NeedsReinstall is true when the build on disk has no hash record, as one installed
+	// by Flynn v0.1.3 has not. Problem stays empty: nothing is known to be wrong, but
+	// nothing vouches for the binary either, so [Host.EnsureRuntime] fetches it again.
+	NeedsReinstall bool
 }
 
 // pinnedReleases converts and checks the releases a test supplies. A release without a digest
@@ -219,8 +223,10 @@ func (h *Host) releaseAmong(ctx context.Context, rels []provision.Release) (prov
 // anything is downloaded, and a build already installed is held to the same floor. Every
 // archive must match its pinned digest. The server binary's own hash is recorded when the
 // verified archives are unpacked and checked again by [Host.Serve] before each launch. A
-// build found installed without that record is refused, not recorded: a hash taken from a
-// file nobody vouched for would bless whatever is there.
+// build found installed without that record (one from Flynn v0.1.3) is replaced by a
+// verified download, not recorded: a hash taken from a file nobody vouched for would bless
+// whatever is there. One whose record disagrees with the binary is refused with
+// [ErrDigestMismatch].
 func (h *Host) EnsureRuntime(ctx context.Context) (RuntimeInstall, error) {
 	rel, err := h.release(ctx)
 	if err != nil {
@@ -267,12 +273,17 @@ func (h *Host) install(ctx context.Context, rel provision.Release) (RuntimeInsta
 	if err != nil {
 		return RuntimeInstall{}, h.fail(err)
 	}
-	sidecar := inst.BinPath + ".sha256"
 	if inst.FromCache {
-		if err := verifyRuntimeBinary(inst.BinPath); err != nil {
+		if err := verifyRuntimeBinary(inst.BinPath); errors.Is(err, ErrRuntimeUnrecorded) {
+			if inst, err = h.refetch(ctx, rel, dest); err != nil {
+				return RuntimeInstall{}, err
+			}
+		} else if err != nil {
 			return RuntimeInstall{}, err
 		}
-	} else {
+	}
+	sidecar := inst.BinPath + ".sha256"
+	if !inst.FromCache {
 		h.say("installed %s %s %s (verified)", Runtime, inst.Version, rel.Name())
 		if err := recordRuntimeBinary(inst.BinPath, sidecar); err != nil {
 			return RuntimeInstall{}, err
@@ -282,6 +293,25 @@ func (h *Host) install(ctx context.Context, rel provision.Release) (RuntimeInsta
 		return RuntimeInstall{}, fmt.Errorf("localmodel: record the chosen runtime build: %w", err)
 	}
 	return RuntimeInstall{BinPath: inst.BinPath, Version: inst.Version.String(), Cached: inst.FromCache, Variant: rel.Name()}, nil
+}
+
+// refetch replaces an install that has no hash record with a verified download. The old
+// directory goes first because [provision.Install] reuses whatever is extracted there, and
+// only the release's own directory under dest is removed.
+func (h *Host) refetch(ctx context.Context, rel provision.Release, dest string) (provision.Installed, error) {
+	dir := rel.Dir(dest)
+	if r, err := filepath.Rel(dest, dir); err != nil || !filepath.IsLocal(r) {
+		return provision.Installed{}, fmt.Errorf("localmodel: runtime directory %s is outside %s", dir, dest)
+	}
+	h.say("%s %s was installed by an earlier flynn and cannot be verified; fetching it again", Runtime, rel.Version)
+	if err := os.RemoveAll(dir); err != nil {
+		return provision.Installed{}, fmt.Errorf("localmodel: remove the unverified runtime (is it running?): %w", err)
+	}
+	inst, err := provision.Install(ctx, h.dl, rel, dest)
+	if err != nil {
+		return provision.Installed{}, h.fail(err)
+	}
+	return inst, nil
 }
 
 // RuntimeStatus reports the runtime build this host would serve with and whether it is
@@ -309,7 +339,10 @@ func (h *Host) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 		return st, nil
 	}
 	st.Installed, st.BinPath = true, inst.BinPath
-	if err := verifyRuntimeBinary(inst.BinPath); err != nil {
+	switch err := verifyRuntimeBinary(inst.BinPath); {
+	case errors.Is(err, ErrRuntimeUnrecorded):
+		st.NeedsReinstall = true
+	case err != nil:
 		st.Problem = err.Error()
 	}
 	return st, nil
@@ -351,7 +384,10 @@ func recordRuntimeBinary(bin, sidecar string) error {
 func verifyRuntimeBinary(bin string) error {
 	want, err := os.ReadFile(bin + ".sha256") //nolint:gosec // a path under the data directory
 	if err != nil {
-		return fmt.Errorf("localmodel: runtime binary has no recorded hash: %w", err)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: %w", ErrRuntimeUnrecorded, err)
+		}
+		return fmt.Errorf("localmodel: read runtime binary hash: %w", err)
 	}
 	got, err := hashFile(bin)
 	if err != nil {

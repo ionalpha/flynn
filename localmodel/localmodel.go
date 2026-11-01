@@ -249,6 +249,10 @@ var (
 	// ErrDigestMismatch is returned when a file on disk no longer hashes to the digest it
 	// was installed under.
 	ErrDigestMismatch = errors.New("localmodel: digest mismatch")
+	// ErrRuntimeUnrecorded is returned when an installed runtime binary has no hash record
+	// beside it, as one installed by Flynn v0.1.3 has not. Provenance is unknown, so the
+	// build is fetched again rather than hashed where it lies; it is not a mismatch.
+	ErrRuntimeUnrecorded = errors.New("localmodel: runtime binary has no recorded hash")
 	// ErrNotServable is returned for a source that can be classified but not served here.
 	ErrNotServable = errors.New("localmodel: source cannot be served")
 	// ErrNotAdmitted is returned when the sandbox provides less isolation than the

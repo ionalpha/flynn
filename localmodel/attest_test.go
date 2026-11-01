@@ -470,9 +470,10 @@ func TestWeightsSwappedBeforeLaunchAreRefused(t *testing.T) {
 	}
 }
 
-// A cached runtime whose recorded hash is gone is refused, and the refusal does not write
-// a new record: a hash taken from the file as it stands would vouch for anything there.
-func TestCachedRuntimeWithoutRecordIsRefusedNotRecorded(t *testing.T) {
+// A cached runtime whose recorded hash is gone is fetched again, and the record that comes
+// back is the hash of the verified download, not of the file that was there: a hash taken
+// from the file as it stands would vouch for anything there.
+func TestCachedRuntimeWithoutRecordIsFetchedAgainNotAdopted(t *testing.T) {
 	f := newFixture(t, fixtureOpts{})
 	h := f.open()
 	rt, err := h.EnsureRuntime(t.Context())
@@ -480,19 +481,52 @@ func TestCachedRuntimeWithoutRecordIsRefusedNotRecorded(t *testing.T) {
 		t.Fatal(err)
 	}
 	sidecar := rt.BinPath + ".sha256"
+	want, err := os.ReadFile(sidecar)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Remove(sidecar); err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
-		if _, err := h.EnsureRuntime(t.Context()); err == nil {
-			t.Fatal("a cached runtime with no recorded hash was accepted")
-		}
-		if _, err := os.Stat(sidecar); !os.IsNotExist(err) {
-			t.Fatalf("the record was written back: %v", err)
-		}
+	if err := os.WriteFile(rt.BinPath, []byte("not what was downloaded"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if _, err := h.Serve(t.Context(), f.model.ID, localmodel.ServeOptions{}); err == nil {
-		t.Fatal("Serve ran a runtime with no recorded hash")
+	again, err := h.EnsureRuntime(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.Cached {
+		t.Fatal("an unrecorded runtime was reused")
+	}
+	got, err := os.ReadFile(sidecar)
+	if err != nil || string(got) != string(want) {
+		t.Fatalf("record = %q (%v), want the hash of the verified download %q", got, err, want)
+	}
+}
+
+// When the fresh download fails, the unrecorded build is not kept as a fallback: the call
+// fails and nothing is left installed for a later call to pick up unverified.
+func TestUnrecordedRuntimeIsNotKeptWhenTheRefetchFails(t *testing.T) {
+	f := newFixture(t, fixtureOpts{})
+	h := f.open()
+	rt, err := h.EnsureRuntime(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(rt.BinPath + ".sha256"); err != nil {
+		t.Fatal(err)
+	}
+	f.srv.Close()
+
+	if _, err := h.EnsureRuntime(t.Context()); err == nil {
+		t.Fatal("EnsureRuntime succeeded with the download server gone")
+	}
+	st, err := h.RuntimeStatus(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Installed {
+		t.Fatalf("the unverified build is still installed after a failed refetch: %+v", st)
 	}
 }
 
