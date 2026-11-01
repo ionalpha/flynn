@@ -11,12 +11,12 @@ import (
 	"database/sql"
 	"fmt"
 	"io/fs"
-	"math/rand/v2"
 	"strings"
 	"time"
 
 	_ "modernc.org/sqlite" // registers the pure-Go "sqlite" driver
 
+	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/internal/migrate"
 )
 
@@ -57,8 +57,14 @@ func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) 
 	return db, nil
 }
 
-// connectWait bounds how long [Open] keeps retrying its first connection.
-const connectWait = 5 * time.Second
+// connectAttempts and connectStep bound how long [Open] keeps retrying its first
+// connection: the wait before attempt n is n*connectStep up to connectMaxWait, about
+// five seconds in all.
+const (
+	connectAttempts = 60
+	connectStep     = 10 * time.Millisecond
+	connectMaxWait  = 100 * time.Millisecond
+)
 
 // connect makes the first connection, retrying while another process holds the file.
 //
@@ -69,16 +75,16 @@ const connectWait = 5 * time.Second
 // reach this point, so the loser retries until the winner has finished; by then the
 // file is already WAL and the switch is a no-op.
 func connect(ctx context.Context, db *sql.DB) error {
-	deadline := time.Now().Add(connectWait)
-	for {
+	var clk clock.Timing = clock.System{}
+	for attempt := 1; ; attempt++ {
 		err := db.PingContext(ctx)
-		if err == nil || !isBusy(err) || time.Now().After(deadline) {
+		if err == nil || !isBusy(err) || attempt >= connectAttempts {
 			return err
 		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
-		case <-time.After(10*time.Millisecond + time.Duration(rand.IntN(40))*time.Millisecond):
+		case <-clk.After(min(time.Duration(attempt)*connectStep, connectMaxWait)):
 		}
 	}
 }
