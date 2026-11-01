@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -130,37 +131,82 @@ var codexAllowedHosts = []string{
 	".chatgpt.com",
 }
 
-// codexAuthDir is the codex CLI's credential and config home, granted read to the
-// confined child so an auth-status probe and a live episode can see the subscription
-// token without it being copied into the workspace. CODEX_HOME overrides the default
-// (~/.codex), matching the CLI's own resolution. Empty when no home directory is
-// resolvable, which grants no extra read.
-func codexAuthDir() string {
-	if v := os.Getenv("CODEX_HOME"); v != "" {
-		return v
-	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".codex")
+// codexHome is the codex home Flynn keeps for the codex backend, apart from the user's own
+// (~/.codex or their CODEX_HOME). The user signs the CLI in to it once with the CLI's own
+// login ([codexLoginCommand]), and every probe and episode points the CLI at it through
+// CODEX_HOME. Flynn never reads, copies or stores the token inside: the CLI writes it at
+// sign-in and refreshes it in place.
+//
+// Keeping it apart from the user's home is the codex half of the HostConfig posture the
+// adapter declares. The user's config.toml, where they keep their MCP servers, model
+// providers and settings, is never on the child's path, so whatever the person who
+// launched the run happens to carry cannot steer an episode or hand the harness servers
+// this run neither hosts nor governs. Anything but the sign-in found in Flynn's own home is removed
+// before a spawner is built ([clearOwnHome]), because nothing Flynn does writes one
+// there. A variable so tests can point it at a temporary directory.
+var codexHome = defaultCodexHome
+
+// defaultCodexHome is where [codexHome] points outside tests.
+func defaultCodexHome() string { return filepath.Join(defaultDataDir(), "codex") }
+
+// codexLoginCommand is the command that signs the codex CLI in to home with its own
+// subscription login.
+func codexLoginCommand(home string) string {
+	return homeLoginCommand("CODEX_HOME", home, "codex login")
 }
 
-// codexAuthSeedFiles are the only files an episode copies out of the codex home into the
-// per-episode credential home the confined child writes: the OAuth token it authenticates
-// with, and nothing else. Everything else in the home (session rollouts, logs, caches) is
-// state the CLI regenerates, so it is left behind rather than handed to an untrusted
-// harness. See externagent.SandboxConfig.AuthSeedFiles for why an episode gets a copy
-// instead of the real directory.
-//
-// The operator's own config.toml is deliberately not among them, which is the codex half
-// of the HostConfig posture the adapter declares. That file is where a codex user keeps
-// their MCP servers, model providers and settings, so seeding it would let whatever the
-// person who launched the run happens to carry steer the episode, and would give the
-// harness servers this run neither hosts nor governs. Everything an episode needs is
-// passed on the command line instead, so the child's configuration is a function of the
-// run.
-var codexAuthSeedFiles = []string{"auth.json"}
+// codexAuthFiles and claudeAuthFiles are the entries of Flynn's own CLI homes that
+// [clearOwnHome] keeps: the sign-in each CLI writes with its file credential store.
+// Everything else a CLI keeps there is rebuilt when it needs it, and is also what a harness
+// would write to steer a later run: config.toml, AGENTS.md, prompts and skills for codex;
+// settings.json (hooks, permission allow rules), CLAUDE.md, agents, commands, plugins and
+// .claude.json (user-scoped MCP servers and trust decisions) for claude. Claude's account
+// details also live in .claude.json, but the token is in .credentials.json, so losing it
+// costs the CLI a re-read of the account and nothing else.
+var (
+	codexAuthFiles  = map[string]bool{"auth.json": true}
+	claudeAuthFiles = map[string]bool{".credentials.json": true}
+)
+
+// clearOwnHome removes everything from one of Flynn's CLI homes except the entries in keep,
+// so an episode's configuration and instructions are what its command line passes and
+// nothing else. An episode's child may write the home it runs in, so without this a harness
+// could leave settings, instructions or plugins there that steer every later run. A sign-in
+// held in the OS keyring is outside the home and untouched. A home that does not exist has
+// nothing to clear.
+func clearOwnHome(label, home string, keep map[string]bool) error {
+	entries, err := os.ReadDir(home)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s home: %w", label, err)
+	}
+	for _, e := range entries {
+		if keep[e.Name()] {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(home, e.Name())); err != nil {
+			return fmt.Errorf("%s home: %w", label, err)
+		}
+	}
+	return nil
+}
+
+// ensureOwnHome creates a CLI home Flynn keeps and sets it to owner-only. MkdirAll leaves
+// an existing directory with the mode it already had, and the home holds a bearer token,
+// so the mode is set explicitly. On Windows Chmod changes only the read-only attribute and
+// the directory's access comes from its ACL, which the per-user data directory sets.
+func ensureOwnHome(label, home string) error {
+	if err := os.MkdirAll(home, 0o700); err != nil {
+		return fmt.Errorf("%s home: %w", label, err)
+	}
+	//nolint:gosec // G302: 0700 is the owner-only mode for a directory; gosec's 0600 ceiling is for files
+	if err := os.Chmod(home, 0o700); err != nil {
+		return fmt.Errorf("%s home: %w", label, err)
+	}
+	return nil
+}
 
 // claudeAllowedHosts are the destination names a claude episode's confined child may
 // reach at the egress waist: the Anthropic API the subscription drives inference over and
@@ -176,34 +222,62 @@ var claudeAllowedHosts = []string{
 	".claude.ai",
 }
 
-// claudeSeedPaths are the files the confined child needs to authenticate on the owner's
-// subscription, gathered into one credential home. Claude Code splits them: its config
-// lives in the home directory (.claude.json) and its OAuth token in a subdirectory
-// (.claude/.credentials.json), and pointing the CLI at a single CLAUDE_CONFIG_DIR makes it
-// look for both, flat, under that directory. So the two are seeded by base name into one
-// per-episode home the run writes and deletes; nothing else from the home (history, caches,
-// project state) is copied, so the operator's hooks, plugins and settings are not on the
-// child's path to find. The config file is seeded because the CLI reads its onboarding and
-// account state from it and reports itself unusable without it; the MCP servers it also
-// carries are neutralized by --strict-mcp-config, which is what lets the adapter declare the
-// operator's configuration denied. CLAUDE_CONFIG_DIR overrides where both files live, matching
-// the CLI's own resolution. Empty when no home directory is resolvable, which seeds nothing and
-// leaves detection to report the CLI as logged out.
-func claudeSeedPaths() []string {
-	if v := os.Getenv("CLAUDE_CONFIG_DIR"); v != "" {
-		return []string{
-			filepath.Join(v, ".claude.json"),
-			filepath.Join(v, ".credentials.json"),
-		}
+// claudeHome is the Claude Code home Flynn keeps for the claude backend, apart from the
+// user's own. The user signs the CLI in to it once with the CLI's own login
+// ([claudeLoginCommand]), and every probe and episode points the CLI at it through
+// CLAUDE_CONFIG_DIR. Flynn never reads, copies or stores the token inside: the CLI writes it
+// at sign-in and refreshes it in place, and the sign-in completes in the CLI's own flow.
+//
+// Keeping it apart from the user's home means none of the user's own settings, hooks,
+// plugins or MCP servers are in it to steer an episode, which is what makes it acceptable
+// to grant an episode write on it ([externagent.SandboxConfig.AuthDirWritable]). The grant
+// still lets a harness sign Flynn's copy out or leave settings, CLAUDE.md, agents, commands
+// or plugins behind, so everything but the sign-in is removed before a spawner is built
+// ([clearOwnHome]). It sits under the per-user data
+// directory, so a development build and a release build keep separate sign-ins. A variable
+// so tests can point it at a temporary directory.
+var claudeHome = defaultClaudeHome
+
+// defaultClaudeHome is where [claudeHome] points outside tests.
+func defaultClaudeHome() string { return filepath.Join(defaultDataDir(), "claude") }
+
+// claudeLoginCommand is the command that signs the claude CLI in to home with its own
+// subscription login.
+func claudeLoginCommand(home string) string {
+	return homeLoginCommand("CLAUDE_CONFIG_DIR", home, "claude auth login --claudeai")
+}
+
+// homeLoginCommand is login run with env pointing the CLI at home, written for the shell
+// the user is most likely in. The PowerShell form clears the variable afterwards, so the
+// user's next plain run of the CLI in that shell is back on their own home.
+func homeLoginCommand(env, home, login string) string {
+	if runtime.GOOS == "windows" {
+		return "$env:" + env + " = '" + strings.ReplaceAll(home, "'", "''") +
+			"'; " + login + "; Remove-Item Env:" + env
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil
+	return env + "='" + strings.ReplaceAll(home, "'", `'\''`) + "' " + login
+}
+
+// withHomeLogin rewrites a not-signed-in readiness for an external backend so its next step
+// signs in the home Flynn keeps for that CLI rather than the user's: the adapter's generic
+// advice (`claude auth login`, `codex login`) would sign in the home Flynn does not use and
+// leave the backend reporting itself logged out. A refusal, a missing install, and a ready
+// CLI pass through. An unknown backend passes through too.
+func withHomeLogin(name string, r externagent.Readiness) externagent.Readiness {
+	if !r.Available || r.Refuse || r.LoggedIn {
+		return r
 	}
-	return []string{
-		filepath.Join(home, ".claude.json"),
-		filepath.Join(home, ".claude", ".credentials.json"),
+	switch name {
+	case "claude":
+		home := claudeHome()
+		r.Reason = "claude is not signed in to a Claude subscription for Flynn. Flynn keeps its own Claude Code sign-in, separate from yours, at " +
+			home + ". Sign in to it once with Claude Code's own login: " + claudeLoginCommand(home)
+	case "codex":
+		home := codexHome()
+		r.Reason = "codex is not signed in for Flynn. Flynn keeps its own Codex sign-in, separate from yours, at " +
+			home + ". Sign in to it once with Codex's own login: " + codexLoginCommand(home)
 	}
+	return r
 }
 
 // externalProbeTimeout caps a single detection probe (a version or auth-status check)
@@ -226,40 +300,76 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
 			return nil, err
 		}
-		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
-			AllowedHosts:  codexAllowedHosts,
-			AuthDir:       codexAuthDir(),
-			AuthEnv:       "CODEX_HOME",
-			AuthSeedFiles: codexAuthSeedFiles,
-			ProgramDirs:   prog.ReadableDirs,
-			ProbeTimeout:  externalProbeTimeout,
-			// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
-			// process can do inside a Windows AppContainer, so it runs under the tier that
-			// confines its writes to the workspace and leaves the host readable. Its writes,
-			// its egress, and its tools stay gated; only the read posture is traded, and the
-			// episode records the tier that ran.
-			HostReadable: true,
-		}), nil
+		// The CLI refuses a CODEX_HOME that does not exist, and the user's first sign-in runs
+		// against the path Flynn prints, so the home is created before anything points at it.
+		home := codexHome()
+		if err := ensureOwnHome("codex", home); err != nil {
+			return nil, err
+		}
+		if err := clearOwnHome("codex", home, codexAuthFiles); err != nil {
+			return nil, err
+		}
+		return externagent.NewSandboxSpawner(codexSandboxConfig(home, prog)), nil
 	case "claude":
 		prog, err := externagent.LocateClaude("")
 		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
 			return nil, err
 		}
-		return externagent.NewSandboxSpawner(externagent.SandboxConfig{
-			AllowedHosts:  claudeAllowedHosts,
-			AuthEnv:       "CLAUDE_CONFIG_DIR",
-			AuthSeedPaths: claudeSeedPaths(),
-			ProgramDirs:   prog.ReadableDirs,
-			ProbeTimeout:  externalProbeTimeout,
-			// Claude Code ships as a single compiled native binary that canonicalizes paths on
-			// startup, the same operation no process can perform inside a Windows AppContainer,
-			// so it runs under the tier that confines its writes to the workspace and leaves the
-			// host readable. Its writes, its egress, and its tools stay gated; only the read
-			// posture is traded, and the episode records the tier that ran.
-			HostReadable: true,
-		}), nil
+		// The CLI would create its home at sign-in, but detection grants the child read on it
+		// before then, and a grant on a directory that does not exist fails the probe that
+		// reports how to sign in.
+		home := claudeHome()
+		if err := ensureOwnHome("claude", home); err != nil {
+			return nil, err
+		}
+		if err := clearOwnHome("claude", home, claudeAuthFiles); err != nil {
+			return nil, err
+		}
+		return externagent.NewSandboxSpawner(claudeSandboxConfig(home, prog)), nil
 	default:
 		return nil, fmt.Errorf("unknown external agent backend %q", name)
+	}
+}
+
+// codexSandboxConfig is the confinement envelope for the codex backend over its own home. The
+// home is granted write ([externagent.SandboxConfig.AuthDirWritable]) because the CLI
+// refreshes its token in place there. That grant is safe only because the home is Flynn's
+// own and holds nothing of the user's, so a test holds it to true here.
+func codexSandboxConfig(home string, prog externagent.Program) externagent.SandboxConfig {
+	return externagent.SandboxConfig{
+		AllowedHosts:    codexAllowedHosts,
+		AuthDir:         home,
+		AuthEnv:         "CODEX_HOME",
+		AuthDirWritable: true,
+		ProgramDirs:     prog.ReadableDirs,
+		ProbeTimeout:    externalProbeTimeout,
+		// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
+		// process can do inside a Windows AppContainer, so it runs under the tier that
+		// confines its writes to the workspace and leaves the host readable. Its writes,
+		// its egress, and its tools stay gated; only the read posture is traded, and the
+		// episode records the tier that ran.
+		HostReadable: true,
+	}
+}
+
+// claudeSandboxConfig is the confinement envelope for the claude backend over its own home. The
+// home is granted write ([externagent.SandboxConfig.AuthDirWritable]) because the CLI
+// refreshes its token in place there. That grant is safe only because the home is Flynn's
+// own and holds nothing of the user's, so a test holds it to true here.
+func claudeSandboxConfig(home string, prog externagent.Program) externagent.SandboxConfig {
+	return externagent.SandboxConfig{
+		AllowedHosts:    claudeAllowedHosts,
+		AuthDir:         home,
+		AuthEnv:         "CLAUDE_CONFIG_DIR",
+		AuthDirWritable: true,
+		ProgramDirs:     prog.ReadableDirs,
+		ProbeTimeout:    externalProbeTimeout,
+		// Claude Code ships as a single compiled native binary that canonicalizes paths on
+		// startup, the same operation no process can perform inside a Windows AppContainer,
+		// so it runs under the tier that confines its writes to the workspace and leaves the
+		// host readable. Its writes, its egress, and its tools stay gated; only the read
+		// posture is traded, and the episode records the tier that ran.
+		HostReadable: true,
 	}
 }
 
@@ -337,6 +447,7 @@ func resolveExternalAgent(ctx context.Context, name, model, workdir string) (*ex
 	if err != nil {
 		return nil, fmt.Errorf("detect %s: %w", name, err)
 	}
+	r = withHomeLogin(name, r)
 	if rerr := readinessError(name, r); rerr != nil {
 		return nil, rerr
 	}

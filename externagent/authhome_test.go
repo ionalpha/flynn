@@ -189,6 +189,34 @@ func TestEpisodeOptionsGrantsWriteOnlyToOwnedHome(t *testing.T) {
 	}
 }
 
+// TestDedicatedAuthDirIsWrittenInPlace proves a home marked AuthDirWritable is used as it
+// is: nothing is copied out of it, so the credential inside is never read here, and the
+// child may write it so the CLI can refresh its own token. A home without the mark stays
+// read-only, which is what keeps a user's own CLI home safe from the harness.
+func TestDedicatedAuthDirIsWrittenInPlace(t *testing.T) {
+	auth := authDirWithToken(t)
+	sp := NewSandboxSpawner(SandboxConfig{AuthDir: auth, AuthEnv: "CLAUDE_CONFIG_DIR", AuthDirWritable: true})
+	home, seeded, err := sp.episodeAuthHome(workdir(t))
+	if err != nil {
+		t.Fatalf("episodeAuthHome: %v", err)
+	}
+	if home != auth || len(seeded) != 0 {
+		t.Fatalf("a dedicated home must be used in place with nothing copied, got home=%q seeded=%v", home, seeded)
+	}
+	if !sp.homeWritable(seeded) {
+		t.Fatal("a dedicated home must be writable so the CLI can refresh its token")
+	}
+	got := writableDirsOf(t, sp.episodeOptions(home, sp.homeWritable(seeded)))
+	if len(got) != 1 || !sameDir(t, got[0], auth) {
+		t.Fatalf("the dedicated home must be the one writable grant, got %q", got)
+	}
+
+	shared := NewSandboxSpawner(SandboxConfig{AuthDir: auth, AuthEnv: "CODEX_HOME"})
+	if shared.homeWritable(nil) {
+		t.Fatal("an unmarked AuthDir is the user's own home and must stay read-only")
+	}
+}
+
 // writableDirsOf builds a sandbox from the options and reports the directories they left
 // writable, read back through the sandbox's own audit accessor.
 func writableDirsOf(t *testing.T, opts []sandbox.LocalOption) []string {
