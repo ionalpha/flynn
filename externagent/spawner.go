@@ -79,6 +79,15 @@ type SandboxConfig struct {
 	// A token refreshed mid-episode is refreshed only in the copy, so the host's refresh
 	// token stays valid. Empty keeps the read-only AuthDir (right for a detection probe).
 	AuthSeedFiles []string
+	// AuthDirWritable grants an episode's child write on AuthDir itself, for a home that
+	// exists only for this program's use of the CLI: the user signed the CLI in to it with
+	// the CLI's own login, so the only credential inside is one the CLI wrote there, and
+	// nothing in it belongs to the user's own use of the CLI. The CLI then reads and
+	// refreshes its token in place and this package never reads, copies or deletes it. The
+	// cost of a harness corrupting that home is a fresh sign-in, not a damaged personal
+	// credential, which is why this must never be set for the user's own CLI home. It has
+	// no effect when seeds are configured, because the episode then runs in the copy.
+	AuthDirWritable bool
 	// ProgramDirs are the directories holding the external CLI's own executable and the
 	// helper binaries shipped beside it. The confined child is granted read (and execute)
 	// on them for the life of the launch and the grant is revoked on teardown. Without it
@@ -366,9 +375,8 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	}
 	// The home is the run's and outlives this episode (the CLI keeps its conversation
 	// there); the credentials copied into it are this episode's and are deleted when it
-	// ends. owned says whether this run created the home, which is what the sandbox grants
-	// write access to.
-	owned := len(seeded) > 0
+	// ends.
+	writable := s.homeWritable(seeded)
 	// A per-episode writable temp directory outside the recorded workspace. A read-only host
 	// leaves the system temp directory unwritable, and a CLI whose runtime needs scratch
 	// space (a compiled JavaScript runtime writes to its temp on startup) exits without a
@@ -380,7 +388,7 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 		removeSeeds(seeded)
 		return nil, fmt.Errorf("externagent: episode temp dir: %w", err)
 	}
-	opts := s.episodeOptions(home, owned)
+	opts := s.episodeOptions(home, writable)
 	opts = append(opts, sandbox.WithWritableDir(tmpDir))
 	// When the child is confined to its own network namespace, the host-loopback bridge is
 	// unreachable from inside it, so the run's bridge is forwarded in: the child dials an
@@ -420,6 +428,13 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 	return &confinedProcess{proc: proc, closer: loc, tier: tier, seeds: seeded, tmpScratch: tmpDir}, nil
 }
 
+// homeWritable reports whether an episode's child may write the credential home it was
+// given: the run's own copy when seeds were copied in, or an AuthDir kept for this
+// program's exclusive use of the CLI. A user's own CLI home is read-only to the child.
+func (s *SandboxSpawner) homeWritable(seeded []string) bool {
+	return len(seeded) > 0 || s.cfg.AuthDirWritable
+}
+
 // tempEnv points the child's temp-directory variables at the per-episode writable temp, so a
 // runtime that writes scratch on startup finds a directory it can write. Both the Unix name
 // (TMPDIR) and the Windows names (TMP, TEMP) are set, so the same launch works on either.
@@ -450,9 +465,11 @@ func removeScratch(dir string) {
 // allowlisted provider and the loopback bridge.
 //
 // The credential home is granted write only when it is the per-episode copy this Spawner
-// owns and deletes; the host's own AuthDir is never made writable, so an untrusted harness
-// cannot rewrite the credential it authenticates with.
-func (s *SandboxSpawner) episodeOptions(home string, owned bool) []sandbox.LocalOption {
+// owns and deletes, or an AuthDir the caller marked AuthDirWritable because it holds no
+// credential but the one the CLI wrote there for this program. A user's own CLI home is
+// never made writable, so an untrusted harness cannot rewrite the credential the user
+// relies on outside this program.
+func (s *SandboxSpawner) episodeOptions(home string, writable bool) []sandbox.LocalOption {
 	opts := []sandbox.LocalOption{
 		sandbox.WithReadOnlyFS(),
 		sandbox.WithSeccomp(),
@@ -463,7 +480,7 @@ func (s *SandboxSpawner) episodeOptions(home string, owned bool) []sandbox.Local
 	}
 	if home != "" {
 		opts = append(opts, sandbox.WithReadableDir(home))
-		if owned {
+		if writable {
 			opts = append(opts, sandbox.WithWritableDir(home))
 		}
 	}
