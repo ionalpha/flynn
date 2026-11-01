@@ -15,6 +15,14 @@ https://huggingface.co/openai/gpt-oss-20b; gemma4.jinja is the Gemma 4 chat
 template published by Google at https://huggingface.co/google/gemma-4-12B-it.
 The revision of each is recorded in internal/inference/launch/template.go.
 
+Gemma 4 is licensed by Google under Apache 2.0 (the model card declares
+license: apache-2.0 and links https://ai.google.dev/gemma/docs/gemma_4_license,
+which is the unmodified Apache 2.0 text). Unlike earlier Gemma releases, it is
+not under the Gemma Terms of Use (https://ai.google.dev/gemma/terms), whose
+scope lists only those earlier models and which points Gemma 4 to its own
+licence. The template and the weights are under the same terms; Flynn does not
+distribute the weights.
+
 The container security profiles in deploy/seccomp/flynn.json and
 deploy/apparmor/flynn-container are Docker's default seccomp profile and
 AppArmor template from moby/profiles (https://github.com/moby/profiles),
