@@ -101,3 +101,30 @@ func TestSealStoppedLeavesAVerifiableRecordThatNamesTheStop(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestSealStoppedReportsWhatItCouldNotWrite: when the store is gone, the stop and the seal
+// each say they were not written, and neither panics nor replaces the run's own error.
+func TestSealStoppedReportsWhatItCouldNotWrite(t *testing.T) {
+	ctx := context.Background()
+	store, err := openDataStore(ctx, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv := ed25519.NewKeyFromSeed(make([]byte, ed25519.SeedSize))
+	signer, err := chain.NewEd25519RootSigner(controlplane.PrincipalID(priv.Public().(ed25519.PublicKey)), priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := chain.NewRecordingLog(store.Log(), nil)
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	sealStopped(ctx, &out, store, rec, "run-closed", signer, errors.New("goal stalled: no progress"))
+	for _, want := range []string{"(outcome not recorded:", "(run not sealed:"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output lacks %q:\n%s", want, out.String())
+		}
+	}
+}

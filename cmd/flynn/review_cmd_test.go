@@ -95,6 +95,46 @@ func TestReviewCommandDrivesThePullRequestToAVerdict(t *testing.T) {
 	}
 }
 
+// TestReviewCommandSealsAReviewTheBudgetStopped: a review that runs out of tokens is the
+// one a maintainer asks about, so its record must exist, verify, and name the stop.
+func TestReviewCommandSealsAReviewTheBudgetStopped(t *testing.T) {
+	dataDir := fileVaultEnv(t)
+	t.Setenv("GITHUB_TOKEN", "test-token")
+
+	var submitted atomic.Value
+	gh := fakeGitHubAPI(t, &submitted)
+	fetch := openAITurn{toolID: "t1", tool: "github_pr_fetch", args: `{}`}
+	model := openAIStub(t, fetch, fetch, fetch, fetch, fetch, fetch)
+	t.Setenv("OPENAI_API_KEY", "test-key")
+	t.Setenv("OPENAI_BASE_URL", model.URL+"/v1")
+
+	stdout := captureStdout(t)
+	err := runReview([]string{"o/r#7", "--api-base", gh.URL, "--max-tokens", "20"}, "openai:gpt-test", dataDir, false)
+	if err == nil {
+		t.Fatal("a review past its token ceiling succeeded")
+	}
+	out := stdout()
+	_, runID, ok := strings.Cut(out, "flynn spine verify ")
+	if !ok {
+		t.Fatalf("the stopped review was not sealed:\n%s", out)
+	}
+	runID = strings.Fields(runID)[0]
+
+	ctx := context.Background()
+	store, err := openDataStore(ctx, dataDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	var report strings.Builder
+	if err := verifyStoredRun(ctx, &report, store, runID); err != nil {
+		t.Fatalf("verifying the stopped review: %v\n%s", err, report.String())
+	}
+	if !strings.Contains(report.String(), "outcome:      budget_exceeded") {
+		t.Fatalf("the record does not name the budget stop:\n%s", report.String())
+	}
+}
+
 // TestReviewCommandFailsWhenNoVerdictWasSubmitted: a reviewer that talked and stopped
 // without submitting anything must not read as a pass. The run itself succeeded, so
 // only the missing verdict can fail the command.
