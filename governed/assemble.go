@@ -454,12 +454,12 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	case ModeToolset:
 		cfg.Executor, cfg.Stop = c.executor(model, b, p, g), mission.Convergence{}
 		if c.planning {
-			cfg.Planner = mission.NewPlanner(model)
+			cfg.Planner = planner(model, p.toolset)
 		}
 	default:
 		cfg.Executor, cfg.Stop = c.executor(model, b, p, g), mission.Convergence{}
 		if c.planning {
-			cfg.Planner = mission.NewPlanner(model)
+			cfg.Planner = planner(model, p.toolset)
 			// The item's declared check is model-authored, so it runs in the run's own
 			// sandbox under the same containment gate as the agent's shell tool.
 			//
@@ -504,6 +504,17 @@ func contained(sb sandbox.Sandbox) []dispatch.Option {
 		dispatch.WithAdmitter(capability.Admitter{}),
 		dispatch.WithHook(capability.NewContainmentGate(sb)),
 	}
+}
+
+// planner is the ledger planner for a run, told which tools the run has. A check is a shell
+// command and a tool is not one, so a plan that checks an action by calling the tool is sent
+// back to the model before it reaches the ledger and stalls the goal on a check that never ran.
+func planner(model llm.Model, toolset []mission.Tool) *mission.Planner {
+	names := make([]string, 0, len(toolset))
+	for _, t := range toolset {
+		names = append(names, t.Def().Name)
+	}
+	return mission.NewPlanner(model, mission.WithPlannerTools(names...))
 }
 
 // executor builds the native mission executor for the conversation and toolset modes.
