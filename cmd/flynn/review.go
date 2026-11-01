@@ -228,17 +228,18 @@ func runReview(args []string, modelSpec, dataDir string, verbose bool) error {
 		withBudget(budgetpkg.Limits{Tokens: fl.maxTokens, Cost: fl.maxCost}),
 	).execute(ctx)
 	if err != nil {
+		// A review that stalled or ran out of budget is the one a maintainer asks about, so
+		// it is sealed with how it ended before the error is returned.
+		if rec != nil && source != "" {
+			sealStopped(ctx, os.Stdout, store, rec, source, signer, err)
+		}
 		return err
 	}
 
 	// Seal the run before acting on its outcome, so the verdict the command reports
 	// is one a third party can verify from the record alone.
 	if rec != nil {
-		if serr := sealRun(ctx, store, rec, source, signer); serr != nil {
-			_, _ = fmt.Fprintf(os.Stdout, "  (run not sealed: %v)\n", serr)
-		} else {
-			_, _ = fmt.Fprintf(os.Stdout, "  run sealed; verify with: flynn spine verify %s\n", source)
-		}
+		sealReported(ctx, os.Stdout, store, rec, source, signer)
 	}
 
 	return verdict.outcome(os.Stdout)
