@@ -257,19 +257,18 @@ func runConfinedChild() int {
 // WithUnreadablePaths are hidden last, so no grant above restores one.
 //
 // When the parent put the command in a PID namespace ([envPrivateProc]), /proc is mounted
-// afresh inside it before anything else reads the mount table. The host's /proc would list
-// every process the caller owns, and /proc/<pid>/cmdline is readable by anyone who can
-// list it, so a token passed to the runner as a flag would be one cat away from the
-// command the model wrote (the user namespace already refuses /proc/<pid>/environ,
-// because reading that file needs a capability over the target's user namespace). A fresh
-// mount shows only this namespace's processes, so the runner, and every other process on
-// the host, is absent. Failing to mount it fails the launch: the parent only asks for it
-// where [privateProcAvailable] predicted the kernel would allow it.
+// afresh first, so the mount table read next is the new one. Failing to mount it fails
+// the launch: the parent only asks where [privateProcAvailable] predicted the kernel
+// would allow it.
 func confineMounts(dir string, writable, hidden []string) error {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("%s: %w", msgMakePrivate, err)
 	}
 	if os.Getenv(envPrivateProc) == "1" {
+		// The host's /proc lists every process the caller owns and /proc/<pid>/cmdline is
+		// readable by anyone who can list it, so a token passed to the runner as a flag
+		// would be one cat away from the command. A fresh mount shows only this
+		// namespace's processes.
 		if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC|keptMountFlags("/proc"), ""); err != nil {
 			return fmt.Errorf("mount a private /proc: %w", err)
 		}
