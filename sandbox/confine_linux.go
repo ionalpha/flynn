@@ -24,6 +24,11 @@ const (
 	envSeccomp  = "FLYNN_SANDBOX_SECCOMP"
 	envWritable = "FLYNN_SANDBOX_WRITABLE"
 	envHidden   = "FLYNN_SANDBOX_UNREADABLE"
+
+	// envPrivateProc tells the launcher it runs in a PID namespace and must mount a /proc
+	// of its own. The parent decides, because only the parent can see its own mount table
+	// before the clone.
+	envPrivateProc = "FLYNN_SANDBOX_PRIVATE_PROC"
 )
 
 // kernelConfinementSupported reports whether this platform can enforce the network,
@@ -85,6 +90,12 @@ func (l *Local) confine(c *exec.Cmd) error {
 	if l.readonlyFS || l.seccomp || l.egressActive() {
 		if l.readonlyFS {
 			sp.Cloneflags |= syscall.CLONE_NEWNS
+			// The PID namespace is what lets the launcher mount a /proc that lists only the
+			// command's own processes (see confineMounts). A host whose /proc is masked cannot
+			// have one, and the command then keeps the host's /proc as before.
+			if privateProcAvailable() {
+				sp.Cloneflags |= syscall.CLONE_NEWPID
+			}
 		}
 		l.reexecConfined(c)
 	}
@@ -123,6 +134,9 @@ func (l *Local) reexecConfined(c *exec.Cmd) {
 	)
 	if l.readonlyFS {
 		c.Env = append(c.Env, envReadonly+"=1")
+		if c.SysProcAttr.Cloneflags&syscall.CLONE_NEWPID != 0 {
+			c.Env = append(c.Env, envPrivateProc+"=1")
+		}
 	}
 	if l.seccomp {
 		c.Env = append(c.Env, envSeccomp+"=1")
@@ -241,9 +255,24 @@ func runConfinedChild() int {
 // never placed so as to hide the working directory), and finally re-grants write
 // access to the working directory and to those extra directories. The paths named with
 // WithUnreadablePaths are hidden last, so no grant above restores one.
+//
+// When the parent put the command in a PID namespace ([envPrivateProc]), /proc is mounted
+// afresh inside it before anything else reads the mount table. The host's /proc would list
+// every process the caller owns, and /proc/<pid>/cmdline is readable by anyone who can
+// list it, so a token passed to the runner as a flag would be one cat away from the
+// command the model wrote (the user namespace already refuses /proc/<pid>/environ,
+// because reading that file needs a capability over the target's user namespace). A fresh
+// mount shows only this namespace's processes, so the runner, and every other process on
+// the host, is absent. Failing to mount it fails the launch: the parent only asks for it
+// where [privateProcAvailable] predicted the kernel would allow it.
 func confineMounts(dir string, writable, hidden []string) error {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("%s: %w", msgMakePrivate, err)
+	}
+	if os.Getenv(envPrivateProc) == "1" {
+		if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC|keptMountFlags("/proc"), ""); err != nil {
+			return fmt.Errorf("mount a private /proc: %w", err)
+		}
 	}
 	mps, err := mountPoints()
 	if err != nil {
@@ -276,6 +305,34 @@ func confineMounts(dir string, writable, hidden []string) error {
 		}
 	}
 	return hideUnreadable(hidden)
+}
+
+// privateProcAvailable reports whether the kernel will let the launcher mount a /proc of
+// its own in a new PID namespace. It will not when the mount table it inherits has anything
+// mounted below /proc: a container runtime masks /proc/kcore, /proc/acpi and similar paths
+// that way, and the kernel refuses an unprivileged procfs mount that would show what the
+// existing one hides (EPERM). Asking anyway would refuse every launch on such a host, so
+// the command keeps the host's /proc there and /proc/<pid>/cmdline of the runner stays
+// readable to it. A caller that must not pass secrets on the command line has to keep
+// them out of it on those hosts.
+func privateProcAvailable() bool {
+	mps, err := mountPoints()
+	if err != nil {
+		return false
+	}
+	return !procMasked(mps)
+}
+
+// procMasked reports whether any mount point lies below /proc. The one exception is
+// /proc/sys/fs/binfmt_misc, which systemd mounts on every host and which the kernel treats
+// as a permanently empty directory, so it hides nothing.
+func procMasked(mps []string) bool {
+	for _, mp := range mps {
+		if mp != "/proc/sys/fs/binfmt_misc" && strings.HasPrefix(mp, "/proc/") {
+			return true
+		}
+	}
+	return false
 }
 
 // remountWritable re-grants write access to one directory inside the read-only view, by
@@ -426,6 +483,7 @@ func strippedEnv() []string {
 			strings.HasPrefix(kv, envReadonly+"="),
 			strings.HasPrefix(kv, envWritable+"="),
 			strings.HasPrefix(kv, envHidden+"="),
+			strings.HasPrefix(kv, envPrivateProc+"="),
 			strings.HasPrefix(kv, envEgress+"="),
 			strings.HasPrefix(kv, envEgressFD+"="),
 			strings.HasPrefix(kv, envForward+"="),
