@@ -6,9 +6,8 @@
 # The race detector always runs: it is the point of this gate. Coverage
 # instrumentation is separable via COVER, which defaults to atomic coverage
 # written to coverage.out (the local and primary-CI invocation). Set COVER= to
-# run without it: CI uploads coverage from one platform only, so the other
-# platforms skip the instrumentation cost while still running every test under
-# -race. Unsetting it is also the fast path for a scoped local run, since the
+# run without it: CI uploads coverage from Linux and Windows only, so macOS
+# skips the instrumentation cost while still running every test under -race. Unsetting it is also the fast path for a scoped local run, since the
 # coverage default instruments the whole tree no matter how few packages you name.
 #
 # -coverpkg=./... is what makes the number honest. By default `go test` credits a

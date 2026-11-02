@@ -25,14 +25,33 @@
 # The packages they test are not ignored. Coverage of the real implementations,
 # which is what the harnesses exist to produce, is unaffected.
 #
-# The two `*_linux.go` files at the end are ignored for a related reason: their
-# number reports the runner's configuration rather than the state of the tests.
-# Both attach network plumbing to a child process inside a user namespace, and
-# both are covered by tests that call t.Skip when the host has unprivileged user
-# namespaces disabled. The GitHub ubuntu runner has them disabled, so the tests
-# that exist for this code never execute in CI and it reports 10% and 50% while
-# being tested. A pull request that touches either file is then scored against
-# coverage it has no way to earn.
+# Linux and Windows both upload (ci.yml, the test job), and a line counts as
+# covered when either report covers it, so Windows-only code is scored on the
+# Windows run. Codecov holds its status until the rest of CI has finished, so the
+# status is posted once, after both uploads.
+#
+# The patch target is fixed rather than following the project figure. Codecov's
+# default holds a pull request's changed lines to the project's own coverage (94%
+# when this was written), so three or four untested error paths in a small diff
+# fail it. 90% sits just under the floor dev/coverfloor enforces on the whole
+# tree. A changed line still uncovered needs a test or a reason in the pull
+# request body (AGENTS.md, Coverage), whatever this check says.
+#
+# The project status is off because dev/coverfloor is the project gate: it fails
+# CI when Linux coverage drops below dev/coverage-floor, and lowering the floor is
+# a reviewed diff. A second, advisory project number would only differ from it by
+# whatever the Windows upload adds.
+codecov:
+  notify:
+    wait_for_ci: true
+
+coverage:
+  status:
+    patch:
+      default:
+        target: 90%
+    project: off
+
 ignore:
   - "bus/bustest"
   - "jobs/jobstest"
@@ -44,5 +63,3 @@ ignore:
   - "spine/spinetest"
   - "state/statetest"
   - "internal/conformtest"
-  - "sandbox/egress_linux.go"
-  - "sandbox/forward_linux.go"
