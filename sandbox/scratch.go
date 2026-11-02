@@ -82,12 +82,16 @@ func (l *Local) scratchDir() (string, error) {
 // temp location nothing is mounted over; a host without it falls back to the default.
 func makeScratchDir() (string, error) {
 	if runtime.GOOS == "linux" {
-		if dir, err := os.MkdirTemp("/var/tmp", "flynn-scratch-"); err == nil {
+		if dir, err := mkdirTemp("/var/tmp", "flynn-scratch-"); err == nil {
 			return dir, nil
 		}
 	}
-	return os.MkdirTemp("", "flynn-scratch-")
+	return mkdirTemp("", "flynn-scratch-")
 }
+
+// mkdirTemp creates the scratch directory. It is a variable so a test can make creation
+// fail, which a runner with a writable temp root never does.
+var mkdirTemp = os.MkdirTemp
 
 // removeScratch deletes the scratch directory. Tools such as the Go module cache mark what
 // they write read-only, which a removal cannot get past (Windows will not delete the file,

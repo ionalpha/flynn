@@ -4,6 +4,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -175,5 +176,83 @@ func TestScratchEnvReplacesHostTemp(t *testing.T) {
 	withScratchEnv(m, "/s", host)
 	if m["GOCACHE"] != "/s/go-build" {
 		t.Fatalf("a lowercase gocache must not satisfy GOCACHE on a case-sensitive platform: %v", m)
+	}
+}
+
+// failScratchCreation makes every scratch directory creation fail for the test.
+func failScratchCreation(t *testing.T) {
+	t.Helper()
+	orig := mkdirTemp
+	mkdirTemp = func(string, string) (string, error) { return "", errors.New("no temp root") }
+	t.Cleanup(func() { mkdirTemp = orig })
+}
+
+// TestScratchFailureRefusesTheLaunch proves a sandbox that cannot create its scratch
+// directory refuses to run the command, rather than launching a child that has the
+// read-only host and no cache location.
+func TestScratchFailureRefusesTheLaunch(t *testing.T) {
+	failScratchCreation(t)
+	l := newTestLocal(t, WithReadOnlyFS())
+	_, err := l.Exec(context.Background(), Command{Line: "true"})
+	if err == nil || !strings.Contains(err.Error(), "no temp root") {
+		t.Fatalf("Exec error = %v, want the scratch creation failure", err)
+	}
+}
+
+// TestScratchFallsBackWhenVarTmpIsUnavailable covers the Linux preference for /var/tmp: a
+// host without it still gets a scratch directory under the default temp root.
+func TestScratchFallsBackWhenVarTmpIsUnavailable(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("only Linux prefers /var/tmp")
+	}
+	orig := mkdirTemp
+	t.Cleanup(func() { mkdirTemp = orig })
+	var parents []string
+	mkdirTemp = func(parent, pattern string) (string, error) {
+		parents = append(parents, parent)
+		if parent == "/var/tmp" {
+			return "", errors.New("no /var/tmp")
+		}
+		return orig(parent, pattern)
+	}
+	l := newTestLocal(t, WithReadOnlyFS())
+	dir, err := l.scratchDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parents) != 2 || parents[0] != "/var/tmp" || parents[1] != "" {
+		t.Fatalf("temp roots tried = %q, want /var/tmp then the default", parents)
+	}
+	if _, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestScratchTempSubdirectoryFailureLeavesNothing proves a scratch directory whose temp
+// subdirectory cannot be made is removed again and reported, not kept half built.
+func TestScratchTempSubdirectoryFailureLeavesNothing(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	orig := mkdirTemp
+	t.Cleanup(func() { mkdirTemp = orig })
+	var made string
+	mkdirTemp = func(parent, pattern string) (string, error) {
+		dir, err := orig(parent, pattern)
+		if err == nil {
+			made = dir
+			err = os.Chmod(dir, 0o500)
+		}
+		return dir, err
+	}
+	l := newTestLocal(t, WithReadOnlyFS())
+	if _, err := l.scratchDir(); err == nil {
+		t.Fatal("scratchDir succeeded in a directory that cannot hold the temp subdirectory")
+	}
+	if l.scratch.dir != "" {
+		t.Fatalf("scratch directory %s recorded after a failed creation", l.scratch.dir)
+	}
+	if _, err := os.Stat(made); !os.IsNotExist(err) {
+		t.Fatalf("half-built scratch directory %s survived (stat err %v)", made, err)
 	}
 }
