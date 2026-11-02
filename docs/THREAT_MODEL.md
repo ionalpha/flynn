@@ -172,10 +172,16 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   command that reads a credential can send it out; the posture event records the network as
   open with `network_reason` `platform` instead of claiming a denial, and
   `--require-network-denial` refuses instead; on macOS a command can
-  still ask the keychain service for an item it hands out without a prompt. Open: another
-  process's command line is readable
-  through procfs because the sandbox has no PID namespace, so a token passed on argv is
-  exposed (see `deploy/README.md`).
+  still ask the keychain service for an item it hands out without a prompt. On Linux the
+  command runs in its own PID namespace with a `/proc` of its own, so the runner's command
+  line is not listed to it; before that, `/proc/<pid>/cmdline` of the parent was readable
+  (measured on WSL2, kernel 6.6.87.2) and a token passed on argv reached the model's shell.
+  `/proc/<pid>/environ` was already refused, because reading it needs a capability over the
+  target's user namespace. `TestParentProcessIsUnreadableToConfinedCommand` holds both.
+  Open: a host that masks parts of `/proc`, which a container runtime does by default,
+  cannot give the command a private `/proc` (the kernel refuses an unprivileged mount that
+  would show what the existing one hides), so there the command line is still readable and
+  the test skips by name; keep tokens off argv on such a host (see `deploy/README.md`).
 - **Credentials in prompts or logs.** Secrets are held as a redacting type and resolved
   from the vault at call time, so they are not formatted into prompts, logs, or error
   output.

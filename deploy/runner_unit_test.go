@@ -270,7 +270,7 @@ func TestRunnerUnitDiffLimitedToNamespaceAndSyscallLines(t *testing.T) {
 	for _, d := range only(b, r) {
 		gotBase = append(gotBase, d.key+"="+d.value)
 	}
-	if want := []string{"RestrictNamespaces=user net mnt", "SystemCallFilter=mount"}; !slices.Equal(gotRunner, want) {
+	if want := []string{"RestrictNamespaces=user net mnt pid", "SystemCallFilter=mount"}; !slices.Equal(gotRunner, want) {
 		t.Errorf("lines only in the runner unit = %q, want %q", gotRunner, want)
 	}
 	if want := []string{"RestrictNamespaces=true"}; !slices.Equal(gotBase, want) {
@@ -301,9 +301,9 @@ func TestRunnerUnitRulesCatchWidening(t *testing.T) {
 		{"weaker file system protection", "ProtectSystem=strict", "ProtectSystem=full", "privilege", nil},
 		{"runs as root", "User=flynn", "User=root", "privilege", nil},
 		{"privileged exec prefix", "ExecStart=/usr/local/bin/flynn", "ExecStart=+/usr/local/bin/flynn", "privilege", nil},
-		{"another namespace type", "\nRestrictNamespaces=user net mnt\n", "\nRestrictNamespaces=user net mnt pid\n", "namespaces", nil},
-		{"namespaces unrestricted", "\nRestrictNamespaces=user net mnt\n", "\nRestrictNamespaces=no\n", "namespaces", nil},
-		{"a missing namespace type", "\nRestrictNamespaces=user net mnt\n", "\nRestrictNamespaces=user net\n", "namespaces", nil},
+		{"another namespace type", "\nRestrictNamespaces=user net mnt pid\n", "\nRestrictNamespaces=user net mnt pid ipc\n", "namespaces", nil},
+		{"namespaces unrestricted", "\nRestrictNamespaces=user net mnt pid\n", "\nRestrictNamespaces=no\n", "namespaces", nil},
+		{"a missing namespace type", "\nRestrictNamespaces=user net mnt pid\n", "\nRestrictNamespaces=user net mnt\n", "namespaces", nil},
 		{"the whole mount group", "SystemCallFilter=mount\n", "SystemCallFilter=@mount\n", "syscalls", nil},
 		{"the privileged group", "SystemCallFilter=~@privileged @resources @obsolete", "SystemCallFilter=~@resources @obsolete", "syscalls", nil},
 		{"mount allowed before the exclusion", "", "", "syscalls", moveMountBeforeExclusion},
@@ -316,8 +316,8 @@ func TestRunnerUnitRulesCatchWidening(t *testing.T) {
 		{"a secret in Environment", "[Install]", "Environment=ANTHROPIC_API_KEY=sk-ant-0123456789abcdef\n\n[Install]", "secrets", nil},
 		{"a credential value inline", "UMask=0077", "UMask=0077\nSetCredential=key:sk-ant-0123456789abcdef", "secrets", nil},
 		{"secrets read from a temporary file", "EnvironmentFile=-/etc/flynn/flynn.env", "EnvironmentFile=-/tmp/flynn.env", "secrets", nil},
-		{"every namespace type allowed", "\nRestrictNamespaces=user net mnt\n", "\nRestrictNamespaces=yes\n", "namespaces", nil},
-		{"the user type excluded", "\nRestrictNamespaces=user net mnt\n", "\nRestrictNamespaces=~user\n", "namespaces", nil},
+		{"every namespace type allowed", "\nRestrictNamespaces=user net mnt pid\n", "\nRestrictNamespaces=yes\n", "namespaces", nil},
+		{"the user type excluded", "\nRestrictNamespaces=user net mnt pid\n", "\nRestrictNamespaces=~user\n", "namespaces", nil},
 		{"an unrelated hardening line dropped", "ProtectKernelModules=true\n", "", "diff", nil},
 		{"an unrelated line added", "[Install]", "BindPaths=/\n\n[Install]", "diff", nil},
 		{"a line without a reason", "ProtectKernelModules=true\n", "ProtectKernelModules=true\n\nSomeSetting=1\n", "diff", nil},

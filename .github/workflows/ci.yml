@@ -229,6 +229,36 @@ jobs:
       #       path: ${{ runner.temp }}/e2e-artifacts
       #       if-no-files-found: ignore
 
+  # Which confinement tier a hosted Linux runner reaches. The other jobs lift the AppArmor
+  # restriction on unprivileged user namespaces before they test, so a green run says the
+  # kernel tier works once lifted and says nothing about the image as GitHub ships it. Each
+  # leg prints the tier, the kernel and the sysctl in its log. The lifted leg asserts the
+  # kernel tier, so a runner that cannot reach it even with the workaround goes red. The
+  # as-shipped leg asserts nothing, because the image owns that value; its log is the
+  # measurement. It is two short runs of one test, so a draft pull request gets it too.
+  tier:
+    name: Confinement tier (${{ matrix.lift && 'restriction lifted' || 'runner as shipped' }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        lift: [true, false]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27"
+          check-latest: true
+      - name: Lift the user-namespace restriction
+        if: matrix.lift
+        run: |
+          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          echo "FLYNN_EXPECT_CONFINEMENT_TIER=namespace-seccomp" >> "$GITHUB_ENV"
+      - name: Measure the tier
+        run: go test ./sandbox -run '^TestHostConfinementTierIsMeasured$' -count=1 -v
+
   # Release rehearsal: the release pipeline otherwise runs only when a v* tag is pushed,
   # so a break in it (a target that does not cross-compile, a goreleaser config error, a
   # container image that does not build) would surface after the tag, in public. This

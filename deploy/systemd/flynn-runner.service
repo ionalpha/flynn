@@ -6,7 +6,7 @@
 # then refuses to run commands (it never runs them unconfined). This unit is the
 # standard hardening with exactly two additions, each marked "SANDBOX" below:
 #
-#   RestrictNamespaces=user net mnt     the namespace types the sandbox creates
+#   RestrictNamespaces=user net mnt pid the namespace types the sandbox creates
 #   SystemCallFilter=mount              the one call the launcher needs back
 #
 # Nothing here grants a capability. Every line says why it is present; a test holds the
@@ -100,12 +100,13 @@ RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
 SystemCallArchitectures=native
 
 # SANDBOX: the namespace types the sandbox creates for a confined command. "user" holds
-# the mapped identity, "net" the empty network, "mnt" the read-only host view. Any other
-# type (pid, ipc, uts, cgroup) stays refused. systemd enforces this directive only on
-# x86, x86-64, ppc64, ppc64le, s390x and some MIPS; on other architectures it does
-# nothing, which is why "flynn sandbox check" starts a real confined child instead of
-# trusting this line.
-RestrictNamespaces=user net mnt
+# the mapped identity, "net" the empty network, "mnt" the read-only host view, "pid" the
+# private /proc that keeps the runner's command line (and any token passed on it) out of
+# the command's reach. Any other type (ipc, uts, cgroup) stays refused. systemd enforces
+# this directive only on x86, x86-64, ppc64, ppc64le, s390x and some MIPS; on other
+# architectures it does nothing, which is why "flynn sandbox check" starts a real
+# confined child instead of trusting this line.
+RestrictNamespaces=user net mnt pid
 
 # Allow the usual service calls, then remove the privileged, resource-management and
 # obsolete groups.

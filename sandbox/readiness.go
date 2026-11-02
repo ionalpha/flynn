@@ -172,7 +172,7 @@ func (r Readiness) Err() error {
 // systemd's RestrictNamespaces= names them. A service unit that restricts namespaces
 // must allow exactly these; a test holds the shipped runner unit to this list and holds
 // this list to the clone flags the sandbox sets.
-func RequiredNamespaces() []string { return []string{"user", "net", "mnt"} }
+func RequiredNamespaces() []string { return []string{"user", "net", "mnt", "pid"} }
 
 // RequiredSyscalls lists the system calls the sandbox makes that a hardened service
 // unit's usual syscall filter (@system-service without @privileged) removes, named as
@@ -529,7 +529,7 @@ func errnoFromText(s string) syscall.Errno {
 // The fixes and the alternative are fixed text, one per cause, so an operator reads the
 // same instruction for the same refusal everywhere.
 const (
-	fixNamespaces  = "the service unit restricts namespaces, or filters a system call that starting a child needs (both answer EPERM). Allow exactly the types the sandbox creates by setting RestrictNamespaces=user net mnt in the unit (the Flynn runner unit does), and keep the SystemCallFilter= groups of the runner unit, then run systemctl daemon-reload and restart the service. Do not set RestrictNamespaces=no, and do not turn confinement off"
+	fixNamespaces  = "the service unit restricts namespaces, or filters a system call that starting a child needs (both answer EPERM). Allow exactly the types the sandbox creates by setting RestrictNamespaces=user net mnt pid in the unit (the Flynn runner unit does), and keep the SystemCallFilter= groups of the runner unit, then run systemctl daemon-reload and restart the service. Do not set RestrictNamespaces=no, and do not turn confinement off"
 	fixAppArmor    = "AppArmor denies capabilities inside unprivileged user namespaces for programs without a profile that grants them. Install the per-binary AppArmor profile Flynn ships (deploy/apparmor/flynn, which grants userns to the flynn binary and nothing else) with the path in its header set to this binary, then run apparmor_parser -r on it. Do not set kernel.apparmor_restrict_unprivileged_userns=0: that lifts the restriction for every program on the host"
 	fixSeccomp     = "a seccomp filter from the service unit or the container runtime blocks a call the launcher needs. In a systemd unit, allow mount after the @privileged exclusion with SystemCallFilter=mount (the Flynn runner unit does) and set SystemCallErrorNumber=EPERM so a refused call fails instead of killing the process"
 	fixContainer   = "this process runs in a container whose runtime profiles block the sandbox: Docker's default seccomp profile allows clone with namespace flags, unshare and mount only with CAP_SYS_ADMIN, and on an AppArmor host (Ubuntu, Debian) its docker-default AppArmor profile denies every mount. Run the container with the profiles Flynn publishes with each release, each Docker's own with only that change: --security-opt seccomp=flynn-seccomp.json (deploy/seccomp/flynn.json in the source), and on an AppArmor host load flynn-apparmor-container (deploy/apparmor/flynn-container) with apparmor_parser -r and add --security-opt apparmor=flynn-container. On Kubernetes, install them on each node and set a Localhost seccompProfile and appArmorProfile. Do not use seccomp=unconfined or apparmor=unconfined, and do not add CAP_SYS_ADMIN: each lifts far more than the sandbox needs"
