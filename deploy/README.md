@@ -228,7 +228,9 @@ namespaces it confines each command in, and the agent then refuses to run comman
 runner unit adds exactly two things to that baseline, each commented in the file with the
 reason:
 
-- `RestrictNamespaces=user net mnt`, the three namespace types the sandbox creates.
+- `RestrictNamespaces=user net mnt pid`, the four namespace types the sandbox creates.
+  A unit from v0.2.0-rc.1 lists only the first three; without `pid` the sandbox check
+  refuses with `namespace-restricted`.
 - `SystemCallFilter=mount` after the `@privileged` exclusion, and
   `SystemCallErrorNumber=EPERM`, so the launcher can make the mounts private inside its
   own namespace and a refused call fails with a readable error instead of killing the
@@ -252,7 +254,7 @@ and an outcome it cannot classify is a refusal, never a pass.
 
 | Cause | What it means | Fix |
 |---|---|---|
-| `namespace-restricted` | the unit's `RestrictNamespaces=` excludes a type the sandbox needs | set `RestrictNamespaces=user net mnt` and restart |
+| `namespace-restricted` | the unit's `RestrictNamespaces=` excludes a type the sandbox needs | set `RestrictNamespaces=user net mnt pid` and restart |
 | `user-namespaces-disabled` | `kernel.unprivileged_userns_clone=0` or `user.max_user_namespaces=0` | raise the limit, or use the container or microVM tier |
 | `apparmor-userns-restricted` | Ubuntu 24.04 and later restrict user namespaces per program | install `apparmor/flynn` (below) |
 | `seccomp-conflict` | a syscall filter blocks a call the launcher needs | allow `mount` after the `@privileged` exclusion and set `SystemCallErrorNumber=EPERM` |

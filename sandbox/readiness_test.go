@@ -62,7 +62,7 @@ func TestClassify(t *testing.T) {
 			f:         failure{stage: stageUser, errno: syscall.EPERM, raw: "fork/exec /bin/sh: operation not permitted"},
 			proc:      with(healthy, procSelfStatus, statusFiltered),
 			cause:     CauseNamespaceRestricted,
-			fixHas:    "RestrictNamespaces=user net mnt",
+			fixHas:    "RestrictNamespaces=user net mnt pid",
 			detailHas: "seccomp filter active",
 		},
 		{
@@ -78,7 +78,7 @@ func TestClassify(t *testing.T) {
 			f:      failure{stage: stageNet, errno: syscall.EPERM, raw: "operation not permitted"},
 			proc:   with(healthy, procSelfStatus, statusFiltered),
 			cause:  CauseNamespaceRestricted,
-			fixHas: "RestrictNamespaces=user net mnt",
+			fixHas: "RestrictNamespaces=user net mnt pid",
 		},
 		{
 			name:   "RestrictNamespaces blocks the mount namespace with EACCES",
@@ -513,7 +513,7 @@ func TestRefusedErrorReadsAsCauseFixAndAlternative(t *testing.T) {
 		t.Fatalf("cause = %q", refused.Readiness.Cause)
 	}
 	msg := err.Error()
-	for _, want := range []string{string(CauseNamespaceRestricted), "RestrictNamespaces=user net mnt", "container tier", "microVM tier"} {
+	for _, want := range []string{string(CauseNamespaceRestricted), "RestrictNamespaces=user net mnt pid", "container tier", "microVM tier"} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("error %q does not contain %q", msg, want)
 		}

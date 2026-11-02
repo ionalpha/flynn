@@ -148,12 +148,19 @@ every CI run:
 |---|---|---|
 | `windows-latest` | kernel-confined | proven by its executed check |
 | `macos-latest` | kernel-confined | proven by its executed check |
-| `ubuntu-latest` | process-jail | unproven: `containment_gate: containment_insufficient` |
+| `ubuntu-latest`, restriction lifted | kernel-confined | proven by its executed check |
+| `ubuntu-latest`, as shipped | process-jail where the image sets the AppArmor restriction | unproven: `containment_gate: containment_insufficient` |
 
-An item's check is model-authored, so it runs as semi-trusted work. GitHub's Ubuntu
-runner forbids unprivileged user namespaces, the sandbox falls back to a process jail,
-and the containment gate refuses the check before it runs. Where the host can contain
-the work, every planned item was proven.
+An item's check is model-authored, so it runs as semi-trusted work. GitHub's Ubuntu 24.04
+runner sets `kernel.apparmor_restrict_unprivileged_userns=1`, which refuses the user
+namespace the kernel tier starts from; with it set the sandbox falls back to a process
+jail, and the containment gate refuses the check before it runs. The CI jobs that run the
+suite lift the setting (`sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0`)
+and set `FLYNN_TEST_REQUIRE_CONFINEMENT=1`, so the suite reaches the kernel tier. The
+`Confinement tier` job runs `TestHostConfinementTierIsMeasured` once with the setting
+lifted (asserting `namespace-seccomp`) and once as the image ships it, and logs the tier,
+kernel and sysctl value for each, so the second row is read from that log and not from this
+table. Where the host can contain the work, every planned item was proven.
 
 The open decision: make the default depend on the host's containment (a run already
 reports which mode it is in), or leave `--require-proof` as the operator's switch.
