@@ -235,11 +235,9 @@ jobs:
   # leg prints the tier, the kernel and the sysctl in its log. The lifted leg asserts the
   # kernel tier, so a runner that cannot reach it even with the workaround goes red. The
   # as-shipped leg asserts nothing, because the image owns that value; its log is the
-  # measurement.
+  # measurement. It is two short runs of one test, so a draft pull request gets it too.
   tier:
     name: Confinement tier (${{ matrix.lift && 'restriction lifted' || 'runner as shipped' }})
-    needs: setup
-    if: needs.setup.outputs.full == 'true'
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
