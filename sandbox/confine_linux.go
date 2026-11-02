@@ -53,7 +53,8 @@ func backgroundConfinementExpressible() bool { return true }
 // command in a fresh network namespace (no interfaces, no routes, so no connection
 // can be made or accepted). Filesystem confinement places it in a mount namespace
 // where the whole host is read-only and only its working directory (plus a private
-// scratch area) is writable, so it cannot modify anything outside its working tree.
+// scratch area and the sandbox's scratch directory) is writable, so it cannot modify
+// anything outside its working tree.
 // Syscall confinement installs a filter that refuses the syscalls a command has no
 // honest need for and that would let it escalate privilege or escape. All nest
 // inside a user namespace with the caller mapped to root inside it, so an
@@ -88,10 +89,15 @@ func (l *Local) confine(c *exec.Cmd) error {
 	// which the standard library does not expose. They go through the re-exec launcher;
 	// the mount view additionally needs its own mount namespace.
 	if l.readonlyFS || l.seccomp || l.egressActive() {
+		var writable []string
 		if l.readonlyFS {
 			sp.Cloneflags |= mountNamespaceFlags()
+			var err error
+			if writable, err = l.grantScratch(c); err != nil {
+				return err
+			}
 		}
-		l.reexecConfined(c)
+		l.reexecConfined(c, writable)
 	}
 	return nil
 }
@@ -114,8 +120,10 @@ func enterUserNamespace(sp *syscall.SysProcAttr) {
 // confinement that can only be set up from inside the new process, and only then
 // executes the real command. The real command, the working directory, and which
 // confinements to apply travel across the re-exec in the environment;
-// RunChildLaunchIfRequested picks them up on the other side.
-func (l *Local) reexecConfined(c *exec.Cmd) {
+// RunChildLaunchIfRequested picks them up on the other side. writable is every directory
+// outside the working directory the child may write: the scratch directory and those named
+// with [WithWritableDir].
+func (l *Local) reexecConfined(c *exec.Cmd, writable []string) {
 	self := "/proc/self/exe"
 	if l.selfExe != "" {
 		self = l.selfExe
@@ -135,8 +143,8 @@ func (l *Local) reexecConfined(c *exec.Cmd) {
 	if l.seccomp {
 		c.Env = append(c.Env, envSeccomp+"=1")
 	}
-	if len(l.writableDirs) > 0 {
-		c.Env = append(c.Env, envWritable+"="+encodeArgv(l.writableDirs))
+	if len(writable) > 0 {
+		c.Env = append(c.Env, envWritable+"="+encodeArgv(writable))
 	}
 	if len(l.unreadable) > 0 {
 		c.Env = append(c.Env, envHidden+"="+encodeArgv(l.unreadable))
@@ -242,8 +250,8 @@ func runConfinedChild() int {
 }
 
 // confineMounts turns the launcher's mount namespace into a read-only view of the
-// host with a single writable area: the working directory, plus any directory the
-// caller named with WithWritableDir. It first makes mount changes private to this
+// host with a single writable area: the working directory, plus the scratch directory and
+// any directory the caller named with WithWritableDir. It first makes mount changes private to this
 // namespace, then remounts every existing mount read-only, gives the command a fresh
 // private scratch area so ordinary tooling still works (isolated from the host's, and
 // never placed so as to hide the working directory), and finally re-grants write

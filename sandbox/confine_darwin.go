@@ -45,7 +45,7 @@ func (l *Local) egressAddr() string {
 // command about to run, by wrapping it in the macOS sandbox launcher with a profile
 // built from the same options the Linux adapter reads. With no options it does
 // nothing. Network denial removes all socket access; filesystem confinement makes the
-// host read-only except the working directory and a scratch area; syscall confinement
+// host read-only except the working directory and the sandbox's scratch directory; syscall confinement
 // refuses the privileged file operations a command in its own tree never needs. The
 // profile and the launcher together are the macOS counterpart of the Linux network
 // namespace, read-only mount view, and syscall filter.
@@ -62,7 +62,16 @@ func (l *Local) confine(c *exec.Cmd) error {
 	}
 	// When egress is governed, the profile allows outbound only to the loopback proxy,
 	// composed into this single profile rather than a second sandbox-exec wrapping.
-	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp, l.egressAddr(), l.writableDirs...) +
+	// A read-only host leaves the child no temp directory or cache location of its own, so
+	// the scratch directory is granted and the environment pointed at it.
+	var writable []string
+	if l.readonlyFS {
+		var err error
+		if writable, err = l.grantScratch(c); err != nil {
+			return err
+		}
+	}
+	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp, l.egressAddr(), writable...) +
 		seatbeltHidden(l.unreadable)
 	// Wrap the existing command: the launcher applies the profile, then execs the real
 	// command (still c.Args from here on) under it. c.Path points at the launcher; the
