@@ -168,32 +168,6 @@ func TestScratchDirIsPerSandboxAndRemovedOnClose(t *testing.T) {
 	}
 }
 
-// TestScratchEnvKeepsOperatorValues proves a value the operator granted is not replaced by
-// the scratch default, including when the name differs only in case, while the host's own
-// TEMP, which the baseline copies in, is replaced.
-func TestScratchEnvKeepsOperatorValues(t *testing.T) {
-	host := map[string]string{"TEMP": `C:\host\tmp`, "TMP": `C:\host\tmp`}
-	m := map[string]string{
-		"TEMP":    `C:\host\tmp`,
-		"TMP":     `D:\operator\tmp`,
-		"gocache": `D:\operator\cache`,
-	}
-	withScratchEnv(m, `S:\scratch`, func(k string) string { return host[k] })
-
-	if m["TEMP"] != `S:\scratch\tmp` {
-		t.Errorf("host TEMP kept: %q", m["TEMP"])
-	}
-	if m["TMP"] != `D:\operator\tmp` {
-		t.Errorf("operator TMP overridden: %q", m["TMP"])
-	}
-	if _, dup := m["GOCACHE"]; dup || m["gocache"] != `D:\operator\cache` {
-		t.Errorf("operator gocache overridden or duplicated: %v", m)
-	}
-	if m["GOMODCACHE"] != `S:\scratch\go-mod` {
-		t.Errorf("GOMODCACHE = %q, want the scratch default", m["GOMODCACHE"])
-	}
-}
-
 // TestScratchDirIsNotWritableFromAnotherSandbox proves the grant is per sandbox: a child
 // of one sandbox cannot write another sandbox's scratch directory.
 func TestScratchDirIsNotWritableFromAnotherSandbox(t *testing.T) {

@@ -35,9 +35,9 @@ var scratchCaches = map[string]string{
 	"PIP_CACHE_DIR":    "pip",
 }
 
-// scratchTempKeys are the variables that name a process's temp directory.
-func scratchTempKeys() []string {
-	if runtime.GOOS == "windows" {
+// scratchTempKeys are the variables that name a process's temp directory on goos.
+func scratchTempKeys(goos string) []string {
+	if goos == "windows" {
 		return []string{"TEMP", "TMP"}
 	}
 	return []string{"TMPDIR"}
@@ -89,9 +89,13 @@ func makeScratchDir() (string, error) {
 	return mkdirTemp("", "flynn-scratch-")
 }
 
-// mkdirTemp creates the scratch directory. It is a variable so a test can make creation
-// fail, which a runner with a writable temp root never does.
-var mkdirTemp = os.MkdirTemp
+// mkdirTemp creates the scratch directory and removeAll deletes it. They are variables so a
+// test can make creation or removal fail, which a runner with a writable temp root never
+// does.
+var (
+	mkdirTemp = os.MkdirTemp
+	removeAll = os.RemoveAll
+)
 
 // removeScratch deletes the scratch directory. Tools such as the Go module cache mark what
 // they write read-only, which a removal cannot get past (Windows will not delete the file,
@@ -105,7 +109,7 @@ func (l *Local) removeScratch() error {
 		return nil
 	}
 	l.scratch.dir = ""
-	if err := os.RemoveAll(dir); err == nil { //nolint:gosec // G703: dir is the directory this sandbox created with MkdirTemp, never caller input
+	if err := removeAll(dir); err == nil {
 		return nil
 	}
 	_ = filepath.WalkDir(dir, func(p string, _ fs.DirEntry, err error) error { //nolint:gosec // G703: dir is the sandbox's own MkdirTemp result
@@ -114,7 +118,7 @@ func (l *Local) removeScratch() error {
 		}
 		return nil
 	})
-	if err := os.RemoveAll(dir); err != nil { //nolint:gosec // G703: dir is the directory this sandbox created with MkdirTemp, never caller input
+	if err := removeAll(dir); err != nil {
 		return fmt.Errorf("sandbox: remove scratch directory: %w", err)
 	}
 	return nil
@@ -125,10 +129,11 @@ func (l *Local) removeScratch() error {
 // that differs from the host's was granted by the operator and stays. A cache variable is
 // set only when absent, since the baseline never carries one and so any present was
 // granted. Windows treats variable names case-insensitively, so presence is checked that
-// way there.
-func withScratchEnv(m map[string]string, scratch string, hostTemp func(string) string) {
+// way when goos is windows. Callers pass runtime.GOOS; the parameter lets one test run
+// prove both rules on every platform.
+func withScratchEnv(m map[string]string, scratch string, hostTemp func(string) string, goos string) {
 	has := func(key string) bool {
-		if runtime.GOOS != "windows" {
+		if goos != "windows" {
 			_, ok := m[key]
 			return ok
 		}
@@ -139,7 +144,7 @@ func withScratchEnv(m map[string]string, scratch string, hostTemp func(string) s
 		}
 		return false
 	}
-	for _, k := range scratchTempKeys() {
+	for _, k := range scratchTempKeys(goos) {
 		if v, ok := m[k]; !ok || v == hostTemp(k) {
 			m[k] = filepath.Join(scratch, scratchTempName)
 		}

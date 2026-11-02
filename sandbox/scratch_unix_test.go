@@ -149,36 +149,6 @@ func TestNoScratchWithoutReadOnlyHost(t *testing.T) {
 	}
 }
 
-// TestScratchEnvReplacesHostTemp covers the rule on its own: the host's TMPDIR, which the
-// baseline copies in, is replaced, an absent one is set, and a different value was granted
-// and stays. Names are case-sensitive here, unlike Windows.
-func TestScratchEnvReplacesHostTemp(t *testing.T) {
-	host := func(string) string { return "/host/tmp" }
-	for name, tc := range map[string]struct {
-		in   map[string]string
-		want string
-	}{
-		"host value replaced": {map[string]string{"TMPDIR": "/host/tmp"}, "/s/tmp"},
-		"absent set":          {map[string]string{}, "/s/tmp"},
-		"granted kept":        {map[string]string{"TMPDIR": "/operator/tmp"}, "/operator/tmp"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			withScratchEnv(tc.in, "/s", host)
-			if tc.in["TMPDIR"] != tc.want {
-				t.Fatalf("TMPDIR = %q, want %q", tc.in["TMPDIR"], tc.want)
-			}
-			if tc.in["GOCACHE"] != "/s/go-build" {
-				t.Fatalf("GOCACHE = %q", tc.in["GOCACHE"])
-			}
-		})
-	}
-	m := map[string]string{"gocache": "/operator/cache"}
-	withScratchEnv(m, "/s", host)
-	if m["GOCACHE"] != "/s/go-build" {
-		t.Fatalf("a lowercase gocache must not satisfy GOCACHE on a case-sensitive platform: %v", m)
-	}
-}
-
 // failScratchCreation makes every scratch directory creation fail for the test.
 func failScratchCreation(t *testing.T) {
 	t.Helper()

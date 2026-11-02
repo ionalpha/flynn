@@ -5,6 +5,7 @@ package sandbox
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -27,7 +28,7 @@ func (l *Local) grantScratch(c *exec.Cmd) ([]string, error) {
 			m[k] = v
 		}
 	}
-	withScratchEnv(m, writable[0], os.Getenv)
+	withScratchEnv(m, writable[0], os.Getenv, runtime.GOOS)
 	env := make([]string, 0, len(m))
 	for k, v := range m {
 		env = append(env, k+"="+v)

@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -202,7 +203,7 @@ func (l *Local) appContainerEnvBlock(base []string) *uint16 {
 		}
 	}
 	if scratch, err := l.scratchDir(); err == nil {
-		withScratchEnv(m, scratch, os.Getenv)
+		withScratchEnv(m, scratch, os.Getenv, runtime.GOOS)
 	}
 	return envBlock(m)
 }
