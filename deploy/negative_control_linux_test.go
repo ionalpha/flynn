@@ -203,7 +203,7 @@ func TestNegativeControlUnitFailsSelfTest(t *testing.T) {
 			if got.Cause != sandbox.CauseNamespaceRestricted {
 				t.Fatalf("cause = %q, want %q: %+v", got.Cause, sandbox.CauseNamespaceRestricted, got)
 			}
-			if !strings.Contains(got.Fix, "RestrictNamespaces=user net mnt") {
+			if !strings.Contains(got.Fix, "RestrictNamespaces=user net mnt pid") {
 				t.Errorf("the remedy does not name the line to set: %q", got.Fix)
 			}
 		})

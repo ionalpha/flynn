@@ -72,6 +72,11 @@ func TestRequiredNamespacesAreTheCloneFlagsConfineSets(t *testing.T) {
 		t.Fatalf("confine sets clone flags %#x this test cannot name; add them to RequiredNamespaces and the runner unit", flags)
 	}
 	want := RequiredNamespaces()
+	if !privateProcAvailable() {
+		// A host with a masked /proc gets no PID namespace (see mountNamespaceFlags), but the
+		// unit still has to allow one for the hosts that do.
+		want = slices.DeleteFunc(want, func(ns string) bool { return ns == "pid" })
+	}
 	slices.Sort(got)
 	slices.Sort(want)
 	if !slices.Equal(got, want) {

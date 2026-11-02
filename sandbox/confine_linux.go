@@ -89,13 +89,7 @@ func (l *Local) confine(c *exec.Cmd) error {
 	// the mount view additionally needs its own mount namespace.
 	if l.readonlyFS || l.seccomp || l.egressActive() {
 		if l.readonlyFS {
-			sp.Cloneflags |= syscall.CLONE_NEWNS
-			// The PID namespace is what lets the launcher mount a /proc that lists only the
-			// command's own processes (see confineMounts). A host whose /proc is masked cannot
-			// have one, and the command then keeps the host's /proc as before.
-			if privateProcAvailable() {
-				sp.Cloneflags |= syscall.CLONE_NEWPID
-			}
+			sp.Cloneflags |= mountNamespaceFlags()
 		}
 		l.reexecConfined(c)
 	}
@@ -304,6 +298,19 @@ func confineMounts(dir string, writable, hidden []string) error {
 		}
 	}
 	return hideUnreadable(hidden)
+}
+
+// mountNamespaceFlags are the clone flags filesystem confinement needs: a mount namespace,
+// and a PID namespace wherever [privateProcAvailable] says the launcher can mount a /proc
+// of its own, which is what lets that /proc list only the command's own processes (see
+// confineMounts). [Local.confine] and the readiness check's mount rung both take them from
+// here, so a service unit that forbids the PID namespace fails the check rather than
+// passing it and then refusing every launch.
+func mountNamespaceFlags() uintptr {
+	if privateProcAvailable() {
+		return syscall.CLONE_NEWNS | syscall.CLONE_NEWPID
+	}
+	return syscall.CLONE_NEWNS
 }
 
 // privateProcAvailable reports whether the kernel will let the launcher mount a /proc of

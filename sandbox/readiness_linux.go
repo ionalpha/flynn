@@ -70,7 +70,7 @@ func runNamespaceStage(ctx context.Context, s stage) *failure {
 	case stageNet:
 		sp.Cloneflags |= syscall.CLONE_NEWNET
 	case stageMount:
-		sp.Cloneflags |= syscall.CLONE_NEWNS
+		sp.Cloneflags |= mountNamespaceFlags()
 	}
 	c.SysProcAttr = sp
 	var out bytes.Buffer
