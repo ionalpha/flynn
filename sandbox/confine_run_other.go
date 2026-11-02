@@ -13,12 +13,13 @@ func (l *Local) runShell(ctx context.Context, name string, args []string, stdin 
 	return l.runWithExecCmd(ctx, name, args, stdin, confined)
 }
 
-// closePlatform releases platform confinement state on Close. No platform but Windows
-// leaves persistent state behind, so this is a no-op here.
+// closePlatform releases platform confinement state on Close. The only state left on the
+// host is the scratch directory, which is removed; the directory grants live in the
+// confinement each child runs under and end with it.
 func (l *Local) closePlatform() error {
 	l.revokeReadableDirs()
 	l.revokeWritableDirs()
-	return nil
+	return l.removeScratch()
 }
 
 // revokeReadableDirs is a no-op off Windows: a read-only host already permits a confined

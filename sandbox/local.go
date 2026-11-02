@@ -54,9 +54,9 @@ type Local struct {
 	// readableDirs this takes effect on every platform, because every confinement tier
 	// denies writes outside the workspace by default.
 	writableDirs []string
-	// scratch is the per-sandbox scratch directory a confined Windows child uses for temp
-	// files and toolchain caches; unused elsewhere (see scratchDir).
-	scratch scratchState //nolint:unused // used by the Windows tiers only
+	// scratch is the per-sandbox scratch directory a confined child uses for temp files and
+	// toolchain caches (see scratchDir).
+	scratch scratchState
 	// unreadable are paths hidden from a confined command (see WithUnreadablePaths).
 	unreadable []string
 	// confineUnsupported is set when the default confinement was asked for on a platform
@@ -303,9 +303,9 @@ func WithWritableDir(paths ...string) LocalOption {
 // audit surface of WithWritableDir: these are the only host locations a confined child
 // could have changed, so a caller can state them next to the confinement tier rather than
 // leaving the widening implicit. The slice is a copy, so a caller cannot widen the grants
-// by writing to it. The Windows scratch directory is not listed: it is created by the
-// sandbox for temp files and caches, private to it and removed on Close, rather than a
-// location the caller chose to widen.
+// by writing to it. The scratch directory is not listed: it is created by the sandbox
+// for temp files and caches, private to it and removed on Close, rather than a location
+// the caller chose to widen.
 func (l *Local) WritableDirs() []string {
 	if len(l.writableDirs) == 0 {
 		return nil

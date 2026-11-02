@@ -4,21 +4,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
 
 // TestSandboxGoToolchainRuns scripts the model to run `go env GOCACHE` and `go test` on a
-// module in the workspace through the shipped binary's default confinement. On Windows
-// the confined child's temp directory used to be the workspace root, which made Go ignore
-// the module's go.mod, and its build cache sat under the user profile where the confined
-// token cannot write, so a model could never run a test suite. The tool results fed back
-// to the model are the evidence: the cache is not under the profile and the tests pass.
+// module in the workspace through the shipped binary's default confinement. The default
+// host is read-only, so the build cache's default location under the home directory could
+// not be written and a model could never run a test suite. On Windows the child's temp
+// directory was also the workspace root, which made Go ignore the module's go.mod. The tool
+// results fed back to the model are the evidence: the cache is in the sandbox's scratch
+// directory and the tests pass.
 func TestSandboxGoToolchainRuns(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("the profile-cache failure is specific to the Windows confinement")
-	}
 	if _, err := exec.LookPath("go"); err != nil {
 		t.Skip("no go toolchain on PATH")
 	}

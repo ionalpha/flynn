@@ -91,13 +91,16 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   and grants write access only to the working directory, so a command, including a
   model-authored shell command, cannot modify host files outside the grant. Proven per
   platform by the containment matrix.
-  On Windows the confined child has one more writable location, a per-sandbox scratch
-  directory outside the working tree. It holds temp files (`TEMP`, `TMP`) and the build and
-  download caches of Go, npm and pip (`GOCACHE`, `GOMODCACHE`, `npm_config_cache`,
-  `PIP_CACHE_DIR`), which otherwise default under the user profile where the child cannot
-  write. It is created on first use, granted to that sandbox alone, and removed on Close, so
-  nothing in it outlives the sandbox. A value the operator set for any of these variables is
-  kept. Linux and macOS do not need it: the working directory is not their temp location.
+  On every platform the confined child has one more writable location, a per-sandbox
+  scratch directory outside the working tree. It holds temp files (`TEMP` and `TMP` on
+  Windows, `TMPDIR` elsewhere) and the build and download caches of Go, npm and pip
+  (`GOCACHE`, `GOMODCACHE`, `npm_config_cache`, `PIP_CACHE_DIR`), which otherwise default
+  under the home directory where the child cannot write. It is created on first use,
+  granted to that sandbox alone, and removed on Close, so nothing in it outlives the
+  sandbox. A value the operator set for any of these variables is kept. On Linux it is a
+  host directory under `/var/tmp` bound writable into the mount view, because a cache has to
+  survive from one command to the next and the private `/tmp` is rebuilt for each; on macOS
+  it is a path in the host temp root added to the profile's write rules.
 - **A poisoned chat template rewriting the prompt contract.** A model file can embed its
   own chat template. Flynn parses the file with its own hardened reader, never the
   runtime's parser, and forces a known, trusted template at run time, so a template
