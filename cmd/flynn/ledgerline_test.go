@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/harness"
 	"github.com/ionalpha/flynn/llm/llmtest"
 )
@@ -76,5 +77,43 @@ func TestAPlannedRunSaysWhatItsLedgerWillDo(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--require-proof") {
 		t.Fatalf("a planned run did not say its ledger proof is available and off:\n%s", out.String())
+	}
+}
+
+// TestLedgerOutcomeNamesWhatWasLeftUnproven: a run that does not require proof can finish
+// with items unproven, and the operator learns that from the run's own output, with the
+// failure that made the run move past each one, rather than from the model's answer.
+func TestLedgerOutcomeNamesWhatWasLeftUnproven(t *testing.T) {
+	ledger, err := goal.AppendItems(nil,
+		goal.LedgerItem{Item: "add the endpoint", Verify: "curl --fail localhost/health"},
+		goal.LedgerItem{Item: "write the report file", Verify: "findstr ok report.txt"},
+		goal.LedgerItem{Item: "cover it with a test", Verify: "go test ./api/..."},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var st goal.Status
+	st.SyncLedger(ledger)
+	if err := st.MarkProven(ledger[0].ID, "1", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	st.Ledger[1].Abandoned = true
+	st.Ledger[1].AbandonedReason = "its check failed the same way on 2 consecutive runs: exit 1"
+
+	got := strings.Join(ledgerOutcomeLines(goal.Spec{Ledger: ledger}, st), "\n")
+	for _, want := range []string{
+		"1 of 3 planned item(s) proven",
+		"unproven, moved past: write the report file (its check failed the same way on 2 consecutive runs: exit 1)",
+		"unproven: cover it with a test",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("outcome missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "add the endpoint") {
+		t.Fatalf("a proven item was listed as unproven:\n%s", got)
+	}
+	if lines := ledgerOutcomeLines(goal.Spec{}, goal.Status{}); lines != nil {
+		t.Fatalf("a goal with no ledger printed %q", lines)
 	}
 }
