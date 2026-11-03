@@ -53,6 +53,66 @@ func TestOpenConcurrentlyOnAFreshFile(t *testing.T) {
 	}
 }
 
+// TestTxThatReadsBeforeItWritesWaitsForAnotherWriter runs the shape that failed when two
+// flynn processes seeded the bundled skills together: a transaction reads, another handle
+// commits a write, and then the first transaction writes. A deferred transaction took only
+// a read snapshot at its first SELECT, and SQLite refuses to upgrade a snapshot another
+// writer has moved past: SQLITE_BUSY at once, with no busy_timeout wait. [sqlitex.Tx] has
+// to take the write lock at BEGIN, so the second writer waits instead and both commit.
+func TestTxThatReadsBeforeItWritesWaitsForAnotherWriter(t *testing.T) {
+	ctx := context.Background()
+	fsys := fstest.MapFS{"migrations/0001_init.sql": {Data: []byte(`CREATE TABLE t (id INTEGER PRIMARY KEY);`)}}
+	dsn := filepath.Join(t.TempDir(), "two.db")
+	first, err := sqlitex.Open(ctx, dsn, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := sqlitex.Open(ctx, dsn, fsys)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+
+	read := make(chan struct{})
+	otherDone := make(chan error, 1)
+	go func() {
+		<-read
+		otherDone <- sqlitex.Tx(ctx, second, func(tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, `INSERT INTO t (id) VALUES (1)`)
+			return err
+		})
+	}()
+
+	var otherErr error
+	otherFinished := false
+	err = sqlitex.Tx(ctx, first, func(tx *sql.Tx) error {
+		var n int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM t`).Scan(&n); err != nil {
+			return err
+		}
+		close(read)
+		// With the write lock held from BEGIN the other writer cannot finish until this
+		// transaction commits, so the wait runs out; without it the other commits first.
+		select {
+		case otherErr = <-otherDone:
+			otherFinished = true
+		case <-time.After(300 * time.Millisecond):
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO t (id) VALUES (2)`)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("the transaction that read first: %v", err)
+	}
+	if !otherFinished {
+		otherErr = <-otherDone
+	}
+	if otherErr != nil {
+		t.Fatalf("the other writer: %v", otherErr)
+	}
+}
+
 // TestOpenGivesUpWhenItsContextEnds: a file another process holds exclusively keeps Open
 // retrying, and the caller's deadline, not the retry budget, ends the wait.
 func TestOpenGivesUpWhenItsContextEnds(t *testing.T) {
