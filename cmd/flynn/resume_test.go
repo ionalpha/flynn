@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/governed"
 
 	"github.com/ionalpha/flynn/harness"
@@ -83,5 +85,67 @@ func TestResumeContinuesInterruptedRun(t *testing.T) {
 	}
 	if !strings.Contains(result, "resumed and finished") {
 		t.Fatalf("resume did not drive the run to completion; result = %q\nout:\n%s", result, out2.String())
+	}
+}
+
+// TestResumeRebuildsTheRunsGuards assembles a goal run with every guard the goal command
+// can set, then assembles its resumption the way `flynn resume` does, and requires the two
+// postures to match. A resume used to come back with none of them: no item verifier, so
+// its first verify step failed the run with goal_no_verifier, and no spend cap, approval
+// gate or outside-action gate.
+func TestResumeRebuildsTheRunsGuards(t *testing.T) {
+	ctx := t.Context()
+	store := memStore(t)
+	reg, err := governed.Registry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := driveRequest{
+		out: &bytes.Buffer{}, model: llmtest.NewScripted(llmtest.SayText("done")), workdir: t.TempDir(),
+		objective: "do the task", system: defaultSystemPrompt, rstore: store.Resources(reg), jq: store.Jobs(), log: store.Log(),
+	}
+	first, err := base.withOptions(
+		withShellPolicy(checkShell), withPlanning(), withLedgerProof(),
+		withBudget(budgetpkg.Limits{Tokens: 400_000, Cost: 0.5}),
+		withApproval([]string{"bash"}, nil), withAllowance([]string{"write"}, nil),
+	).assembly().assemble(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := first.Posture()
+	_ = first.Close()
+
+	resumed := base
+	resumed.resumeID = first.ID()
+	resumed, err = resumed.resuming(ctx, t.TempDir(), checkShell)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := resumed.assembly().assemble(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	if got := second.Posture(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the resumed run's posture\n%+v\nwant the original run's\n%+v", got, want)
+	}
+}
+
+// TestResumeGuardsRefusesAnExternalAgentRun: resume drives a native model, so continuing a
+// run an external agent CLI drove would hand it to a different driver.
+func TestResumeGuardsRefusesAnExternalAgentRun(t *testing.T) {
+	if _, _, err := resumeGuards(governed.Posture{Mode: governed.ModeExternal}); err == nil {
+		t.Fatal("resumeGuards accepted an external agent's run")
+	}
+	opts, fanout, err := resumeGuards(governed.Posture{Mode: governed.ModeFanout, Verifier: true})
+	if err != nil || !fanout {
+		t.Fatalf("a fan-out run: fanout %v, err %v", fanout, err)
+	}
+	var c driveConfig
+	for _, o := range opts {
+		o(&c)
+	}
+	if c.planning {
+		t.Error("a fan-out resume turned on the single run's planning phase")
 	}
 }

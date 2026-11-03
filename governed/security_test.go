@@ -9,10 +9,12 @@ import (
 	"go/token"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	budgetpkg "github.com/ionalpha/flynn/budget"
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/dispatch"
 	"github.com/ionalpha/flynn/goal"
@@ -367,6 +369,43 @@ func TestResumeStatesThePostureAgain(t *testing.T) {
 	}
 	if got, _ := ev[1].Payload["budget"].(bool); got {
 		t.Error("the resumed run's statement says the budget is in force, and it was waived")
+	}
+}
+
+// TestReadPostureReturnsTheFirstAssembly: what [ReadPosture] reads back is the posture the
+// run reported when it was first assembled, every field of it, and a later assembly with
+// fewer guards does not replace it. A resume rebuilds from this, so a field that fails to
+// round-trip is a guard a resumed run silently loses.
+func TestReadPostureReturnsTheFirstAssembly(t *testing.T) {
+	b, _ := memBackends(t)
+	if _, ok, err := ReadPosture(ctxT(t), b.Log, "no-such-run"); err != nil || ok {
+		t.Fatalf("ReadPosture on an empty stream = ok %v, err %v; want false, nil", ok, err)
+	}
+
+	first, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithPlanning(), WithLedgerProof(),
+		WithApproval([]string{"write", "bash"}, nil), WithAllowance([]string{"write", "bash"}),
+		WithBudget(budgetpkg.Limits{Tokens: 400_000, Cost: 0.5}))
+	if err != nil {
+		t.Fatalf("assemble: %v", err)
+	}
+	defer func() { _ = first.Close() }()
+	second, err := Assemble(ctxT(t), say("done"), b, WithWorkDir(t.TempDir()), WithRunID(first.ID()),
+		Waive(GuardBudget, "the host meters spend"))
+	if err != nil {
+		t.Fatalf("assemble the resumed run: %v", err)
+	}
+	defer func() { _ = second.Close() }()
+
+	got, ok, err := ReadPosture(ctxT(t), b.Log, first.ID())
+	if err != nil || !ok {
+		t.Fatalf("ReadPosture = ok %v, err %v", ok, err)
+	}
+	want := first.Posture()
+	if len(want.AllowanceActions) != 2 || !want.Verifier || !want.LedgerProof || want.BudgetLimits.Cost != 0.5 {
+		t.Fatalf("the first run was not assembled with the guards this test reads back: %+v", want)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ReadPosture =\n%+v\nwant the first assembly's\n%+v", got, want)
 	}
 }
 

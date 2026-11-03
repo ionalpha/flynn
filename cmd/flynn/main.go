@@ -888,7 +888,7 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	if err != nil {
 		return err
 	}
-	_, _, _, err = driveRequest{
+	req, err := driveRequest{
 		out:      os.Stdout,
 		model:    model,
 		plan:     plan,
@@ -899,6 +899,56 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 		log:      store.Log(),
 		verbose:  verbose,
 		resumeID: runID,
-	}.withOptions(withShellPolicy(shell)).execute(ctx)
+	}.resuming(ctx, dataDir, shell)
+	if err != nil {
+		return err
+	}
+	_, _, _, err = req.execute(ctx)
 	return err
+}
+
+// resuming completes a request that continues run r.resumeID: the guards its first
+// assembly recorded (see [resumeGuards]), its fan-out if it was one, and the operator's
+// shell policy for this invocation.
+func (r driveRequest) resuming(ctx context.Context, dataDir string, shell governed.ShellPolicy) (driveRequest, error) {
+	posture, _, err := governed.ReadPosture(ctx, r.log, r.resumeID)
+	if err != nil {
+		return r, fmt.Errorf("resume: read the run's posture: %w", err)
+	}
+	guards, fanout, err := resumeGuards(posture)
+	if err != nil {
+		return r, err
+	}
+	if fanout {
+		r.fanout = &fanoutConfig{resolveModel: childModelResolver(ctx, dataDir)}
+	}
+	return r.withOptions(append(guards, withShellPolicy(shell))...), nil
+}
+
+// resumeGuards turns the posture a run was first assembled with into the options that
+// assemble it the same way again, and reports whether it was a fan-out. A resume reads
+// only the shell flags from its own command line, so without these a resumed goal had
+// no item verifier (its first verify step failed the run), no spend cap, no approval
+// gate and no outside-action gate. A zero posture, from a run recorded before postures
+// were, yields none of them, as before. An external agent's run is refused: resume
+// drives a native model, and continuing that run on one would change who is driving it.
+func resumeGuards(p governed.Posture) (opts []driveOption, fanout bool, err error) {
+	if p.Mode == governed.ModeExternal {
+		return nil, false, errors.New("resume: this run was driven by an external agent CLI, and resume can only continue a native run")
+	}
+	opts = []driveOption{
+		withBudget(p.BudgetLimits),
+		// With nobody at a prompt the gate refuses a listed action, as on a one-shot goal.
+		withApproval(p.ApprovalActions, nil),
+		// The run's declared allowances are on its goal, which a resume keeps.
+		withAllowance(p.AllowanceActions, nil),
+	}
+	// A fan-out always wires the verifier, so only the planned single run needs telling.
+	if p.Verifier && p.Mode != governed.ModeFanout {
+		opts = append(opts, withPlanning())
+	}
+	if p.LedgerProof {
+		opts = append(opts, withLedgerProof())
+	}
+	return opts, p.Mode == governed.ModeFanout, nil
 }

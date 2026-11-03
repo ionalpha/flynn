@@ -2,6 +2,9 @@ package governed
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"time"
 
 	"github.com/ionalpha/flynn/brakes"
 	budgetpkg "github.com/ionalpha/flynn/budget"
@@ -82,6 +85,10 @@ func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture)
 	for _, a := range p.ApprovalActions {
 		actions = append(actions, a)
 	}
+	outside := make([]any, 0, len(p.AllowanceActions))
+	for _, a := range p.AllowanceActions {
+		outside = append(outside, a)
+	}
 	waived := make(map[string]any, len(p.Waived))
 	for g, reason := range p.Waived {
 		waived[string(g)] = reason
@@ -91,32 +98,124 @@ func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture)
 		Type:   PostureEventType,
 		Actor:  spine.ActorSystem,
 		Payload: map[string]any{
-			"mode":            string(p.Mode),
-			"sandbox":         p.Sandbox,
-			"hostSandbox":     p.HostSandbox,
-			"containment":     p.Containment,
-			"approval":        p.Approval,
-			"approvalActions": actions,
-			"allowance":       p.Allowance,
-			"brakes":          p.Brakes,
-			"budget":          p.Budget,
-			"budgetTokens":    p.BudgetLimits.Tokens,
-			"budgetCost":      p.BudgetLimits.Cost,
-			"brakeMaxActions": p.BrakeLimits.MaxActions,
-			"brakeWindow":     p.BrakeLimits.Window.String(),
-			"halt":            p.Halt,
-			"eventSink":       p.EventSink,
-			"verifier":        p.Verifier,
-			"evidence":        p.Evidence,
-			"ledgerProof":     p.LedgerProof,
-			"auditor":         p.Auditor,
-			"steerJudge":      p.SteerJudge,
-			"progress":        p.Progress,
-			"refusals":        p.Refusals,
-			"waived":          waived,
+			"mode":             string(p.Mode),
+			"sandbox":          p.Sandbox,
+			"hostSandbox":      p.HostSandbox,
+			"containment":      p.Containment,
+			"approval":         p.Approval,
+			"approvalActions":  actions,
+			"allowance":        p.Allowance,
+			"allowanceActions": outside,
+			"brakes":           p.Brakes,
+			"budget":           p.Budget,
+			"budgetTokens":     p.BudgetLimits.Tokens,
+			"budgetCost":       p.BudgetLimits.Cost,
+			"brakeMaxActions":  p.BrakeLimits.MaxActions,
+			"brakeWindow":      p.BrakeLimits.Window.String(),
+			"halt":             p.Halt,
+			"eventSink":        p.EventSink,
+			"verifier":         p.Verifier,
+			"evidence":         p.Evidence,
+			"ledgerProof":      p.LedgerProof,
+			"auditor":          p.Auditor,
+			"steerJudge":       p.SteerJudge,
+			"progress":         p.Progress,
+			"refusals":         p.Refusals,
+			"waived":           waived,
 		},
 	})
 	return err
+}
+
+// ReadPosture returns the posture the first assembly of stream recorded, and false when
+// the stream has none (a run recorded before postures were). A resume reads it to wire
+// the guards the run was started with, so continuing a run cannot drop its spend cap,
+// its approvals, its outside-action gate or its item verifier. It reads the first and
+// not the latest because a resume records its own posture, and one that had lost a
+// guard would otherwise pass the loss to the next resume.
+func ReadPosture(ctx context.Context, log spine.Log, stream string) (Posture, bool, error) {
+	const page = 64
+	for after := int64(0); ; {
+		events, err := log.Read(ctx, spine.Query{Stream: stream, AfterSeq: after, Limit: page})
+		if err != nil {
+			return Posture{}, false, err
+		}
+		for _, e := range events {
+			if e.Type == PostureEventType {
+				p, err := decodePosture(e.Payload)
+				return p, err == nil, err
+			}
+		}
+		if len(events) < page {
+			return Posture{}, false, nil
+		}
+		after = events[len(events)-1].Seq
+	}
+}
+
+// decodePosture is the inverse of the payload [recordPosture] writes. It goes through
+// JSON because a payload read back from a durable log holds JSON's types (a number is a
+// float64), not the ones it was appended with.
+func decodePosture(payload map[string]any) (Posture, error) {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return Posture{}, fmt.Errorf("governed: posture payload: %w", err)
+	}
+	var w struct {
+		Mode             string            `json:"mode"`
+		Sandbox          bool              `json:"sandbox"`
+		HostSandbox      bool              `json:"hostSandbox"`
+		Containment      bool              `json:"containment"`
+		Approval         bool              `json:"approval"`
+		ApprovalActions  []string          `json:"approvalActions"`
+		Allowance        bool              `json:"allowance"`
+		AllowanceActions []string          `json:"allowanceActions"`
+		Brakes           bool              `json:"brakes"`
+		Budget           bool              `json:"budget"`
+		BudgetTokens     int64             `json:"budgetTokens"`
+		BudgetCost       float64           `json:"budgetCost"`
+		BrakeMaxActions  int               `json:"brakeMaxActions"`
+		BrakeWindow      string            `json:"brakeWindow"`
+		Halt             bool              `json:"halt"`
+		EventSink        bool              `json:"eventSink"`
+		Verifier         bool              `json:"verifier"`
+		Evidence         bool              `json:"evidence"`
+		LedgerProof      bool              `json:"ledgerProof"`
+		Auditor          bool              `json:"auditor"`
+		SteerJudge       bool              `json:"steerJudge"`
+		Progress         bool              `json:"progress"`
+		Refusals         bool              `json:"refusals"`
+		Waived           map[string]string `json:"waived"`
+	}
+	if err := json.Unmarshal(raw, &w); err != nil {
+		return Posture{}, fmt.Errorf("governed: posture payload: %w", err)
+	}
+	window, err := time.ParseDuration(w.BrakeWindow)
+	if err != nil && w.BrakeWindow != "" {
+		return Posture{}, fmt.Errorf("governed: posture brake window: %w", err)
+	}
+	p := Posture{
+		Mode: Mode(w.Mode), Sandbox: w.Sandbox, HostSandbox: w.HostSandbox, Containment: w.Containment,
+		Approval: w.Approval, ApprovalActions: w.ApprovalActions,
+		Allowance: w.Allowance, AllowanceActions: w.AllowanceActions,
+		Brakes: w.Brakes, Budget: w.Budget, Halt: w.Halt,
+		BudgetLimits: budgetpkg.Limits{Tokens: w.BudgetTokens, Cost: w.BudgetCost},
+		BrakeLimits:  brakes.Limits{MaxActions: w.BrakeMaxActions, Window: window},
+		EventSink:    w.EventSink, Verifier: w.Verifier, Evidence: w.Evidence, LedgerProof: w.LedgerProof,
+		Auditor: w.Auditor, SteerJudge: w.SteerJudge, Progress: w.Progress, Refusals: w.Refusals,
+		Waived: make(map[Guard]string, len(w.Waived)),
+	}
+	for g, reason := range w.Waived {
+		p.Waived[Guard(g)] = reason
+	}
+	// recordPosture writes an empty list for none; the run reports none as nil.
+	if len(p.ApprovalActions) == 0 {
+		p.ApprovalActions = nil
+	}
+	if len(p.AllowanceActions) == 0 {
+		p.AllowanceActions = nil
+	}
+	return p, nil
 }
 
 // Mode is the shape of the run's loop.
@@ -148,6 +247,9 @@ type Posture struct {
 	Approval        bool
 	ApprovalActions []string
 	Allowance       bool
+	// AllowanceActions is the actions marked as reaching outside the workspace, sorted:
+	// the ones [Posture.Allowance] gates.
+	AllowanceActions []string
 
 	Brakes bool
 	Budget bool
