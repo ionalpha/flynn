@@ -879,7 +879,12 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 	if err != nil {
 		return err
 	}
-	store, err := openDataStore(ctx, dataDir)
+	// The same best-effort signer a goal seals under, so a resumed run ends verifiable too.
+	signer, serr := runSigner(ctx, dataDir)
+	if serr != nil {
+		signer = nil
+	}
+	store, err := openDataStore(ctx, dataDir, snapshotOptions(signer)...)
 	if err != nil {
 		return err
 	}
@@ -904,6 +909,9 @@ func resumeRun(modelSpec, runID, dataDir string, verbose bool, shell governed.Sh
 		return err
 	}
 	_, _, _, err = req.execute(ctx)
+	if signer != nil {
+		sealResumed(ctx, os.Stdout, store, runID, signer, err)
+	}
 	return err
 }
 

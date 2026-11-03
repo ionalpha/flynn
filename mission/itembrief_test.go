@@ -204,3 +204,83 @@ func TestAFullyProvenPlanClosesWithoutANote(t *testing.T) {
 		t.Fatalf("a fully proven plan produced a closing brief: %q", brief)
 	}
 }
+
+// doneOn is a finished conversation whose last brief was on item: the model's final answer
+// is the last message, as it is when the reconciler holds that claim back.
+func doneOn(t *testing.T, item string) []byte {
+	t.Helper()
+	raw, err := encodeCheckpoint(checkpoint{
+		Messages: []llm.Message{llm.Text(llm.RoleUser, "ship health checks"), llm.Text(llm.RoleAssistant, "Done.")},
+		Done:     true,
+		Result:   "Done.",
+		Item:     item,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+
+// TestAHeldClaimReopensOnTheNextItem: the reconciler builds again after a completion claim
+// only when it held the claim for an open item, so the executor must take the turn rather
+// than return the finished conversation, and the turn must name the item that is next.
+// Returning early here is how a run briefed on one item ended with the rest never tried.
+func TestAHeldClaimReopensOnTheNextItem(t *testing.T) {
+	spec, st := briefFixture(t)
+	st.Checkpoint = doneOn(t, spec.Ledger[0].ID)
+	model := llmtest.NewScripted(llmtest.SayText("on it"))
+
+	raw, err := NewExecutor(model).Execute(context.Background(), ledgerGoal(t, spec, st))
+	if err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	if model.Calls() != 1 {
+		t.Fatalf("model called %d times, want the reopened turn", model.Calls())
+	}
+	sent := model.Requests()[0].Messages
+	last := sent[len(sent)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.TextContent(), "cover it with a test") {
+		t.Fatalf("the reopened turn did not brief the next item: %s %q", last.Role, last.TextContent())
+	}
+	cp, err := decodeCheckpoint(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cp.Done || cp.Result != "on it" {
+		t.Fatalf("checkpoint done=%v result=%q, want the new turn's answer", cp.Done, cp.Result)
+	}
+}
+
+// TestAReopenedTurnOnTheSameItemStillEndsOnTheUser: when the open item is the one the model
+// was already briefed on and nothing new was reported, there is no brief to add, and a
+// request ending on the model's own answer is one a provider refuses.
+func TestAReopenedTurnOnTheSameItemStillEndsOnTheUser(t *testing.T) {
+	spec, st := briefFixture(t)
+	st.Checkpoint = doneOn(t, spec.Ledger[1].ID)
+	model := llmtest.NewScripted(llmtest.SayText("on it"))
+
+	if _, err := NewExecutor(model).Execute(context.Background(), ledgerGoal(t, spec, st)); err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	sent := model.Requests()[0].Messages
+	if last := sent[len(sent)-1]; last.Role != llm.RoleUser || !strings.Contains(last.TextContent(), "The plan is not finished") {
+		t.Fatalf("the reopened request ends on %s %q", last.Role, last.TextContent())
+	}
+}
+
+// TestAFinishedPlanKeepsItsAnswer: with every item settled the claim stands, and a further
+// step makes no model call.
+func TestAFinishedPlanKeepsItsAnswer(t *testing.T) {
+	spec, st := briefFixture(t)
+	st.Ledger[1].Abandoned = true
+	st.Checkpoint = doneOn(t, spec.Ledger[1].ID)
+	model := llmtest.NewScripted()
+
+	raw, err := NewExecutor(model).Execute(context.Background(), ledgerGoal(t, spec, st))
+	if err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	if model.Calls() != 0 || string(raw) != string(st.Checkpoint) {
+		t.Fatalf("a finished plan was advanced: %d call(s)", model.Calls())
+	}
+}

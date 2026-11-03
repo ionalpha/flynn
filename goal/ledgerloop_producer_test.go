@@ -8,6 +8,7 @@ package goal
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,8 +178,9 @@ func TestConsumptionSurvivesARestart(t *testing.T) {
 // TestTheProducerRunsBeforeTheRefusalDoes is the staging the rollout depends on: with the
 // loop wired but the refusal not yet turned on, items still flip to proven from the record
 // (so a build can be observed actually proving things) while a completion claim is still
-// the model's to make. Without this split the refusal would have to be switched on ahead of
-// any evidence that the producer works, which is what stalls every goal.
+// the model's to make once the plan has been worked through. Without this split the refusal
+// would have to be switched on ahead of any evidence that the producer works, which is what
+// stalls every goal.
 func TestTheProducerRunsBeforeTheRefusalDoes(t *testing.T) {
 	ev := &fakeEvidence{}
 	h := newHarness(t, alwaysMet{}, WithLedgerGate(ev, newGate(t, RequireExecuted())))
@@ -187,6 +189,8 @@ func TestTheProducerRunsBeforeTheRefusalDoes(t *testing.T) {
 	if _, err := ev.Record(h.ctx, resource.Resource{}, ledger[0].ID, ItemVerdict{Passed: true, Executed: true}); err != nil {
 		t.Fatal(err)
 	}
+	// The second item was tried and given up on, so nothing in the plan is still open.
+	h.setStatus(t, ref, func(st *Status) { st.Ledger[1].Abandoned = true })
 
 	h.reconcile(t, ref)
 
@@ -196,6 +200,83 @@ func TestTheProducerRunsBeforeTheRefusalDoes(t *testing.T) {
 	}
 	if st.Phase != PhaseConverged {
 		t.Fatalf("phase = %q, want the claim still honoured until the refusal is turned on: %s", st.Phase, st.Message)
+	}
+}
+
+// TestAClaimWaitsForAnItemNobodyTried is the resumed run that ended after its first item:
+// the model, briefed on one item, says it is done when that item is. Without proof
+// required the claim is still the model's, but not while an item it never attempted is
+// open, so the run goes on to build that item instead of converging over it.
+func TestAClaimWaitsForAnItemNobodyTried(t *testing.T) {
+	ev := &fakeEvidence{}
+	h := newHarness(t, alwaysMet{}, WithLedgerGate(ev, newGate(t, RequireExecuted())))
+	ledger := twoItemLedger(t)
+	ref := h.plannedGoal(t, "open-item", ledger)
+	if _, err := ev.Record(h.ctx, resource.Resource{}, ledger[0].ID, ItemVerdict{Passed: true, Executed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.reconcile(t, ref)
+
+	st := h.status(t, ref)
+	if st.Phase == PhaseConverged {
+		t.Fatalf("the run converged with %q never attempted", ledger[1].Item)
+	}
+	if st.Phase == PhaseStalled {
+		t.Fatalf("the run stalled instead of building the open item: %s", st.Message)
+	}
+	if st.InFlight == nil || st.InFlight.Kind != StepJobKind {
+		t.Fatalf("in flight = %+v, want a build step for the open item", st.InFlight)
+	}
+}
+
+// TestAClaimMovesPastAnItemWhoseCheckCannotRun: on a host that refuses the check outright
+// the item can never be proven, and a check that did not run is not counted as a repeat,
+// so holding the claim for it would spin until the no-progress guard stalled the run. The
+// claim instead moves the run past the item, which stays unproven with the reason.
+func TestAClaimMovesPastAnItemWhoseCheckCannotRun(t *testing.T) {
+	ev := &fakeEvidence{}
+	h := newHarness(t, alwaysMet{}, WithLedgerGate(ev, newGate(t, RequireExecuted())))
+	ledger := twoItemLedger(t)
+	ref := h.plannedGoal(t, "unrunnable", ledger)
+	for _, it := range ledger {
+		if _, err := ev.Record(h.ctx, resource.Resource{}, it.ID, ItemVerdict{Detail: "the check could not run: refused"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// One item per claim: the second has a refused check on the record too, so the next
+	// claim moves past it and the plan is worked through.
+	h.reconcile(t, ref)
+	h.setStatus(t, ref, func(st *Status) { st.InFlight = nil })
+	h.reconcile(t, ref)
+
+	st := h.status(t, ref)
+	if st.Phase != PhaseConverged {
+		t.Fatalf("phase = %q, want the claim honoured once no item can be worked: %s", st.Phase, st.Message)
+	}
+	for i, ls := range st.Ledger {
+		if ls.Proven || !ls.Abandoned || !strings.Contains(ls.AbandonedReason, "could not be run") {
+			t.Errorf("item %d = %+v, want it left unproven because its check could not run", i, ls)
+		}
+	}
+}
+
+// TestAClaimUnderProofStillStops: the require-proof refusal is the line that must not be
+// softened, so an open item there still settles the run as stalled rather than going on.
+func TestAClaimUnderProofStillStops(t *testing.T) {
+	ev := &fakeEvidence{}
+	h := newHarness(t, alwaysMet{}, WithLedgerGate(ev, newGate(t, RequireExecuted())), WithLedgerConvergence())
+	ledger := twoItemLedger(t)
+	ref := h.plannedGoal(t, "proof", ledger)
+	if _, err := ev.Record(h.ctx, resource.Resource{}, ledger[0].ID, ItemVerdict{Passed: true, Executed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	h.reconcile(t, ref)
+
+	if st := h.status(t, ref); st.Phase != PhaseStalled {
+		t.Fatalf("phase = %q, want the unproven item to stop a run that requires proof", st.Phase)
 	}
 }
 

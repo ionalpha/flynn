@@ -180,6 +180,13 @@ leaves an empty ledger and the run builds. With the flag, the same item stops th
 an empty ledger stalls it (`TestAnAdvisoryRunMovesPastAnItemWhoseCheckKeepsFailing`,
 `TestARunThatRequiresProofStillStopsOnTheItem`).
 
+Without the flag the model's claim of completion ends the run, but only once no item is
+open: a claim made while an item is neither proven nor abandoned is held, and the run goes
+on to that item. An item whose check the host could not run at all is abandoned when the
+claim arrives, since rerunning a refused check teaches the run nothing
+(`TestAClaimWaitsForAnItemNobodyTried`, `TestAClaimMovesPastAnItemWhoseCheckCannotRun`,
+`TestAClaimUnderProofStillStops`).
+
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are removed through owner references. A
 delete with no cleaner completes instead of waiting on a finalizer

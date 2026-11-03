@@ -352,6 +352,16 @@ func (g *Reconciler) judgeOrStep(ctx context.Context, r resource.Resource, spec 
 			return g.terminal(ctx, r, *status, specHash)
 		}
 	}
+	// Without proof required the claim is accepted, but only once the plan has been worked
+	// through. The claim's wording is dropped with it, so the non-convergence count below
+	// compares the open item's check output and not the model's varying account of being
+	// done.
+	if met && g.claimOverOpenItem(spec, *status) {
+		g.moveOffUnrunnableItem(spec, status, recorded)
+		if g.claimOverOpenItem(spec, *status) {
+			met, reason = false, ""
+		}
+	}
 	// Fold this cycle's refusal into the non-convergence count. It sits here because this
 	// is the first point where both halves of the refusal are current: the evaluator has
 	// just spoken, and under the ledger gate the item's check has just been settled, so
