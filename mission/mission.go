@@ -451,14 +451,26 @@ func (e *Executor) bindRunContext(ctx context.Context, r resource.Resource, spec
 func briefTurn(cp *checkpoint, spec goal.Spec, status goal.Status) {
 	// Only at an item boundary: re-stating the same item each step would copy it into the
 	// transcript once per turn for no new information.
-	if item, ok := status.CurrentItem(spec.Ledger); ok && item.ID != cp.Item {
+	item, ok := status.CurrentItem(spec.Ledger)
+	switch {
+	case ok && item.ID != cp.Item:
 		cp.Messages = appendNudge(cp.Messages, itemBrief(spec, status, item))
 		cp.Item = item.ID
+	case !ok && cp.Item != "":
+		// The last item settled with no new one to brief, so this is the one turn the run
+		// hears that its plan is over, and what was left unproven in it.
+		if brief := ledgerClosed(spec, status); brief != "" {
+			cp.Messages = appendNudge(cp.Messages, brief)
+		}
+		cp.Item = ""
 	}
 	// Every turn the failure survives: the item has not moved, and the failing output is
-	// the most useful thing the run can be told.
+	// the most useful thing the run can be told. The check is the model's own guess at
+	// what done looks like, so a wrong one is to be reported, not worked around: reshaping
+	// the work until a mistaken check passes hides exactly what the ledger exists to show.
 	if status.ItemFeedback != "" {
-		cp.Messages = appendNudge(cp.Messages, "The last run of this item's check did not pass: "+status.ItemFeedback)
+		cp.Messages = appendNudge(cp.Messages, "The last run of this item's check did not pass: "+status.ItemFeedback+
+			"\nIf the work is right and the check itself is wrong, do not change the work to fit it: say so in your final answer.")
 	}
 	// Empty on a turn nobody has redirected.
 	if brief := goal.SteerBrief(spec, status); brief != "" {
@@ -557,27 +569,78 @@ func (e *Executor) settleTurn(ctx context.Context, r resource.Resource, turn int
 // and because seeing the proven items above and the unproven ones below is what makes the
 // position mean something.
 func itemBrief(spec goal.Spec, status goal.Status, current goal.LedgerItem) string {
-	proven := make(map[string]bool, len(status.Ledger))
-	for _, st := range status.Ledger {
-		proven[st.ID] = st.Proven
-	}
 	var b strings.Builder
 	b.WriteString("Current item: ")
 	b.WriteString(current.Item)
 	b.WriteString("\nIt is proven when: ")
 	b.WriteString(current.Verify)
 	b.WriteString("\n\nWork this item, not the whole objective. The plan:\n")
-	for i, it := range spec.Ledger {
-		mark := "[ ]"
-		switch {
-		case proven[it.ID]:
-			mark = "[x]"
-		case it.ID == current.ID:
-			mark = "[>]"
-		}
-		fmt.Fprintf(&b, "%s %d. %s\n", mark, i+1, it.Item)
+	writePlan(&b, spec, status, current.ID)
+	if len(status.Abandoned()) > 0 {
+		b.WriteString(abandonedNote)
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// abandonedNote is what the run is told about an item marked [-]: its check stopped
+// telling the run anything new, so the run moved past it unproven, and the final answer
+// is where an operator learns that.
+const abandonedNote = "Items marked [-] were left unproven because their checks kept failing the same way. " +
+	"Say in your final answer which they are and what their checks reported.\n"
+
+// ledgerClosed is the brief for the turn after the last item settles: the plan with its
+// final marks, and the instruction to report what was left unproven. It is "" when every
+// item was proven, since a fully proven plan has nothing to report beyond the answer.
+func ledgerClosed(spec goal.Spec, status goal.Status) string {
+	abandoned := status.Abandoned()
+	if len(abandoned) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("Every planned item is settled. The plan:\n")
+	writePlan(&b, spec, status, "")
+	b.WriteString(abandonedNote)
+	for _, st := range abandoned {
+		fmt.Fprintf(&b, "- %s: %s\n", itemText(spec, st.ID), st.AbandonedReason)
+	}
+	b.WriteString("Finish the objective and give your final answer.")
+	return b.String()
+}
+
+// writePlan renders the ledger one line per item with its mark: [x] proven, [-] left
+// unproven, [>] the item being worked, [ ] not reached.
+func writePlan(b *strings.Builder, spec goal.Spec, status goal.Status, current string) {
+	marks := make(map[string]string, len(status.Ledger))
+	for _, st := range status.Ledger {
+		switch {
+		case st.Proven:
+			marks[st.ID] = "[x]"
+		case st.Abandoned:
+			marks[st.ID] = "[-]"
+		}
+	}
+	for i, it := range spec.Ledger {
+		mark, ok := marks[it.ID]
+		switch {
+		case ok:
+		case it.ID == current:
+			mark = "[>]"
+		default:
+			mark = "[ ]"
+		}
+		fmt.Fprintf(b, "%s %d. %s\n", mark, i+1, it.Item)
+	}
+}
+
+// itemText is the planner's wording of the item with id, or the id when the ledger no
+// longer carries it.
+func itemText(spec goal.Spec, id string) string {
+	for _, it := range spec.Ledger {
+		if it.ID == id {
+			return it.Item
+		}
+	}
+	return id
 }
 
 // appendNudge folds a stalling warning into the transcript as user-visible text without

@@ -357,7 +357,9 @@ func (g *Reconciler) judgeOrStep(ctx context.Context, r resource.Resource, spec 
 	// just spoken, and under the ledger gate the item's check has just been settled, so
 	// the feedback describes the cycle that ended rather than the one before it.
 	if !met && g.countsAsCycle(obs.completed, obs.kind, *status) {
-		status.ObserveVerdict(reason, status.ExecutedFeedback(spec.Ledger, recorded))
+		feedback := status.ExecutedFeedback(spec.Ledger, recorded)
+		status.ObserveVerdict(reason, feedback)
+		g.moveOffUnprovableItem(spec, status, feedback)
 	}
 	if met {
 		return g.converge(ctx, r, spec, status, specHash, reason)

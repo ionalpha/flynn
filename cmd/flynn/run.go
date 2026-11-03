@@ -209,5 +209,5 @@ func ledgerLine(planned, proof bool) string {
 	case proof:
 		return "  ledger: each item's check runs, and an item with no passing check on the record stops the run"
 	}
-	return "  ledger: each item's check runs and is recorded; --require-proof also stops the run on an item it cannot prove"
+	return "  ledger: each item's check runs and is recorded, and an item whose check keeps failing is left unproven; --require-proof stops the run on it instead"
 }

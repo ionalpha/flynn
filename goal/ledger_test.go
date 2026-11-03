@@ -46,7 +46,7 @@ type planHarness struct {
 	p *fakePlanner
 }
 
-func newPlanHarness(t *testing.T, stop StopEvaluator, planner *fakePlanner) *planHarness {
+func newPlanHarness(t *testing.T, stop StopEvaluator, planner *fakePlanner, opts ...Option) *planHarness {
 	t.Helper()
 	m := clock.NewManual(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	reg := resource.NewRegistry()
@@ -58,7 +58,7 @@ func newPlanHarness(t *testing.T, stop StopEvaluator, planner *fakePlanner) *pla
 	}
 	store := resource.NewMemory(reg, resource.WithClock(m))
 	q := jobs.NewMemory(jobs.WithClock(m))
-	gr := NewReconciler(store, q, m, stop, WithPlanning())
+	gr := NewReconciler(store, q, m, stop, append([]Option{WithPlanning()}, opts...)...)
 	w := NewWorker(store, q, m, &fakeExec{}, WithPlanner(planner), WithLease(time.Minute))
 	h := &harness{ctx: context.Background(), store: store, jobs: q, gr: gr, clk: m}
 	return &planHarness{harness: h, w: w, p: planner}
@@ -471,11 +471,11 @@ func TestPlanningDoesNotSpendTheBuildBudget(t *testing.T) {
 	}
 }
 
-// TestAnEmptyPlanStallsTheGoal: a planner that produced nothing leaves no
-// definition of done. Building anyway is how a run claims success against a record
-// that never said what success was.
-func TestAnEmptyPlanStallsTheGoal(t *testing.T) {
-	h := newPlanHarness(t, neverStop{}, &fakePlanner{})
+// TestAnEmptyPlanStallsAGoalThatRequiresProof: a planner that produced nothing leaves
+// no definition of done. Building anyway is how a run claims success against a record
+// that never said what success was, and a run that requires proof has nothing to prove.
+func TestAnEmptyPlanStallsAGoalThatRequiresProof(t *testing.T) {
+	h := newPlanHarness(t, neverStop{}, &fakePlanner{}, WithLedgerConvergence())
 	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
 
 	h.reconcile(t, ref)
@@ -491,6 +491,27 @@ func TestAnEmptyPlanStallsTheGoal(t *testing.T) {
 	if st.Message != "planning produced an empty ledger" {
 		t.Fatalf("message = %q", st.Message)
 	}
+}
+
+// TestAnEmptyPlanBuildsAGoalThatDoesNotRequireProof: completion in such a run is the
+// model's call whatever the ledger says, and an objective whose result is only a report
+// has nothing for a check to read. Stopping it for an empty plan would stop exactly the
+// runs the planner was told to leave unplanned.
+func TestAnEmptyPlanBuildsAGoalThatDoesNotRequireProof(t *testing.T) {
+	h := newPlanHarness(t, neverStop{}, &fakePlanner{})
+	ref := h.createGoal(t, "g", Spec{Objective: "o", StopCondition: "c"})
+
+	h.reconcile(t, ref)
+	if _, err := h.w.ProcessOnce(h.ctx); err != nil {
+		t.Fatalf("worker: %v", err)
+	}
+	h.reconcile(t, ref)
+
+	st := h.status(t, ref)
+	if st.Phase == PhaseStalled {
+		t.Fatalf("an advisory run stalled on an empty plan: %q", st.Message)
+	}
+	h.completeJob(t, StepJobKind) // the next dispatch is a build step
 }
 
 // TestPlanningRunsOnce pins that the planning mark, not the ledger's emptiness, is

@@ -73,9 +73,15 @@ func (g *Reconciler) observeInFlight(ctx context.Context, r resource.Resource, s
 
 // planGate holds a planning goal at its planning phase and reports whether it handled
 // the reconcile. The first dispatch is a planning step, and the stop condition is not
-// evaluated until there is a ledger to evaluate it against. A planner that produced
-// nothing leaves a goal with no definition of done, which stalls: building anyway is how
-// a run claims success against a record that never said what success was.
+// evaluated until there is a ledger to evaluate it against.
+//
+// A planner that produced nothing stalls a run that requires proof: with no items there
+// is nothing to prove, and building anyway is how a run claims success against a record
+// that never said what success was. A run that does not require proof builds instead.
+// Its completion was always the model's call, so an empty ledger takes nothing away from
+// it, and some objectives have no checkable result (run a command and report what it
+// printed); planning a check for one is how a run ends up inventing a file for the check
+// to find and then working to create it.
 func (g *Reconciler) planGate(ctx context.Context, r resource.Resource, spec Spec, status Status, specHash string) (reconcile.Result, bool, error) {
 	switch {
 	case !g.planning:
@@ -83,7 +89,7 @@ func (g *Reconciler) planGate(ctx context.Context, r resource.Resource, spec Spe
 	case !status.Planned:
 		res, err := g.dispatch(ctx, r, status, specHash, PlanJobKind, PhasePlanning, "PlanDispatched")
 		return res, true, err
-	case len(spec.Ledger) == 0:
+	case len(spec.Ledger) == 0 && g.ledgerConverge:
 		status.stall("EmptyLedger", "planning produced an empty ledger", g.clk.Now())
 		res, err := g.terminal(ctx, r, status, specHash)
 		return res, true, err

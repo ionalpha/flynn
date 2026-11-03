@@ -46,15 +46,15 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 		// rather than taken from either side. Carrying the worker's copy wholesale
 		// would drop a proof this very pass admitted; carrying ours would drop an item
 		// a concurrent planning step just appended.
-		var proved bool
-		status.Ledger, proved = mergeLedger(status.Ledger, cur.Ledger)
+		var settled bool
+		status.Ledger, settled = mergeLedger(status.Ledger, cur.Ledger)
 		// The failing check's detail is the worker's, and a verify job lands in this
 		// same window: it is enqueued before this reservation is written, so a worker
 		// that claims and finishes it first would otherwise have it erased here, and the
 		// next build step would be asked to fix an item without being told what its own
-		// check reported. The exception is a pass that just proved something, which is
-		// the pass that cleared the feedback on purpose.
-		if !proved {
+		// check reported. The exception is a pass that just proved or abandoned an item,
+		// which is the pass that cleared the feedback on purpose.
+		if !settled {
 			status.ItemFeedback = cur.ItemFeedback
 			status.MissingCommand, status.MissingRepeat = cur.MissingCommand, cur.MissingRepeat
 		}
@@ -72,19 +72,22 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 }
 
 // mergeLedger reconciles this reconcile's per-item state with the copy on the freshest
-// record, and reports whether the merge carried a proof the record did not already have.
+// record, and reports whether the merge carried a proof or an abandon mark the record did
+// not already have.
 //
 // The shape of the ledger comes from theirs: it is the copy written against the newest
 // version of the goal, so a planning step that appended items in this window is respected
 // and this write does not shorten the plan. The proven marks come from whichever side has
 // them, because a proof only ever goes from unset to set and never back. An item that is
 // proven on either copy is proven, and the earlier proof's evidence and timestamp are kept
-// intact rather than restamped.
+// intact rather than restamped. An abandon mark travels the same way, and reporting it as
+// carried keeps the caller from restoring the abandoned item's check feedback, which would
+// read as the next item's first failure.
 func mergeLedger(mine, theirs []LedgerState) ([]LedgerState, bool) {
-	proofs := make(map[string]LedgerState, len(mine))
+	settled := make(map[string]LedgerState, len(mine))
 	for _, st := range mine {
-		if st.Proven {
-			proofs[st.ID] = st
+		if st.Proven || st.Abandoned {
+			settled[st.ID] = st
 		}
 	}
 	added := false
@@ -94,8 +97,14 @@ func mergeLedger(mine, theirs []LedgerState) ([]LedgerState, bool) {
 		if st.Proven {
 			continue
 		}
-		if p, ok := proofs[st.ID]; ok {
+		p, ok := settled[st.ID]
+		switch {
+		case !ok:
+		case p.Proven:
 			out[i] = p
+			added = true
+		case !st.Abandoned:
+			out[i].Abandoned, out[i].AbandonedReason = true, p.AbandonedReason
 			added = true
 		}
 	}

@@ -63,6 +63,15 @@ type LedgerState struct {
 	// note instead.
 	ProvenAt *time.Time `json:"provenAt,omitempty"`
 	Evidence string     `json:"evidence,omitempty"`
+	// Abandoned marks an item the run stopped working without proving it, and
+	// AbandonedReason is the check failure that made it stop. Only a run that does not
+	// require proof abandons an item (see [Reconciler] and [WithLedgerConvergence]): its
+	// checks are the model's own guess at what done looks like, written before any work,
+	// and a check that can never pass would otherwise end a run that was told the record
+	// is only advisory. The item stays unproven, so the record still says the plan was
+	// not proven in full; the mark only moves the run on to the next item.
+	Abandoned       bool   `json:"abandoned,omitempty"`
+	AbandonedReason string `json:"abandonedReason,omitempty"`
 }
 
 // ItemID returns the content address of an item: the first ledgerIDLen hex characters of
@@ -233,23 +242,55 @@ func (s Status) Unproven() []string {
 	return out
 }
 
-// CurrentItem returns the item the run is working: the first ledger item still unproven.
-// It reports false when the ledger is empty or every item is proven.
+// CurrentItem returns the item the run is working: the first ledger item neither proven
+// nor abandoned. It reports false when the ledger is empty or every item is settled one
+// way or the other.
 //
 // The selection is derived and not stored on the status, so there is no second
 // representation of "where the run is" to drift from the record. The reconciler, the
 // executor and the producer all compute the same answer from the same two facts.
 func (s Status) CurrentItem(ledger []LedgerItem) (LedgerItem, bool) {
-	proven := make(map[string]bool, len(s.Ledger))
+	done := make(map[string]bool, len(s.Ledger))
 	for _, st := range s.Ledger {
-		proven[st.ID] = st.Proven
+		done[st.ID] = st.Proven || st.Abandoned
 	}
 	for _, it := range ledger {
-		if !proven[it.ID] {
+		if !done[it.ID] {
 			return it, true
 		}
 	}
 	return LedgerItem{}, false
+}
+
+// Abandoned returns the items the run moved past without proving, in ledger order.
+func (s Status) Abandoned() []LedgerState {
+	var out []LedgerState
+	for _, st := range s.Ledger {
+		if st.Abandoned && !st.Proven {
+			out = append(out, st)
+		}
+	}
+	return out
+}
+
+// abandonCurrent marks the current item abandoned with reason and clears every count
+// that was about its check, so the next item starts from nothing. The counts must go
+// with it: left in place, the next item's first failure would read as the abandoned
+// item's third and stop the run.
+func (s *Status) abandonCurrent(ledger []LedgerItem, reason string) {
+	item, ok := s.CurrentItem(ledger)
+	if !ok {
+		return
+	}
+	for i := range s.Ledger {
+		if s.Ledger[i].ID == item.ID {
+			s.Ledger[i].Abandoned = true
+			s.Ledger[i].AbandonedReason = reason
+		}
+	}
+	s.ItemFeedback = ""
+	s.MissingCommand, s.MissingRepeat = "", 0
+	s.LastVerdict, s.VerdictMark, s.VerdictRepeat = "", "", 0
 }
 
 // LedgerSettled reports whether the ledger has items and all of them are proven. An empty

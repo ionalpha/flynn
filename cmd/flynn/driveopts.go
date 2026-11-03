@@ -83,7 +83,8 @@ func withPlanning() driveOption {
 // It is separate from withPlanning because the two carry different risk. Planning always
 // runs the producer, so a run's items visibly flip to proven and a run's report can say
 // how many were proven by execution; this adds the refusal on top, which is the part that
-// can stop a run whose plan wrote checks no machine can run. It is staged, not optional:
+// can stop a run whose plan wrote checks no machine can run. Without it an item whose
+// check keeps failing is left unproven and the run moves on (see goal.LedgerState). It is staged, not optional:
 // the refusal is the point of keeping a ledger, and a build that never turns it on has a
 // plan that decides nothing.
 func withLedgerProof() driveOption {
