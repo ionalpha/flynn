@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 
 	"github.com/ionalpha/flynn/governed"
+	"github.com/ionalpha/flynn/internal/hardware"
 	"github.com/ionalpha/flynn/sandbox"
 )
 
@@ -20,7 +22,7 @@ type shellFlags struct {
 // registerShellFlags declares the shell policy flags on fs.
 func registerShellFlags(fs *flag.FlagSet) shellFlags {
 	return shellFlags{
-		maxMemory:        fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) is unlimited. Bounds a memory bomb; enforced where the platform supports it (a Windows job object today)."),
+		maxMemory:        fs.Int("max-memory", 0, "cap the memory (MiB) a command the agent runs may commit; 0 (default) caps it at half this machine's physical memory. Bounds a memory bomb or a command that keeps starting copies of itself; enforced where the platform supports it (a Windows job object today)."),
 		maxProcs:         fs.Int("max-processes", 0, "cap how many processes a command the agent runs may spawn; 0 (default) uses the platform's generous fork-bomb backstop."),
 		allowNet:         fs.Bool("allow-network", false, "give the commands the agent runs the host's network. By default they run with none, so a command cannot send what it reads anywhere; this is needed for git over the network, package installs and anything else a command fetches. Windows cannot deny the network, so there they have it unless --require-network-denial is passed. The choice is recorded on the run's stream."),
 		allowCreds:       fs.Bool("allow-credential-reads", false, "leave the Flynn data directory and the host's credential locations (~/.ssh, cloud and CLI login tokens, keychain sockets) readable to the commands the agent runs. By default they are hidden on Linux and macOS; Windows cannot hide a path from a command, so there they stay readable unless --require-credential-hiding is passed. The choice is recorded on the run's stream."),
@@ -33,7 +35,7 @@ func registerShellFlags(fs *flag.FlagSet) shellFlags {
 // dataDir.
 func (f shellFlags) policy(dataDir string) governed.ShellPolicy {
 	return governed.ShellPolicy{
-		Limits:               sandbox.ResourceLimits{MemoryMiB: *f.maxMemory, MaxProcesses: *f.maxProcs},
+		Limits:               commandLimits(*f.maxMemory, *f.maxProcs),
 		DataDir:              dataDir,
 		AllowNetwork:         *f.allowNet,
 		AllowCredentialReads: *f.allowCreds,
@@ -43,6 +45,29 @@ func (f shellFlags) policy(dataDir string) governed.ShellPolicy {
 		AllowCredentialReadsWhereUnhidable: !*f.requireHidden,
 		AllowNetworkWhereUndeniable:        !*f.requireNetDenial,
 	}
+}
+
+// hostRAMBytes reads the machine's physical memory. It is a variable so a test can give
+// the default cap a known machine to be computed against.
+var hostRAMBytes = hardware.RAMBytes
+
+// commandLimits is the resource cap on every command the agent runs, from the
+// --max-memory and --max-processes values. A memory value of 0 does not mean unlimited:
+// it means half the machine's physical memory. The sandbox's process cap alone does not
+// protect the host. A command that keeps starting copies of itself (a PATH shim that
+// resolves back to itself, for one) can commit all of RAM with a few hundred heavy
+// processes, far below the process backstop, and take the operator's machine down with
+// the run. Half leaves the host, and this process, room to stop the run and report it.
+//
+// The default is set here, on the agent's shell policy, and not inside [sandbox.Local],
+// because the sandbox also runs the local model server, which can legitimately need more
+// than half the machine's memory. Where the RAM cannot be read the command runs uncapped,
+// as before.
+func commandLimits(memoryMiB, maxProcesses int) sandbox.ResourceLimits {
+	if memoryMiB <= 0 {
+		memoryMiB = int(hostRAMBytes(context.Background()) / 2 >> 20)
+	}
+	return sandbox.ResourceLimits{MemoryMiB: memoryMiB, MaxProcesses: maxProcesses}
 }
 
 // networkNotice is what an operator is told before a run whose commands have the host's

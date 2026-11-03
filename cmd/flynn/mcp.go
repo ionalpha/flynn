@@ -79,7 +79,10 @@ func serveMCP(ctx context.Context, dataDir, dir string, readOnly bool, in io.Rea
 	// assembly is the point: a served session is governed by the same grant and records
 	// onto the same kind of stream as the agent's own run, so authority cannot drift
 	// between the two paths.
-	shell := governed.ShellPolicy{DataDir: dataDir, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}
+	shell := governed.ShellPolicy{
+		Limits:  commandLimits(0, 0),
+		DataDir: dataDir, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true,
+	}
 	if n := credentialNotice(shell); n != "" && !readOnly {
 		_, _ = fmt.Fprintln(logw, n, "Serve with --read-only to expose no shell.")
 	}

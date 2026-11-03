@@ -108,6 +108,11 @@ func Detect(ctx context.Context) Box {
 	return b
 }
 
+// RAMBytes reports the machine's total physical memory in bytes, or 0 where it cannot be
+// read. It is the RAM probe of [Detect] on its own, for a caller that sizes something
+// against the host on every run and should not pay for the GPU and container probes.
+func RAMBytes(ctx context.Context) int64 { return systemRAMBytes(ctx) }
+
 // runCommand runs a probe tool and returns its standard output. It is a package-level
 // variable so the probe can be pointed at recorded tool output instead of the host, which
 // is how the decision logic above it is tested on a machine that has none of these tools.
