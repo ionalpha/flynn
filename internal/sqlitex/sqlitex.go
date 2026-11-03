@@ -31,12 +31,12 @@ import (
 //     the writer. (A no-op for ":memory:".)
 //   - synchronous(NORMAL): the WAL is fsynced at checkpoints, not every commit. It is
 //     crash-safe; only the last few unsynced transactions can be lost on a power cut.
-//   - busy_timeout(5000) waits on a lock; foreign_keys(1) enforces referential integrity.
+//   - busy_timeout(5000) waits on a lock (see [WriteTxLock]); foreign_keys(1) is on.
 //
 // One connection: SQLite serialises writers anyway, and a single connection keeps a
 // ":memory:" database alive with a consistent view. OpenReadPool opens the read side.
 func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) {
-	db, err := sql.Open("sqlite", dsn+dsnPragmas)
+	db, err := sql.Open("sqlite", dsn+dsnPragmas+WriteTxLock)
 	if err != nil {
 		return nil, fmt.Errorf("sqlitex: open: %w", err)
 	}
@@ -114,6 +114,15 @@ func isBusy(err error) bool {
 const dsnPragmas = "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)" +
 	"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
 	"&_pragma=cache_size(-8000)&_pragma=temp_store(2)"
+
+// WriteTxLock makes every transaction a write handle begins take the write lock at BEGIN
+// (BEGIN IMMEDIATE). A deferred transaction that reads before it writes holds only a
+// read snapshot until its first write, and when another process has committed since
+// that snapshot SQLite refuses the upgrade with SQLITE_BUSY at once, without consulting
+// busy_timeout. Two flynn processes starting on one data directory meet exactly that
+// (the bundled skill seed reads, then writes). Taken at BEGIN, the lock is waited for
+// like any other. The read pool leaves it off: its transactions never write.
+const WriteTxLock = "&_txlock=immediate"
 
 // OpenReadPool opens the read side of an already-open-and-migrated file database:
 // a pool of maxConns connections pinned read-only with query_only, so point reads

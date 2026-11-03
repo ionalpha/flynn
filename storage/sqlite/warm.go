@@ -75,7 +75,7 @@ func warmDSN(hotDSN string) string {
 // ":memory:" warm store alive with a consistent view.
 func openWarm(ctx context.Context, hotDSN string) (*warmStore, error) {
 	dsn := warmDSN(hotDSN)
-	db, err := sql.Open("sqlite", dsn+warmPragmas)
+	db, err := sql.Open("sqlite", dsn+warmPragmas+sqlitex.WriteTxLock)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite: open warm store: %w", err)
 	}
