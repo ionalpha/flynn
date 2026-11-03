@@ -31,20 +31,27 @@ func useHome(t *testing.T) string {
 // TestShellFlagsBuildThePolicy shows the flags are the only way to relax the policy, and that
 // leaving them off leaves it closed wherever the platform can close it.
 func TestShellFlagsBuildThePolicy(t *testing.T) {
+	stubRAM(t, 8<<30)
+	capped := sandbox.ResourceLimits{MemoryMiB: 4096}
 	for _, tc := range []struct {
 		name string
 		args []string
 		want governed.ShellPolicy
 	}{
-		{"no flags", nil, governed.ShellPolicy{DataDir: "/d", AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
-		{"network", []string{"-allow-network"}, governed.ShellPolicy{DataDir: "/d", AllowNetwork: true, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
-		{"credentials", []string{"-allow-credential-reads"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
-		{"strict credentials", []string{"-require-credential-hiding"}, governed.ShellPolicy{DataDir: "/d", AllowNetworkWhereUndeniable: true}},
-		{"strict network", []string{"-require-network-denial"}, governed.ShellPolicy{DataDir: "/d", AllowCredentialReadsWhereUnhidable: true}},
+		{"no flags", nil, governed.ShellPolicy{DataDir: "/d", Limits: capped, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
+		{"network", []string{"-allow-network"}, governed.ShellPolicy{DataDir: "/d", Limits: capped, AllowNetwork: true, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
+		{"credentials", []string{"-allow-credential-reads"}, governed.ShellPolicy{DataDir: "/d", Limits: capped, AllowCredentialReads: true, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true}},
+		{"strict credentials", []string{"-require-credential-hiding"}, governed.ShellPolicy{DataDir: "/d", Limits: capped, AllowNetworkWhereUndeniable: true}},
+		{"strict network", []string{"-require-network-denial"}, governed.ShellPolicy{DataDir: "/d", Limits: capped, AllowCredentialReadsWhereUnhidable: true}},
 		{
 			"limits",
 			[]string{"-max-memory", "512", "-max-processes", "64"},
 			governed.ShellPolicy{DataDir: "/d", Limits: sandbox.ResourceLimits{MemoryMiB: 512, MaxProcesses: 64}, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true},
+		},
+		{
+			"process cap keeps the default memory cap",
+			[]string{"-max-processes", "64"},
+			governed.ShellPolicy{DataDir: "/d", Limits: sandbox.ResourceLimits{MemoryMiB: 4096, MaxProcesses: 64}, AllowCredentialReadsWhereUnhidable: true, AllowNetworkWhereUndeniable: true},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

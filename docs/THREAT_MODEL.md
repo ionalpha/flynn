@@ -220,7 +220,10 @@ it runs (`sandbox.Trust`, enforced at the dispatch boundary):
   both the single-conversation and fan-out paths. A per-command wall-clock cap is available
   at the sandbox boundary. Memory and process-count caps on a command the agent runs
   (`--max-memory`, `--max-processes`) are enforced where the platform supports it, through
-  the confined command's job object on Windows today; the Linux and macOS floors record the
+  the confined command's job object on Windows today. With no `--max-memory` the cap is half
+  the machine's physical memory, because the process cap alone does not bound memory: a few
+  hundred heavy processes can commit all of RAM long before the process limit is reached.
+  The Linux and macOS floors record the
   limits but do not yet impose them (a per-run cgroup needs cgroup-v2 delegation that is not
   guaranteed for an unprivileged agent), so a command needing a hard memory or process cap
   there runs under the container or hardware-isolation tier (see Coverage).
