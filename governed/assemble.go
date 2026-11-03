@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/ionalpha/flynn/brakes"
@@ -375,6 +377,9 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	}
 	if g.stack != nil {
 		post.ApprovalActions = g.stack.actions
+	}
+	if outside := outsidePolicy(c.outside); len(outside) > 0 {
+		post.AllowanceActions = slices.Sorted(maps.Keys(outside))
 	}
 	if mode == ModeExternal {
 		// An external agent loop runs its own tools beyond the approval gate, so the gate is
