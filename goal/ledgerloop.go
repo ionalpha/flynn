@@ -61,3 +61,30 @@ func (g *Reconciler) refuseCompletion(status *Status, recorded []Verification) {
 	status.stall("LedgerUnproven", fmt.Sprintf("completion reported with %d planned item(s) unproven: %s",
 		len(reasons), strings.Join(reasons, "; ")), g.clk.Now())
 }
+
+// moveOffUnprovableItem abandons the current item, in a run that does not require proof,
+// once its check has failed the same way twice or named a missing program twice. feedback
+// is the executed check failure this cycle was counted on, or "" when none ran.
+//
+// The checks are the model's own, written before any work, and some can never pass (a
+// quoting mistake) or check for a file the objective never asked for. Left to the
+// non-convergence guard, either one stops a run whose ledger the operator was told is
+// only a record. The item stays unproven, with the failure that gave it up.
+//
+// A run that requires proof stops on the item instead, and a repeated refusal with no
+// check failure in it is still the non-convergence stop.
+func (g *Reconciler) moveOffUnprovableItem(spec Spec, status *Status, feedback string) {
+	if g.ledgerConverge || !g.ledgerGated() || !status.Planned {
+		return
+	}
+	var reason string
+	switch {
+	case status.StalledForEnvironment():
+		reason = status.EnvironmentReason()
+	case feedback != "" && status.StalledForNonConvergence():
+		reason = fmt.Sprintf("its check failed the same way on %d consecutive runs: %s", status.VerdictRepeat, feedback)
+	default:
+		return
+	}
+	status.abandonCurrent(spec.Ledger, reason)
+}

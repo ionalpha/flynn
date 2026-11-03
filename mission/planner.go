@@ -36,7 +36,9 @@ Expand the objective below into the concrete units of work it actually implies: 
 
 The check is run, not read. It must be a single shell command line, and it is treated as proof only when that command exits 0. Write the command, not a description of it: "go test ./..." is a check; "go test ./... passes" and "it looks done" are not. Reach for a command whose exit code already means the right thing (a test run, a build, a linter, grep for the thing you added, curl --fail against the endpoint), and compose with && when one item needs two conditions.
 
-An item you cannot express as a command is usually an item phrased too vaguely to check. Sharpen it, or split it into parts that can be. A check that cannot be run does not prove its item: it is recorded as unproven, and the goal will not complete on it.
+An item you cannot express as a command is usually an item phrased too vaguely to check. Sharpen it, or split it into parts that can be. A check that cannot be run does not prove its item: it is recorded as unproven.
+
+A check reads what the work leaves behind: a file, a build, a passing test, a running service. An objective whose whole result is what you report back (run a command and say what it printed, answer a question, look something up) leaves nothing for a check to read, so it has no items. Never plan an item, or a file, that exists only so a check has something to find.
 
 Respond with ONLY a JSON array, no prose before or after, no code fence. Each element is an object with exactly two string fields:
   - "item":   what the work is, in one clear sentence.
@@ -45,7 +47,7 @@ Respond with ONLY a JSON array, no prose before or after, no code fence. Each el
 Example:
 [{"item":"Add a /health endpoint","verify":"curl --fail --silent http://localhost:8080/health"}]
 
-If the objective genuinely needs no work — it is already satisfied, or it is not a work request — respond with an empty array []. Do not invent filler items to look busy. Every item you return will be held to its verify clause.`
+If the objective needs no checkable work (it is already satisfied, it is not a work request, or its result is only what you report), respond with an empty array []. Do not invent filler items to look busy. Every item you return will be held to its verify clause.`
 
 // plannerCorrections is how many times the planner sends a plan back to the model for a
 // check that cannot run before it gives the sample up as a transient failure. One round

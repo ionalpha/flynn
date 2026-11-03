@@ -95,6 +95,9 @@ func (r driveRequest) execute(ctx context.Context) (result, source string, trans
 	}
 
 	result, transcript, _, runErr := renderStream(w, events, r.verbose, r.cfg.observe)
+	for _, line := range r.ledgerOutcome(ctx, run.ID()) {
+		_, _ = fmt.Fprintln(w, line)
+	}
 	if r.cfg.extAgent != nil {
 		r.declareProvenance(runCtx, w, run)
 	}
@@ -102,6 +105,55 @@ func (r driveRequest) execute(ctx context.Context) (result, source string, trans
 	cancel()
 	<-done
 	return result, run.ID(), transcript, runErr
+}
+
+// ledgerOutcome reads the run's goal after it settles and says how much of its plan was
+// proven. A run that does not require proof can finish with items left unproven, and the
+// model's answer is not where an operator should have to learn that: the model is told to
+// name them, and this line is what holds when it does not.
+func (r driveRequest) ledgerOutcome(ctx context.Context, id string) []string {
+	if r.rstore == nil {
+		return nil
+	}
+	rec, err := r.rstore.Get(context.WithoutCancel(ctx), goal.Kind, resource.Scope{}, id)
+	if err != nil {
+		return nil
+	}
+	spec, serr := goal.DecodeSpec(rec)
+	status, derr := goal.DecodeStatus(rec)
+	if serr != nil || derr != nil {
+		return nil
+	}
+	return ledgerOutcomeLines(spec, status)
+}
+
+// ledgerOutcomeLines renders a settled goal's ledger: how many planned items were proven,
+// then each item left unproven, with the failure that gave it up when the run moved past
+// it. A goal with no ledger says nothing.
+func ledgerOutcomeLines(spec goal.Spec, status goal.Status) []string {
+	if len(spec.Ledger) == 0 {
+		return nil
+	}
+	settled := make(map[string]goal.LedgerState, len(status.Ledger))
+	proven := 0
+	for _, st := range status.Ledger {
+		settled[st.ID] = st
+		if st.Proven {
+			proven++
+		}
+	}
+	lines := []string{fmt.Sprintf("  ledger: %d of %d planned item(s) proven", proven, len(spec.Ledger))}
+	for _, it := range spec.Ledger {
+		st := settled[it.ID]
+		switch {
+		case st.Proven:
+		case st.Abandoned:
+			lines = append(lines, fmt.Sprintf("    unproven, moved past: %s (%s)", it.Item, st.AbandonedReason))
+		default:
+			lines = append(lines, "    unproven: "+it.Item)
+		}
+	}
+	return lines
 }
 
 // assembly is the request as the governed-run assembly takes it. A caller-supplied
@@ -209,5 +261,5 @@ func ledgerLine(planned, proof bool) string {
 	case proof:
 		return "  ledger: each item's check runs, and an item with no passing check on the record stops the run"
 	}
-	return "  ledger: each item's check runs and is recorded; --require-proof also stops the run on an item it cannot prove"
+	return "  ledger: each item's check runs and is recorded, and an item whose check keeps failing is left unproven; --require-proof stops the run on it instead"
 }

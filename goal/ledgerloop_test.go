@@ -153,10 +153,11 @@ func (h *harness) completeJob(t *testing.T, kind string) {
 // producerHarness assembles a reconciler with the ledger loop closed and a worker that
 // shares its record, so a test drives the real dispatch-and-observe round trip. Passing a
 // nil verifier builds the worker without a producer, which is the misconfiguration the
-// loud-failure test is about.
-func producerHarness(t *testing.T, ver ItemVerifier, ev Evidence) (*harness, *Worker) {
+// loud-failure test is about. opts are added to the reconciler, so a test can run the
+// loop with proof required (WithLedgerConvergence) or advisory.
+func producerHarness(t *testing.T, ver ItemVerifier, ev Evidence, opts ...Option) (*harness, *Worker) {
 	t.Helper()
-	h := newHarness(t, neverMet{}, WithLedgerGate(ev, newGate(t, RequireExecuted())))
+	h := newHarness(t, neverMet{}, append([]Option{WithLedgerGate(ev, newGate(t, RequireExecuted()))}, opts...)...)
 	wopts := []WorkerOption{}
 	if ver != nil {
 		wopts = append(wopts, WithItemVerification(ver, ev))

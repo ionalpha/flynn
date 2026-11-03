@@ -172,7 +172,9 @@ func TestAMissingProgramStopsAsAnEnvironmentProblem(t *testing.T) {
 	}
 	ev := &fakeEvidence{}
 	ver := &fakeVerifier{verdicts: []ItemVerdict{missing}}
-	h, w := producerHarness(t, ver, ev)
+	// Proof is required: an advisory run moves past the item instead (see
+	// TestAnAdvisoryRunMovesPastAnItemWhoseProgramIsMissing).
+	h, w := producerHarness(t, ver, ev, WithLedgerConvergence())
 
 	ledger := twoItemLedger(t)
 	ref := h.plannedGoal(t, "missing-program", ledger)
@@ -297,12 +299,13 @@ func TestCommandWords(t *testing.T) {
 }
 
 // runChecksTo drives EnvironmentRepeatLimit rounds of build, verify and observe against a
-// planned two-item ledger whose verifier returns the given verdict every time.
-func runChecksTo(t *testing.T, v ItemVerdict, rounds int) (Status, *fakeEvidence) {
+// planned two-item ledger whose verifier returns the given verdict every time. opts go to
+// the reconciler, as for producerHarness.
+func runChecksTo(t *testing.T, v ItemVerdict, rounds int, opts ...Option) (Status, *fakeEvidence) {
 	t.Helper()
 	ev := &fakeEvidence{}
 	ver := &fakeVerifier{verdicts: []ItemVerdict{v}}
-	h, w := producerHarness(t, ver, ev)
+	h, w := producerHarness(t, ver, ev, opts...)
 	ref := h.plannedGoal(t, "checks", twoItemLedger(t))
 	h.setStatus(t, ref, func(st *Status) { st.Planned = true })
 	for range rounds {
@@ -329,7 +332,7 @@ func TestAnAgentToolNamedInACheckStopsAsAnEnvironmentProblem(t *testing.T) {
 		Executed: true, ExitCode: 1,
 		Output: "'skill_read' is not recognized as an internal or external command,\noperable program or batch file.",
 		Detail: "exit 1: 'skill_read' is not recognized as an internal or external command",
-	}, EnvironmentRepeatLimit)
+	}, EnvironmentRepeatLimit, WithLedgerConvergence())
 
 	if len(ev.recs) == 0 || ev.recs[0].Provenance == ProvenanceExecuted {
 		t.Fatalf("recorded %+v: a check that never ran must not be on the record as executed", ev.recs)
@@ -354,7 +357,7 @@ func TestAnAgentToolNamedInACheckStopsAsAnEnvironmentProblem(t *testing.T) {
 func TestACheckThatRanAndFailedAtExitOneStillCountsAsNotConverging(t *testing.T) {
 	st, ev := runChecksTo(t, ItemVerdict{
 		Executed: true, ExitCode: 1, Output: "FAIL: TestHealth: got 500, want 200", Detail: "exit 1: FAIL",
-	}, VerdictRepeatLimit)
+	}, VerdictRepeatLimit, WithLedgerConvergence())
 
 	if len(ev.recs) == 0 || ev.recs[0].Provenance != ProvenanceExecuted {
 		t.Fatalf("recorded %+v: a check that ran must stay on the record as executed", ev.recs)

@@ -170,6 +170,16 @@ run's sandbox and its verdict goes on the record. The flag adds the refusal that
 those verdicts. A run prints which of the two applies before it starts (`ledgerLine`
 in `cmd/flynn/run.go`).
 
+Without the flag the ledger is a record and never a stop. The checks are the model's own,
+written before any work, and some can never pass (a quoting mistake) or check for
+something the objective never asked for. An item whose executed check fails the same way
+on consecutive runs, or names a program the host does not have, is marked abandoned:
+still unproven on the record, with the failure that gave it up, and the run moves to the
+next item and is told to name it in its answer. A planner that finds nothing checkable
+leaves an empty ledger and the run builds. With the flag, the same item stops the run and
+an empty ledger stalls it (`TestAnAdvisoryRunMovesPastAnItemWhoseCheckKeepsFailing`,
+`TestARunThatRequiresProofStillStopsOnTheItem`).
+
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are removed through owner references. A
 delete with no cleaner completes instead of waiting on a finalizer

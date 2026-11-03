@@ -140,3 +140,67 @@ func ledgerGoal(t *testing.T, spec goal.Spec, st goal.Status) resource.Resource 
 	}
 	return resource.Resource{APIVersion: goal.GroupVersion, Kind: goal.Kind, Name: "brief-run", Spec: raw, Status: enc}
 }
+
+// TestAFailingCheckIsReportedNotWorkedAround: the check is the model's own guess at what
+// done looks like, so the turn that carries its failure also tells the run that a wrong
+// check is to be said in the answer. Without it a run told "the check failed" reshapes
+// the work until a mistaken check passes, which is the field failure this guards.
+func TestAFailingCheckIsReportedNotWorkedAround(t *testing.T) {
+	spec, st := briefFixture(t)
+	st.ItemFeedback = "exit 1: findstr found nothing"
+	e := NewExecutor(llmtest.NewScripted(llmtest.SayText("fixing")))
+
+	raw, err := e.Execute(context.Background(), ledgerGoal(t, spec, st))
+	if err != nil {
+		t.Fatalf("step: %v", err)
+	}
+	cp, err := decodeCheckpoint(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(transcript(cp), "do not change the work to fit it") {
+		t.Fatalf("the failing check's turn did not say a wrong check is to be reported:\n%s", transcript(cp))
+	}
+}
+
+// TestTheRunHearsOnceThatItsPlanClosedWithItemsUnproven: when the last item settles by
+// being abandoned there is no next item to brief, so the run is told once that its plan is
+// over, which items were left unproven and why, and that its answer must say so.
+func TestTheRunHearsOnceThatItsPlanClosedWithItemsUnproven(t *testing.T) {
+	spec, st := briefFixture(t)
+	// The conversation was last briefed on the second item, which has now been abandoned.
+	cp := checkpoint{Item: spec.Ledger[1].ID}
+	st.Ledger[1].Abandoned = true
+	st.Ledger[1].AbandonedReason = "its check failed the same way on 2 consecutive runs: exit 1"
+
+	briefTurn(&cp, spec, st)
+	text := transcript(cp)
+	for _, want := range []string{
+		"Every planned item is settled",
+		"[x] 1. add the endpoint",
+		"[-] 2. cover it with a test",
+		"cover it with a test: its check failed the same way on 2 consecutive runs: exit 1",
+		"Say in your final answer",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("closing brief missing %q:\n%s", want, text)
+		}
+	}
+
+	briefTurn(&cp, spec, st)
+	if n := strings.Count(transcript(cp), "Every planned item is settled"); n != 1 {
+		t.Fatalf("the closing brief appeared %d times, want once", n)
+	}
+}
+
+// TestAFullyProvenPlanClosesWithoutANote: nothing was left unproven, so there is nothing
+// to report and the run is not told anything extra.
+func TestAFullyProvenPlanClosesWithoutANote(t *testing.T) {
+	spec, st := briefFixture(t)
+	if err := st.MarkProven(spec.Ledger[1].ID, "2", time.Unix(0, 0).UTC()); err != nil {
+		t.Fatal(err)
+	}
+	if brief := ledgerClosed(spec, st); brief != "" {
+		t.Fatalf("a fully proven plan produced a closing brief: %q", brief)
+	}
+}
