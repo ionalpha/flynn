@@ -29,7 +29,7 @@ func hideUnreadable(paths []string) error {
 // hidePath covers one path. A directory gets a read-only, empty tmpfs that no one can
 // enter; anything else gets /dev/null bound over it.
 func hidePath(p string) error {
-	info, err := os.Lstat(p)
+	info, err := os.Lstat(p) //nolint:gosec // G703: p names a path to hide; covering it only removes access, so a traversal in p cannot widen what the command reads
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
 	}
