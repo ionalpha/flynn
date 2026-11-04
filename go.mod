@@ -8,19 +8,19 @@ require (
 	github.com/alecthomas/chroma/v2 v2.27.0
 	github.com/aymanbagabas/go-udiff v0.4.1
 	github.com/charmbracelet/x/ansi v0.11.9
-	github.com/fxamacker/cbor/v2 v2.9.6
+	github.com/fxamacker/cbor/v2 v2.10.0
 	github.com/google/go-cmp v0.7.0
 	github.com/klauspost/compress v1.20.3
 	github.com/rivo/uniseg v0.4.7
 	github.com/transparency-dev/merkle v0.0.2
 	github.com/veraison/go-cose v1.3.0
-	github.com/yuin/goldmark v1.8.6
+	github.com/yuin/goldmark v1.8.7
 	github.com/zalando/go-keyring v0.2.8
 	golang.design/x/clipboard v0.11.0
 	golang.org/x/crypto v0.58.0
 	golang.org/x/sys v0.49.0
 	golang.org/x/term v0.47.0
-	modernc.org/sqlite v1.61.0
+	modernc.org/sqlite v1.61.1
 	pgregory.net/rapid v1.3.0
 )
 
