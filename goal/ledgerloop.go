@@ -50,6 +50,51 @@ func (g *Reconciler) holdsClaimAgainstLedger(spec Spec, status Status) bool {
 		status.Planned && len(spec.Ledger) > 0 && !status.LedgerSettled()
 }
 
+// claimOverOpenItem reports whether a completion claim in a run that does not require
+// proof has to wait for the ledger: an item is still neither proven nor moved past. Such a
+// run's completion is the model's call once every item has been tried, never before. A
+// model briefed on one item says it is done when that item is, and accepting that would
+// end the run with the rest of the plan never attempted. Each open item is still bounded:
+// a check that keeps failing the same way moves the run past it (moveOffUnprovableItem),
+// and the step budget bounds the rest.
+func (g *Reconciler) claimOverOpenItem(spec Spec, status Status) bool {
+	if g.ledgerConverge || !g.ledgerGated() || !status.Planned {
+		return false
+	}
+	_, open := status.CurrentItem(spec.Ledger)
+	return open
+}
+
+// moveOffUnrunnableItem abandons the current item when the run has claimed completion and
+// the item's latest check, taken after its last build, could not be run at all (the
+// sandbox refused it, or there was no check). Holding the claim for such an item teaches
+// the run nothing: the host refuses the same check the same way every time, and a check
+// that never ran is never counted as a repeat, so the run would spin until the no-progress
+// guard stalled it. Only a claim reaches here, so an item the model is still working on
+// keeps its chance. recorded is the run's verifications in recorded order.
+func (g *Reconciler) moveOffUnrunnableItem(spec Spec, status *Status, recorded []Verification) {
+	if status.VerifyPending {
+		return // the latest check predates the last build; it says nothing about the work now
+	}
+	item, ok := status.CurrentItem(spec.Ledger)
+	if !ok {
+		return
+	}
+	for i := len(recorded) - 1; i >= 0; i-- {
+		if recorded[i].Item != item.ID {
+			continue
+		}
+		if recorded[i].Provenance != ProvenanceExecuted {
+			detail := status.ItemFeedback
+			if detail == "" {
+				detail = recorded[i].Reason
+			}
+			status.abandonCurrent(spec.Ledger, "its check could not be run: "+strings.TrimSpace(detail))
+		}
+		return
+	}
+}
+
 // refuseCompletion settles a goal whose model reported success over an unproven ledger,
 // naming each unproven item and the reason the gate would refuse it.
 //

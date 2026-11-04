@@ -359,6 +359,11 @@ const verifyPrompt = "Before finishing, re-check that the objective is fully acc
 	"Inspect your work with the tools rather than assuming. If anything is incomplete or " +
 	"incorrect, fix it now. If everything is correct and complete, briefly confirm and stop."
 
+// openItemNudge is what a reopened conversation is told when it is still on the item it
+// claimed to finish: the plan is not worked through yet.
+const openItemNudge = "The plan is not finished: the current item is still open. Keep working on it, " +
+	"and if you believe its check is wrong, say so in your final answer instead of changing the work to fit it."
+
 // Execute advances the goal's conversation by one model turn and returns the
 // updated conversation as the checkpoint. A turn that calls tools runs them and
 // appends their results so the next step continues; a turn that ends naturally
@@ -377,8 +382,17 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "mission_checkpoint_decode", err)
 	}
+	reopened := false
 	if cp.Done {
-		return status.Checkpoint, nil // already complete; nothing to advance
+		// The reconciler dispatches a build after a completion claim only when it held the
+		// claim back for an item still open on the ledger (goal.Reconciler, claimOverOpenItem),
+		// so an open item reopens the conversation and briefTurn below says which item is
+		// next. With nothing open the claim stands.
+		if _, open := status.CurrentItem(spec.Ledger); !open {
+			return status.Checkpoint, nil // already complete; nothing to advance
+		}
+		cp.Done, cp.Result = false, ""
+		reopened = true
 	}
 	// A goal waiting on a fan-out folds its children in before anything else, and makes no
 	// model call on that check.
@@ -389,6 +403,12 @@ func (e *Executor) Execute(ctx context.Context, r resource.Resource) (json.RawMe
 		cp.Messages = []llm.Message{userTurn(e.prompt(spec), spec.Attachments)}
 	}
 	briefTurn(&cp, spec, status)
+	// A reopened conversation ends on the model's own final answer. When nothing was
+	// briefed (the open item is the one it was already on, and its check left no output to
+	// hand back) it still needs a user turn, or the request would end on the assistant.
+	if reopened && cp.Messages[len(cp.Messages)-1].Role != llm.RoleUser {
+		cp.Messages = appendNudge(cp.Messages, openItemNudge)
+	}
 
 	// The count is carried on the checkpoint, so the index stays correct across a
 	// crash-resumed step without rescanning the history.

@@ -205,6 +205,37 @@ func sealStopped(ctx context.Context, out io.Writer, store *sqlite.Store, rec *c
 	sealReported(ctx, out, store, rec, runID, signer)
 }
 
+// sealResumed seals a run that `flynn resume` drove, from its durable stream: the events
+// before the resume were written by an earlier process, so no recorder in this one holds
+// them. A run that stopped records how it ended first, as [sealStopped] does. An
+// interrupt is left unsealed, because Ctrl-C on a resume detaches and the run can be
+// resumed again; a stopped outcome on its stream would then sit inside a run that went on.
+func sealResumed(ctx context.Context, out io.Writer, store *sqlite.Store, runID string, signer chain.RootSigner, runErr error) {
+	if errors.Is(runErr, context.Canceled) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	if runErr != nil {
+		if _, err := store.Log().Append(ctx, spine.AppendInput{
+			Stream: runID,
+			Type:   chain.OutcomeRecorded,
+			Actor:  spine.ActorSystem,
+			Payload: map[string]any{
+				chain.OutcomeResultKey: stoppedOutcome(runErr),
+				outcomeReasonKey:       runErr.Error(),
+			},
+		}); err != nil {
+			_, _ = fmt.Fprintf(out, "  (outcome not recorded: %v)\n", err)
+		}
+	}
+	if err := sealRunFromStore(ctx, store, runID, signer); err != nil {
+		_, _ = fmt.Fprintf(out, "  (run not sealed: %v)\n", err)
+		return
+	}
+	_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", runID)
+}
+
 // sealRunFromStore seals a run's current durable stream into a signed record stored on
 // the stream, without a live recorder. It reads the run's events, folds every one
 // except a prior seal into a fresh record builder, signs the Merkle head, and appends
