@@ -113,6 +113,35 @@ func (s *SpineEvidence) Record(ctx context.Context, r resource.Resource, item st
 	return vs[0], nil
 }
 
+// RecordAdmission appends one admission verdict to the goal's stream. A refused check is
+// recorded as well as an admitted one: the sequence of refusals is how a reader sees what
+// the planner was sent back for before the plan that ran. The event is ActorSystem and the
+// evidence gate does not read it.
+func (s *SpineEvidence) RecordAdmission(ctx context.Context, r resource.Resource, v goal.AdmissionVerdict) error {
+	payload := map[string]any{
+		chain.ItemKey:         v.Item,
+		chain.ItemAdmittedKey: v.Admitted,
+		chain.ItemDryRunKey:   v.DryRun,
+	}
+	if v.Refusal != "" {
+		payload[chain.ItemRefusalKey] = string(v.Refusal)
+	}
+	if reason := strings.TrimSpace(v.Reason); reason != "" {
+		payload[chain.ItemReasonKey] = clip(reason, maxDetail)
+	}
+	if _, err := s.log.Append(ctx, spine.AppendInput{
+		Stream:  r.Name,
+		Type:    chain.ItemAdmitted,
+		Actor:   spine.ActorSystem,
+		Payload: payload,
+	}); err != nil {
+		return fault.Wrap(fault.Transient, "admission_append", err)
+	}
+	return nil
+}
+
+var _ goal.AdmissionRecorder = (*SpineEvidence)(nil)
+
 // Recorded returns every item verification on the goal's stream, in the order recorded. A
 // read failure is transient: a record that cannot be reached for a moment is not a run
 // with no evidence, and treating it as one would stall a healthy goal.

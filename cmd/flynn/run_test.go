@@ -83,7 +83,9 @@ func TestGoalCommandPlansBeforeItBuilds(t *testing.T) {
 	dir := t.TempDir()
 	store := memStore(t)
 	model := llmtest.NewScripted(
-		llmtest.SayText(`[{"item":"write hello.txt","verify":"the file exists with the greeting"}]`),
+		// A runnable check that fails its admission dry run and passes afterwards: prose is
+		// refused at admission, because the shell cannot run it.
+		llmtest.SayText(`[{"item":"write hello.txt","verify":"cd greeted || (mkdir greeted && exit 1)"}]`),
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"hello.txt","content":"hi"}`)),
 		llmtest.SayText("done"),
 	)

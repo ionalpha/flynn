@@ -2,11 +2,13 @@ package e2e
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -186,10 +188,13 @@ func isPlanRequest(req oaiRequest) bool {
 // steer the build — convergence is still the model's to declare on a build turn — so one
 // generic item is enough to satisfy the planning gate and let the scripted build turns run.
 //
-// The clause is a real command that exits 0, not prose, because the run now executes it:
-// the item's check is what settles it, and a scripted suite whose plans were unrunnable
-// would exercise only the degraded path.
-var cannedPlan = oaiReply{Text: `[{"item":"accomplish the objective","verify":"` + passingCheck + `"}]`}
+// The clause is a real command, not prose, because the run executes it: the item's check
+// is what settles it, and a scripted suite whose plans were unrunnable would exercise only
+// the degraded path. It is [settlingCheck] and not [passingCheck] because admission runs
+// every check once before any work and refuses one that already passes.
+func cannedPlan() oaiReply {
+	return oaiReply{Text: `[{"item":"accomplish the objective","verify":"` + settlingCheck() + `"}]`}
+}
 
 // failingPlan answers a planning request with an item whose check runs and fails, which is
 // how a scenario drives the case where a run's own plan contradicts its claim of success.
@@ -201,6 +206,19 @@ const (
 	passingCheck = "cd ."
 	failingCheck = "cd this-directory-does-not-exist"
 )
+
+// markerSeq numbers the markers of one test process.
+var markerSeq atomic.Int64
+
+// settlingCheck fails the first time it runs, which is admission's dry run, and passes every
+// time after: the first run leaves the marker directory the later runs look for. The marker
+// is named afresh for each plan, because a scenario that runs several goals in one workspace
+// would otherwise find the last goal's marker and have its dry run pass. `||` and `&&` mean
+// the same to cmd and to sh, so one string serves every platform.
+func settlingCheck() string {
+	m := fmt.Sprintf("flynn-e2e-marker-%d", markerSeq.Add(1))
+	return "cd " + m + " || (mkdir " + m + " && cd this-directory-does-not-exist)"
+}
 
 // planWith replaces the canned plan for this fake, so a scenario chooses what the run's
 // ledger commits to while still scripting only the build turns.
@@ -217,7 +235,7 @@ func (f *fakeOpenAI) planReply() oaiReply {
 	if f.plan != nil {
 		return *f.plan
 	}
-	return cannedPlan
+	return cannedPlan()
 }
 
 // count returns how many requests the binary has made so far.
