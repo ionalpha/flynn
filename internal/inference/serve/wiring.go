@@ -52,7 +52,7 @@ func statsClient(c *http.Client) *http.Client {
 func (s PromStatsSource) Stats(ctx context.Context, baseURL string) (RuntimeStats, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, metricsURL(baseURL), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, metricsURL(baseURL), http.NoBody)
 	if err != nil {
 		return RuntimeStats{}, err
 	}
@@ -104,7 +104,7 @@ func HTTPProbe(client *http.Client) Prober {
 	return func(ctx context.Context, baseURL string) error {
 		reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+"/models", nil)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, baseURL+"/models", http.NoBody)
 		if err != nil {
 			return err
 		}

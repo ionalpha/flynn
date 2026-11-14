@@ -111,7 +111,7 @@ func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
 		maxBytes = defaultMaxBytes
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, http.NoBody)
 	if err != nil {
 		return Result{}, fault.Wrap(fault.Terminal, "fetch_request", err)
 	}

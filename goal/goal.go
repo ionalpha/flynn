@@ -432,7 +432,8 @@ func decodeStatusHead(r resource.Resource) (statusHead, error) {
 	if len(r.Status) == 0 {
 		return h, nil
 	}
-	return h, json.Unmarshal(r.Status, &h)
+	err := json.Unmarshal(r.Status, &h)
+	return h, err
 }
 
 // Encode marshals the status for writing back onto a resource.

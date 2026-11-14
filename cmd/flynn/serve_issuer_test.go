@@ -113,7 +113,7 @@ func TestServeIssuerAcceptsADelegatedToken(t *testing.T) {
 // rejected one without depending on the resource body.
 func getStatus(t *testing.T, addr, bearer string) int {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/instance", nil)
+	req, err := http.NewRequest(http.MethodGet, "http://"+addr+"/v1/instance", http.NoBody)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}

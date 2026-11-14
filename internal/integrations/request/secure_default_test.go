@@ -24,7 +24,7 @@ func TestDefaultTransportRefusesPrivateEgress(t *testing.T) {
 	for name, url := range cases {
 		t.Run(name, func(t *testing.T) {
 			tr := request.New() // no WithDoer: exercise the real default
-			req, err := http.NewRequest(http.MethodGet, url, nil)
+			req, err := http.NewRequest(http.MethodGet, url, http.NoBody)
 			if err != nil {
 				t.Fatalf("build request: %v", err)
 			}

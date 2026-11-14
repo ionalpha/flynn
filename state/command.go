@@ -352,25 +352,29 @@ func Replay(ctx context.Context, log spine.Log, opts ...Option) (Provider, error
 // Durable backends use it to project the same records the in-memory core does.
 func DecodeSession(payload map[string]any) (Session, error) {
 	var s Session
-	return s, decodeRecord(payload, keySession, &s)
+	err := decodeRecord(payload, keySession, &s)
+	return s, err
 }
 
 // DecodeTurn extracts the Turn post-image from a state event payload.
 func DecodeTurn(payload map[string]any) (Turn, error) {
 	var t Turn
-	return t, decodeRecord(payload, keyTurn, &t)
+	err := decodeRecord(payload, keyTurn, &t)
+	return t, err
 }
 
 // DecodeSkill extracts the Skill post-image from a state event payload.
 func DecodeSkill(payload map[string]any) (Skill, error) {
 	var sk Skill
-	return sk, decodeRecord(payload, keySkill, &sk)
+	err := decodeRecord(payload, keySkill, &sk)
+	return sk, err
 }
 
 // DecodeMemoryItem extracts the MemoryItem post-image from a state event payload.
 func DecodeMemoryItem(payload map[string]any) (MemoryItem, error) {
 	var it MemoryItem
-	return it, decodeRecord(payload, keyItem, &it)
+	err := decodeRecord(payload, keyItem, &it)
+	return it, err
 }
 
 // DecodeMemoryUsage extracts the usage post-images from a state event payload.
@@ -391,7 +395,8 @@ func DecodeMemoryUsage(payload map[string]any) ([]MemoryUsage, error) {
 // payload.
 func DecodeMemoryPromotion(payload map[string]any) (MemoryPromotion, error) {
 	var p MemoryPromotion
-	return p, decodeRecord(payload, keyPromo, &p)
+	err := decodeRecord(payload, keyPromo, &p)
+	return p, err
 }
 
 // encodePayload serialises an event's post-image record(s) to the raw JSON

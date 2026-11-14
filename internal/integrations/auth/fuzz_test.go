@@ -41,7 +41,7 @@ func FuzzApply(f *testing.F) {
 		if err != nil {
 			return // a rejected config never reaches Apply
 		}
-		req, err := http.NewRequest(http.MethodGet, "https://api.example.com/p?a=1", nil)
+		req, err := http.NewRequest(http.MethodGet, "https://api.example.com/p?a=1", http.NoBody)
 		if err != nil {
 			t.Fatal(err)
 		}

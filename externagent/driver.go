@@ -563,7 +563,8 @@ func decodeEpisodeCheckpoint(raw json.RawMessage) (episodeCheckpoint, error) {
 	if len(raw) == 0 {
 		return cp, nil
 	}
-	return cp, json.Unmarshal(raw, &cp)
+	err := json.Unmarshal(raw, &cp)
+	return cp, err
 }
 
 func encodeEpisodeCheckpoint(cp episodeCheckpoint) (json.RawMessage, error) {

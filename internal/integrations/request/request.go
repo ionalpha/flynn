@@ -281,10 +281,13 @@ func transportFault(err error) *fault.Error {
 
 // rewind rebuilds the request body for a retry. It reports false when the body
 // cannot be replayed (a non-nil body with no GetBody), so the caller stops rather
-// than sending a truncated request.
+// than sending a truncated request. [http.NoBody] is empty, so it replays trivially:
+// [http.NewRequest] leaves GetBody nil for it, and treating that as unreplayable would
+// stop every retry of a bodiless request built the way the standard library
+// recommends.
 func rewind(req *http.Request) (io.ReadCloser, bool) {
-	if req.Body == nil {
-		return nil, true
+	if req.Body == nil || req.Body == http.NoBody {
+		return req.Body, true
 	}
 	if req.GetBody == nil {
 		return nil, false

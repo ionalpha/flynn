@@ -242,7 +242,7 @@ func addOllama(ctx context.Context, hc *http.Client, dataDir string, args []stri
 	}
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v2/%s/%s/manifests/%s", ollamaRegistry, ns, name, tag), nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/v2/%s/%s/manifests/%s", ollamaRegistry, ns, name, tag), http.NoBody)
 	if err != nil {
 		return fmt.Errorf("models add: %w", err)
 	}

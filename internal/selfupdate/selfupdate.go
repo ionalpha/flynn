@@ -413,7 +413,7 @@ func (u *Updater) get(ctx context.Context, url string, limit int64) ([]byte, err
 	if !strings.HasPrefix(url, "https://") {
 		return nil, fault.New(fault.Terminal, CodeListing, "refusing to fetch "+url+" over an unencrypted transport")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, CodeListing, err)
 	}

@@ -295,7 +295,7 @@ func tarGz(t *testing.T, name string, body []byte) []byte {
 // argvOf asks a running fake server for its command line.
 func argvOf(t *testing.T, ep localmodel.Endpoint) []string {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ep.BaseURL+"/_argv", nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ep.BaseURL+"/_argv", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

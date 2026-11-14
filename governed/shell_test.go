@@ -61,9 +61,9 @@ func TestCredentialPathsNameEveryKnownLocation(t *testing.T) {
 		"/srv/kube/b",
 		runnerRuntimeDir,
 		"/run/flynn-custom",
-		filepath.Join("/run/user/4242", "bus"),
-		filepath.Join("/run/user/4242", "keyring"),
-		filepath.Join("/run/user/4242", "gnupg"),
+		filepath.Join(filepath.FromSlash("/run/user/4242"), "bus"),
+		filepath.Join(filepath.FromSlash("/run/user/4242"), "keyring"),
+		filepath.Join(filepath.FromSlash("/run/user/4242"), "gnupg"),
 	}
 	for _, p := range want {
 		if !slices.Contains(got, p) {
@@ -78,7 +78,7 @@ func TestCredentialPathsNameEveryKnownLocation(t *testing.T) {
 func TestCredentialPathsFallBackToTheUsersRuntimeDirectory(t *testing.T) {
 	none := func(string) string { return "" }
 	got := dedupe(credentialPaths("", none, 1001))
-	if want := filepath.Join("/run/user/1001", "bus"); !slices.Contains(got, want) {
+	if want := filepath.Join(filepath.FromSlash("/run/user/1001"), "bus"); !slices.Contains(got, want) {
 		t.Errorf("no fallback to the uid's runtime directory: want %q in %q", want, got)
 	}
 	// A negative uid is a platform with no uids; there is no directory to guess.

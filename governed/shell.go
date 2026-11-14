@@ -206,7 +206,7 @@ func credentialPaths(home string, getenv func(string) string, uid int) []string 
 	paths = append(paths, runnerRuntimeDir, getenv("RUNTIME_DIRECTORY"))
 	runtime := getenv("XDG_RUNTIME_DIR")
 	if runtime == "" && uid >= 0 {
-		runtime = filepath.Join("/run/user", strconv.Itoa(uid))
+		runtime = filepath.Join(filepath.FromSlash("/run/user"), strconv.Itoa(uid))
 	}
 	if runtime != "" {
 		for _, name := range runtimeSocketNames {

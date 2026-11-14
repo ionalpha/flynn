@@ -60,14 +60,14 @@ var (
 	// versions are refused.
 	Ollama = Runtime{
 		Name: "ollama", Binaries: []string{"ollama"}, VersionArgs: []string{"--version"},
-		versionRE:    regexp.MustCompile(`(?i)version[^\d]*(\d+\.\d+(?:\.\d+)?)`),
+		versionRE:    regexp.MustCompile(`(?i)version\D*(\d+\.\d+(?:\.\d+)?)`),
 		MinSupported: Version{0, 7, 0},
 	}
 	// llama.cpp prints "version: 5662 (a1b2c3d)"; the build number is what advisories
 	// are pinned to. Floor b8146 is the most recent GGUF-parser fix.
 	LlamaCpp = Runtime{
 		Name: "llama.cpp", Binaries: []string{"llama-server", "llama-cli"}, VersionArgs: []string{"--version"},
-		versionRE:    regexp.MustCompile(`(?i)version[^\d]*b?(\d+)`),
+		versionRE:    regexp.MustCompile(`(?i)version\D*b?(\d+)`),
 		MinSupported: Version{8146},
 	}
 	// vLLM prints a semver like "0.11.1"; its server deserializes request fields, so an

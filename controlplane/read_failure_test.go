@@ -399,7 +399,7 @@ func TestWatchAcceptsAnyCursorValue(t *testing.T) {
 	for _, query := range []string{"?after=1", "?after=notanumber", "?after=-4", ""} {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // the client is already gone: the handler must make one pass and return
-		r, err := http.NewRequestWithContext(ctx, http.MethodGet, "/v1/Widget/watch"+query, nil)
+		r, err := http.NewRequestWithContext(ctx, http.MethodGet, "/v1/Widget/watch"+query, http.NoBody)
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}

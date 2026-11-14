@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -411,7 +412,7 @@ func (s *SandboxSpawner) Start(ctx context.Context, ep Episode, inv Invocation) 
 		return nil, fmt.Errorf("externagent: host containment is %s, below the required %s; refusing to start an untrusted harness less contained than required", got, s.cfg.MinContainment)
 	}
 	tier := loc.ConfinementTier()
-	env := append(inv.Env, s.authEnv(home)...)
+	env := slices.Concat(inv.Env, s.authEnv(home))
 	env = append(env, tempEnv(tmpDir)...)
 	proc, err := loc.Stream(ctx, sandbox.StreamSpec{
 		Argv:    append([]string{inv.Path}, inv.Args...),

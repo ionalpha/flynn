@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 
 	"github.com/ionalpha/flynn/llm"
@@ -51,7 +52,7 @@ func (s *replSession) compact(ctx context.Context) (int, error) {
 	// The summary carries the compacted turns' content forward, so it carries their
 	// taint too: the transcript the session distils from at the end will no longer
 	// show the shell call that fetched what the summary repeats.
-	carried := append(s.carriedTaint, taintReasons(s.transcript)...)
+	carried := slices.Concat(s.carriedTaint, taintReasons(s.transcript))
 	s.clear()
 	s.carriedTaint = carried
 	s.carriedContext = "Summary of the earlier conversation (compacted to save context):\n" + summary

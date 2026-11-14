@@ -16,6 +16,7 @@ linters:
     - exhaustive
     - forbidigo
     - gocognit
+    - gocritic
     - gocyclo
     - godot
     - gosec
@@ -64,6 +65,18 @@ linters:
     # functions that set them are decomposed. Tests are excluded below: a test double
     # that routes every endpoint through one handler would otherwise set the ceiling
     # for production code.
+    # A small high-signal set, not the default one. evalOrder catches
+    # `return v, json.Unmarshal(b, &v)`: the spec does not say whether v is read
+    # before or after the call, so the zero value can be returned.
+    gocritic:
+      disable-all: true
+      enabled-checks:
+        - evalOrder
+        - appendAssign
+        - httpNoBody
+        - filepathJoin
+        - regexpSimplify
+        - equalFold
     gocyclo:
       # Set by (*core).projectRecords and resolveReviewCredentials.
       min-complexity: 21
