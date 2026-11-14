@@ -18,4 +18,5 @@
 
 ## Notes for reviewers
 
-<!-- Surface anything important up front: trade-offs, risks, breaking changes, follow-ups, or anything left out on purpose. Delete if nothing applies. -->
+<!-- Only what the diff cannot tell a reviewer and would change their review: a deliberate choice that looks wrong, a known gap (with its issue), a breaking change or risk, or what was not tested and why.
+     Write it for someone outside the project: no working notes, private discussion, or references they cannot open. Delete if nothing applies. -->
