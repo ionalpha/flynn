@@ -25,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/closeerr"
 	"github.com/ionalpha/flynn/internal/fetch"
 )
 
@@ -252,7 +253,7 @@ func extractTarGz(src, destDir string) error {
 // writeFile copies at most limit bytes from r into a new file at dst, creating parent
 // directories, and refuses once the extraction ceiling is reached. It returns the number
 // of bytes written.
-func writeFile(dst string, r io.Reader, limit int64) (int64, error) {
+func writeFile(dst string, r io.Reader, limit int64) (n int64, err error) {
 	if limit <= 0 {
 		return 0, fault.New(fault.Terminal, "acquire_too_big", "acquire: archive exceeds the extraction size limit")
 	}
@@ -260,22 +261,42 @@ func writeFile(dst string, r io.Reader, limit int64) (int64, error) {
 		return 0, err
 	}
 	// 0o600: extracted files are owner-only; the wanted binary is made executable after.
-	//nolint:gosec // G304: dst is confined under destDir by SafeJoin before this write
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	out, err := openOut(dst)
 	if err != nil {
 		return 0, fault.Wrap(fault.Terminal, "acquire_create", err)
 	}
-	defer func() { _ = out.Close() }()
+	// A write that fails only at close leaves a truncated file that the install would
+	// otherwise put into service, so the close error fails the extraction.
+	defer closeerr.Keep(&err, out)
 	// Copy one byte past the limit so an entry that exactly fills the remaining budget is
 	// still detected as overflowing the ceiling rather than silently truncated.
-	n, err := io.Copy(out, io.LimitReader(r, limit+1))
+	n, err = io.Copy(out, io.LimitReader(r, limit+1))
 	if err != nil {
 		return n, fault.Wrap(fault.Terminal, "acquire_copy", err)
 	}
 	if n > limit {
 		return n, fault.New(fault.Terminal, "acquire_too_big", "acquire: archive exceeds the extraction size limit")
 	}
+	// The bytes have to be on disk before the file is put into service.
+	if err := out.Sync(); err != nil {
+		return n, fault.Wrap(fault.Terminal, "acquire_sync", err)
+	}
 	return n, nil
+}
+
+// outFile is the part of *os.File writeFile drives; it is an interface so a test can make
+// the close fail, which a real filesystem will not do on demand.
+type outFile interface {
+	io.Writer
+	Sync() error
+	Close() error
+}
+
+// openOut creates the extraction target. It is a variable only so a test can substitute a
+// file whose close fails.
+var openOut = func(dst string) (outFile, error) {
+	//nolint:gosec // G304: dst is confined under destDir by SafeJoin before this write
+	return os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 }
 
 // SafeJoin resolves an archive or manifest entry name under base and confirms the result

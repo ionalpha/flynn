@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+
+	"github.com/ionalpha/flynn/internal/closeerr"
 )
 
 // runDB handles `flynn db <path|backup|reset>`: inspect and recover the durable state
@@ -113,7 +115,7 @@ func nextBackupDir(dataDir string) (string, error) {
 
 // copyFile copies src to dst with owner-only permissions, so a database backup does not
 // land with looser access than the original.
-func copyFile(src, dst string) error {
+func copyFile(src, dst string) (err error) {
 	in, err := os.Open(src) //nolint:gosec // src is a database file under the operator's own data dir
 	if err != nil {
 		return err
@@ -123,9 +125,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
+	defer closeerr.Keep(&err, out)
+	_, err = io.Copy(out, in)
+	return err
 }
