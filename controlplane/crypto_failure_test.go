@@ -203,7 +203,7 @@ func TestPossessionRefusesAnUndecodableProof(t *testing.T) {
 // handshake proved possession of some key, but not of this one.
 func TestTLSPossessionIgnoresANonEd25519Certificate(t *testing.T) {
 	leaf := mustIdentity(t)
-	r, err := http.NewRequest(http.MethodGet, "/v1/Widget", nil)
+	r, err := http.NewRequest(http.MethodGet, "/v1/Widget", http.NoBody)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
@@ -326,7 +326,7 @@ func TestDelegationAuthenticatorRefusesEveryBadToken(t *testing.T) {
 	a := NewDelegationAuthenticator(issuer.Public(), clock.NewManual(now))
 
 	for _, tok := range []string{"", "not-a-token", foreign} {
-		r, err := http.NewRequest(http.MethodGet, "/v1/Widget", nil)
+		r, err := http.NewRequest(http.MethodGet, "/v1/Widget", http.NoBody)
 		if err != nil {
 			t.Fatalf("new request: %v", err)
 		}
@@ -344,7 +344,7 @@ func TestDelegationAuthenticatorRefusesEveryBadToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	r, err := http.NewRequest(http.MethodGet, "/v1/Widget", nil)
+	r, err := http.NewRequest(http.MethodGet, "/v1/Widget", http.NoBody)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

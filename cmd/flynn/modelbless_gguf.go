@@ -107,7 +107,7 @@ func readGGUFHeader(ctx context.Context, url string) (*gguf.Metadata, error) {
 	if !strings.HasPrefix(url, "https://") {
 		return nil, fmt.Errorf("refusing to read %s over a non-https URL", url)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return nil, err
 	}

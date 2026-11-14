@@ -900,7 +900,8 @@ func decodeCheckpointOutcome(raw json.RawMessage) (checkpointOutcome, error) {
 	if len(raw) == 0 {
 		return cp, nil
 	}
-	return cp, json.Unmarshal(raw, &cp)
+	err := json.Unmarshal(raw, &cp)
+	return cp, err
 }
 
 func encodeCheckpoint(cp checkpoint) (json.RawMessage, error) {

@@ -29,7 +29,7 @@ func TestDurabilityPragmas(t *testing.T) {
 	if err := db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
 		t.Fatalf("journal_mode: %v", err)
 	}
-	if strings.ToLower(journal) != "wal" {
+	if !strings.EqualFold(journal, "wal") {
 		t.Fatalf("journal_mode = %q, want wal", journal)
 	}
 

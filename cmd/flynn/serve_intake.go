@@ -43,7 +43,7 @@ const (
 	servedPoolPrefix = "served-"
 )
 
-var signalNumberPattern = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
+var signalNumberPattern = regexp.MustCompile(`^\+[1-9]\d{6,14}$`)
 
 // senderAllowList maps an inbox source name to the sender ids the operator allowed on it. A
 // source with no entry, or an empty one, allows nobody.

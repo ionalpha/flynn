@@ -14,7 +14,7 @@ import (
 // header at all when tok is empty, so a test can present (or withhold) a credential.
 func bearerRequest(t *testing.T, tok string) *http.Request {
 	t.Helper()
-	r, err := http.NewRequest(http.MethodGet, "/v1/instances", nil)
+	r, err := http.NewRequest(http.MethodGet, "/v1/instances", http.NoBody)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

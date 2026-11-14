@@ -13,7 +13,7 @@ import (
 // GOCACHE.
 func TestScratchEnvReplacesHostTemp(t *testing.T) {
 	host := func(string) string { return "/host/tmp" }
-	tmp := filepath.Join("/s", scratchTempName)
+	tmp := filepath.Join(filepath.FromSlash("/s"), scratchTempName)
 	for name, tc := range map[string]struct {
 		in   map[string]string
 		want string
@@ -27,14 +27,14 @@ func TestScratchEnvReplacesHostTemp(t *testing.T) {
 			if tc.in["TMPDIR"] != tc.want {
 				t.Fatalf("TMPDIR = %q, want %q", tc.in["TMPDIR"], tc.want)
 			}
-			if want := filepath.Join("/s", "go-build"); tc.in["GOCACHE"] != want {
+			if want := filepath.Join(filepath.FromSlash("/s"), "go-build"); tc.in["GOCACHE"] != want {
 				t.Fatalf("GOCACHE = %q, want %q", tc.in["GOCACHE"], want)
 			}
 		})
 	}
 	m := map[string]string{"gocache": "/operator/cache"}
 	withScratchEnv(m, "/s", host, "linux")
-	if want := filepath.Join("/s", "go-build"); m["GOCACHE"] != want {
+	if want := filepath.Join(filepath.FromSlash("/s"), "go-build"); m["GOCACHE"] != want {
 		t.Fatalf("a lowercase gocache must not satisfy GOCACHE on a case-sensitive platform: %v", m)
 	}
 }

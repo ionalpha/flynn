@@ -105,7 +105,7 @@ func wipeEnvelope(nonce string, expiry time.Time) approval.Envelope {
 // doPostApprovals POSTs the verb with the given approval header values attached.
 func doPostApprovals(t *testing.T, h http.Handler, path, token string, approvals ...string) *httptest.ResponseRecorder {
 	t.Helper()
-	r, _ := http.NewRequest(http.MethodPost, path, nil)
+	r, _ := http.NewRequest(http.MethodPost, path, http.NoBody)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}

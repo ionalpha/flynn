@@ -59,7 +59,7 @@ func readServer(t *testing.T) *Server {
 
 func do(t *testing.T, h http.Handler, path, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	r, _ := http.NewRequest(http.MethodGet, path, nil)
+	r, _ := http.NewRequest(http.MethodGet, path, http.NoBody)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -169,7 +169,7 @@ func TestWatchStreamsNewResource(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	r, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/Widget/watch", nil)
+	r, _ := http.NewRequestWithContext(ctx, http.MethodGet, srv.URL+"/v1/Widget/watch", http.NoBody)
 	r.Header.Set("Authorization", "Bearer readtok")
 	resp, err := srv.Client().Do(r)
 	if err != nil {

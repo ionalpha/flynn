@@ -14,7 +14,7 @@ import (
 // list it returns.
 func getAuthed(t *testing.T, ep localmodel.Endpoint, path string) []string {
 	t.Helper()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ep.BaseURL+path, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, ep.BaseURL+path, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

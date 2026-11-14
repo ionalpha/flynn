@@ -114,7 +114,7 @@ func TestHTTPParseErrorIs400(t *testing.T) {
 func TestHTTPGetIsMethodNotAllowed(t *testing.T) {
 	srv := NewServer(nil, nil)
 	h := srv.HTTPHandler(context.Background(), "")
-	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
+	req := httptest.NewRequest(http.MethodGet, "/mcp", http.NoBody)
 	req.Host = "127.0.0.1:7000"
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

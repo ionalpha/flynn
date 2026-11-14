@@ -172,7 +172,7 @@ func (c *client) changedFiles(ctx context.Context, number int) ([]ChangedFile, b
 
 // doPaged issues a GET and returns the URL of the next page, if any.
 func (c *client) doPaged(ctx context.Context, url string, out any) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
 		return "", err
 	}

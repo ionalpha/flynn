@@ -18,7 +18,8 @@ func DecodeSpec[T any](r Resource) (T, error) {
 	if len(r.Spec) == 0 {
 		return s, nil
 	}
-	return s, json.Unmarshal(r.Spec, &s)
+	err := json.Unmarshal(r.Spec, &s)
+	return s, err
 }
 
 // DecodeStatus reads a resource's typed status. An empty status decodes to the
@@ -28,7 +29,8 @@ func DecodeStatus[T any](r Resource) (T, error) {
 	if len(r.Status) == 0 {
 		return s, nil
 	}
-	return s, json.Unmarshal(r.Status, &s)
+	err := json.Unmarshal(r.Status, &s)
+	return s, err
 }
 
 // EncodeStatus marshals a typed status for writing back onto a resource.

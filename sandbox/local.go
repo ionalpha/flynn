@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ionalpha/flynn/internal/closeerr"
 	"github.com/ionalpha/flynn/internal/procexec"
 )
 
@@ -617,7 +618,7 @@ func (l *Local) ReadFile(_ context.Context, path string) ([]byte, error) {
 // (see confinedOpen): a symlink swapped into the target path after the resolve check
 // cannot redirect the write outside the root, and a terminal symlink is refused rather
 // than written through.
-func (l *Local) WriteFile(_ context.Context, path string, data []byte) error {
+func (l *Local) WriteFile(_ context.Context, path string, data []byte) (err error) {
 	abs, err := l.resolve(path)
 	if err != nil {
 		return err
@@ -629,11 +630,9 @@ func (l *Local) WriteFile(_ context.Context, path string, data []byte) error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		_ = f.Close()
-		return err
-	}
-	return f.Close()
+	defer closeerr.Keep(&err, f)
+	_, err = f.Write(data)
+	return err
 }
 
 // Glob lists confined paths matching a shell pattern, relative to the root.

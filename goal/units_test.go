@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -183,7 +184,7 @@ func TestSyncUnitsCarriesStateAndDropsOrphans(t *testing.T) {
 	dispatchAndProve(t, &s, units[0])
 
 	// A graph that grew gains state for the new unit without disturbing the old.
-	grown := append(units, unit("c", "b"))
+	grown := slices.Concat(units, []Unit{unit("c", "b")})
 	s.SyncUnits(grown)
 	if len(s.Units) != 3 {
 		t.Fatalf("sync over a grown graph = %d entries, want 3", len(s.Units))

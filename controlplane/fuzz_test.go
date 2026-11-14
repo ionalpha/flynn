@@ -92,7 +92,7 @@ func FuzzParseApprovals(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, first, second string) {
-		r, err := http.NewRequest(http.MethodPost, "/v1/Widget/w1/restart", nil)
+		r, err := http.NewRequest(http.MethodPost, "/v1/Widget/w1/restart", http.NoBody)
 		if err != nil {
 			t.Skip() // a header value the request builder rejects never reaches a handler
 		}

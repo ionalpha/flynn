@@ -431,7 +431,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 			Tools: p.toolset, System: c.system, Grant: p.grant, HasGrant: true,
 			Sandbox: p.sb, Reporter: c.observer(p), Fanout: spawner, EventSink: p.sink,
 			CompactionBudget: DefaultCompactionBudget, Brakes: g.brk, Budget: g.pool,
-			Approval: g.stack.spec(c.prompter), Allowance: outsideGate(c.outside), Plan: c.plan,
+			Approval: g.stack.spec(g.stack.recording(c.prompter)), Allowance: outsideGate(c.outside), Plan: c.plan,
 		}
 		router := driver.NewRouter(driver.RouterConfig{
 			Registry: driver.Default(), DefaultModel: model, DefaultDriver: c.driver,
@@ -464,18 +464,22 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	default:
 		cfg.Executor, cfg.Stop = c.executor(model, b, p, g), mission.Convergence{}
 		if c.planning {
-			cfg.Planner = planner(model, p.toolset)
 			// The item's declared check is model-authored, so it runs in the run's own
 			// sandbox under the same containment gate as the agent's shell tool.
 			//
 			// It deliberately does not take the governance event sink, and neither does the
 			// auditor: a dispatcher's correlation ids are monotonic within that dispatcher,
-			// so two dispatchers writing lifecycle events to one stream emit colliding call
-			// ids, and the record then reads as one call both refused and completed. The
+			// so two dispatchers writing lifecycle events to one stream emit colliding call ids,
+			// and the record then reads as one call both refused and completed. The
 			// verdict is on the record as the item-verified event the gate consumes.
 			cfg.Verifier = evidence.NewCommandVerifier(p.sb, contained(p.sb)...)
 			cfg.CheckDir = c.checkDir()
 			cfg.Evidence = evidence.NewSpineEvidence(b.Log)
+			// The planner admits each check with the verifier that will later run it, so a
+			// check refused here is one that would have stalled or falsely proven the item.
+			cfg.Planner = planner(model, p.toolset, mission.WithPlannerAdmission(mission.Admission{
+				Verifier: cfg.Verifier, Recorder: evidence.NewSpineEvidence(b.Log), Dir: cfg.CheckDir, Confined: p.sb != nil,
+			}))
 			cfg.RequireLedgerProof = c.ledgerProof
 			post.Verifier, post.Evidence, post.LedgerProof = true, true, c.ledgerProof
 		}
@@ -514,12 +518,12 @@ func contained(sb sandbox.Sandbox) []dispatch.Option {
 // planner is the ledger planner for a run, told which tools the run has. A check is a shell
 // command and a tool is not one, so a plan that checks an action by calling the tool is sent
 // back to the model before it reaches the ledger and stalls the goal on a check that never ran.
-func planner(model llm.Model, toolset []mission.Tool) *mission.Planner {
+func planner(model llm.Model, toolset []mission.Tool, extra ...mission.PlannerOption) *mission.Planner {
 	names := make([]string, 0, len(toolset))
 	for _, t := range toolset {
 		names = append(names, t.Def().Name)
 	}
-	return mission.NewPlanner(model, mission.WithPlannerTools(names...))
+	return mission.NewPlanner(model, append([]mission.PlannerOption{mission.WithPlannerTools(names...)}, extra...)...)
 }
 
 // executor builds the native mission executor for the conversation and toolset modes.
@@ -544,7 +548,7 @@ func (c *config) executor(model llm.Model, b Backends, p *parts, g gates) *missi
 	if g.brk != nil {
 		opts = append(opts, mission.WithBrakes(g.brk))
 	}
-	opts = append(opts, g.stack.options(c.prompter)...)
+	opts = append(opts, g.stack.options(g.stack.recording(c.prompter))...)
 	opts = append(opts, allowanceOptions(c.outside)...)
 	// The model's scaffolding plan goes last so a present field overrides the lean
 	// defaults while an absent one leaves them in place.

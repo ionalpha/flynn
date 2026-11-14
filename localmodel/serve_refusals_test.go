@@ -182,7 +182,7 @@ func TestUnreadableRegistryIsReported(t *testing.T) {
 		auth = r.Header.Get("Authorization")
 	}))
 	defer srv.Close()
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, nil)
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, srv.URL, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

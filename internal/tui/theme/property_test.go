@@ -59,7 +59,7 @@ func genStyle(rt *rapid.T) theme.Style {
 // prefix of semicolon-separated decimal parameters, the text, an optional
 // reset. Anything else (a stray bracket, a non-numeric parameter from a bad
 // color, a missing terminator) fails the match.
-var wellFormed = regexp.MustCompile(`^(\x1b\[[0-9]+(;[0-9]+)*m)?(.*?)(\x1b\[0m)?$`)
+var wellFormed = regexp.MustCompile(`^(\x1b\[\d+(;\d+)*m)?(.*?)(\x1b\[0m)?$`)
 
 // TestProp_RenderIsAlwaysWellFormed: for any style, however malformed its
 // colors, Render emits either the bare text or one valid SGR prefix plus a

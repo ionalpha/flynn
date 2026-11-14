@@ -59,7 +59,7 @@ func (s Source) Fetch(ctx context.Context) ([]byte, error) {
 	if !strings.HasPrefix(s.URL, "https://") {
 		return nil, fault.New(fault.Terminal, CodeFetch, "notices: the feed URL must be https")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, http.NoBody)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, CodeFetch, err)
 	}

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -284,7 +285,7 @@ func TestServeExplicitConfineFailsClosed(t *testing.T) {
 		{"kernel-confinement", []LocalOption{WithKernelConfinement()}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			opts := append(tc.opts, WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"}))
+			opts := slices.Concat(tc.opts, []LocalOption{WithEnv(map[string]string{"FLYNN_TEST_SERVE_HELPER": "block"})})
 			l, err := NewLocal(t.TempDir(), opts...)
 			if err != nil {
 				t.Fatal(err)
