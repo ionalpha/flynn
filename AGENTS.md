@@ -56,7 +56,13 @@ Run `./dev/check` until it is green before opening a PR.
   once, beside what it describes, and update it in the same commit as the code. Refer to identifiers as doc links (`[Event]`, `[mission.Tool]`):
   `internal/rigor` fails CI on a reference to a name the package does not declare. A
   comment that states a guarantee ("every stall goes through here") needs a test that
-  fails when the guarantee stops holding.
+  fails when the guarantee stops holding. A comment that only restates the code is
+  deleted. `TestCommentsStayTerse` in `internal/rigor` enforces the mechanical part: no
+  comment block over 14 lines (a package comment, 40); no em-dash, en-dash or `…`; none
+  of the filler words and history phrases it lists (`quietly`, `deliberately`, `load-bearing`,
+  "used to be", "we now" and similar). Old violations are in
+  `internal/rigor/testdata/comment_baseline.txt`, which may only shrink: fix the comment,
+  then lower or delete its line. Never add to it.
 - **Duplication:** the third copy of a sequence becomes a gate rather than a review
   comment. When a package is extracted to own something (durable file writes are
   `internal/fsatomic`), the same change adds the lint rule or architecture test that
