@@ -6,27 +6,37 @@ run:
 linters:
   default: standard
   enable:
+    - asasalint
     - bodyclose
     - copyloopvar
     - depguard
     - dupl
+    - durationcheck
     - errcheck
     - errname
     - errorlint
     - exhaustive
+    - fatcontext
     - forbidigo
+    - gochecksumtype
     - gocognit
     - gocyclo
     - godot
     - gosec
     - govet
+    - iface
     - ineffassign
+    - interfacebloat
     - intrange
+    - maintidx
     - makezero
     - misspell
     - nilerr
+    - nilnesserr
+    - nolintlint
     - perfsprint
     - predeclared
+    - reassign
     - revive
     - staticcheck
     - unconvert
@@ -42,6 +52,34 @@ linters:
   # lines respectively, fighting the hand-tuned spacing and the tight helper funcs
   # rather than improving them.
   settings:
+    # Free ratchets: each of the linters below passes with zero hits in shipping code
+    # today, so enabling it costs nothing now and fails the first regression.
+    #
+    # nolintlint keeps suppressions honest: a //nolint must name its linter and give a
+    # reason, so no blanket or unexplained suppression can hide a finding. Unused
+    # directives are allowed: platform files lint only on their own GOOS, and a
+    # directive that gosec does not trigger on one OS is still needed on another.
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: true
+    # govet runs every analyzer, so a new vet check applies without a config change.
+    # fieldalignment is off because it demands struct reordering that hurts readability
+    # for a few bytes, and shadow is off because shadowing err in a narrow scope is
+    # idiomatic Go.
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+    # staticcheck runs every check family (SA bugs, S simplifications, ST style, QF
+    # quickfixes), not only the default set.
+    staticcheck:
+      checks:
+        - all
+    # interfacebloat caps an interface at its default method count, so a port cannot
+    # grow into a wide interface that every host and fake must implement in full.
+    interfacebloat: {}
     exhaustive:
       # A switch with a default case is exhaustive: the default deliberately covers
       # the remaining enum values, so code is not forced to enumerate every constant.
@@ -207,6 +245,12 @@ linters:
           msg: "re-arm clk.NewTimer on the injected clock.Timing, not time.Tick (deterministic replay)"
         - pattern: '^time\.NewTimer$'
           msg: "use the injected clock.Timing (clk.NewTimer), not time.NewTimer (deterministic replay)"
+        # A fixed sleep is a guess at how long something takes: it is slow when the guess
+        # is high and flaky when it is low, and it cannot be driven by a clock.Manual.
+        # Wait on the event itself, or on the injected clock.Timing. Test code and the
+        # *test conformance harnesses are excluded below.
+        - pattern: '^time\.Sleep$'
+          msg: "wait on the event or the injected clock.Timing, not time.Sleep (flaky and defeats deterministic replay)"
         # Outbound connections go through netguard, the default-deny egress gate that
         # blocks SSRF to private, loopback, and cloud-metadata addresses after DNS
         # resolution. Nothing dials around it: the raw dial primitives and the
@@ -263,6 +307,12 @@ linters:
           - forbidigo
         path: '(^|/)(clock|bus/bustest)/'
         source: 'time\.(After|NewTicker|Tick|NewTimer)'
+      # time.Sleep is forbidden in shipping code only: tests and the *test conformance
+      # harnesses may pause in real time.
+      - linters:
+          - forbidigo
+        path: '(_test\.go|(^|/)[a-z]*test/)'
+        source: 'time\.Sleep'
       # The determinism forbid protects shipped code, not the test harness: a test may
       # arm a real timer in a wait-helper guard. The no-time.Now forbid still applies in
       # tests; only the timer forbids are relaxed here.
@@ -349,6 +399,17 @@ linters:
           - gocognit
           - gocyclo
         path: '(^|/)(bus|jobs|llm|memory|resource|skill|spine|state)test/'
+      # maintidx and fatcontext are ratchets on shipping code. Table-heavy tests and
+      # the vector generators in the conformance packages score low on maintainability
+      # because they are long lists of data, not branching logic, and a test may
+      # rebuild a context inside a loop on purpose.
+      - linters:
+          - maintidx
+          - fatcontext
+        path: _test\.go
+      - linters:
+          - maintidx
+        path: '(^|/)((bus|jobs|llm|memory|resource|skill|spine|state)test|conformance)/'
 
 formatters:
   enable:
