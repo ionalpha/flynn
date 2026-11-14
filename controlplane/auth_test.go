@@ -8,7 +8,7 @@ import (
 )
 
 func req(token string) *http.Request {
-	r, _ := http.NewRequest(http.MethodGet, "/v1/Widget", nil)
+	r, _ := http.NewRequest(http.MethodGet, "/v1/Widget", http.NoBody)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -46,7 +46,7 @@ func TestBearerTokenParsing(t *testing.T) {
 		"Bearer    x": "   x", // only the first space is the separator
 	}
 	for header, want := range cases {
-		r, _ := http.NewRequest(http.MethodGet, "/", nil)
+		r, _ := http.NewRequest(http.MethodGet, "/", http.NoBody)
 		if header != "" {
 			r.Header.Set("Authorization", header)
 		}

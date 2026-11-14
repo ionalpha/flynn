@@ -325,7 +325,7 @@ func (c *Client) FileURL(repo, path string) string {
 // getJSON performs a bounded GET and decodes a JSON body, mapping transport and status
 // failures onto faults so a caller classifies them uniformly.
 func (c *Client) getJSON(ctx context.Context, endpoint string, out any) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, http.NoBody)
 	if err != nil {
 		return fault.Wrap(fault.Terminal, "huggingface_request", err)
 	}

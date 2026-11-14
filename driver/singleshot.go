@@ -176,7 +176,8 @@ func decodeShotCheckpoint(raw json.RawMessage) (shotCheckpoint, error) {
 	if len(raw) == 0 {
 		return cp, nil
 	}
-	return cp, json.Unmarshal(raw, &cp)
+	err := json.Unmarshal(raw, &cp)
+	return cp, err
 }
 
 func encodeShotCheckpoint(cp shotCheckpoint) (json.RawMessage, error) {

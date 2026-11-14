@@ -34,7 +34,7 @@ func (failSource) Lookup(context.Context, string) (secret.Text, error) {
 
 func newReq(t *testing.T) *http.Request {
 	t.Helper()
-	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/things?page=2", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/things?page=2", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

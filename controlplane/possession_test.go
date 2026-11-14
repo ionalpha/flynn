@@ -31,7 +31,7 @@ func principalFor(leaf *Identity) Principal {
 
 func proofReq(t *testing.T, method, path, proof string) *http.Request {
 	t.Helper()
-	r := httptest.NewRequest(method, path, nil)
+	r := httptest.NewRequest(method, path, http.NoBody)
 	if proof != "" {
 		r.Header.Set(ProofHeader, proof)
 	}

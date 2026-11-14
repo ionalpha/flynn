@@ -197,7 +197,7 @@ func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 
 	reqCtx, cancel := context.WithTimeout(ctx, b.poll+10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, b.method("getUpdates")+"?"+q.Encode(), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, b.method("getUpdates")+"?"+q.Encode(), http.NoBody)
 	if err != nil {
 		return nil, err
 	}

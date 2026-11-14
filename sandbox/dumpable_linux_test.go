@@ -25,7 +25,7 @@ func TestRunnerProcessHelper(t *testing.T) {
 	if os.Getenv("RUNNER_HELPER") == "" {
 		return
 	}
-	environ := "HELPER_READFILE=" + filepath.Join("/proc", strconv.Itoa(os.Getpid()), "environ")
+	environ := "HELPER_READFILE=" + filepath.Join(filepath.FromSlash("/proc"), strconv.Itoa(os.Getpid()), "environ")
 	report := func(label string, l *Local) {
 		out := strings.ReplaceAll(helperRun(t, l, environ), "\x00", "\n")
 		_, _ = fmt.Fprintf(os.Stdout, "RESULT-%s:%s:END\n", label, out)

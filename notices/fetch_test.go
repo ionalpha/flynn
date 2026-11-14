@@ -78,7 +78,7 @@ func TestSafeClientRefusesRedirects(t *testing.T) {
 	if c.CheckRedirect == nil {
 		t.Fatal("SafeClient must refuse redirects")
 	}
-	req, err := http.NewRequest(http.MethodGet, "https://flynnhq.com/", nil)
+	req, err := http.NewRequest(http.MethodGet, "https://flynnhq.com/", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

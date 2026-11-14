@@ -97,7 +97,7 @@ func serveUntilReturn(t *testing.T, h http.Handler, w http.ResponseWriter, r *ht
 
 func watchRequest(t *testing.T) *http.Request {
 	t.Helper()
-	r, err := http.NewRequest(http.MethodGet, "/v1/Widget/watch", nil)
+	r, err := http.NewRequest(http.MethodGet, "/v1/Widget/watch", http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}

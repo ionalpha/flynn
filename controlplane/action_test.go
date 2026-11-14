@@ -46,7 +46,7 @@ func actionServer(t *testing.T, local capability.Grant, ran *bool) (http.Handler
 
 func doPost(t *testing.T, h http.Handler, path, token string) *httptest.ResponseRecorder {
 	t.Helper()
-	r, _ := http.NewRequest(http.MethodPost, path, nil)
+	r, _ := http.NewRequest(http.MethodPost, path, http.NoBody)
 	if token != "" {
 		r.Header.Set("Authorization", "Bearer "+token)
 	}

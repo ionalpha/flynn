@@ -121,7 +121,7 @@ func (a *authenticator) assertion(now time.Time) (secret.Text, error) {
 // exchange trades a signed assertion for an installation token and its expiry.
 func (a *authenticator) exchange(ctx context.Context, assertion secret.Text) (secret.Text, time.Time, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", a.apiBase, a.app.InstallationID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
 	if err != nil {
 		return secret.Text{}, time.Time{}, err
 	}

@@ -118,7 +118,7 @@ func resolveKind(reg *resource.Registry, alias string) (cpKind, bool) {
 		return k, true
 	}
 	for _, k := range reg.Kinds() {
-		if alias == strings.ToLower(k.Name) || alias == k.Singular || alias == k.Plural {
+		if strings.EqualFold(alias, k.Name) || alias == k.Singular || alias == k.Plural {
 			return cpKind{
 				kind: k.Name,
 				descriptor: controlplane.Descriptor{

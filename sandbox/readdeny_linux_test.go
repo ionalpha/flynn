@@ -170,7 +170,7 @@ func TestSandboxCannotReachControlEndpoints(t *testing.T) {
 // is a view of the host that the launcher's mounts do not touch.
 func TestSandboxCannotReadRunnerFilesThroughProc(t *testing.T) {
 	r := newRunnerLayout(t)
-	via := filepath.Join("/proc", strconv.Itoa(os.Getpid()), "root", r.dataDir, "state.db")
+	via := filepath.Join(filepath.FromSlash("/proc"), strconv.Itoa(os.Getpid()), "root", r.dataDir, "state.db")
 	// The positive control: without the hiding the path works, so a miss below is the
 	// confinement and not a path that never resolved.
 	if out := helperRun(t, newTestLocal(t), "HELPER_READFILE="+via); !strings.Contains(out, r.secret) {

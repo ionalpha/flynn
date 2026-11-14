@@ -152,7 +152,7 @@ func replaceGoRawString(t *testing.T, rules chroma.Rules) {
 // self-closing on a single line, which cmake's empty "string" state is the
 // only embedded lexer to have. Matching both is what keeps the closing
 // </rules></lexer> out of the sorted region.
-var stateElement = regexp.MustCompile(`(?s)\n    <state [^>]*?(?:/>|>.*?\n    </state>)`)
+var stateElement = regexp.MustCompile(`(?s)\n {4}<state [^>]*?(?:/>|>.*?\n {4}</state>)`)
 
 // canonicalLexerXML sorts the <state> elements so a regenerated definition is
 // byte-identical run to run. chroma marshals its rules from a map, so the

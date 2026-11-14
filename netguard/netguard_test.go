@@ -112,7 +112,7 @@ func TestClientEnforcesPolicy(t *testing.T) {
 		c := Client(p)
 		// Trust the test cert so any failure is the dial guard, not TLS.
 		c.Transport.(*http.Transport).TLSClientConfig = srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
-		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, http.NoBody)
 		resp, err := c.Do(req)
 		if err == nil {
 			_ = resp.Body.Close()
