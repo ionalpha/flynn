@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/ionalpha/flynn/approval"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -70,6 +71,29 @@ const (
 	// actions, so the same panel that shows admission decisions shows egress ones.
 	KindEgressDecision Kind = "net.egress"
 
+	// KindApprovalRequested is the run pausing a privileged action to ask a person: what
+	// would run, in which scope and on which host, a preview to show, and when the request
+	// stops waiting. It is on the stream before the prompt opens, so a client that attaches
+	// late sees every request that is still open. Written by the system.
+	KindApprovalRequested Kind = "approval.requested"
+	// KindApprovalDecision is how a request ended, or the gate's own verdict on an action.
+	// A record with an Outcome and a closed [approval.Reason] resolves the request named by
+	// RequestID; the gate's earlier verdict has neither a RequestID nor a Reason. Written by
+	// a person when Reason is allowed or denied and by the system for every other reason.
+	KindApprovalDecision Kind = "approval.decision"
+	// KindPromptEnded closes one user prompt, whichever way it ended: the PromptID, the
+	// Stop class, a short Reason, the Steps taken and the Usage spent. It is written
+	// exactly once per prompt. Written by the system.
+	KindPromptEnded Kind = "prompt.ended"
+	// KindClientAttached records a client connecting to the session: the protocol major it
+	// negotiated, its capabilities, the transport and the peer process where the operating
+	// system reports one. The name and version the client gave are recorded as a claim and
+	// nothing decides by them. Written by the system.
+	KindClientAttached Kind = "client.attached"
+	// KindBudgetExtended records a person raising the session's spend ceiling: the ceiling
+	// before, the ceiling after and the total raised so far. Written by a person.
+	KindBudgetExtended Kind = "budget.extended"
+
 	// KindProjectContext is the trust decision about a repository's instruction files
 	// (AGENTS.md, CLAUDE.md): whether they were loaded into the prompt as untrusted
 	// context, and why. It is recorded on the run's stream so the sealed record shows
@@ -90,7 +114,15 @@ const (
 	typeDispatchRejected = "dispatch.rejected"
 	typeRecordSealed     = "spine.record"
 	typeEgress           = "net.egress"
-	typeProjectContext   = "project.context"
+
+	// The approval sink writes these two with flat payload keys of its own, so they are
+	// decoded here rather than read from the folded body. TestApprovalRecordsRoundTrip
+	// writes through the sink and reads through this package, which fails if either side
+	// renames a key or a type.
+	typeApprovalRequested = "approval.requested"
+	typeApprovalDecision  = "approval.decision"
+
+	typeProjectContext = "project.context"
 )
 
 // Event is one record on a session's event stream: an ordered, replayable view of
@@ -172,6 +204,50 @@ type Event struct {
 	// the dial (public, allowlisted) or refused it (private or reserved address, ...). On
 	// project.context it is the basis of the trust decision.
 	Reason string `json:"reason,omitempty"`
+
+	// RequestID names one approval request (approval.requested and the approval.decision
+	// that resolves it), so a client pairs an answer with the question it answers. It is
+	// empty on the gate's own verdict record.
+	RequestID string `json:"requestId,omitempty"`
+	// Scope is the scope path an approval was asked for (approval.*), the same string on the
+	// request and on every record that refers to it.
+	Scope string `json:"scope,omitempty"`
+	// Grant is the narrower target a person granted an action for (approval.decision), when
+	// they narrowed it. It is the part of the authorization a signature will cover.
+	Grant string `json:"grant,omitempty"`
+	// Preview is the line a client shows beside an approval prompt (approval.requested). It
+	// is built from the action, scope and host alone, escaped so no control character
+	// survives, and at most [approval.PreviewLimit] bytes.
+	Preview string `json:"preview,omitempty"`
+	// Tainted reports that the request follows content the run took from outside, so a
+	// client can warn before the person approves (approval.requested).
+	Tainted bool `json:"tainted,omitempty"`
+	// ExpiresAt is when an open approval request stops waiting and declines
+	// (approval.requested).
+	ExpiresAt time.Time `json:"expiresAt,omitzero"`
+	// Outcome is what an approval came to (approval.decision): allow or deny.
+	Outcome approval.Outcome `json:"outcome,omitempty"`
+	// FeedbackPresent reports that the person attached feedback to a denial
+	// (approval.decision). The text is not recorded: it goes to the model, and the stream
+	// only needs to show that it existed.
+	FeedbackPresent bool `json:"feedbackPresent,omitempty"`
+	// Client is the id of the attached client that answered an approval, or that an
+	// attachment is for (approval.decision, client.attached). Empty when the system closed
+	// the request.
+	Client string `json:"client,omitempty"`
+
+	// PromptID names the user prompt a prompt.ended closes.
+	PromptID string `json:"promptId,omitempty"`
+	// Stop classifies how a prompt ended (prompt.ended). Check [Stop.Valid] before
+	// branching on a value read from a record.
+	Stop Stop `json:"stop,omitempty"`
+	// Steps is the number of steps a prompt took (prompt.ended).
+	Steps int `json:"steps,omitempty"`
+
+	// Attachment describes the client that attached (client.attached).
+	Attachment *ClientAttachment `json:"attachment,omitempty"`
+	// Budget is the ceiling change (budget.extended).
+	Budget *BudgetExtension `json:"budget,omitempty"`
 }
 
 // Usage is the token cost of one turn, projected onto the conversation stream. It
@@ -239,6 +315,10 @@ func decodeBody(se spine.Event) Event {
 		return Event{Kind: KindRecordSealed}
 	case typeEgress:
 		return egressEvent(se)
+	case typeApprovalRequested:
+		return approvalRequestedEvent(se)
+	case typeApprovalDecision:
+		return approvalDecisionEvent(se)
 	case typeProjectContext:
 		return projectContextEvent(se)
 	default:
@@ -247,7 +327,7 @@ func decodeBody(se spine.Event) Event {
 			_ = json.Unmarshal([]byte(s), &e)
 		}
 		e.Kind = Kind(se.Type)
-		return e
+		return e.sanitized()
 	}
 }
 

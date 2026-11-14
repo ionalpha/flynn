@@ -431,7 +431,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 			Tools: p.toolset, System: c.system, Grant: p.grant, HasGrant: true,
 			Sandbox: p.sb, Reporter: c.observer(p), Fanout: spawner, EventSink: p.sink,
 			CompactionBudget: DefaultCompactionBudget, Brakes: g.brk, Budget: g.pool,
-			Approval: g.stack.spec(c.prompter), Allowance: outsideGate(c.outside), Plan: c.plan,
+			Approval: g.stack.spec(g.stack.recording(c.prompter)), Allowance: outsideGate(c.outside), Plan: c.plan,
 		}
 		router := driver.NewRouter(driver.RouterConfig{
 			Registry: driver.Default(), DefaultModel: model, DefaultDriver: c.driver,
@@ -544,7 +544,7 @@ func (c *config) executor(model llm.Model, b Backends, p *parts, g gates) *missi
 	if g.brk != nil {
 		opts = append(opts, mission.WithBrakes(g.brk))
 	}
-	opts = append(opts, g.stack.options(c.prompter)...)
+	opts = append(opts, g.stack.options(g.stack.recording(c.prompter))...)
 	opts = append(opts, allowanceOptions(c.outside)...)
 	// The model's scaffolding plan goes last so a present field overrides the lean
 	// defaults while an absent one leaves them in place.

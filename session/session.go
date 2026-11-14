@@ -52,6 +52,11 @@ type Session struct {
 	failed         error
 	done           chan struct{}
 	maxTurnStarted map[string]int
+	// ended holds the prompt ids that already have a prompt.ended record, so a prompt is
+	// closed once however many paths try to close it. raised is the total of every budget
+	// extension recorded so far.
+	ended  map[string]struct{}
+	raised Ceiling
 }
 
 // Option configures a Session.
