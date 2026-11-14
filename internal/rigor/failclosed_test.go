@@ -54,6 +54,7 @@ var failClosedExemptions = map[string]string{
 	"internal/release.policy":     "fixed identity a release signature must present; it is not configurable",
 	"internal/projectctx.Policy":  "project instruction file loading; fail-closed test owed",
 	"internal/hostneutral.Policy": "host-neutrality rules for the scanner; fail-closed test owed",
+	"internal/stdioguard.Guard":   "keeps stray writes out of the stdout frame stream; decides no access",
 	"internal/rigor.Policy":       "which packages the rigor scan covers; decides no access",
 	"sandbox.floorPolicy":         "counts opt-in uses of the process-jail floor; the opt-in defaults to off and is covered with the sandbox types",
 	"tools/github.authenticator":  "holds the GitHub App credentials for token minting; decides no access",
