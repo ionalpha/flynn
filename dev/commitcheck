@@ -1,0 +1,64 @@
+#!/usr/bin/env sh
+# Check a commit subject against the Conventional Commits rule in AGENTS.md.
+#
+#   dev/commitcheck --message <file>   a commit message file (the commit-msg hook)
+#   dev/commitcheck --subject <text>   one subject line (CI, on the pull request title)
+#
+# It runs where a bad subject costs nothing to fix: before git creates the commit,
+# and on the pull request title, which is edited in place. It never checks commits
+# that already exist, because the only fix for one of those is a history rewrite.
+#
+# The subject is `type(scope)!: description`, scope and ! optional. Also accepted:
+# the `Revert "..."` and `Merge ...` subjects git and GitHub write themselves, and,
+# in a message file, the fixup!, squash! and amend! subjects `git commit --fixup`
+# writes for a later autosquash. A merge commit is not checked further: git wrote
+# its subject, and it needs no sign-off of its own.
+#
+# The scope is free text inside the parentheses, and the type is the only part
+# held to a list, so a failure means the subject has no type at all.
+#
+# A message with no Signed-off-by trailer gets a warning, not a refusal: the DCO
+# sign-off is required (AGENTS.md), and `git commit --amend -s` adds it, but the
+# warning is enough to prompt that without blocking a work-in-progress commit.
+set -eu
+
+types='feat|fix|docs|chore|refactor|test|perf|ci|build|style|revert'
+subject_re="^($types)(\\([^()[:space:]][^()]*\\))?!?: [^ ]"
+
+check_subject() {
+  case "$1" in
+    'Revert "'* | 'Merge '*) return 0 ;;
+  esac
+  if printf '%s\n' "$1" | grep -Eq "$subject_re"; then
+    return 0
+  fi
+  echo "commitcheck: subject is not Conventional Commits: \"$1\"" >&2
+  echo "             want type(scope): description, with type one of" >&2
+  echo "             ${types}; see the Commits rule in AGENTS.md" >&2
+  return 1
+}
+
+case "${1:-}" in
+  --subject)
+    [ $# -eq 2 ] || { echo "usage: dev/commitcheck --subject <text>" >&2; exit 2; }
+    check_subject "$2"
+    ;;
+  --message)
+    [ $# -eq 2 ] || { echo "usage: dev/commitcheck --message <file>" >&2; exit 2; }
+    # The subject is the first line that is neither blank nor a comment, which is
+    # what git keeps after its default cleanup.
+    subject="$(grep -v '^#' "$2" | grep -v '^[[:space:]]*$' | head -n 1 || true)"
+    case "$subject" in
+      '') exit 0 ;; # an empty message: git aborts the commit itself
+      'fixup! '* | 'squash! '* | 'amend! '* | 'Merge '*) exit 0 ;;
+    esac
+    check_subject "$subject"
+    if ! git interpret-trailers --parse "$2" | grep -q '^Signed-off-by: '; then
+      echo "commitcheck: warning: no Signed-off-by trailer; commit with -s (DCO, see AGENTS.md)" >&2
+    fi
+    ;;
+  *)
+    echo "usage: dev/commitcheck --message <file> | --subject <text>" >&2
+    exit 2
+    ;;
+esac

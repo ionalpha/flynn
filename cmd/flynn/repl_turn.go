@@ -85,6 +85,9 @@ func (s *replSession) runTurn(ctx context.Context, userText string, images []llm
 				}
 			}
 		}
+		// Last, so the fenced files are the final text in the standing instructions and
+		// nothing the operator or the store contributed follows what the repository wrote.
+		s.system = s.withProjectPrompt(s.system)
 	} else if err := s.reopen(turnCtx, userText, images); err != nil {
 		return "", err
 	}
@@ -150,6 +153,12 @@ func (s *replSession) driveTurn(turnCtx context.Context, run *governed.Run, user
 		s.objective = objective
 		s.started = true
 		_, _ = fmt.Fprintf(s.out, "  run %s\n", s.runID)
+	}
+	// A resumed run reaches here with its id already known, so this is the first point
+	// at which every kind of turn has a stream to write the decision to.
+	if !s.projectRecorded {
+		recordProjectDecision(turnCtx, s.out, s.store.Log(), s.project, s.runID)
+		s.projectRecorded = true
 	}
 
 	result, transcript, lastSeq, runErr := renderStream(s.out, events, s.verbose, s.observer)
@@ -251,7 +260,7 @@ func (s *replSession) finish(ctx context.Context) error {
 			Converged:  true,
 			Source:     s.runID,
 			SkillsRead: s.skillset.Reads(),
-		}, s.carriedTaint...)
+		}, s.sessionTaint()...)
 	}
 	_, _ = fmt.Fprintf(s.out, "\nsession %s ended.\n", s.runID)
 	return nil

@@ -67,6 +67,11 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	if block != "" {
 		system += "\n\n" + block
 	}
+	// Last, so the fenced files are the final thing in the prompt and nothing the
+	// operator or the store contributed sits after text the repository wrote.
+	if p := cfg.project.Prompt(); p != "" {
+		system += "\n\n" + p
+	}
 
 	// Record the run's events into a verifiable chain as they are produced, when an
 	// instance signer is available. The recorder wraps the log and changes nothing
@@ -158,7 +163,7 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 			Converged:  true,
 			Source:     source,
 			SkillsRead: skillset.Reads(),
-		})
+		}, cfg.project.Taint()...)
 	}
 	if groundTruthFailed {
 		return result, errGroundTruthFailed

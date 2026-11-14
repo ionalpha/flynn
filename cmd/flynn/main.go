@@ -156,6 +156,7 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 		dataDir     = fs.String("data-dir", defaultDataDir(), "directory for the durable state database")
 		noLearn     = fs.Bool("no-learn", false, "do not capture skills/memory from this run")
 		noBundled   = fs.Bool("no-bundled-skills", false, "run without the skills shipped in the binary: the bundled set is removed from the store rather than merely left unseeded, so a run measures the learning loop against a clean baseline. Your own and learned skills are untouched.")
+		projFiles   = fs.String("project-files", "", "whether to load the repository's AGENTS.md, AGENTS.override.md and CLAUDE.md into the model's instructions: ask (the default: load files you approved before, otherwise ask, and skip when no one can answer), trust (load them) or skip (never). Loaded files are untrusted input: they are fenced in the prompt, the session is tainted by them, and the decision is recorded on the run. Also set by FLYNN_PROJECT_FILES.")
 		verbose     = fs.Bool("v", false, "verbose: show tool arguments, outputs, and per-turn detail")
 		verboseLong = fs.Bool("verbose", false, "alias for -v")
 		plain       = fs.Bool("plain", false, "interactive session: use the line-based interface, not the full-screen one")
@@ -209,6 +210,14 @@ func run(fs *flag.FlagSet, args []string, stdout, stderr io.Writer) int {
 	// Whether the binary's own skills apply is settled here, before anything opens a
 	// store, because opening one is what reconciles them.
 	bundledSkillsDisabled = *noBundled
+
+	// A misspelt trust setting is refused up front: falling back to the default would
+	// run a session in a mode its operator did not choose.
+	projectFilesFlag = *projFiles
+	if _, err := projectFilesMode(); err != nil {
+		_, _ = fmt.Fprintln(stderr, err)
+		return 2
+	}
 
 	if *showVersion {
 		_, _ = fmt.Fprintln(stdout, version.String())
@@ -805,6 +814,10 @@ func runGoal(modelSpec, objective, verify, dataDir string, spec goalSpecFile, le
 		// ledger first. An external agent CLI drives its own loop and its own planning, so
 		// the phase is only added to the native path.
 		opts = append(opts, withPlanning())
+		// The repository's instruction files, if the operator lets them in. An external
+		// agent CLI reads its own project files, so the decision is made for a native
+		// run only.
+		opts = append(opts, withProjectFiles(projectDecision(cwd, dataDir)))
 		// Hold the run to that plan when asked. Planning alone runs each item's check
 		// and records the verdict, so a run always says how much of its plan it actually
 		// proved; this is what makes an unproven item stop the run rather than only show

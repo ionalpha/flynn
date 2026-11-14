@@ -42,6 +42,20 @@ func TestSuiteFailsOnBrokenSkillStore(t *testing.T) {
 				return out, err
 			}
 		}),
+		c("search matches only the whole query as a phrase", "SearchWords", func(f *faultstate.Skills) {
+			f.OnSearch = func(ctx context.Context, in state.SkillStore, q string, limit int) ([]state.Skill, error) {
+				got, err := in.Search(ctx, q, limit)
+				phrase := strings.ToLower(strings.TrimSpace(q))
+				var kept []state.Skill
+				for _, sk := range got {
+					hay := strings.ToLower(sk.Name + " " + sk.Description + " " + sk.Body)
+					if phrase == "" || strings.Contains(hay, phrase) {
+						kept = append(kept, sk)
+					}
+				}
+				return kept, err
+			}
+		}),
 		c("update patches instead of replacing", "Description", func(f *faultstate.Skills) {
 			f.OnUpsert = func(ctx context.Context, in state.SkillStore, sk state.Skill) (state.Skill, error) {
 				if old, err := in.Get(ctx, sk.Slug); err == nil && sk.Description == "" {

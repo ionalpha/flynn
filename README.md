@@ -549,8 +549,10 @@ Key flags: `--model`, `--goal-spec <file>`, `--require-proof`,
 `--require-approval <action>`, `--irreversible <action>`, `--allow <action>`,
 `--fanout`, `--verify "<cmd>"`, `--max-cost`, `--max-tokens`, `--max-memory`,
 `--max-processes`, `--allow-network`, `--allow-credential-reads`,
-`--require-credential-hiding`, `--require-network-denial`, `--no-learn`, `--no-bundled-skills`, `--data-dir`,
-`--profile <dir>`. A command the agent runs has no network on Linux and macOS and, there too,
+`--require-credential-hiding`, `--require-network-denial`, `--no-learn`, `--no-bundled-skills`,
+`--project-files ask|trust|skip`, `--data-dir`, `--profile <dir>`. A repository's `AGENTS.md` and
+`CLAUDE.md` load into a session only after you say so, as untrusted context
+([docs/PROJECT_FILES.md](docs/PROJECT_FILES.md)). A command the agent runs has no network on Linux and macOS and, there too,
 cannot read `~/.ssh`, cloud and CLI login tokens or the data directory unless the
 matching `--allow-` flag is set. Windows cannot hide those paths: they stay readable,
 Flynn says so when a run starts, and `--require-credential-hiding` makes it refuse to

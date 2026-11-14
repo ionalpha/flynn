@@ -9,21 +9,18 @@ import (
 
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/state"
-	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
 // These properties drive generated skills - arbitrary unicode names, bodies, and
 // tags - through the real SQL and FTS5 layers. That is where a durable backend
 // can diverge from the reference: parameter binding, JSON tag encoding, and FTS
 // indexing must round-trip any input without error or injection. Each iteration
-// gets a fresh in-memory database.
+// gets a fresh, empty database (see [openFresh]).
 
-func newProvider(rt *rapid.T) state.Provider {
-	p, err := sqlite.Open(context.Background(), ":memory:")
-	if err != nil {
-		rt.Fatalf("open: %v", err)
-	}
-	return p
+// newProvider returns a fresh store as a [state.Provider] and the function that
+// closes and removes it.
+func newProvider(rt *rapid.T) (state.Provider, func()) {
+	return openFresh(rt.Fatalf)
 }
 
 // A generated skill round-trips: it is retrievable by ID and by slug with its
@@ -31,8 +28,8 @@ func newProvider(rt *rapid.T) state.Provider {
 func TestProp_SkillUpsertRoundtrip(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
-		p := newProvider(rt)
-		defer func() { _ = p.Close() }()
+		p, done := newProvider(rt)
+		defer done()
 
 		sk := testkit.SkillGen().Draw(rt, "skill")
 		saved, err := p.Skills().Upsert(ctx, sk)
@@ -64,8 +61,8 @@ func TestProp_SkillUpsertRoundtrip(t *testing.T) {
 func TestProp_SkillUpsertIsIdempotentByKey(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
-		p := newProvider(rt)
-		defer func() { _ = p.Close() }()
+		p, done := newProvider(rt)
+		defer done()
 
 		sk := testkit.SkillGen().Draw(rt, "skill")
 		writes := rapid.IntRange(1, 5).Draw(rt, "writes")
@@ -107,8 +104,8 @@ func TestProp_SkillUpsertIsIdempotentByKey(t *testing.T) {
 func TestProp_DeletedSkillNeverSurfaces(t *testing.T) {
 	rapid.Check(t, func(rt *rapid.T) {
 		ctx := context.Background()
-		p := newProvider(rt)
-		defer func() { _ = p.Close() }()
+		p, done := newProvider(rt)
+		defer done()
 
 		saved, err := p.Skills().Upsert(ctx, testkit.SkillGen().Draw(rt, "skill"))
 		if err != nil {
