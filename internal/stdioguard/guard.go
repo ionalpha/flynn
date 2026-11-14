@@ -20,7 +20,7 @@
 // [Install] must run before anything starts writing frames and before any child is
 // started that should be diverted; output written before it is not intercepted. It runs
 // once per process. Stray bytes still in the pipe when the process exits are lost, so a
-// diagnostic that matters must not depend on the guard.
+// diagnostic that must survive a crash is written to stderr directly.
 package stdioguard
 
 import (
