@@ -29,9 +29,12 @@ err() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 # fetch URL FILE: download URL to FILE using whichever of curl or wget is present.
+# curl retries the transient answers (408, 429, 5xx, timeouts) GitHub's download
+# host sometimes gives, so a brief outage does not fail the install. wget is left
+# without retries: busybox wget has no option for them.
 fetch() {
 	if have curl; then
-		curl -fsSL -o "$2" "$1"
+		curl -fsSL --retry 5 --retry-delay 3 -o "$2" "$1"
 	elif have wget; then
 		wget -qO "$2" "$1"
 	else
@@ -42,7 +45,7 @@ fetch() {
 # fetch_stdout URL: print URL's body to stdout (for the release-lookup API).
 fetch_stdout() {
 	if have curl; then
-		curl -fsSL "$1"
+		curl -fsSL --retry 5 --retry-delay 3 "$1"
 	elif have wget; then
 		wget -qO- "$1"
 	else
