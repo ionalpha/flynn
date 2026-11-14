@@ -58,6 +58,10 @@ func NewVerifier(keyring *Keyring, nonces NonceStore, opts ...VerifierOption) *V
 // inside its validity window; its signature verifies against an authorized key; and
 // its nonce has not been spent. Signatures from the same key id count once, so one
 // approver cannot satisfy a multi-signature requirement alone.
+//
+// A requirement of zero authorizes without a signature, which is how a policy says an
+// action needs no approval. A negative requirement is not that: it is a corrupt or
+// miscomputed count, and treating it as zero would admit the action, so it is denied.
 func (v *Verifier) Check(ctx context.Context, want Envelope, presented []Approval, required int) (Decision, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -65,7 +69,11 @@ func (v *Verifier) Check(ctx context.Context, want Envelope, presented []Approva
 	now := v.clk.Now().UnixNano()
 	dec := Decision{Envelope: want, At: now}
 
-	if required <= 0 {
+	if required < 0 {
+		dec.Reason = "approval: a negative signature requirement is not a policy; refusing"
+		return dec, nil
+	}
+	if required == 0 {
 		dec.Granted = true
 		return dec, nil
 	}

@@ -139,14 +139,18 @@ func NewGate(policy Policy, verifier *Verifier, opts ...GateOption) *Gate {
 
 // Before refuses a privileged action that lacks a sufficient quorum of valid
 // approvals. A non-privileged action (policy requirement zero) is admitted
-// untouched. The decision, grant or denial, is recorded to the sink before the
+// untouched; a negative requirement is a broken policy and is refused as Forbidden. The decision, grant or denial, is recorded to the sink before the
 // result is returned, so the audit trail captures refused attempts too. A denial
 // with no approvals presented is NeedsApproval (the run should pause and request
 // one); a denial with approvals that did not verify is Forbidden (it must not be
 // retried as-is).
 func (g *Gate) Before(ctx context.Context, a dispatch.Action) error {
 	required := g.policy.Required(a)
-	if required <= 0 {
+	if required < 0 {
+		return fault.New(fault.Forbidden, "approval_policy",
+			"action "+a.Name+" not authorized: the approval policy returned a negative requirement")
+	}
+	if required == 0 {
 		return nil
 	}
 	want := Binding(ctx, a, g.host)
