@@ -32,7 +32,7 @@ highest layer it imports.
 | Layer | Packages | Role |
 |-------|----------|------|
 | L0 foundation | `clock`, `fault`, `llm`, `observe` | Pure ports: time source, error taxonomy, the model port, the logging/tracing port. No internal imports. |
-| L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters. |
+| L1 primitives | `spine`, `hlc`, `ids`, `sandbox`, `bus`, `llm/anthropic`, `llm/openai`, `usage` | Event-log port, hybrid logical clock, seeded id generator, isolation port, in-process event bus, concrete model adapters, the usage record and price table. |
 | L2 core data | `state`, `resource`, `provider` | The host persistence interfaces, the event-sourced resource store, the model-adapter registry. |
 | L3 mechanisms | `dispatch`, `reconcile`, `jobs`, `memory`, `skill`, `chain` | The governance gate, the reconcile loop, the leased job queue, durable memory and skill stores, the verifiable-record encoder and signer over spine events. |
 | L4 governance + domain | `capability`, `budget`, `internal/spinesink`, `goal`, `learn`, `storage/sqlite` | Capability grants, the per-run spend ceiling, the dispatch-to-spine sink, the goal controller, the learning loop, the SQLite backend. |
@@ -349,7 +349,10 @@ goroutines follow the same rule. The race detector runs in CI.
   adapters; **`tools`** the default toolset; **`sandbox`** isolation;
   **`localmodel`** runs a catalog model on this machine for a host (advisory floor,
   digest-pinned downloads, loopback-only serving behind a token inside the sandbox),
-  and `flynn models` is one of its clients.
+  and `flynn models` is one of its clients. **`usage`** is the account of what each
+  model call consumed: tokens with how each figure is known (reported, derived or
+  estimated), and cost from a dated, sourced price table, unknown rather than zero
+  for a model nobody priced.
 - **`clock`**, **`ids`**, **`hlc`** determinism; **`fault`** error taxonomy;
   **`observe`** logging and tracing; **`bus`** in-process event bus; **`jobs`** leased
   job queue.
