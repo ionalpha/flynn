@@ -79,6 +79,8 @@ func TestCheckGrounding(t *testing.T) {
 		{name: "a device is not a file", check: "go build ./... > /dev/null", want: nil},
 		{name: "the null device is not a file", check: "type nul", want: nil},
 		{name: "a home path is not judged", check: "type ~/notes.txt", want: nil},
+		{name: "a remote host:path is not a local file", check: "scp build-host:out/report.txt .", want: nil},
+		{name: "a drive path that cannot be made relative is outside", check: `type C:\nowhere-at-all.txt`, confined: true, want: []AdmissionRefusal{RefusedUnwritable}},
 		{name: "a file read through a redirect is judged", check: "findstr x < input.log", want: []AdmissionRefusal{RefusedUngrounded}},
 		{name: "a path named twice is refused once", check: "type made.txt && type made.txt", want: []AdmissionRefusal{RefusedUngrounded}},
 	}
