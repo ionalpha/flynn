@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ionalpha/flynn/fault"
+	"github.com/ionalpha/flynn/internal/closeerr"
 )
 
 // Extraction ceilings. The archive is already digest-verified before it gets here, so
@@ -140,13 +141,20 @@ func matchesEntry(entryName, binaryName string) bool {
 // writeBinary streams the entry to a fresh file, refusing to overwrite one that is
 // already there, and caps the stream regardless of what the archive's header claimed
 // the size would be.
-func writeBinary(dst string, src io.Reader, mode os.FileMode) error {
+func writeBinary(dst string, src io.Reader, mode os.FileMode) (err error) {
 	// #nosec G304 -- dst is the staging path this package created next to the binary it
 	// is replacing; O_EXCL means it refuses to write to a file that already exists.
 	f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
 	if err != nil {
 		return fault.Wrap(fault.Terminal, CodeArchive, err)
 	}
+	defer func() {
+		if err != nil {
+			_ = os.Remove(dst)
+			err = fault.Wrap(fault.Terminal, CodeArchive, err)
+		}
+	}()
+	defer closeerr.Keep(&err, f)
 	// Read one byte past the ceiling, so a body that lied about its length is detected
 	// rather than silently truncated into a binary that is almost right.
 	n, err := io.Copy(f, io.LimitReader(src, maxBinaryBytes+1))
@@ -158,12 +166,5 @@ func writeBinary(dst string, src io.Reader, mode os.FileMode) error {
 		// is atomic with respect to the directory, not with respect to the file's content.
 		err = f.Sync()
 	}
-	if cerr := f.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		_ = os.Remove(dst)
-		return fault.Wrap(fault.Terminal, CodeArchive, err)
-	}
-	return nil
+	return err
 }

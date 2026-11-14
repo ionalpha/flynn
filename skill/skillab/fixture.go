@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/ionalpha/flynn/internal/closeerr"
 )
 
 // A trial starts in an empty directory, which is fine for an exercise that says
@@ -116,11 +118,7 @@ func copyFile(fsys fs.FS, src, dest string) (err error) {
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if cerr := out.Close(); err == nil {
-			err = cerr
-		}
-	}()
+	defer closeerr.Keep(&err, out)
 	_, err = io.Copy(out, in)
 	return err
 }
