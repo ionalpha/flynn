@@ -77,6 +77,10 @@ func TestCheckGrounding(t *testing.T) {
 		{name: "a cmd switch is not a path", check: "dir /s /b", want: nil},
 		{name: "a module import path is not a file", check: "go build github.com/ionalpha/flynn/cmd/flynn", want: nil},
 		{name: "a device is not a file", check: "go build ./... > /dev/null", want: nil},
+		{name: "the null device is not a file", check: "type nul", want: nil},
+		{name: "a home path is not judged", check: "type ~/notes.txt", want: nil},
+		{name: "a file read through a redirect is judged", check: "findstr x < input.log", want: []AdmissionRefusal{RefusedUngrounded}},
+		{name: "a path named twice is refused once", check: "type made.txt && type made.txt", want: []AdmissionRefusal{RefusedUngrounded}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

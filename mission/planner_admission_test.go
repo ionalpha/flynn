@@ -2,6 +2,7 @@ package mission
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,5 +203,40 @@ func TestPlannerAdmissionIsOptIn(t *testing.T) {
 		if !strings.Contains(sys, want) {
 			t.Fatalf("planning prompt does not say %q: %q", want, sys)
 		}
+	}
+}
+
+type failingDryRun struct{ err error }
+
+func (f failingDryRun) VerifyItem(context.Context, resource.Resource, goal.LedgerItem) (goal.ItemVerdict, error) {
+	return goal.ItemVerdict{}, f.err
+}
+
+type failingRecord struct{ err error }
+
+func (f failingRecord) RecordAdmission(context.Context, resource.Resource, goal.AdmissionVerdict) error {
+	return f.err
+}
+
+// TestPlannerAdmissionFailsWhenItCannotJudgeOrRecord: an error from the dry run or from the
+// record is returned as it is. Swallowing either would start a goal on a check nobody
+// vetted, or one whose vetting left no trace.
+func TestPlannerAdmissionFailsWhenItCannotJudgeOrRecord(t *testing.T) {
+	boom := context.Canceled
+	cases := []struct {
+		name string
+		adm  Admission
+	}{
+		{name: "dry run fails", adm: Admission{Verifier: failingDryRun{err: boom}, Recorder: &admissionLog{}, Dir: t.TempDir(), Confined: true}},
+		{name: "record fails", adm: Admission{Verifier: &dryRunner{}, Recorder: failingRecord{err: boom}, Dir: t.TempDir(), Confined: true}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			model := llmtest.NewScripted(llmtest.SayText(planOf("go test ./...")))
+			items, err := NewPlanner(model, WithPlannerAdmission(c.adm)).Plan(context.Background(), goalResource(t, goal.Spec{Objective: "o", StopCondition: "c"}))
+			if !errors.Is(err, boom) || items != nil {
+				t.Fatalf("items=%v err=%v, want the error and no plan", items, err)
+			}
+		})
 	}
 }
