@@ -246,6 +246,8 @@ func Verify(tok string, issuer ed25519.PublicKey, now time.Time) (Authority, err
 // becomes the Principal the action gate later checks. Because Verify fails closed on
 // any forged, widened, expired, or malformed chain, an unverifiable token is simply
 // unauthenticated; nothing here can mint authority the token did not already carry.
+//
+//flynn:policy TestFailClosedAuthenticators
 type DelegationAuthenticator struct {
 	issuer ed25519.PublicKey
 	clk    clock.Clock

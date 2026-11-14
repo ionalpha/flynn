@@ -14,6 +14,8 @@ import (
 // The level is what lets the run gate decide, before anything executes, whether a
 // tier is strong enough for the work's trust level, and refuse rather than run
 // untrusted code somewhere it could break out.
+//
+//flynn:policy
 type Containment int
 
 const (
@@ -61,6 +63,8 @@ func (c Containment) String() string {
 
 // Trust is how far the code about to run is trusted, which sets the containment it
 // requires.
+//
+//flynn:policy
 type Trust int
 
 const (
@@ -82,8 +86,10 @@ func (t Trust) String() string {
 		return "untrusted"
 	case TrustSemi:
 		return "semi-trusted"
-	default:
+	case TrustTrusted:
 		return "trusted"
+	default:
+		return fmt.Sprintf("trust(%d)", int(t))
 	}
 }
 
@@ -91,14 +97,20 @@ func (t Trust) String() string {
 // requires a hardware boundary by default, the strict posture: a kernel exploit in,
 // say, a model parser must not be able to reach the host. A policy may later relax
 // untrusted to a user-space-kernel tier explicitly, but the safe default does not.
+//
+// A level this binary does not define is treated as untrusted. The zero Trust is
+// [TrustTrusted] on purpose (an action that declares no trust is the agent's own
+// tool), but a value outside the declared set carries no such meaning, and answering it
+// with the weakest tier would let a corrupted or newer-than-this-binary level run
+// anywhere.
 func Required(t Trust) Containment {
 	switch t {
-	case TrustUntrusted:
-		return ContainmentMicroVM
+	case TrustTrusted:
+		return ContainmentNone
 	case TrustSemi:
 		return ContainmentKernel
-	default: // TrustTrusted
-		return ContainmentNone
+	default: // TrustUntrusted, and any level this binary does not define
+		return ContainmentMicroVM
 	}
 }
 
@@ -110,11 +122,15 @@ type Contained interface {
 }
 
 // ContainmentOf reports a sandbox's containment level, defaulting to the weakest when
-// the sandbox does not declare one. Defaulting down is the safe direction: an
-// undeclared tier can never satisfy a requirement it has not earned.
+// the sandbox does not declare one or declares a level outside the defined scale.
+// Defaulting down is the safe direction: an undeclared tier can never satisfy a
+// requirement it has not earned, and a level above [ContainmentRemote] would otherwise
+// satisfy every requirement there is.
 func ContainmentOf(sb Sandbox) Containment {
 	if c, ok := sb.(Contained); ok {
-		return c.Containment()
+		if lvl := c.Containment(); lvl >= ContainmentNone && lvl <= ContainmentRemote {
+			return lvl
+		}
 	}
 	return ContainmentNone
 }

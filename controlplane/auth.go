@@ -22,6 +22,8 @@ import (
 
 // Scope is the access level behind a request. Scopes are ordered: Admin contains
 // Operator contains Read. A handler states the minimum it requires.
+//
+//flynn:policy
 type Scope int
 
 const (
@@ -37,7 +39,17 @@ const (
 
 // Allows reports whether this scope satisfies the required minimum. Because scopes
 // are ordered, a higher scope satisfies a lower requirement.
-func (s Scope) Allows(required Scope) bool { return s >= required }
+//
+// Both sides must be a scope this package defines. A bare comparison would admit a
+// principal whose scope is above [ScopeAdmin] (a corrupt token table, or a scope from a
+// newer build) to every route, and a requirement below [ScopeNone] would admit everyone,
+// so a value outside the scale answers false on either side.
+func (s Scope) Allows(required Scope) bool {
+	return s.defined() && required.defined() && s >= required
+}
+
+// defined reports whether s is one of the scopes declared above.
+func (s Scope) defined() bool { return s >= ScopeNone && s <= ScopeAdmin }
 
 // String renders the scope for logs and audit.
 func (s Scope) String() string {
@@ -74,6 +86,8 @@ type Principal struct {
 
 // Authenticator resolves a request to a Principal, or an error if it cannot be
 // authenticated. Implementations must be safe for concurrent use.
+//
+//flynn:policy TestFailClosedAuthenticators
 type Authenticator interface {
 	Authenticate(r *http.Request) (Principal, error)
 }
@@ -116,6 +130,8 @@ func GeneratedOperator(id string, scope Scope, mint func() (string, error)) (*To
 // TokenAuthenticator authenticates a bearer token against a fixed table. It
 // compares in constant time and scans every entry regardless of an early match, so
 // neither a token's value nor which tokens exist leaks through timing.
+//
+//flynn:policy TestFailClosedAuthenticators
 type TokenAuthenticator struct {
 	tokens map[string]Principal
 }
