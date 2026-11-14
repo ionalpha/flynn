@@ -13,6 +13,8 @@ import (
 // under the capability grant alone; a positive number is the quorum (1 for a
 // single approver, more for a high-risk M-of-N action). Keeping the requirement as
 // data lets a host raise the bar on a destructive action without touching the gate.
+//
+//flynn:policy TestFailClosedGate
 type Policy interface {
 	Required(a dispatch.Action) int
 }
@@ -101,6 +103,8 @@ func Binding(ctx context.Context, a dispatch.Action, host string) Envelope {
 // above, the capability admitter: capability decides the action is allowed in
 // principle, approval requires a fresh human (or policy, or peer) authorization for
 // this specific privileged instance.
+//
+//flynn:policy
 type Gate struct {
 	policy   Policy
 	verifier *Verifier
@@ -139,8 +143,9 @@ func NewGate(policy Policy, verifier *Verifier, opts ...GateOption) *Gate {
 
 // Before refuses a privileged action that lacks a sufficient quorum of valid
 // approvals. A non-privileged action (policy requirement zero) is admitted
-// untouched; a negative requirement is a broken policy and is refused as Forbidden. The decision, grant or denial, is recorded to the sink before the
-// result is returned, so the audit trail captures refused attempts too. A denial
+// untouched; a negative requirement is a broken policy and is refused as Forbidden.
+// The decision, grant or denial, is recorded to the sink before the result is
+// returned, so the audit trail captures refused attempts too. A denial
 // with no approvals presented is NeedsApproval (the run should pause and request
 // one); a denial with approvals that did not verify is Forbidden (it must not be
 // retried as-is).
