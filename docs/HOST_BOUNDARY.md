@@ -141,8 +141,9 @@ do.
   reason unrelated to the goal.
 
 `TestThePromotionConditionForLedgerProof` plans a goal whose item carries a check that
-exits 0, drives it through the binary's assembly, and reads the verdict. It runs on
-every CI run:
+fails its admission dry run and then exits 0 (a check that already exits 0 is refused
+before the run starts), drives it through the binary's assembly, and reads the verdict.
+It runs on every CI run:
 
 | Platform | Sandbox containment | The planned item |
 |---|---|---|
@@ -186,6 +187,34 @@ on to that item. An item whose check the host could not run at all is abandoned 
 claim arrives, since rerunning a refused check teaches the run nothing
 (`TestAClaimWaitsForAnItemNobodyTried`, `TestAClaimMovesPastAnItemWhoseCheckCannotRun`,
 `TestAClaimUnderProofStillStops`).
+
+A planned goal's checks are vetted before the run starts. `mission.Planner`, built with
+`mission.WithPlannerAdmission` by the default planning assembly, reads each check the model
+wrote and sends the plan back through the same correction loop as a check that calls a
+tool, with the reason for each refusal. A check is refused when:
+
+- it names a path that does not exist and is not named in the objective or stop condition
+  (`ungrounded`): the check can only fail for want of a file nobody asked for;
+- it names a path outside the working directory that does not exist, and the run is
+  confined there (`unwritable`): the confined command cannot create it, so the check could
+  never pass. Models have written host temp paths into checks this way;
+- it passes on the untouched tree when run once in the sandbox (`already_passes`): it
+  would prove nothing;
+- it fails as a command that cannot be parsed (`malformed`: cmd, sh or PowerShell syntax
+  errors) or names a program the host does not have (`missing_program`).
+
+The path rules are text only and run first, so a refused check is never executed. The dry
+run is the same `goal.ItemVerifier` that verifies the item later. Where the host cannot
+execute a check at all (a process-jail sandbox that refuses semi-trusted work), the check
+is admitted on its text and the record says no dry run happened, so a host that cannot run
+checks does not stall every plan. A host that supplies its own sandbox gets the dry run and
+no path rules, since the working directory is not the planner's to compare against. After
+the correction budget the planner fails transiently with `planner_check_not_admitted`.
+
+Every verdict, refusals included, is appended to the run's stream as an `item.admitted`
+event by `evidence.SpineEvidence.RecordAdmission` (`goal.AdmissionRecorder`). The evidence
+gate never reads it, so an admission cannot prove an item
+(`TestAdmissionVerdictsAreRecordedAndTheGateIgnoresThem`, `TestPlannerAdmission`).
 
 `goal.Cleaner`: a nil cleaner means there is nothing external to tear down, which is
 true of the standalone binary. Child goals are removed through owner references. A
