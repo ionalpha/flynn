@@ -34,6 +34,9 @@ type approvalStack struct {
 	signer  approval.Signer
 	host    string
 	actions []string
+	// sink is the run's approval record, kept so the prompter can be wrapped to write
+	// requests and resolutions onto the same stream as the gate's verdicts.
+	sink *spinesink.ApprovalSink
 }
 
 // newApprovalStack builds the approval path for a run, recording decisions onto stream
@@ -58,10 +61,11 @@ func newApprovalStack(actions []string, log spine.Log, stream string) (*approval
 		return nil, err
 	}
 	verifier := approval.NewVerifier(keyring, approval.NewMemStore(), approval.WithHost(host))
+	sink := spinesink.NewApproval(log, stream)
 	gate := approval.NewGate(policy, verifier,
 		approval.WithGateHost(host),
-		approval.WithSink(spinesink.NewApproval(log, stream)))
-	return &approvalStack{gate: gate, signer: signer, host: host, actions: GatedActions(policy)}, nil
+		approval.WithSink(sink))
+	return &approvalStack{gate: gate, signer: signer, host: host, actions: GatedActions(policy), sink: sink}, nil
 }
 
 // approvalIdentity mints the run's approver: a fresh keypair from entropy, and a keyring

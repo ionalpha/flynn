@@ -245,7 +245,9 @@ func approvalEvents(t *testing.T, log spine.Log, stream string) []spine.Event {
 	}
 	var out []spine.Event
 	for _, e := range events {
-		if e.Type == "approval.decision" {
+		// A prompt's resolution shares the type and carries an outcome instead of a
+		// verdict; these tests read the gate's verdicts.
+		if _, ok := e.Payload["verdict"]; ok && e.Type == "approval.decision" {
 			out = append(out, e)
 		}
 	}
