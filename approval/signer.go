@@ -74,6 +74,8 @@ var _ Signer = (*Ed25519Signer)(nil)
 // count toward an authorization, so revoking an approver is removing their key.
 // It is read-only after construction in normal use, so it is safe for concurrent
 // reads.
+//
+//flynn:policy TestFailClosedVerifier
 type Keyring struct {
 	keys map[string]ed25519.PublicKey
 }

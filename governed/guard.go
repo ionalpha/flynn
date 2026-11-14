@@ -13,6 +13,8 @@ import (
 
 // Guard names a class of governance a run carries by default. Each can be waived, and
 // only through [Waive].
+//
+//flynn:policy
 type Guard string
 
 const (

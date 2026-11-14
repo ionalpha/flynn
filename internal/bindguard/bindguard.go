@@ -29,6 +29,8 @@ import (
 // (bind-safe by default): a bind is allowed only on the loopback interface. Granting
 // AllowNonLoopback additionally permits a named non-loopback unicast interface address,
 // but never a wildcard bind.
+//
+//flynn:policy
 type Exposure struct {
 	// AllowNonLoopback permits binding a specific, non-loopback unicast interface
 	// address (a chosen LAN or public IP). It is the explicit operator opt-in for
