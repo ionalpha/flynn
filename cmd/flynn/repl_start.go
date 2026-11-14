@@ -134,10 +134,21 @@ func runInteractive(modelSpec, dataDir string, learnEnabled, verbose, plain bool
 		if id != "" {
 			s.started = true
 			s.runID = id
-			s.system = defaultSystemPrompt
 			s.lastSeq = lastSeq
 			seed = history
 		}
+	}
+
+	// The instruction files are decided before the interface takes the terminal over,
+	// because the question is asked on it. An external agent CLI reads its own project
+	// files, so only a native session decides.
+	if extAgent == nil {
+		s.project = projectDecision(cwd, dataDir)
+	}
+	if s.started {
+		// A resumed run carries no opening turn to build its instructions on, so it gets
+		// the same base a fresh one starts from.
+		s.system = s.withProjectPrompt(defaultSystemPrompt)
 	}
 
 	if plain || !stdoutIsTerminal() {

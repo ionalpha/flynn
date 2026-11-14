@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ionalpha/flynn/internal/projectctx"
 	"github.com/ionalpha/flynn/internal/text"
 
 	"github.com/ionalpha/flynn/session"
@@ -54,11 +55,34 @@ func renderEvent(w io.Writer, ev session.Event, verbose bool) {
 		_, _ = fmt.Fprintf(w, "\n%s\n", ev.Text)
 	case session.KindStalled:
 		_, _ = fmt.Fprintf(w, "\nstalled: %s\n", ev.Err)
+	case session.KindProjectContext:
+		_, _ = fmt.Fprintf(w, "  %s\n", projectContextLine(ev))
 	default:
 		// Governance and record events (action.*, record.*) share the run's stream but
 		// are not shown in the flat text transcript this renderer draws; the interactive
 		// session renders them inline and in its panels.
 	}
+}
+
+// projectContextLine is the transcript line for a project-file trust decision: whether
+// the instruction files were loaded, on what basis, and which. The hashes stay in the
+// record; a person reading the transcript needs the names.
+func projectContextLine(ev session.Event) string {
+	var names []string
+	for _, l := range strings.Split(ev.Text, "\n") {
+		if f := strings.Fields(l); len(f) > 0 {
+			names = append(names, f[0])
+		}
+	}
+	state := "not loaded"
+	if ev.Allowed {
+		state = "loaded as untrusted context"
+	}
+	line := fmt.Sprintf("project files %s (%s): %s", state, ev.Reason, strings.Join(names, ", "))
+	if !ev.Allowed && ev.Reason == string(projectctx.BasisUnattended) {
+		line += "; --project-files=trust loads them"
+	}
+	return line
 }
 
 // usageMeter accumulates per-turn token usage across a run so the renderer can

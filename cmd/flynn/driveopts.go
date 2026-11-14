@@ -5,6 +5,7 @@ import (
 	"github.com/ionalpha/flynn/capability"
 	"github.com/ionalpha/flynn/goal"
 	"github.com/ionalpha/flynn/governed"
+	"github.com/ionalpha/flynn/internal/projectctx"
 	"github.com/ionalpha/flynn/memory/hybrid"
 	"github.com/ionalpha/flynn/mission"
 	"github.com/ionalpha/flynn/session"
@@ -39,6 +40,9 @@ type driveConfig struct {
 	// the run's memory is assembled before the conversation is, and this is the option
 	// set the entry points already thread through to it.
 	emb hybrid.Embedder
+	// project is the trust decision for the repository's instruction files. Its zero
+	// value is no files found, which adds, taints and records nothing.
+	project projectctx.Decision
 }
 
 // driveOption configures a run driven by drive.
