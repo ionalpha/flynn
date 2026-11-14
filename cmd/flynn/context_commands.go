@@ -22,6 +22,7 @@ func (s *replSession) clear() {
 	s.lastResult = ""
 	s.carriedContext = ""
 	s.carriedTaint = nil
+	s.projectRecorded = false
 }
 
 // compact summarizes the conversation so far and resets the session to continue from

@@ -16,6 +16,7 @@ import (
 	"github.com/ionalpha/flynn/chain"
 	"github.com/ionalpha/flynn/governed"
 	"github.com/ionalpha/flynn/harness"
+	"github.com/ionalpha/flynn/internal/projectctx"
 	"github.com/ionalpha/flynn/internal/tui/editor"
 	"github.com/ionalpha/flynn/internal/tui/theme"
 	"github.com/ionalpha/flynn/learn"
@@ -103,6 +104,14 @@ type replSession struct {
 	// carriedTaint is the taint reasons of the turns a /compact summarised into
 	// carriedContext, applied when the session is distilled (see [distillOutcome]).
 	carriedTaint []string
+
+	// project is the session's trust decision for the repository's instruction files,
+	// made once before the first turn and applied to every run the session opens (a
+	// /clear or /compact starts a new run under the same decision). Its zero value
+	// is no files found. projectRecorded is set once the current run's stream
+	// carries the decision, so a turn appends it exactly once per run.
+	project         projectctx.Decision
+	projectRecorded bool
 
 	recalled []string
 	// skillset serves skill bodies for every turn and accumulates what the session
