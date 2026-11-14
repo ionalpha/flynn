@@ -15,8 +15,9 @@ import (
 
 // The promotion condition for --require-proof is a measurement, and this is where it is
 // taken, on whichever platform the suite is running on: a planned goal whose item carries
-// a check that exits 0, driven through the assembly the binary uses, with the verdict read
-// off the goal the run leaves behind.
+// a check that fails its admission dry run and then exits 0, driven through the assembly the
+// binary uses, with the verdict read off the goal the run leaves behind. The check cannot
+// simply exit 0: a check that already passes is refused before the run starts.
 //
 // The condition asks whether the refusal would cost an honest run anything. It costs
 // nothing where the item's check executes and proves it, and it costs the whole run where
@@ -29,6 +30,9 @@ import (
 // decides which answer is correct, and the answer that is never correct on either host is
 // an item marked proven with no executed check behind it.
 func TestThePromotionConditionForLedgerProof(t *testing.T) {
+	// The first run, admission's dry run, leaves the marker directory and fails; every
+	// later run finds it and exits 0. `||` and `&&` mean the same to cmd and to sh.
+	const check = "cd settled || (mkdir settled && exit 1)"
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
@@ -38,7 +42,7 @@ func TestThePromotionConditionForLedgerProof(t *testing.T) {
 	// real command: a plan whose clause is prose would measure the model auditor rather
 	// than the producer, and prove nothing about whether checks can run here.
 	model := llmtest.NewScripted(
-		llmtest.SayText(`[{"item":"state the answer","verify":"exit 0"}]`),
+		llmtest.SayText(`[{"item":"state the answer","verify":"`+check+`"}]`),
 		llmtest.CallTool("c1", "write", json.RawMessage(`{"path":"answer.txt","content":"42"}`)),
 		llmtest.SayText("done"),
 	)
@@ -75,7 +79,7 @@ func TestThePromotionConditionForLedgerProof(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode the goal's status: %v", err)
 	}
-	if len(spec.Ledger) != 1 || spec.Ledger[0].Verify != "exit 0" {
+	if len(spec.Ledger) != 1 || spec.Ledger[0].Verify != check {
 		t.Fatalf("the run planned no ledger to measure: %+v", spec.Ledger)
 	}
 
