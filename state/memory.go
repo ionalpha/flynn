@@ -8,6 +8,7 @@ import (
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/hlc"
 	"github.com/ionalpha/flynn/ids"
+	"github.com/ionalpha/flynn/recallplan"
 	"github.com/ionalpha/flynn/spine"
 )
 
@@ -303,14 +304,19 @@ func (s *memSkills) Search(_ context.Context, query string, limit int) ([]Skill,
 	c := s.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	q := strings.ToLower(strings.TrimSpace(query))
-	out := make([]Skill, 0)
+	q := strings.TrimSpace(query)
+	live := make([]Skill, 0, len(c.skillsByID))
 	for _, sk := range c.skillsByID {
-		if sk.Deleted {
-			continue
+		if !sk.Deleted {
+			live = append(live, sk)
 		}
-		if q == "" || skillMatches(sk, q) {
-			out = append(out, sk)
+	}
+	out := live
+	if q != "" {
+		hits := recallplan.Select(q, live, skillText, 0)
+		out = make([]Skill, 0, len(hits))
+		for _, h := range hits {
+			out = append(out, h.Item)
 		}
 	}
 	sort.Slice(out, sliceSkillsBySlug(out))
@@ -359,11 +365,10 @@ func sliceSkillsBySlug(s []Skill) func(i, j int) bool {
 	}
 }
 
-func skillMatches(sk Skill, lowerQuery string) bool {
-	return strings.Contains(strings.ToLower(sk.Name), lowerQuery) ||
-		strings.Contains(strings.ToLower(sk.Description), lowerQuery) ||
-		strings.Contains(strings.ToLower(sk.Body), lowerQuery) ||
-		strings.Contains(strings.ToLower(strings.Join(sk.Tags, " ")), lowerQuery)
+// skillText is every field a skill search reaches, as one string to match terms
+// against.
+func skillText(sk Skill) string {
+	return strings.Join([]string{sk.Name, sk.Description, sk.Body, strings.Join(sk.Tags, " ")}, "\n")
 }
 
 type memMemory struct {
@@ -388,7 +393,7 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 	c := m.c
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	query := strings.ToLower(strings.TrimSpace(q.Query))
+	query := strings.TrimSpace(q.Query)
 	// One reading of the clock for the whole recall, so every item is judged
 	// expired-or-not against the same instant.
 	now := c.st.Now()
@@ -401,7 +406,7 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 			chain[s] = true
 		}
 	}
-	out := make([]MemoryItem, 0)
+	candidates := make([]MemoryItem, 0)
 	for _, it := range c.memItems {
 		if it.Deleted {
 			continue
@@ -412,18 +417,26 @@ func (m *memMemory) Recall(_ context.Context, q RecallQuery) ([]MemoryItem, erro
 		if !q.Selects(it, now) {
 			continue
 		}
-		if query != "" && !strings.Contains(strings.ToLower(it.Content), query) {
-			continue
+		candidates = append(candidates, it)
+	}
+	// With no query nothing is graded, so every item scores 1: MemoryItem.Score
+	// reserves 1 for "matched, no opinion on how well", and MinScore excludes
+	// nothing, which is the honest answer from a store with no ranking to offer.
+	// A query is answered by the plan in recallplan.Plan, whose partial matches
+	// score below 1.
+	out := make([]MemoryItem, 0, len(candidates))
+	if query == "" {
+		for _, it := range candidates {
+			it.Score = 1
+			if it.Score >= q.MinScore {
+				out = append(out, it)
+			}
 		}
-		// A substring scan has no notion of a better or worse match, so every hit
-		// scores 1 rather than 0 - see MemoryItem.Score. MinScore consequently
-		// excludes nothing here, which is the honest answer from a store with no
-		// ranking to offer.
-		it.Score = 1
-		if it.Score < q.MinScore {
-			continue
+	} else {
+		for _, h := range recallplan.Select(query, candidates, func(it MemoryItem) string { return it.Content }, q.MinScore) {
+			h.Item.Score = h.Share
+			out = append(out, h.Item)
 		}
-		out = append(out, it)
 	}
 	SortRecall(q, out)
 	if q.Limit > 0 && len(out) > q.Limit {
