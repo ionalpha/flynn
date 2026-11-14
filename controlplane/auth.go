@@ -37,7 +37,17 @@ const (
 
 // Allows reports whether this scope satisfies the required minimum. Because scopes
 // are ordered, a higher scope satisfies a lower requirement.
-func (s Scope) Allows(required Scope) bool { return s >= required }
+//
+// Both sides must be a scope this package defines. A bare comparison would admit a
+// principal whose scope is above [ScopeAdmin] (a corrupt token table, or a scope from a
+// newer build) to every route, and a requirement below [ScopeNone] would admit everyone,
+// so a value outside the scale answers false on either side.
+func (s Scope) Allows(required Scope) bool {
+	return s.defined() && required.defined() && s >= required
+}
+
+// defined reports whether s is one of the scopes declared above.
+func (s Scope) defined() bool { return s >= ScopeNone && s <= ScopeAdmin }
 
 // String renders the scope for logs and audit.
 func (s Scope) String() string {
