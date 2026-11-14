@@ -7,6 +7,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/ionalpha/flynn/recallplan"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
@@ -116,39 +117,57 @@ func (s *skills) List(ctx context.Context, scope state.Scope) ([]state.Skill, er
 
 func (s *skills) Search(ctx context.Context, query string, limit int) ([]state.Skill, error) {
 	q := strings.TrimSpace(query)
-	var (
-		rows *sql.Rows
-		err  error
-	)
 	if q == "" {
 		// An empty query matches everything, ordered by slug (FTS5 rejects an
 		// empty MATCH), capped at limit.
 		sqlStr := `SELECT ` + skillCols + ` FROM skills WHERE deleted = 0 ORDER BY slug`
+		var (
+			rows *sql.Rows
+			err  error
+		)
 		if limit > 0 {
 			sqlStr += ` LIMIT ?`
 			rows, err = s.p.reads().QueryContext(ctx, sqlStr, limit)
 		} else {
 			rows, err = s.p.reads().QueryContext(ctx, sqlStr)
 		}
-	} else {
-		// Ordered by how well the row matches, then by slug for a stable answer.
-		// A limit cuts this list, so ordering it by slug would make the cap select
-		// alphabetically: for a term many skills share, everything sorted after the
-		// first few is unreachable however well it matches. The bm25 weights follow
-		// the columns of skills_fts and say where a hit counts most: the description
-		// is what a skill publishes about when to reach for it, the name is the
-		// handle, and the body is the long text a stray word lands in.
-		sqlStr := `SELECT ` + skillColsQualified + `
-			FROM skills s JOIN skills_fts f ON f.skill_id = s.id
-			WHERE f.skills_fts MATCH ? AND s.deleted = 0
-			ORDER BY bm25(skills_fts, 0.0, 5.0, 10.0, 1.0, 3.0), s.slug`
-		if limit > 0 {
-			sqlStr += ` LIMIT ?`
-			rows, err = s.p.reads().QueryContext(ctx, sqlStr, ftsPhrase(q), limit)
-		} else {
-			rows, err = s.p.reads().QueryContext(ctx, sqlStr, ftsPhrase(q))
+		if err != nil {
+			return nil, err
+		}
+		return collectSkills(rows)
+	}
+	// Strict first, widening only on an empty answer: see recallplan.Plan. A query
+	// with no words in it has no attempts and matches nothing.
+	for _, a := range recallplan.Plan(q) {
+		found, err := s.searchMatching(ctx, ftsMatch(a), limit)
+		if err != nil || len(found) > 0 {
+			return found, err
 		}
 	}
+	return []state.Skill{}, nil
+}
+
+// searchMatching runs one attempt of a text search: the live skills match, an FTS5
+// expression, selects, best first.
+//
+// Ordered by how well the row matches, then by slug for a stable answer. A limit
+// cuts this list, so ordering it by slug would make the cap select alphabetically:
+// for a term many skills share, everything sorted after the first few is
+// unreachable however well it matches. The bm25 weights follow the columns of
+// skills_fts and say where a hit counts most: the description is what a skill
+// publishes about when to reach for it, the name is the handle, and the body is the
+// long text a stray word lands in.
+func (s *skills) searchMatching(ctx context.Context, match string, limit int) ([]state.Skill, error) {
+	sqlStr := `SELECT ` + skillColsQualified + `
+		FROM skills s JOIN skills_fts f ON f.skill_id = s.id
+		WHERE f.skills_fts MATCH ? AND s.deleted = 0
+		ORDER BY bm25(skills_fts, 0.0, 5.0, 10.0, 1.0, 3.0), s.slug`
+	args := []any{match}
+	if limit > 0 {
+		sqlStr += ` LIMIT ?`
+		args = append(args, limit)
+	}
+	rows, err := s.p.reads().QueryContext(ctx, sqlStr, args...)
 	if err != nil {
 		return nil, err
 	}

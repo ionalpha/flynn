@@ -22,6 +22,7 @@ import (
 
 	"github.com/ionalpha/flynn/clock"
 	"github.com/ionalpha/flynn/envelope"
+	"github.com/ionalpha/flynn/recallplan"
 	"github.com/ionalpha/flynn/resource"
 	"github.com/ionalpha/flynn/state"
 )
@@ -264,10 +265,12 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 	return toItem(out)
 }
 
-// Recall returns live memory items whose content contains the query (case
-// insensitive), most-specific scope first then most-recent first, capped at
-// q.Limit (<= 0 means no cap). A zero Scope spans every scope; a set Scope
-// narrows to it, and widens back out over that scope's ancestors when
+// Recall returns live memory items whose content contains the words of the query
+// (case insensitive, in any order), most-specific scope first then most-recent
+// first, capped at q.Limit (<= 0 means no cap). Every word must match; only when
+// no item holds them all does the recall widen to items holding any of the query's
+// content words, as [recallplan.Plan] lays out. A zero Scope spans every scope; a
+// set Scope narrows to it, and widens back out over that scope's ancestors when
 // q.IncludeAncestors is set. An empty query matches every live item.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	rs, err := s.list(ctx, q)
@@ -278,33 +281,57 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 	if err != nil {
 		return nil, err
 	}
-	query := strings.ToLower(strings.TrimSpace(q.Query))
+	query := strings.TrimSpace(q.Query)
 	// One clock reading for the whole recall, so every item is judged expired
 	// against the same instant.
 	now := s.clk.Now()
-	out := make([]state.MemoryItem, 0, len(all))
+	selected := make([]state.MemoryItem, 0, len(all))
 	for _, it := range all {
-		if !q.Selects(it, now) {
-			continue
+		if q.Selects(it, now) {
+			selected = append(selected, it)
 		}
-		if query != "" && !strings.Contains(strings.ToLower(it.Content), query) {
-			continue
-		}
-		// A substring scan cannot grade a match, so every hit scores 1 rather than
-		// 0 - see state.MemoryItem.Score. A projection that can rank (a full-text or
-		// vector index over the same resource events) reports its own score here
-		// without any other part of this contract changing.
-		it.Score = 1
-		if it.Score < q.MinScore {
-			continue
-		}
-		out = append(out, it)
+	}
+	var out []state.MemoryItem
+	if query != "" {
+		out = matchPlanned(selected, query, q.MinScore)
+	} else {
+		out = scoreAll(selected, q.MinScore)
 	}
 	state.SortRecall(q, out)
 	if q.Limit > 0 && len(out) > q.Limit {
 		out = out[:q.Limit]
 	}
 	return out, nil
+}
+
+// scoreAll scores every item 1, since with no query there is nothing to grade, and
+// drops those under floor.
+func scoreAll(items []state.MemoryItem, floor float64) []state.MemoryItem {
+	out := make([]state.MemoryItem, 0, len(items))
+	for _, it := range items {
+		it.Score = 1
+		if it.Score >= floor {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// matchPlanned selects the items that answer query, scored by the share of the
+// matched words each holds. A substring scan cannot grade a match by how rare its
+// words are, but a partial match found by widening scores below a full one and
+// below 1, which state.MemoryItem.Score reserves for "matched, no opinion on how
+// well". A projection that can rank (a full-text or vector index over the same
+// resource events) reports its own score here without any other part of this
+// contract changing.
+func matchPlanned(items []state.MemoryItem, query string, floor float64) []state.MemoryItem {
+	hits := recallplan.Select(query, items, func(it state.MemoryItem) string { return it.Content }, floor)
+	out := make([]state.MemoryItem, 0, len(hits))
+	for _, h := range hits {
+		h.Item.Score = h.Share
+		out = append(out, h.Item)
+	}
+	return out
 }
 
 // list reads the resources a recall query covers: every scope for an unfiltered

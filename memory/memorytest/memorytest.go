@@ -22,6 +22,7 @@ func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Run("ScopeResolution", func(t *testing.T) { testScopeResolution(t, newStore()) })
 	t.Run("Selectors", func(t *testing.T) { testSelectors(t, newStore()) })
 	t.Run("Relevance", func(t *testing.T) { testRelevance(t, newStore()) })
+	t.Run("QueryWords", func(t *testing.T) { testQueryWords(t, newStore()) })
 	t.Run("Provenance", func(t *testing.T) { testProvenance(t, newStore()) })
 	t.Run("Anchors", func(t *testing.T) { testAnchors(t, newStore()) })
 	t.Run("Subjects", func(t *testing.T) { testSubjects(t, newStore()) })
@@ -327,6 +328,49 @@ func testRelevance(t *testing.T, mem state.MemoryStore) {
 	// that carries one does not persist it.
 	if got := write(t, mem, state.MemoryItem{Kind: "fact", Content: "delta", Score: 0.5}); got.Score != 0 {
 		t.Fatalf("Write returned Score %v, want it cleared", got.Score)
+	}
+}
+
+// testQueryWords holds a store to answering a question by its words rather than by
+// the question as one phrase. A phrase read returns nothing for a question phrased
+// differently from the stored sentence, and an empty answer looks the same as an
+// empty store, so the agent proceeds without a fact it holds. The rules are the
+// plan in recallplan.Plan: every word must match first, and only when no item
+// holds them all does the recall widen to items holding some, a full match
+// outranking a partial one.
+func testQueryWords(t *testing.T, mem state.MemoryStore) {
+	decision := write(t, mem, state.MemoryItem{Kind: "fact", Content: "We decided to keep the database on PostgreSQL after the migration review"})
+	write(t, mem, state.MemoryItem{Kind: "fact", Content: "The review of the deploy pipeline is on Fridays"})
+	backups := write(t, mem, state.MemoryItem{Kind: "fact", Content: "Database backups run nightly"})
+
+	// The words are in the item, out of order and not adjacent, and the question
+	// carries words and punctuation the item does not. The two other items each hold
+	// one of the question's content words and must stay out: widening is a fallback
+	// for an empty answer, not a way to pad a full one.
+	got := recall(t, mem, state.RecallQuery{Query: "Which database did we keep after the review?"})
+	wantSet(t, "a question whose words are in the item, not adjacent", got, decision.Content)
+
+	// Nothing holds all four words, so the recall widens: the items holding some of
+	// them come back, and the one holding more of them first.
+	got = recall(t, mem, state.RecallQuery{Query: "database nightly backups restore", Order: state.OrderRelevance})
+	wantOrder(t, "a question no item answers in full", got, backups.Content, decision.Content)
+	if got[0].Score < got[1].Score {
+		t.Fatalf("the fuller match scored %v below the partial one at %v", got[0].Score, got[1].Score)
+	}
+
+	// A word nothing holds answers nothing; widening does not invent a match.
+	wantCount(t, "a question none of whose words appear", recall(t, mem, state.RecallQuery{Query: "kubernetes terraform"}), 0)
+
+	// Text that is query syntax in some full-text engines is matched as text: it
+	// must not error, and it must not turn into a match for every item.
+	for _, q := range []string{`database AND`, `NEAR(database`, `"database`, `data*`, `-database`, `title:database`, `???`} {
+		got, err := mem.Recall(context.Background(), state.RecallQuery{Query: q})
+		if err != nil {
+			t.Fatalf("recall of %q: %v", q, err)
+		}
+		if len(got) > 2 {
+			t.Fatalf("recall of %q returned %d items (%v), want it matched as text", q, len(got), contents(got))
+		}
 	}
 }
 
