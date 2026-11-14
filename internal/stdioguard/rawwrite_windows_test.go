@@ -15,6 +15,12 @@ func rawWriteStdout(b []byte) error {
 	return windows.WriteFile(h, b, &n, nil)
 }
 
+// closeStdout leaves the process with no standard output, as a service or a detached
+// process has.
+func closeStdout() error {
+	return windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, 0)
+}
+
 // rawWriteHandle writes to the handle value h, which the caller took from the parent's
 // frame writer. In a child that did not inherit it, the value is not that handle.
 func rawWriteHandle(h uintptr, b []byte) error {

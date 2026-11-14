@@ -37,6 +37,8 @@ func TestHelperProcess(t *testing.T) {
 		helperGuarded()
 	case "unguarded":
 		helperUnguarded()
+	case "nostdout":
+		helperNoStdout()
 	case "emit":
 		_, _ = os.Stdout.WriteString(forged)
 	case "probe":
@@ -93,6 +95,21 @@ func helperGuarded() {
 		time.Sleep(5 * time.Millisecond)
 	}
 	fmt.Fprintf(os.Stderr, "stats:%d\n", g.Stats().StrayBytes)
+}
+
+// helperNoStdout tries to install the guard in a process that has no standard output. There
+// is nothing to preserve and nothing to divert, so Install must say so and leave the process
+// installable by a later attempt with a real stdout.
+func helperNoStdout() {
+	if err := closeStdout(); err != nil {
+		fail("close stdout: %v", err)
+	}
+	if _, err := Install(); !errors.Is(err, ErrNoStdout) {
+		fail("install without stdout = %v, want ErrNoStdout", err)
+	}
+	if _, err := Install(); !errors.Is(err, ErrNoStdout) {
+		fail("a failed install must not count as installed: second attempt = %v", err)
+	}
 }
 
 // helperUnguarded makes the same writes with no guard. It exists so the test can show the
@@ -159,6 +176,12 @@ func TestFrameStreamIsByteIdenticalUnderStrayWrites(t *testing.T) {
 	if !strings.Contains(stderr, want) {
 		t.Errorf("stray byte count wrong, want %q in:\n%s", want, stderr)
 	}
+}
+
+// TestInstallWithoutStdoutFailsCleanly runs the guard in a process whose standard output is
+// closed. The helper exits 3 with a message when Install does not return ErrNoStdout.
+func TestInstallWithoutStdoutFailsCleanly(t *testing.T) {
+	runHelper(t, "nostdout")
 }
 
 // TestHarnessSeesCorruptionWithoutTheGuard runs the same writes with no guard and requires

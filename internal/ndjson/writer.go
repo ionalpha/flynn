@@ -1,7 +1,6 @@
 package ndjson
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -27,16 +26,14 @@ type Writer struct {
 func NewWriter(w io.Writer) *Writer { return &Writer{w: w} }
 
 // WriteFrame encodes v as one line. The encoding contains no LF, because encoding/json
-// escapes control characters inside strings, and it escapes U+2028 and U+2029 as well, so
-// a consumer that splits on them anyway still sees one record. The line and its LF go out
+// escapes control characters inside strings and compacts a [json.RawMessage], and it
+// escapes U+2028 and U+2029 as well, so a consumer that splits on them anyway still sees
+// one record. The line and its LF go out
 // in a single Write call under a lock, so concurrent callers never interleave frames.
 func (w *Writer) WriteFrame(v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("ndjson: encode frame: %w", err)
-	}
-	if bytes.IndexByte(b, '\n') >= 0 {
-		return errors.New("ndjson: encoded frame contains a line feed")
 	}
 	b = append(b, '\n')
 

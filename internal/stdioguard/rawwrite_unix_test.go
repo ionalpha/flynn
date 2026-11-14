@@ -11,6 +11,10 @@ func rawWriteStdout(b []byte) error {
 	return err
 }
 
+// closeStdout leaves the process with no standard output, as a daemon started with the
+// descriptor closed has.
+func closeStdout() error { return unix.Close(1) }
+
 // rawWriteHandle writes to the descriptor number h, which the caller took from the
 // parent's frame writer. In a child that did not inherit it, the number is unused.
 func rawWriteHandle(h uintptr, b []byte) error {
