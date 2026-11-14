@@ -400,6 +400,10 @@ injected. Not implementing one is supported; the table gives the fallback.
   `clock.Timing` or `observe.Meter` implements these with it.
 - `reconcile.Reconciler`: Flynn implements it and the reconcile loop consumes it.
   There is nothing for a host to supply.
+- `budget.Recorder`, `budget.Reopener`: the two halves of a budget extension that
+  live in packages `budget` cannot import. Flynn implements both (`spinesink.BudgetSink`
+  and `goal.BudgetReopener`) and a host has nothing to supply: the extension itself is
+  refused unless an explicit cap is configured and a person's entry point calls it.
 - `controlplane.Watcher`: a read model Flynn implements (`PollWatcher`) and does not
   depend on. The served watch endpoint tails the resource stream directly. The
   interface gives an embedder list, get and watch as one read model; a streaming

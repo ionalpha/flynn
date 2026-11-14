@@ -99,6 +99,10 @@ type Status struct {
 	// The key is whatever TierInto bound for the run (the model id, by default); an
 	// untiered run leaves this nil, so the zero Status is unchanged.
 	ByTier map[string]Spent `json:"byTier,omitempty"`
+	// Extended is the total [Ledger.Extend] has raised the ceiling by, which is what
+	// the extension cap is checked against. A pointer so a run never extended keeps
+	// the status it always had.
+	Extended *Limits `json:"extended,omitempty"`
 }
 
 // committed is the total a budget has promised: spent plus still-reserved. The
