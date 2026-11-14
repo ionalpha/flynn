@@ -70,6 +70,31 @@ type Planner struct {
 	tools    []string
 	lookPath func(string) (string, error)
 	goos     string
+
+	admission *Admission
+}
+
+// Admission configures the planner to admit each check before the plan is returned. A check
+// that is not admitted goes back to the model with the reason, in the same correction loop as
+// a check that names a tool, so a wrong check is fixed while it is cheap and not discovered
+// by a run that stalls on it.
+type Admission struct {
+	// Verifier runs each grounded check once on the untouched tree. It must run the check
+	// where the run's own checks run, in the run's sandbox. Nil skips the dry run and admits
+	// on grounding alone.
+	Verifier goal.ItemVerifier
+	// Recorder receives one verdict per item, refusals included. Nil records nothing.
+	Recorder goal.AdmissionRecorder
+	// Dir is the working directory a check runs in. Empty disables grounding.
+	Dir string
+	// Confined reports that the run's commands cannot write outside Dir.
+	Confined bool
+}
+
+// WithPlannerAdmission turns on check admission. Without it the planner returns whatever
+// plan the model wrote, once no check names a tool.
+func WithPlannerAdmission(a Admission) PlannerOption {
+	return func(p *Planner) { p.admission = &a }
 }
 
 // PlannerOption configures a Planner.
@@ -149,12 +174,19 @@ func (p *Planner) Plan(ctx context.Context, r resource.Resource) ([]goal.LedgerI
 		if err != nil {
 			return nil, fault.Wrap(fault.Transient, "planner_bad_output", err)
 		}
+		code := "planner_unrunnable_check"
 		refusal := p.refuseToolChecks(items)
+		if refusal == "" && p.admission != nil {
+			code = "planner_check_not_admitted"
+			if refusal, err = p.admit(ctx, r, spec, items); err != nil {
+				return nil, err
+			}
+		}
 		if refusal == "" {
 			return items, nil
 		}
 		if attempt == plannerCorrections {
-			return nil, fault.New(fault.Transient, "planner_unrunnable_check", refusal)
+			return nil, fault.New(fault.Transient, code, refusal)
 		}
 		messages = append(messages, resp.Message, userTurn(refusal, nil))
 	}
@@ -163,11 +195,19 @@ func (p *Planner) Plan(ctx context.Context, r resource.Resource) ([]goal.LedgerI
 // systemPrompt is the standing prompt, with the run's tool names added when they are known
 // so the model is told up front what the correction would otherwise have to tell it.
 func (p *Planner) systemPrompt() string {
-	if len(p.tools) == 0 {
-		return p.system
+	system := p.system
+	if len(p.tools) > 0 {
+		system += "\n\nYour own tools (" + strings.Join(p.tools, ", ") + ") are functions you call, not programs: a check is run by a shell, which cannot start them, so a check that names one can never pass. " +
+			"An action you take through a tool is proven by that tool's recorded result. Plan the check on what the action leaves behind instead."
 	}
-	return p.system + "\n\nYour own tools (" + strings.Join(p.tools, ", ") + ") are functions you call, not programs: a check is run by a shell, which cannot start them, so a check that names one can never pass. " +
-		"An action you take through a tool is proven by that tool's recorded result. Plan the check on what the action leaves behind instead."
+	if p.admission != nil {
+		system += "\n\nEvery check is run once, before any work, on the tree as it is, and is admitted only if it fails then. A check that already passes, that the shell cannot parse, or that runs a program the host lacks is sent back to you. " +
+			"A check may name a file only if it exists now or the objective asks for it; do not invent a file for a check to find."
+		if p.admission.Confined {
+			system += " Commands are confined to the working directory: a check cannot name a path outside it that does not already exist, such as a file in the host's temp directory."
+		}
+	}
+	return system
 }
 
 // refuseToolChecks is the message that sends a plan back, or "" when every check can be
@@ -192,6 +232,57 @@ func (p *Planner) refuseToolChecks(items []goal.LedgerItem) string {
 		"A check is a shell command, and a tool is not one. An action taken through a tool is proven by the tool's recorded result, so do not plan a check that calls it. " +
 		"Plan a command that tests what the action leaves behind (a file that exists, a test that passes, a program that exits 0). " +
 		"Return the whole JSON array again, with every check fixed."
+}
+
+// admit judges every item's check and returns the message that sends the plan back, or ""
+// when all are admitted. Text rules run first and are free; a check is run once, on the tree
+// as it is, only when its text passes them, because a check that names a file nobody made
+// fails for that reason and says nothing more. Every verdict is recorded, so the record shows
+// what the planner was sent back for as well as what it finally got through.
+//
+// The dry run is the same verifier that runs the check later, in the same sandbox, so a
+// check refused for a missing program or a quoting error here is the check that would have
+// stalled the goal there. A cancelled context is the only error.
+func (p *Planner) admit(ctx context.Context, r resource.Resource, spec goal.Spec, items []goal.LedgerItem) (string, error) {
+	a := p.admission
+	ground := goal.Ground{Dir: a.Dir, Confined: a.Confined, Objective: spec.Objective + "\n" + spec.StopCondition, LookPath: p.lookPath}
+	var b strings.Builder
+	for _, it := range items {
+		v := goal.AdmissionVerdict{Item: goal.ItemID(it.Item, it.Verify), Admitted: true}
+		var reasons []string
+		for _, prob := range goal.CheckGrounding(it.Verify, ground) {
+			v.Admitted, v.Refusal = false, prob.Refusal
+			reasons = append(reasons, prob.Reason)
+		}
+		if v.Admitted && a.Verifier != nil {
+			verdict, err := a.Verifier.VerifyItem(ctx, r, it)
+			if err != nil {
+				return "", err
+			}
+			v.DryRun = verdict.Executed
+			if refusal, reason := goal.DryRunRefusal(it.Verify, verdict); refusal != "" {
+				v.Admitted, v.Refusal = false, refusal
+				reasons = append(reasons, reason)
+			} else if !verdict.Executed {
+				v.Reason = "admitted without a dry run: " + strings.TrimSpace(verdict.Detail)
+			}
+		}
+		if !v.Admitted {
+			v.Reason = strings.Join(reasons, " ")
+			fmt.Fprintf(&b, "- %q, checked by %q (%s): %s\n", it.Item, it.Verify, v.Refusal, v.Reason)
+		}
+		if a.Recorder != nil {
+			if err := a.Recorder.RecordAdmission(ctx, r, v); err != nil {
+				return "", err
+			}
+		}
+	}
+	if b.Len() == 0 {
+		return "", nil
+	}
+	return "These checks were not admitted, so the goal has not started:\n" + b.String() +
+		"A check is admitted only when it names files that exist or that the objective asks for, can run on this host as written, and fails now, on the tree as it is, because the work is not done. " +
+		"Return the whole JSON array again, with every check fixed.", nil
 }
 
 // runsAsProgram reports whether a shell on this host would start a program of this name.

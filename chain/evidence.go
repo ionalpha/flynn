@@ -54,6 +54,24 @@ const (
 	ItemReasonKey = "reason"
 )
 
+// The admission vocabulary. Before work starts, each ledger item's check is admitted or
+// refused (goal.CheckGrounding, goal.DryRunRefusal), and the verdict is recorded so a
+// reader of the run can tell a check that was vetted from one that was taken on trust.
+// ItemKey names the item and ItemReasonKey carries the sentence the planner was sent.
+const (
+	// ItemAdmitted is the admission verdict for one ledger item's check. It is not
+	// evidence that the item is done and the evidence gate never reads it.
+	ItemAdmitted = "item.admitted"
+	// ItemAdmittedKey holds the boolean verdict.
+	ItemAdmittedKey = "admitted"
+	// ItemRefusalKey holds the stable name of why a check was refused, absent when it was
+	// admitted.
+	ItemRefusalKey = "refusal"
+	// ItemDryRunKey is true when the check was executed once on the untouched tree before
+	// it was admitted, false when it was admitted on its text alone.
+	ItemDryRunKey = "dryRun"
+)
+
 // The two kinds of item evidence. They are kinds, not tiers: neither is convertible
 // into the other, and there is no path that promotes an assertion into an execution.
 const (

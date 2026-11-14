@@ -16,6 +16,9 @@ import (
 // and across a crash.
 type Ledger struct {
 	store resource.Store
+	// extendCap is the most [Ledger.Extend] may raise a run's ceiling by in total.
+	// Zero allows none.
+	extendCap Limits
 }
 
 // NewLedger returns a Ledger backed by store.
