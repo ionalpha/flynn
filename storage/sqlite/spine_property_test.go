@@ -8,7 +8,6 @@ import (
 
 	"github.com/ionalpha/flynn/internal/testkit"
 	"github.com/ionalpha/flynn/spine"
-	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
 // logModel drives the durable Log through random Append/Read sequences and
@@ -87,11 +86,8 @@ func (m *logModel) Check(t *rapid.T) {
 
 func TestSQLiteLogStateMachine(t *testing.T) {
 	rapid.Check(t, func(t *rapid.T) {
-		s, err := sqlite.Open(context.Background(), ":memory:")
-		if err != nil {
-			t.Fatalf("open: %v", err)
-		}
-		defer func() { _ = s.Close() }()
+		s, done := openFresh(t.Fatalf)
+		defer done()
 		m := &logModel{ctx: context.Background(), log: s.Log(), stream: "run"}
 		t.Repeat(rapid.StateMachineActions(m))
 	})
