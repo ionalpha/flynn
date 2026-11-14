@@ -31,10 +31,19 @@ cd "$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 # a COUNT=2 pass to a subset rather than paying it on the whole -race suite.
 count=${COUNT:+-count=$COUNT}
 if [ "$#" -eq 0 ]; then set -- ./...; fi
+# -race turns on checkptr, which validates every unsafe.Pointer conversion at run
+# time. modernc.org/sqlite is C transpiled to Go, so nearly every instruction in it
+# is a pointer conversion, and checkptr roughly doubled the cost of anything that
+# touches the database: opening a store (30 migrations, each re-parsing the schema)
+# took 374ms with it and 191ms without. That cost put storage/sqlite and cmd/flynn
+# near Go's 10 minute package timeout on the slower macOS runner. The pattern turns
+# checkptr off for the transpiled SQLite only; the race detector still covers it, and
+# checkptr still covers every other package, including this module's own.
+checkptr='-gcflags=modernc.org/...=-d=checkptr=0'
 # shellcheck disable=SC2086  # COVER and count are intentionally split into flags.
-echo "==> go test -race -shuffle=$SHUFFLE $count $COVER $*"
+echo "==> go test -race $checkptr -shuffle=$SHUFFLE $count $COVER $*"
 # shellcheck disable=SC2086
-go test -race -shuffle="$SHUFFLE" $count $COVER "$@"
+go test -race "$checkptr" -shuffle="$SHUFFLE" $count $COVER "$@"
 
 # Under -coverpkg every test binary emits a block for every statement in the tree,
 # so the raw profile holds one copy of each block per binary: here that is ~2M lines

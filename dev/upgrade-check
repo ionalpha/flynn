@@ -47,8 +47,11 @@ asset="flynn_${os}_${arch}.${ext}"
 base="https://github.com/$repo/releases/download/$from"
 
 echo "==> downloading $from $asset"
-curl -fsSL -o "$work/$asset" "$base/$asset"
-curl -fsSL -o "$work/checksums.txt" "$base/checksums.txt"
+# --retry covers the 5xx answers GitHub's download host gives for minutes at a
+# time: on 5 Nov 2026 it returned 504 for one v0.1.3 asset while serving the
+# others, which failed a release's Windows leg before it tested anything.
+curl -fsSL --retry 5 --retry-delay 5 -o "$work/$asset" "$base/$asset"
+curl -fsSL --retry 5 --retry-delay 5 -o "$work/checksums.txt" "$base/checksums.txt"
 want="$(grep " $asset\$" "$work/checksums.txt" | cut -d' ' -f1)"
 if command -v sha256sum >/dev/null 2>&1; then
   got="$(sha256sum "$work/$asset" | cut -d' ' -f1)"

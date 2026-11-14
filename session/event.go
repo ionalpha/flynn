@@ -69,6 +69,14 @@ const (
 	// destinations it reached and which the policy refused) alongside its governed
 	// actions, so the same panel that shows admission decisions shows egress ones.
 	KindEgressDecision Kind = "net.egress"
+
+	// KindProjectContext is the trust decision about a repository's instruction files
+	// (AGENTS.md, CLAUDE.md): whether they were loaded into the prompt as untrusted
+	// context, and why. It is recorded on the run's stream so the sealed record shows
+	// which instructions the model was given. Allowed reports a load, Reason names the
+	// basis (flag, remembered, prompt, unattended), and Text lists one file per line
+	// with its content hash.
+	KindProjectContext Kind = "project.context"
 )
 
 // The dispatch waist and the sealer write these event types onto a run's stream
@@ -82,6 +90,7 @@ const (
 	typeDispatchRejected = "dispatch.rejected"
 	typeRecordSealed     = "spine.record"
 	typeEgress           = "net.egress"
+	typeProjectContext   = "project.context"
 )
 
 // Event is one record on a session's event stream: an ordered, replayable view of
@@ -155,11 +164,13 @@ type Event struct {
 	// Host is the destination an egress decision concerned (net.egress): the literal
 	// address netguard resolved before deciding whether to connect.
 	Host string `json:"host,omitempty"`
-	// Allowed reports whether an egress decision permitted the dial (net.egress). A
-	// false Allowed with a set Host is a blocked destination.
+	// Allowed reports whether an egress decision permitted the dial (net.egress), or
+	// whether the project instruction files were loaded (project.context). A false
+	// Allowed with a set Host is a blocked destination.
 	Allowed bool `json:"allowed,omitempty"`
 	// Reason is the short why for an egress decision (net.egress): why netguard allowed
-	// the dial (public, allowlisted) or refused it (private or reserved address, ...).
+	// the dial (public, allowlisted) or refused it (private or reserved address, ...). On
+	// project.context it is the basis of the trust decision.
 	Reason string `json:"reason,omitempty"`
 }
 
@@ -228,6 +239,8 @@ func decodeBody(se spine.Event) Event {
 		return Event{Kind: KindRecordSealed}
 	case typeEgress:
 		return egressEvent(se)
+	case typeProjectContext:
+		return projectContextEvent(se)
 	default:
 		var e Event
 		if s, ok := se.Payload[payloadKey].(string); ok {
@@ -263,6 +276,19 @@ func egressEvent(se spine.Event) Event {
 	e.Host, _ = se.Payload["host"].(string)
 	e.Reason, _ = se.Payload["reason"].(string)
 	if v, _ := se.Payload["verdict"].(string); v == "allowed" {
+		e.Allowed = true
+	}
+	return e
+}
+
+// projectContextEvent projects a project-file trust decision into the session
+// vocabulary. The verdict is a string on the wire so it survives a durable log's JSON
+// round trip; it maps to the Allowed bool here.
+func projectContextEvent(se spine.Event) Event {
+	e := Event{Kind: KindProjectContext}
+	e.Reason, _ = se.Payload["basis"].(string)
+	e.Text, _ = se.Payload["files"].(string)
+	if v, _ := se.Payload["verdict"].(string); v == "loaded" {
 		e.Allowed = true
 	}
 	return e

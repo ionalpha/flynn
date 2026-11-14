@@ -3,6 +3,7 @@ package memorytest_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -92,6 +93,35 @@ func TestSuiteFailsOnBrokenMemoryStore(t *testing.T) {
 					got[i].Score = 0
 				}
 				return got, err
+			}
+		}),
+
+		c("recall matches only the whole query as a phrase", "QueryWords", func(m *faultstate.Memory) {
+			m.OnRecall = func(ctx context.Context, in state.MemoryStore, q state.RecallQuery) ([]state.MemoryItem, error) {
+				got, err := in.Recall(ctx, q)
+				phrase := strings.ToLower(strings.TrimSpace(q.Query))
+				kept := got[:0]
+				for _, it := range got {
+					if phrase == "" || strings.Contains(strings.ToLower(it.Content), phrase) {
+						kept = append(kept, it)
+					}
+				}
+				return kept, err
+			}
+		}),
+		c("recall answers each word alone and pools the results", "QueryWords", func(m *faultstate.Memory) {
+			m.OnRecall = func(ctx context.Context, in state.MemoryStore, q state.RecallQuery) ([]state.MemoryItem, error) {
+				var out []state.MemoryItem
+				for _, w := range strings.Fields(q.Query) {
+					wq := q
+					wq.Query = w
+					got, err := in.Recall(ctx, wq)
+					if err != nil {
+						return nil, err
+					}
+					out = append(out, got...)
+				}
+				return out, nil
 			}
 		}),
 

@@ -155,6 +155,7 @@ linters:
             - "**/state/**"
             - "**/resource/**"
             - "**/provider/**"
+            - "**/usage/**"
             - "!**/*_test.go"
           deny:
             - pkg: "github.com/ionalpha/flynn/dispatch"

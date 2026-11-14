@@ -20,6 +20,62 @@ func RunSuite(t *testing.T, newStore func() state.SkillStore) {
 	t.Run("OptimisticConcurrency", func(t *testing.T) { testCAS(t, newStore()) })
 	t.Run("Tombstone", func(t *testing.T) { testTombstone(t, newStore()) })
 	t.Run("Description", func(t *testing.T) { testDescription(t, newStore()) })
+	t.Run("SearchWords", func(t *testing.T) { testSearchWords(t, newStore()) })
+}
+
+// testSearchWords holds a search to matching by words rather than by the query as
+// one phrase, since a skill is looked for with the words of the task and not with a
+// sentence copied from its body. Every word must match first, and only when no skill
+// holds them all does the search widen to skills holding some, as in
+// recallplan.Plan.
+func testSearchWords(t *testing.T, sk state.SkillStore) {
+	ctx := context.Background()
+	for _, s := range []state.Skill{
+		{Slug: "deploy", Name: "Deploy", Description: "Ship a reviewed change", Body: "Run the pipeline, then verify the smoke tests"},
+		{Slug: "rotate", Name: "Rotate keys", Description: "Replace a leaked credential", Body: "Revoke the key, then run the pipeline again"},
+	} {
+		if _, err := sk.Upsert(ctx, s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slugs := func(q string) []string {
+		t.Helper()
+		got, err := sk.Search(ctx, q, 0)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", q, err)
+		}
+		out := make([]string, len(got))
+		for i, s := range got {
+			out[i] = s.Slug
+		}
+		return out
+	}
+
+	// Two words from the body, not adjacent and in the other order.
+	if got := slugs("verify pipeline"); len(got) != 1 || got[0] != "deploy" {
+		t.Fatalf("Search(verify pipeline) = %v, want only deploy", got)
+	}
+	// Words from different fields of one skill, with the punctuation of a question.
+	if got := slugs("how do I ship the smoke tests?"); len(got) != 1 || got[0] != "deploy" {
+		t.Fatalf("Search of a question across fields = %v, want only deploy", got)
+	}
+	// Both words are in one skill, so the skill holding only one of them stays out.
+	if got := slugs("pipeline smoke"); len(got) != 1 || got[0] != "deploy" {
+		t.Fatalf("Search(pipeline smoke) = %v, want only deploy, which holds both", got)
+	}
+	// No skill holds both words, so the search widens to the skills holding one.
+	if got := slugs("pipeline rollback"); len(got) != 2 {
+		t.Fatalf("Search(pipeline rollback) = %v, want both skills once the search widens", got)
+	}
+	if got := slugs("kubernetes terraform"); len(got) != 0 {
+		t.Fatalf("Search of words nothing holds = %v, want none", got)
+	}
+	// Query syntax is text, not an instruction to the index.
+	for _, q := range []string{`pipeline AND`, `NEAR(pipeline`, `"pipeline`, `pipe*`, `-pipeline`, `body:pipeline`, `???`} {
+		if _, err := sk.Search(ctx, q, 0); err != nil {
+			t.Fatalf("Search(%q): %v", q, err)
+		}
+	}
 }
 
 // testDescription holds every backend to carrying the specification's description

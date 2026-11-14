@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ionalpha/flynn/recallplan"
 	"github.com/ionalpha/flynn/spine"
 	"github.com/ionalpha/flynn/state"
 )
@@ -313,7 +314,27 @@ func (m *memory) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memor
 		return m.recallPrepared(ctx, q, liveAt)
 	}
 
-	sqlText, args := buildRecallQuery(q, query, chain, liveAt, postFilter)
+	if query == "" {
+		return m.recallMatching(ctx, q, "", chain, now, postFilter)
+	}
+	// The plan is strict first and widens only on an empty answer, judged after the
+	// post-filter: a strict read whose every row the window or score floor then
+	// drops has answered nothing, so the wider read gets its turn.
+	items := make([]state.MemoryItem, 0)
+	for _, a := range recallplan.Plan(query) {
+		var err error
+		items, err = m.recallMatching(ctx, q, ftsMatch(a), chain, now, postFilter)
+		if err != nil || len(items) > 0 {
+			return items, err
+		}
+	}
+	return items, nil
+}
+
+// recallMatching runs one attempt: the recall SQL for match, an FTS5 expression, or
+// for every live item when match is empty.
+func (m *memory) recallMatching(ctx context.Context, q state.RecallQuery, match string, chain []state.Scope, now time.Time, postFilter bool) ([]state.MemoryItem, error) {
+	sqlText, args := buildRecallQuery(q, match, chain, now.UnixNano(), postFilter)
 	rows, err := m.p.reads().QueryContext(ctx, sqlText, args...)
 	if err != nil {
 		return nil, err
@@ -352,11 +373,12 @@ func (m *memory) recallPrepared(ctx context.Context, q state.RecallQuery, liveAt
 }
 
 // buildRecallQuery builds the recall SQL for every shape the prepared statement
-// cannot answer, and the arguments it binds.
-func buildRecallQuery(q state.RecallQuery, query string, chain []state.Scope, liveAt int64, postFilter bool) (string, []any) {
+// cannot answer, and the arguments it binds. match is the FTS5 expression to rank
+// against, or empty for a read with no text query.
+func buildRecallQuery(q state.RecallQuery, match string, chain []state.Scope, liveAt int64, postFilter bool) (string, []any) {
 	var sb strings.Builder
 	args := make([]any, 0, 8)
-	if query == "" {
+	if match == "" {
 		// Nothing to rank against, so every row scores 1: state.MemoryItem.Score
 		// reserves 1 for "matched, no opinion on how well".
 		sb.WriteString(`SELECT ` + memoryColsQualified + `, 1.0
@@ -370,7 +392,7 @@ func buildRecallQuery(q state.RecallQuery, query string, chain []state.Scope, li
 		sb.WriteString(`SELECT ` + memoryColsQualified + `, (-bm25(memory_fts)) / (1.0 - bm25(memory_fts))
 			FROM memory_items m JOIN memory_fts ON memory_fts.item_id = m.id
 			WHERE memory_fts MATCH ? AND ` + memoryLiveSQL)
-		args = append(args, ftsPhrase(query), liveAt)
+		args = append(args, match, liveAt)
 	}
 	// Kind and subject are exact matches on indexed columns, so they belong in the
 	// query rather than in a post-filter: they cut the rows the sort has to order.
