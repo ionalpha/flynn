@@ -116,6 +116,8 @@ func SignProof(holder *Identity, method, path, nonce string, now time.Time) (str
 // possession proof binds to that principal: either a signed ProofHeader, or, when
 // enabled, an mTLS client certificate carrying the leaf key. Any failure collapses to
 // ErrUnauthenticated.
+//
+//flynn:policy TestFailClosedAuthenticators
 type PossessionAuthenticator struct {
 	inner    Authenticator
 	clk      clock.Clock

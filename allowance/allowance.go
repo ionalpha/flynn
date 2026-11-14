@@ -48,6 +48,8 @@ const CodeRequired = "allowance_required"
 
 // Declaration is one standing authorization: an action the run may take even though it
 // reaches outside the workspace irreversibly, optionally narrowed to one target.
+//
+//flynn:policy
 type Declaration struct {
 	// Action is the dispatch action name being authorized. It is matched exactly: an
 	// allowance for one action never authorizes another, and there is no pattern form,
@@ -65,6 +67,8 @@ type Declaration struct {
 // need a declaration. It is host data rather than a judgement made at the waist: dispatch
 // governs an action's identity and never its payload, so the host that knows what an
 // action does is the one that can say whether its effects can be taken back.
+//
+//flynn:policy TestFailClosedAllowanceGate
 type Policy interface {
 	Outside(a dispatch.Action) bool
 }
@@ -151,6 +155,8 @@ func Covers(decls []Declaration, action, target string) bool {
 // Before refuses an action the policy marks as reaching outside the workspace unless the
 // run carries a declaration for it. An action the policy does not mark is admitted
 // untouched, so a run whose host declares nothing is unaffected.
+//
+//flynn:policy TestFailClosedAllowanceGate
 type Gate struct {
 	policy Policy
 }

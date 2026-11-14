@@ -28,6 +28,8 @@ const ShellPostureEventType = "sandbox.posture"
 // confined shell can read it can be asked to echo, and anything it can reach on the network
 // it can send out, so a login token or a signing key readable from the shell is exposed to
 // whatever text the model has read.
+//
+//flynn:policy
 type ShellPolicy struct {
 	// Limits caps the memory and process count of each command.
 	Limits sandbox.ResourceLimits

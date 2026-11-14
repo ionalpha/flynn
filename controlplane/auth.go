@@ -22,6 +22,8 @@ import (
 
 // Scope is the access level behind a request. Scopes are ordered: Admin contains
 // Operator contains Read. A handler states the minimum it requires.
+//
+//flynn:policy
 type Scope int
 
 const (
@@ -84,6 +86,8 @@ type Principal struct {
 
 // Authenticator resolves a request to a Principal, or an error if it cannot be
 // authenticated. Implementations must be safe for concurrent use.
+//
+//flynn:policy TestFailClosedAuthenticators
 type Authenticator interface {
 	Authenticate(r *http.Request) (Principal, error)
 }
@@ -126,6 +130,8 @@ func GeneratedOperator(id string, scope Scope, mint func() (string, error)) (*To
 // TokenAuthenticator authenticates a bearer token against a fixed table. It
 // compares in constant time and scans every entry regardless of an early match, so
 // neither a token's value nor which tokens exist leaks through timing.
+//
+//flynn:policy TestFailClosedAuthenticators
 type TokenAuthenticator struct {
 	tokens map[string]Principal
 }

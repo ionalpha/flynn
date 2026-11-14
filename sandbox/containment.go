@@ -14,6 +14,8 @@ import (
 // The level is what lets the run gate decide, before anything executes, whether a
 // tier is strong enough for the work's trust level, and refuse rather than run
 // untrusted code somewhere it could break out.
+//
+//flynn:policy
 type Containment int
 
 const (
@@ -61,6 +63,8 @@ func (c Containment) String() string {
 
 // Trust is how far the code about to run is trusted, which sets the containment it
 // requires.
+//
+//flynn:policy
 type Trust int
 
 const (

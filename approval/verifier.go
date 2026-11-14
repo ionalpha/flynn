@@ -14,6 +14,8 @@ import (
 // trusted core of the layer: the gate asks it whether an action is authorized, and
 // it answers only yes when enough independent, in-window, correctly-bound,
 // not-yet-replayed signatures from authorized keys are present.
+//
+//flynn:policy
 type Verifier struct {
 	keyring *Keyring
 	nonces  NonceStore
@@ -49,19 +51,18 @@ func NewVerifier(keyring *Keyring, nonces NonceStore, opts ...VerifierOption) *V
 
 // Check decides whether the presented approvals authorize want, requiring at least
 // `required` valid signatures from distinct authorized approvers. It returns a
-// Decision describing the outcome (for the audit record) and, when authorized,
-// commits the contributing nonces so they cannot be replayed. It commits nothing
-// unless the quorum is met, so a partial attempt does not burn a valid approval.
+// Decision for the audit record and, when authorized, commits the contributing nonces
+// so they cannot be replayed. It commits nothing unless the quorum is met, so a
+// partial attempt does not burn a valid approval.
 //
 // An approval counts only when every binding holds: its envelope matches want on
-// action, scope, principal, and detail; its host is this host or unset; it is
-// inside its validity window; its signature verifies against an authorized key; and
-// its nonce has not been spent. Signatures from the same key id count once, so one
-// approver cannot satisfy a multi-signature requirement alone.
+// action, scope, principal, and detail; its host is this host or unset; it is inside
+// its validity window; its signature verifies; and its nonce is unspent. Signatures
+// from one key id count once.
 //
-// A requirement of zero authorizes without a signature, which is how a policy says an
-// action needs no approval. A negative requirement is not that: it is a corrupt or
-// miscomputed count, and treating it as zero would admit the action, so it is denied.
+// Zero authorizes without a signature (the policy says no approval is needed). A
+// negative count is corrupt, and reading it as zero would admit the action, so it is
+// denied.
 func (v *Verifier) Check(ctx context.Context, want Envelope, presented []Approval, required int) (Decision, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()

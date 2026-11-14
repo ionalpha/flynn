@@ -31,6 +31,8 @@ import (
 // Policy decides which outbound addresses are reachable. The zero Policy denies
 // everything (default-deny): a connection is allowed only if its address falls in an
 // allowed range, or it is a public address and the policy permits public addresses.
+//
+//flynn:policy TestFailClosedPolicy
 type Policy struct {
 	// AllowPublic permits any globally-routable public address while still denying
 	// private, loopback, link-local, and the cloud metadata range. This is the
