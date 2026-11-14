@@ -73,7 +73,11 @@ Run `./dev/check` until it is green before opening a PR.
   with the reason, verbatim, in the same PR. `docs/VERSIONING.md` is the same
   policy written for the person importing the module.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `docs:`, `chore:`, ...). Sign off
-  with DCO (`git commit -s`). Wrap the message body at 72 columns.
+  with DCO (`git commit -s`). Wrap the message body at 72 columns. The `commit-msg`
+  hook in `.githooks/` (armed by `./dev/check`) checks the subject before git creates
+  the commit, and CI checks the pull request title by the same rule
+  (`dev/commitcheck`). Nothing checks commits that already exist, so the rule never
+  asks for a pushed commit to be rewritten.
 - **Pull request bodies:** one line per paragraph, wrapped by the browser and not by
   you. GitHub renders a newline inside a paragraph as a line break, so a body wrapped
   like a commit message displays as ragged short lines. Lists, tables and fenced code

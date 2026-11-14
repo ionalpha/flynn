@@ -66,6 +66,23 @@ jobs:
           fi
           echo "PR body contains all required template sections."
 
+      # The title is the one commit-like string CI checks. Commits that already exist
+      # are left alone, because the only fix for one is a history rewrite; the title is
+      # fixed by editing it, which re-runs this job through the `edited` trigger. The
+      # rule itself lives in dev/commitcheck, which the commit-msg hook also runs. The
+      # step sits in this job rather than its own so it is covered by the check that
+      # branch protection already requires.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        if: github.event.pull_request.user.type != 'Bot'
+        with:
+          persist-credentials: false
+          sparse-checkout: dev
+      - name: PR title follows Conventional Commits
+        if: github.event.pull_request.user.type != 'Bot'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: ./dev/commitcheck --subject "$TITLE"
+
       # A closing keyword with no issue number is the template's placeholder left
       # unfilled. It links nothing, and on the merged page it reads as if an issue
       # was meant and lost.

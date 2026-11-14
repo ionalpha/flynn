@@ -1,0 +1,7 @@
+#!/usr/bin/env sh
+# Check the subject of the commit being made, before git creates it, so a subject
+# that breaks the commit rule is retyped rather than rewritten after a push.
+# $1 is the file holding the proposed message.
+set -eu
+cd "$(git rev-parse --show-toplevel)"
+exec ./dev/commitcheck --message "$1"
