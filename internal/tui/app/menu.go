@@ -6,35 +6,30 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// completionTrigger starts a completion token in the composer. @ mentions a
-// file: the accepted path lands in the prompt as typed text the session can
-// read like any other words.
+// completionTrigger starts a completion token; the accepted path lands in the
+// prompt as plain text.
 const completionTrigger = '@'
 
-// menuMaxRows caps the visible menu; longer candidate lists scroll under a
-// window that follows the selection.
+// menuMaxRows caps the visible menu; longer lists scroll with the selection.
 const menuMaxRows = 6
 
-// menu is the completion popup's state. It lives inside the App and is
-// guarded by the App's mutex like the rest of the frame state; all
-// mutations happen on the event loop goroutine.
+// menu is the completion popup's state, guarded by the App's mutex and mutated
+// only on the event loop goroutine.
 type menu struct {
 	open  bool
 	items []string
 	sel   int
 	query string
-	top   int // first visible row, kept so the window scrolls, not jumps
+	top   int // first visible row
 
-	// command is set when the menu completes a slash command rather than an @-token.
-	// In that mode apply holds, per item, the whole composer line to set on accept,
-	// since the replacement is the line rather than a splice of one token.
+	// command marks a slash-command menu, where apply holds the whole line to set
+	// on accept for each item.
 	command bool
 	apply   []string
 }
 
-// menuKey consumes one key while the menu is open: navigation moves the
-// selection, Tab and Enter accept it, Escape dismisses. Every other key
-// belongs to the editor. Returns whether the key was consumed.
+// menuKey consumes navigation, accept (Tab, Enter) and dismiss (Escape) keys
+// while the menu is open and reports whether it consumed the key.
 func (a *App) menuKey(k input.Key) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -59,8 +54,7 @@ func (a *App) menuKey(k input.Key) bool {
 	return true
 }
 
-// move steps the selection with wraparound and keeps it inside the visible
-// window.
+// move steps the selection with wraparound, keeping it in the visible window.
 func (m *menu) move(delta int) {
 	n := len(m.items)
 	if n == 0 {
@@ -75,13 +69,11 @@ func (m *menu) move(delta int) {
 	}
 }
 
-// acceptLocked splices the selected candidate into the composer and closes
-// the menu. The editor re-checks the token, so a buffer that changed under
-// a queued key degrades to a no-op instead of a wrong splice.
+// acceptLocked splices the selected candidate in and closes the menu. The editor
+// re-checks the token, so a buffer that changed under a queued key is a no-op.
 func (a *App) acceptLocked() {
 	if a.menu.sel < len(a.menu.items) {
 		if a.menu.command {
-			// The candidate is the whole line to set, not a token to splice.
 			a.setContentLocked(a.menu.apply[a.menu.sel])
 		} else {
 			item := a.menu.items[a.menu.sel]
@@ -94,10 +86,8 @@ func (a *App) acceptLocked() {
 	a.menu = menu{}
 }
 
-// refreshMenu re-derives the menu from the composer after the editor
-// consumed an event: an active @-token queries the Completer, anything else
-// closes the menu. Called on the event loop with the mutex released, since
-// the Completer is a host hook.
+// refreshMenu re-derives the menu after the editor consumed an event. It runs
+// with the mutex released because the completers are host hooks.
 func (a *App) refreshMenu() {
 	if a.cfg.Completer == nil && a.cfg.Commands == nil {
 		return
@@ -112,7 +102,7 @@ func (a *App) refreshMenu() {
 	line := a.editor.Content()
 	a.mu.Unlock()
 
-	// An active @-token completes files; it wins over command completion.
+	// An active @-token wins over command completion.
 	if active {
 		if unchanged {
 			return
@@ -128,7 +118,6 @@ func (a *App) refreshMenu() {
 		return
 	}
 
-	// Otherwise complete a slash-command line from the whole line.
 	if a.cfg.Commands != nil {
 		if cands := a.cfg.Commands.Suggest(line); len(cands) > 0 {
 			show := make([]string, len(cands))
@@ -147,8 +136,7 @@ func (a *App) refreshMenu() {
 	a.mu.Unlock()
 }
 
-// notifyAccepted drains the accepted-candidate queue to the Completer, with
-// no locks held. Runs on the event loop after the accept.
+// notifyAccepted drains the accepted queue to the Completer with no locks held.
 func (a *App) notifyAccepted() {
 	a.mu.Lock()
 	picked := a.accepted
@@ -159,8 +147,7 @@ func (a *App) notifyAccepted() {
 	}
 }
 
-// menuRowsLocked renders the visible window of the menu, selection marked
-// and styled, each row clipped to the frame width.
+// menuRowsLocked renders the visible window, each row clipped to the width.
 func (a *App) menuRowsLocked() []string {
 	m := &a.menu
 	end := m.top + menuMaxRows

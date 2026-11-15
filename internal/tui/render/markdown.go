@@ -14,19 +14,17 @@ import (
 	"github.com/ionalpha/flynn/internal/tui/theme"
 )
 
-// Markdown renders markdown source to themed terminal lines. It understands
-// the GFM constructs the session actually meets in model output: headings,
-// paragraphs, fenced and indented code (syntax-highlighted), blockquotes,
-// nested ordered and unordered lists, task lists, tables, thematic breaks,
-// links, images, emphasis, strikethrough, and inline code. Unknown or raw
+// Markdown renders GFM source to themed terminal lines: headings, paragraphs,
+// code (highlighted), blockquotes, nested and task lists, tables, thematic
+// breaks, links, images, emphasis, strikethrough and inline code. Unknown or raw
 // HTML degrades to muted plain text, never to dropped content.
 type Markdown struct {
 	th     *theme.Theme
 	parser parser.Parser
 }
 
-// NewMarkdown returns a renderer bound to a theme. The parser is retained
-// because goldmark parsers are expensive to build and safe to reuse.
+// NewMarkdown returns a renderer bound to a theme. The goldmark parser is costly
+// to build and safe to reuse, so it is kept.
 func NewMarkdown(th *theme.Theme) *Markdown {
 	return &Markdown{
 		th:     th,
@@ -39,23 +37,20 @@ func (m *Markdown) Render(source string, width int) []string {
 	if width < 1 {
 		return nil
 	}
-	// Normalize to valid UTF-8 first: the cell accounting, the wrap points,
-	// and the emitted bytes must all see the same string, and an invalid
-	// byte would otherwise change width when the control guard re-encodes
-	// it. The terminal cannot render the original byte anyway.
+	// Normalize to valid UTF-8 first: width accounting, wrap points and emitted
+	// bytes must see one string, and an invalid byte would change width when the
+	// control guard re-encodes it.
 	src := []byte(strings.ToValidUTF8(source, "�"))
 	doc := m.parser.Parse(text.NewReader(src))
 	return clampRows(m.renderChildren(doc, src, width, theme.Style{}, false), width)
 }
 
-// style resolves a role's style layered over the inherited base.
 func (m *Markdown) style(r theme.Role, base theme.Style) theme.Style {
 	return m.th.Style(r).Over(base)
 }
 
-// renderChildren renders a container's block children. Sibling blocks are
-// separated by one blank row except in tight mode (inside compact list
-// items, where markdown semantics say no paragraph spacing).
+// renderChildren renders a container's blocks, separated by one blank row
+// except in tight mode (compact list items).
 func (m *Markdown) renderChildren(n ast.Node, src []byte, width int, base theme.Style, tight bool) []string {
 	var out []string
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
@@ -71,7 +66,6 @@ func (m *Markdown) renderChildren(n ast.Node, src []byte, width int, base theme.
 	return out
 }
 
-// block renders one block-level node to rows.
 func (m *Markdown) block(n ast.Node, src []byte, width int, base theme.Style) []string {
 	switch t := n.(type) {
 	case *ast.Heading:
@@ -101,15 +95,13 @@ func (m *Markdown) block(n ast.Node, src []byte, width int, base theme.Style) []
 		spans := []span{{blockText(t, src), m.style(theme.Muted, base)}}
 		return wrapSpans(spans, width)
 	default:
-		// A block this walker does not know renders its children rather than
-		// vanishing; worst case the content appears unstyled.
+		// An unknown block renders its children instead of vanishing.
 		return m.renderChildren(n, src, width, base, false)
 	}
 }
 
-// list renders ordered and unordered lists, including nesting and task
-// items. Continuation rows and nested blocks indent past the marker so the
-// item's text keeps one left edge.
+// list renders ordered and unordered lists. Continuation rows indent past the
+// marker so an item's text keeps one left edge.
 func (m *Markdown) list(l *ast.List, src []byte, width int, base theme.Style) []string {
 	var out []string
 	num := l.Start
@@ -131,8 +123,7 @@ func (m *Markdown) list(l *ast.List, src []byte, width int, base theme.Style) []
 	return out
 }
 
-// codeBlock highlights a code block and indents it two cells. Code wraps
-// hard (spaces are content), so nothing is ever cut.
+// codeBlock highlights code indented two cells, wrapping hard so nothing is cut.
 func (m *Markdown) codeBlock(lang, code string, width int) []string {
 	if width <= 2 {
 		return nil
@@ -145,8 +136,6 @@ func (m *Markdown) codeBlock(lang, code string, width int) []string {
 	return out
 }
 
-// inline renders a node's inline children to spans under the inherited
-// style.
 func (m *Markdown) inline(n ast.Node, src []byte, base theme.Style) []span {
 	var out []span
 	for c := n.FirstChild(); c != nil; c = c.NextSibling() {
@@ -197,8 +186,8 @@ func (m *Markdown) inline(n ast.Node, src []byte, base theme.Style) []span {
 	return out
 }
 
-// linkSpans renders a link as its styled label followed by the destination
-// in muted parentheses, unless the label already is the destination.
+// linkSpans renders the label then the destination in muted parentheses, unless
+// the label is the destination.
 func (m *Markdown) linkSpans(l *ast.Link, src []byte, base theme.Style) []span {
 	label := m.inline(l, src, m.style(theme.Link, base))
 	dest := string(l.Destination)
@@ -208,7 +197,6 @@ func (m *Markdown) linkSpans(l *ast.Link, src []byte, base theme.Style) []span {
 	return append(label, span{" (" + dest + ")", m.style(theme.Muted, base)})
 }
 
-// plainText flattens spans back to their unstyled text.
 func plainText(spans []span) string {
 	var b strings.Builder
 	for _, s := range spans {
@@ -217,7 +205,6 @@ func plainText(spans []span) string {
 	return b.String()
 }
 
-// blockText reads a block node's raw source lines as one string.
 func blockText(n ast.Node, src []byte) string {
 	var b strings.Builder
 	lines := n.Lines()
@@ -227,7 +214,6 @@ func blockText(n ast.Node, src []byte) string {
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// segmentsText reads inline raw segments as one string.
 func segmentsText(segs *text.Segments, src []byte) string {
 	var b strings.Builder
 	for i := range segs.Len() {
@@ -236,8 +222,8 @@ func segmentsText(segs *text.Segments, src []byte) string {
 	return b.String()
 }
 
-// segValue reads one segment's bytes (text.Segments.At returns a value, and
-// Segment.Value has a pointer receiver).
+// segValue exists because text.Segments.At returns a value and Segment.Value has
+// a pointer receiver.
 func segValue(seg text.Segment, src []byte) []byte {
 	return seg.Value(src)
 }

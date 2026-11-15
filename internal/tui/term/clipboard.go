@@ -8,26 +8,20 @@ import (
 	"golang.design/x/clipboard"
 )
 
-// Clipboard reads image content from the OS clipboard. It is the port behind
-// Ctrl+V image paste: reading the user's clipboard happens only at their
-// explicit keystroke, never on the agent's initiative, so it lives here beside
-// the $EDITOR handoff rather than anywhere an engine can reach. The interface
-// keeps the composer testable with a fake and lets a host that has no
-// clipboard (a pipe, a headless CI run) degrade cleanly instead of failing.
+// Clipboard reads images from the OS clipboard for Ctrl+V paste. It is read only
+// on the user's keystroke, never the agent's initiative, so it lives here beside
+// the $EDITOR handoff where no engine can reach it. A host without a clipboard
+// (a pipe, headless CI) degrades to no image.
 type Clipboard interface {
-	// Image returns a PNG-encoded image on the clipboard and ok=true, or
-	// ok=false when the clipboard holds no image or is unavailable on this
-	// host or session. The returned bytes are always image/png.
+	// Image returns the clipboard's image as PNG, or ok=false when there is none
+	// or the clipboard is unavailable.
 	Image() (data []byte, ok bool)
 }
 
-// osClipboard is the real clipboard backed by golang.design/x/clipboard. That
-// library is Cgo-free on every desktop OS (purego on macOS, syscall on
-// Windows, pure-Go X11 and Wayland on Linux), so it preserves flynn's
-// single-static-binary property. Read(FmtImage) always returns canonical PNG.
+// osClipboard is backed by golang.design/x/clipboard, which is Cgo-free on every
+// desktop OS, preserving the single static binary.
 type osClipboard struct {
-	// init and read are the library's Init and Read, held as fields so a test
-	// can stand in for a host's clipboard without one being present.
+	// init and read are the library's Init and Read, replaceable in tests.
 	init func() error
 	read func(context.Context, clipboard.Format, ...clipboard.Option) ([]byte, error)
 
@@ -35,23 +29,18 @@ type osClipboard struct {
 	ready bool
 }
 
-// clipboardReadTimeout bounds one paste read. On X11 a read asks the selection
-// owner for the data, and the library's own ceiling for an owner that never
-// answers is five seconds, which is a long time for the composer to sit frozen
-// on the keystroke that asked for it.
+// clipboardReadTimeout bounds one paste read. On X11 an owner that never answers
+// would otherwise freeze the composer for the library's five-second ceiling.
 const clipboardReadTimeout = 2 * time.Second
 
-// NewClipboard returns the OS clipboard port. It does not touch the clipboard
-// or probe availability until the first read, so constructing it is free and
-// safe on a host that has no display.
+// NewClipboard returns the OS clipboard. Nothing is probed until the first read,
+// so it is safe on a host with no display.
 func NewClipboard() Clipboard {
 	return &osClipboard{init: clipboard.Init, read: clipboard.Read}
 }
 
-// Image reads a PNG image off the clipboard. The first call initializes the
-// backend once and caches whether it is usable; a host without a clipboard
-// (Init failed) reports no image forever after rather than retrying on every
-// keystroke.
+// Image initializes the backend once and caches whether it is usable, so a host
+// whose Init failed reports no image instead of retrying on every keystroke.
 func (c *osClipboard) Image() ([]byte, bool) {
 	c.once.Do(func() { c.ready = c.init() == nil })
 	if !c.ready {
@@ -66,6 +55,5 @@ func (c *osClipboard) Image() ([]byte, bool) {
 	return data, true
 }
 
-// ImagePNG is the media type every image the clipboard port yields carries:
-// golang.design/x/clipboard normalizes clipboard bitmaps to PNG on read.
+// ImagePNG is the media type of every clipboard image; the library normalizes to PNG.
 const ImagePNG = "image/png"

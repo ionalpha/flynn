@@ -4,19 +4,17 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// ConsistencyProof is a standalone proof that an append-only log only ever grew
-// between two signed checkpoints: the earlier checkpoint's tree is a prefix of the
-// later one's, with no event rewritten or removed in between. It carries both signed
-// checkpoints and the RFC 6962 consistency path that connects their roots. It is the
-// portable artifact a third party checks to confirm a log was not forked or rewritten
-// across two points in time, without needing the events themselves.
+// ConsistencyProof shows a log only grew between two signed checkpoints: the
+// earlier tree is a prefix of the later, with nothing rewritten or removed. It
+// carries both checkpoints and the RFC 6962 path connecting their roots, so no
+// events are needed.
 type ConsistencyProof struct {
 	Before []byte   `cbor:"before"`
 	After  []byte   `cbor:"after"`
 	Proof  [][]byte `cbor:"proof"`
 }
 
-// Marshal encodes the proof as a portable, deterministic CBOR artifact.
+// Marshal encodes the proof as deterministic CBOR.
 func (p *ConsistencyProof) Marshal() ([]byte, error) {
 	b, err := canonicalEnc.Marshal(p)
 	if err != nil {
@@ -25,13 +23,9 @@ func (p *ConsistencyProof) Marshal() ([]byte, error) {
 	return b, nil
 }
 
-// VerifyConsistencyProof verifies a marshalled consistency proof against the keyring
-// and returns the two checkpoints it connects, earlier first. It checks every layer
-// and fails closed: the proof is in canonical form, both checkpoints are validly
-// signed by an authorized key, and the consistency path proves the earlier signed
-// root is a prefix of the later signed root. Passing it means an independent party,
-// trusting only the signing key, can rely on the log having only appended between the
-// two checkpoints.
+// VerifyConsistencyProof returns the two checkpoints, earlier first, failing
+// closed unless the proof is canonical, both checkpoints are signed by an
+// authorized key, and the path proves the earlier root a prefix of the later.
 func VerifyConsistencyProof(proof []byte, ring *RootKeyring) (before, after Checkpoint, err error) {
 	var p ConsistencyProof
 	if derr := canonicalDec.Unmarshal(proof, &p); derr != nil {

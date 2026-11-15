@@ -5,13 +5,11 @@ import (
 	"sort"
 )
 
-// Snapshot is a materialized projection of the state stream up to LastSeq: every
-// session, its turns, every skill (live and tombstoned), every memory item, every
-// per-instance usage row, and the derived skill-slug index, enough to restore the read
-// model without folding the stream from the start. It is the state analogue of the resource snapshot, opaque to the spine
-// and sealed by the same codec when one is configured. The slug index is carried so an
-// in-memory restore is exact; a table-backed store rebuilds it from its own rows and
-// leaves the field nil.
+// Snapshot is the state projection up to LastSeq, enough to restore the read
+// model without folding from the start. Skills include tombstoned ones. It is
+// opaque to the spine and sealed by its codec when one is configured.
+// SlugToID makes an in-memory restore exact; a table-backed store rebuilds
+// the index from its rows and leaves it nil.
 type Snapshot struct {
 	LastSeq    int64             `json:"lastSeq"`
 	Sessions   []Session         `json:"sessions"`
@@ -23,9 +21,8 @@ type Snapshot struct {
 	SlugToID   map[string]string `json:"slugToID,omitempty"`
 }
 
-// MarshalSnapshot serializes a state projection into the payload a Replay or Rebuild
-// restores from. The collections are sorted so the payload is deterministic for a given
-// projection: sessions, skills, and items by id, turns by session then seq.
+// MarshalSnapshot sorts every collection before encoding, so a projection
+// always yields the same bytes. Turns sort by session then seq.
 func MarshalSnapshot(s Snapshot) ([]byte, error) {
 	sort.Slice(s.Sessions, func(i, j int) bool { return s.Sessions[i].ID < s.Sessions[j].ID })
 	sort.Slice(s.Skills, func(i, j int) bool { return s.Skills[i].ID < s.Skills[j].ID })
@@ -41,17 +38,14 @@ func MarshalSnapshot(s Snapshot) ([]byte, error) {
 	return json.Marshal(s)
 }
 
-// UnmarshalSnapshot decodes a state snapshot payload, the inverse of
-// MarshalSnapshot, so any backend restores from the one shared format.
+// UnmarshalSnapshot is the inverse of [MarshalSnapshot].
 func UnmarshalSnapshot(payload []byte) (Snapshot, error) {
 	var s Snapshot
 	err := json.Unmarshal(payload, &s)
 	return s, err
 }
 
-// snapshotLocked captures the core's current projection as a Snapshot. The caller
-// holds c.mu. The slug index is copied so an in-memory restore reproduces the exact
-// read model, derived indices included, without replaying event types.
+// snapshotLocked captures the projection; the caller holds c.mu.
 func (c *core) snapshotLocked() Snapshot {
 	s := Snapshot{LastSeq: c.lastSeq, SlugToID: make(map[string]string, len(c.slugToID))}
 	for _, ses := range c.sessions {
@@ -76,9 +70,8 @@ func (c *core) snapshotLocked() Snapshot {
 	return s
 }
 
-// restoreLocked replaces the core's projection with a snapshot's, so a fold resumes from
-// it and applies only the events after LastSeq. The caller holds c.mu. Per-session turn
-// order is preserved because a sorted payload groups each session's turns in seq order.
+// restoreLocked replaces the projection with s; the caller holds c.mu. Turn
+// order holds because a marshalled payload is sorted by session then seq.
 func (c *core) restoreLocked(s Snapshot) {
 	c.lastSeq = s.LastSeq
 	c.sessions = make(map[string]Session, len(s.Sessions))

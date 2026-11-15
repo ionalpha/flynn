@@ -12,17 +12,15 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// resourceCols matches the resources table column order (and the scanResource scan
-// order); keep them in lockstep with migration 0003.
+// resourceCols must match the scan order and migration 0003.
 const resourceCols = `id, api_version, kind, name, scope_instance, scope_project, scope_workspace,
 	labels, annotations, spec, status,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id, writer_actor, deleted,
 	finalizers, deletion_timestamp, owner_references,
 	version, content_hash, spec_hash, valid_from, valid_to, created_at, updated_at`
 
-// Resources returns a durable resource.Store backed by this Store's database, so
-// resource events share the spine, the file, and a transaction with state. The
-// returned store admits writes against reg.
+// Resources returns a [resource.Store] sharing this Store's spine and
+// transactions, admitting writes against reg.
 func (s *Store) Resources(reg *resource.Registry) resource.Store {
 	return &resourceStore{p: s, st: resource.NewStamper(s.instanceID, s.clk, s.hlc, s.gen, reg)}
 }
@@ -38,13 +36,11 @@ var (
 	_ resource.AnyScopeGetter = (*resourceStore)(nil)
 )
 
-// Close closes the shared database (the resource store and the Store share it).
+// Close closes the database shared with the Store.
 func (s *resourceStore) Close() error { return s.p.Close() }
 
-// Snapshot implements resource.Store: it checkpoints every projected resource (live
-// and tombstoned) onto the event log, anchored at the resource stream's head Seq,
-// so a Replay resumes from the snapshot and folds only the events after it instead
-// of replaying the whole stream.
+// Snapshot checkpoints every resource, tombstones included, at the stream's
+// head Seq.
 func (s *resourceStore) Snapshot(ctx context.Context) error {
 	rows, err := s.p.reads().QueryContext(ctx, `SELECT `+resourceCols+` FROM resources ORDER BY id`)
 	if err != nil {
@@ -82,10 +78,8 @@ func (s *resourceStore) Snapshot(ctx context.Context) error {
 	return s.p.Log().SaveSnapshot(ctx, snap)
 }
 
-// maybeSnapshot counts one committed mutation toward the automatic snapshot
-// cadence and checkpoints the stream when the cadence is reached. It runs after
-// the mutation's transaction commits and best effort: a snapshot failure never
-// fails the write it followed.
+// maybeSnapshot runs after commit, best effort: a failure never fails the
+// write.
 func (s *resourceStore) maybeSnapshot(ctx context.Context) {
 	if s.p.snapEvery <= 0 {
 		return
@@ -97,17 +91,11 @@ func (s *resourceStore) maybeSnapshot(ctx context.Context) {
 	_ = s.Snapshot(ctx)
 }
 
-// Log exposes the shared spine so the resource stream can be observed or folded;
-// the event-sourced capability the conformance suite checks.
+// Log returns the shared spine.
 func (s *resourceStore) Log() spine.Log { return s.p.Log() }
 
-// commit runs one resource mutation through the command path: build stamps the
-// record and produces the event (doing its tx-scoped lookup for CAS), then the
-// event is appended to the spine and the record projected into the table, both
-// in one tx. The projection writes the typed record the Stamper returned (the
-// same post-image the event payload carries), so the live path never decodes
-// what it just encoded; applyResourceEvent performs the identical projection
-// from the payload during Rebuild.
+// commit appends and projects in one transaction, projecting the stamped
+// record without decoding what it just encoded.
 func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (resource.Resource, spine.AppendInput, error)) error {
 	err := s.p.tx(ctx, func(tx *sql.Tx) error {
 		rec, in, err := build(tx)
@@ -125,13 +113,9 @@ func (s *resourceStore) commit(ctx context.Context, build func(tx *sql.Tx) (reso
 	return err
 }
 
-// Rebuild reprojects the resources table from the resource event stream, the proof
-// the log is authoritative; idempotent (every event is a post-image applied by id).
-// It resumes from the stream's latest usable snapshot and folds only the events
-// after it, so a rebuild stays bounded as the stream grows; a snapshot that cannot
-// be verified (with a codec set) or decoded is skipped and the whole stream is
-// folded instead - only slower, never wrong. The full fold from the start remains
-// the deep audit path: rebuild with no snapshot stored and compare.
+// Rebuild reprojects the table from the latest usable snapshot, idempotently.
+// A snapshot that fails to verify or decode is skipped and the whole stream
+// folded. Rebuilding with no snapshot is the full audit.
 func (s *resourceStore) Rebuild(ctx context.Context) error {
 	restored, afterSeq := s.snapshotForRebuild(ctx)
 	events, err := s.p.Log().Read(ctx, spine.Query{Stream: resource.ResourceStream, AfterSeq: afterSeq})
@@ -153,11 +137,8 @@ func (s *resourceStore) Rebuild(ctx context.Context) error {
 	})
 }
 
-// snapshotForRebuild returns the records and seq of the latest usable resource
-// snapshot, or (nil, 0) to fold the whole stream: no snapshot, one the codec
-// rejects, or one that does not decode all fall back the same way. With a codec
-// set, a snapshot that fails verification is never restored - the fallback is the
-// fail-closed path, not an error.
+// snapshotForRebuild returns (nil, 0), never an error, for a missing,
+// rejected or undecodable snapshot, so the caller folds from the start.
 func (s *resourceStore) snapshotForRebuild(ctx context.Context) ([]resource.Resource, int64) {
 	snap, found, err := s.p.Log().LatestSnapshot(ctx, resource.ResourceStream, 0)
 	if err != nil || !found {
@@ -247,12 +228,8 @@ func (s *resourceStore) ListAll(ctx context.Context, kind string, sel resource.S
 	return out, rows.Err()
 }
 
-// collectRows decodes a resource result set, applying the label selector. With a
-// selector, each row is scanned into its raw columns and only its labels are decoded
-// to test the selector; the rest of the per-row JSON (annotations, finalizers, owner
-// references) is decoded only for rows the selector keeps. A resync poll with a
-// selector discards most rows, so this skips the full decode on the rejected majority.
-// With no selector every row is kept, so it decodes fully straight away.
+// collectRows decodes only labels until the selector keeps a row, since a
+// resync poll rejects most rows.
 func collectRows(rows *sql.Rows, sel resource.Selector) ([]resource.Resource, error) {
 	out := make([]resource.Resource, 0)
 	filtering := len(sel) > 0
@@ -269,12 +246,8 @@ func collectRows(rows *sql.Rows, sel resource.Selector) ([]resource.Resource, er
 	return out, nil
 }
 
-// GetAnyScope is the resource.AnyScopeGetter capability: the first live resource of a
-// kind with the given name in any scope, in the same scope-then-id order ListAll
-// surfaces, so a caller resolving a scope-independent name gets a keyed lookup instead
-// of listing and scanning the whole kind. Backed by the (kind, name) partial index, the
-// query seeks straight to the name. It reports found=false (no error) when no scope has
-// the name.
+// GetAnyScope returns the first live match in ListAll's scope-then-id order,
+// seeking the (kind, name) index. found is false when none exists.
 func (s *resourceStore) GetAnyScope(ctx context.Context, kind, name string) (resource.Resource, bool, error) {
 	row := s.p.reads().QueryRowContext(ctx,
 		`SELECT `+resourceCols+` FROM resources
@@ -292,9 +265,7 @@ func (s *resourceStore) GetAnyScope(ctx context.Context, kind, name string) (res
 	return r, true, nil
 }
 
-// ListKeys is the resource.KeyLister capability: the keys of every live resource
-// of a kind, reading only the address columns so a resync sweep never decodes
-// record payloads.
+// ListKeys reads only address columns, so a resync sweep decodes no payloads.
 func (s *resourceStore) ListKeys(ctx context.Context, kind string) ([]resource.Key, error) {
 	rows, err := s.p.reads().QueryContext(ctx,
 		`SELECT scope_instance, scope_project, scope_workspace, name FROM resources
@@ -316,9 +287,8 @@ func (s *resourceStore) ListKeys(ctx context.Context, kind string) ([]resource.K
 	return out, rows.Err()
 }
 
-// errAlreadyTerminating is an internal sentinel: deleting a resource that already
-// has a DeletionTimestamp is an idempotent no-op, so the command path rolls back
-// (writes nothing) and Delete reports success.
+// errAlreadyTerminating rolls back a repeat delete, which Delete reports as
+// success.
 var errAlreadyTerminating = errors.New("sqlite: resource already terminating")
 
 func (s *resourceStore) Delete(ctx context.Context, kind string, scope resource.Scope, name string) error {
@@ -379,9 +349,8 @@ func (s *resourceStore) Merge(ctx context.Context, remote resource.Resource) (re
 	return res, nil
 }
 
-// appendMergeEvent records a merge post-image on the spine and projects it, both in
-// tx, so a replicated record lands on the log and into the table exactly like a
-// local write while keeping the remote envelope verbatim.
+// appendMergeEvent writes a replicated record like a local write, keeping the
+// remote envelope verbatim.
 func appendMergeEvent(ctx context.Context, tx *sql.Tx, p *Store, r resource.Resource) error {
 	in, err := resource.MergeEvent(r)
 	if err != nil {
@@ -393,8 +362,7 @@ func appendMergeEvent(ctx context.Context, tx *sql.Tx, p *Store, r resource.Reso
 	return upsertResourceRow(ctx, tx, p, r)
 }
 
-// getResourceByIDTx loads the stored resource by id within tx, tombstones included
-// (merge resolves against the live-or-tombstoned record), or nil when none exists.
+// getResourceByIDTx includes tombstones, which merge resolves against.
 func getResourceByIDTx(ctx context.Context, tx *sql.Tx, id string) (*resource.Resource, error) {
 	row := tx.QueryRowContext(ctx, `SELECT `+resourceCols+` FROM resources WHERE id = ?`, id)
 	r, err := scanResource(row)
@@ -407,13 +375,11 @@ func getResourceByIDTx(ctx context.Context, tx *sql.Tx, id string) (*resource.Re
 	return &r, nil
 }
 
-// resourceByKeySQL is the CAS lookup on every resource Put/Delete, prepared at
-// Open (stmts.resourceKeyTx). Tombstones included, so a put can resurrect one.
+// resourceByKeySQL is the CAS lookup; it includes tombstones so a put can
+// resurrect one.
 const resourceByKeySQL = `SELECT ` + resourceCols + ` FROM resources
 	WHERE kind = ? AND scope_instance = ? AND scope_project = ? AND scope_workspace = ? AND name = ?`
 
-// getResourceByKeyTx loads the stored resource for (kind, scope, name) within tx,
-// tombstones included (so a put can resurrect it), or nil when none exists.
 func getResourceByKeyTx(ctx context.Context, tx *sql.Tx, p *Store, kind string, scope resource.Scope, name string) (*resource.Resource, error) {
 	row := tx.StmtContext(ctx, p.stmts.resourceKeyTx).QueryRowContext(ctx,
 		kind, scope.Instance, scope.Project, scope.Workspace, name)
@@ -427,8 +393,7 @@ func getResourceByKeyTx(ctx context.Context, tx *sql.Tx, p *Store, kind string, 
 	return &r, nil
 }
 
-// applyResourceEvent projects one resource event into the table. Shared by the live
-// write path (commit) and Rebuild, so a rebuilt table equals a live one.
+// applyResourceEvent projects one event's post-image during Rebuild.
 func applyResourceEvent(ctx context.Context, tx *sql.Tx, p *Store, e spine.Event) error {
 	switch e.Type {
 	case resource.EvPut, resource.EvDeleted, resource.EvMerged:
@@ -467,11 +432,8 @@ func upsertResourceRow(ctx context.Context, tx *sql.Tx, p *Store, r resource.Res
 	return err
 }
 
-// rawResourceRow holds a resources row's columns as scanned, deferring the JSON decode
-// of labels, annotations, finalizers, and owner references. A selector-filtered list
-// decodes only labels to test the selector (matchesLabels), then finishes the decode
-// for survivors (resource), so a row the selector rejects never pays the rest of the
-// per-row unmarshal.
+// rawResourceRow defers JSON decoding so a rejected row pays only for its
+// labels.
 type rawResourceRow struct {
 	r                resource.Resource
 	labels, annots   string
@@ -490,8 +452,6 @@ type rawResourceRow struct {
 	lblsSet bool
 }
 
-// scanRawResource reads every column of a resources row into the raw holder without
-// decoding the JSON columns. The scan order matches resourceCols and migration 0003.
 func scanRawResource(sc interface{ Scan(...any) error }) (rawResourceRow, error) {
 	var row rawResourceRow
 	r := &row.r
@@ -506,8 +466,8 @@ func scanRawResource(sc interface{ Scan(...any) error }) (rawResourceRow, error)
 	return row, nil
 }
 
-// decodeLabels decodes the labels column once and memoizes it, so a selector test and
-// the finishing decode share a single unmarshal.
+// decodeLabels memoizes, so the selector test and full decode share one
+// unmarshal.
 func (row *rawResourceRow) decodeLabels() map[string]string {
 	if !row.lblsSet {
 		row.lbls = unmarshalStringMap(row.labels)
@@ -516,12 +476,10 @@ func (row *rawResourceRow) decodeLabels() map[string]string {
 	return row.lbls
 }
 
-// matchesLabels reports whether sel accepts this row, decoding only its labels.
 func (row *rawResourceRow) matchesLabels(sel resource.Selector) bool {
 	return sel.Matches(row.decodeLabels())
 }
 
-// resource finishes the deferred decode into the full record.
 func (row *rawResourceRow) resource() resource.Resource {
 	r := row.r
 	r.WriterActor = spine.ActorType(row.writerActor)
@@ -551,8 +509,6 @@ func scanResource(sc interface{ Scan(...any) error }) (resource.Resource, error)
 	}
 	return row.resource(), nil
 }
-
-// --- value helpers ----------------------------------------------------------
 
 func marshalStringMap(m map[string]string) string {
 	if len(m) == 0 {
@@ -620,7 +576,6 @@ func unmarshalOwnerRefs(s string) []resource.OwnerReference {
 	return out
 }
 
-// rawOrNil returns nil (SQL NULL) for empty raw JSON, else the JSON text.
 func rawOrNil(b json.RawMessage) any {
 	if len(b) == 0 {
 		return nil
@@ -628,7 +583,6 @@ func rawOrNil(b json.RawMessage) any {
 	return string(b)
 }
 
-// timeOrNil returns nil (SQL NULL) for a nil time, else its canonical string.
 func timeOrNil(t *time.Time) any {
 	if t == nil {
 		return nil
@@ -636,8 +590,8 @@ func timeOrNil(t *time.Time) any {
 	return formatTime(*t)
 }
 
-// writerActorOrDefault normalizes a provenance actor for storage, defaulting the
-// zero value to the agent so the column never holds an empty string.
+// writerActorOrDefault maps the zero actor to the agent, so the column is
+// never empty.
 func writerActorOrDefault(a spine.ActorType) spine.ActorType {
 	if a == "" {
 		return spine.ActorAgent

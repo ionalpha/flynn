@@ -1,21 +1,18 @@
 // Package app is the interactive session shell: one event loop composing the
-// input reader, the composer editor, and the screen painter into a running
-// terminal application. The shell owns mechanics, not policy: it decodes
-// keystrokes into editor actions, keeps prompt history, coalesces repaints
-// into frames, and hands every session-level intent (a submitted prompt,
-// Escape, a key nothing claimed) to the caller through hooks. What a prompt
-// means, what streams back, and how output is styled belong to the host.
+// input reader, the composer editor and the screen painter. It decodes
+// keystrokes into editor actions, keeps prompt history, coalesces repaints into
+// frames, and hands every session-level intent (a submitted prompt, Escape, an
+// unclaimed key) to the caller through hooks. What a prompt means and how output
+// is styled belong to the host.
 //
-// Concurrency follows one rule: all mutable state sits behind a single mutex,
-// hooks are invoked with the mutex released, and every mutator only records
-// state and requests a frame. Painting happens solely on the frame
-// scheduler's goroutine, so the painter, which is not concurrency safe, has
-// exactly one caller for the shell's whole life.
+// All mutable state sits behind a single mutex, hooks run with it released, and
+// every mutator only records state and requests a frame. Painting happens solely
+// on the frame scheduler's goroutine, so the painter, which is not safe for
+// concurrent use, has one caller for the shell's whole life.
 //
-// The shell is pure with respect to the terminal: it reads decoded events
-// from any io.Reader and writes frames to any io.Writer, takes its size by
-// value, and takes time through the injected clock. Raw mode, terminal
-// modes, and resize watching are the term package's job, wired by the caller.
+// The shell reads events from any io.Reader, writes frames to any io.Writer and
+// takes time from the injected clock. Raw mode, terminal modes and resize
+// watching belong to the term package, wired by the caller.
 package app
 
 import (
@@ -32,97 +29,82 @@ import (
 )
 
 // Config wires the shell to its terminal and its host. Input and Output are
-// required; every other field has a working default.
+// required; every other field has a default.
 type Config struct {
-	// Input is the terminal's raw byte stream (stdin in raw mode). The shell
-	// stops when it reaches EOF or when Quit is called; closing Input is the
-	// caller's responsibility and is what unblocks a pending read.
+	// Input is the terminal's raw byte stream. The shell stops at EOF or Quit;
+	// closing Input is the caller's job and is what unblocks a pending read.
 	Input io.Reader
-	// Output receives frames (stdout). Writes are single buffered frames
-	// wrapped in synchronized output.
+	// Output receives frames, each one buffered write wrapped in synchronized
+	// output.
 	Output io.Writer
-	// Timing is the shell's source of time (frame pacing, the escape-key
-	// delay). Nil means the system clock.
+	// Timing is the source of time. Nil means the system clock.
 	Timing clock.Timing
-	// Width and Height are the terminal's size in cells at startup; resizes
-	// arrive later through Resize. Zero values default to 80 by 24.
+	// Width and Height are the size in cells at startup; later resizes arrive
+	// through Resize. Zero values default to 80 by 24.
 	Width, Height int
-	// Theme styles the shell's own chrome (the prompt gutter, the status
-	// line, the placeholder). Nil means the default theme.
+	// Theme styles the shell's own chrome. Nil means the default theme.
 	Theme *theme.Theme
-	// FrameInterval is the minimum time between repaints. Zero means about
-	// sixty frames per second.
+	// FrameInterval is the minimum time between repaints. Zero means about 60
+	// frames per second.
 	FrameInterval time.Duration
-	// EscDelay is how long a lone Escape byte may dangle before it resolves
-	// as the Escape key rather than the start of a sequence. Zero means 50ms.
+	// EscDelay is how long a lone Escape byte may dangle before it resolves as
+	// the Escape key rather than the start of a sequence. Zero means 50ms.
 	EscDelay time.Duration
 	// Placeholder is the hint shown in the empty composer.
 	Placeholder string
-	// Keymap is the composer's key bindings. Nil means the default map;
-	// build a custom one with editor.LoadKeymap.
+	// Keymap is the composer's key bindings. Nil means the default map.
 	Keymap editor.Keymap
-	// AltScreen selects the alternate-screen renderer instead of the default
-	// inline one. The inline renderer commits the transcript to the terminal's
-	// own scrollback and is the right choice almost everywhere; the alternate
-	// screen is the fallback for emulators where inline scroll-region insertion
-	// is unsafe (Zellij-class multiplexers). The caller enters and leaves the
-	// alternate screen around Run (through the term package) when this is set.
+	// AltScreen selects the alternate-screen renderer instead of the inline one,
+	// which commits the transcript to the terminal's scrollback. Use it only for
+	// emulators where inline scroll-region insertion is unsafe (Zellij-class
+	// multiplexers). The caller enters and leaves the alternate screen around Run.
 	AltScreen bool
 
-	// OnSubmit receives each submitted prompt: the prompt text and the images
-	// attached to it (nil when there are none), in the order their chips
-	// appeared. It runs on the event loop goroutine with no locks held; long
-	// work belongs on the host's own goroutine, which reports back through
-	// Append, SetLive, and SetStatus.
+	// OnSubmit receives each submitted prompt and its attached images (nil when
+	// none), in chip order. It runs on the event loop goroutine with no locks
+	// held; long work belongs on the host's own goroutine, which reports back
+	// through Append, SetLive and SetStatus.
 	OnSubmit func(text string, images []editor.Attachment)
-	// OnEsc fires when Escape is pressed. The host owns what Escape means:
-	// interrupt the in-flight turn, dismiss a panel, nothing.
+	// OnEsc fires when Escape is pressed; the host decides what it means.
 	OnEsc func()
-	// OnKey receives keys neither the editor nor a named hook claimed.
-	// Return true to consume the key; unconsumed keys fall through to the
-	// shell's defaults (Ctrl+C).
+	// OnKey receives keys neither the editor nor a named hook claimed. Return
+	// true to consume the key; the rest fall through to the defaults (Ctrl+C).
 	OnKey func(k input.Key) bool
-	// Completer supplies @-completion candidates. The shell owns the popup
-	// (tracking the token at the cursor, navigation, accept, dismiss); the
-	// host owns the universe being completed over. Nil disables completion.
-	// Both methods run on the event loop goroutine with no locks held, so
-	// Complete must be fast; slow indexing belongs behind a host-built cache.
+	// Completer supplies @-completion candidates. Nil disables completion. Both
+	// methods run on the event loop goroutine with no locks held, so Complete
+	// must be fast.
 	Completer Completer
-	// Commands supplies completion for a slash-command line. A slashed line has no
-	// trigger token the way an @-mention does, so command and argument completion look
-	// at the whole composer line instead: given that line, Suggest returns the
-	// candidates to replace it with. Nil disables slash-command completion.
+	// Commands supplies completion for a slash-command line. Unlike an @-mention
+	// it has no trigger token, so Suggest sees the whole composer line. Nil
+	// disables it.
 	Commands CommandCompleter
-	// Marker maps the composer's current content to its first-row gutter
-	// marker, so the host can surface an input mode the content selects
-	// ("! " while the prompt is a shell command). Empty selects the default
-	// prompt marker; a non-empty marker is fitted to the gutter's width. It
-	// runs on the paint goroutine under the shell's lock, so it must be a
-	// fast pure function of its argument. Nil always uses the default.
+	// Marker maps the composer's content to its first-row gutter marker, so the
+	// host can show an input mode ("! " while the prompt is a shell command).
+	// Empty selects the default marker; a non-empty one is fitted to the gutter
+	// width. It runs on the paint goroutine under the shell's lock, so it must be
+	// fast and pure. Nil always uses the default.
 	Marker func(content string) string
 }
 
-// Completer is the host side of @-completion. Complete returns the
-// candidates for a query, best first, at most a menu's worth; the query may
-// be empty (the trigger was just typed, ask for the unfiltered universe).
-// Accepted reports the candidate the user chose, so the host can rank
-// recent picks higher.
+// Completer is the host side of @-completion. Complete returns candidates for a
+// query, best first, at most a menu's worth; the query may be empty (the
+// unfiltered universe). Accepted reports the chosen candidate so the host can
+// rank recent picks higher.
 type Completer interface {
 	Complete(query string) []string
 	Accepted(item string)
 }
 
-// CommandCompleter is the host side of slash-command completion. Suggest returns the
-// candidates for the current composer line, best first and at most a menu's worth, or
-// nil when nothing applies (the line is not a command, or it is already complete). Each
-// candidate carries the text shown in the menu and the whole line to set when it is
-// chosen. It runs on the event loop with no lock held, so it must be fast.
+// CommandCompleter is the host side of slash-command completion. Suggest returns
+// candidates for the composer line, best first and at most a menu's worth, or nil
+// when nothing applies. It runs on the event loop with no lock held, so it must be
+// fast.
 type CommandCompleter interface {
 	Suggest(line string) []CommandCandidate
 }
 
-// CommandCandidate is one slash-command completion: Show is the menu label, Apply is
-// the whole composer line the shell sets when the candidate is chosen.
+// CommandCandidate is one slash-command completion: Show is the menu label,
+// Apply the whole line set when it is chosen.
 type CommandCandidate struct {
 	Show  string
 	Apply string
@@ -135,8 +117,7 @@ const (
 	defaultEscDelay      = 50 * time.Millisecond
 )
 
-// App is the running shell. Create one with New, drive it with Run, and feed
-// it from any goroutine through Append, SetLive, SetStatus, and Resize.
+// App is the running shell. Its feeding methods are safe from any goroutine.
 type App struct {
 	cfg   Config
 	sched *screen.Scheduler
@@ -158,17 +139,13 @@ type App struct {
 	accepted  []string
 	reader    *input.Reader
 	suspended bool
-	// capture, when set, takes first claim on every decoded input event before
-	// the completion menu and the composer: a modal overlay (an approval prompt)
-	// installs it to own the keyboard while it is up, and clears it when it
-	// resolves. It returns whether it consumed the event; an unconsumed event
-	// falls through to the normal editor path, so the modal can let keys it does
-	// not use pass. Nil is the default: no modal, input flows to the composer.
+	// capture, when set, gets first claim on every event, ahead of the menu and
+	// composer. An unconsumed event falls through.
 	capture func(input.Event) bool
 }
 
-// New builds the shell and starts its frame scheduler. Run must be called
-// exactly once to drive input and to release the scheduler on the way out.
+// New builds the shell and starts its frame scheduler. Call Run exactly once,
+// which also releases the scheduler.
 func New(cfg Config) *App {
 	if cfg.Timing == nil {
 		cfg.Timing = clock.System{}
@@ -200,10 +177,6 @@ func New(cfg Config) *App {
 	return a
 }
 
-// newSurface builds the render target for the shell: the alternate-screen
-// painter when the caller asked for it, the inline scrollback-native painter
-// otherwise. Both satisfy screen.Surface, so the rest of the shell drives
-// either without caring which it holds.
 func newSurface(cfg Config) screen.Surface {
 	if cfg.AltScreen {
 		return screen.NewAltPainter(cfg.Output, cfg.Width, cfg.Height)
@@ -211,11 +184,9 @@ func newSurface(cfg Config) screen.Surface {
 	return screen.NewPainter(cfg.Output, cfg.Width, cfg.Height)
 }
 
-// Run paints the first frame, then consumes input events until Quit is
-// called or Input reaches EOF. On the way out it stops the scheduler, flushes
-// any pending finalized lines, leaves the last frame in the terminal's
-// scrollback with the cursor on a fresh line below it, and returns the first
-// write error the painter hit, if any.
+// Run consumes input events until Quit or EOF, then leaves the last frame in
+// the scrollback with the cursor on a fresh line below it. It returns the
+// first write error the painter hit.
 func (a *App) Run() error {
 	reader := input.NewReader(a.cfg.Input, a.cfg.Timing, a.cfg.EscDelay)
 	a.mu.Lock()
@@ -234,8 +205,7 @@ loop:
 			a.handle(ev)
 		}
 	}
-	// Stop the scheduler first so the direct paint below cannot race it;
-	// after Stop returns, this goroutine is the painter's only caller.
+	// Stop first so the direct paint cannot race the scheduler.
 	a.sched.Stop()
 	a.paint()
 	a.mu.Lock()
@@ -246,15 +216,13 @@ loop:
 	return err
 }
 
-// Quit stops Run from any goroutine. Safe to call more than once.
+// Quit stops Run. It is idempotent.
 func (a *App) Quit() {
 	a.quitOnce.Do(func() { close(a.quit) })
 }
 
-// Append commits finalized lines to the terminal's scrollback above the live
-// region on the next frame. The lines are styled by the caller and become
-// ordinary terminal output: never repainted, wrapped by the terminal itself,
-// selectable and searchable like any other program's output.
+// Append commits caller-styled lines to the scrollback above the live region on
+// the next frame. They become ordinary terminal output and are never repainted.
 func (a *App) Append(lines ...string) {
 	if len(lines) == 0 {
 		return
@@ -265,9 +233,8 @@ func (a *App) Append(lines ...string) {
 	a.sched.Request()
 }
 
-// SetLive installs the component rendered above the status line and the
-// composer: the in-flight output being streamed, repainted in place each
-// frame. Nil clears it.
+// SetLive installs the in-flight component repainted above the status line.
+// Nil clears it.
 func (a *App) SetLive(c screen.Component) {
 	a.mu.Lock()
 	a.live = c
@@ -275,12 +242,9 @@ func (a *App) SetLive(c screen.Component) {
 	a.sched.Request()
 }
 
-// SetCapture installs a modal input handler that takes first claim on every
-// decoded event, ahead of the completion menu and the composer, so an overlay
-// (an approval prompt) can own the keyboard while it is up. The handler reports
-// whether it consumed the event; an unconsumed event falls through to the normal
-// editor path. Passing nil clears the modal and returns input to the composer.
-// It is safe to call from any goroutine.
+// SetCapture installs a modal handler (an approval prompt) that gets first claim
+// on every event, ahead of the menu and composer. It reports whether it consumed
+// the event; the rest fall through. Nil clears it.
 func (a *App) SetCapture(fn func(input.Event) bool) {
 	a.mu.Lock()
 	a.capture = fn
@@ -288,8 +252,7 @@ func (a *App) SetCapture(fn func(input.Event) bool) {
 	a.sched.Request()
 }
 
-// SetStatus sets the one-row status line between the live output and the
-// composer. Empty hides it.
+// SetStatus sets the one-row status line above the composer. Empty hides it.
 func (a *App) SetStatus(line string) {
 	a.mu.Lock()
 	a.status = line
@@ -312,10 +275,8 @@ func (a *App) SetDraft(text string) {
 	a.sched.Request()
 }
 
-// PasteImage inserts an image chip at the cursor and repaints. It is how the
-// host lands a clipboard image in the composer (Ctrl+V, or the /paste
-// fallback): the chip carries the image out of line, and the bytes surface on
-// the next submit through Attachments. Empty data is ignored.
+// PasteImage inserts an image chip at the cursor. The bytes travel out of line
+// and surface on the next submit. Empty data is ignored.
 func (a *App) PasteImage(att editor.Attachment) {
 	a.mu.Lock()
 	a.editor.InsertImage(att)
@@ -323,22 +284,17 @@ func (a *App) PasteImage(att editor.Attachment) {
 	a.sched.Request()
 }
 
-// cursorQuery is the poke written while pausing the reader: a cursor
-// position query the terminal answers on the input stream, completing a
-// blocked read so the read goroutine can park. The answer is discarded by
-// the paused reader (or decodes to an ignored Unknown event if it arrives
-// after resume).
+// cursorQuery is written while pausing the reader: the terminal's answer
+// completes a blocked read so the read goroutine can park. The paused reader
+// discards it, or it decodes to an ignored Unknown event after resume.
 const cursorQuery = "\x1b[6n"
 
-// Suspend hands the terminal to run for its duration: painting stops, the
-// live region is cleared so run's output starts below the scrollback, and
-// the input reader is parked off the input stream so run's process can own
-// it exclusively. After run returns, the shell reclaims the input and
-// repaints from scratch. The caller owns the terminal's modes: leave raw
-// mode and the shell's terminal modes inside run before starting a child
-// process, and restore them before returning. Suspend must be called from a
-// hook (the event loop goroutine); before Run, or while already suspended,
-// it does nothing.
+// Suspend hands the terminal to run: painting stops, the live region is cleared,
+// and the input reader parks so run's process owns the input exclusively. After
+// run returns the shell reclaims input and repaints from scratch. The caller
+// leaves raw mode and the shell's terminal modes inside run and restores them
+// before returning. Call it from a hook (the event loop goroutine); before Run,
+// or while suspended, it does nothing.
 func (a *App) Suspend(run func()) {
 	a.mu.Lock()
 	reader := a.reader
@@ -347,17 +303,15 @@ func (a *App) Suspend(run func()) {
 		return
 	}
 	a.suspended = true
-	// Direct painter calls are safe here: every painter call sits behind
-	// this mutex, and with suspended set the scheduler's paint is a no-op,
-	// so the poke below is the only terminal writer until resume.
+	// With suspended set the scheduler's paint is a no-op, so the poke below is
+	// the only terminal writer until resume.
 	a.painter.Repaint(nil)
 	out := a.cfg.Output
 	a.mu.Unlock()
 
 	parked := reader.Pause(func() { _, _ = out.Write([]byte(cursorQuery)) })
-	// Drain stale events while waiting so a full event buffer can never
-	// wedge the pump between Pause and the park; anything typed after the
-	// suspending keystroke was meant for run's process, not the composer.
+	// Drain events while waiting so a full buffer cannot wedge the pump before
+	// the park; keys typed after the suspending one belong to run's process.
 	for waiting := true; waiting; {
 		select {
 		case <-parked:
@@ -373,8 +327,7 @@ func (a *App) Suspend(run func()) {
 
 	reader.Resume()
 	a.mu.Lock()
-	// run's process may have left the cursor mid-line; return to column
-	// zero so the repainted frame starts on a clean left edge.
+	// run's process may have left the cursor mid-line.
 	_, _ = out.Write([]byte("\r"))
 	a.suspended = false
 	a.resized = true
@@ -382,9 +335,8 @@ func (a *App) Suspend(run func()) {
 	a.sched.Request()
 }
 
-// Resize records a new terminal size; the next frame re-renders every
-// component at the new width and repaints from scratch, since the terminal
-// rewrapped the old rows and the painter's diff base is stale.
+// Resize records a new size. The next frame repaints from scratch, since the
+// terminal rewrapped the old rows and the painter's diff base is stale.
 func (a *App) Resize(width, height int) {
 	a.mu.Lock()
 	a.width, a.height = width, height
@@ -393,24 +345,19 @@ func (a *App) Resize(width, height int) {
 	a.sched.Request()
 }
 
-// Width returns the terminal's current width in cells. A host that renders its
-// own content to fit the terminal (wrapping markdown, laying out a transcript)
-// reads it here so its output tracks resizes, which arrive through Resize on the
-// event loop goroutine while the host renders on its own.
+// Width returns the current width in cells, for a host that renders its own
+// content and must track resizes arriving on the event loop goroutine.
 func (a *App) Width() int {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.width
 }
 
-// handle consumes one decoded input event on the event loop goroutine. An
-// open completion menu gets first claim on the navigation keys; everything
-// else flows through the editor, and afterwards the menu re-derives itself
-// from the composer's state.
+// handle consumes one event on the event loop goroutine. An open menu claims
+// the navigation keys first; the rest flows through the editor, then the menu
+// re-derives from the composer.
 func (a *App) handle(ev input.Event) {
-	// A modal overlay gets first claim on every event, ahead of the menu and the
-	// composer. It runs with no lock held (it reaches back into the shell to
-	// repaint and to resolve), and a consumed event ends the frame here.
+	// Capture runs with no lock held because it reaches back into the shell.
 	a.mu.Lock()
 	capture := a.capture
 	a.mu.Unlock()
@@ -430,8 +377,7 @@ func (a *App) handle(ev input.Event) {
 	case editor.ActionSubmit:
 		text := a.editor.Content()
 		images := a.editor.Attachments()
-		// An image-only prompt (chips, no prose) is a real turn; submit when
-		// there is text or at least one attachment.
+		// An image-only prompt is a turn too.
 		if strings.TrimSpace(text) != "" || len(images) > 0 {
 			a.editor.Clear()
 			if strings.TrimSpace(text) != "" {
@@ -452,8 +398,7 @@ func (a *App) handle(ev input.Event) {
 			a.setContentLocked(text)
 		}
 	case editor.ActionNone, editor.ActionRedraw, editor.ActionTab:
-		// Redraw needs nothing beyond the frame request below; None and Tab
-		// fall through to the host's OnKey and the shell's defaults.
+		// None and Tab fall through to OnKey and the defaults.
 	}
 	a.mu.Unlock()
 	if after != nil {
@@ -468,9 +413,8 @@ func (a *App) handle(ev input.Event) {
 	a.sched.Request()
 }
 
-// fallbackKey handles keys the editor did not claim: first the host's OnKey
-// hook, then the shell's defaults. Ctrl+C clears a non-empty prompt; on an
-// empty prompt it quits.
+// fallbackKey runs OnKey, then the defaults: Ctrl+C clears a non-empty prompt
+// and quits on an empty one.
 func (a *App) fallbackKey(k input.Key) {
 	if h := a.cfg.OnKey; h != nil && h(k) {
 		return
@@ -488,16 +432,13 @@ func (a *App) fallbackKey(k input.Key) {
 	}
 }
 
-// setContentLocked replaces the composer's content with a recalled prompt,
-// cursor at the end.
 func (a *App) setContentLocked(text string) {
 	a.editor.Clear()
 	a.editor.Insert(text)
 }
 
-// paint composes and paints one frame. It runs on the scheduler's goroutine
-// while Run is live, and once more on Run's goroutine after the scheduler
-// has stopped, for the final flush.
+// paint runs on the scheduler's goroutine, and once on Run's after the
+// scheduler stops, for the final flush.
 func (a *App) paint() {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -514,8 +455,7 @@ func (a *App) paint() {
 	a.finalized = nil
 	switch {
 	case len(finalized) > 0:
-		// Insert clears the live region and rewrites the whole frame, so it
-		// doubles as the from-scratch repaint a resize needs.
+		// Insert rewrites the whole frame, so it covers a resize too.
 		a.painter.Insert(finalized, frame)
 	case resized:
 		a.painter.Repaint(frame)
@@ -524,22 +464,16 @@ func (a *App) paint() {
 	}
 }
 
-// composeLocked renders the live region for this frame: the in-flight
-// output, the status line, and the composer, top to bottom. The painter's
-// overflow guard keeps the bottom rows when the frame is taller than the
-// terminal, so the composer always survives clipping.
+// composeLocked renders the live region top to bottom. The painter keeps the
+// bottom rows when the frame overflows, so the composer survives clipping.
 func (a *App) composeLocked() []string {
-	// A blank row opens the live region so the pinned status and composer read as
-	// their own block, set apart from the transcript scrolling above them rather
-	// than glued to its last line.
+	// The blank row sets the live region apart from the transcript above.
 	frame := []string{""}
 	if a.live != nil {
 		frame = append(frame, a.live.Render(a.width)...)
 	}
 	if a.status != "" {
 		frame = append(frame, a.cfg.Theme.Render(theme.Status, screen.Truncate(a.status, a.width)))
-		// A blank row sets the composer apart from the status strip above it, so the
-		// input does not read as jammed onto the status line.
 		frame = append(frame, "")
 	}
 	if a.menu.open {

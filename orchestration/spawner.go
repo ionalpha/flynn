@@ -1,13 +1,8 @@
-// Package orchestration turns a single goal into a graph: its Spawner is the
-// concrete fan-out that creates and governs child goals. It is the mission.Fanout
-// the executor calls when a run delegates a sub-goal, and it composes the existing
-// foundation rather than adding new mechanism: a child is an ordinary Goal resource
-// owned by its parent (so it is torn down with the parent), carrying a capability
-// grant narrowed to a subset of the parent's (so a delegation can never widen
-// authority), charging one shared budget pool reserved per child before it is
-// created (so a fan-out cannot overshoot), at a bounded delegation depth (so agents
-// spawning agents cannot recurse without end), under a concurrency cap (so the
-// blast radius is bounded). Poll reports each child's outcome from its goal status.
+// Package orchestration creates and governs child goals when a run delegates.
+// A child is an ordinary Goal resource owned by its parent, so it is torn down
+// with it. Its grant is a subset of the parent's, so delegation never widens
+// authority. It reserves its share of one budget pool before it is created, so
+// a fan-out cannot overshoot, and depth and concurrency are capped.
 package orchestration
 
 import (
@@ -26,12 +21,12 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// defaultMaxDepth bounds delegation recursion when no depth is configured: a chain
-// of agents spawning agents stops here even if each step looks locally reasonable.
+// defaultMaxDepth stops a chain of agents spawning agents even when each step
+// looks reasonable.
 const defaultMaxDepth = 8
 
-// Spawner is the concrete mission.Fanout over the resource store. It creates child
-// goals, governs them, and reports their outcomes. It is safe for concurrent use.
+// Spawner is the mission.Fanout over the resource store. It is safe for
+// concurrent use.
 type Spawner struct {
 	store    resource.Store
 	ledger   *budget.Ledger
@@ -44,9 +39,7 @@ type Spawner struct {
 	children map[string]*childRec
 }
 
-// childRec is the spawner's bookkeeping for one outstanding child, so Poll can
-// resolve it by id and release its reservation and concurrency slot exactly once
-// when it finishes.
+// childRec lets Poll release a child's reservation and slot exactly once.
 type childRec struct {
 	scope    resource.Scope
 	pool     string
@@ -56,14 +49,13 @@ type childRec struct {
 // Option configures a Spawner.
 type Option func(*Spawner)
 
-// WithReservation bounds a fan-out by budget: each child reserves est against the
-// shared pool before it is created, and the reservation is released when the child
-// finishes, so the number of concurrent children is capped by what the pool can
-// cover. The zero estimate (default) disables budget bounding.
+// WithReservation makes each child reserve est from the shared pool before it
+// is created and release it when it finishes, so the pool caps concurrent
+// children. The zero value (default) disables it.
 func WithReservation(est budget.Spent) Option { return func(s *Spawner) { s.perChild = est } }
 
-// WithMaxDepth sets the maximum delegation depth (default defaultMaxDepth). A child
-// past this depth is refused, so recursion is bounded.
+// WithMaxDepth sets the deepest delegation allowed (default 8); n <= 0 keeps
+// the default.
 func WithMaxDepth(n int) Option {
 	return func(s *Spawner) {
 		if n > 0 {
@@ -72,9 +64,8 @@ func WithMaxDepth(n int) Option {
 	}
 }
 
-// WithConcurrency caps how many children may be outstanding at once; a spawn past
-// the cap is refused rather than queued. Zero (default) leaves it uncapped (budget
-// and depth still bound the fan-out).
+// WithConcurrency caps outstanding children. A spawn past the cap is refused
+// instead of queued, so the model serializes. Zero (default) is uncapped.
 func WithConcurrency(n int) Option {
 	return func(s *Spawner) {
 		if n > 0 {
@@ -83,10 +74,8 @@ func WithConcurrency(n int) Option {
 	}
 }
 
-// NewSpawner builds a Spawner over store and an optional budget ledger. Bind the
-// enqueue function (SetEnqueue) before driving runs: it is how a created child is
-// handed to the runtime, and is injected rather than taken at construction so the
-// spawner does not depend on the runtime it feeds.
+// NewSpawner builds a Spawner; ledger may be nil. Call SetEnqueue before the
+// first spawn.
 func NewSpawner(store resource.Store, ledger *budget.Ledger, opts ...Option) *Spawner {
 	s := &Spawner{store: store, ledger: ledger, maxDepth: defaultMaxDepth, children: map[string]*childRec{}}
 	for _, o := range opts {
@@ -95,61 +84,46 @@ func NewSpawner(store resource.Store, ledger *budget.Ledger, opts ...Option) *Sp
 	return s
 }
 
-// SetEnqueue binds the function that hands a created child goal to the runtime for
-// reconciliation. It is set after the runtime exists, breaking the construction
-// cycle between the executor (which holds the spawner) and the runtime (which holds
-// the executor).
+// SetEnqueue binds how a new child reaches the runtime. It is set after
+// construction because the runtime holds the executor that holds the spawner.
 func (s *Spawner) SetEnqueue(fn func(ctx context.Context, key resource.Key) error) {
 	s.enqueue = fn
 }
 
 var _ mission.Fanout = (*Spawner)(nil)
 
-// Request is one spawn as the caller specifies it. Sub is the child's work and is the
-// whole of what a model-driven spawn asks for; the other fields are what a spawn
-// driven by a written plan needs, and they are what let both paths share one create.
+// Request is one spawn. A model-driven spawn sets only Sub; a plan-driven one
+// sets the rest too.
 type Request struct {
-	// Sub is the child's objective and its authority: an ad-hoc action set, or a named
-	// archetype whose prompt and capabilities configure it.
+	// Sub is the objective and authority: an action set, or a named archetype.
 	Sub mission.SubGoal
-	// Name is the child's resource name. Setting it makes the spawn idempotent: the
-	// same request twice returns the same child and creates and charges for only one,
-	// which is what a caller that records the child after the create needs, because the
-	// gap between the two is a crash window. Empty asks the store for a generated name,
-	// which is what a model-driven spawn wants: each tool call is its own delegation and
-	// there is nothing to be idempotent about.
+	// Name makes the spawn idempotent: a repeat returns the same child and
+	// charges once, covering a crash between create and the caller recording
+	// it. Empty generates a name.
 	Name string
-	// StopCondition overrides the generic delegated-sub-goal condition. A child never
-	// inherits its parent's, which is the failure that produces a fork still running
-	// after the parent is done, so this is the caller's own narrower condition or
-	// nothing.
+	// StopCondition replaces the generic one. A child never inherits its
+	// parent's, or it would run on after the parent is done.
 	StopCondition string
-	// Ledger is the child's definition of done, written before it starts. A child handed
-	// one is created already planned, so it builds against the record it was given
-	// instead of planning its way to a different one.
+	// Ledger is the child's definition of done. A child given one is created
+	// already planned, so it does not plan a different one.
 	Ledger []goal.LedgerItem
 }
 
-// Spawn creates a child goal for sub, owned by parent, with a narrowed grant, a
-// reserved share of the shared budget, at the next depth, under the concurrency
-// cap. It returns the child's id, or a refusal (depth exceeded, budget exhausted,
-// at capacity) the model sees as a failed spawn it can adapt to.
+// Spawn creates a child goal for sub and returns its id. A refusal (depth,
+// budget, capacity) is an error the model can adapt to.
 func (s *Spawner) Spawn(ctx context.Context, parent resource.Resource, sub mission.SubGoal) (string, error) {
 	return s.SpawnRequest(ctx, parent, Request{Sub: sub})
 }
 
-// SpawnRequest is Spawn with the plan-driven fields available: a fixed child name, the
-// child's own stop condition, and the ledger it is to be judged against. Everything
-// that governs a spawn happens here, so neither caller can reach a create the other's
-// rules did not apply to.
+// SpawnRequest is Spawn with the plan-driven fields. Every rule that governs a
+// spawn is applied here, so both paths get the same ones.
 func (s *Spawner) SpawnRequest(ctx context.Context, parent resource.Resource, req Request) (string, error) {
 	if s.enqueue == nil {
 		return "", fault.New(fault.Terminal, "spawner_unbound", "spawner: enqueue not bound")
 	}
-	// A named request that already has its child is the idempotent case: return the
-	// child that exists without taking a concurrency slot or reserving a second share
-	// of the pool, so a caller re-entering after a crash resumes its fan-out rather
-	// than doubling it.
+	// An existing named child is returned without a new slot or reservation, so
+	// a caller re-entering after a crash resumes its fan-out instead of doubling
+	// it.
 	if req.Name != "" {
 		existing, err := s.store.Get(ctx, goal.Kind, parent.Scope, req.Name)
 		switch {
@@ -177,7 +151,6 @@ func (s *Spawner) SpawnRequest(ctx context.Context, parent resource.Resource, re
 	}
 	scope := parent.Scope
 
-	// Concurrency slot: refuse rather than queue, so the model serializes.
 	if s.sem != nil {
 		select {
 		case s.sem <- struct{}{}:
@@ -187,8 +160,6 @@ func (s *Spawner) SpawnRequest(ctx context.Context, parent resource.Resource, re
 		}
 	}
 
-	// Budget: reserve a share against the shared pool before creating the child, so a
-	// fan-out cannot overshoot. Release the slot if the pool cannot cover it.
 	if s.ledger != nil && !s.perChild.IsZero() {
 		ok, rerr := s.ledger.Reserve(ctx, pool, scope, s.perChild)
 		if rerr != nil {
@@ -220,15 +191,11 @@ func (s *Spawner) SpawnRequest(ctx context.Context, parent resource.Resource, re
 	return child.Name, nil
 }
 
-// create builds and stores the child goal resource: owned by the parent (controller
-// owner, for cascade teardown), with a grant narrowed to the subset of the parent's
-// authority the sub-goal asked for, at the next depth, sharing the pool.
+// create stores the child goal resource.
 func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSpec goal.Spec, req Request, depth int, pool string) (resource.Resource, error) {
 	sub := req.Sub
-	// A named Agent configures the child from its resolved bundle: its capabilities
-	// (intersected with the parent's authority, never widened) and its system prompt.
-	// An ad-hoc child takes its authority from the requested actions. An unknown Agent
-	// fails the spawn closed.
+	// A named Agent supplies the capabilities (still narrowed by the parent) and
+	// prompt; an unknown one fails the spawn closed.
 	childGrant := narrowGrant(parentSpec.Grant, withModelGenerate(sub.Actions))
 	childSystem, childDriver, childModel := "", "", ""
 	if sub.Agent != "" {
@@ -253,18 +220,11 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		Model:         childModel,
 		System:        childSystem,
 		Ledger:        req.Ledger,
-		// The terms of the run travel down the delegation, exactly as authority does and
-		// for the same reason. A grant a child cannot widen would be worth little if the
-		// child could be handed the work its parent was forbidden to do a certain way and
-		// then do it that way; spawning is not a way out of the terms. Unlike the grant
-		// this is not narrowed, because there is no narrower version of an obligation:
-		// the child is held to everything its parent is.
+		// Invariants are copied whole, so spawning is no way out of the parent's
+		// terms; an obligation has no narrower form.
 		Invariants: parentSpec.Invariants,
-		// Allowances are copied, which is neither widening nor inference: a child holds
-		// exactly what its parent was declared to hold, and holds it only for the actions
-		// its narrowed grant lets it take at all. What a delegation cannot do is mint one.
-		// A run that could declare an allowance for its child would be a run declaring its
-		// own authority, which is the reading of the objective this refuses.
+		// Allowances are copied and apply only within the narrowed grant. A run
+		// cannot mint one for its child, or it would be declaring its own authority.
 		Allowances: parentSpec.Allowances,
 	}
 	raw, err := json.Marshal(childSpec)
@@ -281,9 +241,7 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 	if req.Name == "" {
 		child.GenerateName = parent.Name + "-child-"
 	}
-	// A child handed its ledger has been planned, by whoever wrote the plan. Saying so
-	// on the record is what stops a planning-enabled runtime dispatching a planning step
-	// that would expand the objective into a second, different ledger.
+	// Marking it planned stops the runtime planning a second, different ledger.
 	if len(req.Ledger) > 0 {
 		enc, err := goal.Status{Planned: true}.Encode()
 		if err != nil {
@@ -291,9 +249,8 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 		}
 		child.Status = enc
 	}
-	// OwnerReferences is a promoted embedded field, so it is set after the literal.
-	// The parent is the controller owner, so the child is garbage-collected when the
-	// parent is gone (cascade teardown).
+	// OwnerReferences is a promoted field, so it is set after the literal. The
+	// controller owner makes the child go when the parent does.
 	child.OwnerReferences = []resource.OwnerReference{{
 		APIVersion: goal.GroupVersion,
 		Kind:       goal.Kind,
@@ -308,10 +265,9 @@ func (s *Spawner) create(ctx context.Context, parent resource.Resource, parentSp
 	return saved, nil
 }
 
-// Poll reports each child's outcome and whether all have finished. A converged
-// child yields its final answer; a stalled one yields a failure. A child still
-// running leaves allDone false. When a child reaches a terminal state, its budget
-// reservation and concurrency slot are released exactly once.
+// Poll reports each finished child's result and whether all have finished. A
+// stalled child is Failed. A finished child's reservation and slot are released
+// exactly once.
 func (s *Spawner) Poll(ctx context.Context, ids []string) ([]mission.ChildResult, bool, error) {
 	results := make([]mission.ChildResult, 0, len(ids))
 	allDone := true
@@ -338,14 +294,10 @@ func (s *Spawner) Poll(ctx context.Context, ids []string) ([]mission.ChildResult
 	return results, allDone, nil
 }
 
-// adopt takes bookkeeping for a child the spawner was handed back rather than created.
-// It only ever has anything to do in the resume case: a same-process repeat of a named
-// request already has its record, so this returns early and the one reservation that was
-// made is still the one that gets released. After a restart the map is empty while the
-// reservation is not, because a reservation lives on the budget resource rather than in
-// this process, so the adopted child is recorded as still holding it and the release
-// happens when it finishes. The pool is read off the child, which is where the spawn
-// that created it wrote the pool it charged.
+// adopt records a child found already existing. It acts only after a restart:
+// the reservation persists on the budget resource while this map does not, so
+// the child is recorded as holding it and releases it when it finishes. The
+// pool is read off the child spec, where its spawn wrote it.
 func (s *Spawner) adopt(child resource.Resource, parent resource.Resource) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -359,7 +311,6 @@ func (s *Spawner) adopt(child resource.Resource, parent resource.Resource) {
 	s.children[child.Name] = &childRec{scope: child.Scope, pool: pool}
 }
 
-// finish releases a terminal child's reservation and concurrency slot exactly once.
 func (s *Spawner) finish(ctx context.Context, id string) {
 	s.mu.Lock()
 	rec := s.children[id]
@@ -375,14 +326,12 @@ func (s *Spawner) finish(ctx context.Context, id string) {
 	s.releaseSlot()
 }
 
-// refund returns a child's budget reservation to the shared pool.
 func (s *Spawner) refund(ctx context.Context, pool string, scope resource.Scope) {
 	if s.ledger != nil && !s.perChild.IsZero() {
 		_ = s.ledger.Release(ctx, pool, scope, s.perChild)
 	}
 }
 
-// releaseSlot frees one concurrency slot.
 func (s *Spawner) releaseSlot() {
 	if s.sem != nil {
 		select {
@@ -392,10 +341,8 @@ func (s *Spawner) releaseSlot() {
 	}
 }
 
-// narrowGrant returns the actions a child may take: the subset of the requested
-// actions the parent is authorized for, so a child never exceeds its parent. A
-// parent with no explicit grant is unconstrained, so the child is scoped to exactly
-// what it requested.
+// narrowGrant returns the requested actions the parent holds. A parent with no
+// grant is unconstrained, so the child gets what it requested.
 func narrowGrant(parentGrant, requested []string) []string {
 	if len(parentGrant) == 0 {
 		return requested
@@ -403,13 +350,9 @@ func narrowGrant(parentGrant, requested []string) []string {
 	return capability.NewGrant(parentGrant...).Narrow(requested...).Actions()
 }
 
-// withModelGenerate ensures the model-call action is in a child's requested
-// authority. Every loop must call the model to make progress, so a child that
-// requested only tool actions (or a bound Agent whose capabilities omit it) would
-// otherwise be admitted for its tools but refused the model call, leaving it unable
-// to think. The action is added to the request before it is narrowed against the
-// parent, so it is still intersected with the parent's grant and never widens it;
-// this mirrors how the host grants the root run its own model call.
+// withModelGenerate adds the model-call action to a request, because a child
+// granted only tools could never call the model. It is added before narrowing,
+// so it never widens the parent's grant.
 func withModelGenerate(actions []string) []string {
 	for _, a := range actions {
 		if a == mission.ActionModelGenerate {

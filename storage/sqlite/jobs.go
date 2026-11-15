@@ -9,16 +9,12 @@ import (
 	"github.com/ionalpha/flynn/jobs"
 )
 
-// Jobs returns the durable work queue backed by the same database as the state
-// provider and event spine. Jobs are a plain projected table, not event-sourced:
-// they are operational records mutated in place, so they do not flow through the
-// command path. The returned Queue is valid until the Store is closed.
+// Jobs returns the work queue, valid until Close. Jobs are operational records
+// mutated in place, outside the event log.
 func (s *Store) Jobs() jobs.Queue { return &jobQueue{s} }
 
-// jobQueue implements jobs.Queue over the shared SQLite database. The lifecycle
-// decisions (defaults, claim transition, retry-vs-dead) are delegated to the
-// shared functions in package jobs, so this backend and the in-memory reference
-// behave identically; only storage and atomic claim selection live here.
+// jobQueue delegates lifecycle decisions to package jobs, so it behaves like
+// the in-memory queue; only storage and atomic claim are here.
 type jobQueue struct{ p *Store }
 
 var (
@@ -26,12 +22,10 @@ var (
 	_ jobs.Waker = (*jobQueue)(nil)
 )
 
-// Ready implements jobs.Waker: the channel signalled after this process
-// enqueues a job or returns one to pending. Writes from other processes on the
-// same database cannot be signalled; a worker's poll covers those.
+// Ready signals only this process's writes; polling covers other processes.
 func (q *jobQueue) Ready() <-chan struct{} { return q.p.jobsReady }
 
-// jobCols matches the jobs table column order and the scanJob order.
+// jobCols must match the table and scanJob order.
 const jobCols = `id, queue, kind, payload, scope_instance, scope_project, scope_workspace,
 	state, attempt, max_attempts, last_error, run_at, lease_expires, origin_instance_id, created_at, updated_at`
 
@@ -88,19 +82,16 @@ func (q *jobQueue) Claim(ctx context.Context, p jobs.ClaimParams) ([]jobs.Job, e
 
 	var claimed []jobs.Job
 	err := q.p.tx(ctx, func(tx *sql.Tx) error {
-		// Reap jobs that timed out on their final attempt: a running job whose lease
-		// expired with no attempts left is dead, not retried past MaxAttempts.
+		// A lease expired on the final attempt makes the job dead.
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE jobs SET state = ?, last_error = 'lease expired without completion', lease_expires = 0, updated_at = ?
 			 WHERE queue = ? AND state = ? AND lease_expires <= ? AND attempt >= max_attempts`,
 			string(jobs.StateDead), now, queue, string(jobs.StateRunning), now); err != nil {
 			return err
 		}
-		// Select ready jobs in the shared total order (earliest schedule first):
-		// pending jobs whose RunAt has arrived, or running jobs whose lease has
-		// expired and still have attempts left (crash recovery). The single
-		// connection serialises this with any other claim, so a job is leased to one
-		// worker at a time.
+		// Due pending jobs, or expired leases with attempts left, earliest
+		// first. The single connection serialises claims, so one worker holds a
+		// job at a time.
 		rows, err := tx.QueryContext(ctx,
 			`SELECT `+jobCols+` FROM jobs
 			 WHERE queue = ? AND (
@@ -144,17 +135,14 @@ func (q *jobQueue) Fail(ctx context.Context, id, errMsg string, retryAt int64) e
 		jobs.MarkFailed(j, errMsg, retryAt, q.p.clk.Now().UnixNano())
 		pending = j.State == jobs.StatePending
 	})
-	// A retryable failure re-pends the job; wake a worker so a due retry is
-	// picked up on the signal rather than the next idle poll.
+	// Wake a worker so a due retry need not wait for the poll.
 	if err == nil && pending {
 		jobs.Notify(q.p.jobsReady)
 	}
 	return err
 }
 
-// transition loads a running job, applies a state change, and writes it back, all
-// in one transaction. It enforces the running-only guard shared by Complete and
-// Fail: a job that is not currently leased cannot be completed or failed.
+// transition refuses a job that is not leased, for Complete and Fail.
 func (q *jobQueue) transition(ctx context.Context, id string, apply func(*jobs.Job)) error {
 	return q.p.tx(ctx, func(tx *sql.Tx) error {
 		row := tx.QueryRowContext(ctx, `SELECT `+jobCols+` FROM jobs WHERE id = ?`, id)
@@ -182,10 +170,8 @@ func (q *jobQueue) Get(ctx context.Context, id string) (jobs.Job, error) {
 	return j, err
 }
 
-// Recover implements jobs.Queue: it expires the lease of every job left running, so the
-// next Claim reclaims (or, if attempts are spent, reaps) it. A startup runs it once so a
-// step a crashed predecessor left in flight is picked up at once, not after its lease
-// lapses.
+// Recover expires every running lease, so work a crashed process left is
+// reclaimed at startup without waiting out the lease.
 func (q *jobQueue) Recover(ctx context.Context) (int, error) {
 	now := q.p.clk.Now().UnixNano()
 	var n int64
@@ -208,8 +194,7 @@ func (q *jobQueue) Recover(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
-// Close is a no-op: the queue shares the Store's database, which the Store owns
-// and closes.
+// Close is a no-op; the Store owns the database.
 func (q *jobQueue) Close() error { return nil }
 
 func collectJobs(rows *sql.Rows) ([]jobs.Job, error) {

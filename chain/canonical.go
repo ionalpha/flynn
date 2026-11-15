@@ -15,14 +15,11 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// eventDomain is the domain-separation tag mixed into an event's hashed and signed
-// preimage. It binds a hash over an event to this format and version so a signature
-// over an event can never be confused with a signature over any other message.
+// eventDomain separates event preimages from every other signed message.
 const eventDomain = "provetrail/event/v1\n"
 
-// Failure codes are stable, dotted identifiers. They are the codes a conforming
-// verifier reports, so a rejection names which check failed rather than just
-// "invalid". They match the published Provetrail conformance registry.
+// Failure codes are stable identifiers matching the published Provetrail
+// conformance registry.
 const (
 	CodeNonCanonicalCBOR = "enc.non_canonical_cbor"
 	CodeDuplicateMapKey  = "enc.duplicate_map_key"
@@ -35,12 +32,9 @@ const (
 	CodeInvalidActor     = "enc.invalid_actor"
 )
 
-// canonicalEnc and canonicalDec are the single, shared CBOR modes the format is
-// defined by. canonicalEnc is RFC 8949 Core Deterministic Encoding (preferred
-// serialization, shortest integers and floats, map keys sorted in bytewise
-// lexicographic order). canonicalDec is strict: it rejects duplicate map keys and
-// indefinite-length items, the two ambiguities that would let two byte strings
-// claim to be the same event.
+// canonicalEnc is RFC 8949 Core Deterministic Encoding. canonicalDec rejects
+// duplicate map keys and indefinite-length items, the two ambiguities that
+// would let two byte strings claim to be the same event.
 var (
 	canonicalEnc cbor.EncMode
 	canonicalDec cbor.DecMode
@@ -49,8 +43,7 @@ var (
 func init() {
 	enc, err := cbor.CoreDetEncOptions().EncMode()
 	if err != nil {
-		// The options are static and valid, so this cannot fail in practice; a
-		// panic here would be a programming error, not a runtime condition.
+		// The options are static, so an error is a programming bug.
 		panic("chain: build canonical CBOR encoder: " + err.Error())
 	}
 	canonicalEnc = enc
@@ -65,13 +58,10 @@ func init() {
 	canonicalDec = dec
 }
 
-// canonicalEvent is both the decode target and the encode source for canonical
-// bytes. Its cbor tags name the wire keys. The seven critical keys are always
-// present; the optional string keys carry omitempty so they are present only when
-// set, by a fixed rule, and the encoding of an event without them is stable. The
-// canonical encoder sorts struct-field keys bytewise exactly as it sorts map keys,
-// so field declaration order carries no authority over the wire; the conformance
-// vectors pin the resulting bytes.
+// canonicalEvent is the decode target and encode source. The seven critical keys
+// are always present; optional keys are omitted when empty. The encoder sorts
+// struct keys as it sorts map keys, so field order does not affect the wire; the
+// conformance vectors pin the bytes.
 type canonicalEvent struct {
 	Stream         string         `cbor:"stream"`
 	Seq            int64          `cbor:"seq"`
@@ -87,19 +77,16 @@ type canonicalEvent struct {
 	SpanID         string         `cbor:"span_id,omitempty"`
 }
 
-// toCanonical validates e and shapes it into the encode source. Time is
-// normalized to UTC unix nanoseconds, which intentionally drops the monotonic
-// reading and location so the canonical form is clock- and location-independent.
-// A nil payload is normalized to an empty map so the payload key is always
-// present with a stable value.
+// toCanonical normalizes time to UTC unix nanoseconds, dropping the monotonic
+// reading and location, and a nil payload to an empty map so the payload key is
+// always present.
 func toCanonical(e spine.Event) (canonicalEvent, error) {
 	if e.Time.IsZero() {
 		return canonicalEvent{}, fault.New(fault.Terminal, CodeTimeRange, "chain: event time is zero")
 	}
-	// The actor field is a closed category (SPEC 2.1): agent, human, or system.
-	// Enforcing it here covers both directions: a producer cannot emit an event
-	// outside the category, and the re-derivation check of verifyCanonical rejects
-	// carried bytes that claim one.
+	// Actor is a closed category (SPEC 2.1). Checking here stops a producer
+	// emitting outside it, and verifyCanonical's re-derivation rejects carried
+	// bytes that claim one.
 	switch e.Actor {
 	case spine.ActorAgent, spine.ActorHuman, spine.ActorSystem:
 	default:
@@ -109,11 +96,8 @@ func toCanonical(e spine.Event) (canonicalEvent, error) {
 	if payload == nil {
 		payload = map[string]any{}
 	}
-	// A CBOR text string must be valid UTF-8, and the strict decoder enforces that,
-	// so the encoder fails closed on a non-UTF-8 string field rather than producing
-	// bytes that will not round-trip. Binary data belongs in a byte string ([]byte),
-	// which carries no UTF-8 constraint. The array literal keeps the sweep on the
-	// stack.
+	// The strict decoder requires UTF-8 text, so fail closed here rather than
+	// produce bytes that will not round-trip. Binary data belongs in a []byte.
 	for _, s := range [...]string{e.Stream, e.Type, string(e.Actor), e.CausationID, e.OriginInstanceID, e.Principal, e.TraceID, e.SpanID} {
 		if !utf8.ValidString(s) {
 			return canonicalEvent{}, fault.New(fault.Terminal, CodeInvalidUTF8, "chain: event field is not valid UTF-8")
@@ -138,15 +122,13 @@ func toCanonical(e spine.Event) (canonicalEvent, error) {
 	}, nil
 }
 
-// CanonicalBytes returns the deterministic CBOR encoding of e. Two events with the
-// same logical content always produce identical bytes, regardless of Go map
-// iteration order, because the encoder sorts map keys. These are the bytes a hash
-// chain commits to and a proof carries.
+// CanonicalBytes returns the deterministic CBOR encoding of e, the bytes a hash
+// chain commits to and a proof carries. Equal content gives equal bytes whatever
+// the map iteration order.
 //
-// Payload integers must be integer-typed (int, int64). A value that is a float64
-// holding an integral number, which is what a payload round-tripped through a JSON
-// decoder becomes, encodes as a float and changes the bytes. Producers must
-// preserve integer types; the property tests guard this.
+// Payload integers must be integer-typed (int, int64). An integral float64, as a
+// JSON round trip produces, encodes as a float and changes the bytes. Producers
+// must preserve integer types.
 func CanonicalBytes(e spine.Event) ([]byte, error) {
 	ce, err := toCanonical(e)
 	if err != nil {
@@ -159,11 +141,8 @@ func CanonicalBytes(e spine.Event) ([]byte, error) {
 	return b, nil
 }
 
-// DecodeCanonical strictly decodes canonical bytes back to an Event. It rejects
-// duplicate map keys, indefinite-length items, and trailing bytes, so a byte
-// string that decodes here is well formed CBOR with no structural ambiguity. It
-// does NOT by itself prove the bytes are in canonical form; use VerifyCanonical for
-// that.
+// DecodeCanonical rejects duplicate map keys, indefinite-length items and
+// trailing bytes. It does not prove canonical form; use [VerifyCanonical].
 func DecodeCanonical(b []byte) (spine.Event, error) {
 	var ce canonicalEvent
 	if err := canonicalDec.Unmarshal(b, &ce); err != nil {
@@ -172,18 +151,14 @@ func DecodeCanonical(b []byte) (spine.Event, error) {
 	return fromCanonical(ce), nil
 }
 
-// VerifyCanonical reports whether b is the exact canonical encoding of the event it
-// decodes to. It decodes b strictly, re-encodes the recovered event through the
-// canonical encoder, and compares: any difference means b carries non-canonical or
-// extra content and is rejected. This is the re-derivation check that lets a
-// verifier confirm carried bytes agree with their logical content.
+// VerifyCanonical decodes b strictly, re-encodes the event and compares, so
+// non-canonical or extra content is rejected.
 func VerifyCanonical(b []byte) error {
 	_, err := verifyCanonical(b)
 	return err
 }
 
-// verifyCanonical is VerifyCanonical returning the decoded event, so a stream
-// verifier gets the event from the same pass instead of decoding the bytes twice.
+// verifyCanonical also returns the decoded event, to avoid a second decode.
 func verifyCanonical(b []byte) (spine.Event, error) {
 	e, err := DecodeCanonical(b)
 	if err != nil {
@@ -199,10 +174,9 @@ func verifyCanonical(b []byte) (spine.Event, error) {
 	return e, nil
 }
 
-// LeafInput returns the domain-separated preimage the hash chain commits to for one
-// event: the domain tag, the length of the canonical bytes as a big-endian uint64,
-// then the canonical bytes. The length prefix makes the encoding unambiguous so two
-// different events can never share a preimage. The tamper-evident spine hashes this.
+// LeafInput returns the preimage the hash chain commits to: the domain tag, the
+// big-endian uint64 length, then the canonical bytes. The length prefix keeps two
+// events from sharing a preimage.
 func LeafInput(canonical []byte) ([]byte, error) {
 	if len(canonical) > math.MaxInt-len(eventDomain)-8 {
 		return nil, fault.New(fault.Terminal, CodeEncode, "chain: canonical event too large to frame")
@@ -233,9 +207,8 @@ func fromCanonical(ce canonicalEvent) spine.Event {
 	}
 }
 
-// validUTF8Value reports whether every string in v (and in any map keys, map
-// values, or slice elements it contains) is valid UTF-8. Byte slices are not
-// strings and are skipped, so binary payload data is allowed.
+// validUTF8Value checks strings, map keys and slice elements; byte slices are
+// skipped.
 func validUTF8Value(v any) bool {
 	switch x := v.(type) {
 	case string:
@@ -265,8 +238,6 @@ func validUTF8Value(v any) bool {
 	return true
 }
 
-// classifyDecodeError maps a CBOR decode error to a stable failure code so a
-// rejection names the specific structural fault.
 func classifyDecodeError(err error) error {
 	var dup *cbor.DupMapKeyError
 	if errors.As(err, &dup) {

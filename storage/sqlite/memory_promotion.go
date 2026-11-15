@@ -12,8 +12,7 @@ import (
 const memoryPromotionCols = `memory_id, promoted, decided_by, reason, decided_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id`
 
-// projectMemoryPromotion writes a promotion post-image. Shared by the live command
-// path and applyEvent (Rebuild), so both project identically.
+// projectMemoryPromotion is shared by the live path and Rebuild.
 func projectMemoryPromotion(ctx context.Context, tx *sql.Tx, p state.MemoryPromotion) error {
 	_, err := tx.ExecContext(ctx,
 		`INSERT INTO memory_promotions (`+memoryPromotionCols+`) VALUES (?,?,?,?,?,?,?,?,?,?)
@@ -73,8 +72,6 @@ func (m *memory) Promote(ctx context.Context, d state.PromotionDecision) (state.
 	return out, nil
 }
 
-// promotionPrevTx loads the stored decision for an item within tx, or nil when
-// nobody has decided yet.
 func (m *memory) promotionPrevTx(ctx context.Context, tx *sql.Tx, memoryID string) (*state.MemoryPromotion, error) {
 	row := tx.QueryRowContext(ctx,
 		`SELECT `+memoryPromotionCols+` FROM memory_promotions WHERE memory_id = ?`, memoryID)
@@ -92,8 +89,6 @@ func (m *memory) Promotions(ctx context.Context, memoryIDs []string) ([]state.Me
 	return selectByMemoryID(ctx, m.p.reads(), memoryPromotionCols, `memory_promotions`, `memory_id`, memoryIDs, scanMemoryPromotion)
 }
 
-// getLiveMemoryTx loads a live memory item by id within tx, or returns
-// ErrNotFound.
 func getLiveMemoryTx(ctx context.Context, tx *sql.Tx, id string) (state.MemoryItem, error) {
 	row := tx.QueryRowContext(ctx, `SELECT `+memoryCols+` FROM memory_items WHERE id = ? AND deleted = 0`, id)
 	it, err := scanMemory(row)

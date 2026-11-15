@@ -7,11 +7,10 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// Reader pumps a raw terminal byte stream through a Decoder and delivers
-// events on a channel. A lone Escape byte cannot be told from the start of an
-// escape sequence until more bytes arrive, so a partial sequence arms an idle
-// timer (from the injected clock.Timing) that flushes it; the timer never arms
-// mid-paste, or a stall between chunks would split the paste in two. Reads are
+// Reader pumps a raw terminal byte stream through a Decoder and delivers events
+// on a channel. A partial sequence arms an idle timer (from the injected
+// clock.Timing) that flushes it, resolving a lone Escape; the timer never arms
+// mid-paste, or a stall between chunks would split the paste. Reads are
 // token-gated so a pause withholds the next token instead of racing a blocked
 // read for the stream's bytes.
 type Reader struct {
@@ -24,17 +23,15 @@ type Reader struct {
 }
 
 // pauseReq asks the pump to park the reader. done closes once no read is in
-// flight; poke runs when a read is already blocked, so the caller can elicit
-// bytes that complete it.
+// flight; poke runs when a read is blocked, to elicit bytes that complete it.
 type pauseReq struct {
 	poke func()
 	done chan struct{}
 }
 
-// NewReader starts pumping r. escDelay is how long a partial sequence may
-// dangle before it is flushed (traditional terminals use tens of
-// milliseconds; too low misreads fast sequences on slow links as Escape
-// presses, too high makes the Escape key feel laggy).
+// NewReader starts pumping r. escDelay is how long a partial sequence may dangle
+// before it is flushed: too low misreads sequences on slow links as Escape
+// presses, too high makes Escape laggy. Tens of milliseconds is usual.
 func NewReader(r io.Reader, timing clock.Timing, escDelay time.Duration) *Reader {
 	rd := &Reader{
 		events: make(chan Event, 64),
@@ -50,29 +47,25 @@ func NewReader(r io.Reader, timing clock.Timing, escDelay time.Duration) *Reader
 	return rd
 }
 
-// Events is the decoded event stream. It closes when the input reaches EOF
-// or errors, after a final flush, so a consumer ranges over it and exits
-// cleanly with the terminal.
+// Events is the decoded event stream. It closes after a final flush when the
+// input reaches EOF or errors.
 func (r *Reader) Events() <-chan Event { return r.events }
 
-// Stop abandons the pump and waits for it to exit. The underlying read
-// goroutine may stay blocked in its current Read until the input closes;
-// that is inherent to blocking terminal reads, and callers close or restore
-// the terminal right after Stop, which unblocks it.
+// Stop abandons the pump and waits for it to exit. The read goroutine may stay
+// blocked in Read until the input closes, so callers close or restore the
+// terminal right after.
 func (r *Reader) Stop() {
 	close(r.stop)
 	<-r.done
 }
 
-// Pause parks the reader off its input and returns a channel that closes
-// once no read is in flight, so the caller can hand the stream to another
-// process without the two racing for its bytes. When a read is already
-// blocked, poke runs exactly once; the caller uses it to elicit bytes on the
-// stream (a terminal answers a cursor position query) that complete the
-// read. Bytes read between Pause and the park are discarded, as is the
-// poke's answer. The pump handles the request at its next iteration, so a
-// caller waiting on the returned channel must keep draining Events until it
-// closes. Pause and Resume alternate strictly, from one goroutine.
+// Pause parks the reader off its input and returns a channel that closes once no
+// read is in flight, so the stream can go to another process without a race for
+// its bytes. When a read is blocked, poke runs once to elicit bytes that
+// complete it (a cursor position query). Bytes read between Pause and the park,
+// and the poke's answer, are discarded. The pump handles the request at its next
+// iteration, so a caller waiting on the channel must keep draining Events. Pause
+// and Resume alternate strictly, from one goroutine.
 func (r *Reader) Pause(poke func()) <-chan struct{} {
 	req := pauseReq{poke: poke, done: make(chan struct{})}
 	select {
@@ -83,8 +76,8 @@ func (r *Reader) Pause(poke func()) <-chan struct{} {
 	return req.done
 }
 
-// Resume lifts a pause: the pump issues the next read token and decoding
-// starts fresh, dropping any partial escape sequence from before the pause.
+// Resume lifts a pause. Decoding starts fresh, dropping any partial sequence
+// from before it.
 func (r *Reader) Resume() {
 	select {
 	case r.resume <- struct{}{}:
@@ -92,10 +85,8 @@ func (r *Reader) Resume() {
 	}
 }
 
-// read moves raw chunks from the input to the pump, one token-gated read at
-// a time. Each chunk is its own allocation because the pump consumes it
-// asynchronously; sizing follows the largest burst a terminal delivers at
-// once (a paste arrives in chunks of a few kilobytes).
+// read moves raw chunks to the pump, one token-gated read at a time. Each chunk
+// is its own allocation because the pump consumes it asynchronously.
 func (r *Reader) read(src io.Reader, chunks chan<- []byte) {
 	defer close(chunks)
 	for {
@@ -119,11 +110,10 @@ func (r *Reader) read(src io.Reader, chunks chan<- []byte) {
 	}
 }
 
-// pump feeds the decoder and manages the idle flush, the read tokens, and
-// the pause protocol. Exactly one token is outstanding whenever the reader
-// is running; a pause withholds the next one, reclaiming an unclaimed token
-// when it can and otherwise poking the blocked read and waiting for its
-// final chunk.
+// pump feeds the decoder and manages the idle flush, read tokens and pause
+// protocol. Exactly one token is outstanding while running; a pause withholds the
+// next, reclaiming an unclaimed token or else poking the blocked read and
+// waiting for its final chunk.
 func (r *Reader) pump(timing clock.Timing, escDelay time.Duration, chunks <-chan []byte) {
 	p := &pumpState{r: r, timing: timing, escDelay: escDelay}
 	defer p.finish()
@@ -150,9 +140,8 @@ func (r *Reader) pump(timing clock.Timing, escDelay time.Duration, chunks <-chan
 	}
 }
 
-// pumpState is the pump's loop-local state, held in one place so each select
-// case is a method. outstanding is true while a read token is in play;
-// pauseDone is the acknowledgement owed to a Pause whose read is still blocked.
+// pumpState is the pump's loop-local state. outstanding is true while a read
+// token is in play; pauseDone is owed to a Pause whose read is still blocked.
 type pumpState struct {
 	r           *Reader
 	timing      clock.Timing
@@ -164,8 +153,8 @@ type pumpState struct {
 	pauseDone   chan struct{}
 }
 
-// finish releases a Pause still waiting on a read, so its caller is never
-// stranded by a pump that exits, then marks the reader done.
+// finish releases a Pause still waiting on a read, so its caller is not
+// stranded by an exiting pump, then marks the reader done.
 func (p *pumpState) finish() {
 	if p.pauseDone != nil {
 		close(p.pauseDone)
@@ -173,8 +162,6 @@ func (p *pumpState) finish() {
 	close(p.r.done)
 }
 
-// issueToken grants the read goroutine its next read unless paused or one is
-// already in play.
 func (p *pumpState) issueToken() {
 	if p.paused || p.outstanding {
 		return
@@ -199,9 +186,9 @@ func (p *pumpState) idleC() <-chan time.Time {
 	return p.idle.C()
 }
 
-// park handles a pause request. It reclaims the token when the read goroutine
-// has not taken it yet: no read will start, so the park is immediate.
-// Otherwise a read is blocked; poke it and park when its chunk arrives.
+// park handles a pause request. An unclaimed token is reclaimed and the park is
+// immediate; otherwise a read is blocked, so poke it and park when its chunk
+// arrives.
 func (p *pumpState) park(req pauseReq) {
 	p.paused = true
 	p.stopIdle()
@@ -218,7 +205,6 @@ func (p *pumpState) park(req pauseReq) {
 	req.poke()
 }
 
-// chunk handles a read result and reports whether pumping should continue.
 func (p *pumpState) chunk(chunk []byte, open bool) bool {
 	p.stopIdle()
 	p.outstanding = false
@@ -243,15 +229,13 @@ func (p *pumpState) chunk(chunk []byte, open bool) bool {
 	return true
 }
 
-// flushIdle resolves a partial sequence nothing has followed, and reports
-// whether pumping should continue.
 func (p *pumpState) flushIdle() bool {
 	p.idle = nil
 	return p.r.emit(p.d.Flush())
 }
 
-// emit delivers events, honoring stop so a departed consumer never wedges
-// the pump. It reports whether pumping should continue.
+// emit delivers events, honoring stop so a departed consumer cannot wedge the
+// pump. It reports whether pumping should continue.
 func (r *Reader) emit(evs []Event) bool {
 	for _, ev := range evs {
 		select {

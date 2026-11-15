@@ -11,9 +11,8 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// snapshotContentType marks a COSE payload as a snapshot claim, so a snapshot
-// signature can never be replayed as a checkpoint signature or vice versa: the
-// content type is in the protected header and covered by the signature.
+// snapshotContentType is in the protected header, so a snapshot signature cannot
+// be replayed as a checkpoint signature or the reverse.
 const snapshotContentType = "application/provetrail-snapshot+cbor"
 
 // Snapshot failure codes, matching the published Provetrail conformance registry.
@@ -25,12 +24,10 @@ const (
 	CodeSnapshotNoSigner  = "snap.no_signer"
 )
 
-// SnapshotClaim binds a projected state to the exact log prefix it derives from:
-// the SHA-256 of the snapshot payload, the stream and sequence the projection is
-// current as of, and the stream's Merkle checkpoint over that prefix. Signed, it
-// makes a snapshot exactly as trustworthy as the log it summarizes - a verifier
-// checks the signature and state hash to restore fast, and can always re-fold the
-// prefix and compare against the checkpoint to audit in depth.
+// SnapshotClaim binds a projected state to the log prefix it derives from: the
+// SHA-256 of the payload, the stream and Seq it is current as of, and the
+// stream's Merkle checkpoint over that prefix. A verifier can restore from the
+// signature and state hash, or re-fold the prefix and compare to the checkpoint.
 type SnapshotClaim struct {
 	Stream     string
 	Seq        int64
@@ -38,9 +35,8 @@ type SnapshotClaim struct {
 	Checkpoint Checkpoint
 }
 
-// snapshotClaimPayload is the deterministic CBOR encoding of a claim: the bytes
-// that are signed. It uses the same canonical encoder as events and checkpoints,
-// so the signed payload is reproducible in any language.
+// snapshotClaimPayload is the signed bytes, from the canonical encoder, so they
+// are reproducible in any language.
 func snapshotClaimPayload(c SnapshotClaim) ([]byte, error) {
 	m := map[string]any{
 		"origin":     c.Checkpoint.Origin,
@@ -77,18 +73,15 @@ func decodeSnapshotClaim(b []byte) (SnapshotClaim, error) {
 	}, nil
 }
 
-// SnapshotSigner produces a signed snapshot claim. Like RootSigner it is a port:
-// the signing method is an implementation detail, so a verifier checks a snapshot
-// without depending on how it was signed. Ed25519RootSigner implements both.
+// SnapshotSigner signs a snapshot claim, as [RootSigner] does a checkpoint.
+// [Ed25519RootSigner] implements both.
 type SnapshotSigner interface {
-	// SignSnapshotClaim signs c and returns the tagged COSE_Sign1 message.
 	SignSnapshotClaim(c SnapshotClaim) ([]byte, error)
-	// KeyID identifies the signing key in a verifier's keyring.
 	KeyID() string
 }
 
-// SignSnapshotClaim signs a snapshot claim as COSE_Sign1 under the snapshot
-// content type, so the signature binds the claim's meaning as well as its bytes.
+// SignSnapshotClaim signs under the snapshot content type, so the signature
+// binds the claim's meaning.
 func (s *Ed25519RootSigner) SignSnapshotClaim(c SnapshotClaim) ([]byte, error) {
 	payload, err := snapshotClaimPayload(c)
 	if err != nil {
@@ -110,10 +103,8 @@ func (s *Ed25519RootSigner) SignSnapshotClaim(c SnapshotClaim) ([]byte, error) {
 
 var _ SnapshotSigner = (*Ed25519RootSigner)(nil)
 
-// VerifySnapshotClaim verifies a COSE_Sign1 signed snapshot claim against the
-// keyring and returns the claim it attests. It fails closed exactly like
-// VerifyCheckpoint, and additionally rejects a checkpoint signature presented as a
-// snapshot (the content types differ).
+// VerifySnapshotClaim fails closed like [VerifyCheckpoint], and also rejects a
+// checkpoint signature presented as a snapshot.
 func VerifySnapshotClaim(coseBytes []byte, ring *RootKeyring) (SnapshotClaim, error) {
 	payload, err := verifiedPayload(coseBytes, ring, snapshotContentType, "snapshot")
 	if err != nil {
@@ -122,29 +113,25 @@ func VerifySnapshotClaim(coseBytes []byte, ring *RootKeyring) (SnapshotClaim, er
 	return decodeSnapshotClaim(payload)
 }
 
-// snapshotWire is the stored form of a verified snapshot: the projection payload
-// plus the signed claim binding it to the log prefix it derives from.
+// snapshotWire is the stored form: the projection payload plus its signed claim.
 type snapshotWire struct {
 	State []byte `cbor:"state"`
 	COSE  []byte `cbor:"cose"`
 }
 
-// SnapshotSealer seals projection snapshots into verified, checkpoint-bound
-// artifacts and opens (verifies) them on read. It implements spine.SnapshotCodec,
-// so a store that snapshots through it never persists or trusts an unsigned state
-// blob: Seal binds the state to the stream's Merkle checkpoint under the instance
-// key, and Open rejects anything the keyring does not vouch for, so a rebuild
-// falls back to a full fold rather than restoring unverified state.
+// SnapshotSealer implements [spine.SnapshotCodec], so a store never persists or
+// trusts an unsigned state blob. Seal binds the state to the stream's Merkle
+// checkpoint under the instance key; Open rejects anything the keyring does not
+// vouch for, and a rebuild then falls back to a full fold.
 type SnapshotSealer struct {
 	signer SnapshotSigner
 	ring   *RootKeyring
 	origin OriginFunc
 }
 
-// NewSnapshotSealer builds a sealer verifying against ring and signing with
-// signer. A nil signer makes a verify-only sealer (Open works, Seal refuses), for
-// a process that reads snapshots but holds no key. originFor maps a stream to its
-// checkpoint origin; if nil, the stream id is used.
+// NewSnapshotSealer verifies against ring and signs with signer. A nil signer
+// gives a verify-only sealer (Seal refuses) for a process holding no key. A nil
+// originFor uses the stream id.
 func NewSnapshotSealer(signer SnapshotSigner, ring *RootKeyring, originFor OriginFunc) (*SnapshotSealer, error) {
 	if ring == nil {
 		return nil, fault.New(fault.Terminal, CodeSignerKey, "chain: snapshot sealer needs a keyring")
@@ -159,11 +146,10 @@ func (ss *SnapshotSealer) originFor(stream string) string {
 	return stream
 }
 
-// Seal wraps a projection snapshot in a signed claim binding it to the stream's
-// Merkle checkpoint at the snapshot's Seq. It folds the stream's canonical events
-// up to Seq into the tree, which is linear in the prefix - a write-side cost paid
-// once per snapshot, amortized by the cadence, and bounded by segment rotation;
-// the read side is what stops growing with history.
+// Seal signs a claim binding the snapshot to the stream's Merkle checkpoint at
+// its Seq. It folds the stream up to Seq into a tree, linear in the prefix: a
+// write-side cost per snapshot, bounded by segment rotation, so reads stop
+// growing with history.
 func (ss *SnapshotSealer) Seal(ctx context.Context, log spine.Log, s spine.Snapshot) (spine.Snapshot, error) {
 	if ss.signer == nil {
 		return spine.Snapshot{}, fault.New(fault.Terminal, CodeSnapshotNoSigner, "chain: snapshot sealer has no signer")
@@ -217,11 +203,10 @@ func (ss *SnapshotSealer) Seal(ctx context.Context, log spine.Log, s spine.Snaps
 	return spine.Snapshot{Stream: s.Stream, Seq: s.Seq, Payload: sealed}, nil
 }
 
-// Open verifies a sealed snapshot and returns it with the inner projection
-// payload. It fails closed: a payload that is not a sealed envelope, a signature
-// the keyring does not vouch for, a claim bound to a different stream or seq, or a
-// state whose hash does not match the signed claim are all rejected - the caller
-// falls back to a full fold, which is only slower, never wrong.
+// Open returns the inner projection payload. It fails closed on a payload that
+// is not a sealed envelope, a signature the keyring does not vouch for, a claim
+// bound to another stream or seq, or a state hash that differs from the claim.
+// The caller then falls back to a full fold, which is slower, never wrong.
 func (ss *SnapshotSealer) Open(_ context.Context, s spine.Snapshot) (spine.Snapshot, error) {
 	var wire snapshotWire
 	if err := canonicalDec.Unmarshal(s.Payload, &wire); err != nil {

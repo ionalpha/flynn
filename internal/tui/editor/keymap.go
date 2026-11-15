@@ -12,33 +12,28 @@ import (
 type Action int
 
 const (
-	// ActionNone reports the event was not the editor's to handle.
+	// ActionNone means the event was not the editor's to handle.
 	ActionNone Action = iota
-	// ActionRedraw reports the buffer or cursor changed; repaint the composer.
+	// ActionRedraw means the buffer or cursor changed.
 	ActionRedraw
-	// ActionSubmit reports the user pressed Enter; send Content and Clear.
+	// ActionSubmit means Enter: send Content and Clear.
 	ActionSubmit
-	// ActionEsc reports Escape with the buffer untouched by this key; the
-	// caller owns what Esc means (backtrack, dismiss an overlay, interrupt).
+	// ActionEsc means Escape, whose meaning the caller owns.
 	ActionEsc
-	// ActionTab hands completion to the caller, since it needs the file and
-	// command universe the editor has no business knowing.
+	// ActionTab hands completion to the caller, which knows the file and command
+	// universe.
 	ActionTab
-	// ActionHistoryPrev reports the cursor tried to move above the first
-	// line; recall the previous prompt.
+	// ActionHistoryPrev means the cursor tried to move above the first line.
 	ActionHistoryPrev
-	// ActionHistoryNext reports the cursor tried to move below the last
-	// line; recall the next prompt.
+	// ActionHistoryNext means the cursor tried to move below the last line.
 	ActionHistoryNext
 )
 
-// Command names one editor operation a key chord can bind to. Names are
-// dotted: "compose.*" commands resolve to caller-owned actions (submit,
-// escape, completion), "editor.*" commands act on the buffer directly.
+// Command names an operation a key chord binds to. "compose.*" commands resolve
+// to caller-owned actions; "editor.*" commands act on the buffer.
 type Command string
 
-// The bindable command vocabulary. CmdUnbind is the explicit "none": binding
-// a chord to it removes the default binding for that chord.
+// The bindable commands. Binding a chord to CmdUnbind removes its default.
 const (
 	CmdUnbind Command = "none"
 
@@ -68,9 +63,8 @@ const (
 	CmdRedo            Command = "editor.redo"
 )
 
-// commands is the dispatch table from a command name to its behaviour.
-// Loading validates command names against this table, so a misspelled name
-// in a keymap file is refused instead of silently binding nothing.
+// commands is the dispatch table. Loading validates names against it, so a
+// misspelled name is refused rather than binding nothing.
 var commands = map[Command]func(*Editor) Action{
 	CmdSubmit:   func(*Editor) Action { return ActionSubmit },
 	CmdEscape:   func(*Editor) Action { return ActionEsc },
@@ -82,8 +76,7 @@ var commands = map[Command]func(*Editor) Action{
 	CmdBackspace: func(e *Editor) Action { e.Backspace(); return ActionRedraw },
 	CmdDelete:    func(e *Editor) Action { e.Delete(); return ActionRedraw },
 	CmdDeleteOrEOF: func(e *Editor) Action {
-		// Delete forward, except on an empty buffer, where the key is left
-		// unclaimed for the session (the readline EOF convention).
+		// On an empty buffer the key is left to the session (readline EOF).
 		if e.Empty() {
 			return ActionNone
 		}
@@ -95,7 +88,6 @@ var commands = map[Command]func(*Editor) Action{
 	CmdWordLeft:  func(e *Editor) Action { e.WordLeft(); return ActionRedraw },
 	CmdWordRight: func(e *Editor) Action { e.WordRight(); return ActionRedraw },
 	CmdCursorUp: func(e *Editor) Action {
-		// Moving above the first line recalls history instead.
 		if !e.Up() {
 			return ActionHistoryPrev
 		}
@@ -119,20 +111,15 @@ var commands = map[Command]func(*Editor) Action{
 	CmdRedo:            func(e *Editor) Action { e.Redo(); return ActionRedraw },
 }
 
-// Keymap maps a normalized key chord (see ParseChord) to a command. Chords
-// not in the map fall through: printable text inserts, everything else is
-// unclaimed.
+// Keymap maps a normalized chord (see [ParseChord]) to a command. Unmapped
+// chords fall through: printable text inserts, the rest is unclaimed.
 type Keymap map[string]Command
 
-// Default is the built-in keymap: the emacs and readline set every shell
-// user already knows, plus the arrow, Home/End, and Delete keys in both
-// their legacy and kitty encodings (the input decoder has already
-// normalized those onto one vocabulary).
+// Default is the emacs and readline keymap plus the arrow, Home/End and Delete
+// keys; the input decoder has already normalized their encodings.
 func Default() Keymap {
 	return Keymap{
-		// Plain Enter submits; Alt+Enter and Shift+Enter insert a line
-		// break (Shift+Enter only reaches us on kitty-protocol terminals;
-		// Ctrl+J covers the rest).
+		// Shift+Enter only arrives on kitty-protocol terminals; Ctrl+J covers the rest.
 		"enter":       CmdSubmit,
 		"alt+enter":   CmdNewline,
 		"shift+enter": CmdNewline,
@@ -176,7 +163,6 @@ func Default() Keymap {
 	}
 }
 
-// keyNames maps chord key-name spellings to functional key codes.
 var keyNames = map[string]rune{
 	"enter":     input.KeyEnter,
 	"esc":       input.KeyEsc,
@@ -192,7 +178,6 @@ var keyNames = map[string]rune{
 	"space":     ' ',
 }
 
-// nameOf is keyNames inverted, for formatting a chord from a decoded key.
 var nameOf = func() map[rune]string {
 	m := make(map[rune]string, len(keyNames))
 	for name, code := range keyNames {
@@ -201,7 +186,6 @@ var nameOf = func() map[rune]string {
 	return m
 }()
 
-// modNames lists modifier spellings in canonical chord order.
 var modNames = []struct {
 	name string
 	bit  input.Mod
@@ -212,15 +196,13 @@ var modNames = []struct {
 	{"super", input.ModSuper},
 }
 
-// ParseChord normalizes one chord spelling ("Ctrl+Shift+Left", "alt+d",
-// "enter") into the canonical form Keymap keys use: lowercase, modifiers in
-// ctrl-alt-shift-super order, then a key name or a single character. It
-// refuses spellings it cannot represent, so a typo in a keymap file is an
-// error, not a binding that never fires.
+// ParseChord normalizes a spelling ("Ctrl+Shift+Left") to the Keymap key form:
+// lowercase, modifiers in ctrl-alt-shift-super order, then a key name or single
+// character. An unrepresentable spelling is an error, so a typo cannot become a
+// binding that never fires.
 func ParseChord(s string) (string, error) {
 	parts := strings.Split(s, "+")
-	// A trailing "+" means the key itself is "+" ("ctrl++" splits into
-	// ["ctrl", "", ""]); rejoin that spelling into one literal key.
+	// "ctrl++" splits into ["ctrl", "", ""]; rejoin it as a literal "+" key.
 	if n := len(parts); n >= 2 && parts[n-1] == "" && parts[n-2] == "" {
 		parts = append(parts[:n-2], "+")
 	}
@@ -252,8 +234,6 @@ func ParseChord(s string) (string, error) {
 	return "", fmt.Errorf("keymap: chord %q: unknown key %q (named keys: %s)", s, key, knownKeyNames())
 }
 
-// chordOf renders a decoded key in the canonical chord form ParseChord
-// produces, so map lookups and file spellings meet on one vocabulary.
 func chordOf(k input.Key) string {
 	if name, ok := nameOf[k.Code]; ok {
 		return formatChord(k.Mods, name)
@@ -282,12 +262,11 @@ func knownKeyNames() string {
 	return strings.Join(names, ", ")
 }
 
-// SetKeymap replaces the editor's bindings. Nil restores the default map.
-// The map is used as given and must not be mutated afterwards.
+// SetKeymap replaces the bindings; nil restores the default. The map is used as
+// given and must not be mutated afterwards.
 func (e *Editor) SetKeymap(km Keymap) { e.keys = km }
 
-// Handle consumes one decoded input event, resolving keys through the
-// editor's keymap (the default map unless SetKeymap changed it).
+// Handle consumes one decoded event, resolving keys through the keymap.
 func (e *Editor) Handle(ev input.Event) Action {
 	switch ev := ev.(type) {
 	case input.Paste:
@@ -307,9 +286,8 @@ func (e *Editor) key(k input.Key) Action {
 	if cmd, ok := km[chordOf(k)]; ok {
 		return commands[cmd](e)
 	}
-	// Some terminals report Shift on functional keys that have no plain
-	// encoding of their own; an unbound shifted functional key falls back
-	// to its unshifted binding rather than going unclaimed.
+	// Some terminals report Shift on functional keys with no plain encoding; an
+	// unbound one falls back to its unshifted binding.
 	if k.IsFunctional() && k.Mods&input.ModShift != 0 {
 		unshifted := k
 		unshifted.Mods &^= input.ModShift
@@ -324,6 +302,5 @@ func (e *Editor) key(k input.Key) Action {
 	return ActionNone
 }
 
-// defaultKeymap is the shared map behind editors nobody called SetKeymap
-// on; it is never mutated after init.
+// defaultKeymap is shared and never mutated after init.
 var defaultKeymap = Default()

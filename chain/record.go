@@ -19,11 +19,9 @@ const (
 	CodeNonCanonical = "record.non_canonical"
 )
 
-// requireCanonical reports an error unless raw is the exact canonical encoding of
-// decoded. Re-encoding the decoded value and comparing rejects any mutation of the
-// artifact's framing, a reordered, renamed, dropped, or extra field, that a lenient
-// decode would otherwise absorb into a default value. The cryptographic checks bind
-// the contents; this binds the container.
+// requireCanonical rejects a reordered, renamed, dropped or extra field that a
+// lenient decode would absorb into a default. The cryptographic checks bind the
+// contents; this binds the container.
 func requireCanonical(decoded any, raw []byte) error {
 	re, err := canonicalEnc.Marshal(decoded)
 	if err != nil {
@@ -35,23 +33,20 @@ func requireCanonical(decoded any, raw []byte) error {
 	return nil
 }
 
-// Builder accumulates a run's events as canonical encodings and a Merkle log over
-// them, so the run can be sealed into a signed, independently verifiable record. It
-// composes the canonical encoding, the structural ordering, and the tamper-evident
-// log into one producer. A Builder is not safe for concurrent use.
+// Builder accumulates a run's canonical events and a Merkle log over them, to be
+// sealed into a signed record. It is not safe for concurrent use.
 type Builder struct {
 	origin string
 	tree   *Tree
 	events [][]byte
 }
 
-// NewBuilder starts a record builder for a run identified by origin.
+// NewBuilder starts a builder for the run identified by origin.
 func NewBuilder(origin string) *Builder {
 	return &Builder{origin: origin, tree: NewTree()}
 }
 
-// Add canonicalizes e, appends it to the log as the next leaf, and retains the
-// canonical bytes for the sealed record.
+// Add appends e as the next leaf and retains its canonical bytes.
 func (b *Builder) Add(e spine.Event) error {
 	cb, err := CanonicalBytes(e)
 	if err != nil {
@@ -64,10 +59,8 @@ func (b *Builder) Add(e spine.Event) error {
 	return nil
 }
 
-// Seal signs the current Merkle head and returns the sealed run: the signed
-// checkpoint plus every event's canonical bytes, which together are sufficient for
-// full verification and for extracting a single-event proof. An empty run is
-// refused so a record always attests at least one event.
+// Seal signs the current Merkle head. An empty run is refused so a record
+// attests at least one event.
 func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 	if len(b.events) == 0 {
 		return nil, fault.New(fault.Terminal, CodeEmptyRecord, "chain: cannot seal a run with no events")
@@ -90,12 +83,10 @@ func (b *Builder) Seal(signer RootSigner) (*SealedRun, error) {
 	return &SealedRun{cose: sc.COSE, events: events, nodes: nodes}, nil
 }
 
-// SealAndReset seals the current run and resets the builder to an empty run under
-// the same origin. This is the rotation point for a long-lived stream: everything a
-// run accumulates (each event's canonical bytes plus the full Merkle node set) moves
-// into the returned immutable record and the builder starts fresh, so retention is
-// bounded per segment instead of growing for the stream's life. Each sealed segment
-// verifies on its own; Seq continuity across segments ties them together.
+// SealAndReset seals the run and starts an empty one under the same origin. It
+// is the rotation point for a long-lived stream: events and Merkle nodes move
+// into the returned record, so retention is bounded per segment. Each segment
+// verifies on its own; Seq continuity ties them together.
 func (b *Builder) SealAndReset(signer RootSigner) (*SealedRun, error) {
 	sealed, err := b.Seal(signer)
 	if err != nil {
@@ -106,18 +97,13 @@ func (b *Builder) SealAndReset(signer RootSigner) (*SealedRun, error) {
 	return sealed, nil
 }
 
-// SealedRun is an immutable, signed record of a run: the COSE-signed checkpoint over
-// the Merkle head plus the canonical bytes of every event. It is a snapshot taken at
-// seal time, so further appends to the builder it came from do not affect it. It can
-// be marshalled to a portable artifact, verified in full, or used to produce a
-// standalone proof for one event.
+// SealedRun is an immutable record: the signed checkpoint plus every event's
+// canonical bytes. Later appends to its builder do not affect it.
 type SealedRun struct {
 	cose   []byte
 	events [][]byte
-	// nodes is the seal-time snapshot of the run's Merkle node store (hash values
-	// are immutable and never rewritten), so EventProof assembles an inclusion path
-	// by lookup instead of rebuilding the whole tree per proof. Seal always populates
-	// it.
+	// nodes lets EventProof look up an inclusion path instead of rebuilding the
+	// tree. Seal always populates it.
 	nodes NodeStore
 }
 
@@ -126,8 +112,7 @@ type sealedRunWire struct {
 	Events     [][]byte `cbor:"events"`
 }
 
-// Marshal encodes the sealed run as a portable, deterministic CBOR artifact a third
-// party can verify with VerifyRun.
+// Marshal encodes the run as deterministic CBOR for [VerifyRun].
 func (s *SealedRun) Marshal() ([]byte, error) {
 	b, err := canonicalEnc.Marshal(sealedRunWire{Checkpoint: s.cose, Events: s.events})
 	if err != nil {
@@ -136,8 +121,8 @@ func (s *SealedRun) Marshal() ([]byte, error) {
 	return b, nil
 }
 
-// EventProof extracts a standalone proof that the event at index is in the sealed
-// run, verifiable on its own with VerifyEventProof and without the other events.
+// EventProof extracts a proof for the event at index, checkable with
+// [VerifyEventProof] without the other events.
 func (s *SealedRun) EventProof(index uint64) (*EventProof, error) {
 	if index >= uint64(len(s.events)) {
 		return nil, fault.New(fault.Terminal, CodeIndexRange, "chain: event index out of range")
@@ -159,11 +144,9 @@ func (s *SealedRun) EventProof(index uint64) (*EventProof, error) {
 	}, nil
 }
 
-// EventProof is a standalone proof that one event is included in a signed run: the
-// event's canonical bytes, its position, the inclusion path, and the signed
-// checkpoint whose root the path reconstructs. It is the portable artifact a third
-// party checks to confirm a single action happened under a signed log, without the
-// rest of the run.
+// EventProof shows one event is included in a signed run: its canonical bytes,
+// position, the inclusion path, and the signed checkpoint whose root the path
+// reconstructs.
 type EventProof struct {
 	Canonical  []byte   `cbor:"canonical"`
 	Index      uint64   `cbor:"index"`
@@ -172,7 +155,7 @@ type EventProof struct {
 	Checkpoint []byte   `cbor:"checkpoint"`
 }
 
-// Marshal encodes the proof as a portable, deterministic CBOR artifact.
+// Marshal encodes the proof as deterministic CBOR.
 func (p *EventProof) Marshal() ([]byte, error) {
 	b, err := canonicalEnc.Marshal(p)
 	if err != nil {
@@ -181,15 +164,12 @@ func (p *EventProof) Marshal() ([]byte, error) {
 	return b, nil
 }
 
-// VerifyRun verifies a marshalled sealed run against the keyring and returns its
-// events in order. It checks every layer and fails closed on the first fault:
+// VerifyRun returns the events of a marshalled run, failing closed on the first
+// fault:
 //   - the checkpoint signature is valid and from an authorized key,
 //   - the event count equals the signed size,
-//   - every event is in canonical form and the stream is strictly ordered,
+//   - every event is canonical and the stream is strictly ordered,
 //   - the events rebuild exactly the signed Merkle root.
-//
-// Passing it means an independent party, trusting only the signing key, can rely on
-// the whole event sequence being authentic and untampered.
 func VerifyRun(record []byte, ring *RootKeyring) ([]spine.Event, error) {
 	var w sealedRunWire
 	if err := canonicalDec.Unmarshal(record, &w); err != nil {
@@ -202,9 +182,8 @@ func VerifyRun(record []byte, ring *RootKeyring) ([]spine.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	// An empty record is refused before the size comparison, so a signed size-0
-	// checkpoint over no events reports the emptiness, not a vacuous size match: a
-	// record must attest at least one event to attest anything.
+	// Checked before the size comparison so a signed size-0 checkpoint reports
+	// emptiness, not a vacuous size match.
 	if len(w.Events) == 0 {
 		return nil, fault.New(fault.Terminal, CodeEmptyRecord, "chain: record carries no events")
 	}
@@ -231,11 +210,10 @@ func VerifyRun(record []byte, ring *RootKeyring) ([]spine.Event, error) {
 	return events, nil
 }
 
-// VerifyEventProof verifies a marshalled single-event proof against the keyring and
-// returns the event. It checks every layer and fails closed: the checkpoint
-// signature is valid and authorized, the proof's size matches the signed size, the
-// event is in canonical form, and the event's leaf is included under the signed root
-// at the claimed index. It needs only the proof and the keyring, not the run.
+// VerifyEventProof returns the event of a marshalled proof, failing closed unless
+// the checkpoint signature is authorized, the size matches the signed size, the
+// event is canonical, and its leaf is included under the signed root at the
+// claimed index.
 func VerifyEventProof(proofBytes []byte, ring *RootKeyring) (spine.Event, error) {
 	var p EventProof
 	if err := canonicalDec.Unmarshal(proofBytes, &p); err != nil {
@@ -254,10 +232,9 @@ func VerifyEventProof(proofBytes []byte, ring *RootKeyring) (spine.Event, error)
 	if p.Index >= p.Size {
 		return spine.Event{}, fault.New(fault.Terminal, CodeIndexRange, "chain: proof index is outside the signed tree")
 	}
-	// A path shorter than the tree shape requires cannot reconstruct the root; name
-	// the missing node rather than reporting a generic inclusion failure. The
-	// delivered length is what Rehash produces over the shape's node IDs, which can
-	// be shorter than the ID count when an ephemeral range collapses to one hash.
+	// Name a missing node instead of a generic inclusion failure. The expected
+	// length is what Rehash yields, which can be below the ID count when an
+	// ephemeral range collapses to one hash.
 	if nodes, err := proof.Inclusion(p.Index, p.Size); err == nil {
 		dummies := make([][]byte, len(nodes.IDs))
 		for i := range dummies {

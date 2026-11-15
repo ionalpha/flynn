@@ -7,18 +7,16 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// Painter owns the live region: the last few rows of the terminal, repainted in place as
-// the session streams. It tracks only the lines it last painted and the terminal size;
-// it never queries the terminal. After every operation the cursor rests at column one of
-// the last live row (or of the row where the region will begin, while it is empty).
+// Painter owns the live region: the last few terminal rows, repainted in place. It
+// tracks only the lines it last painted and the terminal size, and never queries
+// the terminal. After every operation the cursor rests at column one of the last
+// live row (or of the row where an empty region will begin).
 //
-// All movement is relative to that resting row, never absolute: relative movement stays
-// correct when the terminal scrolls, because the cursor and the live rows scroll together.
-//
-// Each operation is accumulated into one buffer and flushed as a single write wrapped in
-// synchronized output, so the terminal applies it as one atomic frame. Write errors are
-// sticky: after the first failure every later operation is a no-op and Err reports the
-// cause, so a torn-down terminal does not cascade secondary failures mid-exit.
+// Movement is relative to that row, which stays correct when the terminal scrolls
+// because the cursor and live rows scroll together. Each operation is one write
+// wrapped in synchronized output, so the terminal applies it as one frame. Write
+// errors are sticky: after the first, every operation is a no-op and Err reports
+// it, so a torn-down terminal cannot cascade failures mid-exit.
 type Painter struct {
 	w      io.Writer
 	width  int
@@ -27,9 +25,8 @@ type Painter struct {
 	err    error
 }
 
-// NewPainter builds a painter over w for a terminal of the given size. The
-// painter assumes the cursor starts at column one of an otherwise unused row
-// (a fresh prompt line); the first Paint draws the live region from there.
+// NewPainter builds a painter over w, assuming the cursor starts at column one of
+// an unused row (a fresh prompt line).
 func NewPainter(w io.Writer, width, height int) *Painter {
 	p := &Painter{w: w}
 	p.Resize(width, height)
@@ -39,30 +36,26 @@ func NewPainter(w io.Writer, width, height int) *Painter {
 // Err returns the first write error the painter hit, or nil.
 func (p *Painter) Err() error { return p.err }
 
-// Live returns the lines currently painted in the live region. It exists for
-// tests and diagnostics; callers must not mutate the returned slice.
+// Live returns the painted lines, for tests and diagnostics. Callers must not
+// mutate the slice.
 func (p *Painter) Live() []string { return p.live }
 
-// Resize records a new terminal size. It does not repaint: after a resize the
-// previously painted rows may have been rewrapped by the terminal, so the
-// caller re-renders its components at the new width and calls Repaint, which
-// redraws without trusting the stale diff base.
+// Resize records a new terminal size without repainting. The terminal may have
+// rewrapped the painted rows, so the caller re-renders at the new width and calls
+// Repaint.
 func (p *Painter) Resize(width, height int) {
 	if width < 1 {
 		width = 1
 	}
-	// The live region never owns the whole screen: committing finalized lines
-	// scrolls the screen, and at full height that would push live rows into
-	// scrollback mid-frame. Keeping height at two or more leaves at least one
-	// history row above the region.
+	// At full height, committing finalized lines would push live rows into
+	// scrollback mid-frame, so keep one history row above the region.
 	if height < 2 {
 		height = 2
 	}
 	p.width, p.height = width, height
 }
 
-// Paint diffs frame against the last painted live region and rewrites only
-// the rows that changed. Painting an identical frame writes nothing.
+// Paint rewrites only the rows of frame that differ from the last paint.
 func (p *Painter) Paint(frame []string) {
 	frame = p.guard(frame)
 	if p.err != nil || equalLines(p.live, frame) {
@@ -76,13 +69,11 @@ func (p *Painter) Paint(frame []string) {
 	p.live = frame
 }
 
-// Insert commits finalized lines into the terminal's own scrollback above the
-// live region, then paints frame as the new live region. The finalized lines
-// become ordinary terminal output: they are never repainted again, and native
-// scrolling, selection, and search work on them. Long finalized lines are
-// left to the terminal to wrap, matching how any other program's output
-// behaves in scrollback; only live rows are hard-truncated, because the
-// painter's row arithmetic depends on one live line per row.
+// Insert commits finalized lines to the terminal's scrollback above the live
+// region, then paints frame. Finalized lines are never repainted, so native
+// scrolling, selection and search work on them. Long ones are left for the
+// terminal to wrap; only live rows are truncated, because the row arithmetic
+// needs one line per row.
 func (p *Painter) Insert(finalized, frame []string) {
 	frame = p.guard(frame)
 	if p.err != nil {
@@ -105,10 +96,9 @@ func (p *Painter) Insert(finalized, frame []string) {
 	p.live = frame
 }
 
-// Repaint clears the live region and redraws frame from scratch, without
-// diffing. It is the recovery path after anything that invalidates the diff
-// base: a resize (the terminal rewrapped the old rows) or output from outside
-// the painter (a child process wrote to the terminal).
+// Repaint clears the live region and redraws frame without diffing. It recovers
+// from anything that invalidates the diff base: a resize, or output from outside
+// the painter such as a child process.
 func (p *Painter) Repaint(frame []string) {
 	frame = p.guard(frame)
 	if p.err != nil {
@@ -123,10 +113,8 @@ func (p *Painter) Repaint(frame []string) {
 	p.live = frame
 }
 
-// Close finalizes the session's last frame: the live region's current content
-// is left in place as ordinary scrollback and the cursor moves to a fresh
-// line below it, where the shell prompt will appear. The painter is unusable
-// afterwards except for Err.
+// Close leaves the live region as scrollback and moves the cursor to a fresh
+// line below it. The painter is unusable afterwards except for Err.
 func (p *Painter) Close() {
 	if p.err != nil {
 		return
@@ -139,10 +127,9 @@ func (p *Painter) Close() {
 	p.live = nil
 }
 
-// guard enforces the invariants the row arithmetic depends on: every live
-// line is at most one row wide, and the region leaves at least one history
-// row above it. A component bug can therefore misrender a line, but it cannot
-// corrupt the geometry of everything painted after it.
+// guard enforces what the row arithmetic needs: every live line at most one row
+// wide and a history row above the region. A component bug can misrender a line
+// but not corrupt the geometry of later paints.
 func (p *Painter) guard(frame []string) []string {
 	maxRows := p.height - 1
 	if len(frame) > maxRows {
@@ -155,7 +142,6 @@ func (p *Painter) guard(frame []string) []string {
 	return out
 }
 
-// diff writes the minimal row updates turning the painted region into frame.
 func (p *Painter) diff(b *bytes.Buffer, frame []string) {
 	n, m := len(p.live), len(frame)
 	if n == 0 {
@@ -194,9 +180,8 @@ func (p *Painter) diff(b *bytes.Buffer, frame []string) {
 	}
 }
 
-// clearLive moves the cursor to the top of the live region and erases from
-// there to the end of the screen, leaving the cursor at column one of the
-// row where new content begins.
+// clearLive erases from the top of the live region to the end of the screen,
+// leaving the cursor where new content begins.
 func (p *Painter) clearLive(b *bytes.Buffer) {
 	if n := len(p.live); n > 1 {
 		b.WriteString(ansi.CursorUp(n - 1))
@@ -214,8 +199,7 @@ func (p *Painter) flush(b *bytes.Buffer) {
 	}
 }
 
-// moveTo emits relative cursor movement from row *cur to row target within
-// the live region and records the new position.
+// moveTo moves the cursor from row *cur to target and records the position.
 func moveTo(b *bytes.Buffer, cur *int, target int) {
 	switch {
 	case target < *cur:
@@ -226,16 +210,14 @@ func moveTo(b *bytes.Buffer, cur *int, target int) {
 	*cur = target
 }
 
-// writeRow rewrites one live row in place: carriage return, the new content,
-// then erase to the end of the row so no residue of the old content survives.
+// writeRow rewrites one row, erasing to its end so no old content survives.
 func writeRow(b *bytes.Buffer, ln string) {
 	b.WriteString("\r")
 	b.WriteString(ln)
 	b.WriteString(ansi.EraseLineRight)
 }
 
-// writeRows writes frame starting at the cursor's row, one row per line,
-// leaving the cursor resting on the last row written.
+// writeRows writes frame from the cursor's row, leaving the cursor on the last.
 func writeRows(b *bytes.Buffer, frame []string) {
 	for i, ln := range frame {
 		if i > 0 {
@@ -257,9 +239,8 @@ func equalLines(a, b []string) bool {
 	return true
 }
 
-// Synchronized output brackets (DEC private mode 2026): the terminal buffers
-// everything between them and applies it as one frame. Terminals without the
-// mode ignore the markers.
+// Synchronized output brackets (DEC private mode 2026); terminals without the
+// mode ignore them.
 const (
 	syncBegin = "\x1b[?2026h"
 	syncEnd   = "\x1b[?2026l"

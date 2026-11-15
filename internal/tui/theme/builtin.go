@@ -1,13 +1,7 @@
 package theme
 
-// The built-in themes. Default leans on the sixteen named colors so it
-// follows the user's terminal palette instead of fighting it; HighContrast
-// drops faint text and color-only distinctions for low-vision and colorblind
-// use (state is always carried by weight or reverse video, not hue alone);
-// Mono styles with attributes only, for monochrome terminals and pipes that
-// strip color but keep attributes.
-
-// Default returns the standard theme.
+// Default returns the standard theme, built on the sixteen named colors so it
+// follows the user's palette.
 func Default() *Theme {
 	return &Theme{name: "default", styles: map[Role]Style{
 		UserPrefix:      {Foreground: "cyan", Bold: true},
@@ -53,8 +47,8 @@ func Default() *Theme {
 	}}
 }
 
-// HighContrast returns the accessibility theme: no faint text, and every
-// state distinction doubled onto a non-color channel.
+// HighContrast returns the accessibility theme: no faint text, and every state
+// carried by weight or reverse video as well as hue.
 func HighContrast() *Theme {
 	return &Theme{name: "high-contrast", styles: map[Role]Style{
 		UserPrefix:      {Bold: true, Underline: true},
@@ -99,7 +93,8 @@ func HighContrast() *Theme {
 	}}
 }
 
-// Mono returns the attribute-only theme for monochrome output.
+// Mono returns the attribute-only theme, for terminals and pipes that strip color
+// but keep attributes.
 func Mono() *Theme {
 	return &Theme{name: "mono", styles: map[Role]Style{
 		UserPrefix:    {Bold: true},
@@ -133,7 +128,7 @@ func Mono() *Theme {
 	}}
 }
 
-// Builtin returns the built-in theme with the given name, or nil.
+// Builtin returns the built-in theme named name, or nil.
 func Builtin(name string) *Theme {
 	switch name {
 	case "default", "":

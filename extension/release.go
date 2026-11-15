@@ -19,26 +19,21 @@ import (
 	"github.com/ionalpha/flynn/internal/sigstore"
 )
 
-// Origin describes where released extensions come from and who is trusted to have built
-// them. It is the trust root for every extension flynn will execute: change these fields
-// and flynn runs somebody else's code.
+// Origin is the trust root for released extensions: where they come from and
+// who must have built them.
 type Origin struct {
-	// Repo is the "owner/name" whose releases are installed from.
+	// Repo is "owner/name".
 	Repo string
 
-	// Identity is the signature the release must carry. Note that Identity.Workflow is
-	// the *reusable* release workflow, which lives in a different repository than Repo;
-	// that is what Sigstore binds the signature to, and pinning Repo instead would
-	// reject every genuine release.
+	// Identity.Workflow is the reusable release workflow, in a different
+	// repository from Repo. Sigstore binds the signature to it, so pinning
+	// Repo would reject every genuine release.
 	Identity sigstore.Identity
 }
 
-// DefaultOrigin is the first-party extension catalog: extensions published by
-// ionalpha/flynn-extensions, signed by the shared release workflow that builds them.
-//
-// It is a var rather than a const so a test can point the resolver at a fixture server,
-// and so an operator running a private catalog can replace it wholesale. It is not a
-// per-extension setting: an extension does not get to say who vouches for it.
+// DefaultOrigin is the first-party catalog, ionalpha/flynn-extensions. It is a
+// var so tests and private catalogs can replace it. It is never per-extension:
+// an extension does not choose who vouches for it.
 var DefaultOrigin = Origin{
 	Repo: "ionalpha/flynn-extensions",
 	Identity: sigstore.Identity{
@@ -48,16 +43,14 @@ var DefaultOrigin = Origin{
 	},
 }
 
-// maxMetadataBytes caps the checksum file, signature and certificate. They are a few
-// kilobytes; anything remotely larger is not the file we asked for, and a resolver that
-// will read whatever a server sends is a resolver that can be made to exhaust memory.
+// maxMetadataBytes caps the checksum file, signature and certificate, which
+// are a few kilobytes, so a server cannot exhaust memory.
 const maxMetadataBytes = 1 << 20 // 1 MiB
 
 // maxArchiveBytes caps an extension archive. Extensions are single static binaries.
 const maxArchiveBytes = 256 << 20 // 256 MiB
 
-// verifiedFile records what was proven about an installed extension, so a cached install
-// can be re-checked without going back to the network.
+// verifiedFile lets a cached install be re-checked offline.
 const verifiedFile = ".flynn-verified.json"
 
 // verified is the receipt written beside an installed extension.
@@ -69,41 +62,33 @@ type verified struct {
 	SourceRepo    string `json:"source_repo"`
 }
 
-// ReleaseResolver resolves a released extension to a local binary it has proven the origin
-// of, and refuses to produce a path for anything it cannot prove.
-//
-// The chain of trust runs: a keyless signature over the release's checksums.txt, made by
-// the pinned workflow identity; that file commits to every archive by SHA-256; the archive
-// downloaded for this platform must match its digest; the binary extracted from it is
-// hashed and the hash recorded. Nothing is executed on the strength of where it was
-// downloaded from, only on the strength of what signed it.
+// ReleaseResolver returns a binary only when it can prove its origin. The chain:
+// the pinned workflow signs checksums.txt, which commits to each archive by
+// SHA-256; the downloaded archive must match; the extracted binary's hash is
+// recorded. Download location confers no trust.
 type ReleaseResolver struct {
-	// Origin is who is trusted. The zero value trusts nobody and refuses everything.
+	// Origin's zero value trusts nobody.
 	Origin Origin
 
-	// Dir is where verified extensions are installed, one directory per name and version.
+	// Dir holds one directory per name and version.
 	Dir string
 
-	// Downloader performs the size-capped, digest-checked downloads.
 	Downloader *fetch.Downloader
 
-	// BaseURL overrides the release host (tests point this at a local server). Empty
-	// means GitHub.
+	// BaseURL overrides the release host; empty means GitHub.
 	BaseURL string
 
-	// GOOS and GOARCH override the target platform. Empty means this machine's.
+	// GOOS and GOARCH default to this machine's.
 	GOOS, GOARCH string
 
-	// roots overrides the Sigstore trust anchor. It is unexported because only this
-	// package's tests set it: production must always pin the embedded Fulcio roots, and
-	// an exported knob for "trust a different CA" is one an operator could get wrong.
+	// roots overrides the Sigstore trust anchor for tests only; production
+	// always pins the embedded Fulcio roots.
 	roots []byte
 }
 
-// Resolve downloads, verifies and installs the extension named by the block's release
-// source, returning the path to its binary. A dev source is not this resolver's business
-// and is refused: honouring one here would let an unsigned local path stand in for a
-// signed release, which is the one substitution the whole design exists to prevent.
+// Resolve downloads, verifies and installs a release source and returns the
+// binary path. A dev source is refused so an unsigned path cannot stand in
+// for a signed release.
 func (r ReleaseResolver) Resolve(ctx context.Context, extName string, block ProcessBlock) (string, []string, error) {
 	if block.Release == nil {
 		return "", nil, fault.New(fault.Terminal, "extension_release_absent",
@@ -127,9 +112,8 @@ func (r ReleaseResolver) Resolve(ctx context.Context, extName string, block Proc
 	archive := archiveName(rel.Asset, rel.Version, plat)
 	targetDir := filepath.Join(r.Dir, rel.Asset, rel.Version, plat.goos+"_"+plat.goarch)
 
-	// A cached install is re-proven from its receipt rather than trusted because it is
-	// there: the directory is on local disk, and local disk is exactly what an attacker
-	// who already got a foothold would rewrite.
+	// A cached install is verified again: local disk is what an attacker with a
+	// foothold rewrites.
 	if bin, ok, err := r.reuse(targetDir, archive, plat.binaryName(rel.Asset), rel.Digests[plat.goos+"_"+plat.goarch]); err != nil {
 		return "", nil, err
 	} else if ok {
@@ -141,13 +125,10 @@ func (r ReleaseResolver) Resolve(ctx context.Context, extName string, block Proc
 		return "", nil, err
 	}
 
-	// The signature proves the pinned workflow built this release. It does NOT prove the
-	// release is the one this flynn was built to run: a mutable tag, re-cut and re-published
-	// through the same workflow, produces a different binary with a perfectly valid
-	// signature. So if the spec pinned a digest, that digest is the last word. This check
-	// runs against a hash compiled into the binary, which is why an attacker who owns the
-	// repo, the tag, and the release pipeline still cannot change what an already-shipped
-	// flynn executes.
+	// A re-cut tag through the same workflow carries a valid signature over
+	// different bytes, so a pinned digest has the last word. It is compiled
+	// in, so owning the repo and pipeline cannot change what a shipped flynn
+	// runs.
 	if want, ok := rel.Digests[plat.goos+"_"+plat.goarch]; ok && !strings.EqualFold(want, digest) {
 		return "", nil, fault.New(fault.Forbidden, "extension_release_digest_mismatch",
 			"extension: "+extName+" release "+rel.Version+" is correctly signed but is NOT the artifact this flynn pins: "+
@@ -181,10 +162,8 @@ func (r ReleaseResolver) Resolve(ctx context.Context, extName string, block Proc
 	return binPath, block.Args, nil
 }
 
-// provenDigest establishes the archive's digest from the release's signature. The digest
-// is never taken from the artifact itself, or from any file the artifact's publisher could
-// have written without signing: it comes from checksums.txt, and checksums.txt is trusted
-// only after the pinned identity is proven to have signed it.
+// provenDigest reads the archive's digest from checksums.txt, trusted only
+// once the pinned identity's signature over it verifies.
 func (r ReleaseResolver) provenDigest(ctx context.Context, extName string, rel ReleaseSource, archive string) (string, error) {
 	tmp, err := os.MkdirTemp("", "flynn-ext-verify-")
 	if err != nil {
@@ -203,17 +182,14 @@ func (r ReleaseResolver) provenDigest(ctx context.Context, extName string, rel R
 	checksums, sig, cert := parts[0], parts[1], parts[2]
 
 	if err := (sigstore.Verifier{Roots: r.roots}).Verify(checksums, sig, cert, r.Origin.Identity); err != nil {
-		// Deliberately not wrapped into something vaguer: the operator needs to know
-		// that code claiming to be this extension failed to prove who built it.
+		// Unwrapped: the operator must see that the build provenance failed.
 		return "", fault.Wrap(fault.Forbidden, "extension_release_unverified",
 			fmt.Errorf("extension %s: refusing to run code whose origin is not proven: %w", extName, err))
 	}
 
 	digest, ok := digestFor(checksums, archive)
 	if !ok {
-		// The signature covers the file, and the file does not mention this archive. So
-		// the archive is not part of the release that was signed, whatever the server
-		// serves under its name.
+		// An archive the signed file does not list is not part of the release.
 		return "", fault.New(fault.Forbidden, "extension_release_not_in_manifest",
 			"extension: "+extName+" release "+rel.Version+" does not include "+archive+
 				"; the signed checksum file does not cover it, so it is not part of this release")
@@ -221,14 +197,9 @@ func (r ReleaseResolver) provenDigest(ctx context.Context, extName string, rel R
 	return digest, nil
 }
 
-// reuse re-proves an already-installed extension from its receipt. A missing receipt, a
-// receipt for a different archive or origin, a missing binary, or a binary whose hash has
-// moved all mean "install again and re-verify" rather than "run it".
+// reuse re-proves an install from its receipt. Any mismatch means reinstall.
 func (r ReleaseResolver) reuse(targetDir, archive, binName, wantArchive string) (string, bool, error) {
-	// A missing or unreadable receipt is not an error: it means this version was never
-	// installed, or was installed by a flynn that wrote no receipt. Either way the answer
-	// is to download and verify it again, which is the safe direction. Reporting an error
-	// here would instead break an install that is merely unproven.
+	// An unreadable receipt means unproven, so reinstall instead of failing.
 	raw, err := os.ReadFile(filepath.Join(targetDir, verifiedFile)) //nolint:gosec // G304: a path under our own data dir
 	if err != nil {
 		return "", false, nil //nolint:nilerr // no receipt means "verify again", not "fail"
@@ -238,14 +209,11 @@ func (r ReleaseResolver) reuse(targetDir, archive, binName, wantArchive string) 
 		return "", false, nil //nolint:nilerr // a corrupt receipt proves nothing, so re-verify
 	}
 	if v.Archive != archive || v.Workflow != r.Origin.Identity.Workflow || v.SourceRepo != r.Origin.Identity.SourceRepo {
-		// The pinned origin has changed since this was installed, so what was proven
-		// then is not what we require now.
+		// The pinned origin changed since install.
 		return "", false, nil
 	}
-	// If the spec pins a digest, the cached install must be OF that digest. Otherwise the
-	// cache is the bypass: an install made when the tag pointed at other bytes would be
-	// reused forever, and the pin would only ever apply to machines that had never run the
-	// extension before. Re-download and let the digest check above reject it properly.
+	// A cached install must match a pinned digest, or one made when the tag
+	// pointed elsewhere would bypass the pin forever.
 	if wantArchive != "" && !strings.EqualFold(v.ArchiveSHA256, wantArchive) {
 		return "", false, nil
 	}
@@ -258,16 +226,14 @@ func (r ReleaseResolver) reuse(targetDir, archive, binName, wantArchive string) 
 		return "", false, err
 	}
 	if got != v.BinarySHA256 {
-		// The cached binary is not the one that was verified. Something rewrote it on
-		// disk, which is the only way this happens.
+		// Something rewrote the binary on disk.
 		return "", false, fault.New(fault.Forbidden, "extension_release_cache_tampered",
 			"extension: the installed binary at "+targetDir+" no longer matches the digest that was verified; refusing to run it")
 	}
 	return bin, true, nil
 }
 
-// writeReceipt records what was verified for an install. The write is atomic because a
-// torn receipt would read as a failed verification of an install that did pass.
+// writeReceipt writes atomically: a torn receipt would fail a good install.
 func (r ReleaseResolver) writeReceipt(dir string, v verified) error {
 	raw, err := json.MarshalIndent(v, "", "  ")
 	if err != nil {
@@ -279,9 +245,8 @@ func (r ReleaseResolver) writeReceipt(dir string, v verified) error {
 	return nil
 }
 
-// fetchBytes downloads a small metadata file and returns its contents. No digest is pinned
-// because there is nothing yet to pin against: these three files are what establish the
-// pin. They are size-capped instead, and the signature is what makes them trustworthy.
+// fetchBytes downloads a metadata file, size-capped. These files establish
+// the pin, so none is digest-checked; the signature vouches for them.
 func (r ReleaseResolver) fetchBytes(ctx context.Context, url, dest string) ([]byte, error) {
 	if _, err := r.Downloader.Fetch(ctx, fetch.Request{
 		URL:      url,
@@ -348,9 +313,8 @@ func (t target) binaryName(asset string) string {
 	return asset
 }
 
-// archiveName is the release asset a given platform downloads. It mirrors, exactly, the
-// name the release tooling publishes; the two are one contract, and a mismatch here is a
-// 404 rather than a security hole, because the digest is what is trusted.
+// archiveName must match what the release tooling publishes. A mismatch is a
+// 404 and never a trust failure, since the digest is what is trusted.
 //
 //	token_v0.1.0_linux_amd64.tar.gz
 //	token_v0.1.0_windows_amd64.zip
@@ -362,9 +326,8 @@ func archiveName(asset, version string, t target) string {
 	return fmt.Sprintf("%s_%s_%s_%s%s", asset, version, t.goos, t.goarch, ext)
 }
 
-// assetURL is where a release asset lives. The tag is "<asset>/<version>", so the path
-// carries a slash inside the tag; GitHub serves it unchanged, which is why the release
-// tooling can use a prefixed tag at all.
+// assetURL builds the download URL. The tag "<asset>/<version>" contains a
+// slash, which GitHub serves unchanged.
 func (r ReleaseResolver) assetURL(rel ReleaseSource, name string) string {
 	return fmt.Sprintf("%s/%s/releases/download/%s/%s/%s",
 		r.baseURL(), r.Origin.Repo, rel.Asset, rel.Version, name)
@@ -383,15 +346,10 @@ func (r ReleaseResolver) baseURL() string {
 
 var _ Resolver = ReleaseResolver{}
 
-// SourceResolver routes an extension to the resolver its source kind demands: a published
-// release goes through signature verification, a dev binary through the explicit dev-mode
-// opt-in.
-//
-// A release wins whenever both are declared. That is the point of the ordering: a spec
-// carrying a stray dev block, whether from an author's machine or from an attacker who
-// managed to edit a stored spec, must not be able to substitute an unsigned local binary
-// for the signed release the operator asked for. Downgrade is the attack; refusing to
-// downgrade is the defence.
+// SourceResolver routes a release to signature verification and a dev binary
+// to the dev-mode opt-in. A release wins when both are declared, so a stray
+// or planted dev block cannot downgrade a signed release to an unsigned
+// binary.
 type SourceResolver struct {
 	Release ReleaseResolver
 	Dev     DevResolver

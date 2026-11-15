@@ -6,25 +6,16 @@ import (
 	"github.com/ionalpha/flynn/mission"
 )
 
-// ToolSource is the optional interface a Point implements when its
-// surface contributes callable tools to the agent. Not every surface does (an auth
-// provider contributes credentials, not tools), so it is separate from
-// Point: the loader type-asserts for it and collects tools only from
-// handlers that expose them. This is the tool-bridge boundary. The actual tools a
-// surface builds (an API call per endpoint, a deploy action) are the surface
-// handler's concern; the keystone only defines how they reach the agent.
-//
-// Tools returns the live tools mounted for one extension id, or nil if that
-// extension contributes none. It is called after OnLoad has mounted the surface.
+// ToolSource is implemented by a [Point] whose surface contributes tools; an
+// auth provider, for one, contributes none. Tools is called after OnLoad and
+// returns nil for an extension with no tools.
 type ToolSource interface {
 	Tools(id string) []mission.Tool
 }
 
-// Tools returns every tool contributed by the currently loaded extensions, in a
-// deterministic order (by extension id, then by tool name), so the agent's tool
-// surface is reproducible across runs. Authority to call a tool is enforced
-// separately at the dispatch waist by the capability grant and credential check;
-// presence here only makes a tool reachable, never automatically permitted.
+// Tools returns the loaded extensions' tools ordered by extension id then tool
+// name, so runs are reproducible. Listing a tool grants no authority to call
+// it; dispatch checks the capability grant and credential.
 func (l *Loader) Tools() []mission.Tool {
 	l.mu.Lock()
 	ids := make([]string, 0, len(l.loaded))
@@ -43,9 +34,7 @@ func (l *Loader) Tools() []mission.Tool {
 
 	var out []mission.Tool
 	for _, id := range ids {
-		// Each mounted surface key resolves to a distinct handler (the registry holds
-		// one handler per surface), so querying each yields that extension's full tool
-		// set without duplication.
+		// One handler per surface, so no tool is collected twice.
 		for _, key := range keysByID[id] {
 			h, err := l.reg.Resolve(key)
 			if err != nil {

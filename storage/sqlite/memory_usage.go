@@ -12,8 +12,7 @@ import (
 const memoryUsageCols = `memory_id, instance_id, push_count, last_pushed_at, organic_uses, primed_uses, last_used_at,
 	sync_version, origin_instance_id, updated_hlc_wall, updated_hlc_counter, last_writer_id`
 
-// projectMemoryUsage writes usage post-images. Shared by the live command path and
-// applyEvent (Rebuild), so both project identically.
+// projectMemoryUsage is shared by the live path and Rebuild.
 func projectMemoryUsage(ctx context.Context, tx *sql.Tx, rows []state.MemoryUsage) error {
 	for _, u := range rows {
 		if _, err := tx.ExecContext(ctx,
@@ -50,9 +49,8 @@ func scanMemoryUsage(sc interface{ Scan(...any) error }) (state.MemoryUsage, err
 	return u, nil
 }
 
-// usagePrevTx loads this instance's stored usage rows for the given items within
-// tx, rejecting an id with no live item behind it. Both checks run before anything
-// is stamped, so a set carrying one bad id records nothing at all.
+// usagePrevTx rejects an id with no live item before anything is stamped, so
+// one bad id records nothing.
 func (m *memory) usagePrevTx(ctx context.Context, tx *sql.Tx, memoryIDs []string) (map[string]state.MemoryUsage, error) {
 	prev := make(map[string]state.MemoryUsage, len(memoryIDs))
 	for _, id := range memoryIDs {
