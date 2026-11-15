@@ -2,12 +2,11 @@ package modelsource
 
 import "strings"
 
-// recognizedPublishers are model-hub owners treated as first-party publishers: the orgs
-// that release the weights they are named for, rather than reuploads of someone else's.
-// Membership raises a hub model from untrusted to semi-trusted, so it may run under
-// kernel confinement instead of being refused for want of the strong tier. The list is
-// deliberately small and curated; an unlisted owner is untrusted by default, never the
-// other way around. Matching is case-insensitive because hub owners are.
+// recognizedPublishers are hub owners that release the weights they are named for, as
+// opposed to reuploaders. Membership raises a hub model from untrusted to semi-trusted,
+// so it can run under kernel confinement instead of being refused. The list is small
+// and curated so an unlisted owner stays untrusted. Keys are lower case because hub
+// owners match case-insensitively.
 var recognizedPublishers = map[string]bool{
 	"qwen":          true,
 	"meta-llama":    true,
@@ -24,8 +23,7 @@ var recognizedPublishers = map[string]bool{
 }
 
 // KnownPublisher reports whether a hub owner is a recognized first-party publisher.
-// Extra owners (for example the publishers already named in the embedded catalog) can be
-// supplied so a source a curator already vouched for is recognized too.
+// extra adds owners a curator already vouched for, such as the catalog's publishers.
 func KnownPublisher(owner string, extra ...string) bool {
 	o := strings.ToLower(strings.TrimSpace(owner))
 	if o == "" {

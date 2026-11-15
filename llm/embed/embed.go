@@ -1,13 +1,7 @@
-// Package embed turns text into vectors over an OpenAI-compatible
-// /v1/embeddings endpoint, which is the one embedding wire format the hosted
-// providers and the local model servers all speak. Pointing it at a different
-// base URL is the whole of switching backend, the same property that lets one
-// chat adapter reach every OpenAI-shaped endpoint.
-//
-// It is the producer for memory/hybrid.Embedder. The interface lives with the
-// recall that consumes it and names no provider; this package is the adapter,
-// built on the same governed HTTP core as the chat adapters, so a hardening fix
-// there covers embeddings too.
+// Package embed turns text into vectors over an OpenAI-compatible /v1/embeddings
+// endpoint, the one embedding format hosted providers and local servers share, so the
+// base URL alone picks the backend. It produces memory/hybrid.Embedder over the same
+// governed HTTP core as the chat adapters, so a hardening fix there covers embeddings.
 package embed
 
 import (
@@ -22,20 +16,17 @@ import (
 )
 
 const (
-	// DefaultModel is the embedding model used when none is configured. It is the
-	// small one on purpose: recall ranking is a similarity ordering over a few
-	// hundred short items, where the large model's extra dimensions buy little and
-	// cost on every write.
+	// DefaultModel is the small model, because recall ranks a few hundred short items,
+	// where the large model's extra dimensions buy little and cost on every write.
 	DefaultModel = "text-embedding-3-small"
-	// DefaultBatch is how many texts go in one request. A batch bounds the request
-	// body and the blast radius of one failure: a corpus embedded in batches loses a
-	// batch to a timeout, where a corpus sent whole loses the read.
+	// DefaultBatch is how many texts go in one request. Batching bounds the body and
+	// what one timeout loses.
 	DefaultBatch   = 64
 	defaultBaseURL = "https://api.openai.com/v1"
 )
 
-// Client embeds text through one endpoint. Build it once and share it; it holds no
-// per-call state.
+// Client embeds text through one endpoint. It holds no per-call state, so build one and
+// share it.
 type Client struct {
 	apiKey  secret.Text
 	model   string
@@ -48,8 +39,8 @@ type Client struct {
 // Option configures a Client.
 type Option func(*Client)
 
-// WithModel sets the embedding model id (default DefaultModel). A local server
-// that serves one model ignores the field, and sending it anyway costs nothing.
+// WithModel sets the embedding model id (default [DefaultModel]). A single-model local
+// server ignores it.
 func WithModel(m string) Option {
 	return func(c *Client) {
 		if m != "" {
@@ -58,11 +49,9 @@ func WithModel(m string) Option {
 	}
 }
 
-// WithBaseURL points the client at any OpenAI-compatible endpoint: a local model
-// server, a gateway, another vendor. An unsafe URL (plaintext http to a
-// non-loopback host, where the key could be read in transit) is rejected and the
-// secure default kept, so an override can never downgrade the transport. See
-// llm.SafeBaseURL.
+// WithBaseURL points the client at any OpenAI-compatible endpoint. A URL that fails
+// llm.SafeBaseURL is ignored and the default kept, so the override can never send the
+// key over plaintext to a remote host.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" && llm.SafeBaseURL(u) {
@@ -71,7 +60,7 @@ func WithBaseURL(u string) Option {
 	}
 }
 
-// WithHTTPClient injects the HTTP client (tests supply a mock transport).
+// WithHTTPClient injects the HTTP client.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) {
 		if h != nil {
@@ -91,9 +80,8 @@ func WithBatch(n int) Option {
 	}
 }
 
-// New builds a Client authenticating with apiKey, which is held as a secret.Text so
-// it cannot leak through logging or formatting. An endpoint that needs no key (a
-// loopback model server) takes an empty one.
+// New builds a Client authenticating with apiKey, a secret.Text so it cannot leak
+// through logging. A loopback server that needs no key takes an empty one.
 func New(apiKey secret.Text, opts ...Option) *Client {
 	c := &Client{apiKey: apiKey, model: DefaultModel, baseURL: defaultBaseURL, batch: DefaultBatch}
 	for _, o := range opts {
@@ -107,20 +95,16 @@ func New(apiKey secret.Text, opts ...Option) *Client {
 	return c
 }
 
-// Model reports the embedding model id in use, which is what an operator checking
-// what their recall is ranked by needs to be told.
+// Model reports the embedding model id, so an operator can see what recall ranks by.
 func (c *Client) Model() string { return c.model }
 
-// embedRequest is one /v1/embeddings call.
 type embedRequest struct {
 	Model string   `json:"model"`
 	Input []string `json:"input"`
 }
 
-// embedResponse is the reply. Index is read rather than assumed: the API documents
-// the data array as carrying its own ordering, and a ranking built on vectors
-// silently paired with the wrong text would look like a working recall that returns
-// the wrong memories.
+// embedResponse is the reply. Index is read, never assumed, because vectors paired with
+// the wrong text give a recall that looks healthy and returns the wrong memories.
 type embedResponse struct {
 	Data []struct {
 		Index     int       `json:"index"`
@@ -128,12 +112,9 @@ type embedResponse struct {
 	} `json:"data"`
 }
 
-// Embed returns one vector per text, in the same order. An empty list makes no
-// call: an endpoint asked to embed nothing is a round trip that can only fail.
-//
-// A failure is returned rather than a short result. The caller ranking with these
-// is built to fall back to a lexical order when embeddings are unavailable, and
-// giving it half a corpus's vectors would fuse a ranking over a set nobody chose.
+// Embed returns one vector per text, in order. An empty list makes no call. A failure is
+// returned instead of a partial result, because the caller falls back to lexical
+// ranking, and half a corpus's vectors would rank an arbitrary subset.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
@@ -151,8 +132,8 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	return out, nil
 }
 
-// embedBatch fills into with the vectors for texts, which it must do exactly: every
-// slot written once, by the index the endpoint gave.
+// embedBatch fills into with the vectors for texts, each slot written exactly once at
+// the index the endpoint gave.
 func (c *Client) embedBatch(ctx context.Context, texts []string, into [][]float32) error {
 	var resp embedResponse
 	if err := c.api.PostJSON(ctx, "/embeddings", embedRequest{Model: c.model, Input: texts}, &resp); err != nil {

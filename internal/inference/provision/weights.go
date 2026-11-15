@@ -10,42 +10,27 @@ import (
 	"github.com/ionalpha/flynn/internal/fetch"
 )
 
-// This file acquires a multi-file model: a directory of weight shards plus the tokenizer and
-// config files a GPU runtime (vLLM) serves a model from. The single-file path (Install, for a
-// GGUF runtime build, and the catalog's single-weights fetch) downloads one verified file; a
-// safetensors model is instead a set of files served from a directory, so it needs the same
-// verified-fetch discipline applied per file into one directory.
-//
-// Every file is fetched through the same hardened downloader (https-pinned, host-allowlisted,
-// size-capped, digest-verified) and written under a single model directory with the same
-// traversal guard the archive extractor uses, so a hostile manifest cannot place a file
-// outside the model directory. A file already present is reused, so an interrupted fetch
-// resumes by downloading only what is missing.
-
-// ModelFile is one file of a multi-file model: its name within the model directory and where
-// to fetch it from, verified against a pinned digest. It is the per-file unit a safetensors
-// model's manifest is made of.
+// ModelFile is one file of a multi-file model such as a safetensors directory: its name
+// in the model directory, its source, and its pinned digest.
 type ModelFile struct {
-	// Name is the file's path within the model directory, for example "model.safetensors" or
-	// "tokenizer.json". It is relative and must not escape the directory.
+	// Name is the file's path within the model directory, such as "tokenizer.json". It is
+	// relative and must not escape the directory.
 	Name string
 	// URL is the https source of the file.
 	URL string
-	// SHA256 is the pinned digest the file is verified against. Empty pins on fetch (the
-	// computed digest is recorded but nothing pre-pinned was checked), the lower-trust path
-	// the single-file fetch also allows.
+	// SHA256 is the pinned digest. Empty pins on fetch: the computed digest is recorded
+	// but nothing was checked, the lower-trust path the single-file fetch also allows.
 	SHA256 string
-	// SizeBytes is the file's known size, used as the per-file download cap. 0 uses the
+	// SizeBytes is the file's known size, used as the download cap. 0 uses the
 	// downloader's default ceiling.
 	SizeBytes int64
 }
 
-// FetchModelDir downloads every file of a multi-file model into destDir, each verified and
-// traversal-guarded, reusing any file already present. It returns destDir on success. It
-// refuses an empty manifest (a model with no files is not a model) and an entry whose name
-// escapes the directory, so the directory it returns holds exactly the manifest's files and
-// nothing outside it. The download cap for a file is its known size plus a small margin, so a
-// server that returns more than the manifest claims is refused rather than written.
+// FetchModelDir downloads every file of a multi-file model into destDir through the
+// hardened downloader, reusing files already present so an interrupted fetch resumes.
+// It refuses an empty manifest and any name that escapes the directory, so destDir
+// holds exactly the manifest's files. The cap for a file is its known size plus 1 MiB,
+// so a server that sends more than the manifest claims is refused.
 func FetchModelDir(ctx context.Context, dl *fetch.Downloader, files []ModelFile, destDir string) (string, error) {
 	if len(files) == 0 {
 		return "", fault.New(fault.Terminal, "provision_no_files", "provision: a multi-file model has no files to fetch")
@@ -78,8 +63,8 @@ func FetchModelDir(ctx context.Context, dl *fetch.Downloader, files []ModelFile,
 	return destDir, nil
 }
 
-// ModelDirPresent reports whether every file of a manifest is already present under destDir,
-// so a caller can skip the fetch entirely (and the network) when the model is fully on disk.
+// ModelDirPresent reports whether every file of a manifest is already under destDir, so
+// a caller can skip the fetch and the network.
 func ModelDirPresent(files []ModelFile, destDir string) bool {
 	if len(files) == 0 {
 		return false

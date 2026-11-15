@@ -76,10 +76,9 @@ func consolidateMemory(args []string, modelSpec, dataDir string, out io.Writer) 
 	}
 	defer func() { _ = store.Close() }()
 
-	// The raw store, deliberately: the pass owns its own write semantics. It writes
-	// the lesson with the episodes it supersedes and retires them itself, so putting
-	// it behind the curated write path would have two things deciding what one write
-	// retires.
+	// The raw store: the pass writes the lesson with the episodes it supersedes and
+	// retires them itself, so the curated write path would be a second decider of
+	// what one write retires.
 	return runConsolidation(ctx, store.Memory(), consolidateDistiller(model, maxCalls), out)
 }
 

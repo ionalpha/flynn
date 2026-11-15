@@ -29,8 +29,8 @@ import (
 //
 // The recovery applies only to a spec the user did not choose (the built-in default
 // or a saved one). When explicit is true the caller named the provider on the command
-// line, so a missing credential is refused rather than answered by quietly sending the
-// work, and the prompts in it, to a provider the caller did not ask for.
+// line, so a missing credential is refused; the work and its prompts never go to a
+// provider the caller did not ask for.
 func resolveModelOrOnboard(ctx context.Context, modelSpec string, explicit bool, dataDir string) (llm.Model, harness.Plan, string, error) {
 	model, plan, err := resolveModel(ctx, modelSpec, dataDir)
 	if !errors.Is(err, provider.ErrCredentialNotSet) {

@@ -26,7 +26,7 @@ const defaultEvalRoot = "evals"
 // working directory, so nothing a run learns or writes reaches the next one and the
 // only difference between the two arms is the skill.
 //
-// It spends real model calls, deliberately and on demand. There is no cheaper way to
+// It spends model calls, on demand only. There is no cheaper way to
 // answer whether a procedure helps a model that has it: the retrieval table says
 // whether a skill is reachable and costs nothing, and this says whether reaching it
 // was worth the tokens.

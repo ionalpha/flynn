@@ -22,30 +22,25 @@ import (
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
-// errGroundTruthFailed is what a run returns when its --verify command ran after the agent
-// stopped and did not pass. The run is still sealed and distilled first, because its record
-// honestly says the check failed; the error is only what a script sees, so a goal whose own
-// independent check disagrees with the agent does not exit 0.
+// errGroundTruthFailed is returned when the --verify check, run after the agent stopped,
+// did not pass. The run is still sealed and distilled, since its record states the
+// failure; the error keeps a goal its own check disagrees with from exiting 0.
 var errGroundTruthFailed = errors.New("the --verify check did not pass: the run's success is not grounded")
 
-// runLearningMission runs one objective end to end over a durable store: it recalls
-// what past runs learned into the prompt, drives the goal to a result through the
-// sandboxed toolset, and (when a distiller is supplied) distills the converged run
-// back into skills and memory so the next run starts ahead. Progress is written to
-// out; the model's final summary is returned.
+// runLearningMission drives one objective over a durable store: it recalls past
+// learning into the prompt, runs the goal through the sandboxed toolset and, given a
+// distiller, distills a converged run back into skills and memory. It returns the
+// model's final summary.
 func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, plan harness.Plan, distiller learn.Distiller, workdir, objective, verify string, store *sqlite.Store, signer chain.RootSigner, verbose bool, fanout *fanoutConfig, opts ...driveOption) (string, error) {
 	reg, err := governed.Registry()
 	if err != nil {
 		return "", err
 	}
 	skills := store.Skills()
-	// Every write in this run goes through the curated store, so a fact supersedes
-	// the standing answer on its subject and an episode joins the series the
-	// consolidation pass later reads.
-	// The options are read here for the one that shapes memory rather than the drive:
-	// which embedding model recall ranks by. The run's memory is assembled before its
-	// conversation is, so the option is applied twice, to a config read here and to
-	// the one drive builds; both are plain setters and the second is the drive's own.
+	// Every write goes through the curated store, so a fact supersedes the standing answer
+	// on its subject and an episode joins the series consolidation reads.
+	// Memory is assembled before the conversation, so the embedder option is applied to a
+	// local config here and again by drive; both are plain setters.
 	var cfg driveConfig
 	for _, o := range opts {
 		o(&cfg)
@@ -53,29 +48,24 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	mem := governed.NewMemoryStack(store.Memory(), governed.NoticeWriter(out), governed.WithMemoryEmbedder(cfg.emb))
 	memories := mem.Store()
 
-	// The run carries a prime scope from here on, so a memory the digest pushed is
-	// attributed as primed when it is used rather than as the run having found it.
+	// With a prime scope, a memory the digest pushed is attributed as primed when used.
 	ctx = governed.WakeContext(ctx)
 
-	// Two halves of memory, in the order they matter. The digest is the push: what
-	// this install knows, offered whether or not the objective mentions it, which is
-	// the half a pull-only store cannot do. Recall is the pull: what this objective's
-	// own words match, plus the skills to offer, and which of them were surfaced so
-	// the run can be told what it was shown.
+	// The digest pushes what this install knows whether or not the objective mentions it,
+	// which a pull-only store cannot do. Recall pulls what the objective's words match,
+	// plus skills to offer, and records what was surfaced so the run is told what it saw.
 	system := governed.WithWake(ctx, mem, defaultSystemPrompt, out)
 	block, recalled, _ := recallContext(ctx, skills, memories, objective)
 	if block != "" {
 		system += "\n\n" + block
 	}
-	// Last, so the fenced files are the final thing in the prompt and nothing the
-	// operator or the store contributed sits after text the repository wrote.
+	// Last, so no operator or store text follows text the repository wrote.
 	if p := cfg.project.Prompt(); p != "" {
 		system += "\n\n" + p
 	}
 
-	// Record the run's events into a verifiable chain as they are produced, when an
-	// instance signer is available. The recorder wraps the log and changes nothing
-	// about how events are written.
+	// With a signer, events are recorded into a verifiable chain as they are written. The
+	// recorder does not change how they are written.
 	log := store.Log()
 	var rec *chain.RecordingLog
 	if signer != nil {
@@ -84,14 +74,12 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	}
 
 	resources := store.Resources(reg)
-	// The run reads skills from the store recall just offered from, through a toolset
-	// that keeps the list of what it served. Prepended rather than appended so a caller
-	// could override it, and passed unconditionally: the offer in the prompt names
-	// skill_read, so the tool has to be there.
+	// Skills are read from the store recall offered from, through a toolset that lists
+	// what it served. It is prepended so a caller can override it, and always present
+	// because the prompt's offer names skill_read.
 	//
-	// Loading a skill also surfaces what past runs learned while working from it, and
-	// counts that as a use of those memories. It is the pull half of the ride-along,
-	// against the same store the digest pushes from.
+	// Loading a skill also surfaces what past runs learned from it and counts that as a
+	// use of those memories: the pull side of the digest's push.
 	skillset := skilltool.New(skills, skilltool.WithNotes(mem.SkillNotes()))
 	opts = append([]driveOption{withSkills(skillset)}, opts...)
 	result, source, transcript, err := driveRequest{
@@ -108,53 +96,43 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 		fanout:    fanout,
 	}.withOptions(opts...).execute(ctx)
 
-	// Record what the run was shown and what it took up as two separate facts. Every
-	// recalled skill was offered; only the ones the model loaded through skill_read
-	// are credited with the run's outcome, because being in the prompt establishes
-	// nothing about whether a skill was used and a win handed to all five makes the
-	// number a property of the run. Both are gated with capture, so a read-only
-	// --no-learn run records neither.
+	// Offered and used are recorded separately. Being in the prompt says nothing about use,
+	// and crediting all recalled skills would make the number a property of the run, so
+	// only skills loaded through skill_read get the outcome. A --no-learn run records
+	// neither.
 	if distiller != nil {
 		_ = learn.Offer(ctx, skills, recalled)
 		_ = learn.Reinforce(ctx, skills, skillset.Reads(), err == nil)
 	}
 	if err != nil {
-		// A run that stopped is sealed too, with how it ended on the record before the
-		// seal. Without a run id nothing was started, so there is no stream to seal.
+		// A stopped run is sealed with its ending recorded first. Without a run id nothing
+		// started, so there is no stream to seal.
 		if rec != nil && source != "" {
 			sealStopped(ctx, out, store, rec, source, signer, err)
 		}
 		return "", err
 	}
 
-	// Ground the run's success in an independent check before sealing, when one is
-	// given. The check runs after the agent has stopped and is never seen by the
-	// model, so a sealed run that claims success is backed by a verdict the model
-	// could not have produced. This must run before the seal so the check and outcome
-	// events are part of the verifiable record.
+	// The check runs after the agent stopped and is never shown to the model, so a sealed
+	// success is backed by a verdict the model could not produce. It runs before the seal
+	// so its events are in the record.
 	groundTruthFailed := false
 	if verify != "" && rec != nil {
 		groundTruthFailed = !recordGroundTruth(ctx, out, rec, source, workdir, verify)
 	}
 
-	// Seal the run into a signed, verifiable record stored on its own stream, so it
-	// can be checked later from the durable store alone. Best effort: a sealing
-	// failure is reported but never fails the run.
+	// Best effort: a sealing failure is reported and never fails the run.
 	if rec != nil {
 		sealReported(ctx, out, store, rec, source, signer)
-		// Checkpoint the resource projection alongside the sealed run, so a later
-		// rebuild resumes from a verified snapshot instead of folding the whole
-		// stream. Best effort, like the seal: a snapshot is a derived cache, and a
-		// missing one is only slower, never wrong.
+		// A snapshot lets a later rebuild start from a verified checkpoint. It is a derived
+		// cache, so a missing one is slower and never wrong.
 		if serr := resources.Snapshot(ctx); serr != nil {
 			_, _ = fmt.Fprintf(out, "  (resources not snapshotted: %v)\n", serr)
 		}
 	}
 
-	// Capture: distill the converged run back into durable, provenance-stamped
-	// knowledge. A captured skill's check is run in a sandbox at the working
-	// directory before it is crystallized, so a broken procedure is dropped rather
-	// than learned. Capture failures never fail the run; learning is best effort.
+	// A captured skill's check runs in a sandbox at the working directory before it is
+	// crystallized, so a broken procedure is dropped. Capture failures never fail the run.
 	if distiller != nil {
 		distillOutcome(ctx, out, distiller, skills, memories, workdir, learn.Outcome{
 			Objective:  objective,
@@ -171,16 +149,14 @@ func runLearningMission(ctx context.Context, out io.Writer, model llm.Model, pla
 	return result, nil
 }
 
-// recordGroundTruth runs the run's verification command independently and records the
-// result on the run's stream: a check event carrying the real exit-code verdict, and
-// an outcome event that binds the run's success to it. The verdict is the system's,
-// produced after the agent stopped and never seen by the model, so a sealed run that
-// claims success is grounded in a check the agent could not have graded itself. A
-// failing or unrunnable check is recorded honestly, which makes the run's own record
-// fail the ground-truth check rather than overstate the outcome.
+// recordGroundTruth runs the verification command and records a check event with the
+// exit-code verdict and an outcome event binding the run's success to it. The verdict
+// comes after the agent stopped and is never shown to the model. A failing or
+// unrunnable check is recorded as such, so the record fails the ground-truth tier
+// instead of overstating the outcome.
 //
-// It returns the check's verdict whether or not the log took it, because the caller's exit
-// status follows the check and not the bookkeeping.
+// It returns the verdict even if the log refused it, because the exit status follows
+// the check.
 func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream, workdir, verify string) bool {
 	passed := runVerification(ctx, workdir, verify)
 	if err := appendGroundTruth(ctx, log, stream, passed); err != nil {
@@ -195,23 +171,21 @@ func recordGroundTruth(ctx context.Context, out io.Writer, log spine.Log, stream
 	return passed
 }
 
-// runVerification runs command in a confined sandbox at workdir and reports whether it
-// succeeded (exit 0). The command is operator-supplied and run after the agent stops,
-// so its verdict is independent of anything the model produced.
+// runVerification runs the operator's command in a confined sandbox at workdir and
+// reports exit 0.
 func runVerification(ctx context.Context, workdir, command string) bool {
 	sb, err := sandbox.NewLocal(workdir, sandbox.WithDefaultConfinement())
 	if err != nil {
 		return false
 	}
-	// Closing releases whatever the confinement registered with the operating system for
-	// this check. Without it, every verified run leaves a container profile behind.
+	// Without Close every verified run leaves a container profile behind.
 	defer func() { _ = sb.Close() }()
 	res, err := sb.Exec(ctx, sandbox.Command{Line: command})
 	return err == nil && res.ExitCode == 0
 }
 
-// appendGroundTruth records the independent check's verdict and binds the run's
-// success to it on the run's stream, using the chain's ground-truth vocabulary.
+// appendGroundTruth records the verdict and binds the run's success to it, in the
+// chain's ground-truth vocabulary.
 func appendGroundTruth(ctx context.Context, log spine.Log, stream string, passed bool) error {
 	if _, err := log.Append(ctx, spine.AppendInput{
 		Stream:  stream,
@@ -230,12 +204,10 @@ func appendGroundTruth(ctx context.Context, log spine.Log, stream string, passed
 	return err
 }
 
-// appendProvenance records a run's provenance declaration on its stream using the
-// chain's provenance vocabulary: an external agent harness drove the loop, so the
-// sealed record vouches for enforced effects (every effect crossed the dispatch waist)
-// but names the harness's inner reasoning as an unobserved gap, and the run is
-// non-replayable (the run does not drive the harness's inner loop). `flynn spine
-// verify` reports this tier mix from the same record. A native run records none of it.
+// appendProvenance records that an external harness drove the loop: the record vouches
+// for enforced effects (each crossed the dispatch waist), names the harness's reasoning
+// as unobserved, and marks the run non-replayable. `flynn spine verify` reports this
+// tier mix. Native runs record none of it.
 func appendProvenance(ctx context.Context, log spine.Log, stream string, d externalProvenance) error {
 	payload := map[string]any{
 		chain.ProvenanceHarnessKey:    d.harness,
@@ -247,8 +219,8 @@ func appendProvenance(ctx context.Context, log spine.Log, stream string, d exter
 		chain.ProvenanceDriftKey:      d.drift,
 	}
 	if len(d.drift) == 0 {
-		// An empty map and an absent key both mean the harness honored the contract. Omit
-		// it, so a clean run's record carries no key inviting the reader to wonder.
+		// Empty and absent both mean the contract was honoured; omitting the key keeps a clean
+		// record from implying otherwise.
 		delete(payload, chain.ProvenanceDriftKey)
 	}
 	_, err := log.Append(ctx, spine.AppendInput{
@@ -260,9 +232,8 @@ func appendProvenance(ctx context.Context, log spine.Log, stream string, d exter
 	return err
 }
 
-// externalProvenance is what the host observed of an external-harness run: which harness
-// drove it, how many events the harness reported about itself, and how far it drifted
-// from the session contract it was given.
+// externalProvenance is what the host observed of an external-harness run: the harness,
+// the events it reported about itself, and its drift from the session contract.
 type externalProvenance struct {
 	harness    string
 	attested   int
@@ -270,12 +241,10 @@ type externalProvenance struct {
 	drift      map[string]int
 }
 
-// distillOutcome distills a converged run into durable skills and memory and retires
-// skills that enough runs have proven unhelpful, reporting the tally to out. It is
-// best effort: a capture or decay failure never fails the run. A captured skill's
-// check is verified in a sandbox at workdir before it is crystallized, so a broken
-// procedure is dropped rather than learned. Shared by the one-shot runner and the
-// interactive session so both capture identically.
+// distillOutcome distills a converged run into skills and memory, retires skills enough
+// runs proved unhelpful, and reports the tally. Failures never fail the run. A captured
+// skill's check runs in a sandbox at workdir first, so a broken procedure is dropped.
+// The one-shot runner and the interactive session share it.
 //
 // carried are taint reasons from conversation the transcript no longer holds (a
 // session's compacted turns), so a summary cannot launder what it summarised.
@@ -291,36 +260,32 @@ func distillOutcome(ctx context.Context, out io.Writer, distiller learn.Distille
 		}
 	}
 
-	// Retire skills that enough runs have proven unhelpful, so the index stays
-	// high-signal rather than growing without bound.
+	// Decay keeps the skill index from growing without bound.
 	if archived, derr := learn.Decay(ctx, skills, state.Scope{}, learn.DefaultDecay()); derr == nil && len(archived) > 0 {
 		_, _ = fmt.Fprintf(out, "  (retired %d unhelpful skill(s))\n", len(archived))
 	}
 }
 
-// untrustedOutputTools are the tools whose results this binary cannot vouch for, so
-// a note distilled from a run that called one is tainted: never pushed at wake, and
-// refused by `memory promote`. The shell is here because its network is open and
-// nothing on a host without a governed egress proxy tells a curl from a go test. A
-// spawn is here because the child's transcript is not in the parent's. The file tools
-// and skill_read read the working tree and the skill store, which the install trusts.
-// TestUntrustedOutputToolsCoverEveryUntrustedTool fails on a reduced-trust tool added
-// to the default toolset without being listed.
+// untrustedOutputTools are tools whose results this binary cannot vouch for. A note
+// distilled from a run that called one is tainted: never pushed at wake, and refused by
+// `memory promote`. The shell has open network, and without a governed egress proxy a
+// curl looks like a go test. A spawn's child transcript is not in the parent's. File
+// tools and skill_read read the working tree and skill store, which the install trusts.
+// TestUntrustedOutputToolsCoverEveryUntrustedTool fails when a reduced-trust default
+// tool is missing here.
 var untrustedOutputTools = map[string]bool{
 	"bash":              true,
 	mission.ActionSpawn: true,
 }
 
-// taintFromTranscript returns ctx with a fresh taint scope, marked for each call in
-// transcript to one of [untrustedOutputTools] and for each carried reason. The memory
-// writes the distiller makes under the returned context go through the guard, which
-// stamps them with the mark.
+// taintFromTranscript returns ctx with a fresh taint scope, marked for each call to one
+// of [untrustedOutputTools] in transcript and each carried reason. The guard stamps
+// the distiller's memory writes under it.
 //
-// The scope is opened here rather than at the top of the run because the distiller
-// is the run's only memory writer and the transcript is the complete record of what
-// the model was shown, so reading it at the write gives the answer marking each
-// tool result as it arrived would, without threading a scope through every path
-// that drives a run.
+// The scope opens here because the distiller is the run's only memory writer and the
+// transcript is the full record of what the model saw. That gives the same answer as
+// marking each tool result on arrival, without threading a scope through every drive
+// path.
 func taintFromTranscript(ctx context.Context, transcript []llm.Message, carried ...string) context.Context {
 	ctx = guard.NewTaintScope(ctx)
 	for _, reason := range append(taintReasons(transcript), carried...) {
@@ -329,8 +294,8 @@ func taintFromTranscript(ctx context.Context, transcript []llm.Message, carried 
 	return ctx
 }
 
-// taintReasons names each call in transcript to one of [untrustedOutputTools], in
-// the form the guard records a reason ("tool:bash").
+// taintReasons names each call to one of [untrustedOutputTools] as the guard records
+// it ("tool:bash").
 func taintReasons(transcript []llm.Message) []string {
 	var reasons []string
 	for _, m := range transcript {
@@ -343,14 +308,11 @@ func taintReasons(transcript []llm.Message) []string {
 	return reasons
 }
 
-// childModelResolver builds the model resolver the Router consults for a delegated
-// child goal that names a model other than the run's default. A local catalog model
-// is provisioned and served on demand; a hosted model resolves through the same
-// source as the root model (the credential chain, plus the servers named in the
-// data directory's providers file), so a child runs on whatever its archetype pins
-// without any extra setup. The child's scaffolding plan is not threaded through (the
-// Router shares one base plan across loops), so a local child runs on the shared
-// defaults.
+// childModelResolver resolves a delegated child's non-default model. A local catalog
+// model is served on demand; a hosted one uses the root's source (the credential chain
+// plus the data directory's providers file), so a child runs on its archetype's model
+// with no setup. The Router shares one base plan across loops, so a local child gets
+// the shared scaffolding defaults.
 func childModelResolver(ctx context.Context, dataDir string) driver.ModelResolver {
 	return func(id string) (llm.Model, error) {
 		if isLocalModelID(id) {

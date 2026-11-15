@@ -108,11 +108,10 @@ func (h *Host) Hardware(ctx context.Context) Hardware {
 	return Hardware{GPUName: b.GPUName, VRAMBytes: b.VRAMBytes, RAMBytes: b.RAMBytes}
 }
 
-// Machine is the memory this machine offers a model: the VRAM free now rather than the
-// card's total, because the desktop and other programs already hold some and a model sized
-// to the total fails to load, and the system RAM left after the share the OS keeps, which
-// is where a mixture-of-experts model's overflow experts go. It is the machine
-// `flynn models --fit` judges against, so a host and the command give the same verdicts.
+// Machine is the memory this machine offers a model: VRAM free now, because the desktop
+// already holds some and a model sized to the card's total fails to load, and the system
+// RAM left after the OS's share, where a mixture-of-experts model's overflow experts go.
+// `flynn models --fit` judges against the same value.
 func (h *Host) Machine(ctx context.Context) Machine {
 	box := h.detectBox(ctx)
 	var mc Machine
@@ -129,8 +128,7 @@ func (h *Host) Machine(ctx context.Context) Machine {
 }
 
 // cpuInferenceBudget is the share of system RAM a model may claim: all but a quarter, or
-// all but two gigabytes when that leaves more, since the OS and the programs around the
-// model need the memory too.
+// all but two gigabytes when that leaves more, so the OS keeps enough to run.
 func cpuInferenceBudget(ramBytes int64) int64 {
 	reserve := max(ramBytes/4, 2_000_000_000)
 	if reserve >= ramBytes {

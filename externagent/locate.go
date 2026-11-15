@@ -11,31 +11,24 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// ErrProgramNotFound reports that an external agent CLI is not installed, as opposed to
-// installed but unreachable from inside the confinement. The two need different fixes
-// (install it, versus grant the confined child access to it), so they are different
-// errors and the onboarding message for each says something the user can act on.
+// ErrProgramNotFound reports that an external CLI is not installed. Installed but
+// unreachable from inside the confinement is a different error, because the fix is a
+// grant instead of an install.
 var ErrProgramNotFound = errors.New("externagent: cli not found on PATH")
 
-// Program is a resolved external agent CLI: the executable to launch and the directories
-// a confined child must be able to read in order to run it.
-//
-// The path is always absolute and always the real executable, never a launcher script.
-// A confined child gets read access to nothing outside its workspace by default, so a
-// script that shells out to an interpreter would need that interpreter's directory
-// granted too, and an interpreter installed under a system-owned directory cannot be
-// granted at all by an unprivileged process. Resolving to the native executable removes
-// the interpreter from the picture, so the only directory that has to be reachable is the
-// one the CLI ships in, which lives under the user's own install tree.
+// Program is a resolved external CLI: the executable and the directories a confined
+// child must read to run it. Path is always absolute and always the native executable,
+// never a launcher script: a confined child reads nothing outside its workspace by
+// default, and a script's interpreter under a system-owned directory cannot be granted
+// by an unprivileged process. Only the CLI's own install directory then needs a grant.
 type Program struct {
-	// Path is the absolute path of the native executable to launch.
+	// Path is the absolute path of the native executable.
 	Path string
-	// ReadableDirs are the directories the confined child is granted read and execute
-	// access on so it can load the executable and the helper binaries shipped beside it.
+	// ReadableDirs are granted read and execute, so the child can load the executable
+	// and the helper binaries shipped beside it.
 	ReadableDirs []string
 }
 
-// exeSuffix is the extension a native executable carries on this platform.
 func exeSuffix() string {
 	if runtime.GOOS == "windows" {
 		return ".exe"
@@ -43,12 +36,10 @@ func exeSuffix() string {
 	return ""
 }
 
-// rustTargetTriple is the Rust target triple naming this platform's vendored binaries.
-// An external CLI distributed on npm ships one prebuilt native binary per triple and
-// selects between them at run time; resolving the triple here reaches the same binary
-// without running the launcher. An unrecognized platform yields the empty string, which
-// makes the vendored lookup fail and fall back to reporting the CLI as unusable rather
-// than guessing at a path.
+// rustTargetTriple names this platform's vendored binaries. An npm-distributed CLI
+// ships one prebuilt binary per triple and picks one at run time; naming it here reaches
+// the same binary without running the launcher. An unknown platform returns "", so the
+// lookup fails and the CLI is reported unusable instead of guessed at.
 func rustTargetTriple() string {
 	switch runtime.GOOS + "/" + runtime.GOARCH {
 	case "windows/amd64":
@@ -68,17 +59,14 @@ func rustTargetTriple() string {
 	}
 }
 
-// isNativeExecutable reports whether path is a native executable rather than a launcher
-// script. On Windows the extension decides it: a .cmd or .ps1 shim runs through a shell
-// and a .js entry point through an interpreter, while .exe is the real thing. Elsewhere a
-// script announces itself with a "#!" line, so a file that does not start with one is
-// taken to be native.
+// isNativeExecutable reports whether path is a native executable. On Windows the
+// extension decides: .cmd and .ps1 shims run through a shell, a .js entry point through
+// an interpreter. Elsewhere a script starts with "#!", so any other file is native.
 func isNativeExecutable(path string) bool {
 	if runtime.GOOS == "windows" {
 		return strings.EqualFold(filepath.Ext(path), ".exe")
 	}
-	// The path is one the host's PATH resolved, and only its first two bytes are read to
-	// tell a script from a binary. Nothing here is executed and no content is returned.
+	// Only the first two bytes are read; nothing is executed or returned.
 	f, err := os.Open(path) //nolint:gosec // a PATH-resolved program, opened to sniff two bytes
 	if err != nil {
 		return false
@@ -91,33 +79,24 @@ func isNativeExecutable(path string) bool {
 	return string(head[:]) != "#!"
 }
 
-// LocateCodex resolves the codex CLI to the native executable to launch and the
-// directories a confined child needs to read to run it. bin names the CLI (empty means
-// "codex" on PATH) or gives an absolute path to it.
+// LocateCodex resolves the codex CLI to its native executable and the directories a
+// confined child must read to run it. bin is a name (empty means "codex" on PATH) or an
+// absolute path.
 //
-// The npm distribution installs a launcher (a .cmd shim on Windows, a symlinked .js entry
-// point elsewhere) that finds and executes a vendored native binary for the host's
-// platform. Launching the launcher would drag its interpreter into the confinement, so
-// this resolves straight to the vendored binary. When the CLI is installed some other way
-// (a package manager that puts a native binary on PATH) the resolved path is already
-// native and is used as is.
-//
-// A CLI that is not installed yields ErrProgramNotFound. A launcher whose vendored binary
-// cannot be found yields a distinct error naming the path that was looked for, because
-// that is a broken or unfamiliar installation rather than a missing one.
+// The npm install puts a launcher on PATH (a .cmd shim on Windows, a symlinked .js
+// elsewhere) that runs a vendored native binary; launching it would pull its
+// interpreter into the confinement, so this resolves to the vendored binary. A native
+// binary already on PATH is used as is. Not installed yields [ErrProgramNotFound]; a
+// launcher whose binary cannot be found yields a distinct error naming the path tried,
+// because that is a broken installation.
 func LocateCodex(bin string) (Program, error) {
 	return locateCLI(bin, "codex", locateVendored)
 }
 
-// locateCLI is the resolution both LocateCodex and LocateClaude perform: fall back to
-// onPath when bin is empty, resolve through PATH and any symlink to a real file, and take
-// it as the program to launch when it is already a native executable. Only the fallback
-// for a launcher script differs, because the two CLIs vendor their native binary in
-// different places, so behindLauncher is the parameter.
-//
-// The symlink is followed before the native-executable test rather than after: an npm
-// install puts a symlink on PATH, and testing the link itself would read the shim's own
-// bytes instead of the file it names.
+// locateCLI resolves bin (or onPath when empty) through PATH and any symlink, and uses
+// it if native; otherwise behindLauncher finds the binary, since each CLI vendors it in
+// a different place. The symlink is followed first because npm puts a symlink on PATH,
+// and testing the link would read the shim's bytes.
 func locateCLI(bin, onPath string, behindLauncher func(string) (Program, error)) (Program, error) {
 	if bin == "" {
 		bin = onPath
@@ -145,43 +124,33 @@ func locateCLI(bin, onPath string, behindLauncher func(string) (Program, error))
 	return behindLauncher(resolved)
 }
 
-// LocateClaude resolves the claude CLI (Claude Code) to the native executable to launch
-// and the directories a confined child needs to read to run it. bin names the CLI (empty
-// means "claude" on PATH) or gives an absolute path to it.
+// LocateClaude resolves the claude CLI (Claude Code) to its native executable and the
+// directories a confined child must read to run it. bin is a name (empty means "claude"
+// on PATH) or an absolute path.
 //
-// Claude Code ships a single self-contained native binary per platform, fronted by an npm
-// launcher (a .cmd shim on Windows, an sh shim or symlinked entry point elsewhere) that
-// execs it. Launching the launcher would drag its shell or interpreter into the
-// confinement, so this resolves straight to the native binary the launcher stands for.
-// When the CLI is installed some other way that already puts a native binary on PATH, the
-// resolved path is used as is.
-//
-// A CLI that is not installed yields ErrProgramNotFound. A launcher whose native binary
-// cannot be found yields a distinct error naming the path that was looked for, because
-// that is a broken or unfamiliar installation rather than a missing one.
+// Claude Code ships one self-contained binary per platform behind an npm launcher (a
+// .cmd shim on Windows, an sh shim or symlinked entry point elsewhere); this resolves to
+// the binary so the launcher's shell stays out of the confinement. Not installed yields
+// [ErrProgramNotFound]; a launcher whose binary cannot be found yields a distinct error
+// naming the path tried.
 func LocateClaude(bin string) (Program, error) {
 	return locateCLI(bin, "claude", locateClaudeNative)
 }
 
-// claudePackagePath is the npm package directory of Claude Code, relative to the global
-// bin directory the launcher shim is installed into.
+// claudePackagePath is Claude Code's npm package directory, relative to the global bin
+// directory holding the launcher.
 var claudePackagePath = []string{"node_modules", "@anthropic-ai", "claude-code"}
 
-// locateClaudeNative finds the native binary a launcher script stands for, given the
-// resolved path of that script. The binary ships at bin/claude inside the package tree,
-// so two installation shapes are searched: the launcher sitting in a global bin directory
-// next to the package tree (the Windows shim), and the launcher sitting inside or beside
-// the package (the sh shim or symlinked entry point elsewhere). The package root is
-// returned as the readable directory rather than the binary's own bin/, so the
-// per-platform helper package that ships beside it in the same tree stays reachable from
-// inside the confinement.
+// locateClaudeNative finds bin/claude in the package tree from the launcher's path, for
+// a launcher beside the package (the Windows shim) or inside it (elsewhere). It grants
+// the package root instead of bin/, so the per-platform helper package in the same tree
+// stays reachable.
 func locateClaudeNative(launcher string) (Program, error) {
 	exe := filepath.Join("bin", "claude"+exeSuffix())
 
 	dir := filepath.Dir(launcher)
 	roots := []string{filepath.Join(append([]string{dir}, claudePackagePath...)...)}
-	// Walk up from the launcher looking for the package root, so an entry point that lives
-	// inside the package resolves as well as a shim that lives beside it.
+	// Walk up so an entry point inside the package resolves too.
 	for cur := dir; ; {
 		roots = append(roots, filepath.Join(append([]string{cur}, claudePackagePath...)...))
 		roots = append(roots, cur)
@@ -200,14 +169,12 @@ func locateClaudeNative(launcher string) (Program, error) {
 	return Program{}, fmt.Errorf("externagent: %s is a launcher script but no native claude binary was found beside it (looked for %s)", launcher, exe)
 }
 
-// codexPackagePath is the npm package directory of the codex CLI, relative to the global
-// bin directory the launcher shim is installed into.
+// codexPackagePath is codex's npm package directory, relative to the global bin
+// directory holding the launcher.
 var codexPackagePath = []string{"node_modules", "@openai", "codex"}
 
-// codexPlatformPkg is the npm package name of the per-platform bundle the codex CLI vendors
-// its native binary in. Newer codex releases ship the binary in a platform-specific
-// dependency (`@openai/codex-linux-x64`) under the main package's node_modules rather than
-// directly beside the launcher, so the vendored binary is looked for there as well.
+// codexPlatformPkg names the per-platform npm package (`@openai/codex-linux-x64`) that
+// newer codex releases vendor the binary in, under the main package's node_modules.
 func codexPlatformPkg() string {
 	osName := runtime.GOOS
 	if osName == "windows" {
@@ -220,13 +187,10 @@ func codexPlatformPkg() string {
 	return "codex-" + osName + "-" + arch
 }
 
-// locateVendored finds the native binary a launcher script stands for, given the resolved
-// path of that script. Two installation shapes are searched: the launcher sitting in a
-// global bin directory next to the package tree (the Windows shim), and the launcher
-// sitting inside the package's own bin directory (the symlinked entry point elsewhere).
-// The package root is returned as the readable directory rather than the binary's own,
-// so the helper binaries the CLI shells out to, which ship beside it in the same tree,
-// stay reachable from inside the confinement.
+// locateVendored finds the vendored binary from the launcher's path, for a launcher in a
+// global bin directory beside the package (the Windows shim) or in the package's own bin
+// (elsewhere). It grants the package root, so helper binaries the CLI runs from the same
+// tree stay reachable.
 func locateVendored(launcher string) (Program, error) {
 	triple := rustTargetTriple()
 	if triple == "" {
@@ -237,10 +201,8 @@ func locateVendored(launcher string) (Program, error) {
 	platformPkg := []string{"node_modules", "@openai", codexPlatformPkg()}
 	dir := filepath.Dir(launcher)
 	roots := []string{filepath.Join(append([]string{dir}, codexPackagePath...)...)}
-	// Walk up from the launcher looking for the package root, so an entry point that lives
-	// inside the package (bin/codex.js) resolves as well as a shim that lives beside it. At
-	// each level, look both directly under the directory (the binary shipped beside the
-	// launcher) and in the per-platform dependency package (newer releases vendor it there).
+	// Walk up so bin/codex.js resolves too, checking each level directly and in the
+	// per-platform package.
 	for cur := dir; ; {
 		roots = append(roots, cur, filepath.Join(append([]string{cur}, platformPkg...)...))
 		parent := filepath.Dir(cur)

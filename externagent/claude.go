@@ -7,26 +7,20 @@ import (
 	"strings"
 )
 
-// Claude drives the claude CLI (Claude Code) as an external agent backend over its
-// headless print mode, which streams an episode as JSON lines. Unlike codex, claude has
-// no native filesystem-sandbox flag; its native execution surface is locked down by
-// tool denial instead. The effector tools (shell, edit, write, web) are denied and the
-// permission mode never prompts and never auto-approves, so the only tools the model can
-// act through are the bridged ones offered over the loopback MCP bridge. This is
-// defense in depth: Flynn's own sandbox spawner is the boundary that actually confines
-// the child, and it holds regardless of whether the CLI honors the flags.
+// Claude drives the claude CLI (Claude Code) in headless print mode, which streams an
+// episode as JSON lines. claude has no filesystem-sandbox flag, so its native surface
+// is locked down by tool denial: the effector tools are denied and the permission mode
+// neither prompts nor auto-approves, leaving only the bridged tools. The sandbox
+// spawner confines the child whether or not the CLI honors the flags.
 type Claude struct {
-	// bin is the claude executable name or path; empty uses "claude" on PATH.
+	// bin is the executable name or path; empty uses "claude" on PATH.
 	bin string
-	// spawner runs the detection probes. It may be nil for an adapter used only to build
-	// invocations and parse output (the runner supplies its own spawner for the episode
-	// itself); Detect requires it.
+	// spawner runs the detection probes. Detect requires it; Command and Parse do not.
 	spawner Spawner
 }
 
-// NewClaude builds the claude adapter. bin overrides the executable to run (empty uses
-// "claude" resolved on PATH); spawner runs the detection probes through the sandbox
-// boundary and may be nil when the adapter is used only for Command and Parse.
+// NewClaude builds the claude adapter. Empty bin uses "claude" on PATH; spawner may be
+// nil when the adapter is used only for Command and Parse.
 func NewClaude(bin string, spawner Spawner) *Claude {
 	if bin == "" {
 		bin = "claude"
@@ -37,60 +31,47 @@ func NewClaude(bin string, spawner Spawner) *Claude {
 // Name identifies the adapter in the model spec and on the run.
 func (*Claude) Name() string { return "claude" }
 
-// Lockdown states what a claude episode leaves the harness holding. Writes and commands
-// are denied outright: every native effector is named on --disallowedTools and the
-// permission mode neither prompts nor auto-approves, so the model is not offered them at
-// all. The operator's own configuration is denied too, by --strict-mcp-config (the child
-// loads the run's bridge and no MCP server the host has configured) over a per-episode
-// config home seeded with the credential files and nothing else, so the host's hooks,
-// plugins and settings are not on the child's path to find.
-//
-// The sandbox is still the boundary that enforces any of this. What the flags add is that
-// the model is not offered a tool it would spend a turn discovering it cannot use.
+// Lockdown states what a claude episode leaves the harness holding. Every native
+// effector is named on --disallowedTools and the permission mode never prompts or
+// auto-approves, so the model is never offered them. --strict-mcp-config loads only
+// the run's bridge, over a per-episode home holding just the credentials, so the
+// host's MCP servers, hooks, plugins and settings are out of reach. The sandbox
+// enforces all of this; the flags spare the model a turn discovering what it cannot use.
 func (*Claude) Lockdown() Lockdown {
 	return Lockdown{Writes: StripDenied, Commands: StripDenied, HostConfig: StripDenied}
 }
 
-// claudeBridgeName is the MCP server name the bridge is registered under in claude's
-// config. claude namespaces the tools it reports as mcp__<server>__<tool>, so a tool
-// call is recognized as bridged by this prefix.
+// claudeBridgeName is the bridge's MCP server name. claude reports tools as
+// mcp__<server>__<tool>, so this prefix marks a call as bridged.
 const claudeBridgeName = "flynn"
 
-// claudeDeniedTools denies the CLI's entire native tool surface, so the model's only way
-// to act is a bridged tool that is governed and recorded at the dispatch waist. This is
-// deny-by-default made explicit: the allowlist alone does not deny a native tool (the CLI
-// auto-runs some without a prompt even under a strict permission mode), so every native
-// tool is named here instead, and a denial outranks any allow a build or config carries.
-// The list is a superset on purpose; a name a given build does not know is reported on
-// stderr, which the spawner discards, so denying a tool that is not present is harmless
-// while denying one that is present is what matters. The native read tools are denied too,
-// which closes the unobserved-read gap entirely: with no way to read the workspace or the
-// host outside a bridged tool, the harness has no observation the run cannot see. The real
-// boundary remains Flynn's sandbox, which contains anything a future build might add that
-// is not on this list.
+// claudeDeniedTools names the CLI's entire native tool surface, so the model can act
+// only through bridged tools. The allowlist alone does not deny a native tool (the CLI
+// auto-runs some even under a strict permission mode), and a denial outranks any allow
+// a build or config carries. The list is a superset: an unknown name only produces a
+// stderr warning the spawner discards. Read tools are denied too, so the harness has
+// no observation the run cannot see. The sandbox contains anything a future build adds.
 var claudeDeniedTools = []string{
 	// Shell and command execution.
 	"Bash", "BashOutput", "KillShell", "PowerShell",
-	// Native file writes and reads (reads denied too: no unobserved-read gap).
+	// Native file writes, and reads, so no read goes unobserved.
 	"Edit", "MultiEdit", "Write", "NotebookEdit", "Read", "Glob", "Grep",
-	// Native web reach; egress is already gated, this removes the native fetchers.
+	// Native fetchers; egress is gated regardless.
 	"WebFetch", "WebSearch",
-	// Sub-agents, orchestration, and skills: no spinning up its own agents, workflows, or
-	// slash commands, which run unobserved work and burn subscription usage.
+	// Its own agents, workflows and slash commands, which run unobserved work and burn
+	// subscription usage.
 	"Task", "Workflow", "Skill", "SlashCommand", "TodoWrite",
 	// Scheduling, background, messaging, and worktree primitives.
 	"ScheduleWakeup", "CronCreate", "CronDelete", "CronList", "Monitor",
 	"RemoteTrigger", "SendMessage", "PushNotification", "DesignSync",
 	"EnterWorktree", "ExitWorktree", "ReportFindings", "ToolSearch",
-	// Its own task tracker, which the run governs rather than the CLI.
+	// Its own task tracker; the run governs tasks.
 	"TaskCreate", "TaskGet", "TaskList", "TaskOutput", "TaskStop", "TaskUpdate",
 }
 
-// claudeCapabilityNotice is appended to the CLI's system prompt on every run, so the model
-// knows up front that it holds only the bridged tools and does not waste a turn reaching
-// for a native one it cannot use. It is the stated half of the tool lockdown; the denied
-// tool list and the sandbox are the enforced half. Managing memory is called out because a
-// confined episode's memory never persists, so any effort spent curating it is wasted.
+// claudeCapabilityNotice is appended to the system prompt on every run, so the model
+// knows it holds only bridged tools and does not waste a turn on a native one. Memory
+// is called out because a confined episode's memory never persists.
 const claudeCapabilityNotice = "You are running as a governed backend inside Flynn, a sandbox that contains this session. " +
 	"Your only usable tools are the ones provided by the Flynn MCP server, whose names begin with mcp__flynn__. " +
 	"Use those tools for every action, including reading and writing files. " +
@@ -102,13 +83,10 @@ const claudeCapabilityNotice = "You are running as a governed backend inside Fly
 	"Do not read, write, or manage memory of any kind: this session does not persist memory, so managing it is wasted effort. " +
 	"If a task cannot be done with the mcp__flynn__ tools, say so plainly rather than reaching for a native tool."
 
-// Detect probes that claude is installed, logged in on a subscription, and new enough to
-// be constrained to the bridge. It runs claude's own version, help, and auth-status
-// probes and never starts an episode. A missing binary or a build without the lockdown
-// knobs (headless print, the stream-json event format, the HTTP MCP client, and the tool
-// and permission controls) is a hard refusal, so the driver stops rather than running
-// claude with unattested effects; a healthy but logged-out CLI is a recoverable
-// onboarding prompt.
+// Detect checks that claude is installed, signed in on a subscription, and new enough
+// to be constrained, using its version, help and auth-status probes. A missing binary
+// or a build lacking a lockdown option is a hard refusal; a logged-out CLI is a
+// recoverable onboarding prompt.
 func (c *Claude) Detect(ctx context.Context) (Readiness, error) {
 	version, stop := cliProbe{
 		name: "claude", bin: c.bin, spawner: c.spawner,
@@ -119,11 +97,9 @@ func (c *Claude) Detect(ctx context.Context) (Readiness, error) {
 	}
 	r := Readiness{Available: true, Version: version}
 
-	// The lockdown depends on four knobs: headless print, the stream-json event format,
-	// the HTTP MCP client, and the tool and permission controls that deny the native
-	// effectors. A build missing any of them cannot be constrained to route effects
-	// through the bridge, so refuse rather than run with native effects. claude prints all
-	// of these on its top-level help.
+	// The lockdown needs headless print, stream-json output, the HTTP MCP client, and
+	// the tool and permission controls; a build missing any cannot be constrained.
+	// claude lists all of them on its top-level help.
 	help, err := c.spawner.Probe(ctx, c.bin, "--help")
 	if err != nil {
 		r.Refuse = true
@@ -144,11 +120,9 @@ func (c *Claude) Detect(ctx context.Context) (Readiness, error) {
 		}
 	}
 
-	// Login state: claude auth status reports it as JSON without a model call, so
-	// detection spends no tokens. A logged-out CLI is an onboarding prompt, not a refusal.
-	// The backend drives a subscription, never per-token API billing, so a session
-	// authenticated for API/console billing is treated as not-yet-onboarded for this
-	// backend and pointed at the subscription login rather than run.
+	// claude auth status answers without a model call, so detection spends no tokens.
+	// The backend drives a subscription only, so an API or console session is pointed
+	// at the subscription login instead of being run on per-token billing.
 	status, err := c.spawner.Probe(ctx, c.bin, "auth", "status", "--json")
 	if err != nil {
 		r.Reason = "claude is not logged in; run `claude auth login` and sign in to use your subscription"
@@ -167,39 +141,32 @@ func (c *Claude) Detect(ctx context.Context) (Readiness, error) {
 	return r, nil
 }
 
-// claudeAuthStatus is the shape of `claude auth status --json`. Only the fields the
-// readiness check needs are decoded.
+// claudeAuthStatus is the part of `claude auth status --json` readiness needs.
 type claudeAuthStatus struct {
 	LoggedIn         bool   `json:"loggedIn"`
 	AuthMethod       string `json:"authMethod"`
 	SubscriptionType string `json:"subscriptionType"`
 }
 
-// subscription reports whether the logged-in session is a Claude subscription rather
-// than API/console billing. The subscription session reports its auth method as the
-// consumer product and carries a subscription tier; an API-key or console session
-// reports neither, and running headless on it would bill per token.
+// subscription reports whether the session is a Claude subscription: it names the
+// consumer product as its auth method and carries a tier. An API-key or console
+// session has neither, and headless use would bill per token.
 func (a claudeAuthStatus) subscription() bool {
 	return a.AuthMethod == "claude.ai" || a.SubscriptionType != ""
 }
 
-// parseClaudeAuth decodes an auth-status probe. A body that does not decode reports as
-// not-logged-in, so a changed or unexpected status format onboards the user rather than
-// crashing the run.
+// parseClaudeAuth decodes an auth-status probe. An undecodable body reads as logged
+// out, so a changed format onboards the user instead of crashing the run.
 func parseClaudeAuth(status string) claudeAuthStatus {
 	var a claudeAuthStatus
 	_ = json.Unmarshal([]byte(strings.TrimSpace(status)), &a)
 	return a
 }
 
-// Command builds the claude headless invocation for one episode. It runs in print mode
-// with the stream-json event format, points claude's MCP client at the loopback bridge
-// over HTTP with the bearer token carried in the environment (not on the command line),
-// and locks the native surface down by tool denial: the effector tools are denied and
-// the permission mode never prompts and never auto-approves, so effects must reach the
-// workspace through the bridge. The turn is written on stdin; a standing instruction is
-// prepended as a lower-authority preamble, since claude's own harness prompt outranks
-// anything injected.
+// Command builds the headless invocation for one episode: print mode with stream-json
+// output, the MCP client pointed at the bridge over HTTP with the token in the
+// environment, and the native surface denied. The turn goes on stdin, with the
+// standing instruction as a lower-authority preamble.
 func (c *Claude) Command(ep Episode) (Invocation, error) {
 	bridge := ep.Bridge
 	if bridge.Name == "" {
@@ -215,40 +182,32 @@ func (c *Claude) Command(ep Episode) (Invocation, error) {
 		"--print",
 		"--output-format", "stream-json",
 		"--input-format", "text",
-		// stream-json output requires verbose so every event is emitted, not just the last.
+		// stream-json needs verbose to emit every event instead of only the last.
 		"--verbose",
-		// Only the bridge MCP server, never any the user configured on the host, so the
-		// child's tool surface is exactly what this run offers it and nothing else.
+		// Only the bridge server, never one configured on the host.
 		"--strict-mcp-config",
 		"--mcp-config", mcpConfig,
-		// dontAsk never blocks on a prompt (headless) and, unlike bypassPermissions, does not
-		// auto-approve a tool that would otherwise ask. The native surface is denied by the
-		// explicit --disallowedTools list below (the allowlist alone does not deny it), and
-		// only the bridge server's tools are allowed.
+		// dontAsk never blocks on a prompt and, where bypassPermissions would
+		// auto-approve, refuses. The native surface is denied by --disallowedTools below.
 		"--permission-mode", "dontAsk",
-		// State the tool lockdown to the model as well as enforcing it, so it does not spend a
-		// turn reaching for a native tool it cannot use.
+		// Tell the model about the lockdown so it does not spend a turn on a native tool.
 		"--append-system-prompt", claudeCapabilityNotice,
 	}
 	if ep.Model != "" {
 		args = append(args, "--model", ep.Model)
 	}
-	// Continue the conversation the CLI already holds, rather than opening a new one and
-	// replaying a transcript it never wrote. The id came from the CLI's own stream on an
-	// earlier episode of this run, so only a session that already ran one has it.
+	// Continue the conversation the CLI holds. The id came from the CLI's stream on an
+	// earlier episode of this run.
 	if ep.Session != "" {
 		args = append(args, "--resume", ep.Session)
 	}
-	// The allow and deny tool lists are variadic and come last, so the parser reads every
-	// tool name into the right list and no positional argument follows them. The turn is
-	// read from stdin, so there is no prompt argument to be captured by a variadic flag.
+	// The variadic tool lists come last, so no positional argument is read as a tool
+	// name. The turn is on stdin, so no prompt argument follows them either.
 	args = append(args, "--allowedTools", "mcp__"+bridge.Name)
 	args = append(args, "--disallowedTools")
 	args = append(args, claudeDeniedTools...)
 
-	// The run's instructions reach claude as part of the user turn, below its own harness
-	// prompt in authority. The turn is read from stdin so a long or multi-line input does
-	// not land on the command line.
+	// On stdin so a long or multi-line turn stays off the command line.
 	stdin := promptLayers{system: ep.System, probes: ep.Probes, input: ep.Input}.render()
 
 	inv := Invocation{
@@ -256,19 +215,18 @@ func (c *Claude) Command(ep Episode) (Invocation, error) {
 		Args:  args,
 		Stdin: stdin,
 	}
-	// The bearer token is passed through the environment and referenced from the MCP
-	// config by name, so it stays out of the process table. ANTHROPIC_API_KEY is never
-	// added: a set key silently overrides the subscription and bills per token, and the
-	// confined child inherits none of the host environment, so the only way it could
-	// appear is if this built it, which it must not.
+	// The token goes in the environment, named from the MCP config, to stay out of the
+	// process table. ANTHROPIC_API_KEY is never added: a set key overrides the
+	// subscription and bills per token, and the child inherits no host environment, so
+	// only this code could put it there.
 	if bridge.TokenEnv != "" && bridge.Token != "" {
 		inv.Env = append(inv.Env, bridge.TokenEnv+"="+bridge.Token)
 	}
 	return inv, nil
 }
 
-// claudeMCPServers is the inline --mcp-config document: one HTTP MCP server, the loopback
-// bridge, with the bearer token referenced from the environment rather than written in.
+// claudeMCPServers is the inline --mcp-config document: the loopback bridge as one
+// HTTP MCP server.
 type claudeMCPServers struct {
 	MCPServers map[string]claudeMCPServer `json:"mcpServers"`
 }
@@ -279,10 +237,9 @@ type claudeMCPServer struct {
 	Headers map[string]string `json:"headers,omitempty"`
 }
 
-// claudeMCPConfig builds the inline JSON config that points claude's MCP client at the
-// bridge over HTTP. The bearer token is referenced as ${TOKENENV}, which claude expands
-// from the child's environment at load time, so the token never appears in the argument
-// list. With no token env configured (an offline detection build) the header is omitted.
+// claudeMCPConfig builds the inline MCP config. The token is written as ${TOKENENV},
+// which claude expands from the child's environment, so it never appears in the
+// arguments. With no token variable (an offline detection build) the header is omitted.
 func claudeMCPConfig(bridge Bridge) (string, error) {
 	server := claudeMCPServer{Type: "http", URL: bridge.URL}
 	if bridge.TokenEnv != "" {
@@ -296,9 +253,8 @@ func claudeMCPConfig(bridge Bridge) (string, error) {
 	return string(b), nil
 }
 
-// claudeEvent is the envelope claude --output-format stream-json emits, one JSON object
-// per line. Only the fields the projection needs are decoded; the rest is preserved in
-// Raw.
+// claudeEvent is one line of claude's stream-json output, decoded only as far as the
+// projection needs.
 type claudeEvent struct {
 	Type      string          `json:"type"`
 	Subtype   string          `json:"subtype"`
@@ -310,16 +266,15 @@ type claudeEvent struct {
 	Raw       json.RawMessage `json:"-"`
 }
 
-// claudeMessage is the model turn carried by an assistant or user event. Its content is a
-// list of typed blocks (text, tool_use, tool_result).
+// claudeMessage is the turn carried by an assistant or user event, as typed blocks
+// (text, tool_use, tool_result).
 type claudeMessage struct {
 	Role    string          `json:"role"`
 	Content []claudeContent `json:"content"`
 }
 
-// claudeContent is one block of a message. type selects which fields are populated: text
-// carries Text; tool_use carries Name and Input; tool_result is a bridged call's return,
-// recorded independently at the dispatch waist and projected here only as progress.
+// claudeContent is one message block. Type selects the populated fields. A tool_result
+// is projected only as progress because the waist records the bridged call.
 type claudeContent struct {
 	Type  string          `json:"type"`
 	Text  string          `json:"text"`
@@ -332,14 +287,11 @@ type claudeUsage struct {
 	OutputTokens int `json:"output_tokens"`
 }
 
-// Parse projects one claude stream-json line to typed events. The init and progress
-// events become attested progress; an assistant message projects each of its blocks
-// (text as attested text, a bridged tool call as a bridge call, a native tool call as a
-// native command); a tool result is progress, since the bridged call it answers is
-// enforced and recorded at the dispatch waist; the terminal result event becomes the
-// episode's final text plus a done event carrying the total usage, or an error event
-// when it reports a failure. A line it cannot decode becomes an attested progress event
-// carrying the raw line, so nothing is dropped and noise does not end the episode.
+// Parse projects one stream-json line to events. Init and progress events are attested
+// progress; each assistant block is its own event; a tool result is progress because
+// the waist records the call; the terminal result becomes the final text and a done
+// event with total usage, or an error. An undecodable line is attested progress with
+// the raw line, so noise is recorded and does not end the episode.
 func (c *Claude) Parse(line []byte) ([]Event, error) {
 	line = trimLine(line)
 	if len(line) == 0 {
@@ -347,8 +299,7 @@ func (c *Claude) Parse(line []byte) ([]Event, error) {
 	}
 	var ev claudeEvent
 	if err := json.Unmarshal(line, &ev); err != nil {
-		// A line that is not JSON is CLI noise (a banner, a warning), kept as attested
-		// progress rather than dropped or treated as a fatal parse error.
+		// A non-JSON line is CLI noise (a banner, a warning).
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: cloneRaw(line)}}, nil //nolint:nilerr // noise is recorded, not fatal
 	}
 	raw := cloneRaw(line)
@@ -361,23 +312,18 @@ func (c *Claude) Parse(line []byte) ([]Event, error) {
 	case "error":
 		out = []Event{{Kind: EventError, Err: ev.Result, Terminal: terminalClaudeError(ev.Subtype + " " + ev.Result), Tier: TierAttested, Raw: raw}}
 	default:
-		// system/init, rate_limit_event, a user tool_result, and any unfamiliar type are
-		// attested progress: they carry no result of their own, and the enforced side of a
-		// bridged call is recorded at the waist, not from the CLI's echo of it.
+		// system/init, rate_limit_event, a user tool_result and unknown types carry no
+		// result of their own.
 		out = []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}
 	}
-	// Every line of the stream carries the conversation id, starting with system/init.
-	// Stamping it on the projections is what lets a later episode continue this
-	// conversation instead of opening a new one.
+	// Every line carries the conversation id, starting with system/init; a later
+	// episode needs it to continue the conversation.
 	return withSession(out, ev.SessionID), nil
 }
 
-// projectMessage projects an assistant message's blocks to typed events. Each block is
-// its own event so a turn that both speaks and calls a tool is recorded as both. Every
-// projection is attested: the CLI is reporting on itself. A bridged call is separately
-// enforced at the dispatch waist, which records it independently of the CLI's account.
-// The tool_use block is projected once here; the matching tool_result arrives on a later
-// user event and is projected as progress, so a single call is not counted twice.
+// projectMessage makes one attested event per block, so a turn that speaks and calls a
+// tool records both. tool_use is projected here and its tool_result later as progress,
+// so one call is counted once.
 func (c *Claude) projectMessage(msg *claudeMessage, raw json.RawMessage) []Event {
 	if msg == nil || len(msg.Content) == 0 {
 		return []Event{{Kind: EventProgress, Tier: TierAttested, Raw: raw}}
@@ -399,11 +345,9 @@ func (c *Claude) projectMessage(msg *claudeMessage, raw json.RawMessage) []Event
 	return out
 }
 
-// projectToolUse projects a tool_use block to a bridge call or a native command. A tool
-// whose name is namespaced under the bridge server is a bridged call (its bare tool name
-// and arguments are kept so a conformance probe can find the nonce it asked the harness
-// to echo); everything else, a native effector or a foreign MCP server, is a native
-// command the run did not route through the bridge.
+// projectToolUse maps a tool namespaced under the bridge to a bridge call, keeping the
+// bare name and arguments so a conformance probe can find its nonce. Anything else, a
+// native tool or a foreign MCP server, is a native command.
 func (c *Claude) projectToolUse(block claudeContent, raw json.RawMessage) Event {
 	if server, tool, ok := splitMCPToolName(block.Name); ok && server == claudeBridgeName {
 		return Event{
@@ -414,10 +358,9 @@ func (c *Claude) projectToolUse(block claudeContent, raw json.RawMessage) Event 
 	return Event{Kind: EventNativeCommand, Tier: TierAttested, Raw: raw, Command: block.Name}
 }
 
-// projectResult projects the terminal result event. A success carries the episode's final
-// text and the total usage; a failure (an error subtype or is_error) becomes a terminal
-// or transient error. The final text is projected as a text event so it becomes the
-// episode's result, since claude writes no last-message file for the runner to read.
+// projectResult projects the terminal result: final text and total usage on success, a
+// terminal or transient error on failure. The text becomes the episode's result because
+// claude writes no last-message file.
 func (c *Claude) projectResult(ev claudeEvent, raw json.RawMessage) []Event {
 	if ev.IsError || (ev.Subtype != "" && ev.Subtype != "success") {
 		msg := ev.Result
@@ -436,10 +379,9 @@ func (c *Claude) projectResult(ev claudeEvent, raw json.RawMessage) []Event {
 	return []Event{done}
 }
 
-// splitMCPToolName splits a claude MCP tool name (mcp__<server>__<tool>) into its server
-// and bare tool name. A name that is not MCP-namespaced (a native tool like Bash or Edit)
-// reports ok false. The tool name may itself contain the "__" separator, so only the
-// first two segments are the prefix and server; the rest is the tool.
+// splitMCPToolName splits mcp__<server>__<tool>. ok is false for a native tool name.
+// The tool name may itself contain "__", so only the first two segments are prefix and
+// server.
 func splitMCPToolName(name string) (server, tool string, ok bool) {
 	const prefix = "mcp__"
 	if !strings.HasPrefix(name, prefix) {
@@ -453,9 +395,8 @@ func splitMCPToolName(name string) (server, tool string, ok bool) {
 	return rest[:sep], rest[sep+2:], true
 }
 
-// terminalClaudeError reports whether an error names a permanent condition (auth, quota,
-// a forbidden request) that a retry cannot fix, so the run stops instead of looping. An
-// unrecognized error is treated as transient.
+// terminalClaudeError reports whether an error is permanent (auth, quota, a forbidden
+// request), so the run stops instead of retrying. Unrecognized errors are transient.
 func terminalClaudeError(msg string) bool {
 	m := strings.ToLower(msg)
 	for _, s := range []string{"unauthorized", "invalid_api_key", "invalid api key", "authentication", "insufficient_quota", "quota", "forbidden", "401", "403", "not supported"} {

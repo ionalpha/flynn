@@ -20,9 +20,9 @@ type Nanos int64
 
 const nanosPerUnit = 1_000_000_000
 
-// ParseNanos reads a non-negative decimal amount with at most nine digits after
-// the point. A tenth digit is refused rather than rounded, because a rate that
-// silently loses precision gives a cost that is wrong by an amount nobody can see.
+// ParseNanos reads a non-negative decimal amount with at most nine digits after the
+// point. A tenth digit is refused, because a rounded rate gives a cost that is wrong by
+// an amount nobody can see.
 func ParseNanos(s string) (Nanos, error) {
 	whole, frac, _ := strings.Cut(s, ".")
 	if whole == "" && frac == "" {
@@ -78,13 +78,11 @@ func (n *Nanos) UnmarshalText(b []byte) error {
 	return nil
 }
 
-// Price is one dated row of a [Table]: what a model charged per million tokens
-// from Effective onward, until a later row for the same model takes over. Input
-// is charged on input not served from cache. CacheRead and CacheWrite are nil
-// when the source states no rate for them; a call that used the cache is then
-// unpriced rather than charged at a guessed rate. Source says where the rates
-// came from (a price page URL and the date it was read), so a reader can check
-// a cost back to its origin.
+// Price is one dated row of a [Table]: what a model charged per million tokens from
+// Effective until a later row for the same model takes over. Input is charged on input
+// not served from cache. CacheRead and CacheWrite are nil when the source states no rate,
+// and a call that used the cache is then unpriced instead of charged at a guess. Source
+// names the price page URL and the date it was read, so a cost can be checked back to it.
 type Price struct {
 	Provider   string
 	Model      string
@@ -233,8 +231,8 @@ func (t *Table) Lookup(provider, model string, at time.Time) (Price, bool) {
 	return rs[i-1], true
 }
 
-// errOverflow is returned when a cost does not fit in [Nanos]; at nine billion
-// currency units per call it means corrupt input, not a large bill.
+// errOverflow is returned when a cost does not fit in [Nanos]. At nine billion currency
+// units per call it can only mean corrupt input.
 var errOverflow = errors.New("usage: cost overflows")
 
 // charge returns tokens at rate per million tokens, rounded half up to the
@@ -259,10 +257,10 @@ func charge(tokens int64, rate Nanos) (Nanos, error) {
 	return Nanos(q), nil
 }
 
-// Price returns what r cost under the table: priced at the row in force on r.At,
-// with basis [Derived] when every token figure was reported or derived and
-// [Estimated] when any was estimated. A record the table cannot price comes back
-// with Known false and a reason, never with a zero amount that reads as free.
+// Price returns what r cost under the table: priced at the row in force on r.At, with
+// basis [Derived] when every token figure was reported or derived and [Estimated] when any
+// was estimated. A record the table cannot price comes back with Known false and a
+// reason, so it cannot be read as free.
 func (t *Table) Price(r Record) Cost {
 	unknown := func(format string, args ...any) Cost {
 		return Cost{Reason: fmt.Sprintf(format, args...)}

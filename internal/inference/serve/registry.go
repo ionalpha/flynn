@@ -11,60 +11,52 @@ import (
 	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
-// Record is the persisted description of a model server that was started, so a later,
-// separate Flynn process (a `models status` or `models stop` invocation) can find it,
-// report it, reach it, or kill it. It holds only loopback coordinates and a pid; no
-// secret is ever recorded.
+// Record is the persisted description of a started model server, so a later Flynn
+// process (`models status`, `models stop`) can find, reach or kill it. It holds only
+// loopback coordinates and a pid, never a secret.
 type Record struct {
-	// ModelID is the catalog id the server runs, the key a reuse or stop looks up.
+	// ModelID is the catalog id, the key a reuse or stop looks up.
 	ModelID string `json:"modelID"`
-	// PID is the operating-system process id, so a separate process can stop the server. It
-	// is set for a process-backed server (the runtime runs as a host process); a
-	// container-backed server has no host pid and carries ContainerID instead.
+	// PID is the host process id of a process-backed server. A container-backed server
+	// has none and carries ContainerID instead.
 	PID int `json:"pid"`
-	// ContainerID and Engine identify a container-backed server, so a later, separate Flynn
-	// process can stop it by driving the engine (a container has no host pid to signal).
-	// They are empty for a process-backed server. Exactly one of PID or ContainerID
-	// identifies a given server.
+	// ContainerID and Engine identify a container-backed server, so a later process can
+	// stop it through the engine. Exactly one of PID or ContainerID is set.
 	ContainerID string `json:"containerID,omitempty"`
 	Engine      string `json:"engine,omitempty"`
 	// Port and BaseURL are the loopback coordinates a client targets.
 	Port    int    `json:"port"`
 	BaseURL string `json:"baseURL"`
-	// Runtime names the runtime serving the model, for display.
+	// Runtime names the serving runtime, for display.
 	Runtime string `json:"runtime,omitempty"`
-	// Version is the runtime build the server was started from. A later process compares
-	// it with the advisory floor before adopting the server, and treats a record without
-	// one as below every floor, because it cannot say what it is running.
+	// Version is the runtime build. A later process checks it against the advisory floor
+	// before adopting the server, and treats a missing one as below every floor.
 	Version string `json:"version,omitempty"`
 	// Containment is the isolation the launch ran under, as the sandbox reported it. A
-	// record without one is read as the weakest level.
+	// missing one reads as the weakest level.
 	Containment string `json:"containment,omitempty"`
-	// StartedAt is the Unix time the server was started, for display.
+	// StartedAt is the Unix start time, for display.
 	StartedAt int64 `json:"startedAt,omitempty"`
 }
 
-// Registry persists the set of running model servers to a single JSON file under the
-// data directory, keyed by model id. It is the cross-process record that lets a fresh
-// Flynn invocation see and control servers an earlier one started. Access is guarded by
-// a mutex within a process; the file is rewritten atomically so a concurrent reader
-// never sees a half-written file. It does not itself decide liveness: a record is a
-// claim that a server was started, and the manager confirms it with a health probe
-// before trusting it, pruning a record whose server no longer answers.
+// Registry persists the running model servers to one JSON file, keyed by model id, so a
+// fresh Flynn invocation can control servers an earlier one started. A mutex guards it
+// within a process, and the file is rewritten atomically so a reader never sees a partial
+// file. A record only claims a server was started; the manager confirms it with a health
+// probe and prunes one that no longer answers.
 type Registry struct {
 	path string
 	mu   sync.Mutex
 }
 
-// NewRegistry returns a registry backed by servers.json under dir (created on first
-// write). dir is typically the data directory's run area.
+// NewRegistry returns a registry backed by servers.json under dir, created on first
+// write.
 func NewRegistry(dir string) *Registry {
 	return &Registry{path: filepath.Join(dir, "servers.json")}
 }
 
-// List returns all recorded servers, sorted by model id for a stable display. A missing
-// or unreadable file is treated as an empty registry, not an error, so a first run and a
-// cleared registry behave the same.
+// List returns all records sorted by model id. A missing or unreadable file is an empty
+// registry, so a first run and a cleared registry behave the same.
 func (r *Registry) List() ([]Record, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -107,8 +99,8 @@ func (r *Registry) Put(rec Record) error {
 	return r.saveLocked(recs)
 }
 
-// Delete removes the record for a model id, if present, and persists the registry.
-// Deleting an absent id is not an error.
+// Delete removes the record for a model id and persists the registry. Deleting an absent
+// id is not an error.
 func (r *Registry) Delete(modelID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -138,9 +130,8 @@ func (r *Registry) loadLocked() ([]Record, error) {
 	}
 	var recs []Record
 	if err := json.Unmarshal(data, &recs); err != nil {
-		// A corrupt registry must not wedge the runtime: treat it as empty so a new
-		// server can be started and the file rewritten clean, rather than failing every
-		// command until a human deletes it.
+		// A corrupt registry reads as empty, so the next start rewrites it clean instead
+		// of every command failing until someone deletes the file.
 		return nil, nil //nolint:nilerr // a malformed registry is intentionally read as empty, not surfaced
 	}
 	sort.Slice(recs, func(i, j int) bool { return recs[i].ModelID < recs[j].ModelID })

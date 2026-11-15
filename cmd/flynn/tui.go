@@ -191,8 +191,8 @@ func loadKeymap(dataDir string) (editor.Keymap, error) {
 // loadTheme reads the user's theme from theme.json in the data directory,
 // layered over its declared built-in base. No file means the default theme; a
 // file that fails to parse is an error, reported before the session starts,
-// since silently falling back to the default would leave a user's theme
-// quietly ignored with nothing to point at.
+// since a fallback to the default would ignore the user's theme with nothing to
+// point at.
 func loadTheme(dataDir string) (*theme.Theme, error) {
 	f, err := os.Open(filepath.Join(dataDir, "theme.json")) //nolint:gosec // G304: fixed filename under the operator-chosen data dir
 	if errors.Is(err, os.ErrNotExist) {
