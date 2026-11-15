@@ -6,11 +6,10 @@ import (
 	"unicode"
 )
 
-// WellFormed checks the rendered GBNF text on its own terms, independent of the AST
-// it came from: every group and class and string literal is balanced, the start
-// rule is defined, and every bareword reference resolves to a defined rule. It scans
-// the text a runtime would actually parse, so a rendering bug is caught here rather
-// than at the runtime. It returns the first problem found, or nil.
+// WellFormed checks the rendered GBNF text, independent of the AST: groups, classes
+// and string literals balance, the start rule is defined, and every bareword
+// reference resolves. It scans the text a runtime parses, so a rendering bug is
+// caught here. It returns the first problem found, or nil.
 func WellFormed(text, root string) error {
 	defined, referenced, err := scan(text)
 	if err != nil {

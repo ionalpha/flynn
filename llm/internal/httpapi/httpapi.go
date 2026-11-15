@@ -1,10 +1,7 @@
-// Package httpapi is the shared HTTP core for the hosted-provider adapters: one
-// governed POST-JSON pipeline (netguard-dialed by default, capped response read,
-// retry with Retry-After through the integrations transport) and one quota
-// classifier, so every adapter makes the same retry-vs-fail decision and a
-// hardening fix lands once instead of per provider. Adapters stay thin wire-format
-// mappers: they build a request struct, call PostJSON, and decode their response
-// type.
+// Package httpapi is the shared HTTP core for the hosted-provider adapters: one governed
+// POST-JSON pipeline (netguard dialing, capped reads, Retry-After aware retries) and one
+// quota classifier, so every adapter makes the same retry decision and a hardening fix
+// lands once.
 package httpapi
 
 import (
@@ -27,18 +24,16 @@ import (
 )
 
 const (
-	// DefaultTimeout bounds one whole HTTP attempt. It is generous because a
-	// single non-streaming model turn can legitimately run for minutes before
-	// the first response byte arrives.
+	// DefaultTimeout bounds one HTTP attempt. A non-streaming model turn can run for
+	// minutes before the first byte.
 	DefaultTimeout = 10 * time.Minute
-	// MaxResponseBytes caps the response-body read, so a hostile or broken
-	// endpoint (reachable via a base-URL override) cannot exhaust memory with an
-	// unbounded body. Far above any real model response, which is bounded by the
+	// MaxResponseBytes caps the body read, so an endpoint reached through a base-URL
+	// override cannot exhaust memory. A real response is far smaller, bounded by the
 	// output-token ceiling.
 	MaxResponseBytes = 32 << 20
 )
 
-// Client posts JSON requests to one provider API. Build it once per adapter.
+// Client posts JSON requests to one provider API. Build one per adapter.
 type Client struct {
 	name      string
 	baseURL   string
@@ -46,13 +41,10 @@ type Client struct {
 	transport *request.Transport
 }
 
-// New builds a Client for the provider named name (the fault-code and message
-// prefix), rooted at baseURL. headers stamps per-provider authentication onto
-// every request. httpClient overrides the underlying HTTP client (tests inject a
-// mock transport); nil selects the default for the endpoint: loopback (a local
-// model server) gets a plain client, anything else dials through netguard so a
-// hosted call can never be steered at a private, loopback, or cloud-metadata
-// address.
+// New builds a Client for the provider name, used as the fault-code and message prefix.
+// headers stamps authentication on every request. A nil httpClient picks a plain client
+// for loopback and netguard for anything else, so a hosted call cannot be steered at a
+// private, loopback or cloud-metadata address.
 func New(name, baseURL string, headers func(http.Header), httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = defaultClient(baseURL)
@@ -65,12 +57,11 @@ func New(name, baseURL string, headers func(http.Header), httpClient *http.Clien
 	}
 }
 
-// PostJSON marshals in, posts it to path, and decodes a 2xx body into out.
-// Transient failures (network faults, 408/429/5xx) are retried by the transport
-// with backoff, honouring Retry-After; the response read is capped at
-// MaxResponseBytes. Every error is fault-classified: encode/decode and client
-// errors terminal, network and server errors transient, with the 429 quota
-// exception decided by the shared classifier in statusError.
+// PostJSON marshals in, posts it to path, and decodes a 2xx body into out. The
+// transport retries network faults and 408, 429 and 5xx with backoff, honouring
+// Retry-After, and the read is capped at [MaxResponseBytes]. Encode, decode and client
+// errors are terminal; network and server errors are transient, except a quota 429 (see
+// statusError).
 func (c *Client) PostJSON(ctx context.Context, path string, in, out any) error {
 	body, err := json.Marshal(in)
 	if err != nil {
@@ -87,8 +78,7 @@ func (c *Client) PostJSON(ctx context.Context, path string, in, out any) error {
 
 	resp, err := c.transport.Do(ctx, req)
 	if resp == nil {
-		// No response at all: surface the transport's classification (transient
-		// network fault, cancelled context) under the provider's code.
+		// No response: keep the transport's classification under the provider's code.
 		return fault.Wrap(fault.Classify(err), c.name+"_http", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -109,15 +99,12 @@ func (c *Client) PostJSON(ctx context.Context, path string, in, out any) error {
 	return nil
 }
 
-// statusError maps an HTTP error response to a fault-classified error: rate
-// limits and server errors are transient so the worker retries; client errors are
-// terminal. The exception that matters is a 429 that is really an exhausted quota
-// or billing problem: that is permanent and must fail fast rather than retry for
-// hours against an account that cannot succeed. This is the one quota classifier
-// for every provider, the union of their signals: OpenAI marks the case with the
-// error type or code "insufficient_quota" (message mentioning quota/billing as a
-// fallback); Anthropic phrases it in the message ("credit balance is too low",
-// billing). One list means retry-vs-fail can never drift between adapters again.
+// statusError maps an HTTP error response to a fault: rate limits and server errors are
+// transient, client errors terminal. A 429 for an exhausted quota or billing problem is
+// terminal, so a worker does not retry for hours against an account that cannot succeed.
+// It is the one quota classifier for every provider, the union of their signals: OpenAI's
+// "insufficient_quota" type or code, with a quota or billing message as fallback, and
+// Anthropic's message ("credit balance is too low", billing).
 func statusError(name string, code int, body []byte) error {
 	var e struct {
 		Error struct {
@@ -140,20 +127,19 @@ func statusError(name string, code int, body []byte) error {
 	return fault.New(llm.RetryClass(code, quota), name+"_status", full)
 }
 
-// overflowError is a refused-for-length response whose text is the provider's own message, so the
-// error prints as it did before it was classified and still matches [llm.ErrContextOverflow].
+// overflowError is a refused-for-length response carrying the provider's own message,
+// so it prints that message and still matches [llm.ErrContextOverflow].
 type overflowError string
 
 func (e overflowError) Error() string { return string(e) }
 
 func (overflowError) Is(target error) bool { return target == llm.ErrContextOverflow }
 
-// isContextOverflow reports whether an error response says the prompt was longer than the context
-// window. Each server words it differently and none shares a code with another, so the signals are
-// listed here, once, instead of in every caller: llama.cpp reports type exceed_context_size_error
-// and says "exceeds the available context size", vLLM says "maximum context length", and OpenAI
-// sets the code context_length_exceeded. Only a 400 or 413 can be one; a 5xx or 429 that happens to
-// mention a context is a different failure and keeps its retry class.
+// isContextOverflow reports whether an error response says the prompt exceeded the
+// context window. Each server words it differently, so the signals are listed once:
+// llama.cpp's exceed_context_size_error and "exceeds the available context size", vLLM's
+// "maximum context length", OpenAI's context_length_exceeded. Only a 400 or 413 can be
+// one; a 5xx or 429 that mentions context keeps its retry class.
 func isContextOverflow(status int, errType, errCode, msg string) bool {
 	if status != http.StatusBadRequest && status != http.StatusRequestEntityTooLarge {
 		return false
@@ -164,11 +150,9 @@ func isContextOverflow(status int, errType, errCode, msg string) bool {
 	return text.ContainsAny(strings.ToLower(msg), "exceeds the available context size", "maximum context length")
 }
 
-// defaultClient selects the client for an endpoint no caller overrode. Loopback
-// stays plain: the traffic never leaves the machine, and the netguard policy
-// would (correctly, for remote calls) refuse to dial it. Everything else dials
-// through netguard. Neither sets a response-header timeout: a non-streaming model
-// call holds the connection silently for as long as the generation takes.
+// defaultClient picks the client when no caller overrode it. Loopback stays plain,
+// because netguard refuses to dial it. Neither sets a response-header timeout, because
+// a non-streaming model call is silent for the whole generation.
 func defaultClient(baseURL string) *http.Client {
 	if isLoopback(baseURL) {
 		return &http.Client{Timeout: DefaultTimeout}
@@ -177,8 +161,8 @@ func defaultClient(baseURL string) *http.Client {
 	return &http.Client{
 		Timeout: DefaultTimeout,
 		Transport: &http.Transport{
-			// No proxy: a proxy would carry the request past the dial-time
-			// address guard, the same reasoning as netguard.Client.
+			// No proxy, because a proxy would carry the request past the dial-time
+			// address guard.
 			Proxy:               nil,
 			DialContext:         dialer.DialContext,
 			ForceAttemptHTTP2:   true,
@@ -187,8 +171,8 @@ func defaultClient(baseURL string) *http.Client {
 	}
 }
 
-// isLoopback reports whether the base URL targets the local machine, mirroring
-// the loopback branch of llm.SafeBaseURL.
+// isLoopback reports whether the base URL targets the local machine, matching the
+// loopback branch of llm.SafeBaseURL.
 func isLoopback(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {

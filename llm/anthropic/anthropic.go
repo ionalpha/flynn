@@ -1,13 +1,9 @@
-// Package anthropic adapts Anthropic's Messages API to the provider-agnostic
-// llm.Model port. It speaks the HTTP API directly (no vendor SDK), so the agent
-// keeps its single-binary, minimal-dependency shape and the adapter stays a thin,
-// fully-testable mapping between this package's neutral types and the wire format.
+// Package anthropic adapts Anthropic's Messages API to the llm.Model port over plain
+// HTTP, with no vendor SDK, so the agent stays a single binary.
 //
-// The default model is Claude Opus 5.5 with adaptive thinking. The model's
-// reasoning blocks must be replayed to the API unchanged on the next turn, so they
-// are carried through the conversation as llm.KindOpaque blocks: decoded verbatim
-// from a response and spliced back verbatim into the next request, without the
-// conversation loop ever interpreting them.
+// The API requires the model's reasoning blocks replayed unchanged on the next turn, so
+// they travel as llm.KindOpaque blocks: decoded verbatim from a response and spliced back
+// verbatim into the next request, never interpreted by the conversation loop.
 package anthropic
 
 import (
@@ -25,7 +21,7 @@ import (
 const (
 	// DefaultModel is the model used when none is configured.
 	DefaultModel = "claude-opus-5-5"
-	// DefaultMaxTokens bounds output when a request does not set its own ceiling.
+	// DefaultMaxTokens bounds output when a request sets no ceiling.
 	DefaultMaxTokens = 16000
 	defaultBaseURL   = "https://api.anthropic.com"
 	apiVersion       = "2023-06-01"
@@ -45,7 +41,7 @@ type Client struct {
 // Option configures a Client.
 type Option func(*Client)
 
-// WithModel sets the model id (default DefaultModel).
+// WithModel sets the model id (default [DefaultModel]).
 func WithModel(m string) Option {
 	return func(c *Client) {
 		if m != "" {
@@ -54,10 +50,9 @@ func WithModel(m string) Option {
 	}
 }
 
-// WithBaseURL overrides the API base URL (for a proxy or a compatible endpoint).
-// An unsafe URL (plaintext http to a non-loopback host, where the API key could be
-// sniffed in transit) is rejected and the secure default is kept, so the override
-// can never downgrade the transport. See llm.SafeBaseURL.
+// WithBaseURL overrides the API base URL, for a proxy or a compatible endpoint. A URL
+// that fails llm.SafeBaseURL is ignored and the default kept, so the override can never
+// send the key over plaintext to a remote host.
 func WithBaseURL(u string) Option {
 	return func(c *Client) {
 		if u != "" && llm.SafeBaseURL(u) {
@@ -66,8 +61,8 @@ func WithBaseURL(u string) Option {
 	}
 }
 
-// WithHTTPClient injects the HTTP client, so tests supply a mock transport and
-// production can set timeouts and proxies.
+// WithHTTPClient injects the HTTP client, for a mock transport or custom timeouts and
+// proxies.
 func WithHTTPClient(h *http.Client) Option {
 	return func(c *Client) {
 		if h != nil {
@@ -76,7 +71,7 @@ func WithHTTPClient(h *http.Client) Option {
 	}
 }
 
-// WithMaxTokens sets the default output ceiling (a request's own MaxTokens wins).
+// WithMaxTokens sets the default output ceiling. A request's own MaxTokens wins.
 func WithMaxTokens(n int) Option {
 	return func(c *Client) {
 		if n > 0 {
@@ -85,16 +80,14 @@ func WithMaxTokens(n int) Option {
 	}
 }
 
-// WithThinking enables or disables adaptive thinking (default enabled).
+// WithThinking turns adaptive thinking on or off (default on).
 func WithThinking(on bool) Option {
 	return func(c *Client) { c.thinking = on }
 }
 
-// New builds a Client authenticating with apiKey. The key is held as a
-// secret.Text, so it cannot leak through logging or formatting of the Client. With
-// no HTTP client injected the shared core picks the governed default (netguard for
-// a hosted endpoint, plain for loopback), with a generous timeout since a single
-// non-streaming turn can run for a while.
+// New builds a Client authenticating with apiKey. The key is a secret.Text, so it cannot
+// leak through logging the Client. With no HTTP client injected, the shared core picks
+// netguard for a hosted endpoint and a plain client for loopback.
 func New(apiKey secret.Text, opts ...Option) *Client {
 	c := &Client{
 		apiKey:    apiKey,
@@ -124,8 +117,6 @@ func (c *Client) Generate(ctx context.Context, req llm.Request) (llm.Response, e
 	return decodeResponse(ar)
 }
 
-// --- request building -------------------------------------------------------
-
 type apiRequest struct {
 	Model     string       `json:"model"`
 	MaxTokens int          `json:"max_tokens"`
@@ -141,19 +132,15 @@ type apiThinking struct {
 
 type apiMessage struct {
 	Role string `json:"role"`
-	// Content holds one typed content block per element (textBlock, toolUseBlock,
-	// toolResultBlock, imageBlock) or a json.RawMessage for an opaque block replayed
-	// verbatim. Keeping the blocks typed lets the single outer marshal of apiRequest
-	// serialize the whole transcript in one pass, instead of marshaling every block
-	// into a map[string]any first and re-encoding the run each turn (O(T^2)).
+	// Content holds typed blocks, or a json.RawMessage for an opaque block, so the one
+	// outer marshal encodes the transcript in a single pass. Marshaling each block into a
+	// map first re-encodes the whole run every turn, O(T^2).
 	Content []any `json:"content"`
 }
 
-// The typed content blocks. Field order below is the wire order; the Anthropic API
-// parses by key so order is not a contract, but the keys and values match what the
-// previous map-based encoder emitted so the request is byte-equivalent modulo key
-// order. cache_control is the only optional field: it is attached to at most one
-// block per message to mark a prompt-cache boundary (see encodeBlocks).
+// The typed content blocks. The API parses by key, so field order is not a contract.
+// cache_control marks a prompt-cache boundary on at most one block per message (see
+// encodeBlocks).
 type (
 	textBlock struct {
 		Type         string        `json:"type"`
@@ -194,19 +181,17 @@ type apiTool struct {
 	CacheControl *cacheControl   `json:"cache_control,omitempty"`
 }
 
-// cacheControl marks a prefix boundary the API should cache. "ephemeral" is the
-// short-lived prompt cache reused across the turns of one conversation.
+// cacheControl marks a prefix boundary to cache. "ephemeral" is the short-lived cache
+// reused across one conversation's turns.
 type cacheControl struct {
 	Type string `json:"type"`
 }
 
 func ephemeral() *cacheControl { return &cacheControl{Type: "ephemeral"} }
 
-// systemBlock is the structured form of the system field, used only when a cache
-// boundary is requested on it; otherwise the system prompt is sent as a plain
-// string. The API caches the prefix up to and including the marked block, and the
-// tool schemas sit before the system prompt in that prefix, so one marker here
-// caches the whole static head (tools plus system) of every turn.
+// systemBlock is the structured system field, sent only when a cache boundary is
+// requested on it. The cached prefix is tools then system, so one marker here caches the
+// whole static head of every turn.
 type systemBlock struct {
 	Type         string        `json:"type"`
 	Text         string        `json:"text"`
@@ -227,9 +212,8 @@ func (c *Client) buildRequest(req llm.Request) apiRequest {
 		out.Thinking = &apiThinking{Type: "adaptive"}
 	}
 
-	// The static-prefix boundary. The cache prefix is ordered tools, then system,
-	// so a marker on the system block caches both. With no system prompt, fall back
-	// to marking the last tool so the tool schemas still cache.
+	// The cache prefix is tools then system, so a marker on the system block caches
+	// both. With no system prompt, the last tool is marked instead.
 	markLastTool := false
 	switch {
 	case req.Cache.Prefix && req.System != "":
@@ -248,8 +232,8 @@ func (c *Client) buildRequest(req llm.Request) apiRequest {
 		out.Tools[len(out.Tools)-1].CacheControl = ephemeral()
 	}
 
-	// The rolling message boundary: cache through the last stable message so the
-	// next turn reads the frozen history back instead of reprocessing it.
+	// Cache through the last stable message, so the next turn reads the frozen history
+	// back instead of reprocessing it.
 	markMsg := req.Cache.StableMessages
 	if markMsg > len(req.Messages) {
 		markMsg = len(req.Messages)
@@ -263,13 +247,9 @@ func (c *Client) buildRequest(req llm.Request) apiRequest {
 	return out
 }
 
-// encodeBlocks maps neutral blocks to Messages-API content blocks as typed values,
-// so the single outer marshal of the request encodes them in one pass rather than
-// this function marshaling each block separately into a map. An opaque block is
-// spliced back verbatim (it is provider content we captured earlier). When markLast
-// is set, the last cacheable block carries a cache_control marker, which makes
-// everything up to and including it a cache boundary; opaque blocks are not marked,
-// since they are replayed byte-for-byte.
+// encodeBlocks maps neutral blocks to typed Messages-API blocks. An opaque block is
+// spliced back verbatim. When markLast is set, the last cacheable block carries a
+// cache_control marker, making everything through it a cache boundary.
 func encodeBlocks(blocks []llm.Block, markLast bool) []any {
 	markIdx := -1
 	if markLast {
@@ -313,8 +293,8 @@ func encodeBlocks(blocks []llm.Block, markLast bool) []any {
 	return out
 }
 
-// cacheableBlock reports whether a block can carry a cache_control marker. Opaque
-// provider content is excluded because it must be replayed unchanged.
+// cacheableBlock reports whether a block can carry a cache_control marker. An opaque
+// block cannot, because it must be replayed unchanged.
 func cacheableBlock(b llm.Block) bool {
 	switch b.Kind {
 	case llm.KindText:
@@ -327,8 +307,6 @@ func cacheableBlock(b llm.Block) bool {
 		return false
 	}
 }
-
-// --- response decoding ------------------------------------------------------
 
 type apiResponse struct {
 	Content    []json.RawMessage `json:"content"`
@@ -372,15 +350,12 @@ func decodeResponse(ar apiResponse) (llm.Response, error) {
 			}
 			blocks = append(blocks, llm.Block{Kind: llm.KindToolUse, ToolUse: &llm.ToolUse{ID: tu.ID, Name: tu.Name, Input: tu.Input}})
 		default:
-			// thinking, redacted_thinking, or any future block: preserve verbatim so
-			// it can be replayed unchanged on the next turn.
+			// thinking, redacted_thinking or any future block is kept verbatim for replay.
 			blocks = append(blocks, llm.Block{Kind: llm.KindOpaque, Raw: raw})
 		}
 	}
-	// This API reports input_tokens as the uncached input only, with cache reads and
-	// writes counted separately. The port's InputTokens is the total input processed,
-	// so add them back; cache reads and writes are also surfaced on their own so a
-	// caller can compute cache-hit-rate and the cheaper/dearer cache cost.
+	// This API reports input_tokens as uncached input only, so cache reads and writes
+	// are added back to give the port's total.
 	u := ar.Usage
 	return llm.Response{
 		Message:    llm.Message{Role: llm.RoleAssistant, Blocks: blocks},

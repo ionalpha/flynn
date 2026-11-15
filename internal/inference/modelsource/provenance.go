@@ -13,12 +13,11 @@ import (
 )
 
 // Provenance is the durable record of a model source: where it came from, how it was
-// classified, the weight format, and the content digest that was pinned for it. It is the
-// audit trail for a run and, through the digest, the trust-on-first-use anchor: a source
-// whose digest was pinned once is refused later if its bytes no longer match. No secret
-// is ever recorded.
+// classified, its weight format and its pinned digest. The digest is the
+// trust-on-first-use anchor, so a source whose bytes change is refused. It never holds
+// a secret.
 type Provenance struct {
-	// Key is the stable source key (see Source.Key), the record's primary key.
+	// Key is the stable source key ([Source.Key]), the record's primary key.
 	Key string `json:"key"`
 	// Raw is the original reference the user supplied.
 	Raw string `json:"raw"`
@@ -26,21 +25,19 @@ type Provenance struct {
 	Trust string `json:"trust"`
 	// Format is the detected weight format name.
 	Format string `json:"format,omitempty"`
-	// Digest is the sha256 the source's bytes were pinned to, "sha256:..." form. Empty
-	// until the weights have been fetched and verified at least once.
+	// Digest is the "sha256:..." the source's bytes were pinned to, empty until the
+	// weights have been fetched and verified once.
 	Digest string `json:"digest,omitempty"`
-	// FirstSeen and LastVerified are Unix times, for audit. FirstSeen is when the source
-	// was first recorded; LastVerified is the most recent successful integrity check.
+	// FirstSeen and LastVerified are Unix times: the first record of the source and the
+	// most recent successful integrity check.
 	FirstSeen    int64 `json:"firstSeen,omitempty"`
 	LastVerified int64 `json:"lastVerified,omitempty"`
 }
 
-// Ledger persists model-source provenance to a single JSON file, keyed by source key. It
-// is the trust-on-first-use store and the audit log in one: the first time a source is
-// fetched its digest is pinned here, and every later fetch is checked against it. Access
-// is mutex-guarded within a process and the file is rewritten atomically, so a concurrent
-// reader never sees a partial file. A corrupt ledger is read as empty rather than
-// wedging a run, the same default-open-to-rebuild posture the runtime registry uses.
+// Ledger persists provenance to one JSON file keyed by source key, as both the
+// trust-on-first-use store and the audit log. The file is rewritten atomically under a
+// mutex, so a reader never sees a partial file. A corrupt ledger reads as empty so it
+// cannot wedge a run.
 type Ledger struct {
 	path string
 	mu   sync.Mutex
@@ -52,8 +49,8 @@ func NewLedger(dir string) *Ledger {
 }
 
 // PinnedDigest returns the digest recorded for a source key, and whether one is pinned.
-// A caller passes it to the verified fetch as the expected digest, so a source pinned
-// once cannot be swapped underneath a later run.
+// The caller passes it to the verified fetch, so a pinned source cannot be swapped
+// under a later run.
 func (l *Ledger) PinnedDigest(key string) (string, bool, error) {
 	rec, ok, err := l.Get(key)
 	if err != nil || !ok {
@@ -77,15 +74,15 @@ func (l *Ledger) Get(key string) (Provenance, bool, error) {
 }
 
 // List returns all provenance records, sorted by key. A missing or unreadable file is an
-// empty ledger, not an error.
+// empty ledger.
 func (l *Ledger) List() ([]Provenance, error) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.loadLocked()
 }
 
-// Record inserts or updates the provenance for its key and persists the ledger. It
-// preserves FirstSeen on an update so the audit trail keeps the original sighting.
+// Record inserts or updates the provenance for its key and persists the ledger. An
+// update keeps FirstSeen, so the audit trail retains the original sighting.
 func (l *Ledger) Record(p Provenance) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()

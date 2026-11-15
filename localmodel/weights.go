@@ -27,10 +27,9 @@ type Weights struct {
 }
 
 // EnsureWeights makes a quantization of a catalog model available on disk and returns
-// it. quant names the quantization; empty picks the smallest single-file GGUF. A
-// quantization with no digest in the catalog is refused with [ErrUnpinned] rather than
-// fetched on trust. A file already on disk is hashed and kept only if it matches; one that
-// does not is replaced.
+// it. An empty quant picks the smallest single-file GGUF. A quantization with no catalog
+// digest is refused with [ErrUnpinned]. A file already on disk is kept only if its hash
+// matches, and replaced otherwise.
 func (h *Host) EnsureWeights(ctx context.Context, id, quant string) (Weights, error) {
 	m, err := h.Model(id)
 	if err != nil {
@@ -57,8 +56,8 @@ func pickQuant(m Model, name string) (catalog.Quant, error) {
 }
 
 // smallestServable returns the smallest quantization this package can serve: a single
-// GGUF file. A model whose only quantizations are another format fails with the reason its
-// smallest one cannot be served, instead of silently choosing nothing.
+// GGUF file. A model with none fails with the reason its smallest quantization cannot be
+// served.
 func smallestServable(m Model) (catalog.Quant, error) {
 	var best catalog.Quant
 	found := false
