@@ -8,15 +8,10 @@ import (
 	"strconv"
 )
 
-// Arguments compiles a tool's JSON Schema into a grammar whose root matches a
-// single JSON object: the arguments of one call to that tool. A runtime applies it
-// so the argument object is structurally valid and type-correct by construction.
-//
-// The supported subset is what tool argument schemas use in practice: a top-level
-// object with typed properties (string, integer, number, boolean, enum, array, and
-// nested object), a required list, and either closed (additionalProperties false)
-// or open extra properties. Anything outside the subset is a compile error so a
-// runtime is never handed a grammar that quietly permits an invalid call.
+// Arguments compiles a tool's JSON Schema into a grammar whose root matches one
+// JSON object, the arguments of one call to that tool. A construct outside the
+// supported subset is a compile error, so a runtime never receives a grammar that
+// permits an invalid call.
 func Arguments(schema json.RawMessage) (*Grammar, error) {
 	s, err := decodeSchema(schema)
 	if err != nil {
@@ -31,8 +26,7 @@ func Arguments(schema json.RawMessage) (*Grammar, error) {
 }
 
 // schemaNode is the slice of JSON Schema this package reads. Unknown keywords are
-// ignored rather than rejected, but a type or shape that cannot be constrained is
-// reported by the compiler.
+// ignored; a type or shape that cannot be constrained is a compile error.
 type schemaNode struct {
 	Type                 string                `json:"type"`
 	Properties           map[string]schemaNode `json:"properties"`
@@ -65,12 +59,9 @@ func (s *schemaNode) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// objectKeyOrder returns the keys of the object named field, in source order, in a
-// single streaming pass over the raw JSON. json.Unmarshal into a Go map drops order,
-// but constrained generation must emit properties in a fixed order, so the source
-// order is recovered here. The node's typed fields are already decoded by the caller's
-// struct unmarshal; this pass only walks the top-level object to reach field, without
-// the extra full map decode the previous version did before streaming.
+// objectKeyOrder returns the keys of the object named field, in source order, in
+// one streaming pass. A Go map decode drops order, and the grammar must emit
+// properties in a fixed order.
 func objectKeyOrder(data []byte, field string) ([]string, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	tok, err := dec.Token()
@@ -251,9 +242,8 @@ func (b *builder) compile(s *schemaNode, name string, depth int) (string, error)
 		b.add(name, ref{"json_boolean"})
 		return name, nil
 	case "":
-		// An untyped schema with no enum admits any JSON value; constrain it to
-		// well-formed JSON rather than refusing, so partially-specified tools still
-		// gain structural safety.
+		// An untyped schema with no enum admits any well-formed JSON value, so a
+		// partially specified tool still gains structural safety.
 		b.needValue()
 		b.add(name, ref{"json_value"})
 		return name, nil
@@ -262,17 +252,14 @@ func (b *builder) compile(s *schemaNode, name string, depth int) (string, error)
 	}
 }
 
-// compileObject builds the rule for an object schema. A closed object (the default,
-// and what every tool argument schema uses) is a brace-delimited list of its
-// declared members in order, each required member mandatory and each optional one
-// skippable, with no other members permitted. An open object with no declared
+// compileObject builds the rule for an object schema. A closed object, which every
+// tool argument schema is, lists its declared members in order: required ones
+// mandatory, optional ones skippable, nothing else. An open object with no declared
 // properties is a free-form JSON object.
 //
-// An open object that also declares typed properties is refused: a context-free
-// grammar cannot both type-check a declared property and admit an arbitrary extra
-// property under a different name without letting the declared one be re-admitted
-// untyped, which would silently permit an invalid call. Refusing is sound; guessing
-// is not. This case does not arise for tool argument schemas, which are closed.
+// An open object that also declares properties is refused. A context-free grammar
+// cannot admit arbitrary extra members without also re-admitting a declared one
+// untyped, which would permit an invalid call.
 func (b *builder) compileObject(s *schemaNode, name string, depth int) (string, error) {
 	open := s.AdditionalProperties != nil && *s.AdditionalProperties
 	if open {
@@ -291,10 +278,8 @@ func (b *builder) compileObject(s *schemaNode, name string, depth int) (string, 
 	}
 	required := map[string]bool{}
 	for _, r := range s.Required {
-		// A required property with no entry in "properties" cannot be type-constrained
-		// or even located in the declared-order body, so its mandatoriness would be
-		// silently lost. Refuse rather than emit a grammar that admits a call missing a
-		// required argument.
+		// A required property absent from "properties" cannot be typed or placed, so
+		// its requirement would be lost. Refuse it.
 		if !declared[r] {
 			return "", fmt.Errorf("gbnf: required property %q is not declared in properties", r)
 		}
@@ -430,8 +415,6 @@ func marshalCanonical(v any) (string, error) {
 	}
 	return string(bs), nil
 }
-
-// --- shared JSON primitive rules --------------------------------------------
 
 func (b *builder) needWS() {
 	b.add("json_ws", star{class{ranges: [][2]rune{{' ', ' '}, {'\t', '\t'}, {'\n', '\n'}, {'\r', '\r'}}}})

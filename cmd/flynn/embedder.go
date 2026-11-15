@@ -30,11 +30,9 @@ func noticeLine(w io.Writer) func(string) {
 // configuredEmbedder resolves the embedding model this install ranks recall by, or
 // returns nil when none is configured, which leaves recall exactly as it was.
 //
-// A spec that does not resolve is reported and then dropped. Memory is an advantage
-// and not a precondition: an install whose embedding endpoint is misconfigured
-// should lose ranking quality for the session, never its memory. The report is what
-// keeps that from being silent, because a recall that quietly stopped ranking by
-// meaning looks exactly like one that never did.
+// A spec that does not resolve is reported and dropped: a misconfigured embedding
+// endpoint costs the session ranking quality, never its memory. The report is needed
+// because recall that stopped ranking by meaning looks like recall that never did.
 func configuredEmbedder(ctx context.Context, dataDir string, notify func(string)) hybrid.Embedder {
 	spec := strings.TrimSpace(os.Getenv(embedModelEnv))
 	if spec == "" {

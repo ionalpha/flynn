@@ -1,15 +1,11 @@
 // Package modelsource classifies where a model's weights come from and how far that
-// source can be trusted, so a model from anywhere (a curated catalog entry, a model-hub
-// reference, a raw URL, or a file a user drops in) goes through one trust decision before
-// it is ever fetched or run. A model file is untrusted input to a parser with a history
-// of memory-safety flaws, so the source it came from sets the containment a run requires:
-// our own pinned catalog entry is the trust anchor, a recognized publisher is
-// semi-trusted, and anything else is untrusted by default and may only run where it can
-// be genuinely contained.
-//
-// The package is pure: it parses a reference, names the weight format, and maps the
-// source to a trust level. It performs no I/O, so the classification is fully testable
-// and is the same whatever calls it. Fetching, pinning, and running compose on top.
+// source can be trusted, so every model (a catalog entry, a hub reference, a raw URL or
+// a dropped file) passes one trust decision before it is fetched or run. A model file
+// is untrusted input to a parser with a history of memory-safety flaws, so its source
+// sets the containment a run requires: the pinned catalog is the trust anchor, a
+// recognized publisher is semi-trusted, and anything else is untrusted and runs only
+// where it can be contained. The package does no I/O; fetching, pinning and running
+// are built on top of it.
 package modelsource
 
 import (
@@ -20,16 +16,16 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// Kind is where a model's weights come from. The kind alone does not decide trust (a
-// publisher still matters), but it decides how the reference is resolved to bytes.
+// Kind is where a model's weights come from. It decides how the reference resolves to
+// bytes; trust also depends on the publisher.
 type Kind int
 
 const (
-	// KindCatalog is a blessed entry in the embedded catalog: pinned URL and digest,
-	// vetted offline. The catalog is the trust anchor, independent of any live registry.
+	// KindCatalog is an entry in the embedded catalog: pinned URL and digest, vetted
+	// offline, so trust does not depend on any live registry.
 	KindCatalog Kind = iota
 	// KindHuggingFace is a model-hub reference, hf:owner/repo[/file] or a huggingface.co
-	// URL. The owner is the publisher whose reputation the trust decision turns on.
+	// URL. The owner is the publisher the trust decision turns on.
 	KindHuggingFace
 	// KindURL is a direct https link to a weights file from no recognized publisher.
 	KindURL
@@ -37,8 +33,8 @@ const (
 	KindFile
 )
 
-// Source is a parsed, not-yet-fetched model reference. Exactly the fields for its Kind
-// are populated.
+// Source is a parsed, not-yet-fetched model reference. Only the fields for its Kind
+// are set.
 type Source struct {
 	// Kind is how the reference resolves to bytes.
 	Kind Kind
@@ -55,10 +51,9 @@ type Source struct {
 	Path string
 }
 
-// Parse classifies a reference string into a Source. isCatalogID reports whether a bare
-// string names a known catalog entry, so a catalog id is recognized before it is treated
-// as anything else. The grammar is deliberately small and unambiguous: a catalog id, an
-// hf: prefix or a huggingface.co URL, any other https URL, or a local path.
+// Parse classifies a reference string into a Source. isCatalogID is consulted first, so
+// a catalog id is never read as a path. The grammar has four unambiguous forms: a
+// catalog id, an hf: prefix or huggingface.co URL, any other https URL, or a local path.
 func Parse(ref string, isCatalogID func(string) bool) (Source, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
@@ -76,11 +71,10 @@ func Parse(ref string, isCatalogID func(string) bool) (Source, error) {
 	if strings.HasPrefix(ref, "http://") || strings.HasPrefix(ref, "https://") {
 		return Source{Kind: KindURL, Raw: ref, URL: ref}, nil
 	}
-	// Anything else is treated as a local file path the user is pointing at.
+	// Anything else is a local path.
 	return Source{Kind: KindFile, Raw: ref, Path: ref}, nil
 }
 
-// parseHuggingFace reads an hf:owner/repo[/file] reference.
 func parseHuggingFace(raw, rest string) (Source, error) {
 	parts := strings.SplitN(rest, "/", 3)
 	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
@@ -99,8 +93,8 @@ func parseHuggingFace(raw, rest string) (Source, error) {
 func parseHuggingFaceURL(raw string) (Source, error) {
 	rest := strings.TrimPrefix(raw, "https://huggingface.co/")
 	rest = strings.TrimSuffix(rest, "/")
-	// A resolve URL embeds the file after /resolve/<rev>/; keep it as the file, drop the
-	// revision marker so owner/repo stay clean.
+	// A resolve URL embeds the file after /resolve/<rev>/; the file is kept and the
+	// revision dropped so owner/repo stay clean.
 	if i := strings.Index(rest, "/resolve/"); i >= 0 {
 		ownerRepo := rest[:i]
 		after := rest[i+len("/resolve/"):]
@@ -116,8 +110,8 @@ func parseHuggingFaceURL(raw string) (Source, error) {
 	return parseHuggingFace(raw, rest)
 }
 
-// Key is a stable identifier for this source, used to record provenance and to pin its
-// integrity on first use. Two references that resolve to the same weights share a key.
+// Key identifies the source for provenance and for pinning its integrity on first use.
+// Two references that resolve to the same weights share a key.
 func (s Source) Key() string {
 	switch s.Kind {
 	case KindCatalog:
@@ -142,20 +136,20 @@ func (s Source) Key() string {
 type WeightFormat int
 
 const (
-	// FormatUnknown is an extension we do not recognize. It is refused, since an
-	// unrecognized container cannot be assumed safe to parse.
+	// FormatUnknown is an unrecognized extension. It is refused, because an unknown
+	// container cannot be assumed safe to parse.
 	FormatUnknown WeightFormat = iota
 	// FormatGGUF is the single-file quantized format, read by the hardened reader.
 	FormatGGUF
 	// FormatSafetensors stores tensors only and executes no code on load.
 	FormatSafetensors
-	// FormatCodeExecuting is a format that can run arbitrary code when loaded (a Python
-	// pickle, or an archive that could carry one). It is refused everywhere.
+	// FormatCodeExecuting can run arbitrary code when loaded (a Python pickle, or an
+	// archive that could carry one). It is refused everywhere.
 	FormatCodeExecuting
 )
 
-// DetectFormat names the weight format from a filename or path by its extension. An empty
-// or extension-less name is unknown, not assumed safe.
+// DetectFormat names the weight format from a filename's extension. An empty or
+// extension-less name is unknown.
 func DetectFormat(name string) WeightFormat {
 	switch strings.ToLower(path.Ext(name)) {
 	case ".gguf":
@@ -169,10 +163,9 @@ func DetectFormat(name string) WeightFormat {
 	}
 }
 
-// CheckRunnableFormat refuses a format that cannot be safely parsed: a code-executing
-// format outright, and an unrecognized one conservatively. Only the safe-parse formats
-// (GGUF, safetensors) are allowed. This holds for every source, not only catalog fetches,
-// so a dropped pickle file is refused the same as a downloaded one.
+// CheckRunnableFormat allows only GGUF and safetensors: a code-executing format is
+// refused, and so is an unrecognized one. It applies to every source, so a dropped
+// pickle file is refused the same as a downloaded one.
 func CheckRunnableFormat(name string) error {
 	switch DetectFormat(name) {
 	case FormatGGUF, FormatSafetensors:
@@ -186,22 +179,17 @@ func CheckRunnableFormat(name string) error {
 	}
 }
 
-// Classification is the trust decision for a source: the containment-setting trust level
-// and a plain-language reason a user can be shown.
+// Classification is the trust decision for a source, with a reason a user can be shown.
 type Classification struct {
-	// Trust is the sandbox trust level the source maps to, which sets the containment a
-	// run requires through sandbox.Required.
+	// Trust sets the containment a run requires through sandbox.Required.
 	Trust sandbox.Trust
-	// Reason is a short, plain-language explanation of why the source got this trust.
+	// Reason explains in plain language why the source got this trust.
 	Reason string
 }
 
-// Classify maps a source to a trust level. The embedded catalog is the trust anchor, so a
-// catalog entry is trusted. A hub model from a recognized publisher is semi-trusted: the
-// publisher is reputable but the bytes are still parsed by a vulnerable runtime, so it
-// needs kernel confinement. Everything else (an unknown publisher, a raw URL, a local
-// file) is untrusted by default and may run only where it can be genuinely contained.
-// knownPublisher reports whether a hub owner is a recognized first-party publisher.
+// Classify maps a source to a trust level. A catalog entry is trusted. A hub model from
+// a publisher knownPublisher recognizes is semi-trusted and needs kernel confinement,
+// because its bytes are still parsed by a vulnerable runtime. Anything else is untrusted.
 func Classify(s Source, knownPublisher func(owner string) bool) Classification {
 	switch s.Kind {
 	case KindCatalog:

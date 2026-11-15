@@ -18,11 +18,10 @@ import (
 	"github.com/ionalpha/flynn/internal/inference/provision"
 )
 
-// runtimeRelease is one pinned build of the runtime for one platform: where its archive
-// is, the digest the archive must match, and the server executable inside it. A host
-// cannot supply one: the version it reports is a claim about a binary this package never
-// runs, so accepting it from the caller would let a label decide the advisory gate. Tests
-// supply them through a hook that is compiled only into the test binary.
+// runtimeRelease is one pinned build of the runtime for one platform. A host cannot
+// supply one, because the version it reports is a claim about a binary this package never
+// runs and would let a label decide the advisory gate. Tests supply them through a hook
+// compiled only into the test binary.
 type runtimeRelease struct {
 	// Runtime is the runtime the build is, [Runtime] for the one this package serves.
 	Runtime string
@@ -67,10 +66,8 @@ type RuntimeInstall struct {
 	Variant string
 }
 
-// RuntimeStatus describes the runtime build this host would serve with, found the way
-// [Host.EnsureRuntime] finds it. A command that reports whether the runtime is installed
-// reads this instead of looking for a binary itself, so the report cannot disagree with
-// the install.
+// RuntimeStatus describes the build this host would serve with, found the way
+// [Host.EnsureRuntime] finds it, so a status report cannot disagree with the install.
 type RuntimeStatus struct {
 	// Installed is true when the build is on disk.
 	Installed bool
@@ -91,14 +88,14 @@ type RuntimeStatus struct {
 	UsesGPU bool
 	// Problem is non-empty when the installed build fails its integrity check.
 	Problem string
-	// NeedsReinstall is true when the build on disk has no hash record, as one installed
-	// by Flynn v0.1.3 has not. Problem stays empty: nothing is known to be wrong, but
-	// nothing vouches for the binary either, so [Host.EnsureRuntime] fetches it again.
+	// NeedsReinstall is true when the build on disk has no hash record, as a Flynn v0.1.3
+	// install has not. Nothing is known to be wrong, so Problem stays empty, but nothing
+	// vouches for the binary, so [Host.EnsureRuntime] fetches it again.
 	NeedsReinstall bool
 }
 
-// pinnedReleases converts and checks the releases a test supplies. A release without a digest
-// would be installed on trust, so it is refused here rather than at install.
+// pinnedReleases converts and checks the releases a test supplies. A release without a
+// digest would be installed on trust, so it is refused here, before any install.
 func pinnedReleases(in []runtimeRelease) ([]provision.Release, error) {
 	var out []provision.Release
 	for _, r := range in {
@@ -217,16 +214,14 @@ func (h *Host) releaseAmong(ctx context.Context, rels []provision.Release) (prov
 	return h.bestRelease(ctx, rels)
 }
 
-// EnsureRuntime installs the runtime build this host serves with and returns where it is.
-// That is the variant a previous install chose or, on a machine with none, the best build
-// for the hardware. The build is refused if it is below the advisory floor, before
-// anything is downloaded, and a build already installed is held to the same floor. Every
-// archive must match its pinned digest. The server binary's own hash is recorded when the
-// verified archives are unpacked and checked again by [Host.Serve] before each launch. A
-// build found installed without that record (one from Flynn v0.1.3) is replaced by a
-// verified download, not recorded: a hash taken from a file nobody vouched for would bless
-// whatever is there. One whose record disagrees with the binary is refused with
-// [ErrDigestMismatch].
+// EnsureRuntime installs the runtime build this host serves with (the variant a previous
+// install chose, else the best build for the hardware) and returns where it is. A build
+// below the advisory floor is refused before anything is downloaded, and an installed one
+// is held to the same floor. Every archive must match its pinned digest. The server
+// binary's hash is recorded at unpack and checked by [Host.Serve] before each launch. An
+// install without that record (Flynn v0.1.3) is replaced by a verified download, because a
+// hash taken from an unvouched file would bless whatever is there. One whose record
+// disagrees with the binary is refused with [ErrDigestMismatch].
 func (h *Host) EnsureRuntime(ctx context.Context) (RuntimeInstall, error) {
 	rel, err := h.release(ctx)
 	if err != nil {
@@ -314,9 +309,8 @@ func (h *Host) refetch(ctx context.Context, rel provision.Release, dest string) 
 	return inst, nil
 }
 
-// RuntimeStatus reports the runtime build this host would serve with and whether it is
-// installed. It finds the build exactly as [Host.EnsureRuntime] does, through the same
-// selection and the same install location, and downloads nothing.
+// RuntimeStatus reports the build this host would serve with and whether it is installed.
+// It downloads nothing.
 func (h *Host) RuntimeStatus(ctx context.Context) (RuntimeStatus, error) {
 	rels, err := h.candidates()
 	if err != nil {
@@ -360,7 +354,6 @@ func offloads(rel provision.Release, hw gpu.Info) bool {
 	return rel.GOOS == "darwin" && rel.GOARCH == "arm64"
 }
 
-// formatBytes renders a download size for a progress line.
 func formatBytes(n int64) string {
 	if n >= 1<<30 {
 		return fmt.Sprintf("%.1f GiB", float64(n)/(1<<30))
@@ -400,12 +393,10 @@ func verifyRuntimeBinary(bin string) error {
 }
 
 // RaiseFloor raises the minimum runtime version this Host will run, for an advisory
-// learned after the module was built. It keeps the higher of the current floor and
-// version, so a lower version changes nothing, and it has no inverse. The floor belongs to
-// this Host: another Host in the same process does not see it, and it is not remembered
-// when this one closes. Servers already running below it are stopped the next time
-// [Host.Serve] or [Host.Reach] finds them. advisoryID names the advisory in a later
-// refusal.
+// learned after the module was built. A lower version changes nothing, and there is no
+// inverse. The floor is not shared with other Hosts and is not persisted. Servers running
+// below it are stopped the next time [Host.Serve] or [Host.Reach] finds them. advisoryID
+// names the advisory in a later refusal.
 func (h *Host) RaiseFloor(version, advisoryID string) error {
 	v := inference.ParseVersion(version)
 	if len(v) == 0 {

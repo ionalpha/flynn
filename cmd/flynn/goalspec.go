@@ -13,53 +13,41 @@ import (
 	"github.com/ionalpha/flynn/goal"
 )
 
-// A goal spec file is where an operator writes the terms of a run: what must stay true
-// while the work happens, and how each of those terms is observed.
+// A goal spec file holds a run's terms (what must stay true while the work happens, and
+// how each is observed) alongside its objective, stop condition and allowances.
 //
-// It is a file rather than a repeatable flag because a term's check is a shell command.
-// `--invariant "the tree stays clean:git diff --quiet -- . ':!vendor'"` puts the operator
-// in a delimiter fight with their own shell on the first term that has a quote or a colon
-// in it, and the terms of a run are the last thing that should be awkward to state
-// precisely. A file also holds the objective, the stop condition and the allowances
-// together, which is what a run is: the thing to do, when it is over, what may not be
-// traded away to get there, and what it is authorized to reach for.
+// It is a file because a term's check is a shell command, and a flag like
+// `--invariant "clean:git diff --quiet -- . ':!vendor'"` fights the operator's shell on
+// the first quote or colon.
 //
-// The format is JSON, matching the playbook specs already shipped in this repository, and
-// it decodes into a curated struct rather than straight into goal.Spec. The spec carries
-// fields the run owns (the model, the step budget, the grant, the unit graph the planner
-// writes); a file that could set those would let an operator hand-edit machinery they have
-// no way to reason about, and every one of them already has a flag or an owner. What is
-// left is exactly the operator's half.
+// It is JSON, like the shipped playbook specs, and decodes into a curated struct in
+// place of goal.Spec. The fields the run owns (model, step budget, grant, the planner's
+// unit graph) already have a flag or an owner, and hand-editing them is unsafe, so the
+// file carries only the operator's half.
 
-// goalSpecFile is the operator-facing half of a goal spec: what the run is for, when it is
-// over, the terms it is held to, and the irreversible actions it may take.
+// goalSpecFile is the operator's half of a goal spec.
 type goalSpecFile struct {
-	// Objective is what the run is asked to do. It may be given here instead of on the
-	// command line, so a spec file is a complete, re-runnable statement of a run.
+	// Objective may be given here instead of on the command line, so a spec file is a
+	// complete, re-runnable statement of a run.
 	Objective string `json:"objective,omitempty"`
-	// StopCondition is what must become true for the work to be over. Omitted, the run
-	// uses the same default a bare `flynn goal` does.
+	// StopCondition is what must become true for the work to be over. Omitted, the run uses
+	// the default of a bare `flynn goal`.
 	StopCondition string `json:"stopCondition,omitempty"`
-	// Invariants are the terms of the run. This is the field the file exists for.
+
 	Invariants []goal.Invariant `json:"invariants,omitempty"`
-	// Allowances are the irreversible actions outside the workspace this run is
-	// authorized to take. The narrow, target-bound form is expressible here and is not
-	// expressible with --allow.
+	// Allowances are the irreversible actions outside the workspace this run may take. Only
+	// here can one be narrowed to a target; --allow cannot express that.
 	Allowances []goal.Allowance `json:"allowances,omitempty"`
 }
 
-// errEmptyGoalSpec reports a spec file that parsed but states nothing. Loading it and
-// running anyway would give the operator a run governed by a file they believe is in
-// force, which is the one outcome worse than refusing.
+// errEmptyGoalSpec refuses a spec that parsed but states nothing, since running would
+// leave the operator believing a file was in force.
 var errEmptyGoalSpec = errors.New("states nothing: it needs at least an objective or one invariant")
 
-// loadGoalSpecFile reads and validates a goal spec file. The path "-" reads stdin, so a
-// spec can be generated and piped without touching the disk.
+// loadGoalSpecFile reads and validates a goal spec file; "-" reads stdin.
 //
-// Unknown fields are refused. A misspelled key in a governance file is the failure this
-// surface exists to prevent: `"invariant"` for `"invariants"` would otherwise load
-// cleanly, run to completion, and produce a record showing a goal that was never held to
-// anything, indistinguishable from one whose terms held.
+// Unknown fields are refused. A misspelled `"invariant"` would otherwise load, run and
+// record a goal held to nothing, indistinguishable from one whose terms held.
 func loadGoalSpecFile(path string) (goalSpecFile, error) {
 	var (
 		raw []byte
@@ -86,10 +74,8 @@ func loadGoalSpecFile(path string) (goalSpecFile, error) {
 	}
 	spec.Objective = strings.TrimSpace(spec.Objective)
 	spec.StopCondition = strings.TrimSpace(spec.StopCondition)
-	// Trim what the file states before anything reads it, so the term the run adopts is
-	// the term the operator wrote. An invariant's content is fingerprinted at adoption
-	// and the fingerprint is what makes rewording it mid-run detectable, so a stray
-	// newline off a heredoc must not become part of what the term says.
+	// Terms are trimmed before adoption. An invariant is fingerprinted when adopted, so
+	// mid-run rewording is detectable, and a stray heredoc newline must not join the term.
 	for i := range spec.Invariants {
 		spec.Invariants[i].ID = strings.TrimSpace(spec.Invariants[i].ID)
 		spec.Invariants[i].Statement = strings.TrimSpace(spec.Invariants[i].Statement)
@@ -101,18 +87,16 @@ func loadGoalSpecFile(path string) (goalSpecFile, error) {
 	return spec, nil
 }
 
-// validate refuses a spec the engine would refuse later, and refuses it here, where the
-// operator is still reading their own file. The rules are the engine's:
-// [goal.ValidateInvariants] decides admission, so it is called rather than restated, and
-// this adds only what the file surface can get wrong on its own.
+// validate refuses, while the operator is reading their own file, a spec the engine
+// would refuse later. [goal.ValidateInvariants] decides admission; this adds only what
+// the file can get wrong on its own.
 func (s goalSpecFile) validate() error {
 	if s.Objective == "" && len(s.Invariants) == 0 {
 		return errEmptyGoalSpec
 	}
 	if err := goal.ValidateInvariants(s.Invariants); err != nil {
-		// The engine's error names the rule that was broken; naming the term that broke
-		// it is what makes the file editable. An id-less term is pointed at by position,
-		// since there is nothing else to call it.
+		// The engine's error names the rule; naming the offending term makes the file editable.
+		// An id-less term is named by position.
 		return fmt.Errorf("%w%s", err, offendingTerms(s.Invariants))
 	}
 	for i, a := range s.Allowances {
@@ -123,10 +107,9 @@ func (s goalSpecFile) validate() error {
 	return nil
 }
 
-// offendingTerms names the terms a validation failure is about, so the operator can find
-// them in a file with several. It reports duplicates by id, absence claims by id, and an
-// incomplete term by its position, and returns "" when it cannot narrow it down (the
-// engine's own message stands alone in that case).
+// offendingTerms names the terms a validation failure concerns: duplicates and absence
+// claims by id, an incomplete term by position. It returns "" when it cannot narrow it
+// down.
 func offendingTerms(invs []goal.Invariant) string {
 	var named []string
 	seen := map[string]int{}
@@ -150,9 +133,7 @@ func offendingTerms(invs []goal.Invariant) string {
 	return "\n  " + strings.Join(named, "\n  ")
 }
 
-// goalSpecExample is printed when a file will not parse. Somebody who has just been told
-// their JSON is malformed wants the shape, not a pointer to documentation they have to go
-// and find.
+// goalSpecExample is printed when a file will not parse, so the operator sees the shape.
 const goalSpecExample = `a goal spec is JSON:
   {
     "objective": "upgrade the http client and keep the suite green",
@@ -166,14 +147,12 @@ const goalSpecExample = `a goal spec is JSON:
     "allowances": [{"action": "shell"}]
   }`
 
-// mergeGoalSpec folds a loaded spec file and the command line into the one objective and
-// stop condition the run is submitted with.
+// mergeGoalSpec folds the spec file and the command line into the run's objective and
+// stop condition.
 //
-// A conflict is an error rather than a precedence rule. Both an objective on the command
-// line and an objective in the file is somebody running a spec file they have edited past
-// or a command line they have forgotten; silently picking a winner means the run does the
-// other one, and "which wins" is a thing nobody remembers under time pressure. The message
-// says which two to reconcile.
+// An objective in both places is an error. It means a stale file or a forgotten command
+// line, and any precedence rule would silently run the other one. The message names the
+// two to reconcile.
 func mergeGoalSpec(spec goalSpecFile, objective string) (string, error) {
 	objective = strings.TrimSpace(objective)
 	switch {
@@ -187,10 +166,8 @@ func mergeGoalSpec(spec goalSpecFile, objective string) (string, error) {
 	return "", errors.New(`usage: flynn goal "<objective>", or state "objective" in a --goal-spec file`)
 }
 
-// mergeAllowances folds the --allow declarations and the spec file's into one list. The
-// flag's form is action-level and the file's may narrow to a target, so the two are
-// concatenated rather than one overriding the other: each is a separate authorization the
-// operator wrote down. Duplicates collapse.
+// mergeAllowances concatenates the --allow declarations and the spec file's, since each
+// is a separate authorization the operator wrote. Duplicates collapse.
 func mergeAllowances(spec goalSpecFile, allowed []string) []goal.Allowance {
 	out := append([]goal.Allowance(nil), declaredAllowances(allowed)...)
 	seen := map[goal.Allowance]bool{}
@@ -216,11 +193,9 @@ func mergeAllowances(spec goalSpecFile, allowed []string) []goal.Allowance {
 
 // termsLines is what a run says about its terms before it starts, one line per term.
 //
-// It is here because a term with no check is judged by the model auditor, which rules on
-// the run's own record, and a term with one is judged by running it. That is a real
-// difference in what the operator is getting, and the file makes the check optional
-// without ever saying so. The run says it, at the point where the operator can still
-// stop and write the check.
+// A term without a check is judged by the model auditor from the run's own record; one
+// with a check is judged by running it. The file leaves the check optional, so the run
+// states the difference while the operator can still add one.
 func termsLines(invs []goal.Invariant) []string {
 	if len(invs) == 0 {
 		return nil

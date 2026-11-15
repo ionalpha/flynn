@@ -1,7 +1,5 @@
-// Package llmtest provides a deterministic in-memory llm.Model for tests: a
-// scripted backend that returns a fixed sequence of turns and records the requests
-// it was given, so the conversation loop and the agent runtime can be driven
-// end to end without a real provider or any network.
+// Package llmtest provides a scripted in-memory llm.Model, so the conversation loop and
+// the agent runtime can be tested end to end without a provider or network.
 package llmtest
 
 import (
@@ -13,12 +11,10 @@ import (
 	"github.com/ionalpha/flynn/llm"
 )
 
-// ScriptedModel is a deterministic llm.Model: each Generate call returns the next
-// turn from a fixed script and records the request it was handed. It ignores the
-// request when choosing what to return, so a test fixes the model's behaviour up
-// front and then asserts, via Requests, that the loop fed the right history back.
-// Running off the end of the script is a terminal error, surfacing a loop that
-// took more turns than the test scripted.
+// ScriptedModel returns the next turn from a fixed script on each Generate call, ignoring
+// the request, and records what it was handed so a test can assert the history the loop
+// fed back. Running past the script is a terminal error, which exposes a loop that took
+// more turns than scripted.
 type ScriptedModel struct {
 	mu       sync.Mutex
 	turns    []llm.Response
@@ -33,8 +29,8 @@ func NewScripted(turns ...llm.Response) *ScriptedModel {
 	return &ScriptedModel{turns: turns}
 }
 
-// ErrScriptExhausted is returned (terminal) when Generate is called more times
-// than the script has turns.
+// ErrScriptExhausted is returned when Generate is called more times than the script has
+// turns.
 var ErrScriptExhausted = fault.New(fault.Terminal, "llmtest_script_exhausted", "scripted model: no turn left for this call")
 
 // Generate implements llm.Model.
@@ -57,9 +53,7 @@ func (m *ScriptedModel) Calls() int {
 	return m.calls
 }
 
-// Requests returns a copy of the requests Generate has received, in order, so a
-// test can assert the conversation the loop built (e.g. that tool results were
-// appended before the next turn).
+// Requests returns a copy of the requests Generate received, in order.
 func (m *ScriptedModel) Requests() []llm.Request {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -68,9 +62,7 @@ func (m *ScriptedModel) Requests() []llm.Request {
 	return out
 }
 
-// --- turn constructors ------------------------------------------------------
-
-// SayText returns a final assistant turn carrying text (StopEndTurn).
+// SayText returns a final assistant turn carrying text ([llm.StopEndTurn]).
 func SayText(text string) llm.Response {
 	return llm.Response{
 		Message:    llm.Text(llm.RoleAssistant, text),
@@ -78,7 +70,7 @@ func SayText(text string) llm.Response {
 	}
 }
 
-// CallTool returns an assistant turn that requests one tool call (StopToolUse).
+// CallTool returns an assistant turn requesting one tool call ([llm.StopToolUse]).
 func CallTool(id, name string, input json.RawMessage) llm.Response {
 	return llm.Response{
 		Message: llm.Message{Role: llm.RoleAssistant, Blocks: []llm.Block{

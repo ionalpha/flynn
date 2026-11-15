@@ -12,39 +12,30 @@ import (
 	"github.com/ionalpha/flynn/observe"
 )
 
-// RuntimeStats is a point-in-time, best-effort reading of how loaded a running model
-// server is: how full its key/value cache is and how many requests it is working on. It
-// is the control-plane view the orchestrator and router read to make eviction and routing
-// decisions, kept distinct from the metrics pushed to a backend through observe.Meter.
-//
-// Fields are best-effort. A runtime that does not report a value leaves it at its zero,
-// and Known reports whether any usable reading was obtained at all: a false Known means
-// the snapshot carries no information (the runtime was unreachable, hung, or spoke an
-// unparseable dialect) and a reader must treat the load as unknown rather than as zero.
+// RuntimeStats is a best-effort reading of how loaded a running model server is, for
+// the orchestrator's eviction and the router's routing. Metrics for a backend go
+// through observe.Meter instead. A value the runtime does not report stays zero.
 type RuntimeStats struct {
-	// Known is true when a usable reading was obtained and parsed. A false Known means the
-	// snapshot carries no information and the load must be treated as unknown, not as zero.
+	// Known is false when the snapshot carries no information (unreachable, hung or an
+	// unparseable dialect), so a reader treats the load as unknown, never as zero.
 	Known bool
-	// KVCacheUsage is the fraction of the key/value cache in use, in [0,1]. It is the
-	// primary memory-pressure signal an eviction policy reads.
+	// KVCacheUsage is the fraction of the key/value cache in use, in [0,1], and the
+	// memory-pressure reading an eviction policy uses.
 	KVCacheUsage float64
-	// RequestsRunning is the number of requests the server is actively decoding.
+	// RequestsRunning is the number of requests being decoded.
 	RequestsRunning int
 	// RequestsWaiting is the number of requests queued behind the running ones.
 	RequestsWaiting int
-	// DecodeTokensPerSec is the recent generation throughput, in tokens per second.
+	// DecodeTokensPerSec is recent generation throughput, in tokens per second.
 	DecodeTokensPerSec float64
-	// PromptTokensPerSec is the recent prefill throughput, in tokens per second.
+	// PromptTokensPerSec is recent prefill throughput, in tokens per second.
 	PromptTokensPerSec float64
-	// CollectedAt is when the reading was taken, stamped from the manager clock so it is
-	// deterministic in tests and consistent across the process.
+	// CollectedAt is stamped from the manager clock, so it is deterministic in tests.
 	CollectedAt time.Time
 }
 
-// normalized returns a copy with every field forced into its valid range: the gauge
-// clamped to [0,1], counts and throughputs floored at zero, and any non-finite value
-// dropped to zero. It is applied to whatever a source returns, so a buggy or hostile
-// source can never hand the control plane a garbage reading.
+// normalized clamps the gauge to [0,1], floors counts and throughputs at zero and drops
+// non-finite values, so a buggy or hostile source cannot hand the control plane garbage.
 func (s RuntimeStats) normalized() RuntimeStats {
 	s.KVCacheUsage = clampUnit(s.KVCacheUsage)
 	s.DecodeTokensPerSec = clampNonNeg(s.DecodeTokensPerSec)
@@ -58,29 +49,26 @@ func (s RuntimeStats) normalized() RuntimeStats {
 	return s
 }
 
-// StatsSource reads a load snapshot from a runtime serving at a loopback base URL. There
-// is one implementation per runtime dialect, because the metric names differ. It returns
-// a snapshot with Known false (and a nil error) when the runtime is reachable but reports
-// nothing usable, and an error only when the read itself fails, which the manager turns
-// into an unknown reading.
+// StatsSource reads a load snapshot from a runtime at a loopback base URL, one
+// implementation per metric dialect. A reachable runtime that reports nothing usable
+// gives Known false and a nil error; an error means the read itself failed.
 type StatsSource interface {
 	Stats(ctx context.Context, baseURL string) (RuntimeStats, error)
 }
 
-// NopStatsSource reports every runtime as unknown load. It is the default for a runtime
-// with no registered source, so the standalone path stays zero-setup.
+// NopStatsSource reports every load as unknown. It is the default for a runtime with no
+// registered source, so the standalone path needs no setup.
 type NopStatsSource struct{}
 
-// Stats implements StatsSource by always reporting an unknown load.
+// Stats always reports an unknown load.
 func (NopStatsSource) Stats(context.Context, string) (RuntimeStats, error) {
 	return RuntimeStats{}, nil
 }
 
 var _ StatsSource = NopStatsSource{}
 
-// WithStatsSource registers a load reader for servers of a given runtime, keyed by the
-// runtime name recorded on each server (for example "llama.cpp"). Without one for a
-// runtime, Stats reports the load as unknown rather than failing.
+// WithStatsSource registers a load reader for servers of a runtime, keyed by the runtime
+// name recorded on each server (for example "llama.cpp").
 func WithStatsSource(runtime string, src StatsSource) Option {
 	return func(m *Manager) {
 		if runtime != "" && src != nil {
@@ -89,12 +77,9 @@ func WithStatsSource(runtime string, src StatsSource) Option {
 	}
 }
 
-// Stats reads a best-effort load snapshot for a running model. It returns an error only
-// when there is no recorded server for the model. A server that is present but cannot be
-// read (no source for its runtime, an unreachable or hung endpoint, an unparseable reply)
-// yields a snapshot with Known false, never an error, so the control plane can always read
-// the load without a failing call breaking it. The reading is normalized and stamped with
-// the manager clock.
+// Stats reads a normalized load snapshot for a running model, stamped with the manager
+// clock. It errors only when no server is recorded for the model. An unreadable server
+// yields Known false, so a hung runtime cannot break a control-plane read.
 func (m *Manager) Stats(ctx context.Context, modelID string) (RuntimeStats, error) {
 	rec, ok, err := m.reg.Get(modelID)
 	if err != nil {
@@ -111,8 +96,7 @@ func (m *Manager) Stats(ctx context.Context, modelID string) (RuntimeStats, erro
 	}
 	s, err := src.Stats(ctx, rec.BaseURL)
 	if err != nil {
-		// A read failure means the load is unknown right now, not that the call failed: a
-		// hung or flapping runtime must not break a control-plane read.
+		// A failed read is unknown load, not a failed call.
 		return RuntimeStats{CollectedAt: now}, nil //nolint:nilerr // a failed read is reported as unknown load, not surfaced as a call error
 	}
 	s = s.normalized()
@@ -120,11 +104,9 @@ func (m *Manager) Stats(ctx context.Context, modelID string) (RuntimeStats, erro
 	return s, nil
 }
 
-// EmitStats records a load snapshot on the meter so a host's telemetry backend sees the
-// same numbers the control plane reads. The Meter port offers counters and histograms but
-// no gauge instrument, so the snapshot's gauge-like values are recorded as histogram
-// observations, which a backend renders as the per-model distribution and last value. A
-// snapshot with Known false, or a nil meter, records nothing.
+// EmitStats records a load snapshot on the meter, so a telemetry backend sees the
+// numbers the control plane reads. The Meter port has no gauge, so gauge values are
+// recorded as histogram observations. Known false or a nil meter records nothing.
 func EmitStats(ctx context.Context, m observe.Meter, modelID string, s RuntimeStats) {
 	if m == nil || !s.Known {
 		return
@@ -137,8 +119,7 @@ func EmitStats(ctx context.Context, m observe.Meter, modelID string, s RuntimeSt
 	m.Histogram("local.prompt_tokens_per_sec").Record(ctx, s.PromptTokensPerSec, model)
 }
 
-// promNames maps the RuntimeStats fields onto a runtime's Prometheus metric names. The two
-// dialects Flynn serves are filled in by llamaCppMetricNames and vllmMetricNames.
+// promNames maps the RuntimeStats fields onto one runtime's Prometheus metric names.
 type promNames struct {
 	kvCacheUsage    string
 	requestsRunning string
@@ -155,8 +136,6 @@ var llamaCppMetricNames = promNames{
 	promptTokPerSec: "llamacpp:prompt_tokens_seconds",
 }
 
-// vllmMetricNames maps onto vLLM's process-wide gauge metrics, read the same way as the
-// llama.cpp set.
 var vllmMetricNames = promNames{
 	kvCacheUsage:    "vllm:gpu_cache_usage_perc",
 	requestsRunning: "vllm:num_requests_running",
@@ -165,9 +144,8 @@ var vllmMetricNames = promNames{
 	promptTokPerSec: "vllm:avg_prompt_throughput_toks_per_s",
 }
 
-// toStats maps a parsed metric payload onto a normalized RuntimeStats. Known is true when
-// at least one mapped metric was present, so a reachable runtime that reported nothing we
-// understand is reported as unknown rather than as an all-zero load.
+// toStats sets Known when at least one mapped metric was present, so a runtime that
+// reported nothing we understand reads as unknown rather than as zero load.
 func (n promNames) toStats(data []byte) RuntimeStats {
 	vals := parseProm(data)
 	var s RuntimeStats
@@ -194,18 +172,14 @@ func (n promNames) toStats(data []byte) RuntimeStats {
 	return s.normalized()
 }
 
-// parseProm scans Prometheus text exposition format and returns the first value seen for
-// each metric name, with labels and timestamps ignored. It is deliberately forgiving:
-// comment and blank lines are skipped, a line that does not parse as a sample is ignored,
-// and a non-finite value is dropped, so a truncated, reordered, or hostile payload yields
-// missing values rather than a panic or a poisoned reading. The runtime metrics read here
-// are process-wide single-series gauges and counters, so dropping labels is safe.
+// parseProm returns the first value of each metric name in Prometheus text format,
+// ignoring labels and timestamps. Unparseable lines and non-finite values are skipped,
+// so a truncated or hostile payload yields missing values, never a panic. The metrics
+// read here are single-series, so dropping labels is safe.
 func parseProm(data []byte) map[string]float64 {
 	out := map[string]float64{}
-	// Scan line by line over the raw bytes instead of splitting the whole body into a
-	// []string first: the exposition payload holds many series and only a handful are
-	// read here, so the full split allocates a large slice and a copy of every line for
-	// nothing. Each line becomes a short-lived string only when it is non-empty.
+	// Scan the raw bytes line by line, because splitting the whole payload allocates a
+	// copy of every series when only a handful are read.
 	for len(data) > 0 {
 		var raw []byte
 		if i := bytes.IndexByte(data, '\n'); i >= 0 {
@@ -236,10 +210,9 @@ func parseProm(data []byte) map[string]float64 {
 	return out
 }
 
-// splitSample splits a Prometheus sample line into its metric name and the remainder that
-// begins with the value. A labelled sample (name{...}) has its label block skipped to the
-// last closing brace; an unlabelled one splits at the first whitespace. It never indexes
-// out of range, so any malformed line returns empty and is skipped by the caller.
+// splitSample splits a sample line into its metric name and the rest, which begins with
+// the value. A label block is skipped to its last closing brace. It never indexes out of
+// range, so a malformed line returns empty and is skipped.
 func splitSample(line string) (name, rest string) {
 	if i := strings.IndexByte(line, '{'); i >= 0 {
 		j := strings.LastIndexByte(line, '}')
@@ -255,9 +228,8 @@ func splitSample(line string) (name, rest string) {
 	return line[:i], strings.TrimSpace(line[i+1:])
 }
 
-// metricsURL derives a runtime's Prometheus endpoint from its OpenAI-compatible base URL.
-// The model API is served under a /v1 path while metrics are exposed at /metrics on the
-// server root, so the version suffix is trimmed before the metrics path is appended.
+// metricsURL trims the /v1 suffix from the OpenAI-compatible base URL, because metrics
+// are served at /metrics on the server root.
 func metricsURL(baseURL string) string {
 	u := strings.TrimRight(baseURL, "/")
 	u = strings.TrimSuffix(u, "/v1")
@@ -265,7 +237,7 @@ func metricsURL(baseURL string) string {
 	return u + "/metrics"
 }
 
-// clampUnit forces v into [0,1], mapping a non-finite or negative value to 0.
+// clampUnit forces v into [0,1], mapping a non-finite value to 0.
 func clampUnit(v float64) float64 {
 	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return 0
@@ -284,8 +256,7 @@ func clampNonNeg(v float64) float64 {
 	return v
 }
 
-// countFrom converts a metric value to a non-negative count, dropping a non-finite or
-// negative value to 0.
+// countFrom converts v to a non-negative count, mapping a non-finite value to 0.
 func countFrom(v float64) int {
 	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
 		return 0

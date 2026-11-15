@@ -8,36 +8,32 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// Policy decides how many independent approver signatures an action requires
-// before the waist admits it. Zero means the action needs no approval and runs
-// under the capability grant alone; a positive number is the quorum (1 for a
-// single approver, more for a high-risk M-of-N action). Keeping the requirement as
-// data lets a host raise the bar on a destructive action without touching the gate.
+// Policy gives the number of independent signatures an action needs. Zero
+// means the capability grant alone admits it. Keeping the requirement as data
+// lets a host raise the bar on a destructive action without touching the gate.
 //
 //flynn:policy TestFailClosedGate
 type Policy interface {
 	Required(a dispatch.Action) int
 }
 
-// Requirements is a map-based Policy from action name to required signature count.
-// An action not in the map requires no approval, so the default is permissive and a
-// host opts specific privileged actions into the gate.
+// Requirements maps action name to required signature count. An unlisted
+// action needs no approval, so a host opts specific actions into the gate.
 type Requirements map[string]int
 
-// Required returns the signatures the action needs, or zero when it is not listed.
+// Required returns the signatures a needs, or zero when it is not listed.
 func (r Requirements) Required(a dispatch.Action) int { return r[a.Name] }
 
 var _ Policy = Requirements(nil)
 
-// Sink records an authorization Decision, so a grant or a denial lands on the event
-// spine as an immutable, after-the-fact-verifiable record of who authorized what.
-// The default DiscardSink drops it, keeping standalone use zero-config; a host
-// wires this to the spine.
+// Sink records each [Decision], grant or denial, so the spine holds a
+// verifiable record of who authorized what. A host wires it to the spine;
+// [DiscardSink] is the default.
 type Sink interface {
 	Record(ctx context.Context, d Decision) error
 }
 
-// DiscardSink is the default Sink that records nothing.
+// DiscardSink is the default Sink and records nothing.
 type DiscardSink struct{}
 
 // Record implements Sink.
@@ -47,10 +43,8 @@ var _ Sink = DiscardSink{}
 
 type approvalsKey struct{}
 
-// Into returns a context carrying approvals presented for the run's privileged
-// actions, accumulating with any already bound, so a quorum can be assembled from
-// approvals that arrive separately. The gate reads them from the context, so a
-// caller binds them once rather than threading them through every call.
+// Into adds approvals to ctx, keeping any already bound, so a quorum can be
+// assembled from approvals that arrive separately.
 func Into(ctx context.Context, approvals ...Approval) context.Context {
 	existing, _ := ctx.Value(approvalsKey{}).([]Approval)
 	merged := make([]Approval, 0, len(existing)+len(approvals))
@@ -67,25 +61,22 @@ func FromContext(ctx context.Context) []Approval {
 
 type detailKey struct{}
 
-// WithDetail binds a target descriptor for the next privileged action, so an
-// approval can be narrowed to a specific target (a resource id, an environment)
-// rather than the action name alone. The gate folds it into the envelope it
-// requires, and an approver must have signed for the same detail. Empty (the
-// default) binds by action and scope only.
+// WithDetail binds a target descriptor (a resource id, an environment) for the
+// next privileged action. The gate folds it into the envelope it requires, so
+// the approver must have signed for the same detail.
 func WithDetail(ctx context.Context, detail string) context.Context {
 	return context.WithValue(ctx, detailKey{}, detail)
 }
 
-// detailFromContext returns the bound target descriptor, or "".
 func detailFromContext(ctx context.Context) string {
 	d, _ := ctx.Value(detailKey{}).(string)
 	return d
 }
 
-// Binding builds the envelope a privileged action requires, from the action, the
-// run's principal and target on the context, and the gate's host. An approver
-// signs this envelope (after setting a nonce and validity window) so the signature
-// is over exactly what the gate checks; the gate builds the same binding to verify.
+// Binding builds the envelope a privileged action requires from the action,
+// the principal and detail on ctx, and host. The approver signs this envelope,
+// after setting a nonce and window, and the gate rebuilds it to verify, so the
+// signature covers exactly what the gate checks.
 func Binding(ctx context.Context, a dispatch.Action, host string) Envelope {
 	return Envelope{
 		Action:    a.Name,
@@ -96,13 +87,10 @@ func Binding(ctx context.Context, a dispatch.Action, host string) Envelope {
 	}
 }
 
-// Gate is the approval enforcement at the dispatch waist: a dispatch.Hook whose
-// Before refuses a privileged action unless a sufficient quorum of valid approvals
-// is presented for it. Because the waist governs every action, one Gate enforces
-// approval across the whole run with no per-call wiring. It composes with, and sits
-// above, the capability admitter: capability decides the action is allowed in
-// principle, approval requires a fresh human (or policy, or peer) authorization for
-// this specific privileged instance.
+// Gate is a dispatch.Hook that refuses a privileged action unless enough valid
+// approvals are presented. The waist governs every action, so one Gate covers
+// the whole run. It runs after the capability admitter: capability allows the
+// action in principle, and approval authorizes this instance of it.
 //
 //flynn:policy
 type Gate struct {
@@ -115,7 +103,7 @@ type Gate struct {
 // GateOption configures a Gate.
 type GateOption func(*Gate)
 
-// WithSink wires the audit sink decisions are recorded to (default: DiscardSink).
+// WithSink sets the audit sink. Default: [DiscardSink].
 func WithSink(s Sink) GateOption {
 	return func(g *Gate) {
 		if s != nil {
@@ -124,15 +112,14 @@ func WithSink(s Sink) GateOption {
 	}
 }
 
-// WithGateHost sets the host id the gate stamps on the envelope it requires, so an
-// approval must be valid for this host. It should match the verifier's host.
+// WithGateHost sets the host stamped on the required envelope. It should match
+// the verifier's host.
 func WithGateHost(host string) GateOption {
 	return func(g *Gate) { g.host = host }
 }
 
-// NewGate builds an approval gate over a policy and verifier. Add it to a
-// dispatcher with dispatch.WithHook so every privileged action it governs requires
-// approval.
+// NewGate builds a gate over policy and verifier. Add it to a dispatcher with
+// dispatch.WithHook.
 func NewGate(policy Policy, verifier *Verifier, opts ...GateOption) *Gate {
 	g := &Gate{policy: policy, verifier: verifier, sink: DiscardSink{}}
 	for _, o := range opts {
@@ -141,14 +128,11 @@ func NewGate(policy Policy, verifier *Verifier, opts ...GateOption) *Gate {
 	return g
 }
 
-// Before refuses a privileged action that lacks a sufficient quorum of valid
-// approvals. A non-privileged action (policy requirement zero) is admitted
-// untouched; a negative requirement is a broken policy and is refused as Forbidden.
-// The decision, grant or denial, is recorded to the sink before the result is
-// returned, so the audit trail captures refused attempts too. A denial
-// with no approvals presented is NeedsApproval (the run should pause and request
-// one); a denial with approvals that did not verify is Forbidden (it must not be
-// retried as-is).
+// Before admits an action with requirement zero and refuses a negative
+// requirement as Forbidden. Otherwise it records the decision to the sink
+// before returning, so refused attempts are audited too. A denial with no
+// approvals is NeedsApproval (pause and ask); one whose approvals did not
+// verify is Forbidden (do not retry as-is).
 func (g *Gate) Before(ctx context.Context, a dispatch.Action) error {
 	required := g.policy.Required(a)
 	if required < 0 {
@@ -178,7 +162,7 @@ func (g *Gate) Before(ctx context.Context, a dispatch.Action) error {
 		"action "+a.Name+" not authorized: "+dec.Reason)
 }
 
-// After is a no-op: approval is decided before the action runs.
+// After does nothing: approval is decided before the action runs.
 func (g *Gate) After(context.Context, dispatch.Action, dispatch.Metering, error) {}
 
 var _ dispatch.Hook = (*Gate)(nil)

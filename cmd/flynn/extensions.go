@@ -22,27 +22,24 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// Usage errors for the subcommands whose flags follow positional arguments, so the
-// message is identical whether the positionals are missing or an extra one is given.
+// Shared usage errors, so a missing and an extra positional get the same message.
 var (
 	errUsageDev  = errors.New("usage: flynn extensions dev <name> <binary> [--cap ...] [--tool ...] [--egress ...] [--arg ...]")
 	errUsageCall = errors.New("usage: flynn extensions call <name> <tool> [json-input] [--egress ...]")
 )
 
-// runExtensions implements `flynn extensions <subcommand>`: the surface for both kinds
-// of extension. A bundled one is an official extension this binary ships knowledge of;
-// calling it downloads the signed release, proves its origin, and runs it. A dev one is
-// a locally-built binary linked by path, which keeps the authoring loop fast.
+// runExtensions implements `flynn extensions <subcommand>`. A bundled extension is an
+// official one this binary knows; calling it downloads the signed release, proves its
+// origin and runs it. A dev extension is a local build linked by path, for a fast
+// authoring loop.
 //
 //	flynn extensions dev <name> <binary> [flags]   link a locally-built binary as a dev extension
 //	flynn extensions ls                            list installed extensions and their source
 //	flynn extensions call <name> <tool> [json]     launch the extension confined and call one tool
 //	flynn extensions rm <name>                     unlink a dev extension
 //
-// A dev extension runs UNSIGNED local code, so it is honoured only under this
-// explicitly dev-enabled path (and a served run with dev mode turned on); a normal run
-// refuses it. It is marked DEV wherever it is listed so it is never mistaken for a
-// verified, signed extension.
+// A dev extension is unsigned local code, honoured only on this path and on a served
+// run with dev mode on. Every listing marks it DEV so it is never taken for a signed one.
 func runExtensions(args []string, dataDir string) error {
 	if len(args) == 0 {
 		return errors.New("usage: flynn extensions <dev|ls|call|rm>")
@@ -62,11 +59,9 @@ func runExtensions(args []string, dataDir string) error {
 	}
 }
 
-// extensionsDev links a locally-built binary as a dev (unsigned) extension. It resolves
-// the binary to an absolute path and stat-checks it now so a bad path is reported at
-// link time, builds the process-surface spec, and persists it marked dev. The
-// DevResolver re-checks the path at launch, so a binary deleted between link and call
-// still fails closed.
+// extensionsDev links a local binary as an unsigned dev extension. The path is checked
+// at link time to report a bad one early, and the DevResolver checks again at launch,
+// so a binary deleted in between fails closed.
 func extensionsDev(ctx context.Context, dataDir string, args []string) error {
 	fs := newFlagSet("extensions dev")
 	var (
@@ -75,9 +70,8 @@ func extensionsDev(ctx context.Context, dataDir string, args []string) error {
 		egress = fs.String("egress", "", "comma-separated hostnames the extension may reach (still intersected with the operator grant at call time)")
 		binArg = fs.String("arg", "", "comma-separated fixed arguments passed to the binary verbatim")
 	)
-	// The name and binary are leading positionals; flags follow them. Split them out
-	// before parsing so the friendly order `dev <name> <binary> --cap ...` works (the
-	// flag package otherwise stops at the first positional and leaves the flags unparsed).
+	// The flag package stops at the first positional, so name and binary are split off
+	// before parsing to allow `dev <name> <binary> --cap ...`.
 	if len(args) < 2 {
 		return errUsageDev
 	}
@@ -116,8 +110,8 @@ func extensionsDev(ctx context.Context, dataDir string, args []string) error {
 	return nil
 }
 
-// extensionsList prints every installed extension with its source, so a dev link is
-// visible and unmistakably marked unsigned next to bundled and forked entries.
+// extensionsList prints every installed extension with its source, marking dev links
+// unsigned.
 func extensionsList(ctx context.Context, dataDir string) error {
 	rt, err := openExtensionRuntime(ctx, dataDir)
 	if err != nil {
@@ -127,25 +121,22 @@ func extensionsList(ctx context.Context, dataDir string) error {
 	return listExtensions(ctx, rt.store, os.Stdout)
 }
 
-// extensionsCall launches an extension confined and invokes one of its tools, printing
-// the result. It runs the real path a served agent would (resolve the binary, launch it
-// inside the sandbox, speak MCP, mount its tools, call one), so a tool that works here
-// works in a run. A bundled extension resolves through the signed release path: the
-// artifact is downloaded, its origin proven, and only then executed. A dev extension
-// resolves to its local binary, unsigned, under this command's explicit dev opt-in.
+// extensionsCall launches an extension confined and calls one tool, on the same path a
+// served agent uses (resolve, sandboxed launch, MCP, mount, call), so a tool that works
+// here works in a run. A bundled extension is downloaded and origin-proven before it
+// runs; a dev extension runs its unsigned local binary.
 //
-// The tool name may be given bare (mint) or namespaced (token.mint); both resolve to
-// the mounted "<name>.<tool>". Authority to call a tool is enforced separately at the
-// dispatch waist in a real run; this command invokes it directly to test the round trip.
+// The tool may be named bare (mint) or namespaced (token.mint). A real run enforces
+// call authority at the dispatch waist; this command calls the tool directly to test
+// the round trip.
 func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	req, err := parseCallArgs(args)
 	if err != nil {
 		return err
 	}
 
-	// routed is filled in once the signer extension is mounted, below. The runtime needs
-	// the grant closure at open time, but only calls it when the worker mounts, which is
-	// after the signer is up.
+	// routed is set after the signer mounts below. The runtime takes the grant closure at
+	// open time but calls it only when the worker mounts, after the signer is up.
 	var routed extension.HostSigner
 	runtimeOpts, err := req.runtimeOptions(&routed)
 	if err != nil {
@@ -157,9 +148,8 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	}
 	defer func() { _ = rt.close() }()
 
-	// The signer comes up first and is unlocked before the worker is mounted: the worker's
-	// mount asks for its signer, and a signer that will not unlock should stop the run
-	// before the worker has done anything, not halfway through a transaction.
+	// The worker's mount asks for its signer, so the signer is mounted and unlocked first.
+	// A signer that will not unlock stops the run before the worker does anything.
 	if req.signer != "" {
 		routed, err = mountSigner(ctx, rt, dataDir, req.signer)
 		if err != nil {
@@ -169,7 +159,6 @@ func extensionsCall(ctx context.Context, dataDir string, args []string) error {
 	return invokeExtensionTool(ctx, rt, req.name, req.tool, req.input)
 }
 
-// callRequest is a parsed `flynn extensions call`.
 type callRequest struct {
 	name, tool string
 	input      json.RawMessage
@@ -181,9 +170,8 @@ type callRequest struct {
 	localEndpoint bool
 }
 
-// parseCallArgs splits the leading positionals (name, tool and an optional JSON input)
-// from the flags that follow them, so `call <name> <tool> <json> --egress ...` parses;
-// the flag package would otherwise stop at the first positional.
+// parseCallArgs splits name, tool and optional JSON input from the flags after them, so
+// `call <name> <tool> <json> --egress ...` parses.
 func parseCallArgs(args []string) (callRequest, error) {
 	fs := newFlagSet("extensions call")
 	egress := fs.String("egress", "", "comma-separated hostnames to grant the extension for this call (operator grant; effective egress is this intersected with the spec)")
@@ -214,9 +202,8 @@ func parseCallArgs(args []string) (callRequest, error) {
 	return req, nil
 }
 
-// runtimeOptions builds the runtime grants the request asks for. The signer grant reads
-// *routed when the worker mounts, not now, so the caller assigns it after mounting the
-// signer.
+// runtimeOptions builds the requested grants. The signer grant reads *routed when the
+// worker mounts, so the caller may assign it after mounting the signer.
 func (r callRequest) runtimeOptions(routed *extension.HostSigner) ([]governed.ExtensionOption, error) {
 	opts := []governed.ExtensionOption{governed.WithExtensionEgress(r.egress)}
 	if r.signer != "" {
@@ -238,9 +225,9 @@ func (r callRequest) runtimeOptions(routed *extension.HostSigner) ([]governed.Ex
 
 // signerOption routes the called tool's signing to the signer extension.
 //
-// No policy is configured, and none exists to configure. The signer holds the key AND
-// the parser, so it judges the payload itself; a policy here would mean this process
-// understood the transaction format, which is exactly what routing the key away removes.
+// There is no policy to configure. The signer holds the key and the parser, so it
+// judges the payload; a policy here would require this process to understand the
+// transaction format, which routing the key away is meant to avoid.
 func (r callRequest) signerOption(routed *extension.HostSigner) (governed.ExtensionOption, error) {
 	if r.signer == r.name {
 		return nil, errors.New("extensions: an extension cannot be its own signer: the component that builds " +
@@ -254,9 +241,8 @@ func (r callRequest) signerOption(routed *extension.HostSigner) (governed.Extens
 	}), nil
 }
 
-// fetcherOption lends the called tool the host's network access to the one endpoint. The
-// grant is for THIS tool only. Every other mounted tool gets nil, so it borrows no network
-// at all: default-deny, one authority, one destination.
+// fetcherOption lends the host's network to the one endpoint, for the called tool only.
+// Every other mounted tool gets nil and has no network.
 func (r callRequest) fetcherOption() (governed.ExtensionOption, error) {
 	var fopts []extension.FetcherOption
 	if r.localEndpoint {
@@ -274,14 +260,12 @@ func (r callRequest) fetcherOption() (governed.ExtensionOption, error) {
 	}), nil
 }
 
-// isCalledTool reports whether a mount of tool (bare name) on extension ext is the tool
-// this request calls. The request may name the tool bare or as "<name>.<tool>".
+// isCalledTool reports whether tool (bare) on ext is the one this request calls, named
+// bare or as "<name>.<tool>".
 func (r callRequest) isCalledTool(ext, tool string) bool {
 	return ext == r.name && tool == strings.TrimPrefix(r.tool, r.name+".")
 }
 
-// invokeExtensionTool loads the named extension, calls one of its mounted tools with
-// input, prints the result and unloads the extension.
 func invokeExtensionTool(ctx context.Context, rt *extensionRuntime, name, toolName string, input json.RawMessage) error {
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -307,19 +291,18 @@ func invokeExtensionTool(ctx context.Context, rt *extensionRuntime, name, toolNa
 	return nil
 }
 
-// mountSigner launches a signer extension, unlocks it with the operator's passphrase from the
-// vault, and returns a HostSigner that routes to it.
+// mountSigner launches a signer extension, unlocks it with the operator's passphrase
+// and returns a HostSigner that routes to it.
 //
-// The passphrase comes from the vault and NOWHERE else. Not an environment variable, not a
-// flag: a signing key's passphrase must not be settable by anything ambient, and a flag would
-// put it in the shell history and the process list. The vault is the one place a secret lives.
+// The passphrase comes only from the vault. An environment variable is ambient, and a
+// flag lands in shell history and the process list.
 //
-// What the host ends up holding is the passphrase and the signer's PUBLIC key. It never sees
-// the private key, and it never parses what it asks the signer to sign.
+// The host holds the passphrase and the signer's public key. It never sees the private
+// key and never parses what it asks the signer to sign.
 //
-// The signer is reached over the host's private channel, not through its mounted tools: a
-// signer's tools are never mounted at all, so nothing model-facing can unlock the key or ask
-// for a signature without going through the worker.
+// The signer is reached over the host's private channel. Its tools are never mounted,
+// so nothing model-facing can unlock the key or get a signature except through the
+// worker.
 func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string) (extension.HostSigner, error) {
 	r, err := rt.store.Get(ctx, extension.Kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -329,32 +312,27 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 		return nil, err
 	}
 
-	// The passphrase is fetched BEFORE the signer is launched. Without it the signer is inert
-	// and the run is going to fail anyway, so failing here means no subprocess was started for
-	// nothing, and the operator is told what is missing rather than watching a signer come up
-	// and refuse everything.
+	// The passphrase is fetched before launch. Without it the signer is inert, so this
+	// fails before starting a subprocess and names what is missing.
 	ref := "signer/" + name
 	pass, err := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase)).Lookup(ctx, ref)
 	if err != nil {
 		return nil, fmt.Errorf("extensions: no passphrase for signer %q in the vault (set it with: flynn auth set %s): %w", name, ref, err)
 	}
 
-	// The sealed key lives at a path this host names, because a released signer is launched from
-	// a catalog spec that could not have known where the operator would put it. The convention is
-	// one file per signer under the data directory; the operator seals a key to it, and the host
-	// hands the path to the signer at unlock. A missing file is caught here, with the path and the
-	// remedy, rather than surfacing as the signer's lower-level "cannot open" from inside a mount.
+	// A released signer's catalog spec cannot know where the operator keeps its key, so the
+	// host names the path ([signerKeyPath]) and passes it at unlock. A missing file is
+	// reported here with the path and remedy, before the signer's lower-level error.
 	keyPath := signerKeyPath(dataDir, name)
 	if _, statErr := os.Stat(keyPath); errors.Is(statErr, os.ErrNotExist) {
 		return nil, fmt.Errorf("extensions: signer %q has a passphrase but no sealed key at %s; seal one there first", name, keyPath)
 	}
 
-	// The signer runs confined, and on Windows that is an AppContainer whose default-deny
-	// filesystem cannot open the sealed key the host names for it unless the key is granted
-	// to the container. The key is encrypted at rest and its passphrase never touches disk,
-	// so this grants read to ALL APPLICATION PACKAGES (a no-op off Windows) rather than to a
-	// per-launch container SID that would be a dead entry by the next launch. Done before the
-	// launch so the file is reachable the moment the signer is unlocked.
+	// On Windows the signer runs in an AppContainer whose default-deny filesystem cannot
+	// open the key without a grant. The key is encrypted at rest and its passphrase never
+	// touches disk, so read goes to ALL APPLICATION PACKAGES (a no-op elsewhere); a
+	// per-launch container SID would be dead by the next launch. It runs before launch so
+	// the file is reachable at unlock.
 	if err := rt.grantSignerKey(keyPath); err != nil {
 		return nil, fmt.Errorf("extensions: grant the confined signer read on its sealed key: %w", err)
 	}
@@ -369,15 +347,13 @@ func mountSigner(ctx context.Context, rt *extensionRuntime, dataDir, name string
 	return extension.NewRoutedSigner(ctx, ch, pass, keyPath)
 }
 
-// signerKeyPath is where a signer's sealed key lives: one file per signer under the data
-// directory. The host names this path so a released signer, whose catalog spec could not have
-// named a file on a machine that did not yet exist, is told where its key is at unlock.
+// signerKeyPath is a signer's sealed key file: one per signer under the data directory.
 func signerKeyPath(dataDir, name string) string {
 	return filepath.Join(dataDir, "signers", name+".key")
 }
 
-// extensionsRemove unlinks a dev extension. It refuses to delete a bundled or forked
-// extension so this command cannot remove catalog state; those are managed elsewhere.
+// extensionsRemove unlinks a dev extension and refuses bundled or forked ones, which
+// are catalog state.
 func extensionsRemove(ctx context.Context, dataDir string, args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: flynn extensions rm <name>")
@@ -396,10 +372,9 @@ func extensionsRemove(ctx context.Context, dataDir string, args []string) error 
 	return nil
 }
 
-// buildDevSpec assembles the Extension spec for a dev link: a single process surface
-// pointing at the local binary by absolute path, plus the optional capability tags,
-// tool allow-list, egress request, and fixed args. The path must already be absolute
-// (the resolver requires it); a relative path is a programming error here.
+// buildDevSpec builds a dev link's spec: one process surface at absPath, plus optional
+// capability tags, tool allow-list, egress and fixed args. absPath must be absolute, as
+// the resolver requires.
 func buildDevSpec(name, absPath string, caps, tools, egress, binArgs []string) (extension.Spec, error) {
 	if !filepath.IsAbs(absPath) {
 		return extension.Spec{}, fmt.Errorf("extensions: dev binary path %q must be absolute", absPath)
@@ -421,10 +396,9 @@ func buildDevSpec(name, absPath string, caps, tools, egress, binArgs []string) (
 	}, nil
 }
 
-// putDevExtension writes (or replaces) a dev extension resource, marked with the dev
-// source label so the catalog sync never touches it and every listing shows it
-// unsigned. Re-linking a rebuilt binary preserves the existing observed status (e.g. a
-// prior enable), so a rebuild does not silently reset it; a fresh link starts with none.
+// putDevExtension writes a dev extension under the dev source label, so catalog sync
+// never touches it and listings show it unsigned. Re-linking keeps the observed status,
+// such as a prior enable.
 func putDevExtension(ctx context.Context, store resource.Store, name string, spec extension.Spec) error {
 	specRaw, err := spec.Encode()
 	if err != nil {
@@ -450,8 +424,8 @@ func putDevExtension(ctx context.Context, store resource.Store, name string, spe
 	return nil
 }
 
-// deleteDevExtension removes a dev link. It refuses a non-dev extension so a bundled or
-// forked catalog entry cannot be deleted through the dev command.
+// deleteDevExtension refuses a non-dev extension, so the dev command cannot delete a
+// catalog entry.
 func deleteDevExtension(ctx context.Context, store resource.Store, name string) error {
 	r, err := store.Get(ctx, extension.Kind, resource.Scope{}, name)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -469,8 +443,6 @@ func deleteDevExtension(ctx context.Context, store resource.Store, name string) 
 	return nil
 }
 
-// listExtensions renders every installed extension with its source and whether it is a
-// signed release or an unsigned dev link.
 func listExtensions(ctx context.Context, store resource.Store, w io.Writer) error {
 	exts, err := store.List(ctx, extension.Kind, resource.Scope{}, nil)
 	if err != nil {
@@ -499,8 +471,8 @@ func listExtensions(ctx context.Context, store resource.Store, w io.Writer) erro
 	return nil
 }
 
-// resolveDevBinary turns a user-supplied binary path into a verified absolute path,
-// reporting a missing file or a directory at link time rather than at first call.
+// resolveDevBinary returns the binary's absolute path, rejecting a missing file or a
+// directory at link time.
 func resolveDevBinary(binary string) (string, error) {
 	abs, err := filepath.Abs(binary)
 	if err != nil {
@@ -516,9 +488,8 @@ func resolveDevBinary(binary string) (string, error) {
 	return abs, nil
 }
 
-// findExtensionTool resolves a tool by bare or namespaced name against the mounted
-// tools of one extension. The mounted name is always "<ext>.<tool>", so a bare name is
-// matched by prefixing the extension name.
+// findExtensionTool matches a bare or namespaced tool name against one extension's
+// mounts, which are always named "<ext>.<tool>".
 func findExtensionTool(tools []mission.Tool, extName, toolName string) mission.Tool {
 	full := extName + "." + toolName
 	for _, t := range tools {
@@ -529,9 +500,8 @@ func findExtensionTool(tools []mission.Tool, extName, toolName string) mission.T
 	return nil
 }
 
-// validateExtensionName rejects a name that would break namespacing or resource keys. A
-// dot is reserved: mounted tool names are "<ext>.<tool>", so a dot in the extension name
-// would make a tool's namespaced identity ambiguous.
+// validateExtensionName rejects names that would break namespacing or resource keys. A
+// dot is reserved, because mounted tools are named "<ext>.<tool>".
 func validateExtensionName(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("extensions: name must not be empty")
@@ -542,8 +512,8 @@ func validateExtensionName(name string) error {
 	return nil
 }
 
-// splitList parses a comma-separated flag value into a trimmed, non-empty list, or nil
-// for an empty value, so an unset list flag leaves the corresponding spec field empty.
+// splitList parses a comma-separated flag into trimmed, non-empty items, or nil when
+// empty, so an unset flag leaves its spec field empty.
 func splitList(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil
@@ -568,32 +538,28 @@ func orUser(s string) string {
 	return s
 }
 
-// newFlagSet builds a subcommand flag set that reports parse errors to the caller
-// instead of exiting the process, so a bad flag surfaces as a usage error the dispatch
-// turns into exit code 2.
+// newFlagSet returns a flag set that hands parse errors back, so dispatch exits 2.
 func newFlagSet(name string) *flag.FlagSet {
 	return flag.NewFlagSet(name, flag.ContinueOnError)
 }
 
-// extensionRuntime bundles the durable store and a loader wired with the dev process
-// handler, so the extensions commands resolve and launch a linked binary exactly as a
-// served run would, minus the release download and signature check.
+// extensionRuntime is the store plus a loader with the dev process handler, so these
+// commands launch a linked binary as a served run would, without the release download
+// and signature check.
 type extensionRuntime struct {
 	store  resource.Store
 	loader *extension.Loader
-	// procs is the process handler itself, kept so the host can reach a signer extension over
-	// its private channel. A signer's tools are never mounted, so there is no other way to it.
+	// procs reaches a signer over its private channel; its tools are never mounted.
 	procs *extension.ProcessHandler
-	// grantSignerKey makes a signer's sealed key reachable by its confined process before the
-	// launch (on Windows, an AppContainer read grant; a no-op elsewhere). It is a field so a
-	// test can drive the failure path without a platform that can make the grant fail.
+	// grantSignerKey makes a sealed key readable by the confined signer before launch. It
+	// is a field so a test can drive the failure path.
 	grantSignerKey func(keyPath string) error
 	close          func() error
 }
 
-// openExtensionRuntime opens the durable store and builds the extension runtime over it
-// with [governed.OpenExtensions], which owns how an extension is resolved, launched and
-// confined. What stays here is the store's lifetime.
+// openExtensionRuntime opens the store and the runtime through
+// [governed.OpenExtensions], which owns resolution, launch and confinement. This type
+// owns the store's lifetime.
 func openExtensionRuntime(ctx context.Context, dataDir string, opts ...governed.ExtensionOption) (*extensionRuntime, error) {
 	durable, err := openDataStore(ctx, dataDir)
 	if err != nil {
@@ -605,8 +571,8 @@ func openExtensionRuntime(ctx context.Context, dataDir string, opts ...governed.
 		return nil, err
 	}
 	store := durable.Resources(reg)
-	// The binary is the developer's own tool: `extensions link` names a local build, so it
-	// opts into dev sources, which an embedder of governed.OpenExtensions does not by default.
+	// `extensions dev` links the developer's own build, so dev sources are enabled; an
+	// embedder of governed.OpenExtensions does not get them by default.
 	exts, err := governed.OpenExtensions(ctx, store, dataDir, append([]governed.ExtensionOption{governed.WithDevExtensions()}, opts...)...)
 	if err != nil {
 		_ = durable.Close()

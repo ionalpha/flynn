@@ -7,7 +7,7 @@ import (
 	"github.com/ionalpha/flynn/internal/inertext"
 )
 
-// Outcome is what an approval request came to: the action was allowed or it was not.
+// Outcome is whether the action an approval request asked about was allowed.
 type Outcome string
 
 const (
@@ -17,13 +17,13 @@ const (
 	OutcomeDeny Outcome = "deny"
 )
 
-// Reason says how a request was resolved. It is a closed set so that a reader of the
-// record can branch on it, and so that no free text a peer chose can reach a place where
-// code decides something from it: free text lives in a separate, labelled field.
+// Reason says how a request was resolved. It is a closed set so a reader of the
+// record can branch on it and no free text a peer chose reaches code that
+// decides on it; free text goes in a separate, labelled field.
 //
-// Two of the values are a person's answer and three are the system closing a request
-// nobody answered. The split decides who the record names as the author of the
-// resolution; see [Reason.ByPerson].
+// Two values are a person's answer and three are the system closing a request
+// nobody answered, which decides who the record names as author; see
+// [Reason.ByPerson].
 type Reason string
 
 const (
@@ -36,7 +36,7 @@ const (
 	ReasonExpired Reason = "expired"
 	// ReasonCancelled is the run being cancelled while the request was open.
 	ReasonCancelled Reason = "cancelled"
-	// ReasonDisconnected is the client that was asked going away before it answered.
+	// ReasonDisconnected is the asked client going away before it answered.
 	ReasonDisconnected Reason = "disconnected"
 )
 
@@ -45,8 +45,8 @@ func Reasons() []Reason {
 	return []Reason{ReasonAllowed, ReasonDenied, ReasonExpired, ReasonCancelled, ReasonDisconnected}
 }
 
-// Valid reports whether r is one of the closed set. A decoder uses it to refuse a value
-// it does not know, rather than passing a string on that a later reader would trust.
+// Valid reports whether r is in the closed set, so a decoder refuses a value it
+// does not know instead of passing on a string a later reader would trust.
 func (r Reason) Valid() bool {
 	for _, v := range Reasons() {
 		if r == v {
@@ -56,14 +56,13 @@ func (r Reason) Valid() bool {
 	return false
 }
 
-// ByPerson reports whether a person produced this resolution. Only an answer at the
-// prompt is a person's; an expiry, a cancellation and a disconnect are the system closing
-// a request, and a record that named a person as the author of one would credit them with
-// a decision they never made.
+// ByPerson reports whether a person produced this resolution. An expiry, a
+// cancellation or a disconnect is the system closing the request, and naming a
+// person as its author would credit them with a decision they never made.
 func (r Reason) ByPerson() bool { return r == ReasonAllowed || r == ReasonDenied }
 
-// Outcome is the verdict the reason implies. Only [ReasonAllowed] admits the action; every
-// other reason, including one this package does not know, declines it.
+// Outcome is the verdict the reason implies. Only [ReasonAllowed] admits the
+// action; every other reason, including an unknown one, declines it.
 func (r Reason) Outcome() Outcome {
 	if r == ReasonAllowed {
 		return OutcomeAllow
@@ -71,21 +70,19 @@ func (r Reason) Outcome() Outcome {
 	return OutcomeDeny
 }
 
-// PreviewLimit is the most bytes a request preview carries. A preview is a line beside a
-// prompt, and a bound keeps a long scope from filling the screen the person is deciding
-// on.
+// PreviewLimit is the most bytes a request preview carries, so a long scope
+// cannot fill the screen the person is deciding on.
 const PreviewLimit = 2048
 
-// Preview builds the line a client shows beside an approval prompt. It takes the action,
-// the scope and the host and nothing else, on purpose: those are what the approval will
-// authorize, so the person is shown what they are signing and not a description someone
-// wrote about it. A model's explanation, a command's arguments or a tool's own summary
-// have no way in.
+// Preview builds the line a client shows beside an approval prompt from the
+// action, scope and host only. Those are what the approval authorizes, so the
+// person sees what they sign; a model's explanation, a command's arguments or
+// a tool's summary have no way in.
 //
-// Each part is escaped before it is joined: a control character, an invisible format
-// character or a byte that is not UTF-8 appears as a visible escape such as \x1b, so the
-// line holds nothing a terminal would act on and a part that tried to hide something shows
-// it. The result is cut to [PreviewLimit] bytes.
+// Each part is escaped first: a control character, an invisible format
+// character or a non-UTF-8 byte appears as a visible escape such as \x1b, so
+// the line holds nothing a terminal would act on and nothing hidden. The result
+// is cut to [PreviewLimit] bytes.
 func Preview(action, scope, host string) string {
 	var b strings.Builder
 	b.WriteString("allow ")
@@ -101,13 +98,14 @@ func Preview(action, scope, host string) string {
 	return inertext.Limit(b.String(), PreviewLimit)
 }
 
-// quote shows a part between double quotes after escaping it, and escapes the quote
-// itself, so a part cannot close the quotes early and pass the rest off as the next field.
+// quote escapes s, including its quotes, and wraps it in double quotes, so a
+// part cannot close the quotes early and pass the rest off as the next field.
 func quote(s string) string {
 	return `"` + strings.ReplaceAll(inertext.Escape(s), `"`, `\"`) + `"`
 }
 
-// ErrDisconnected is what a prompter returns when the client it asked went away before
-// answering. The recorder of the request reads it as [ReasonDisconnected]; the approval
-// flow reads any prompter error as a decline, so the action stays refused either way.
+// ErrDisconnected is what a prompter returns when the asked client went away.
+// The request's recorder reads it as [ReasonDisconnected]; the approval flow
+// reads any prompter error as a decline, so the action stays refused either
+// way.
 var ErrDisconnected = errors.New("approval: the client that was asked disconnected")

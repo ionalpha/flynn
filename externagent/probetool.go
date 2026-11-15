@@ -10,20 +10,16 @@ import (
 	"github.com/ionalpha/flynn/mission"
 )
 
-// ProbeToolName is the bridged tool a session's reachability probe calls. It is named
-// for what it does rather than for the run that serves it, so the external harness sees
-// no fingerprint of who is governing it.
+// ProbeToolName is the bridged tool a reachability probe calls. The name describes the
+// check, so the external harness sees no fingerprint of who is governing it.
 const ProbeToolName = "conformance_check"
 
-// ProbeTool is an effect-free bridged tool whose only purpose is to prove that the
-// external harness can reach the run's bridge and will use it when told to. It grants
-// nothing: it touches no filesystem, runs no command, and reaches no network. Adding it
-// to a run's grant therefore widens the harness's authority by exactly nothing, which is
-// what makes it safe to admit unconditionally for the probe.
+// ProbeTool is an effect-free bridged tool that proves the external harness can reach
+// the run's bridge and will use it when told to. It touches no filesystem, command or
+// network, so admitting it to a grant widens the harness's authority by nothing.
 //
-// Its value is that a call must cross the dispatch waist to arrive here. A harness that
-// writes "I called conformance_check" into its output stream without dispatching does
-// not move this tool, so the probe it settles cannot be passed by narration.
+// A call must cross the dispatch waist to arrive here, so a harness that only writes
+// "I called conformance_check" into its output cannot pass the probe.
 type ProbeTool struct {
 	nonce string
 
@@ -40,9 +36,8 @@ func NewProbeTool(nonce string) *ProbeTool {
 // Name is the tool name the harness calls and the action the waist admits.
 func (*ProbeTool) Name() string { return ProbeToolName }
 
-// Def describes the tool to the harness. The description states the contract the probe
-// is testing, since the description is the only channel that reaches the harness's own
-// tool-selection reasoning.
+// Def states the contract under test in the description, because the description is
+// the only channel that reaches the harness's own tool-selection reasoning.
 func (*ProbeTool) Def() llm.Tool {
 	return llm.Tool{
 		Name: ProbeToolName,
@@ -56,25 +51,21 @@ func (*ProbeTool) Def() llm.Tool {
 	}
 }
 
-// probeInput is the tool's argument.
 type probeInput struct {
 	Nonce string `json:"nonce"`
 }
 
-// Invoke records that the harness reached the bridge with the right nonce. A call with a
-// wrong or missing nonce is answered but not counted: it proves the channel is open, not
-// that the harness followed the instruction it was given, and the probe is testing the
-// latter.
-//
-// It is safe for concurrent use: the bridge serves the external subprocess, which may
-// dispatch more than one call at a time.
+// Invoke records that the harness reached the bridge with the right nonce. A call with
+// a wrong or missing nonce is answered but not counted: it proves the channel is open,
+// and the probe tests whether the harness followed its instruction. It is safe for
+// concurrent use, because the subprocess may dispatch several calls at once.
 func (p *ProbeTool) Invoke(_ context.Context, input json.RawMessage) (string, error) {
 	var in probeInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return "", err
 	}
-	// Constant time, so the tool cannot be turned into an oracle that reveals the nonce
-	// one byte at a time to a harness that is trying to guess it.
+	// Constant time, so the tool cannot become an oracle that leaks the nonce one byte
+	// at a time.
 	if subtle.ConstantTimeCompare([]byte(in.Nonce), []byte(p.nonce)) == 1 {
 		p.mu.Lock()
 		p.called = true
