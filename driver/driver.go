@@ -1,22 +1,11 @@
-// Package driver makes the agent run-loop a swappable port. The loop, how a run
-// reasons and acts on its way to a goal, used to be hardwired: every run was
-// assembled from one implicit conversation loop and there was no way to plug a
-// different strategy without forking it. A Driver is that strategy as a named,
-// resolvable choice: given the ingredients of a run (a model, a toolset, the
-// governance grant, the safety brake, the capability-scaffolding plan), it builds
-// the executor and the convergence test the goal reconciler drives.
+// Package driver makes the agent's run loop a named, swappable choice. A [Driver] takes
+// the ingredients of a run ([Spec]) and builds the executor and convergence test the goal
+// reconciler drives.
 //
-// The loop a Driver builds composes WITH the run's governance rather than
-// replacing it: a Driver owns the loop shape only. The dispatch waist, the
-// capability grant, and the safety brakes sit outside the loop and apply to every
-// action it takes, whichever Driver built it. So selecting a different loop never
-// widens authority or escapes a halt.
-//
-// The default driver is the general-purpose software/automation loop, so the
-// zero-config experience is unchanged; alternate loops are additive registrations,
-// not edits to the default. A run resolves its driver by name from a Registry,
-// fail-closed on an unknown name like every other resource, and the choice is fixed
-// for the run.
+// A Driver owns the loop shape only. The dispatch waist, the capability grant and the
+// brakes apply to every action whichever Driver built the loop, so a different loop never
+// widens authority or escapes a halt. A run resolves its driver by name from a
+// [Registry], and the choice is fixed for the run.
 package driver
 
 import (
@@ -38,75 +27,50 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// Spec is the loop-agnostic description of one agent run. Every Driver receives the
-// same Spec and translates it into its own loop shape, so the ingredients (model,
-// tools, governance, observability, scaffolding) stay uniform across loops and only
-// the strategy differs. A zero field means that ingredient is absent: no tools, no
-// grant (unconstrained), no sandbox gate, no observer, no brake, no scaffolding.
+// Spec describes one agent run independently of the loop. A zero field means the
+// ingredient is absent; a missing grant means unconstrained.
 type Spec struct {
-	// Model is the language model the loop drives.
 	Model llm.Model
-	// Tools is the capability surface the loop may call. A loop that takes no tools
-	// (a single-shot responder) ignores it.
-	Tools []mission.Tool
-	// System is the standing system instruction framing every turn.
+	// Tools is ignored by a loop that takes none.
+	Tools  []mission.Tool
 	System string
-	// Grant is the capability grant every action is admitted against at the waist.
-	// HasGrant distinguishes "no grant bound" (unconstrained) from the zero grant.
+	// HasGrant tells "no grant bound" (unconstrained) from the zero grant.
 	Grant    capability.Grant
 	HasGrant bool
-	// Sandbox, when set, gates each action on containment sufficiency at the waist.
-	Sandbox sandbox.Sandbox
-	// Reporter receives the loop's conversational events for live streaming.
+	// Sandbox gates each action on containment at the waist.
+	Sandbox  sandbox.Sandbox
 	Reporter mission.Reporter
-	// Brakes, when set, halts the run from outside the loop on a tripped breaker or
-	// the kill-switch. It applies regardless of which loop is built.
+	// Brakes halts the run from outside the loop on a tripped breaker or the
+	// kill-switch.
 	Brakes *brakes.Hook
-	// Budget, when set, charges every action against the run's spend pool and refuses
-	// one once the ceiling is reached. It applies regardless of which loop is built; a
-	// run whose pool has no budget resource is unlimited, so a nil Budget or an
-	// unbudgeted run is unconstrained.
+	// Budget charges every action against the run's spend pool. A pool with no budget
+	// resource is unlimited.
 	Budget *budget.Hook
-	// Fanout, when set, lets the loop delegate sub-goals to concurrent child runs
-	// (the model is offered a spawn tool). A loop that does not fan out (a single-shot
-	// responder) ignores it. The default is nil: a goal runs as a single conversation.
+	// Fanout offers the model a spawn tool for concurrent child runs. Nil runs a goal as
+	// one conversation.
 	Fanout mission.Fanout
-	// Approval, when set, requires a fresh human authorization for the privileged
-	// actions its policy lists, above the capability grant. It applies regardless of
-	// which loop is built, for the same reason the brake and the budget do: a loop
-	// chooses how a run reasons, never how much authority it has. Nil requires nothing,
-	// which keeps a standalone run zero-config.
+	// Approval requires a fresh human authorization for the actions its policy lists.
+	// Nil requires nothing.
 	Approval *Approval
-	// Allowance, when set, marks the actions whose effects leave the workspace and
-	// cannot be undone, so one of them runs only where the goal declared it in advance.
-	// It applies regardless of which loop is built, for the reason approval does, and it
-	// applies to a delegated child as much as to the root: a gate that stopped at the
-	// root is a gate a run walks around by delegating. Nil marks nothing.
+	// Allowance marks irreversible actions outside the workspace, which run only where
+	// the goal declared them. It covers delegated children too, so delegating cannot
+	// route around it. Nil marks nothing.
 	Allowance allowance.Policy
-	// EventSink, when set, records every governed action's lifecycle (admitted,
-	// completed, or rejected) onto the event spine, so the admission decisions are
-	// part of the run's recorded and sealed history rather than only the live trace.
-	// A nil sink records nothing extra, leaving the live trace unchanged.
+	// EventSink records each governed action's lifecycle on the spine, so admission
+	// decisions are part of the sealed history. Nil records nothing extra.
 	EventSink dispatch.EventSink
-	// CompactionBudget, when greater than zero, is the input-token budget past which
-	// the loop elides the oldest middle turns to keep a long session within the
-	// model's window. Zero leaves compaction at its default.
+	// CompactionBudget is the input-token count past which the loop elides the oldest
+	// middle turns. Zero keeps the default.
 	CompactionBudget int
-	// Plan is the capability-scaffolding for a weaker or more quantized model: how
-	// hard the loop should work to keep it reliable. The zero Plan adds nothing, so a
-	// capable model runs leanly.
+	// Plan is extra scaffolding for a weaker or quantized model. The zero Plan adds
+	// nothing.
 	Plan harness.Plan
 }
 
-// Approval is the human-authorization half of a run's governance, carried to whichever
-// loop is built. Gate is what pauses a privileged action; Prompter, Signer and Host are
-// what resolve the pause, by asking a person and minting the single-use approval their
-// decision authorizes.
-//
-// The two halves are separate because a run can have the first without the second, and
-// that combination is meaningful rather than broken: a run with no one to ask refuses the
-// action instead of proceeding, which is what a non-interactive run should do. A Prompter
-// without a Signer cannot mint anything and is ignored.
+// Approval is a run's human-authorization wiring. Gate pauses a privileged action;
+// Prompter, Signer and Host resolve the pause by asking a person and minting the
+// single-use approval. A Gate with no Prompter refuses, which is right for an unattended
+// run. A Prompter without a Signer is ignored.
 type Approval struct {
 	Gate     *approval.Gate
 	Prompter mission.ApprovalPrompter
@@ -114,34 +78,26 @@ type Approval struct {
 	Host     string
 }
 
-// Driver builds the run loop for an agent. Name identifies it in the registry and
-// is recorded on the run; Build assembles the executor and convergence test from a
-// Spec. Build is pure assembly: it wires the loop but does not start it. An
-// implementation must be safe for concurrent use.
+// Driver builds the run loop for an agent. An implementation must be safe for
+// concurrent use.
 type Driver interface {
-	// Name is the driver's stable identifier, resolved from the registry and
-	// recorded on the run's spine.
+	// Name is the stable identifier recorded on the run's spine.
 	Name() string
-	// Build assembles the loop for one run. It returns the goal.StepExecutor the
-	// worker advances and the goal.StopEvaluator the reconciler converges on.
+	// Build wires the loop for one run without starting it.
 	Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, error)
 }
 
-// Registry resolves a Driver by name. It is fail-closed: an unknown name is an
-// error, never a silent fallback to a default, so a run with a misnamed driver
-// stops at assembly rather than running the wrong loop. It is safe for concurrent
-// use.
+// Registry resolves a Driver by name. An unknown name is an error, so a misnamed driver
+// stops the run at assembly. It is safe for concurrent use.
 type Registry struct {
 	mu      sync.RWMutex
 	drivers map[string]Driver
 }
 
-// NewRegistry builds an empty registry.
+// NewRegistry returns an empty registry.
 func NewRegistry() *Registry { return &Registry{drivers: map[string]Driver{}} }
 
-// Register adds a driver under its Name. It refuses an empty name or a duplicate,
-// so a registry can never hold two loops under one name (which would make selection
-// ambiguous).
+// Register adds a driver under its Name. It refuses an empty or duplicate name.
 func (r *Registry) Register(d Driver) error {
 	if d == nil {
 		return fault.New(fault.Terminal, "driver_nil", "driver: refusing to register a nil driver")
@@ -159,9 +115,8 @@ func (r *Registry) Register(d Driver) error {
 	return nil
 }
 
-// Resolve returns the driver registered under name, or a Terminal error naming the
-// available drivers when none matches. Resolving the empty name returns the default
-// driver, so a run that names no driver gets the blessed general-purpose loop.
+// Resolve returns the driver under name, or a Terminal error listing the registered
+// names. The empty name resolves to [NameDefault].
 func (r *Registry) Resolve(name string) (Driver, error) {
 	if name == "" {
 		name = NameDefault
@@ -176,21 +131,17 @@ func (r *Registry) Resolve(name string) (Driver, error) {
 	return d, nil
 }
 
-// Names lists the registered driver names in sorted order, for diagnostics and a
-// kube-style listing.
+// Names lists the registered driver names, sorted.
 func (r *Registry) Names() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return sortedNames(r.drivers)
 }
 
-// Default returns a registry preloaded with the built-in drivers: the
-// general-purpose software loop (the default) and the single-shot responder. A host
-// can register additional drivers onto it.
+// Default returns a registry holding [NameDefault] and [NameSingleShot].
 func Default() *Registry {
 	r := NewRegistry()
-	// The built-ins are constructed in this package, so registration cannot fail; a
-	// panic here would mean a programming error in this package, not a runtime fault.
+	// Registration of the built-ins fails only on a bug in this package.
 	for _, d := range []Driver{defaultDriver{}, singleShotDriver{}} {
 		if err := r.Register(d); err != nil {
 			panic("driver: built-in registration failed: " + err.Error())

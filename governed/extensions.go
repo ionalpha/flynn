@@ -16,16 +16,12 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// Extensions is the extension machinery over a host's resource store: a loader whose only
-// handler for a process extension is [Extensions.Process], and through the loader the tools
-// a run may mount. The loader satisfies [ToolBridge], so it is passed to [WithExtensions]
-// as it is.
+// Extensions is the extension loader over a host's store. The loader satisfies
+// [ToolBridge], so it goes to [WithExtensions] as it is.
 type Extensions struct {
-	// Loader mounts and unmounts extensions and lists the tools they provide.
 	Loader *extension.Loader
-	// Process is the handler that launches a process extension, kept so the host can reach a
-	// signer extension over its private channel. A signer's tools are never mounted, so
-	// there is no other way to it.
+	// Process is kept so the host can reach a signer extension over its private channel; a
+	// signer's tools are never mounted, so there is no other way to it.
 	Process *extension.ProcessHandler
 }
 
@@ -39,55 +35,44 @@ type extensionConfig struct {
 	devSources  bool
 }
 
-// WithDevExtensions makes the loader honour a dev source: an extension that names a local
-// binary by path, which is unsigned and unverified. Without it only a signed release
-// resolves, so a host that embeds the assembly cannot be handed an unsigned binary by a
-// spec in its store. Turn it on for a developer's own machine, never for a deployed host.
+// WithDevExtensions honours a dev source, an unsigned local binary. Without it only a signed
+// release resolves, so a spec in the store cannot hand a host an unsigned binary. Never set
+// it on a deployed host.
 func WithDevExtensions() ExtensionOption {
 	return func(c *extensionConfig) { c.devSources = true }
 }
 
-// WithExtensionEgress sets the host's outbound allow-list for a launched extension. The
-// effective egress is this list intersected with the spec's request, so it can only narrow
-// what the spec asks for. With none given, every extension launches with egress denied.
+// WithExtensionEgress sets the host's egress allow-list, intersected with each spec's
+// request. Unset, every extension launches with egress denied.
 func WithExtensionEgress(hosts []string) ExtensionOption {
 	return func(c *extensionConfig) { c.egressGrant = hosts }
 }
 
-// WithExtensionSigner grants a host-held signing key to specific mounted tools. fn returns
-// the signer a tool may obtain signatures from, or nil for a tool that does not sign. The
-// key stays in the host: a tool that builds something needing a signature hands out the
-// bytes and receives only the signature back. With none given, every tool is non-signing.
+// WithExtensionSigner grants a host-held key to the tools fn returns a signer for. The key
+// stays in the host: a tool sends bytes and gets only the signature back.
 func WithExtensionSigner(fn func(ext, tool string) extension.HostSigner) ExtensionOption {
 	return func(c *extensionConfig) { c.hostSigner = fn }
 }
 
-// WithExtensionFetcher grants a host-held endpoint to specific mounted tools. fn returns
-// the fetcher a tool may send requests through, or nil for a tool that borrows no network.
-// The tool hands out the request bytes and receives the response, and never names, or
-// influences, the destination, which is how an extension reaches a service while its own
-// egress is denied. With none given, every tool is network-free.
+// WithExtensionFetcher grants a host-held endpoint to the tools fn returns a fetcher for.
+// The tool sends request bytes and never names the destination, so it reaches a service
+// while its own egress stays denied.
 func WithExtensionFetcher(fn func(ext, tool string) extension.HostFetcher) ExtensionOption {
 	return func(c *extensionConfig) { c.hostFetcher = fn }
 }
 
-// OpenExtensions syncs the bundled catalog into store and builds a loader whose only
-// handler is the process handler. A released extension resolves by downloading it and
-// proving its origin against the pinned signing identity. A dev extension, which resolves
-// by a local path and is unsigned, is refused unless [WithDevExtensions] is given. A spec
-// that declares a release is never satisfied by a local binary, so a stray dev block
-// cannot downgrade a signed extension to an unsigned one. Every launch is
-// confined, and is refused rather than run unconfined. Each launch's scratch directory
-// lives under dataDir and is removed when the connection stops.
+// OpenExtensions syncs the bundled catalog into store and builds the loader. A release
+// resolves only after its origin is proven against the pinned signing identity, and a spec
+// that declares one is never satisfied by a local binary, so a stray dev block cannot
+// downgrade it. A launch that cannot be confined is refused. Scratch directories under
+// dataDir are removed when the connection stops.
 func OpenExtensions(ctx context.Context, store resource.Store, dataDir string, opts ...ExtensionOption) (*Extensions, error) {
 	var cfg extensionConfig
 	for _, o := range opts {
 		o(&cfg)
 	}
-	// A bundled process extension names a signed release and resolves through
-	// verification, so syncing installs nothing and downloads nothing: it records that the
-	// host knows of the extension, which is what makes an official one listable and callable
-	// out of the box.
+	// Syncing downloads nothing; it records the official extensions so they are listable
+	// and callable out of the box.
 	if _, err := catalog.Sync(ctx, store); err != nil {
 		return nil, err
 	}
@@ -122,10 +107,9 @@ func OpenExtensions(ctx context.Context, store resource.Store, dataDir string, o
 	return &Extensions{Loader: extension.NewLoader(reg), Process: handler}, nil
 }
 
-// OpenIntegrations builds the loader that serves API integrations and hosting providers
-// from one operation engine over store. Credentials come from the credential records in
-// store and the secrets behind them from secrets, so an operation runs through the same
-// credential resolution, role enforcement and egress confinement wherever it is started.
+// OpenIntegrations serves API integrations and hosting providers from one operation engine,
+// so every operation gets the same credential resolution, role enforcement and egress
+// confinement wherever it starts.
 func OpenIntegrations(store resource.Store, secrets secret.Source) (*extension.Loader, error) {
 	opts := []integrations.Option{
 		integrations.WithSecrets(secrets),

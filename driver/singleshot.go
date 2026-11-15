@@ -16,25 +16,18 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// NameSingleShot is a tight responder loop: one model turn, no tools, converge on
-// the answer. It is the alternate loop that proves the Driver boundary: a
-// genuinely different strategy, selected by name, with no edits to the default
-// loop. It suits an archetype that should answer directly rather than work a
-// tool-using investigation (a classifier, a router, a summarizer).
+// NameSingleShot is one model turn with no tools, converging on the answer. It suits an
+// archetype that answers directly (a classifier, a router, a summarizer).
 const NameSingleShot = "single-shot"
 
-// singleShotDriver builds the single-shot loop. It does not reuse the default
-// loop: it is its own executor, which is the point, it independently governs its
-// one model call through the dispatch waist (the run's grant and brake still
-// apply), demonstrating that a loop composes with governance rather than owning it.
+// singleShotDriver builds its own executor, which governs its one model call through
+// the dispatch waist so the run's grant and brake still apply.
 type singleShotDriver struct{}
 
-// Name identifies the single-shot driver.
+// Name returns [NameSingleShot].
 func (singleShotDriver) Name() string { return NameSingleShot }
 
-// Build assembles the single-shot executor and its convergence test. Tools and the
-// scaffolding Plan are intentionally ignored: this loop takes one turn and never
-// calls a tool.
+// Build ignores Tools and Plan: the loop takes one turn and calls no tool.
 func (singleShotDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, error) {
 	opts := []dispatch.Option{dispatch.WithAdmitter(capability.Admitter{})}
 	if s.Brakes != nil {
@@ -61,8 +54,7 @@ func (singleShotDriver) Build(s Spec) (goal.StepExecutor, goal.StopEvaluator, er
 
 var _ Driver = singleShotDriver{}
 
-// singleShotExec advances a goal with exactly one model turn and converges. It
-// implements goal.StepExecutor.
+// singleShotExec is the goal.StepExecutor for the single turn.
 type singleShotExec struct {
 	model      llm.Model
 	system     string
@@ -73,8 +65,8 @@ type singleShotExec struct {
 	budgeted   bool
 }
 
-// Execute runs the single turn. A resumed step whose checkpoint is already done
-// returns it unchanged, so the step is safe to re-run after a crash.
+// Execute runs the turn. A checkpoint already done is returned unchanged, so a re-run
+// after a crash is safe.
 func (e *singleShotExec) Execute(ctx context.Context, r resource.Resource) (json.RawMessage, error) {
 	if e.hasGrant {
 		ctx = capability.Into(ctx, e.grant)
@@ -83,10 +75,8 @@ func (e *singleShotExec) Execute(ctx context.Context, r resource.Resource) (json
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "singleshot_spec_decode", err)
 	}
-	// Charge the turn against the run's budget pool (an unbudgeted run binds a pool
-	// with no budget resource, which the waist treats as unlimited). A fan-out shares
-	// one pool, so binding the pool rather than the goal's own name keeps a single
-	// ceiling over the graph; a root carries no pool of its own, so it is the pool.
+	// Bind the pool, which a fan-out shares, so one ceiling covers the graph. A root has
+	// no pool of its own and is the pool.
 	if e.budgeted {
 		pool := spec.BudgetPool
 		if pool == "" {
@@ -133,8 +123,8 @@ func (e *singleShotExec) Execute(ctx context.Context, r resource.Resource) (json
 	return encodeShotCheckpoint(cp)
 }
 
-// prompt renders the goal into the single user message: the objective, and the
-// stop condition as the explicit definition of done.
+// prompt renders the objective and the stop condition, as the definition of done, into
+// one user message.
 func prompt(spec goal.Spec) string {
 	s := spec.Objective
 	if spec.StopCondition != "" {
@@ -143,12 +133,10 @@ func prompt(spec goal.Spec) string {
 	return s
 }
 
-// singleShotStop converges as soon as the single turn has run. It implements
-// goal.StopEvaluator.
+// singleShotStop is the goal.StopEvaluator that converges once the turn has run.
 type singleShotStop struct{}
 
-// Met reports whether the turn has completed, returning the model's answer as the
-// reason.
+// Met returns the model's answer as the reason.
 func (singleShotStop) Met(_ context.Context, _ goal.Spec, status goal.Status) (bool, string, error) {
 	cp, err := decodeShotCheckpoint(status.Checkpoint)
 	if err != nil {
@@ -164,8 +152,7 @@ func (singleShotStop) Met(_ context.Context, _ goal.Spec, status goal.Status) (b
 	return true, reason, nil
 }
 
-// shotCheckpoint is the single-shot loop's resumable state: whether the turn has
-// run and the answer it produced.
+// shotCheckpoint is the resumable state: whether the turn ran, and its answer.
 type shotCheckpoint struct {
 	Done   bool   `json:"done"`
 	Result string `json:"result,omitempty"`

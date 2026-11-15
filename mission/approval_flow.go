@@ -12,11 +12,9 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// ApprovalRequest describes a privileged action the waist paused for a human decision:
-// the action's name, the scope it would run in, and the host the run is on. Grace is how
-// long the requester will wait before the request auto-declines, so an interactive
-// prompter can show a countdown. It carries no action arguments, matching what the
-// dispatch waist authorizes by (action identity, not payload).
+// ApprovalRequest is a privileged action paused for a human. It carries no arguments
+// because the waist authorizes by action identity. Grace is the time left before an
+// auto-decline, so a prompter can show a countdown.
 type ApprovalRequest struct {
 	Action string
 	Scope  state.Scope
@@ -24,37 +22,28 @@ type ApprovalRequest struct {
 	Grace  time.Duration
 }
 
-// ApprovalDecision is a human's answer to an ApprovalRequest. Allow admits the action;
-// Scope, when set, narrows the grant to an exact glob or target (bound into the minted
-// approval, so the authorization does not over-grant); Feedback is a short reason fed
-// back to the run on a denial so the model can adapt.
+// ApprovalDecision answers an [ApprovalRequest]. Scope narrows the minted approval to one
+// glob or target so it cannot over-grant; Feedback goes to the model on a denial.
 type ApprovalDecision struct {
 	Allow    bool
 	Scope    string
 	Feedback string
 }
 
-// ApprovalPrompter resolves an approval request interactively (a TUI prompt) or by
-// policy (a headless auto-decider). It is called on the run goroutine and blocks until
-// the decision is made, so an implementation must observe ctx: a context deadline is the
-// grace-period expiry, and the requester treats a context error or a returned error as a
-// fail-closed decline.
+// ApprovalPrompter decides an approval interactively or by policy. It blocks the run
+// goroutine, so it must observe ctx, whose deadline is the grace expiry; any error is a
+// decline.
 type ApprovalPrompter interface {
 	Prompt(ctx context.Context, req ApprovalRequest) (ApprovalDecision, error)
 }
 
-// defaultApprovalGrace bounds how long the waist waits on a human before a paused action
-// auto-declines, so a run is never blocked forever on an unattended prompt. It is a
-// fail-closed backstop; a prompter with its own shorter countdown resolves first.
+// defaultApprovalGrace declines a paused action so an unattended prompt never blocks a run
+// forever.
 const defaultApprovalGrace = 2 * time.Minute
 
-// WithApprovalPrompter enables interactive resolution of a paused privileged action:
-// when the waist returns NeedsApproval, the executor asks prompter for a decision and,
-// on allow, mints a single-use approval signed by signer for host, presents it, and
-// retries the action once. Without this option (or with a nil prompter or signer) a
-// NeedsApproval rejection surfaces to the model unchanged, so the standalone agent is
-// zero-config. It composes with WithApproval, which installs the gate that pauses the
-// action in the first place.
+// WithApprovalPrompter asks prompter on NeedsApproval and, on allow, retries once with a
+// single-use approval signed by signer for host. With a nil prompter or signer the refusal
+// reaches the model unchanged. WithApproval installs the gate that pauses the action.
 func WithApprovalPrompter(prompter ApprovalPrompter, signer approval.Signer, host string) Option {
 	return func(e *Executor) {
 		if prompter == nil || signer == nil {
@@ -72,8 +61,7 @@ func WithApprovalPrompter(prompter ApprovalPrompter, signer approval.Signer, hos
 	}
 }
 
-// WithApprovalGrace overrides how long the waist waits on a human before a paused action
-// auto-declines (default defaultApprovalGrace). A non-positive duration is ignored.
+// WithApprovalGrace overrides [defaultApprovalGrace]. A non-positive duration is ignored.
 func WithApprovalGrace(d time.Duration) Option {
 	return func(e *Executor) {
 		if d > 0 {
@@ -82,9 +70,8 @@ func WithApprovalGrace(d time.Duration) Option {
 	}
 }
 
-// WithApprovalClock sets the clock the executor stamps a minted approval's validity
-// window from, so a deterministic run (and a test) controls the window. The default is
-// clock.System. It should match the verifier's clock.
+// WithApprovalClock sets the clock for a minted approval's validity window. It should match
+// the verifier's clock.
 func WithApprovalClock(c clock.Clock) Option {
 	return func(e *Executor) {
 		if c != nil {
@@ -93,14 +80,8 @@ func WithApprovalClock(c clock.Clock) Option {
 	}
 }
 
-// governWithApproval governs a through the waist and, when the waist pauses the action
-// for approval (NeedsApproval) and a prompter is configured, asks the prompter for a
-// decision. On allow it mints a single-use approval bound to exactly this action, scope,
-// principal, and (optional) target, presents it on the retry context, and governs once
-// more; the gate rebuilds the same binding and admits the action against the presented
-// approval. On deny it returns the feedback to the run so the model adapts, and on a
-// grace-period timeout (or a prompter error) it declines fail-closed. Without a prompter,
-// or for any outcome other than NeedsApproval, it is a bare Govern.
+// governWithApproval mints an approval bound to exactly this action, scope, principal and
+// target, so the gate rebuilds the same binding on the retry and nothing wider is admitted.
 func (e *Executor) governWithApproval(ctx context.Context, a dispatch.Action, work func(context.Context) (dispatch.Metering, error)) error {
 	err := e.dispatcher.Govern(ctx, a, work)
 	if e.prompter == nil || fault.Classify(err) != fault.NeedsApproval {
@@ -116,8 +97,7 @@ func (e *Executor) governWithApproval(ctx context.Context, a dispatch.Action, wo
 	}
 	dec, derr := e.prompter.Prompt(promptCtx, req)
 	if derr != nil {
-		// A prompter error or a grace-period timeout is a fail-closed auto-decline: the
-		// action stays refused, never admitted on a missing decision.
+		// A missing decision never admits the action.
 		return fault.New(fault.Forbidden, "approval_declined",
 			"action "+a.Name+" was not approved within the grace period")
 	}
@@ -129,9 +109,7 @@ func (e *Executor) governWithApproval(ctx context.Context, a dispatch.Action, wo
 		return fault.New(fault.Forbidden, "approval_denied", msg)
 	}
 
-	// Bind the minted approval to exactly what the operator authorized. A scope narrows
-	// the grant to a target (Envelope.Detail), so the authorization cannot be widened to
-	// another target; the gate rebuilds the same binding from this context.
+	// The scope goes into Envelope.Detail, so the approval cannot cover another target.
 	apprCtx := ctx
 	if dec.Scope != "" {
 		apprCtx = approval.WithDetail(ctx, dec.Scope)

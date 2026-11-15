@@ -9,84 +9,55 @@ import (
 	"time"
 )
 
-// ledgerIDLen is how many hex characters of an item's content hash form its ID: 64
-// bits, past collision range for the items one goal carries.
+// ledgerIDLen is 64 bits, past collision range for one goal's items.
 const ledgerIDLen = 16
 
-// Ledger errors are distinct because they say different things about the writer: a
-// regression is the definition of done being edited, an unknown item is a claim about
-// work never planned, and an incomplete item is a plan entry with no way to check it.
 var (
-	// ErrLedgerRegressed reports a proposed ledger that is not an extension of the
-	// recorded one: an item was removed, reordered, or rewritten.
+	// ErrLedgerRegressed reports an item removed, reordered or rewritten.
 	ErrLedgerRegressed = errors.New("goal: ledger is not an append-only extension")
 	// ErrLedgerUnknownItem reports a state change naming an item the ledger does not carry.
 	ErrLedgerUnknownItem = errors.New("goal: ledger item not found")
-	// ErrLedgerIncomplete reports an item missing its text or verify clause. An item with
-	// no declared check can only be asserted, never proven.
+	// ErrLedgerIncomplete reports an item with no verify clause, which can never be proven.
 	ErrLedgerIncomplete = errors.New("goal: ledger item needs both an item and a verify")
 	// ErrLedgerDuplicate reports the same item appended twice.
 	ErrLedgerDuplicate = errors.New("goal: ledger item already present")
 )
 
-// LedgerItem is one planned unit of work. The ledger expands a goal's objective into such
-// units, written by a planner phase before any building starts and kept on the goal
-// resource so it survives a crash. Completion is a state transition on this record and
-// not a phrase matched in a transcript, which fails both ways: a run declares victory
-// on step one having written nothing, or a finished run goes undetected because its
-// wording drifted.
-//
-// Verify is the item's declared way to prove it, recorded when the work is planned and
-// not argued for once it is time to claim the item is done.
+// LedgerItem is one planned unit of work, written before building and kept on the goal so
+// it survives a crash. Completion is a state change on this record, because transcript
+// phrases both claim early and miss a finish. Verify is fixed at planning, so it is not
+// argued for at claim time.
 type LedgerItem struct {
-	// ID is the content address of Item and Verify (see [ItemID]). It is assigned on
-	// append, not by the planner, so a rewrite cannot masquerade as an edit of the same
-	// item.
-	ID string `json:"id"`
-	// Item is what the work is, in the planner's words.
+	// ID is [ItemID], assigned on append, so a rewrite cannot pass as an edit.
+	ID   string `json:"id"`
 	Item string `json:"item"`
-	// Verify is the declared way to prove the item: the command to run, the observation
-	// that would settle it.
+	// Verify is the command or observation that proves the item.
 	Verify string `json:"verify"`
 }
 
-// LedgerState is the observed state of one ledger item, keyed to it by ID. Every item
-// starts unproven, so the run begins from a record saying nothing is done yet.
+// LedgerState starts unproven, so a run begins from a record saying nothing is done.
 type LedgerState struct {
 	ID     string `json:"id"`
 	Proven bool   `json:"proven,omitempty"`
-	// ProvenAt is when the item was marked, and Evidence references the verification that
-	// proved it. Under the evidence gate (evidence.go) Evidence holds the spine ref of the
-	// passing check the gate consumed, and the spent refs are read back from the proven
-	// items' Evidence, so a resumed run consumes exactly what the record already spent. A
-	// proof recorded through [Status.MarkProven] (a test, a replay) may carry a free-form
-	// note instead.
+	// Evidence is the spine ref the evidence gate consumed, and spent refs are read back
+	// from it, so a resumed run spends nothing twice. [Status.MarkProven] may store a note.
 	ProvenAt *time.Time `json:"provenAt,omitempty"`
 	Evidence string     `json:"evidence,omitempty"`
-	// Abandoned marks an item the run stopped working without proving it, and
-	// AbandonedReason is the check failure that made it stop. Only a run that does not
-	// require proof abandons an item (see [Reconciler] and [WithLedgerConvergence]): its
-	// checks are the model's own guess at what done looks like, written before any work,
-	// and a check that can never pass would otherwise end a run that was told the record
-	// is only advisory. The item stays unproven, so the record still says the plan was
-	// not proven in full; the mark only moves the run on to the next item.
+	// Abandoned is set only when proof is advisory ([WithLedgerConvergence]), because the
+	// model's own pre-work check may never pass. The item stays unproven, so the record
+	// still shows the plan unproven; the mark only moves the run on.
 	Abandoned       bool   `json:"abandoned,omitempty"`
 	AbandonedReason string `json:"abandonedReason,omitempty"`
 }
 
-// ItemID returns the content address of an item: the first ledgerIDLen hex characters of
-// a SHA-256 over its text and verify clause, NUL-separated so no pair of fields re-splits
-// into a different pair with the same concatenation. A rewrite gets a different ID, so
-// [ValidateExtension] sees the removal it is.
+// ItemID hashes text and verify NUL-separated, so no two pairs share bytes. A rewrite
+// gets a new ID, so [ValidateExtension] sees it as a removal.
 func ItemID(item, verify string) string {
 	sum := sha256.Sum256([]byte(item + "\x00" + verify))
 	return hex.EncodeToString(sum[:])[:ledgerIDLen]
 }
 
-// AppendItems returns ledger with items appended, stamping each new item's ID from its
-// content. It rejects an item missing its text or verify clause, and one already on the
-// ledger. The returned slice is new, so a caller whose validation fails still holds an
-// unmodified ledger.
+// AppendItems returns a new slice, so a failed append leaves the caller's ledger intact.
 func AppendItems(ledger []LedgerItem, items ...LedgerItem) ([]LedgerItem, error) {
 	out := make([]LedgerItem, len(ledger), len(ledger)+len(items))
 	copy(out, ledger)
@@ -110,15 +81,9 @@ func AppendItems(ledger []LedgerItem, items ...LedgerItem) ([]LedgerItem, error)
 	return out, nil
 }
 
-// PlanExtension returns ledger with items appended, first dropping any incoming item
-// whose content already addresses to an id the ledger carries. A planning step that
-// crashed after writing the ledger but before completing its job re-runs and re-proposes
-// the items it recorded; dropping those exact re-statements makes the re-run a no-op and
-// not an [ErrLedgerDuplicate] stalling a goal whose ledger is already correct.
-//
-// Only an exact re-statement is dropped. An item reworded to a new id is a new item and
-// is appended; this cannot detect that. New items still pass through [AppendItems], so
-// the same new item twice in one batch is still refused.
+// PlanExtension drops items already on the ledger, so a planning step re-run after a
+// crash is a no-op instead of [ErrLedgerDuplicate]. A reworded item is appended as new.
+// The same new item twice in one batch is still refused.
 func PlanExtension(ledger []LedgerItem, items ...LedgerItem) ([]LedgerItem, error) {
 	have := make(map[string]struct{}, len(ledger))
 	for _, it := range ledger {
@@ -134,15 +99,9 @@ func PlanExtension(ledger []LedgerItem, items ...LedgerItem) ([]LedgerItem, erro
 	return AppendItems(ledger, fresh...)
 }
 
-// ValidateExtension reports whether next is a legal successor to prev: prev must be a
-// prefix of next, item for item and in order, and every item in next must carry the ID
-// its own content addresses to. Anything else is a removal, a reordering or a rewrite.
-//
-// This makes the ledger append-and-mark-only by enforcement and not request. An agent
-// under completion pressure may edit the definition of done (dropping a test, narrowing
-// an item), and a prompt asking it not to is advisory. The check runs on the write path,
-// and again on reconcile, so a ledger edited around the write path settles the goal as
-// stalled.
+// ValidateExtension requires prev as a prefix of next and every ID to match its content,
+// because a run under completion pressure may narrow the definition of done. It runs on
+// write and again on reconcile, so an edit around the write path stalls the goal.
 func ValidateExtension(prev, next []LedgerItem) error {
 	if len(next) < len(prev) {
 		return fmt.Errorf("%w: %d items dropped", ErrLedgerRegressed, len(prev)-len(next))
@@ -168,17 +127,13 @@ func ValidateExtension(prev, next []LedgerItem) error {
 	return nil
 }
 
-// ValidateLedger checks a goal's spec ledger against the state the status records for
-// it: the recorded entries must be a prefix of the ledger, in order and by id, and every
-// ledger item must still address to its own id. It is the reconcile-time half of the
-// extension rule, refusing a ledger edited around the write path.
+// ValidateLedger is the reconcile-time half of [ValidateExtension].
 func (s Status) ValidateLedger(ledger []LedgerItem) error {
 	if len(s.Ledger) > len(ledger) {
 		return fmt.Errorf("%w: status records %d items, the ledger carries %d", ErrLedgerRegressed, len(s.Ledger), len(ledger))
 	}
 	for i, st := range s.Ledger {
-		// The length check above makes i in range; the explicit bound keeps that provable
-		// here, as in ValidateExtension.
+		// The bound is redundant with the length check and keeps it provable here.
 		if i < len(ledger) && ledger[i].ID != st.ID {
 			return fmt.Errorf("%w: item %d was %s, the ledger now carries %s", ErrLedgerRegressed, i, st.ID, ledger[i].ID)
 		}
@@ -194,14 +149,8 @@ func (s Status) ValidateLedger(ledger []LedgerItem) error {
 	return nil
 }
 
-// SyncLedger brings the status's per-item state into line with the spec's ledger: every
-// planned item gains an unproven entry, in ledger order, and existing state is carried
-// across untouched. A ledger that grew mid-run thus has state for its new items, none
-// arriving pre-proven.
-//
-// State for an item no longer on the ledger is dropped. The extension rule means an item
-// cannot leave the ledger, so reaching this case means the ledger was already refused,
-// and carrying orphan state would let a proof outlive the thing it proved.
+// SyncLedger gives new items unproven entries. State for an item off the ledger is
+// dropped, so a proof cannot outlive what it proved.
 func (s *Status) SyncLedger(ledger []LedgerItem) {
 	s.Ledger = syncStateByID(s.Ledger, ledger,
 		func(st LedgerState) string { return st.ID },
@@ -209,11 +158,8 @@ func (s *Status) SyncLedger(ledger []LedgerItem) {
 		func(id string) LedgerState { return LedgerState{ID: id} })
 }
 
-// MarkProven records an item as proven, with the evidence reference and the time it was
-// marked. It reports [ErrLedgerUnknownItem] for an id the status has no state for, so a
-// claim about work never planned fails and is not accepted as a new item. Marking a
-// proven item again is a no-op that keeps the first proof: the record says when the item
-// was first settled, not when it was last re-asserted.
+// MarkProven refuses an unplanned id with [ErrLedgerUnknownItem]. Marking again keeps the
+// first proof, so the record shows when the item first settled.
 func (s *Status) MarkProven(id, evidence string, now time.Time) error {
 	for i := range s.Ledger {
 		if s.Ledger[i].ID != id {
@@ -242,13 +188,8 @@ func (s Status) Unproven() []string {
 	return out
 }
 
-// CurrentItem returns the item the run is working: the first ledger item neither proven
-// nor abandoned. It reports false when the ledger is empty or every item is settled one
-// way or the other.
-//
-// The selection is derived and not stored on the status, so there is no second
-// representation of "where the run is" to drift from the record. The reconciler, the
-// executor and the producer all compute the same answer from the same two facts.
+// CurrentItem is the first item neither proven nor abandoned. It is derived and never
+// stored, so no second copy of the run's position can drift from the record.
 func (s Status) CurrentItem(ledger []LedgerItem) (LedgerItem, bool) {
 	done := make(map[string]bool, len(s.Ledger))
 	for _, st := range s.Ledger {
@@ -273,10 +214,8 @@ func (s Status) Abandoned() []LedgerState {
 	return out
 }
 
-// abandonCurrent marks the current item abandoned with reason and clears every count
-// that was about its check, so the next item starts from nothing. The counts must go
-// with it: left in place, the next item's first failure would read as the abandoned
-// item's third and stop the run.
+// abandonCurrent clears the check counts, because the next item's first failure would
+// otherwise read as the abandoned item's third and stop the run.
 func (s *Status) abandonCurrent(ledger []LedgerItem, reason string) {
 	item, ok := s.CurrentItem(ledger)
 	if !ok {
@@ -293,8 +232,7 @@ func (s *Status) abandonCurrent(ledger []LedgerItem, reason string) {
 	s.LastVerdict, s.VerdictMark, s.VerdictRepeat = "", "", 0
 }
 
-// LedgerSettled reports whether the ledger has items and all of them are proven. An empty
-// ledger is not settled: a goal with nothing planned has not started.
+// LedgerSettled is false for an empty ledger, because nothing planned means not started.
 func (s Status) LedgerSettled() bool {
 	if len(s.Ledger) == 0 {
 		return false

@@ -8,52 +8,32 @@ import (
 	"github.com/ionalpha/flynn/llm"
 )
 
-// pruneResultThreshold is the size in bytes above which an older tool result is
-// replaced by a one-line summary. A result at or below it is small enough that
-// keeping it verbatim costs little, so only large outputs are touched.
+// pruneResultThreshold is in bytes; a result at or below it is cheap to keep verbatim.
 const pruneResultThreshold = 600
 
-// ResultSummarizer is an optional capability a Tool implements to describe a large
-// result in one line. It is used when an older result is elided from the model's
-// context to save tokens, so the model still sees what the call did without
-// carrying its full output. A tool that does not implement it falls back to a
-// generic size summary. The summary must be a pure function of the call so pruning
-// stays deterministic and replayable, with no model round-trip.
+// ResultSummarizer is an optional [Tool] method that describes an elided result in one
+// line. It must be a pure function of the call, so pruning stays replayable.
 type ResultSummarizer interface {
 	SummarizeResult(input json.RawMessage, result string) string
 }
 
-// blockPos locates one content block within a message list.
 type blockPos struct{ mi, bi int }
 
-// toolCall is the call a tool result answers, recovered so a summary can name the
-// tool and read its original arguments.
 type toolCall struct {
 	name  string
 	input json.RawMessage
 }
 
-// pruneTranscript returns a token-lean view of a conversation to send to the model.
-// Older and duplicate large tool results are replaced by one-line summaries, while
-// the most recent result of each tool, every small result, and every error are kept
-// verbatim. The point is that big tool outputs are the fastest way to exhaust the
-// context budget, and an old one is rarely needed in full once newer work has moved
-// on, yet the model still benefits from a one-line trace of what happened.
+// pruneTranscript summarizes older and duplicate large tool results in one line, keeping
+// each tool's latest result, small results and errors verbatim, because large outputs
+// exhaust the budget fastest.
 //
-// It does not mutate msgs: the durable checkpoint stays the lossless source of
-// truth, and this is a transient view over it. It never changes the message or
-// block count, only the text of elided tool-result blocks, so tool-call/result
-// pairing and the cacheable prefix layout are preserved. It is deterministic: the
-// same transcript always prunes to the same view, so a cached prefix stays stable
-// and a replay reproduces the view exactly. summarizer resolves a tool name to its
-// optional one-line summarizer (nil when the tool has none).
+// It never mutates msgs, since the checkpoint is the lossless record, and never changes
+// the message or block count, so call/result pairing and the cached prefix survive. It
+// is deterministic, so a replay reproduces the view.
 func pruneTranscript(msgs []llm.Message, summarizer func(tool string) ResultSummarizer) []llm.Message {
-	// Fast path: only a large, non-error tool result can ever be elided, so if the
-	// transcript holds none there is nothing to prune. The common turn carries only
-	// small results, and this pass runs on every turn over the whole growing history,
-	// so skipping the map-building and hashing below keeps such a turn a single cheap
-	// scan with no allocation. The original slice is returned as a read-only view (as
-	// it would be when nothing changes), which callers never mutate.
+	// This runs every turn over the whole history, and most turns hold no large result,
+	// so one scan without allocation skips the indexing below.
 	if !hasPrunableResult(msgs) {
 		return msgs
 	}
@@ -84,8 +64,6 @@ func pruneTranscript(msgs []llm.Message, summarizer func(tool string) ResultSumm
 	return out
 }
 
-// indexCalls maps each tool-use id to the call that carries it, so a result can be
-// traced back to the tool that produced it.
 func indexCalls(msgs []llm.Message) map[string]toolCall {
 	calls := map[string]toolCall{}
 	for _, m := range msgs {
@@ -98,21 +76,15 @@ func indexCalls(msgs []llm.Message) map[string]toolCall {
 	return calls
 }
 
-// resultIndex is what pruneResult consults to decide which results survive.
 type resultIndex struct {
-	// latestByTool is the most recent result position per tool name, kept verbatim.
 	latestByTool map[string]blockPos
-	// latestByBody is the most recent position of each distinct large result body, so
-	// an earlier identical one is pruned as a duplicate rather than re-summarized.
+	// latestByBody lets an earlier identical body be pruned as a duplicate.
 	latestByBody map[uint64]blockPos
-	// bodyHash is the hash of each large result body, computed once while indexing and
-	// reused by pruneResult.
+	// bodyHash is computed once while indexing.
 	bodyHash map[blockPos]uint64
 }
 
-// indexResults builds the resultIndex in one scan. Only large bodies are hashed: a
-// body can only match another of the same length, and pruning is decided for large
-// results alone, so small results never populate the duplicate index.
+// indexResults hashes only large bodies, because only large results are pruned.
 func indexResults(msgs []llm.Message, calls map[string]toolCall) resultIndex {
 	idx := resultIndex{
 		latestByTool: map[string]blockPos{},
@@ -136,9 +108,6 @@ func indexResults(msgs []llm.Message, calls map[string]toolCall) resultIndex {
 	return idx
 }
 
-// hasPrunableResult reports whether any block is a non-error tool result large enough
-// to be elided. Only such a result is ever pruned, so when none is present the whole
-// prune pass is a no-op and is skipped.
 func hasPrunableResult(msgs []llm.Message) bool {
 	for _, m := range msgs {
 		for _, b := range m.Blocks {
@@ -151,11 +120,8 @@ func hasPrunableResult(msgs []llm.Message) bool {
 	return false
 }
 
-// pruneResult decides whether one block is an older large tool result that should be
-// elided, and if so returns the replacement summary. A result is kept verbatim when
-// it is not a tool result, is an error, is the most recent result of its tool, or is
-// small. Otherwise it is replaced: by a duplicate note when an identical body
-// appears later, else by the tool's one-line summary (or a generic size summary).
+// pruneResult prefers a duplicate note when an identical body appears later, then the
+// tool's summary, then a size summary.
 func pruneResult(
 	b llm.Block, here blockPos,
 	calls map[string]toolCall,
@@ -167,14 +133,12 @@ func pruneResult(
 	}
 	r := b.ToolResult
 	if r.IsError || len(r.Content) <= pruneResultThreshold {
-		return "", false // errors and small results are always kept in full
+		return "", false
 	}
 	c := calls[r.ToolUseID]
 	if idx.latestByTool[c.name] == here {
-		return "", false // the freshest result of each tool is kept in full
+		return "", false
 	}
-	// here is a large result, so its body was hashed once when the duplicate index was
-	// built; reuse that hash rather than hashing the body again.
 	if dup := idx.latestByBody[idx.bodyHash[here]]; dup != here {
 		return fmt.Sprintf("[pruned %s: identical to a later result]", toolLabel(c.name)), true
 	}
@@ -188,14 +152,11 @@ func pruneResult(
 	return fmt.Sprintf("[pruned %s: %s]", toolLabel(c.name), body), true
 }
 
-// genericSummary describes a result by its shape when a tool offers no summarizer,
-// so something is always carried forward rather than an opaque elision.
 func genericSummary(content string) string {
 	return fmt.Sprintf("%d lines, %d chars", strings.Count(content, "\n")+1, len(content))
 }
 
-// toolLabel names the tool in a summary, falling back to a neutral word when a
-// result could not be tied back to a call.
+// toolLabel covers a result that could not be tied back to a call.
 func toolLabel(name string) string {
 	if name == "" {
 		return "tool"
@@ -203,12 +164,8 @@ func toolLabel(name string) string {
 	return name
 }
 
-// hashString is a fast, stable content fingerprint for duplicate detection. It is
-// FNV-1a computed directly over the string's bytes: deterministic (no seed) so
-// pruning a transcript is reproducible on replay, and byte-identical to hash/fnv,
-// but without the []byte(s) copy that hashing through the hash.Hash interface forces
-// on every result body. This runs on the whole growing transcript each turn, so
-// dropping that per-body allocation matters over a long tool-using loop.
+// hashString is FNV-1a, unseeded so pruning replays, and identical to hash/fnv without the
+// []byte copy hash.Hash forces on every body of every turn.
 func hashString(s string) uint64 {
 	const (
 		offset64 = 14695981039346656037

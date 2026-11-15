@@ -12,39 +12,31 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// attestRecorder is an external-agent driver whose harness's attested events can be
-// recorded onto the run's stream, and which reports how many of them were lost. The
-// driver port itself stays free of the record (a native loop has nothing to attest), so
-// the host asks for the capability rather than requiring it.
+// attestRecorder is an optional driver capability, because a native loop has nothing to
+// attest and the driver port stays free of the record.
 type attestRecorder interface {
 	SetRecorder(externagent.Recorder)
 	Unrecorded() (int, error)
 }
 
-// The external-agent driver satisfies it. Asserted at compile time because the binding is
-// a type assertion at run time: a signature that drifted would turn the recording into a
-// silent no-op, and the run would declare an attested count over an empty account.
+// The binding is a run-time type assertion, so a drifted signature would make recording a
+// no-op under a declared attested count; this fails the build instead.
 var _ attestRecorder = (*externagent.Driver)(nil)
 
-// AttestedSink writes the external harness's own account of its episode onto the run's
-// event stream: one event per line the harness produced, carrying the line verbatim so a
-// reader can hold the harness's claims next to the effects the dispatch waist enforced
-// and see where the two accounts part. It is the counterpart of the governance sink,
-// which records what the run enforced; this records what the harness said.
+// AttestedSink records each line the external harness produced, verbatim, so a reader can
+// compare what the harness claimed with what the dispatch waist enforced.
 type AttestedSink struct {
 	log    spine.Log
 	stream string
 }
 
-// NewAttestedSink returns a sink that records harness events onto stream on log.
+// NewAttestedSink records onto stream on log.
 func NewAttestedSink(log spine.Log, stream string) *AttestedSink {
 	return &AttestedSink{log: log, stream: stream}
 }
 
-// Record appends one attested event. The raw line is inlined up to chain.AttestedRawLimit
-// bytes and always digested whole, so a harness that echoes a large tool result into its
-// stream cannot inflate the record while a verifier can still match a truncated line
-// against the log the harness kept.
+// Record inlines at most chain.AttestedRawLimit bytes and digests the whole line, so a
+// large echo cannot inflate the record and a truncated line still matches the harness log.
 func (s *AttestedSink) Record(ctx context.Context, ev externagent.Event) error {
 	sum := sha256.Sum256(ev.Raw)
 	raw := ev.Raw
@@ -62,8 +54,7 @@ func (s *AttestedSink) Record(ctx context.Context, ev externagent.Event) error {
 	if truncated {
 		payload[chain.AttestedTruncatedKey] = true
 	}
-	// The harness is the actor: this is its account of itself, not the run's observation,
-	// and the record says so in the event's own attribution as well as its tier.
+	// The harness is the actor because this is its account of itself.
 	_, err := s.log.Append(ctx, spine.AppendInput{
 		Stream:    s.stream,
 		Type:      chain.AttestedRecorded,
@@ -76,19 +67,16 @@ func (s *AttestedSink) Record(ctx context.Context, ev externagent.Event) error {
 
 var _ externagent.Recorder = (*AttestedSink)(nil)
 
-// RecordAttested binds the run's stream to the external driver, so each event the
-// harness reports lands on the record as it is projected. A driver that cannot record
-// (another harness implementation) is left alone; the run then declares its attested
-// count and carries no events, which `flynn spine verify` reports as a mismatch rather
-// than passing over in silence.
+// RecordAttested binds the run's stream to the driver. A driver that cannot record is left
+// alone, and `flynn spine verify` reports its declared count with no events as a mismatch.
 func RecordAttested(d driver.Driver, log spine.Log, stream string) {
 	if r, ok := d.(attestRecorder); ok {
 		r.SetRecorder(NewAttestedSink(log, stream))
 	}
 }
 
-// UnrecordedAttested reports how many of the harness's events could not be written to the
-// record and why, so the run can say so rather than leaving a silent hole behind a count.
+// UnrecordedAttested reports how many harness events failed to record and why, so the run
+// can declare the gap.
 func UnrecordedAttested(d driver.Driver) (int, error) {
 	if r, ok := d.(attestRecorder); ok {
 		return r.Unrecorded()

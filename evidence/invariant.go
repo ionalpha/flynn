@@ -16,26 +16,17 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// AuditInvariantAction is the dispatch action name a term's check runs under, so an
-// audit is admitted, traced and recorded under a stable name alongside the tools the
-// agent invokes. It is deliberately distinct from VerifyItemAction: the two run the same
-// kind of thing for opposite purposes, and a grant should be able to say yes to one
-// without saying yes to the other.
+// AuditInvariantAction is the dispatch action a term's check runs under. It differs from
+// [VerifyItemAction] so a grant can allow one without the other.
 const AuditInvariantAction = "goal.audit.invariant"
 
-// CommandAuditor is the goal.InvariantAuditor that rules on a term by running the check
-// the term declares, inside the run's own sandbox and through the dispatch waist. A zero
-// exit says the term still holds; any other exit is a breach carrying the check's output.
+// CommandAuditor is the [goal.InvariantAuditor] that runs each term's check in the run's
+// sandbox through the dispatch waist. Exit 0 holds; any other exit is a breach. The run
+// is not asked, because a run that looks compliant at each step is the wrong witness.
 //
-// Invariants exist for a run that looks locally compliant at every step, and asking that
-// run whether it kept to its terms asks the wrong witness, so the check is run.
-//
-// Anything an audit cannot answer (no sandbox, a check that could not start, a refused
-// admission, a term with no check or prose auditor) is an error, not a clean verdict, and
-// the reconciler stops the goal. CommandVerifier does the opposite for a ledger item on
-// purpose: an unchecked item is unproven, an unchecked term means the run is ungoverned.
-// A term with no check goes to the prose auditor (ModelAuditor in production); a term with
-// one is always settled by running it.
+// An audit that cannot answer is an error and the goal stops. [CommandVerifier] does the
+// opposite, because an unchecked item is unproven while an unchecked term leaves the run
+// ungoverned. A term with no check goes to the prose auditor ([ModelAuditor]).
 type CommandAuditor struct {
 	sb         sandbox.Sandbox
 	log        spine.Log
@@ -43,36 +34,24 @@ type CommandAuditor struct {
 	prose      goal.InvariantAuditor
 }
 
-// NewCommandAuditor builds an auditor running each term's check in sb, recording every
-// audit on log, governed by a dispatcher built from opts. Pass the same admitter, event
-// sink and observability the rest of the run uses, so an audit shares its governance and
-// its spine.
-//
-// prose is where terms that declare no check are sent, and it is an explicit argument
-// rather than an option because every host has to decide what happens to them. A nil prose
-// auditor is a legitimate answer, and it means the strict one: a goal may only state terms
-// that reduce to a command, and one that states anything else stops rather than running
-// against a term nobody rules on.
+// NewCommandAuditor runs checks in sb and records audits on log, under a dispatcher built
+// from opts. prose is an argument so every host decides where unchecked terms go. A nil
+// prose is the strict answer: a goal stating a term with no check stops.
 func NewCommandAuditor(sb sandbox.Sandbox, log spine.Log, prose goal.InvariantAuditor, opts ...dispatch.Option) *CommandAuditor {
 	return &CommandAuditor{sb: sb, log: log, prose: prose, dispatcher: dispatch.New(opts...)}
 }
 
 var _ goal.InvariantAuditor = (*CommandAuditor)(nil)
 
-// Audit runs every term's check and returns a breach for each that failed.
-//
-// It audits on the reconcile path, which carries no run's authority of its own, so the
-// goal's grant is bound onto the context here the way the unit fan-out binds it for a
-// plan-driven spawn. An audit is therefore admitted against the authority of the run
-// being audited: a goal that cannot run its own checks cannot be audited by running
-// them, and it stops rather than being waved through.
+// Audit returns a breach for each term that failed. The reconcile path carries no run's
+// authority, so the goal's grant is bound here, and a goal that cannot run its own
+// checks stops rather than being waved through.
 func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec goal.Spec, status goal.Status, terms []goal.Invariant) ([]goal.Breach, error) {
 	declared, prose := splitByCheck(terms)
 	if len(declared) > 0 && a.sb == nil {
 		return nil, fault.Wrap(fault.Terminal, "audit_no_sandbox", ErrNoSandbox)
 	}
-	// A goal with no grant is unconstrained, exactly as it is everywhere else, so an
-	// empty one is left unbound rather than bound as a grant that allows nothing.
+	// An empty grant means unconstrained, so binding it would wrongly allow nothing.
 	if len(spec.Grant) > 0 {
 		ctx = capability.Into(ctx, capability.NewGrant(spec.Grant...))
 	}
@@ -94,9 +73,7 @@ func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec go
 			"audit: invariant "+prose[0].ID+" declares no check to run and no prose auditor is wired, "+
 				"so nothing can rule on it")
 	}
-	// The prose terms go in one call so the auditor reads the record once and judges them
-	// all against the same reading. They are handed the status this pass built, the same
-	// as the ones audited here, since that is the run as it stands after the step.
+	// One call, so every prose term is judged against one reading of the record.
 	found, err := a.prose.Audit(ctx, r, spec, status, prose)
 	if err != nil {
 		return nil, err
@@ -104,7 +81,6 @@ func (a *CommandAuditor) Audit(ctx context.Context, r resource.Resource, spec go
 	return append(breaches, found...), nil
 }
 
-// splitByCheck separates the terms that declare a check from the terms that do not.
 func splitByCheck(terms []goal.Invariant) (declared, prose []goal.Invariant) {
 	for _, term := range terms {
 		if strings.TrimSpace(term.Check) == "" {
@@ -116,10 +92,8 @@ func splitByCheck(terms []goal.Invariant) (declared, prose []goal.Invariant) {
 	return declared, prose
 }
 
-// auditOne runs one term's check and records the audit on the run's stream. The record
-// is written for a term that held as well as one that did not: the point of auditing on
-// the spine rather than only on the status is to be able to show afterwards that the
-// terms were checked, and a log that only ever mentions the breaches cannot show that.
+// auditOne records held terms as well as breaches, so the spine shows afterwards that
+// every term was checked.
 func (a *CommandAuditor) auditOne(ctx context.Context, r resource.Resource, term goal.Invariant) (held bool, detail string, err error) {
 	check := strings.TrimSpace(term.Check)
 	var res sandbox.ExecResult
@@ -137,19 +111,10 @@ func (a *CommandAuditor) auditOne(ctx context.Context, r resource.Resource, term
 		if ctx.Err() != nil {
 			return false, "", ctx.Err()
 		}
-		// Refused or unable to start: the term is unaudited, which is not the same as
-		// broken and is certainly not the same as held. A momentary failure keeps its
-		// class and retries; anything else is reported Terminal, so the goal settles
-		// saying the check could not run.
-		//
-		// Terminal rather than the refusal's own class, because a refusal is where this
-		// went wrong before. A gate that will never admit this check (a host whose
-		// sandbox cannot contain semi-trusted work is the one that happens) refuses
-		// Forbidden, and the goal reconciler settles a goal on a Terminal fault only:
-		// every other class is handed back, the controller declines to spin on it, and
-		// the run is left running with a step in flight, no verdict on its terms, and
-		// nobody told. A guard that cannot be applied has to stop the run, and stopping
-		// it is worth nothing if the run never hears about it.
+		// An unrun term is neither held nor broken. A Transient failure retries; any other
+		// becomes Terminal, because the goal reconciler settles only on Terminal. A
+		// Forbidden refusal (a sandbox that cannot contain semi-trusted work) would leave
+		// the run going with no verdict on its terms and nobody told.
 		if class := fault.Classify(gerr); class == fault.Transient {
 			return false, "", fault.Wrap(class, "audit_check_unrun",
 				fmt.Errorf("audit: invariant %s: the check could not run: %w", term.ID, gerr))
@@ -168,9 +133,8 @@ func (a *CommandAuditor) auditOne(ctx context.Context, r resource.Resource, term
 	return held, detail, nil
 }
 
-// record appends the audit to the goal's stream. A failure to write it fails the audit:
-// an audit nobody can show happened is the thing this exists to prevent, so it is not
-// quietly dropped in favour of the verdict it produced.
+// record fails the audit when the write fails, because an audit nobody can show
+// happened is what this guards against.
 func (a *CommandAuditor) record(ctx context.Context, r resource.Resource, term goal.Invariant, held bool, detail string, res sandbox.ExecResult) error {
 	if a.log == nil {
 		return fault.New(fault.Terminal, "audit_no_log",
@@ -186,8 +150,7 @@ func (a *CommandAuditor) record(ctx context.Context, r resource.Resource, term g
 	if detail != "" {
 		payload[chain.InvariantDetailKey] = detail
 	}
-	// ActorSystem: the runtime ran the check and observed the exit code. Nothing a model
-	// wrote reaches this event's provenance, which is what the executed marker certifies.
+	// The runtime observed the exit code, so no model text reaches the provenance.
 	if _, err := a.log.Append(ctx, spine.AppendInput{
 		Stream:  r.Name,
 		Type:    chain.InvariantAudited,

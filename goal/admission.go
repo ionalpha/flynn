@@ -11,68 +11,51 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// A ledger check is written by the model before any work, and a check that is wrong
-// proves nothing in one of four ways: it reads a file nobody was asked to make, it names a
-// place the run's confined commands cannot write, it cannot run as written, or it already
-// passes on the tree as it stands. The first two are decided from the text of the check, the
-// last two by running it once on the untouched tree. Admission is the rule that decides all
-// four before work starts, so a wrong check goes back to the planner and not into a run that
-// then stalls on it or, worse, proves an item with a check that was never able to fail.
-
-// AdmissionRefusal names why a check was not admitted. The values are recorded on the run's
-// spine, so they are stable strings and not prose.
+// AdmissionRefusal values are recorded on the spine, so they stay stable. Admission runs
+// before work, so a wrong check goes back to the planner instead of proving an item.
 type AdmissionRefusal string
 
 const (
-	// RefusedUngrounded means the check names a path that does not exist before the work and that
-	// the objective never asks for, so the only thing that could make it pass is the worker
-	// creating the very file the check looks for.
+	// RefusedUngrounded is a missing path the objective never names, which only the worker
+	// creating it could satisfy.
 	RefusedUngrounded AdmissionRefusal = "ungrounded"
-	// RefusedUnwritable means the check names a path outside the working directory that does not
-	// exist. The run's commands are confined and cannot create it, so the check can never
-	// pass.
+	// RefusedUnwritable is a missing path outside the working directory, which confined
+	// commands cannot create.
 	RefusedUnwritable AdmissionRefusal = "unwritable"
-	// RefusedMalformed means the shell rejected the check's text (syntax, quoting).
+	// RefusedMalformed means the shell could not parse the check.
 	RefusedMalformed AdmissionRefusal = "malformed"
 	// RefusedMissingProgram means the check runs a program the host does not have.
 	RefusedMissingProgram AdmissionRefusal = "missing_program"
-	// RefusedAlreadyPasses means the check exits 0 on the tree before any work, so a pass later
-	// distinguishes nothing.
+	// RefusedAlreadyPasses means a later pass would distinguish nothing.
 	RefusedAlreadyPasses AdmissionRefusal = "already_passes"
 )
 
-// AdmissionVerdict is the outcome of admitting one ledger item's check. Item is the item's
-// content address ([ItemID]), so the verdict names the exact check it judged.
+// AdmissionVerdict names its check by content address ([ItemID]).
 type AdmissionVerdict struct {
 	Item     string
 	Admitted bool
-	// Refusal is set when Admitted is false.
-	Refusal AdmissionRefusal
-	// Reason is the sentence the planner is sent back, and on an admitted verdict a note
-	// when something was not checked (the dry run could not execute).
+	Refusal  AdmissionRefusal
+	// Reason goes to the planner. On an admitted verdict it notes what was not checked.
 	Reason string
-	// DryRun reports whether the check was executed once on the untouched tree. An admitted
-	// verdict with DryRun false was admitted on its text alone.
+	// DryRun false on an admitted verdict means it was admitted on its text alone.
 	DryRun bool
 }
 
-// AdmissionRecorder writes admission verdicts onto the run's durable record. It is a
-// separate port from [Evidence] so that adding it does not change what a host implementing
-// Evidence must provide; the shipped implementation is evidence.SpineEvidence.
+// AdmissionRecorder is apart from [Evidence] so hosts implementing Evidence need nothing
+// new. evidence.SpineEvidence implements both.
 type AdmissionRecorder interface {
 	RecordAdmission(ctx context.Context, r resource.Resource, v AdmissionVerdict) error
 }
 
 // Ground is what grounding a check is judged against.
 type Ground struct {
-	// Dir is the working directory a check runs in. Empty disables grounding, because a
-	// host-supplied sandbox has no directory the run chose to look in.
+	// Dir empty disables grounding, because a host sandbox has no directory the run chose.
 	Dir string
-	// Confined reports that the run's commands cannot write outside Dir.
+	// Confined reports that commands cannot write outside Dir.
 	Confined bool
-	// Objective is the text of the goal (objective and stop condition) a path may be named in.
+	// Objective holds the objective and stop condition.
 	Objective string
-	// LookPath resolves a bare file name on the host's program search path.
+	// LookPath resolves a bare name on the program search path.
 	LookPath func(string) (string, error)
 }
 
@@ -83,19 +66,10 @@ type GroundingProblem struct {
 	Reason  string
 }
 
-// CheckGrounding returns the paths in check that admission refuses, in order and once each.
-//
-// A path the check reads must exist before the work or be something the objective asks for.
-// Without that a planner can invent an artifact ("result.txt exists") that the worker then
-// creates to satisfy it, and the item reads as proven by a check that would have passed
-// whatever the work was. A path outside the working directory that does not exist is
-// refused whatever the objective says when the run is confined, because no command of the
-// run can create it.
-//
-// Only tokens that are plainly paths are judged: an absolute or separator-bearing token, or
-// a bare name with a file extension. Anything with shell syntax in it (a substitution, a
-// variable, a glob, quoted code) is left alone, since a wrong guess here refuses a good
-// check, and the dry run catches what the text cannot.
+// CheckGrounding requires each read path to exist or be named by the objective, so a
+// planner cannot invent an artifact the worker then creates. Only plain paths are judged;
+// shell syntax is left alone, because a wrong guess refuses a good check and the dry run
+// catches the rest.
 func CheckGrounding(check string, g Ground) []GroundingProblem {
 	if g.Dir == "" {
 		return nil
@@ -138,7 +112,6 @@ func CheckGrounding(check string, g Ground) []GroundingProblem {
 	return problems
 }
 
-// within reports whether target is dir or lies under it.
 func within(dir, target string) bool {
 	rel, err := filepath.Rel(dir, filepath.Clean(target))
 	if err != nil {
@@ -147,7 +120,6 @@ func within(dir, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// mentioned reports whether the objective names the path, by its full text or by its file name.
 func mentioned(lowerObjective, tok string) bool {
 	slashed := strings.ToLower(strings.ReplaceAll(tok, `\`, "/"))
 	if strings.Contains(lowerObjective, slashed) {
@@ -169,10 +141,8 @@ func isAbsPath(tok string) bool {
 	return filepath.IsAbs(tok) || driveRoot.MatchString(tok) || strings.HasPrefix(tok, "/") || strings.HasPrefix(tok, `\`)
 }
 
-// pathTokens returns the tokens of a check line that are plainly paths. The tokenizer
-// follows the shell only as far as quoting and the characters that end a word, so a quoted
-// string is one token and code inside `python -c "..."` is never read as a file. The target
-// of a redirect is the check writing its own file and is not judged.
+// pathTokens keeps a quoted string as one token, so code in `python -c "..."` is never
+// read as a file. A redirect target is the check's own output and is skipped.
 func pathTokens(check string) []string {
 	var (
 		tokens   []string
@@ -220,8 +190,6 @@ func pathTokens(check string) []string {
 	return filterPaths(tokens)
 }
 
-// assignmentValue is the value of a --flag=value or NAME=value token, so the path inside it
-// is judged.
 func assignmentValue(tok string) string {
 	if loc := assignment.FindStringIndex(tok); loc != nil {
 		return tok[loc[1]:]
@@ -229,7 +197,6 @@ func assignmentValue(tok string) string {
 	return tok
 }
 
-// plainPath is the cheap pre-filter: a token with shell syntax in it is not a path to judge.
 func plainPath(tok string) bool {
 	if tok == "" || strings.Contains(tok, "://") {
 		return false
@@ -240,9 +207,7 @@ func plainPath(tok string) bool {
 	return cleanPath.MatchString(tok)
 }
 
-// filterPaths keeps the tokens that name a file: a rooted or separator-bearing path, or a
-// bare file name with an extension. Flags, switches, device names, package patterns and
-// module import paths are dropped.
+// filterPaths drops flags, switches, device names, package patterns and module paths.
 func filterPaths(tokens []string) []string {
 	var out []string
 	for _, tok := range tokens {
@@ -266,14 +231,9 @@ func filterPaths(tokens []string) []string {
 	return out
 }
 
-// DryRunRefusal judges the verdict of running a check once on the tree before any work. It
-// returns "" when the check is admitted: it ran and failed, which is what a check for work
-// not yet done should do.
-//
-// A verdict that was not executed is admitted, with the reason left to the caller to note:
-// the host could not run checks at all (no sandbox, a gate that declined), and refusing
-// every plan for that would move a stall from the first verification to the planner without
-// telling the operator anything new.
+// DryRunRefusal returns "" for a check that ran and failed, as one for undone work should.
+// An unexecuted verdict is admitted, because refusing every plan on a host that cannot run
+// checks only moves the stall to the planner.
 func DryRunRefusal(check string, v ItemVerdict) (AdmissionRefusal, string) {
 	if !v.Executed {
 		return "", ""
@@ -296,9 +256,8 @@ var (
 	psSyntax  = regexp.MustCompile(`(?i)ParserError|ParseException|The string is missing the terminator|Missing closing '[)}\]]'`)
 )
 
-// MalformedCheck reports the shell's own complaint when it rejected a check's text rather
-// than running it. The patterns are the shells' wording for a parse failure, anchored so the
-// output of a program that merely mentions a syntax error does not read as one.
+// MalformedCheck returns the shell's parse complaint. The patterns are anchored so output
+// that mentions a syntax error does not read as one.
 func MalformedCheck(output string) (string, bool) {
 	for _, re := range []*regexp.Regexp{cmdSyntax, shSyntax, psSyntax} {
 		if m := re.FindString(output); m != "" {

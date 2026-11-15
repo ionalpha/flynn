@@ -14,19 +14,12 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// ModelSteerJudge rules on whether a run's account of finishing addresses the redirects
-// its operator issued. It is the discharge half of the gated obligation: a redirect is
-// delivered to the run every turn, and this decides whether what came back answers it.
+// ModelSteerJudge decides whether a run's finishing account addresses each operator
+// redirect. It asks only "does this say what was done about that instruction", so a
+// cheap model can answer, and a wrong no only asks the run again.
 //
-// The question is small on purpose: "does this sentence say what was done about that
-// instruction", not "did the run do a good job". A cheap model can classify it, and its
-// mistakes fall the safe way: a no keeps the obligation open and the run is asked again,
-// where a yes spends the operator's only guarantee.
-//
-// Two rules keep it from becoming a formality. It must quote the account: an unquoted
-// acceptance leaves the redirect outstanding, and the quote is recorded beside the verdict.
-// And naming the redirect is not addressing it ("As requested, I have handled the table
-// issue" says nothing about what was done), so the quote must describe an action.
+// The judge must quote the account, and the quote is recorded. Naming the redirect is not
+// addressing it ("I have handled the table issue"), so the quote must describe an action.
 type ModelSteerJudge struct {
 	model     llm.Model
 	log       spine.Log
@@ -34,10 +27,8 @@ type ModelSteerJudge struct {
 	maxTokens int
 }
 
-// defaultSteerSystem frames the model as ruling on one redirect against one account, and
-// puts the quote before the verdict. The order is the point: a model that has already
-// written "addressed" will justify it, and a model that has already had to find the words
-// has bounded what it can claim.
+// defaultSteerSystem asks for the quote before the verdict, because a model that has
+// written "addressed" will justify it.
 const defaultSteerSystem = `An operator interrupted an autonomous run to redirect it. The run has now reported that it finished, and given an account of what it did. Decide whether that account says what the run did about the redirect.
 
 Answer two things, in this order.
@@ -50,9 +41,8 @@ Return ONLY a JSON object (no prose, no code fence):
 // ModelSteerJudgeOption configures a ModelSteerJudge.
 type ModelSteerJudgeOption func(*ModelSteerJudge)
 
-// WithSteerSystem overrides the standing instruction framing the judgement. The default
-// puts the quote ahead of the verdict; an override that drops it leaves a model free to
-// rule first and account for it afterwards.
+// WithSteerSystem overrides the system prompt. An override that drops the quote lets a
+// model rule first and justify afterwards.
 func WithSteerSystem(s string) ModelSteerJudgeOption {
 	return func(j *ModelSteerJudge) {
 		if strings.TrimSpace(s) != "" {
@@ -61,7 +51,7 @@ func WithSteerSystem(s string) ModelSteerJudgeOption {
 	}
 }
 
-// WithSteerMaxTokens caps the output length requested of the model.
+// WithSteerMaxTokens caps the model's output (default 512).
 func WithSteerMaxTokens(n int) ModelSteerJudgeOption {
 	return func(j *ModelSteerJudge) {
 		if n > 0 {
@@ -70,9 +60,8 @@ func WithSteerMaxTokens(n int) ModelSteerJudgeOption {
 	}
 }
 
-// NewModelSteerJudge builds a judge that rules on acknowledgements by asking m, recording
-// each judgement on log. The log is the run's own, so what the operator asked and what the
-// run answered land in the record beside the work they are about.
+// NewModelSteerJudge asks m and records each judgement on log, which should be the run's
+// own so the judgement sits beside the work.
 func NewModelSteerJudge(m llm.Model, log spine.Log, opts ...ModelSteerJudgeOption) *ModelSteerJudge {
 	j := &ModelSteerJudge{model: m, log: log, system: defaultSteerSystem, maxTokens: 512}
 	for _, o := range opts {
@@ -83,12 +72,8 @@ func NewModelSteerJudge(m llm.Model, log spine.Log, opts ...ModelSteerJudgeOptio
 
 var _ goal.SteerJudge = (*ModelSteerJudge)(nil)
 
-// Acknowledged rules on each outstanding redirect against the run's account and returns one
-// acknowledgement per redirect the account addressed.
-//
-// Every redirect is ruled on separately. A run that answered one and ignored another has
-// answered one, and asking about them together invites a single verdict over the pile,
-// which is the reading that discharges the ignored one.
+// Acknowledged returns one acknowledgement per redirect the account addressed. Each is
+// judged separately, because one verdict over several would discharge an ignored one.
 func (j *ModelSteerJudge) Acknowledged(ctx context.Context, r resource.Resource, spec goal.Spec, _ goal.Status, outstanding []goal.Steer, account string) ([]goal.Acknowledgement, error) {
 	if len(outstanding) == 0 {
 		return nil, nil
@@ -97,8 +82,7 @@ func (j *ModelSteerJudge) Acknowledged(ctx context.Context, r resource.Resource,
 		return nil, fault.New(fault.Terminal, "steer_no_model",
 			"steer: no model wired to rule on whether the run addressed the operator's redirect")
 	}
-	// An account with nothing in it cannot address anything, and asking a model to confirm
-	// that costs a call to learn what is already known.
+	// An empty account addresses nothing, so no model call is needed.
 	if strings.TrimSpace(account) == "" {
 		for _, st := range outstanding {
 			if err := j.record(ctx, r, st, false, "", account); err != nil {
@@ -123,8 +107,7 @@ func (j *ModelSteerJudge) Acknowledged(ctx context.Context, r resource.Resource,
 	return acks, nil
 }
 
-// judge asks the model about one redirect and turns the reply into a verdict, refusing the
-// reply that looks like an acceptance and is not: addressed, with nothing quoted.
+// judge treats "addressed" with nothing quoted as not addressed.
 func (j *ModelSteerJudge) judge(ctx context.Context, spec goal.Spec, st goal.Steer, account string) (quote string, addressed bool, err error) {
 	resp, gerr := j.model.Generate(ctx, llm.Request{
 		System:    j.system,
@@ -147,26 +130,19 @@ func (j *ModelSteerJudge) judge(ctx context.Context, spec goal.Spec, st goal.Ste
 		return "", false, nil
 	}
 	if quote == "" {
-		// The verdict rests on nothing, which is not a judgement. The safe reading is the
-		// one that keeps the obligation open: the run is refused its completion and the
-		// operator's instruction stands, rather than being discharged by a model that did
-		// not point at anything.
+		// An uncited acceptance keeps the operator's instruction open.
 		return "", false, nil
 	}
 	return clip(quote, maxDetail), true, nil
 }
 
-// steerVerdict is the wire shape the judge returns.
 type steerVerdict struct {
 	Quote     string `json:"quote"`
 	Addressed bool   `json:"addressed"`
 }
 
-// parseSteerVerdict extracts the JSON object from the reply. Models wrap JSON in prose or a
-// code fence despite instructions, so the outermost object is taken. A reply with no object,
-// or one that does not parse, is a terminal fault rather than a default verdict: the run may
-// well have complied, and recording it as having ignored its operator would put a broken
-// judge's failure onto the run's record as a fact about the run.
+// parseSteerVerdict takes the outermost object. An unparseable reply is Terminal, not a
+// "not addressed" verdict, so a broken judge is not recorded as a fact about the run.
 func parseSteerVerdict(text string) (steerVerdict, error) {
 	raw := extractObject(text)
 	if raw == "" {
@@ -179,9 +155,8 @@ func parseSteerVerdict(text string) (steerVerdict, error) {
 	return v, nil
 }
 
-// steerPrompt renders the objective, the redirect and the run's account. The objective is
-// included because a redirect is stated against it: "use the other table" is only legible
-// next to what the run was trying to do.
+// steerPrompt includes the objective, because "use the other table" is legible only next
+// to it.
 func steerPrompt(spec goal.Spec, st goal.Steer, account string) string {
 	var b strings.Builder
 	b.WriteString("The run's objective:\n")
@@ -193,14 +168,8 @@ func steerPrompt(spec goal.Spec, st goal.Steer, account string) string {
 	return b.String()
 }
 
-// record appends the judgement to the goal's stream, marked as asserted: nothing was run
-// for this verdict, and the record says so rather than letting a model's judgement read
-// like an observed exit code. The account rides along, because a refused acknowledgement is
-// only legible next to what was actually said, and the transcript that sentence came from
-// is pruned and eventually gone.
-//
-// A failure to write it fails the judgement, for the reason it does in the auditors: a
-// judgement nobody can show happened is what the record exists to prevent.
+// record marks the judgement asserted and keeps the account, because the transcript it
+// came from is pruned. A failed write fails the judgement, as in the auditors.
 func (j *ModelSteerJudge) record(ctx context.Context, r resource.Resource, st goal.Steer, addressed bool, quote, account string) error {
 	if j.log == nil {
 		return fault.New(fault.Terminal, "steer_no_log",
