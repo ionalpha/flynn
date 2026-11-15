@@ -20,14 +20,9 @@ import (
 	"github.com/ionalpha/flynn/procs"
 )
 
-// commandMachine drives a host-provided microVM runtime over a small, product-neutral
-// protocol, so Flynn stays a thin boundary over whatever hardware virtualization the host
-// already trusts rather than embedding a hypervisor. Flynn hands the runtime a manifest
-// (the guest image, the resource caps, the read-only mounts, the egress posture, and the
-// command to run) and reads back the guest's result. The runtime is the host's to provide;
-// the Flynn side, the manifest it builds and the result it reads, is fully implemented and
-// tested here. File operations on the guest working area reuse a path-confined Local, since
-// the working directory is a host directory the runtime mounts writable into the guest.
+// commandMachine hands a host runtime a JSON manifest and reads back the result,
+// so Flynn embeds no hypervisor. File operations use a path-confined Local because
+// the runtime mounts the host working directory into the guest.
 type commandMachine struct {
 	runtime string // absolute path to the host's microVM runtime binary
 	spec    Spec   // the boot request: image, guarantees, root
@@ -39,9 +34,8 @@ type commandMachine struct {
 	closed  bool
 }
 
-// newCommandMachine builds a machine that drives runtime for spec. The working area
-// (spec.Root) must exist; a private control directory is created beside it for the
-// manifests and results the guest never sees.
+// newCommandMachine requires spec.Root and creates a control directory beside it
+// that the guest never sees.
 func newCommandMachine(runtime string, spec Spec) (*commandMachine, error) {
 	files, err := NewLocal(spec.Root)
 	if err != nil {
@@ -56,17 +50,10 @@ func newCommandMachine(runtime string, spec Spec) (*commandMachine, error) {
 
 var _ Machine = (*commandMachine)(nil)
 
-// manifest is the boot request Flynn hands the runtime, as JSON. It is product-neutral:
-// it names the image, the caps, the mounts, the egress posture, and the command, and the
-// runtime adapter translates it to its own hypervisor. Egress is always denied and every
-// mount is read-only, set here regardless of the caller, so the manifest cannot carry a
-// weakened posture even if a caller assembled the spec by hand.
-//
-// The manifest carries the guest-side posture; by accepting it the runtime also commits to
-// the host-side half of the contract (see the Driver doc): run the monitor jailed and
-// least-privilege, attach no network interface while Egress is false, give each guest a
-// unique uid/gid, and bound the monitor process by the resource caps. Egress=false means
-// no network device, not a blocked one, so an inference process has no interface to reach.
+// manifest always denies egress and makes every mount read-only, whatever the
+// caller built. A runtime that accepts it also runs the monitor jailed, gives
+// each guest a unique uid/gid, caps the monitor, and attaches no network device
+// while Egress is false.
 type manifest struct {
 	Kernel   string            `json:"kernel"`
 	RootFS   string            `json:"rootfs"`
@@ -83,19 +70,14 @@ type manifest struct {
 	ResultTo string            `json:"result_to,omitempty"`
 }
 
-// manifestMount is a host path the runtime mounts into the guest, always read-only.
 type manifestMount struct {
 	HostPath  string `json:"host_path"`
 	GuestPath string `json:"guest_path"`
 	ReadOnly  bool   `json:"read_only"`
 }
 
-// buildManifest renders the boot request for a command (or a serve when argv drives a
-// long-lived server). It is a pure function so the security-critical invariants are
-// fuzz-testable in isolation: egress is forced denied, every mount is forced read-only,
-// the command is carried as argv (never a shell string), and the resource caps come
-// straight from the validated guarantees. It refuses a spec with no guest image, since a
-// guest with no kernel or root filesystem cannot be a boundary.
+// buildManifest is pure so its invariants can be fuzzed. It refuses a spec with
+// no guest image, since a guest without kernel or rootfs is no boundary.
 func buildManifest(spec Spec, argv []string, serve bool, resultTo string) (manifest, error) {
 	if !filepath.IsAbs(spec.Image.Kernel) || !filepath.IsAbs(spec.Image.RootFS) {
 		return manifest{}, fault.New(fault.Terminal, "microvm_no_image",
@@ -127,22 +109,18 @@ func buildManifest(spec Spec, argv []string, serve bool, resultTo string) (manif
 	}, nil
 }
 
-// result is the guest outcome the runtime writes back for a run-to-completion command.
 type result struct {
 	Exit   int    `json:"exit"`
 	Output string `json:"output"`
 }
 
-// Exec boots a guest, runs the command to completion, reads back the result, and tears
-// the guest down, the one-shot path. A non-zero guest exit is a result; an error means the
-// runtime could not boot or run the guest at all.
+// Exec returns a non-zero guest exit as a result; an error means the guest did
+// not boot or run.
 func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, error) {
 	if c.isClosed() {
 		return ExecResult{}, fault.New(fault.Terminal, "microvm_closed", "microvm: machine is closed")
 	}
-	// Each Exec gets its own result file so concurrent calls on the same machine
-	// cannot overwrite each other's manifest or read back another call's result. The
-	// files live in the private control directory and are removed when the call ends.
+	// A result file per call keeps concurrent calls from reading each other's.
 	resultFile, err := os.CreateTemp(c.control, "result-*.json")
 	if err != nil {
 		return ExecResult{}, fault.Wrap(fault.Terminal, "microvm_result", err)
@@ -160,14 +138,11 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	}
 	defer func() { _ = os.Remove(manPath) }()               //nolint:gosec // manPath is from os.CreateTemp under the private control dir, not caller-controlled
 	cmd := procexec.CommandContext(ctx, c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path; the guest, not this exec, is the boundary
-	// runCounted brackets the child-process registry around a confirmed start, so a
-	// runtime that fails to launch is never counted as a live child.
+	// runCounted counts a child only after a confirmed start.
 	var buf bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &buf, &buf
 	if err = runCounted(cmd); err != nil {
-		// A cancelled or timed-out context (the caller's deadline, or the wall-clock breaker)
-		// surfaces as the context error so callers can tell "the guest was stopped" from "the
-		// runtime is broken", rather than misreading a cancellation as a terminal failure.
+		// The context error lets callers tell a stopped guest from a broken runtime.
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ExecResult{}, ctxErr
 		}
@@ -187,9 +162,8 @@ func (c *commandMachine) Exec(ctx context.Context, line string) (ExecResult, err
 	return ExecResult{Output: r.Output, ExitCode: r.Exit}, nil
 }
 
-// Serve boots a guest running a long-lived server and returns a handle once the runtime
-// reports the forwarded host address. The guest still has no outbound network; only the
-// single loopback endpoint the runtime forwards is reachable.
+// Serve returns once the runtime reports the forwarded address. The guest has no
+// outbound network; only that loopback endpoint is reachable.
 func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, error) {
 	if c.isClosed() {
 		return nil, fault.New(fault.Terminal, "microvm_closed", "microvm: machine is closed")
@@ -202,8 +176,7 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 	if err != nil {
 		return nil, err
 	}
-	// The server outlives the call, so it is not tied to ctx; ctx only bounds the wait
-	// for the forwarded address to appear.
+	// ctx bounds only the wait for the address; the server outlives the call.
 	cmd := procexec.Command(c.runtime, manPath) //nolint:gosec // runtime is a resolved, host-trusted path
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -227,9 +200,8 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 		_ = s.Stop()
 		return nil, ctx.Err()
 	case <-s.done:
-		// done is closed only after the reader reached EOF, so an address the runtime printed
-		// before exiting is already in addrCh. That is what makes the outcome deterministic:
-		// a server that did come up is never reported as one that never did.
+		// done closes after the reader hits EOF, so a printed address is already in
+		// addrCh and a server that came up is never reported as failed.
 		select {
 		case addr := <-addrCh:
 			return c.adopt(s, addr)
@@ -242,9 +214,8 @@ func (c *commandMachine) Serve(ctx context.Context, argv []string) (Serving, err
 	}
 }
 
-// adopt records a started server's forwarded address and tracks it for teardown. If the
-// machine was closed while the server was coming up, the server is stopped rather than
-// leaked, so a Serve that races Close never leaves an orphan process behind.
+// adopt stops the server if the machine closed meanwhile, so racing Close leaves
+// no orphan.
 func (c *commandMachine) adopt(s *cmdServing, addr string) (Serving, error) {
 	s.setAddr(addr)
 	if !c.track(s) {
@@ -257,18 +228,14 @@ func (c *commandMachine) adopt(s *cmdServing, addr string) (Serving, error) {
 // addrPrefix is the line the runtime prints once the forwarded loopback endpoint is up.
 const addrPrefix = "FLYNN-MICROVM-ADDR "
 
-// ReadFile reads from the guest working area, which is the host working directory the
-// runtime mounts into the guest, so the read is path-confined on the host.
 func (c *commandMachine) ReadFile(ctx context.Context, p string) ([]byte, error) {
 	return c.files.ReadFile(ctx, p)
 }
 
-// WriteFile writes into the guest working area (the host working directory).
 func (c *commandMachine) WriteFile(ctx context.Context, p string, data []byte) error {
 	return c.files.WriteFile(ctx, p, data)
 }
 
-// List returns regular-file paths under dir in the guest working area.
 func (c *commandMachine) List(ctx context.Context, dir string) ([]string, error) {
 	return c.files.Walk(ctx, dir)
 }
@@ -297,8 +264,7 @@ func (c *commandMachine) isClosed() bool {
 	return c.closed
 }
 
-// track records a server for teardown, returning false if the machine has already closed
-// (so the caller stops the server rather than leaking it past Close).
+// track returns false after Close, and the caller then stops the server.
 func (c *commandMachine) track(s *cmdServing) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -309,10 +275,8 @@ func (c *commandMachine) track(s *cmdServing) bool {
 	return true
 }
 
-// writeManifest serializes a manifest to a uniquely named file in the control
-// directory and returns its path. The name is unique per call (os.CreateTemp), so
-// concurrent Exec or Serve calls on the same machine never share a manifest path
-// and cannot overwrite each other's boot request.
+// writeManifest names the file with os.CreateTemp so concurrent calls never share
+// a manifest.
 func (c *commandMachine) writeManifest(kind string, man manifest) (string, error) {
 	data, err := json.Marshal(man)
 	if err != nil {
@@ -332,17 +296,15 @@ func (c *commandMachine) writeManifest(kind string, man manifest) (string, error
 	return f.Name(), nil
 }
 
-// cmdServing is the handle to a background guest server started by a commandMachine.
 type cmdServing struct {
 	cmd  *exec.Cmd
 	tail *tailBuffer
 	done chan struct{}
-	// scanned is closed when the reader has drained the server's stdout, so a Serve that
-	// observes the exit can still tell whether an address was printed before it.
+	// scanned closes once stdout is drained, so Serve can tell whether an address
+	// came before the exit.
 	scanned chan struct{}
 	clk     clock.Timing
-	// reaped tells the process registry this child is no longer live. It runs from reap,
-	// the one goroutine that waits on the command.
+	// reaped runs only from reap, the one goroutine that waits on the command.
 	reaped func()
 
 	mu   sync.Mutex
@@ -351,10 +313,8 @@ type cmdServing struct {
 
 var _ Serving = (*cmdServing)(nil)
 
-// readAddr drains the runtime's stdout, retaining every line in the tail and reporting the
-// first forwarded address it announces. It runs to EOF and closes scanned, which is what reap
-// waits for before calling Wait: Wait closes this pipe, and closing it under a live read is
-// what loses the address. The pipe is not closed here, because Wait is what owns it.
+// readAddr reads to EOF and closes scanned. reap waits for that before Wait,
+// because Wait closes the pipe and would cut off a live read of the address.
 func (s *cmdServing) readAddr(stdout io.Reader, tail *tailBuffer, out chan<- string) {
 	defer close(s.scanned)
 	sc := bufio.NewScanner(stdout)
@@ -371,10 +331,8 @@ func (s *cmdServing) readAddr(stdout io.Reader, tail *tailBuffer, out chan<- str
 }
 
 func (s *cmdServing) reap() {
-	// Wait closes the stdout pipe as soon as the runtime exits, so every read has to be
-	// finished before it runs. Draining first is what keeps a runtime that prints its
-	// address and exits in the same instant from having that address cut off mid-read and
-	// being reported as a server that never came up.
+	// Wait closes stdout, so drain first or an address printed just before exit is
+	// lost.
 	<-s.scanned
 	_ = s.cmd.Wait()
 	s.reaped()
@@ -413,7 +371,7 @@ func (s *cmdServing) Stop() error {
 	if s.cmd.Process != nil {
 		_ = s.cmd.Process.Kill()
 	}
-	// Bound the wait so a runtime that ignores the kill cannot hang teardown forever.
+	// A runtime that ignores the kill cannot hang teardown.
 	select {
 	case <-s.done:
 	case <-s.clk.After(5 * time.Second):
