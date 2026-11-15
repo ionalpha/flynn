@@ -9,22 +9,9 @@
 # fails it, and so does a count that has dropped or an entry with no
 # violation left, so a change that fixes comments lowers or deletes the
 # lines it fixed. Never add a line or raise a count: fix the comment.
-bus/bus.go deliberately 1
-chain/conformance/conformance.go deliberately 2
-chain/conformance/crypto.go deliberately 1
 chain/conformance/crypto.go length 1
-chain/verify.go deliberately 1
-extension/extension.go deliberately 1
-extension/fetch.go deliberately 1
-extension/release.go deliberately 1
-extension/signerchannel.go deliberately 1
-extension/signing.go matters 1
 inbox/triage.go matters 1
 internal/conformtest/conformtest.go deliberately 2
-internal/tui/editor/editor.go deliberately 1
-internal/tui/screen/screen.go deliberately 1
-internal/tui/term/term.go deliberately 1
-internal/tui/theme/theme.go deliberately 1
 memory/consolidate/consolidate.go matters 1
 memory/curate/curate.go filler 1
 memory/digest/builder.go matters 1
@@ -48,10 +35,6 @@ notices/feed.go matters 1
 notices/fetch.go deliberately 1
 notices/keyring.go deliberately 2
 notices/store.go filler 1
-observe/observe.go deliberately 1
-orchestration/units.go deliberately 1
-runtime/runtime.go dash 1
-runtime/runtime.go filler 2
 skill/pack.go length 1
 skill/skillmd/load.go length 1
 skill/skillmd/load.go matters 1
@@ -59,7 +42,3 @@ skill/skillmd/skillmd.go deliberately 2
 skill/skillmd/skillmd.go filler 1
 skill/skillmd/write.go deliberately 2
 skill/skillrecall/skillrecall.go deliberately 1
-state/usage.go deliberately 1
-state/usage.go filler 1
-storage/sqlite/compress.go matters 1
-storage/sqlite/warm.go length 1
