@@ -14,55 +14,42 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// ActionSpawn is the dispatch action a fan-out runs under, so spawning a sub-goal is admitted
-// against the run's grant, metered, and recorded on the spine like any other action. A run whose
-// grant does not list it cannot fan out, which keeps delegation a least-privilege decision.
+// ActionSpawn is the action a fan-out runs under, so a run whose grant omits it cannot
+// delegate.
 const ActionSpawn = "spawn"
 
-// SubGoal is a child goal a parent asks to run as part of a fan-out: an objective and either the
-// actions the child may take or a named Agent to run it as. The actions (or the named Agent's
-// capabilities) narrow the parent's authority, since a delegated run can never exceed the authority
-// of the run that spawned it.
+// SubGoal is a child of a fan-out. Its Actions or Agent narrow the parent's authority and
+// never exceed it.
 type SubGoal struct {
 	Objective string   `json:"objective"`
 	Actions   []string `json:"actions,omitempty"`
-	// Agent, when set, names an Agent archetype to run the child as: its system prompt and
-	// capabilities configure the child (intersected with the parent's authority), instead of the
-	// ad-hoc Actions list. Empty runs an ad-hoc child from Actions.
+	// Agent names an archetype whose prompt and capabilities replace Actions.
 	Agent string `json:"agent,omitempty"`
 }
 
-// ChildResult is the outcome of a spawned child, folded back into the parent's conversation as the
-// result of its spawn call.
+// ChildResult becomes the result of the parent's spawn call.
 type ChildResult struct {
 	ID     string
 	Result string
 	Failed bool
 }
 
-// Fanout spawns child goals and reports their outcomes, so a parent goal can run sub-goals
-// concurrently and fold their results into its own conversation. The implementation attaches each
-// child to the parent (ownership and cascade teardown), narrows the grant to the requested
-// actions, and shares the parent's budget, so a fan-out can neither escalate authority nor exceed
-// the run's budget. A nil Fanout disables fan-out: the spawn tool is not offered and a goal runs as
-// a single conversation, which is the n=1 case of the same mechanism.
+// Fanout runs sub-goals concurrently. An implementation owns each child under the parent,
+// narrows its grant and shares the parent's budget, so a fan-out escalates neither
+// authority nor spend.
 type Fanout interface {
-	// Spawn creates a child goal owned by parent and returns its id.
 	Spawn(ctx context.Context, parent resource.Resource, sub SubGoal) (id string, err error)
-	// Poll reports the children's outcomes and whether all of them have finished, so the parent
-	// knows when to fold. While any child is still running, allDone is false.
+	// Poll reports allDone once every child has finished.
 	Poll(ctx context.Context, ids []string) (results []ChildResult, allDone bool, err error)
 }
 
-// WithFanout enables fan-out: the model is offered a spawn tool, and a call to it creates a child
-// goal through f. The default is nil, which leaves a goal as a single conversation.
+// WithFanout offers the model a spawn tool backed by f. Nil offers none.
 func WithFanout(f Fanout) Option {
 	return func(e *Executor) { e.fanout = f }
 }
 
-// spawnToolDef is the tool the model calls to fan out. Its result is the child's final answer,
-// delivered once the child finishes, so to the model a fan-out reads as an ordinary tool call that
-// happens to take a while.
+// spawnToolDef returns the child's final answer, so a fan-out reads to the model as a slow
+// tool call.
 var spawnToolDef = llm.Tool{
 	Name: ActionSpawn,
 	Description: "Delegate a self-contained sub-task to a child agent that runs concurrently. " +
@@ -81,10 +68,8 @@ var spawnToolDef = llm.Tool{
 }`),
 }
 
-// resultSlot is one tool-result the turn owes the model, held on the checkpoint while a fan-out is
-// in flight. A normal tool's result is captured immediately in Content; a spawn's result is filled
-// from its child once the child finishes (ChildID identifies which). Keeping the slots in tool-call
-// order means the folded results are appended in the order the model issued the calls.
+// resultSlot is a tool result owed to the model while a fan-out is in flight. Slots stay in
+// call order so the folded results match the order the model issued them.
 type resultSlot struct {
 	ToolUseID string `json:"toolUseID"`
 	ChildID   string `json:"childID,omitempty"`
@@ -92,12 +77,8 @@ type resultSlot struct {
 	IsError   bool   `json:"isError,omitempty"`
 }
 
-// dispatchToolUses runs a turn's tool calls. A turn with no spawn call takes the ordinary path
-// unchanged, returning the result blocks to append now. A turn that spawns at least one child
-// instead returns pending slots, in call order, so the parent waits and folds the children's
-// results in later: a normal call's result is captured immediately, a spawn's is left for its
-// child. A spawn that fails (rejected, malformed, or a spawner error) becomes an error result the
-// model sees rather than a step failure.
+// dispatchToolUses returns blocks for a turn with no live spawn and pending slots otherwise.
+// A failed spawn is an error result for the model, so it does not fail the step.
 func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, turn int, calls []llm.ToolUse) (blocks []llm.Block, pending []resultSlot, err error) {
 	scope := state.Scope(r.Scope)
 	if e.fanout == nil || !containsSpawn(calls) {
@@ -116,9 +97,7 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 			}
 			live = true
 			slots = append(slots, resultSlot{ToolUseID: c.ID, ChildID: id})
-			// Record the parent-to-child edge on the stream, correlated to this spawn
-			// call by ToolUseID: the child's result folds back as the tool.result for the
-			// same id, so a tree projection pairs the child with its completion.
+			// ToolUseID pairs this spawn with the child's completion in a tree projection.
 			e.reporter.Report(ctx, Event{Kind: EventChildSpawned, Goal: r.Name, Child: id, Turn: turn, Tool: ActionSpawn, ToolUseID: c.ID, Text: objective})
 			continue
 		}
@@ -130,18 +109,14 @@ func (e *Executor) dispatchToolUses(ctx context.Context, r resource.Resource, tu
 		e.reporter.Report(ctx, Event{Kind: EventToolResult, Goal: r.Name, Turn: turn, Tool: c.Name, ToolUseID: c.ID, Result: slot.Content, IsError: slot.IsError})
 		slots = append(slots, slot)
 	}
-	// With no live child (every spawn was rejected), there is nothing to wait for, so fold the
-	// results now rather than entering a wait that would resolve immediately.
+	// Every spawn was rejected, so there is nothing to wait for.
 	if !live {
 		return slotsToBlocks(slots), nil, nil
 	}
 	return nil, slots, nil
 }
 
-// spawnChild governs a spawn through the waist and creates the child goal. The action is admitted
-// against the run's grant, so a run whose grant omits spawn cannot fan out, and it is metered and
-// recorded on the spine like any other action. It returns the child's id and the sub-objective it
-// was given, so the caller can record the parent-to-child edge on the stream.
+// spawnChild returns the objective too, so the caller can record the parent-to-child edge.
 func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.ToolUse) (id, objective string, err error) {
 	var sub SubGoal
 	if err := json.Unmarshal(c.Input, &sub); err != nil {
@@ -159,11 +134,8 @@ func (e *Executor) spawnChild(ctx context.Context, r resource.Resource, c llm.To
 	return id, sub.Objective, err
 }
 
-// advanceFanout is the waiting step of a fan-out: poll the children, and either fold their results
-// into the conversation once they have all finished or report goal.ErrWaiting while any is still
-// running, which parks the parent (no checkpoint write, no step counted, no re-dispatch until a
-// child settles). Folding fills each spawn slot from its child and preserves call order, so the
-// model receives the spawn results as ordinary tool results in the order it issued them.
+// advanceFanout returns goal.ErrWaiting while a child runs, which parks the parent with no
+// checkpoint write and no step counted, until a child settles.
 func (e *Executor) advanceFanout(ctx context.Context, r resource.Resource, cp checkpoint) (json.RawMessage, error) {
 	results, allDone, err := e.fanout.Poll(ctx, childIDs(cp.Pending))
 	if err != nil {
@@ -180,10 +152,7 @@ func (e *Executor) advanceFanout(ctx context.Context, r resource.Resource, cp ch
 		if id := cp.Pending[i].ChildID; id != "" {
 			cr := byID[id]
 			cp.Pending[i].Content, cp.Pending[i].IsError = cr.Result, cr.Failed
-			// Record the child folding back into this parent, closing the edge its spawn
-			// opened. This is the only point a successful child's result reaches the
-			// stream (a rejected spawn reports its own error), so the record carries every
-			// delegation's outcome and a live tree can flip the child to done or failed.
+			// The only place a successful child's result reaches the stream.
 			e.reporter.Report(ctx, Event{Kind: EventChildCompleted, Goal: r.Name, Child: id, Tool: ActionSpawn, ToolUseID: cp.Pending[i].ToolUseID, Result: cr.Result, IsError: cr.Failed})
 		}
 	}
@@ -192,7 +161,6 @@ func (e *Executor) advanceFanout(ctx context.Context, r resource.Resource, cp ch
 	return encodeCheckpoint(cp)
 }
 
-// containsSpawn reports whether any call in a turn is a fan-out spawn.
 func containsSpawn(calls []llm.ToolUse) bool {
 	for _, c := range calls {
 		if c.Name == ActionSpawn {
@@ -202,7 +170,6 @@ func containsSpawn(calls []llm.ToolUse) bool {
 	return false
 }
 
-// childIDs is the set of child goal ids a pending fan-out is waiting on.
 func childIDs(pending []resultSlot) []string {
 	ids := make([]string, 0, len(pending))
 	for _, s := range pending {
@@ -213,7 +180,6 @@ func childIDs(pending []resultSlot) []string {
 	return ids
 }
 
-// slotsToBlocks renders result slots as tool_result blocks in order.
 func slotsToBlocks(slots []resultSlot) []llm.Block {
 	blocks := make([]llm.Block, 0, len(slots))
 	for _, s := range slots {

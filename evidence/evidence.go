@@ -1,16 +1,11 @@
-// Package evidence is the shipped producer behind the goal package's evidence gate: it
-// runs a ledger item's declared check and writes the verdict onto the run's spine, where
-// the gate reads it.
+// Package evidence runs a ledger item's declared check and writes the verdict onto the
+// run's spine, where the goal package's evidence gate reads it. The goal package owns
+// the rule and stays free of a log, a sandbox and the dispatch waist; this package owns
+// the mechanism and depends on all three.
 //
-// It exists as its own package for the reason progress does. The goal package owns the
-// rule (what counts as proof) and must stay free of a log implementation, a sandbox, and
-// the dispatch waist; this owns the mechanism, depends on all three, and nothing depends
-// on it but the composition that wires it.
-//
-// The two halves are deliberately separate types. CommandVerifier decides what happened;
-// SpineEvidence records it. Neither marks anything proven (the reconciler does, by
-// folding the record back through the gate), so there is no path from "a check ran" to
-// "an item is done" that skips the rule.
+// [CommandVerifier] decides what happened and [SpineEvidence] records it. Neither marks
+// an item proven; the reconciler does, through the gate, so no path from "a check ran"
+// to "an item is done" skips the rule.
 package evidence
 
 import (
@@ -31,49 +26,32 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// VerifyItemAction is the dispatch action name an item's check runs under, so a
-// verification is admitted, traced, and recorded on the spine under a stable, greppable
-// name alongside the tools the agent invokes. Running a model-authored command is an
-// action with consequences whoever asked for it, so it goes through the same chokepoint
-// as the rest of the run rather than being a side channel that bypasses governance.
+// VerifyItemAction is the dispatch action an item's check runs under. A model-authored
+// command has consequences, so it is admitted and traced like any tool call.
 const VerifyItemAction = "goal.verify.item"
 
-// maxDetail bounds the check output spliced into a verdict's Detail. The full output is
-// hashed onto the spine, not carried; this is the part handed back to the model as
-// feedback, and an unbounded tail of it would crowd out the turn it is meant to inform.
+// maxDetail bounds the output handed back to the model, so it cannot crowd out the turn.
+// The spine records only a hash of the full output.
 const maxDetail = 2000
 
-// SpineEvidence is the goal.Evidence implementation over a run's own event stream: a
-// verification is appended as a chain.ItemVerified event on the goal's stream, and read
-// back from the same stream by sequence.
-//
-// The event's sequence is its identity, which is what makes consumption work: the gate
-// spends a verification by ref, and no two appends can share one. The stream is the goal's
-// name, the same identity the session, the progress probe and the conversation cache key
-// on, so a run's verifications interleave with its other events in one ordered log rather
-// than living in a record of their own.
+// SpineEvidence is the [goal.Evidence] that appends each verification as a
+// chain.ItemVerified event on the goal's stream. The event's sequence is its ref, and no
+// two appends share one, so the gate can spend a verification exactly once.
 type SpineEvidence struct {
 	log spine.Log
 }
 
-// NewSpineEvidence builds an evidence record over log.
+// NewSpineEvidence returns a SpineEvidence over log.
 func NewSpineEvidence(log spine.Log) *SpineEvidence { return &SpineEvidence{log: log} }
 
 var _ goal.Evidence = (*SpineEvidence)(nil)
 
-// Record appends one item verification to the goal's stream and returns it as the gate
-// will read it.
+// Record appends one item verification as ActorSystem and returns it as the gate reads it.
 //
-// The provenance written is the verdict's own Executed field and nothing else. This is the
-// single place the executed marker can enter the record, it is set from what the verifier
-// observed about its own execution, and no payload from a model reaches it, which is the
-// invariant the whole provenance axis rests on. A model that could claim execution would
-// make the field certify nothing.
-//
-// The event is recorded as ActorSystem: the runtime produced it, not the agent. An
-// executed verdict also carries the exit code and a hash of the output, so a later reader
-// can tell a check that passed from one merely said to have passed, without the record
-// growing by the size of every check's output.
+// This is the only place the executed marker enters the record, and it comes from the
+// verdict's Executed field, never from a model payload. A model that could claim
+// execution would make the marker certify nothing. An executed verdict also carries the
+// exit code and an output hash.
 func (s *SpineEvidence) Record(ctx context.Context, r resource.Resource, item string, v goal.ItemVerdict) (goal.Verification, error) {
 	payload := map[string]any{
 		chain.ItemKey:           item,
@@ -85,11 +63,8 @@ func (s *SpineEvidence) Record(ctx context.Context, r resource.Resource, item st
 		payload[chain.ItemExitKey] = v.ExitCode
 		payload[chain.ItemOutputKey] = outputHash(v.Output)
 	} else if detail := strings.TrimSpace(v.Detail); detail != "" {
-		// Why nothing was run, which is the unexecuted case's whole evidence. An item the
-		// gate refuses reports only that its check could not be run, and that sentence
-		// names no cause: a clause no host could ever execute and a sandbox that failed to
-		// start read the same to whoever is handed the stopped goal. Recording the reason
-		// is what makes those two different outcomes on the record rather than one.
+		// The reason tells an unrunnable clause from a sandbox that failed to start, which
+		// otherwise read the same on a stopped goal.
 		payload[chain.ItemReasonKey] = clip(detail, maxDetail)
 	}
 	e, err := s.log.Append(ctx, spine.AppendInput{
@@ -101,10 +76,8 @@ func (s *SpineEvidence) Record(ctx context.Context, r resource.Resource, item st
 	if err != nil {
 		return goal.Verification{}, fault.Wrap(fault.Transient, "evidence_append", err)
 	}
-	// Read the appended event back through the same decoder the gate uses, rather than
-	// building the Verification here. The two would otherwise be independent derivations
-	// of one wire contract, free to drift on the ref format or the provenance rule, and a
-	// drift there is a verification the producer thinks it wrote and the gate never sees.
+	// Decode with the gate's own decoder, so producer and gate cannot drift on the ref
+	// format or the provenance rule.
 	vs := goal.VerificationsFrom([]spine.Event{e})
 	if len(vs) != 1 {
 		return goal.Verification{}, fault.New(fault.Terminal, "evidence_unreadable",
@@ -113,10 +86,8 @@ func (s *SpineEvidence) Record(ctx context.Context, r resource.Resource, item st
 	return vs[0], nil
 }
 
-// RecordAdmission appends one admission verdict to the goal's stream. A refused check is
-// recorded as well as an admitted one: the sequence of refusals is how a reader sees what
-// the planner was sent back for before the plan that ran. The event is ActorSystem and the
-// evidence gate does not read it.
+// RecordAdmission appends one admission verdict as ActorSystem. Refusals are recorded too,
+// so a reader sees what the planner was sent back for. The evidence gate does not read it.
 func (s *SpineEvidence) RecordAdmission(ctx context.Context, r resource.Resource, v goal.AdmissionVerdict) error {
 	payload := map[string]any{
 		chain.ItemKey:         v.Item,
@@ -142,9 +113,8 @@ func (s *SpineEvidence) RecordAdmission(ctx context.Context, r resource.Resource
 
 var _ goal.AdmissionRecorder = (*SpineEvidence)(nil)
 
-// Recorded returns every item verification on the goal's stream, in the order recorded. A
-// read failure is transient: a record that cannot be reached for a moment is not a run
-// with no evidence, and treating it as one would stall a healthy goal.
+// Recorded returns the goal's verifications in order. A read failure is Transient,
+// because treating it as no evidence would stall a healthy goal.
 func (s *SpineEvidence) Recorded(ctx context.Context, r resource.Resource) ([]goal.Verification, error) {
 	events, err := s.log.Read(ctx, spine.Query{Stream: r.Name})
 	if err != nil {
@@ -153,51 +123,34 @@ func (s *SpineEvidence) Recorded(ctx context.Context, r resource.Resource) ([]go
 	return goal.VerificationsFrom(events), nil
 }
 
-// outputHash is the content address of a check's output, recorded instead of the output
-// itself so the evidence names exactly what was observed without the record growing by the
-// size of every test run's log.
+// outputHash names the observed output exactly without storing it.
 func outputHash(out string) string {
 	sum := sha256.Sum256([]byte(out))
 	return hex.EncodeToString(sum[:])
 }
 
-// CommandVerifier runs a ledger item's verify clause as a shell command inside the run's
-// sandbox and treats a zero exit code as proof, routing the run through the dispatch waist
-// so it is admitted, traced and recorded like any tool the agent invokes.
-//
-// It is learn.SandboxVerifier's shape aimed at a ledger item rather than a skill, and the
-// resemblance is the point: that path was built once, is in production, and already
-// separates "the check failed" from "the check could not run". Rebuilding it differently
-// here would give the ledger a weaker version of a distinction the codebase already makes.
+// CommandVerifier runs an item's verify clause in the run's sandbox through the dispatch
+// waist and treats exit 0 as proof. It follows learn.SandboxVerifier, which separates
+// "the check failed" from "the check could not run".
 type CommandVerifier struct {
 	sb         sandbox.Sandbox
 	dispatcher *dispatch.Dispatcher
 }
 
-// NewCommandVerifier builds a verifier running each item's check in sb, governed by a
-// dispatcher built from opts. Pass the same admitter, event sink and observability the
-// rest of the run uses, so a verification shares its governance and its spine; with no
-// options the dispatcher applies standalone defaults and the check is recorded but
-// ungoverned.
+// NewCommandVerifier runs checks in sb under a dispatcher built from opts. Pass the run's
+// own admitter, sink and observability; with none the check is recorded but ungoverned.
 func NewCommandVerifier(sb sandbox.Sandbox, opts ...dispatch.Option) *CommandVerifier {
 	return &CommandVerifier{sb: sb, dispatcher: dispatch.New(opts...)}
 }
 
 var _ goal.ItemVerifier = (*CommandVerifier)(nil)
 
-// VerifyItem runs the item's declared check and reports the verdict.
+// VerifyItem runs the item's check. A check that cannot run (no clause, no sandbox, a
+// refused admission) yields an unexecuted, unpassed verdict saying why, so the gate rules
+// on it and the goal does not stall. Only a cancelled context is an error.
 //
-// Every way of not running the check yields a verdict that did not pass, marked
-// unexecuted, saying why. An item with no clause, a sandbox that could not start it, an
-// admission that refused it: none is evidence the item is done, and none should stall the
-// goal, because a clause no mechanism can run is a common outcome the gate rules on. Only
-// a cancelled context is a hard error.
-//
-// The command runs as the model wrote it, inside the sandbox and under the waist. It is
-// classified semi-trusted, the level the shell tool declares: model-authored text that
-// executes in the agent's own confined sandbox. Classifying it stronger would make the
-// containment gate decline every check on every host that runs the shell tool, and every
-// item would read as unproven for a reason unrelated to the items.
+// The command runs as TrustSemi, the shell tool's level. A stronger class would make the
+// containment gate refuse every check on hosts that run the shell tool.
 func (v *CommandVerifier) VerifyItem(ctx context.Context, r resource.Resource, item goal.LedgerItem) (goal.ItemVerdict, error) {
 	check := strings.TrimSpace(item.Verify)
 	if check == "" {
@@ -236,8 +189,8 @@ func (v *CommandVerifier) VerifyItem(ctx context.Context, r resource.Resource, i
 	return verdict, nil
 }
 
-// clip bounds a check's output for the detail handed back to the agent, keeping the tail
-// rather than the head: a failing command's diagnosis is almost always its last lines.
+// clip keeps the tail, because a failing command's diagnosis is almost always its last
+// lines.
 func clip(s string, n int) string {
 	s = strings.TrimSpace(s)
 	if len(s) <= n {
@@ -246,8 +199,5 @@ func clip(s string, n int) string {
 	return "…" + s[len(s)-n:]
 }
 
-// ErrNoSandbox reports a verifier asked to run a check with no sandbox to run it in. It is
-// a composition error, not a runtime one: a run reaching this had its verifier wired
-// wrong, and every item would otherwise read as unexecuted for a reason that has nothing
-// to do with the items.
+// ErrNoSandbox reports a verifier or auditor wired with no sandbox, a composition error.
 var ErrNoSandbox = errors.New("evidence: command verifier has no sandbox")

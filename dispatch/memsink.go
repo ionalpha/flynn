@@ -5,9 +5,8 @@ import (
 	"sync"
 )
 
-// MemorySink is an EventSink that records events in memory. It stands in where no
-// durable spine sink is wired (tests, headless runs) and makes the waist's emissions
-// inspectable. It is safe for concurrent use.
+// MemorySink records events in memory where no spine sink is wired, so tests can
+// inspect them. It is safe for concurrent use.
 type MemorySink struct {
 	mu     sync.Mutex
 	events []Event

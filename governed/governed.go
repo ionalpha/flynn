@@ -1,20 +1,15 @@
 // Package governed composes a governed Flynn run from backends a host supplies.
 //
-// Everything that makes a run governed lives here and nowhere else: the confined
-// sandbox, the toolset and the grant that bounds it, the dispatch hooks (brakes, spend
-// budget, approval, containment), the spine sink, and the run-level judges (verifier,
-// auditor, steer judge, refusal and progress probes). The flynn binary is one caller of
-// [Assemble]; an embedder is another, and gets the same run. A package that wired these
-// by hand would drift from the binary the first time a guard was added to one side.
+// The sandbox, the grant, the dispatch hooks (brakes, budget, approval, containment), the
+// spine sink and the run-level judges are composed only here, so the flynn binary and an
+// embedder calling [Assemble] get the same run and cannot drift apart.
 //
 // # Defaults are the governed ones
 //
-// A run assembled with no options carries every guard the binary does. There is no
-// option that means "fewer guards" except [Waive], which names the [Guard], needs a
-// reason, and writes both onto the run's spine stream as a [WaivedEventType] event
-// before the run starts. A nil or zero value passed to an option is an error, never a
-// silent opt-out, and [Run.Posture] reports what was wired so a host can
-// assert it.
+// A run with no options carries every guard. Only [Waive] removes one: it names the
+// [Guard], needs a reason, and records both as a [WaivedEventType] event before the run
+// starts. A nil or zero option value is an error, and [Run.Posture] reports what was
+// wired so a host can assert it.
 //
 // # Modes
 //
@@ -33,36 +28,30 @@ import (
 )
 
 const (
-	// DefaultCompactionBudget is the input-token budget past which a run elides the
-	// oldest middle turns. It is a conservative floor for a model whose window is
-	// unknown; a model plan with a measured, narrower context tightens it.
+	// DefaultCompactionBudget is the input-token count past which a run elides the oldest
+	// middle turns. It is a floor for an unknown window; a model plan can tighten it.
 	DefaultCompactionBudget = 100_000
 
-	// DefaultFanoutWidth caps how many child runs a fan-out may have outstanding at
-	// once, bounding the blast radius of delegation alongside the depth guard.
+	// DefaultFanoutWidth caps a fan-out's outstanding child runs.
 	DefaultFanoutWidth = 8
 
-	// FanoutRootMaxSteps is the step budget a fan-out parent runs under. A fan-out adds
-	// orchestration steps a single conversation never takes (a dispatch per delegation,
-	// one poll per reconcile while it waits), so the reconciler's default would cut a
-	// legitimate delegation off mid-fold.
+	// FanoutRootMaxSteps is a fan-out parent's step budget. Each delegation and each poll
+	// while waiting costs a step, so the reconciler's default would cut delegation short.
 	FanoutRootMaxSteps = 200
 
-	// DefaultMaxActionsPerMinute is the rate the default safety brake halts a run at. It
-	// sits well above any real run's pace so it catches only a degenerate tight loop.
+	// DefaultMaxActionsPerMinute is the default brake rate, set well above any normal
+	// run's pace so only a tight loop trips it.
 	DefaultMaxActionsPerMinute = 600
 )
 
-// Backends are the durable ports a run is assembled over. All three are required: a run
-// with no log has no record, and one with no resource store or queue has nothing to
-// reconcile. A nil port is an error rather than a silent in-memory substitute, which
-// would lose the run on exit. [MemoryBackends] is the explicit in-memory choice.
+// Backends are the durable ports a run is assembled over. All three are required, and a
+// nil one is an error because a silent in-memory substitute would lose the run on exit.
+// [MemoryBackends] is the explicit in-memory choice.
 type Backends struct {
-	// Resources holds the run's goal and every child goal, budget and approval it spawns.
+	// Resources holds the goal and every child goal, budget and approval it spawns.
 	Resources resource.Store
-	// Jobs is the work queue the runtime's workers drain.
-	Jobs jobs.Queue
-	// Log is the spine the run is recorded on, and the stream waivers are written to.
+	Jobs      jobs.Queue
+	// Log records the run, including its waivers.
 	Log spine.Log
 }
 
@@ -79,7 +68,7 @@ func (b Backends) validate() error {
 }
 
 // MemoryBackends returns in-process backends over [Registry]. A run on them is lost when
-// the process exits; it is the choice for tests and one-shot embedding.
+// the process exits.
 func MemoryBackends() (Backends, error) {
 	reg, err := Registry()
 	if err != nil {

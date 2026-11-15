@@ -15,20 +15,16 @@ import (
 	"github.com/ionalpha/flynn/skill/skilltool"
 )
 
-// Option configures a run. Options accumulate: an invalid one records its error and
-// [Assemble] returns it, so a bad option is reported once with its cause instead of
-// being dropped. Nothing about an option's zero value weakens governance; the only
-// opt-out is [Waive].
+// Option configures a run. An invalid option's error is returned by [Assemble]. No zero
+// value weakens governance; the only opt-out is [Waive].
 type Option func(*config)
 
-// ExternalAgent is an external agent CLI that drives the run's loop in place of a
-// native model conversation. Every tool call it makes crosses the same dispatch waist,
-// so the grant, brakes and budget bound it; its inner model calls stay unobserved and
-// are declared as a provenance gap by the caller.
+// ExternalAgent is an agent CLI driving the loop. Its tool calls cross the dispatch
+// waist, so grant, brakes and budget bound it; its model calls are unobserved and the
+// caller declares that gap.
 type ExternalAgent struct {
-	// Model is the model string the CLI is handed, set on the submitted goal.
-	Model string
-	// Driver builds the episode loop.
+	// Model is handed to the CLI and set on the submitted goal.
+	Model  string
 	Driver driver.Driver
 }
 
@@ -91,11 +87,9 @@ func WithWorkDir(dir string) Option {
 	}
 }
 
-// WithSandbox runs over a sandbox the host owns instead of creating a confined local
-// one. The run does not close it. It is still subject to the containment gate, so a
-// host sandbox that provides weaker isolation than an action's trust needs refuses the
-// action rather than running it, and [Posture.HostSandbox] records that the run did not
-// build its own confinement.
+// WithSandbox runs over a host-owned sandbox, which the run does not close. The
+// containment gate still refuses an action needing more isolation than it gives, and
+// [Posture.HostSandbox] records it.
 func WithSandbox(sb sandbox.Sandbox) Option {
 	return func(c *config) {
 		if sb == nil {
@@ -109,32 +103,26 @@ func WithSandbox(sb sandbox.Sandbox) Option {
 // WithSystem sets the system prompt framing every turn.
 func WithSystem(system string) Option { return func(c *config) { c.system = system } }
 
-// WithSkills adds the skill toolset to the run's tools. The caller keeps the set to
-// grade the run against its reads, so a session spanning turns hands one set to each.
+// WithSkills adds the skill toolset. The caller keeps s to grade the run's reads, so a
+// multi-turn session passes one set to each.
 func WithSkills(s *skilltool.Set) Option { return func(c *config) { c.skills = s } }
 
 // WithRunID names the run's stream and goal. Empty is a fresh id.
 func WithRunID(id string) Option { return func(c *config) { c.runID = id } }
 
-// WithPlan applies a model's scaffolding plan, so a weaker model is driven with the
-// support it needs. The zero plan of a strong model adds nothing.
+// WithPlan applies a model's scaffolding plan. The zero plan adds nothing.
 func WithPlan(p harness.Plan) Option { return func(c *config) { c.plan = p } }
 
-// WithPlanning expands the objective into a visible ledger before the first build step
-// and closes the loop with a verifier that runs each item's declared check in the run's
-// sandbox.
+// WithPlanning plans a ledger before the first build step and runs each item's check in
+// the run's sandbox.
 func WithPlanning() Option { return func(c *config) { c.planning = true } }
 
-// WithLedgerProof makes the settled ledger, not the model's final answer, decide
-// whether a goal that carries one is done. It has effect with [WithPlanning]; a fan-out
-// always requires proof.
+// WithLedgerProof makes the settled ledger decide completion. It needs [WithPlanning];
+// a fan-out always requires proof.
 func WithLedgerProof() Option { return func(c *config) { c.ledgerProof = true } }
 
 // WithApproval names the actions that pause for a person, and the prompter that asks.
-// An empty actions list with a prompter is an interactive session where nothing is
-// listed. Actions with a nil prompter is the non-interactive run: the listed actions
-// are refused, because a run that cannot reach a person does not proceed as though it
-// had.
+// With a nil prompter the listed actions are refused, because nobody can be reached.
 func WithApproval(actions []string, prompter mission.ApprovalPrompter) Option {
 	return func(c *config) {
 		c.approve = append(c.approve, actions...)
@@ -142,14 +130,14 @@ func WithApproval(actions []string, prompter mission.ApprovalPrompter) Option {
 	}
 }
 
-// WithAllowance names the actions whose effects leave the workspace and cannot be
-// undone. One of them runs only where the goal declared it in advance.
+// WithAllowance names the irreversible actions that reach outside the workspace, which
+// run only if the goal declares them.
 func WithAllowance(outside []string) Option {
 	return func(c *config) { c.outside = append(c.outside, outside...) }
 }
 
-// WithReporter receives the run's conversational events in addition to the spine. The
-// spine always records them; a reporter cannot replace that record.
+// WithReporter receives the run's conversational events alongside the spine, which
+// still records them.
 func WithReporter(r mission.Reporter) Option {
 	return func(c *config) {
 		if r == nil {
@@ -160,11 +148,9 @@ func WithReporter(r mission.Reporter) Option {
 	}
 }
 
-// WithToolset runs a caller-supplied toolset under grant instead of the sandboxed
-// working-tree tools. The grant is the complete authority the waist consults. There is
-// no sandbox, so the run also loses the sandbox-bound verifier, auditor and containment
-// gate; that is a weaker posture and requires Waive(GuardSandbox, reason). A grant that
-// admits every action is refused, so the caller always names what the tools may do.
+// WithToolset runs tools under grant with no sandbox, so the run loses the verifier,
+// auditor and containment gate and needs Waive(GuardSandbox, reason). An unrestricted
+// grant is refused.
 func WithToolset(tools []mission.Tool, grant capability.Grant) Option {
 	return func(c *config) {
 		if len(tools) == 0 {
@@ -172,8 +158,7 @@ func WithToolset(tools []mission.Tool, grant capability.Grant) Option {
 			return
 		}
 		if grant.Unrestricted() {
-			// An unrestricted grant admits every action, which is the one grant that cannot be
-			// told apart from having no policy. The caller names what the tools may do.
+			// An unrestricted grant is indistinguishable from no policy.
 			c.fail(errors.New("governed: WithToolset needs a grant that names its actions, not an unrestricted one"))
 			return
 		}
@@ -181,10 +166,8 @@ func WithToolset(tools []mission.Tool, grant capability.Grant) Option {
 	}
 }
 
-// WithExtensions adds the tools the loaded extensions contribute, and grants exactly
-// their names. An extension tool is permitted by the same grant as any other tool, and
-// the extension's own credential checks still apply at the waist. A tool that reuses the
-// name of one the run already offers fails assembly: it would inherit that name's grant.
+// WithExtensions adds the extensions' tools and grants exactly their names. A tool that
+// reuses an offered name fails assembly, because it would inherit that grant.
 func WithExtensions(b ToolBridge) Option {
 	return func(c *config) {
 		if b == nil {
@@ -195,9 +178,8 @@ func WithExtensions(b ToolBridge) Option {
 	}
 }
 
-// WithCapabilities narrows the grant to exactly these actions plus the model call, so
-// an archetype run is the least-privilege boundary its Agent resource declares. It
-// narrows only: a name outside the offered toolset grants nothing the run could call.
+// WithCapabilities narrows the grant to names plus the model call. A name outside the
+// toolset grants nothing callable.
 func WithCapabilities(names ...string) Option {
 	return func(c *config) {
 		c.caps, c.hasCaps = append([]string(nil), names...), true
@@ -216,9 +198,8 @@ func WithExternalAgent(ea ExternalAgent) Option {
 	}
 }
 
-// WithFanout lets the model delegate self-contained sub-goals to concurrent, governed
-// child agents. resolve turns a named model into a client for a child whose archetype
-// pins one; nil restricts children to the host model.
+// WithFanout lets the model delegate sub-goals to governed child agents. resolve serves
+// a child whose archetype pins a model; nil keeps children on the host model.
 func WithFanout(resolve driver.ModelResolver) Option {
 	return func(c *config) { c.fanout = &fanoutSpec{resolve: resolve} }
 }
@@ -235,8 +216,8 @@ func WithDriver(name string) Option {
 	}
 }
 
-// WithBrakeLimits replaces the default rate breaker. A non-positive cap or window is an
-// error: a limit that never trips would be no brake while reading as one.
+// WithBrakeLimits replaces the default brake. A non-positive cap or window is an error,
+// because it would never trip.
 func WithBrakeLimits(l brakes.Limits) Option {
 	return func(c *config) {
 		if l.MaxActions <= 0 || l.Window <= 0 {
@@ -247,18 +228,15 @@ func WithBrakeLimits(l brakes.Limits) Option {
 	}
 }
 
-// WithBudget sets the spend ceiling [Assemble] opens for the run, so it is in force on
-// every path that starts the run. A run with no ceiling is unchanged: its budget hook is
-// wired but a pool with no budget is unlimited. The ceiling is the run's pool, keyed by its
-// id: a pool already open under that id (a resumed run) is kept as it stands.
+// WithBudget sets the spend ceiling [Assemble] opens, keyed by run id. A resumed run
+// keeps its existing pool. Without it the hook is wired but unlimited.
 func WithBudget(l budgetpkg.Limits) Option {
 	return func(c *config) { c.budget = &l }
 }
 
-// Waive records an explicit opt-out of g, with the reason an auditor will read. It is
-// the only way to run with less than the binary's guards. The waiver is written to the
-// run's stream as a [WaivedEventType] event before anything else, and [Assemble] fails
-// if that write fails, so a weaker run is never unrecorded.
+// Waive opts out of g with a reason for an auditor. It is recorded as a
+// [WaivedEventType] event before anything else, and [Assemble] fails if that write
+// fails, so a weaker run is never unrecorded.
 func Waive(g Guard, reason string) Option {
 	return func(c *config) {
 		if !g.valid() {

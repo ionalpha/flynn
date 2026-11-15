@@ -11,24 +11,21 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// Guard names a class of governance a run carries by default. Each can be waived, and
-// only through [Waive].
+// Guard names a default governance class, removable only through [Waive].
 //
 //flynn:policy
 type Guard string
 
 const (
-	// GuardSandbox is the confined sandbox and everything bound to it: the containment
-	// gate, the item verifier and the invariant auditor.
+	// GuardSandbox includes the containment gate, item verifier and invariant auditor.
 	GuardSandbox Guard = "sandbox"
-	// GuardApproval is the human-approval gate.
+	// GuardApproval is the human approval gate.
 	GuardApproval Guard = "approval"
-	// GuardBrakes is the rate breaker and kill-switch that halt a runaway.
+	// GuardBrakes is the rate breaker and kill-switch.
 	GuardBrakes Guard = "brakes"
-	// GuardBudget is the spend charge applied to every action.
+	// GuardBudget is the spend ceiling.
 	GuardBudget Guard = "budget"
-	// GuardAudit is the run-level judging: invariant auditor, steer judge, and the
-	// progress and refusal probes.
+	// GuardAudit covers the auditor, steer judge and the progress and refusal probes.
 	GuardAudit Guard = "audit"
 )
 
@@ -49,13 +46,11 @@ type Waiver struct {
 	Reason string
 }
 
-// WaivedEventType is the spine event type a waiver is recorded under, on the run's own
-// stream, with the guard and the reason in its payload. Its absence from a record is
-// what lets a reader say the run carried every guard.
+// WaivedEventType records a waiver's guard and reason. Its absence from a record shows
+// the run carried every guard.
 const WaivedEventType = "governance.waived"
 
-// recordWaivers writes each waiver onto stream before the run starts. A failed write
-// fails assembly: a run that is weaker than the binary's must not be able to hide it.
+// recordWaivers fails assembly on a failed write, so a weaker run cannot hide it.
 func recordWaivers(ctx context.Context, log spine.Log, stream string, ws []Waiver) error {
 	for _, w := range ws {
 		if _, err := log.Append(ctx, spine.AppendInput{
@@ -70,18 +65,13 @@ func recordWaivers(ctx context.Context, log spine.Log, stream string, ws []Waive
 	return nil
 }
 
-// PostureEventType is the spine event type under which [Assemble] states, on the run's own
-// stream, which guards the run was wired with. [WaivedEventType] says what was given up and
-// why; this says what is in force, so a reader of a sealed record learns the posture from
-// the record and not from the host's account of it. It is written before [Assemble]
-// returns, so it precedes the run's first action however the goal is started, and so it
-// precedes the session's own opening event: a reader looking for a run's first session
-// event skips the governance events ahead of it. A resumed run states it again, because
-// each assembly is its own claim.
+// PostureEventType records which guards are in force, so a sealed record states its
+// posture without the host's word. It precedes the first action and the session's opening
+// event, so a reader seeking that event skips governance events first. Each assembly,
+// including a resume, writes its own.
 const PostureEventType = "governance.posture"
 
-// recordPosture writes p onto stream. A failed write fails assembly for the same reason a
-// failed waiver does: a run weaker than the binary's must not be able to hide it.
+// recordPosture fails assembly on a failed write, as [recordWaivers] does.
 func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture) error {
 	actions := make([]any, 0, len(p.ApprovalActions))
 	for _, a := range p.ApprovalActions {
@@ -129,12 +119,9 @@ func recordPosture(ctx context.Context, log spine.Log, stream string, p Posture)
 	return err
 }
 
-// ReadPosture returns the posture the first assembly of stream recorded, and false when
-// the stream has none (a run recorded before postures were). A resume reads it to wire
-// the guards the run was started with, so continuing a run cannot drop its spend cap,
-// its approvals, its outside-action gate or its item verifier. It reads the first and
-// not the latest because a resume records its own posture, and one that had lost a
-// guard would otherwise pass the loss to the next resume.
+// ReadPosture returns the first posture on stream, or false if none, so a resume rewires
+// the original guards. It reads the first, because a resume that lost a guard would pass
+// the loss on.
 func ReadPosture(ctx context.Context, log spine.Log, stream string) (Posture, bool, error) {
 	const page = 64
 	for after := int64(0); ; {
@@ -155,9 +142,8 @@ func ReadPosture(ctx context.Context, log spine.Log, stream string) (Posture, bo
 	}
 }
 
-// decodePosture is the inverse of the payload [recordPosture] writes. It goes through
-// JSON because a payload read back from a durable log holds JSON's types (a number is a
-// float64), not the ones it was appended with.
+// decodePosture goes through JSON, because a durable log returns JSON types (a number
+// is a float64).
 func decodePosture(payload map[string]any) (Posture, error) {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -220,7 +206,7 @@ func decodePosture(payload map[string]any) (Posture, error) {
 	return p, nil
 }
 
-// Mode is the shape of the run's loop.
+// Mode is the kind of loop a run drives.
 type Mode string
 
 // The run modes.
@@ -231,14 +217,10 @@ const (
 	ModeExternal     Mode = "external"
 )
 
-// Posture reports what [Assemble] wired, computed from what was built and not from the
-// options asked for, so a host can assert it before it starts the run. A field is false
-// when that guard is not on this run's path, whether because it was waived or because
-// the mode does not have it; Waived names the first cause.
-//
-// The per-mode differences are the binary's, reported as they are: a fan-out has no
-// progress or refusal probe, a toolset run has no sandbox-bound judges, an external run
-// has no auditor or steer judge.
+// Posture reports what [Assemble] built, so a host can assert it before starting. A
+// field is false when the guard was waived (named in Waived) or the mode lacks it: a
+// fan-out has no progress or refusal probe, a toolset run no sandbox-bound judges, an
+// external run no auditor or steer judge.
 type Posture struct {
 	Mode Mode
 
@@ -249,18 +231,16 @@ type Posture struct {
 	Approval        bool
 	ApprovalActions []string
 	Allowance       bool
-	// AllowanceActions is the actions marked as reaching outside the workspace, sorted:
-	// the ones [Posture.Allowance] gates.
+	// AllowanceActions is sorted.
 	AllowanceActions []string
 
 	Brakes bool
 	Budget bool
 	Halt   bool
 
-	// BudgetLimits is the spend ceiling opened for the run; zero when the budget hook is
-	// wired and no ceiling was given, which leaves the run unmetered against any pool.
+	// BudgetLimits is zero when no ceiling was given, leaving the run unlimited.
 	BudgetLimits budgetpkg.Limits
-	// BrakeLimits is the limits the run's brakes were built with, zero when waived.
+	// BrakeLimits is zero when waived.
 	BrakeLimits brakes.Limits
 
 	EventSink   bool
@@ -272,6 +252,5 @@ type Posture struct {
 	Progress    bool
 	Refusals    bool
 
-	// Waived maps each waived guard to its reason.
 	Waived map[Guard]string
 }

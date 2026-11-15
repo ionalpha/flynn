@@ -10,70 +10,51 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// ShellPostureEventType is the spine event type, on a run's own stream, that states what
-// the commands the run launched were kept away from. It is written for every run that
-// builds its own sandbox, not only for one that opted out, so a record that lacks it came
-// from a build that did not state its posture and a record that carries it can be read for
-// the answer. It precedes the session's opening event.
+// ShellPostureEventType is the event that states what a run's commands were kept away
+// from. Every run that builds its own sandbox writes it, before the session opens, so a
+// record without it came from a build that did not state its posture.
 const ShellPostureEventType = "sandbox.posture"
 
-// ShellPolicy is what a command the agent launches is kept away from, beyond the kernel
-// confinement every command gets. The zero value is the strictest policy: no network, and
-// the host's credential locations hidden. A caller relaxes it by setting a field, so an
-// assembly that forgets to configure one is closed rather than open. It applies to the
-// sandbox the run builds; a run over [WithSandbox] is the host's to confine, and a toolset
-// run has no shell.
+// ShellPolicy is what a launched command is kept away from beyond kernel confinement. The
+// zero value is the strictest: no network and credential locations hidden, so an assembly
+// that forgets to configure it is closed. It applies only to a sandbox the run builds; a
+// [WithSandbox] run is the host's to confine.
 //
-// The commands are model-authored, and the model reads what they print. Anything the
-// confined shell can read it can be asked to echo, and anything it can reach on the network
-// it can send out, so a login token or a signing key readable from the shell is exposed to
-// whatever text the model has read.
+// The model writes the commands and reads their output, so any credential the shell can
+// read or send over the network is exposed to whatever text the model has read.
 //
 //flynn:policy
 type ShellPolicy struct {
-	// Limits caps the memory and process count of each command.
 	Limits sandbox.ResourceLimits
-	// DataDir is the host's state directory (the run database, the instance signing key and
-	// stored provider credentials), hidden from the commands along with the credential
-	// locations. Empty names none.
+	// DataDir is the host's state directory (run database, signing key, provider
+	// credentials), hidden along with the credential locations. Empty names none.
 	DataDir string
-	// AllowNetwork gives the commands the host's network. Without it they run in a network
-	// namespace with no interfaces, which also takes away the loopback services of the host
-	// (a control-plane API among them).
+	// AllowNetwork gives the commands the host's network. Without it they also lose the
+	// host's loopback services, a control-plane API among them.
 	AllowNetwork bool
-	// AllowCredentialReads leaves DataDir and the credential locations readable on every
-	// platform.
+	// AllowCredentialReads leaves DataDir and the credential locations readable everywhere.
 	AllowCredentialReads bool
-	// AllowCredentialReadsWhereUnhidable leaves them readable only on a platform that cannot
-	// hide a path ([sandbox.ReadDenySupported] is false: Windows today), and hides them
-	// everywhere else. Without it such a platform refuses every launch, so a run whose
-	// shell must never see the credentials cannot start there by accident; with it the
-	// shell runs, and the run's posture event says the credentials were readable and that
-	// the platform was the reason. The binary sets it so a first run works on every OS.
+	// AllowCredentialReadsWhereUnhidable leaves them readable only where
+	// [sandbox.ReadDenySupported] is false (Windows). Without it such a platform refuses
+	// every launch; with it the posture event records the platform as the reason. The
+	// binary sets it so a first run works on every OS.
 	AllowCredentialReadsWhereUnhidable bool
-	// AllowNetworkWhereUndeniable gives the commands the host's network only on a platform
-	// whose confinement cannot deny it ([sandbox.NetworkDenySupported] is false: Windows
-	// today), and denies it everywhere else. Without it such a platform refuses every launch
-	// that asks for no network, because the alternative is a command that can send out what
-	// it reads while the record says it could not; with it the shell runs, and the run's
-	// posture event says the network was open and that the platform was the reason. It has
-	// no effect when AllowNetwork is set.
+	// AllowNetworkWhereUndeniable opens the network only where [sandbox.NetworkDenySupported]
+	// is false (Windows). Without it such a platform refuses a no-network launch, so the
+	// record never claims a denial that did not happen; with it the posture event records
+	// the platform as the reason.
 	AllowNetworkWhereUndeniable bool
 }
 
-// Posture reasons recorded on a [ShellPostureEventType] event whose network is open: the
-// policy asked for it, or the platform could not deny it and the policy accepted that.
+// Posture reasons for an open network on a [ShellPostureEventType] event.
 const (
 	NetworkOpenByPolicy   = "policy"
 	NetworkOpenByPlatform = "platform"
 )
 
-// NetworkOpen reports whether the commands will have the host's network on this platform,
-// and which posture reason the run will record for it. Like [ShellPolicy.CredentialsReadable]
-// it is the one decision the sandbox options and the posture event both read, so a caller
-// that warns an operator says what the record will say. A policy that asks for no network
-// on a platform that cannot deny it, and does not accept that, reports false here and the
-// launch refuses.
+// NetworkOpen reports whether the commands get the host's network here, and the posture
+// reason recorded. The sandbox options and the posture event both read it, so a warning
+// to an operator says what the record will say.
 func (p ShellPolicy) NetworkOpen() (open bool, reason string) {
 	switch {
 	case p.AllowNetwork:
@@ -84,18 +65,14 @@ func (p ShellPolicy) NetworkOpen() (open bool, reason string) {
 	return false, ""
 }
 
-// Posture reasons recorded on a [ShellPostureEventType] event whose credentials are
-// readable: the policy asked for it, or the platform could not hide them and the policy
-// accepted that.
+// Posture reasons for readable credentials on a [ShellPostureEventType] event.
 const (
 	CredentialsReadableByPolicy   = "policy"
 	CredentialsReadableByPlatform = "platform"
 )
 
-// CredentialsReadable reports whether the commands will be able to read the credential
-// locations on this platform, and which posture reason the run will record for it. It is
-// the one decision [ShellPolicy] options and the posture event both read, so a caller that
-// warns an operator says what the record will say.
+// CredentialsReadable reports whether the commands can read the credential locations here,
+// and the posture reason recorded, read by the same callers as [ShellPolicy.NetworkOpen].
 func (p ShellPolicy) CredentialsReadable() (readable bool, reason string) {
 	switch {
 	case p.AllowCredentialReads:
@@ -106,16 +83,13 @@ func (p ShellPolicy) CredentialsReadable() (readable bool, reason string) {
 	return false, ""
 }
 
-// WithShellPolicy sets what the commands of the run's own sandbox may reach. Without it
-// the run gets the zero [ShellPolicy]. The choice is recorded on the run's stream as a
-// [ShellPostureEventType] event.
+// WithShellPolicy sets the run's own sandbox policy; the default is the zero [ShellPolicy].
 func WithShellPolicy(p ShellPolicy) Option {
 	return func(c *config) { c.shell, c.shellSet = p, true }
 }
 
-// options returns the sandbox options the policy stands for. Both restrictions apply on top
-// of [sandbox.WithDefaultConfinement], so a platform that cannot enforce one refuses the
-// launch instead of running the command without it.
+// options stacks the restrictions on [sandbox.WithDefaultConfinement], so a platform that
+// cannot enforce one refuses the launch instead of running without it.
 func (p ShellPolicy) options() []sandbox.LocalOption {
 	opts := []sandbox.LocalOption{
 		sandbox.WithDefaultConfinement(),
@@ -133,17 +107,14 @@ func (p ShellPolicy) options() []sandbox.LocalOption {
 	return opts
 }
 
-// hiddenPaths lists what the commands cannot read: the data directory, the runner's
-// runtime directory, and the credential locations of the user the agent runs as.
 func (p ShellPolicy) hiddenPaths() []string {
 	home, _ := os.UserHomeDir()
 	paths := append([]string{p.DataDir}, credentialPaths(home, os.Getenv, os.Getuid())...)
 	return dedupe(paths)
 }
 
-// credentialHomePaths are the places under a home directory where a tool keeps a login
-// token, a private key or a password store. Each is a prefix: a directory hides everything
-// beneath it.
+// credentialHomePaths are home-relative prefixes where tools keep tokens, keys and password
+// stores; a directory hides everything beneath it.
 var credentialHomePaths = []string{
 	".ssh",
 	".gnupg",
@@ -168,8 +139,7 @@ var credentialHomePaths = []string{
 	".claude.json",
 }
 
-// credentialEnvPaths are the environment variables that relocate a credential store or name
-// a socket to one. A value is a path (or, for KUBECONFIG, a list of them).
+// credentialEnvPaths relocate a credential store or name a socket; KUBECONFIG is a list.
 var credentialEnvPaths = []string{
 	"SSH_AUTH_SOCK",
 	"GNUPGHOME",
@@ -183,18 +153,15 @@ var credentialEnvPaths = []string{
 	"CLAUDE_CONFIG_DIR",
 }
 
-// runtimeSocketNames are the entries in a user's runtime directory that are keychain,
-// agent and bus sockets: a command that can connect to one can ask the desktop's secret
-// service or the user's agent for a secret without reading any file.
+// runtimeSocketNames are keychain, agent and bus sockets, hidden because a connection to one
+// can fetch a secret without reading any file.
 var runtimeSocketNames = []string{"bus", "keyring", "gnupg", "gcr", "ssh-agent.socket"}
 
-// runnerRuntimeDir is where the runner's unit puts its sockets (RuntimeDirectory= in
-// deploy/systemd/flynn-runner.service).
+// runnerRuntimeDir matches RuntimeDirectory= in deploy/systemd/flynn-runner.service.
 const runnerRuntimeDir = "/run/flynn"
 
-// credentialPaths lists the credential locations for a user with the given home directory,
-// environment and uid. It takes the environment as a function so the set can be computed
-// for a user other than the process's, and so a test needs no real home.
+// credentialPaths takes the environment as a function so it can compute the set for another
+// user, and a test needs no real home.
 func credentialPaths(home string, getenv func(string) string, uid int) []string {
 	var paths []string
 	if home != "" {
@@ -218,7 +185,6 @@ func credentialPaths(home string, getenv func(string) string, uid int) []string 
 	return paths
 }
 
-// dedupe drops empty and repeated entries, keeping the first of each in order.
 func dedupe(paths []string) []string {
 	seen := make(map[string]bool, len(paths))
 	out := paths[:0:0]
@@ -232,13 +198,9 @@ func dedupe(paths []string) []string {
 	return out
 }
 
-// declareShellPosture records on stream what sb keeps its commands away from, read from the
-// sandbox that will launch them. A relaxation the operator asked for, or one the platform
-// forced, is therefore in the sealed record next to the actions that ran under it, with
-// reason naming which (see [ShellPolicy.CredentialsReadable]) and networkReason doing the
-// same for an open network (see [ShellPolicy.NetworkOpen]). A record that cannot be
-// written fails the assembly: a run must not start under a relaxed policy it cannot account
-// for.
+// declareShellPosture reads the posture from sb itself, so the sealed record states what
+// the launching sandbox enforces. A failed write fails the assembly, so no run starts under
+// a relaxation it cannot account for.
 func declareShellPosture(ctx context.Context, log spine.Log, stream string, sb *sandbox.Local, reason, networkReason string) error {
 	network := "open"
 	if sb.NetworkDenied() {

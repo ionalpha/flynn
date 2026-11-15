@@ -2,19 +2,13 @@ package mission
 
 import "runtime"
 
-// HostNote tells a model which operating system the commands it writes will run on and
-// which shell reads them. The bash tool and every ledger check are handed to one shell
-// (cmd.exe on Windows, sh elsewhere), and a model that is not told reaches for the shell
-// it was trained on: on Windows that is a POSIX check such as `test "$(python hello.py)" =
-// "hello"`, which cmd.exe cannot run, so the item can never be proven however
-// well the work is done.
-//
-// The planner and the build prompt both carry it, because the planner is the one that
-// writes the check and the builder is the one that writes the commands.
+// HostNote names the OS and the shell that reads every command and ledger check. An
+// untold model writes POSIX checks, which cmd.exe cannot run, so on Windows the item could
+// never be proven. The planner writes checks and the builder writes commands, so both
+// prompts carry it.
 func HostNote() string { return hostNote(runtime.GOOS) }
 
-// hostNote is HostNote for a named GOOS, so each platform's wording is testable on any
-// host.
+// hostNote takes GOOS so each platform's wording is testable on any host.
 func hostNote(goos string) string {
 	switch goos {
 	case "windows":

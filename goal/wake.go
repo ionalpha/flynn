@@ -1,8 +1,5 @@
 package goal
 
-// Parking and waking: how long a goal waiting on a fan-out sits before it re-checks
-// itself, and how a settling child cuts that wait short for its parent.
-
 import (
 	"context"
 	"errors"
@@ -12,7 +9,6 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// recheckAfter is how long a parked goal waits before re-checking without a wake.
 func (g *Reconciler) recheckAfter() time.Duration {
 	if g.waitRecheck > 0 {
 		return g.waitRecheck
@@ -20,12 +16,9 @@ func (g *Reconciler) recheckAfter() time.Duration {
 	return DefaultWaitRecheckFactor * g.poll
 }
 
-// wakeOwner clears the controller owner's park and signals it, so a parent goal
-// waiting on a fan-out re-checks its children the moment one settles instead of
-// waiting out the recheck fallback. Best effort: a lost wake costs latency (the
-// fallback catches it), never correctness, so every failure here is dropped. The
-// conflict retry matters because the parent's status is also written by its own
-// reconciler and worker; losing every race would silently downgrade the wake.
+// wakeOwner lets a parent re-check its children when one settles instead of waiting out
+// the recheck. A lost wake costs only latency, so failures are dropped. A conflict still
+// signals, because the parent's own reconciler and worker also write its status.
 func (g *Reconciler) wakeOwner(ctx context.Context, r resource.Resource) {
 	owner, ok := r.Controller()
 	if !ok || owner.Kind != Kind {

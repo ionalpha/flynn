@@ -11,24 +11,17 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// Hook is the brakes' integration with the dispatch waist. Before refuses an
-// action when the run is halted, and also accounts the attempt so a rate or
-// repeat breaker can halt the run before the action runs. After accounts the
-// outcome and cost so the error and spend breakers, and any anomaly detector, can
-// halt the run before its next action. Because the waist governs every action, one
-// Hook brakes the whole run with no per-call wiring.
-//
-// A breaker that trips engages the run's kill-switch, so the automatic halt and an
-// operator-invoked halt are the same state: once engaged, every later action that
-// run dispatches is refused until the switch is reset.
+// Hook is the brakes' [dispatch.Hook]. Before refuses an action on a halted run and
+// counts the attempt for the rate and repeat breakers. After counts outcome and cost for
+// the error and spend breakers and the anomaly detector, which halt the next action. A
+// tripped breaker engages the same kill-switch an operator does.
 type Hook struct {
 	limits   Limits
 	sw       Switch
 	detector AnomalyDetector
 	clk      clock.Clock
-	// refuse builds the error a halted run's action is refused with. It is a field only
-	// so ProveHalts can be shown to catch a refusal of the wrong class, which is the one
-	// break in the halt that no wrong halt state can produce. Nil is the shipped refusal.
+	// refuse overrides the refusal so a test can show ProveHalts catches a wrong class.
+	// Nil is the shipped refusal.
 	refuse func(reason string) error
 
 	mu    sync.Mutex
@@ -38,18 +31,14 @@ type Hook struct {
 // Option configures a Hook.
 type Option func(*Hook)
 
-// WithClock sets the time source the rate breaker measures its window against
-// (default: clock.System).
+// WithClock sets the rate breaker's time source (default: clock.System).
 func WithClock(c clock.Clock) Option { return func(h *Hook) { h.clk = c } }
 
-// WithAnomalyDetector wires a behavioural-anomaly detector the Hook consults after
-// each action (default: none).
+// WithAnomalyDetector wires a detector consulted after each action (default: none).
 func WithAnomalyDetector(d AnomalyDetector) Option { return func(h *Hook) { h.detector = d } }
 
-// NewHook returns a brakes Hook that enforces limits and trips sw. Add it to a
-// dispatcher with dispatch.WithHook to brake every action that dispatcher governs.
-// A nil sw is replaced with a fresh in-memory switch, so the Hook is always backed
-// by a real halt state.
+// NewHook returns a Hook enforcing limits on sw, for [dispatch.WithHook]. A nil sw is
+// replaced with a [MemSwitch], so the Hook always has a halt state.
 func NewHook(limits Limits, sw Switch, opts ...Option) *Hook {
 	if sw == nil {
 		sw = NewMemSwitch()
@@ -66,15 +55,11 @@ func NewHook(limits Limits, sw Switch, opts ...Option) *Hook {
 	return h
 }
 
-// Switch returns the kill-switch the Hook enforces, so an operator (or the
-// control plane) can Engage, Engaged, or Reset a run's halt through the same state
-// the breakers trip.
+// Switch returns the kill-switch the breakers trip, for an operator to read or reset.
 func (h *Hook) Switch() Switch { return h.sw }
 
-// Before refuses an action when the run is halted, and otherwise records the
-// attempt and trips the rate or repeat breaker if this action crosses it. The
-// action that crosses a threshold is the one refused, so the breaker stops the run
-// at the limit rather than one past it.
+// Before refuses an action on a halted run. The action that crosses a rate or repeat
+// threshold is itself refused, so the run stops at the limit.
 func (h *Hook) Before(ctx context.Context, a dispatch.Action) error {
 	run := runFromContext(ctx)
 	if halted, reason := h.sw.Engaged(run); halted {
@@ -90,8 +75,6 @@ func (h *Hook) Before(ctx context.Context, a dispatch.Action) error {
 	st.mu.Lock()
 	defer st.mu.Unlock()
 
-	// Rate: count this attempt within the trailing window and halt if it is one
-	// too many.
 	if h.limits.MaxActions > 0 && h.limits.Window > 0 {
 		st.pruneWindow(now.Add(-h.limits.Window))
 		st.window = append(st.window, now)
@@ -101,8 +84,6 @@ func (h *Hook) Before(ctx context.Context, a dispatch.Action) error {
 		}
 	}
 
-	// Repeat: count consecutive dispatches of the same action name and halt when
-	// the run hammers one action.
 	if h.limits.MaxRepeats > 0 {
 		if a.Name == st.lastAction {
 			st.repeatStreak++
@@ -119,9 +100,8 @@ func (h *Hook) Before(ctx context.Context, a dispatch.Action) error {
 	return nil
 }
 
-// After accounts the action's cost and outcome, then halts the run when a spend or
-// error breaker, or the anomaly detector, fires. The action has already run, so a
-// trip here stops the run's next action rather than this one.
+// After accounts cost and outcome. The action has already run, so a trip here stops the
+// next one.
 func (h *Hook) After(ctx context.Context, a dispatch.Action, m dispatch.Metering, err error) {
 	run := runFromContext(ctx)
 	if h.limits.active() {
@@ -134,8 +114,6 @@ func (h *Hook) After(ctx context.Context, a dispatch.Action, m dispatch.Metering
 	}
 }
 
-// account folds one completed action into the run's spend and error windows and
-// trips the spend or error breaker when it crosses a ceiling.
 func (h *Hook) account(run string, m dispatch.Metering, failed bool) {
 	st := h.runState(run)
 
@@ -166,16 +144,13 @@ func (h *Hook) account(run string, m dispatch.Metering, failed bool) {
 	}
 }
 
-// trip engages the kill-switch for run and returns the refusal for the action that
-// crossed the breaker, so the same call both halts the run and is itself stopped.
+// trip halts run and refuses the action that crossed the breaker.
 func (h *Hook) trip(run, reason string) error {
 	h.sw.Engage(run, reason)
 	return h.halt(reason)
 }
 
-// halt is the refusal returned for an action on a halted run. It is Forbidden, a
-// policy denial that must not be retried: the fix is to reset the kill-switch, not
-// to try again.
+// halt refuses with Forbidden, because the fix is a reset and a retry cannot succeed.
 func (h *Hook) halt(reason string) error {
 	if h.refuse != nil {
 		return h.refuse(reason)
@@ -183,7 +158,6 @@ func (h *Hook) halt(reason string) error {
 	return fault.New(fault.Forbidden, "run_halted", "run halted by safety brake: "+reason)
 }
 
-// runState returns the per-run breaker state, creating it on first use.
 func (h *Hook) runState(run string) *runState {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -195,26 +169,23 @@ func (h *Hook) runState(run string) *runState {
 	return st
 }
 
-// runState is one run's breaker bookkeeping: the recent action times for the rate
-// breaker, the consecutive-repeat streak, the spend totals, and the recent
-// outcomes for the error breaker. Its own mutex guards it so concurrent actions in
-// a fan-out account safely.
+// runState is one run's breaker bookkeeping, with its own mutex so concurrent actions
+// in a fan-out account safely.
 type runState struct {
 	mu sync.Mutex
 
-	window []time.Time // action times within the rate breaker's trailing window
+	window []time.Time // action times within the rate window
 
-	lastAction   string // the most recent action name, for the repeat breaker
-	repeatStreak int    // consecutive dispatches of lastAction
+	lastAction   string
+	repeatStreak int
 
-	tokens int64   // cumulative metered tokens
-	cost   float64 // cumulative metered cost
+	tokens int64
+	cost   float64
 
-	outcomes []bool // recent failure flags, newest last, capped to the error window
+	outcomes []bool // recent failure flags, newest last
 }
 
-// pruneWindow drops action times at or before cutoff, so the rate breaker counts
-// only the trailing window.
+// pruneWindow drops action times at or before cutoff.
 func (s *runState) pruneWindow(cutoff time.Time) {
 	keep := 0
 	for _, t := range s.window {
@@ -226,8 +197,7 @@ func (s *runState) pruneWindow(cutoff time.Time) {
 	s.window = s.window[:keep]
 }
 
-// recordOutcome appends a failure flag, keeping only the last window entries so
-// the error rate is measured over a trailing window rather than the whole run.
+// recordOutcome keeps the last window flags, so the rate covers recent actions only.
 func (s *runState) recordOutcome(failed bool, window int) {
 	s.outcomes = append(s.outcomes, failed)
 	if len(s.outcomes) > window {
@@ -235,7 +205,6 @@ func (s *runState) recordOutcome(failed bool, window int) {
 	}
 }
 
-// errorRate is the fraction of recorded outcomes that failed.
 func (s *runState) errorRate() float64 {
 	if len(s.outcomes) == 0 {
 		return 0

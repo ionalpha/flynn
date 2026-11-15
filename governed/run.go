@@ -18,9 +18,8 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// DefaultStopCondition is what a run means by finished when nobody says otherwise: the
-// objective, judged achieved. It is the run's own account of its work, which is why a
-// goal's invariants are audited separately and first.
+// DefaultStopCondition is the run's own judgement of its work, which is why invariants
+// are audited separately and first.
 const DefaultStopCondition = "the objective is fully accomplished"
 
 // StopReason says why a run ended.
@@ -28,7 +27,7 @@ type StopReason string
 
 // The stop reasons.
 const (
-	// StopConverged: the stop condition held and every guard that applied was satisfied.
+	// StopConverged: the stop condition held and every applicable guard was satisfied.
 	StopConverged StopReason = "converged"
 	// StopStalled: the goal could not continue; Result.Message says why.
 	StopStalled StopReason = "stalled"
@@ -38,30 +37,24 @@ const (
 	StopCancelled StopReason = "cancelled"
 )
 
-// Result is what a finished run reports. It is populated on a stall or cancellation as
-// well, so a caller that gets an error still has the run id to find the record by.
+// Result is what a finished run reports. It is filled on a stall or cancellation too, so
+// a caller with an error still has the run id.
 type Result struct {
-	// RunID is the session id, goal name and spine stream of the run.
+	// RunID is the session id, goal name and spine stream.
 	RunID string
-	// Text is the model's final answer. It is empty unless the run converged.
+	// Text is the final answer, empty unless the run converged.
 	Text string
-	// Stop says why the run ended.
 	Stop StopReason
-	// Message is the goal's settled message: the final answer on convergence, the reason
-	// on a stall.
+	// Message is the final answer on convergence, the reason on a stall.
 	Message string
-	// Steps is how many reconcile steps the goal spent.
-	Steps int
-	// Posture is what the run was assembled with, including every waived guard, so a
-	// host that only keeps the result can still say how governed the run was.
+	// Steps counts reconcile steps.
+	Steps   int
 	Posture Posture
-	// Record is the run's events in order. It is read after the run ends and is empty if
-	// the log could not be read; the spine remains the authority.
+	// Record is empty if the log could not be read; the spine stays the authority.
 	Record []session.Event
 }
 
-// Run is one assembled, governed run. The caller owns it for the length of one goal and
-// closes it.
+// Run is one assembled run. The caller owns it for one goal and closes it.
 type Run struct {
 	rt       *runtime.Runtime
 	p        *parts
@@ -72,34 +65,30 @@ type Run struct {
 	external *ExternalAgent
 }
 
-// ID is the run's identity: its session id, its goal's name, its spine stream and its
-// budget key.
+// ID is the session id, goal name, spine stream and budget key.
 func (r *Run) ID() string { return r.p.sess.ID() }
 
-// Session is the session that records the run onto the spine, for a caller that streams
-// the conversation live.
+// Session records the run, for a caller that streams it live.
 func (r *Run) Session() *session.Session { return r.p.sess }
 
-// Runtime is the goal runtime. Start it, then submit or resume a goal through
-// [Run.Session]; [Run.Do] does all of that.
+// Runtime is the goal runtime. [Run.Do] starts it and submits; a caller may do both
+// itself.
 func (r *Run) Runtime() *runtime.Runtime { return r.rt }
 
 // Posture reports what was wired.
 func (r *Run) Posture() Posture { return r.posture }
 
-// Toolset is the tools the run offers.
+// Toolset returns a copy of the offered tools.
 func (r *Run) Toolset() []mission.Tool { return append([]mission.Tool(nil), r.p.toolset...) }
 
-// Grant is the authority the run's actions are admitted against.
+// Grant admits the run's actions.
 func (r *Run) Grant() capability.Grant { return r.p.grant }
 
-// Sandbox is the sandbox the run's tools act through, or nil for a run that has none (a
-// caller-supplied toolset, or an external agent that brings its own). A host that checks a
-// run's work, a verifier say, runs the check through this one so it is confined the same
-// way the run is.
+// Sandbox is the tools' sandbox, or nil for a toolset or external run. A host check should
+// run through it, so it is confined as the run is.
 func (r *Run) Sandbox() sandbox.Sandbox { return r.p.sb }
 
-// Close releases what the run built. A sandbox the host supplied is the host's to close.
+// Close releases what the run built, but not a host-supplied sandbox.
 func (r *Run) Close() error {
 	if r == nil {
 		return nil
@@ -107,18 +96,15 @@ func (r *Run) Close() error {
 	return r.p.close()
 }
 
-// Prepare returns a context carrying an egress observer bound to the run's stream: every
-// dial netguard makes on the run's behalf reports its allow or block verdict into the same
-// recorded history as the run's governed actions. Start the runtime with the returned
-// context. The spend ceiling does not depend on it; [Assemble] opens that.
+// Prepare returns ctx with an egress observer, so each netguard verdict is recorded on
+// the run's stream. Start the runtime with it.
 func (r *Run) Prepare(ctx context.Context) (context.Context, error) {
 	egress := spinesink.NewEgress(r.log, r.ID())
 	return netguard.WithObserver(ctx, egress.Observe), nil
 }
 
-// GoalSpec fills a spec's mode defaults: the stop condition, the larger step budget a
-// fan-out parent spends dispatching and polling, and the external agent's model string.
-// A field the caller set is left alone.
+// GoalSpec fills unset fields with the mode's defaults: stop condition, fan-out step
+// budget, external model.
 func (r *Run) GoalSpec(spec goal.Spec) goal.Spec {
 	if strings.TrimSpace(spec.StopCondition) == "" {
 		spec.StopCondition = DefaultStopCondition
@@ -126,25 +112,20 @@ func (r *Run) GoalSpec(spec goal.Spec) goal.Spec {
 	if spec.Model == "" && r.external != nil {
 		spec.Model = r.external.Model
 	}
-	// A fan-out parent spends steps a single conversation does not: one dispatching each
-	// delegation and one per poll while it waits for the children. The safety brake and
-	// the fan-out width still bound a runaway.
+	// The brake and fan-out width still bound a runaway.
 	if spec.MaxSteps == 0 && r.mode == ModeFanout {
 		spec.MaxSteps = FanoutRootMaxSteps
 	}
 	return spec
 }
 
-// Submit opens the run's session and submits spec as its goal. The runtime must be
-// started. A caller that streams the conversation live uses this and [Run.Resume];
-// [Run.Do] uses this too.
+// Submit opens the session and submits spec. The runtime must be started.
 func (r *Run) Submit(ctx context.Context, spec goal.Spec) (resource.Key, error) {
 	return r.p.sess.Submit(ctx, r.rt, r.GoalSpec(spec))
 }
 
-// Resume continues the stored run id on the same stream. The runtime must be started. The
-// posture this assembly states is the one [Assemble] recorded, which may differ from the
-// run being continued.
+// Resume continues run id on its stream. The runtime must be started. This assembly's
+// posture may differ from the original run's.
 func (r *Run) Resume(ctx context.Context, id string) error {
 	g, err := r.rt.Resume(ctx, id)
 	if err != nil {
@@ -154,9 +135,8 @@ func (r *Run) Resume(ctx context.Context, id string) error {
 	return nil
 }
 
-// Do runs spec to the end and reports how it ended. It starts the runtime, submits the
-// goal, waits for it to settle and stops the runtime again, so nothing it started outlives
-// the call. A stalled or cancelled goal returns the populated [Result] and an error.
+// Do runs spec to the end. Nothing it starts outlives the call. A stall or cancellation
+// returns a filled [Result] and an error.
 func (r *Run) Do(ctx context.Context, spec goal.Spec) (Result, error) {
 	ctx, err := r.Prepare(ctx)
 	if err != nil {
@@ -179,8 +159,7 @@ func (r *Run) Do(ctx context.Context, spec goal.Spec) (Result, error) {
 	return res, werr
 }
 
-// settle reads how the goal ended from its status, which the reconciler owns, and the
-// record from the log, after the runtime has stopped writing to either.
+// settle reads status and record after the runtime has stopped writing both.
 func (r *Run) settle(ctx context.Context, key resource.Key, text string, werr error) Result {
 	res := Result{RunID: r.ID(), Text: text, Stop: StopStalled, Posture: r.posture}
 	switch {
@@ -189,7 +168,7 @@ func (r *Run) settle(ctx context.Context, key resource.Key, text string, werr er
 	case errors.Is(werr, context.Canceled), errors.Is(werr, context.DeadlineExceeded):
 		res.Stop = StopCancelled
 	}
-	// The caller's context may be the thing that ended; read with one that cannot be.
+	// The caller's context may have ended.
 	rctx := context.WithoutCancel(ctx)
 	if key.Name != "" {
 		if rec, err := r.store.Get(rctx, key.Kind, key.Scope, key.Name); err == nil {

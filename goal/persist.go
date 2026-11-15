@@ -1,9 +1,5 @@
 package goal
 
-// Every write the reconciler makes to a goal record, and the conflict policy each
-// one needs. A settled status is written blind; an in-flight reservation races the
-// step's own worker and is reapplied onto a fresh read.
-
 import (
 	"context"
 	"errors"
@@ -13,19 +9,11 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// recordDispatch persists the in-flight reservation for a step that was just
-// enqueued. Unlike a settled-status write, it must survive a race with the step's
-// own worker: the job is enqueued (Enqueue, above) before this write runs, so a
-// worker on a tight poll can claim it, take its turn, and persist that turn's
-// checkpoint before this write lands. A blind Put would then lose the optimistic
-// race and be dropped, and the dropped InFlight marker means the completed step is
-// never observed in the next pass and never counted against the step budget, so an
-// extra turn runs past MaxSteps (the goal converges where it must stall). Retrying
-// the whole reconcile does not recover it: the retry re-reads a state that has
-// already lost the job-to-reservation link. So this reapplies the reservation onto
-// a fresh read with the shared conflict-retry policy instead. Only reconciler-owned
-// fields are written; the worker-owned checkpoint and waiting mark are carried over
-// from the fresh record so neither writer clobbers the other.
+// recordDispatch reapplies the reservation onto a fresh read, because the job is enqueued
+// first and its worker can persist a checkpoint before this lands. A blind Put would lose
+// that race and drop InFlight, so the step goes uncounted and a turn runs past MaxSteps;
+// retrying the reconcile cannot recover the link. Worker-owned fields come from the fresh
+// record so neither writer clobbers the other.
 func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, status Status, specHash string) error {
 	status.ObservedSpecHash = specHash
 	_, err := resource.UpdateByID(ctx, g.store, r.ID, func(fresh *resource.Resource) error {
@@ -35,25 +23,15 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 		}
 		status.Checkpoint = cur.Checkpoint
 		status.WaitingSince = cur.WaitingSince
-		// The planning mark and the per-item state are the worker's too, and the
-		// planning step is the one most likely to land inside this window: the plan
-		// job is enqueued before this reservation is written, so a worker that
-		// claims and finishes it first would otherwise have its ledger erased here
-		// and be asked to plan the same goal all over again.
+		// The planning step most often lands in this window, and taking ours would
+		// erase its ledger and ask for the plan again.
 		status.Planned = cur.Planned
-		// The ledger has two writers: the worker appends items when it plans, and the
-		// reconciler marks them proven when the record backs them. So it is merged
-		// rather than taken from either side. Carrying the worker's copy wholesale
-		// would drop a proof this very pass admitted; carrying ours would drop an item
-		// a concurrent planning step just appended.
+		// Merged because both write it: the worker appends items and this pass may have
+		// proven one.
 		var settled bool
 		status.Ledger, settled = mergeLedger(status.Ledger, cur.Ledger)
-		// The failing check's detail is the worker's, and a verify job lands in this
-		// same window: it is enqueued before this reservation is written, so a worker
-		// that claims and finishes it first would otherwise have it erased here, and the
-		// next build step would be asked to fix an item without being told what its own
-		// check reported. The exception is a pass that just proved or abandoned an item,
-		// which is the pass that cleared the feedback on purpose.
+		// A verify job can land in this window too, so its feedback is kept unless this
+		// pass settled an item and cleared it on purpose.
 		if !settled {
 			status.ItemFeedback = cur.ItemFeedback
 			status.MissingCommand, status.MissingRepeat = cur.MissingCommand, cur.MissingRepeat
@@ -71,18 +49,10 @@ func (g *Reconciler) recordDispatch(ctx context.Context, r resource.Resource, st
 	return nil
 }
 
-// mergeLedger reconciles this reconcile's per-item state with the copy on the freshest
-// record, and reports whether the merge carried a proof or an abandon mark the record did
-// not already have.
-//
-// The shape of the ledger comes from theirs: it is the copy written against the newest
-// version of the goal, so a planning step that appended items in this window is respected
-// and this write does not shorten the plan. The proven marks come from whichever side has
-// them, because a proof only ever goes from unset to set and never back. An item that is
-// proven on either copy is proven, and the earlier proof's evidence and timestamp are kept
-// intact rather than restamped. An abandon mark travels the same way, and reporting it as
-// carried keeps the caller from restoring the abandoned item's check feedback, which would
-// read as the next item's first failure.
+// mergeLedger takes the item list from theirs, so appended items survive, and a proof or
+// abandon mark from either side, because neither is ever unset. An earlier proof keeps its
+// evidence and time. It reports whether it carried a mark, so the caller does not restore
+// feedback that would read as the next item's first failure.
 func mergeLedger(mine, theirs []LedgerState) ([]LedgerState, bool) {
 	settled := make(map[string]LedgerState, len(mine))
 	for _, st := range mine {
@@ -111,8 +81,6 @@ func mergeLedger(mine, theirs []LedgerState) ([]LedgerState, bool) {
 	return out, added
 }
 
-// persistStatus records the observed spec hash and persists the status via the
-// store's optimistic-concurrency Put.
 func (g *Reconciler) persistStatus(ctx context.Context, r resource.Resource, status Status, specHash string) error {
 	status.ObservedSpecHash = specHash
 	enc, err := status.Encode()
@@ -126,17 +94,15 @@ func (g *Reconciler) persistStatus(ctx context.Context, r resource.Resource, sta
 	return nil
 }
 
-// terminal persists a settled status (converged or stalled) and requests no
-// requeue: the goal has reached a steady state, so it is only revisited when its
-// spec changes or at the next resync, not on a timer.
-// stalled settles the goal as stopped for reason and writes it terminally, reporting the
-// reconcile handled. It is the tail every gate that stops a run ends on.
+// stalled is where every gate that stops a run ends.
 func (g *Reconciler) stalled(ctx context.Context, r resource.Resource, status *Status, specHash, reason, message string) (reconcile.Result, bool, error) {
 	status.stall(reason, message, g.clk.Now())
 	res, err := g.terminal(ctx, r, *status, specHash)
 	return res, true, err
 }
 
+// terminal requests no requeue, so a settled goal is revisited only on a spec change or
+// resync.
 func (g *Reconciler) terminal(ctx context.Context, r resource.Resource, status Status, specHash string) (reconcile.Result, error) {
 	if err := g.persistStatus(ctx, r, status, specHash); err != nil {
 		return reconcile.Result{}, err
@@ -145,8 +111,7 @@ func (g *Reconciler) terminal(ctx context.Context, r resource.Resource, status S
 	return reconcile.Result{}, nil
 }
 
-// putErr maps a write conflict to a Transient error so the controller backs off
-// and retries with a fresh read, rather than treating a lost race as fatal.
+// putErr makes a conflict Transient so the controller retries on a fresh read.
 func putErr(err error) error {
 	if errors.Is(err, resource.ErrConflict) {
 		return fault.Wrap(fault.Transient, "goal_write_conflict", err)

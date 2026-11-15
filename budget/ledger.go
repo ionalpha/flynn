@@ -10,24 +10,18 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Ledger reads and writes run budgets on the resource store. It is the durable
-// home of a run's spend: concurrent charges converge on one record under the
-// store's optimistic concurrency, so a shared pool stays correct across a fan-out
-// and across a crash.
+// Ledger keeps run budgets on the resource store. Writes use optimistic concurrency, so
+// a shared pool stays correct across a fan-out and a crash.
 type Ledger struct {
-	store resource.Store
-	// extendCap is the most [Ledger.Extend] may raise a run's ceiling by in total.
-	// Zero allows none.
-	extendCap Limits
+	store     resource.Store
+	extendCap Limits // zero allows no extension
 }
 
-// NewLedger returns a Ledger backed by store.
+// NewLedger returns a Ledger with no extension cap.
 func NewLedger(store resource.Store) *Ledger { return &Ledger{store: store} }
 
-// Open creates (or returns the existing) budget for run id in scope, capped by
-// limits. Pass owners to bind the budget to the run that owns it (an
-// OwnerReference to the run's goal), so the budget is garbage-collected when the
-// run ends rather than outliving it.
+// Open creates run id's budget, or returns the existing one unchanged. Owners (the
+// run's goal) let the budget be garbage-collected with the run.
 func (l *Ledger) Open(ctx context.Context, id string, scope resource.Scope, limits Limits, owners ...resource.OwnerReference) (resource.Resource, error) {
 	if existing, err := l.store.Get(ctx, Kind, scope, id); err == nil {
 		return existing, nil
@@ -43,13 +37,12 @@ func (l *Ledger) Open(ctx context.Context, id string, scope resource.Scope, limi
 	return l.store.Put(ctx, r)
 }
 
-// Available reports whether the run identified by id still has budget: true when
-// no budget is bound (unlimited), and true until the recorded spend reaches a set
-// limit. It is the pre-execution check the dispatch waist gates an action on.
+// Available reports whether recorded spend is under every set limit. An unbound run is
+// always available.
 func (l *Ledger) Available(ctx context.Context, id string, scope resource.Scope) (bool, error) {
 	r, err := l.store.Get(ctx, Kind, scope, id)
 	if errors.Is(err, resource.ErrNotFound) {
-		return true, nil // no budget bound: unlimited
+		return true, nil
 	}
 	if err != nil {
 		return false, err
@@ -65,16 +58,10 @@ func (l *Ledger) Available(ctx context.Context, id string, scope resource.Scope)
 	return !spec.Limits.Exceeded(status.Spent), nil
 }
 
-// Reserve atomically holds est against the run's pool before an action runs: the
-// reserve half of reserve-before-dispatch. It admits (returns true) while the pool
-// still has budget left, where "left" means the committed total (spent plus
-// already-reserved) has not reached a set limit, and records the reservation; it
-// refuses (false) once the pool is fully committed. Because the check and the
-// reservation are one compare-and-set, concurrent actions sharing a pool admit
-// against one consistent view rather than each reading an under-budget snapshot and
-// overshooting together. A run with no budget bound is unlimited: always admits,
-// records nothing. With an upper-bound estimate the ceiling cannot be exceeded;
-// with a smaller estimate the overshoot is bounded by the in-flight estimates.
+// Reserve adds est to Reserved and admits while spent plus reserved is under every set
+// limit. The check and the add are one compare-and-set, so concurrent actions admit
+// against one view. With an upper-bound est the ceiling holds; a smaller one bounds
+// the overshoot by the in-flight estimates. An unbound run always admits.
 func (l *Ledger) Reserve(ctx context.Context, id string, scope resource.Scope, est Spent) (bool, error) {
 	admitted := false
 	_, err := resource.Update(ctx, l.store, Kind, scope, id, func(r *resource.Resource) error {
@@ -88,7 +75,7 @@ func (l *Ledger) Reserve(ctx context.Context, id string, scope resource.Scope, e
 		}
 		if spec.Limits.Exceeded(status.committed()) {
 			admitted = false
-			return resource.ErrSkipUpdate // pool fully committed: refuse before the action runs
+			return resource.ErrSkipUpdate
 		}
 		admitted = true
 		status.Reserved = status.Reserved.plus(est)
@@ -101,7 +88,7 @@ func (l *Ledger) Reserve(ctx context.Context, id string, scope resource.Scope, e
 	})
 	switch {
 	case errors.Is(err, resource.ErrNotFound):
-		return true, nil // no budget bound: unlimited
+		return true, nil
 	case errors.Is(err, resource.ErrConflict):
 		return false, fault.New(fault.Transient, "budget_reserve_contention",
 			"budget reserve gave up after repeated write conflicts")
@@ -111,9 +98,7 @@ func (l *Ledger) Reserve(ctx context.Context, id string, scope resource.Scope, e
 	return admitted, nil
 }
 
-// Release returns a reservation to the pool without spending it, for an action that
-// was admitted but did not run (rejected downstream, cancelled). It floors the
-// reserved total at zero so a doubled release under a race cannot drive it negative.
+// Release returns est unspent, for an admitted action that did not run.
 func (l *Ledger) Release(ctx context.Context, id string, scope resource.Scope, est Spent) error {
 	if est.IsZero() {
 		return nil
@@ -123,10 +108,8 @@ func (l *Ledger) Release(ctx context.Context, id string, scope resource.Scope, e
 	})
 }
 
-// Settle converts a reservation into actual spend once an action finishes: it
-// releases est and charges the metered actual in one atomic write, so the pool
-// never briefly double-counts (reserved and spent) nor under-counts (released
-// before charged). A zero est with a real metering behaves like Charge.
+// Settle releases est and charges m in one write, so the pool never counts the action
+// twice or not at all.
 func (l *Ledger) Settle(ctx context.Context, id string, scope resource.Scope, est Spent, m dispatch.Metering) error {
 	tier, _ := TierFromContext(ctx)
 	return l.update(ctx, id, scope, func(s *Status) {
@@ -137,16 +120,12 @@ func (l *Ledger) Settle(ctx context.Context, id string, scope resource.Scope, es
 	})
 }
 
-// Spend returns the run's recorded budget status: what it has spent (in total and
-// attributed per tier) and what it still holds reserved. A run with no budget bound
-// returns the zero Status, so an unbudgeted goal reads as having spent nothing rather
-// than erroring. It is the read the goal reconciler's spend ceiling is evaluated
-// against, the counterpart to Available's boolean for a caller that needs the numbers
-// to compare and to name in a stop reason.
+// Spend returns the run's recorded status, for a caller that needs the numbers. An
+// unbound run returns the zero Status rather than an error.
 func (l *Ledger) Spend(ctx context.Context, id string, scope resource.Scope) (Status, error) {
 	r, err := l.store.Get(ctx, Kind, scope, id)
 	if errors.Is(err, resource.ErrNotFound) {
-		return Status{}, nil // no budget bound: nothing spent
+		return Status{}, nil
 	}
 	if err != nil {
 		return Status{}, err
@@ -154,9 +133,7 @@ func (l *Ledger) Spend(ctx context.Context, id string, scope resource.Scope) (St
 	return DecodeStatus(r)
 }
 
-// update applies fn to the run's budget status under the store's shared
-// conflict-retry policy, so charge, release, and settle all converge on a shared
-// pool. A run with no budget bound is a no-op.
+// update applies fn under the store's conflict retry. An unbound run is a no-op.
 func (l *Ledger) update(ctx context.Context, id string, scope resource.Scope, fn func(*Status)) error {
 	_, err := resource.Update(ctx, l.store, Kind, scope, id, func(r *resource.Resource) error {
 		status, err := DecodeStatus(*r)
@@ -173,7 +150,7 @@ func (l *Ledger) update(ctx context.Context, id string, scope resource.Scope, fn
 	})
 	switch {
 	case errors.Is(err, resource.ErrNotFound):
-		return nil // no budget bound: unlimited, nothing to record
+		return nil
 	case errors.Is(err, resource.ErrConflict):
 		return fault.New(fault.Transient, "budget_update_contention",
 			"budget update gave up after repeated write conflicts")
@@ -181,12 +158,8 @@ func (l *Ledger) update(ctx context.Context, id string, scope resource.Scope, fn
 	return err
 }
 
-// Charge adds m to the run's recorded spend, retrying under optimistic
-// concurrency so concurrent charges against a shared pool all land. A run with no
-// budget bound is a no-op (unlimited). Charging more than the limit is allowed:
-// the limit is enforced before an action runs (see Available), and the actual
-// cost is only known after, so the recorded spend is the truth and can settle
-// slightly past the ceiling.
+// Charge adds m to the recorded spend. It may pass the ceiling, because the limit is
+// checked before an action and its cost is known only after.
 func (l *Ledger) Charge(ctx context.Context, id string, scope resource.Scope, m dispatch.Metering) error {
 	if m.Tokens == 0 && m.Cost == 0 {
 		return nil

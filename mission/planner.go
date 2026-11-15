@@ -14,22 +14,16 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// DefaultPlannerMaxTokens bounds the planner's single call. A ledger is a short list
-// of work items, not a transcript, so the ceiling is modest; a run that needs a longer
-// plan raises it with WithPlannerMaxTokens.
+// DefaultPlannerMaxTokens is modest because a ledger is a short list; raise it with
+// [WithPlannerMaxTokens].
 const DefaultPlannerMaxTokens = 4096
 
-// planSystem is the planner's own standing prompt. It is deliberately not the build
-// system prompt with a plan instruction bolted on: the whole call is spent working out
-// what the objective requires, and the model is asked to commit, per item, to how that
-// item would be checked. The verify clause is not decoration. The ledger refuses an
-// item that has none (goal.AppendItems), so a plan the model cannot say how to verify
-// does not get recorded — which is the point. An item with no way to prove it is one a
-// later step can only assert it did.
+// planSystem is separate from the build prompt so the whole call goes to deciding what the
+// objective requires and how each item is checked. The ledger refuses an item with no
+// verify clause, because a later step could only assert it.
 //
-// The output contract is a bare JSON array, not prose. A model is measurably more
-// reluctant to quietly overwrite a structured record than a paragraph, and asking it to
-// emit the ledger as JSON carries that same reluctance into how the plan is produced.
+// The output is a JSON array because a model is measurably more reluctant to overwrite a
+// structured record than a paragraph.
 const planSystem = `You are the planning phase of an autonomous agent. You do not do the work; you decide what the work is.
 
 Expand the objective below into the concrete units of work it actually implies: the smallest set of items that, each proven, means the objective is met. For every item, give the check that proves it.
@@ -49,24 +43,18 @@ Example:
 
 If the objective needs no checkable work (it is already satisfied, it is not a work request, or its result is only what you report), respond with an empty array []. Do not invent filler items to look busy. Every item you return will be held to its verify clause.`
 
-// plannerCorrections is how many times the planner sends a plan back to the model for a
-// check that cannot run before it gives the sample up as a transient failure. One round
-// usually settles it; the second is for a model that fixed one check and kept another.
+// plannerCorrections is the rounds before a refused plan is a transient failure. The second
+// round is for a model that fixed one check and kept another.
 const plannerCorrections = 2
 
-// Planner expands a goal's objective into its ledger with a single model call, against
-// the provider-agnostic llm port. It is the model-backed implementation of goal.Planner
-// the runtime pairs with the reconciler's planning gate; without it a goal runs
-// unplanned, straight to building.
+// Planner is the model-backed [goal.Planner]. Without one a goal goes straight to building.
 type Planner struct {
 	model     llm.Model
 	system    string
 	maxTokens int
 	sampling  *llm.Sampling
 
-	// tools are the names of the run's own tools, which a shell cannot start. lookPath and
-	// goos are the host facts that decide whether a check naming one is still runnable, and
-	// are fields so a test can stand in for a host it is not running on.
+	// lookPath and goos are fields so a test can stand in for another host.
 	tools    []string
 	lookPath func(string) (string, error)
 	goos     string
@@ -74,33 +62,30 @@ type Planner struct {
 	admission *Admission
 }
 
-// Admission configures the planner to admit each check before the plan is returned. A check
-// that is not admitted goes back to the model with the reason, in the same correction loop as
-// a check that names a tool, so a wrong check is fixed while it is cheap and not discovered
-// by a run that stalls on it.
+// Admission sends a refused check back to the model in the correction loop, so it is fixed
+// while cheap instead of stalling a run.
 type Admission struct {
-	// Verifier runs each grounded check once on the untouched tree. It must run the check
-	// where the run's own checks run, in the run's sandbox. Nil skips the dry run and admits
-	// on grounding alone.
+	// Verifier dry-runs each grounded check on the untouched tree, in the run's sandbox.
+	// Nil admits on grounding alone.
 	Verifier goal.ItemVerifier
-	// Recorder receives one verdict per item, refusals included. Nil records nothing.
+	// Recorder receives every verdict, refusals included.
 	Recorder goal.AdmissionRecorder
-	// Dir is the working directory a check runs in. Empty disables grounding.
+	// Dir is where a check runs. Empty disables grounding.
 	Dir string
-	// Confined reports that the run's commands cannot write outside Dir.
+	// Confined means commands cannot write outside Dir.
 	Confined bool
 }
 
-// WithPlannerAdmission turns on check admission. Without it the planner returns whatever
-// plan the model wrote, once no check names a tool.
+// WithPlannerAdmission turns on [Admission]. Without it only checks that name a tool are
+// refused.
 func WithPlannerAdmission(a Admission) PlannerOption {
 	return func(p *Planner) { p.admission = &a }
 }
 
-// PlannerOption configures a Planner.
+// PlannerOption configures a [Planner].
 type PlannerOption func(*Planner)
 
-// WithPlannerSystem overrides the planner's standing prompt. Empty keeps the default.
+// WithPlannerSystem overrides the standing prompt. Empty keeps the default.
 func WithPlannerSystem(s string) PlannerOption {
 	return func(p *Planner) {
 		if s != "" {
@@ -109,8 +94,7 @@ func WithPlannerSystem(s string) PlannerOption {
 	}
 }
 
-// WithPlannerMaxTokens overrides the output ceiling on the planner's call. Non-positive
-// keeps the default.
+// WithPlannerMaxTokens overrides [DefaultPlannerMaxTokens]. Non-positive keeps it.
 func WithPlannerMaxTokens(n int) PlannerOption {
 	return func(p *Planner) {
 		if n > 0 {
@@ -119,22 +103,18 @@ func WithPlannerMaxTokens(n int) PlannerOption {
 	}
 }
 
-// WithPlannerSampling pins the planner's decoding parameters, so a reproducible run
-// plans the same way it builds. Nil leaves the call free-running.
+// WithPlannerSampling pins decoding so a reproducible run plans as it builds.
 func WithPlannerSampling(s *llm.Sampling) PlannerOption {
 	return func(p *Planner) { p.sampling = s }
 }
 
-// WithPlannerTools names the run's own tools, so the planner can refuse a check that calls
-// one. A tool is a function the model calls, and a check is a command line a shell runs:
-// `skill_read x` as a check can only report the program missing, which stalls the goal on a
-// check that never ran. An action taken through a tool is proven by the tool's recorded
-// result, so the model is sent back to plan a check on the action's effect.
+// WithPlannerTools names the run's tools so a check that calls one is refused: a shell
+// cannot start a tool, so the goal would stall on a check that never ran.
 func WithPlannerTools(names ...string) PlannerOption {
 	return func(p *Planner) { p.tools = names }
 }
 
-// NewPlanner builds a model-backed planner over the llm port.
+// NewPlanner defaults the system prompt to the plan prompt plus [HostNote].
 func NewPlanner(model llm.Model, opts ...PlannerOption) *Planner {
 	p := &Planner{model: model, system: planSystem + "\n\n" + HostNote(), maxTokens: DefaultPlannerMaxTokens, lookPath: sandbox.LookPath, goos: runtime.GOOS}
 	for _, o := range opts {
@@ -145,13 +125,9 @@ func NewPlanner(model llm.Model, opts ...PlannerOption) *Planner {
 
 var _ goal.Planner = (*Planner)(nil)
 
-// Plan expands the goal's objective into ledger items. An empty result is not an error:
-// a model that finds nothing to plan returns no items, and the reconciler settles the
-// goal as stalled with that reason rather than building against a record that never said
-// what done was. Malformed output is a transient error so the retry ladder samples the
-// model again before the goal stalls; the ledger's own completeness rule (an item needs
-// both text and a verify clause) is enforced here too, so an incomplete plan is retried
-// rather than recorded.
+// Plan returns no items without error when there is nothing to plan, and the reconciler
+// stalls the goal for it. Malformed or incomplete output is transient, so the model is
+// sampled again before the goal stalls.
 func (p *Planner) Plan(ctx context.Context, r resource.Resource) ([]goal.LedgerItem, error) {
 	spec, err := goal.DecodeSpec(r)
 	if err != nil {
@@ -167,7 +143,7 @@ func (p *Planner) Plan(ctx context.Context, r resource.Resource) ([]goal.LedgerI
 			Sampling:  p.sampling,
 		})
 		if err != nil {
-			return nil, err // the model classifies its own errors; the worker retries transient ones
+			return nil, err // the model classifies its own errors
 		}
 
 		items, err := parsePlan(resp.Message.TextContent())
@@ -192,8 +168,7 @@ func (p *Planner) Plan(ctx context.Context, r resource.Resource) ([]goal.LedgerI
 	}
 }
 
-// systemPrompt is the standing prompt, with the run's tool names added when they are known
-// so the model is told up front what the correction would otherwise have to tell it.
+// systemPrompt names the run's tools up front so a correction round is not needed to.
 func (p *Planner) systemPrompt() string {
 	system := p.system
 	if len(p.tools) > 0 {
@@ -210,11 +185,9 @@ func (p *Planner) systemPrompt() string {
 	return system
 }
 
-// refuseToolChecks is the message that sends a plan back, or "" when every check can be
-// started by a shell. A check is refused when its command word is one of the run's tools and
-// the host has no program of that name. On Windows a POSIX shell is refused even where one is
-// installed: the check runs confined, and Git's bash fails to start under that token with a
-// status that carries no text to classify, so it reports 256 for every line it is given.
+// refuseToolChecks returns "" when a shell can start every check. On Windows a POSIX shell
+// is refused even when installed, because Git's bash fails to start under the confined token
+// and reports 256 for every line.
 func (p *Planner) refuseToolChecks(items []goal.LedgerItem) string {
 	var b strings.Builder
 	for _, it := range items {
@@ -234,15 +207,10 @@ func (p *Planner) refuseToolChecks(items []goal.LedgerItem) string {
 		"Return the whole JSON array again, with every check fixed."
 }
 
-// admit judges every item's check and returns the message that sends the plan back, or ""
-// when all are admitted. Text rules run first and are free; a check is run once, on the tree
-// as it is, only when its text passes them, because a check that names a file nobody made
-// fails for that reason and says nothing more. Every verdict is recorded, so the record shows
-// what the planner was sent back for as well as what it finally got through.
-//
-// The dry run is the same verifier that runs the check later, in the same sandbox, so a
-// check refused for a missing program or a quoting error here is the check that would have
-// stalled the goal there. A cancelled context is the only error.
+// admit runs the free text rules first and dry-runs only a check that passes them, because
+// a check naming a file nobody made fails for that reason alone. The dry run uses the
+// verifier and sandbox the run will, so a refusal here is a stall avoided. Every verdict is
+// recorded. A cancelled context is the only error.
 func (p *Planner) admit(ctx context.Context, r resource.Resource, spec goal.Spec, items []goal.LedgerItem) (string, error) {
 	a := p.admission
 	ground := goal.Ground{Dir: a.Dir, Confined: a.Confined, Objective: spec.Objective + "\n" + spec.StopCondition, LookPath: p.lookPath}
@@ -285,7 +253,6 @@ func (p *Planner) admit(ctx context.Context, r resource.Resource, spec goal.Spec
 		"Return the whole JSON array again, with every check fixed.", nil
 }
 
-// runsAsProgram reports whether a shell on this host would start a program of this name.
 func (p *Planner) runsAsProgram(name string) bool {
 	if p.goos == "windows" && (name == "bash" || name == "sh") {
 		return false
@@ -294,13 +261,9 @@ func (p *Planner) runsAsProgram(name string) bool {
 	return err == nil
 }
 
-// prompt builds the planner's user turn: the objective, its stop condition, and — when
-// the goal already carries a ledger — that ledger, with an instruction to return only
-// what is not already covered. Showing the existing ledger is what makes a re-planned
-// goal idempotent from the model's side: a planning step that crashed after writing the
-// ledger re-runs, sees its own work, and returns nothing new. The append rule
-// (goal.PlanExtension) is the structural backstop beneath that; this keeps the model
-// from proposing a reworded near-duplicate the backstop cannot catch.
+// prompt shows any existing ledger, so a planning step that crashed after writing it sees
+// its own work and returns nothing new. goal.PlanExtension rejects exact repeats; this
+// stops a reworded near-duplicate it cannot catch.
 func (p *Planner) prompt(spec goal.Spec) string {
 	var b strings.Builder
 	b.WriteString("Objective:\n")
@@ -322,17 +285,13 @@ func (p *Planner) prompt(spec goal.Spec) string {
 	return b.String()
 }
 
-// planItem is the wire shape the planner asks the model to emit, one per ledger item.
 type planItem struct {
 	Item   string `json:"item"`
 	Verify string `json:"verify"`
 }
 
-// parsePlan reads the model's output into ledger items. It tolerates a model that wraps
-// the array in a code fence or in a sentence by extracting the outermost JSON array, but
-// it does not tolerate an item missing its text or verify clause: an incomplete item is a
-// malformed plan, reported so the caller retries rather than recording a ledger entry
-// that cannot be verified. An empty array is valid and returns no items and no error.
+// parsePlan extracts the outermost JSON array, so a fence or sentence around it is
+// tolerated. An item missing its text or verify clause is an error so the caller retries.
 func parsePlan(text string) ([]goal.LedgerItem, error) {
 	raw := strings.TrimSpace(text)
 	start := strings.IndexByte(raw, '[')
@@ -356,8 +315,7 @@ func parsePlan(text string) ([]goal.LedgerItem, error) {
 	return items, nil
 }
 
-// truncate bounds an untrusted string spliced into an error message so a model that
-// returned a wall of text does not blow up the log line.
+// truncate bounds untrusted model text spliced into an error.
 func truncate(s string, n int) string {
 	if len(s) <= n {
 		return s
