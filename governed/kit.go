@@ -12,20 +12,16 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// Kit is the governed ingredients of a run without a goal loop: the sandbox, the toolset,
-// the grant and a dispatcher carrying the containment gate, the rate breaker and the
-// governance sink. It is for a host that serves tool calls from a client (an MCP server)
-// instead of driving a model, and it gets the same grant and the same record as a run
-// assembled by [Assemble], so the two cannot drift apart.
+// Kit is a governed run without a goal loop, for a host that serves tool calls (an MCP
+// server). It shares [Assemble]'s grant and record, so the two cannot drift apart.
 type Kit struct {
 	p   *parts
 	brk *brakes.Hook
 }
 
-// NewKit builds a kit recording onto log. It accepts the options that describe the
-// working tree ([WithWorkDir], [WithSandbox], [WithShellPolicy], [WithSkills],
-// [WithRunID]) and [Waive] of [GuardBrakes]; an option that only a goal loop can use is
-// an error rather than ignored.
+// NewKit accepts only [WithWorkDir], [WithSandbox], [WithShellPolicy], [WithSkills],
+// [WithRunID] and [Waive] of [GuardBrakes]; any other option is an error, so none is
+// accepted and then ignored.
 func NewKit(ctx context.Context, log spine.Log, opts ...Option) (*Kit, error) {
 	if log == nil {
 		return nil, errors.New("governed: NewKit needs a log")
@@ -55,8 +51,6 @@ func NewKit(ctx context.Context, log spine.Log, opts ...Option) (*Kit, error) {
 	return k, nil
 }
 
-// checkKitOptions refuses an option only a goal loop can use, and a waiver of a guard a
-// kit does not have, so neither is accepted and then ignored.
 func (c *config) checkKitOptions() error {
 	if c.hasToolset || c.external != nil || c.fanout != nil || c.bridge != nil || c.hasCaps ||
 		c.driver != "" || c.brake != nil || c.budget != nil || len(c.approve) > 0 || len(c.outside) > 0 ||
@@ -71,21 +65,18 @@ func (c *config) checkKitOptions() error {
 	return nil
 }
 
-// Toolset is the tools the kit offers.
+// Toolset returns a copy of the kit's tools.
 func (k *Kit) Toolset() []mission.Tool { return append([]mission.Tool(nil), k.p.toolset...) }
 
-// Grant is the full authority over the kit's toolset. A host that serves less (a
-// read-only client) narrows it with [capability.NewGrant] and passes the result to
-// [Kit.Bind]; the dispatcher admits only what the bound grant lists.
+// Grant is full authority over the toolset. A host serving less narrows it with
+// [capability.NewGrant] before [Kit.Bind].
 func (k *Kit) Grant() capability.Grant { return k.p.grant }
 
 // SessionID is the spine stream the kit records onto.
 func (k *Kit) SessionID() string { return k.p.sess.ID() }
 
-// boundAdmitter is the capability admitter for a call that must carry a grant. The
-// capability package admits everything on a context with none, which suits a standalone
-// agent; a served tool call that skipped [Kit.Bind] would then run with no policy at all,
-// and a refusal that names the missing step is what tells its author.
+// boundAdmitter refuses a context with no grant, because the capability package admits
+// everything then, and a served call that skipped [Kit.Bind] would run with no policy.
 type boundAdmitter struct{ capability.Admitter }
 
 func (a boundAdmitter) Admit(ctx context.Context, act dispatch.Action) error {
@@ -96,10 +87,8 @@ func (a boundAdmitter) Admit(ctx context.Context, act dispatch.Action) error {
 	return a.Admitter.Admit(ctx, act)
 }
 
-// Dispatcher is the waist a served call crosses: the capability admitter, the governance
-// sink, the containment gate over the kit's sandbox and the rate breaker. It is the same
-// waist a goal loop's actions cross. A call whose context was not bound with [Kit.Bind] is
-// refused, not admitted.
+// Dispatcher carries the same gates a goal loop's actions cross. It refuses a call whose
+// context was not bound with [Kit.Bind].
 func (k *Kit) Dispatcher() *dispatch.Dispatcher {
 	opts := []dispatch.Option{
 		dispatch.WithAdmitter(boundAdmitter{}),
@@ -112,8 +101,8 @@ func (k *Kit) Dispatcher() *dispatch.Dispatcher {
 	return dispatch.New(opts...)
 }
 
-// Bind returns ctx carrying grant and the kit's run identity, the bindings a goal loop's
-// executor sets before it dispatches. The dispatcher holds no grant of its own.
+// Bind returns ctx carrying grant and the kit's run identity; the dispatcher holds no
+// grant of its own.
 func (k *Kit) Bind(ctx context.Context, grant capability.Grant) context.Context {
 	return brakes.Into(capability.Into(ctx, grant), k.SessionID())
 }

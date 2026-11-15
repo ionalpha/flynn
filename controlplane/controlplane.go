@@ -1,10 +1,11 @@
-// Package controlplane is the read model over the resource store: one generic
-// way to list, describe, and watch any registered kind. The command-line reader,
-// a future remote API, and a dashboard all read through this package instead of
-// each re-deriving per-kind queries, so there is a single read path to keep
-// correct. A kind becomes listable by supplying a Descriptor (its display
-// columns); nothing here is hard-coded to a specific kind, so adding a kind never
-// edits this package.
+// Package controlplane is the authenticated API over the resource store, through
+// which the CLI, a dashboard and remote peers read and act. Every kind reads through
+// one generic list, describe, diff and watch path; a kind becomes listable by
+// supplying a [Descriptor], so adding a kind never edits this package.
+//
+// Every request resolves to a [Principal] with a [Scope], and a handler requires a
+// minimum scope. Local use authenticates with a bearer token; delegated, attenuable
+// capability tokens plug in behind the same [Authenticator].
 package controlplane
 
 import (
@@ -17,26 +18,23 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// Column is one display column of a kind's table: a header and a pure projection
-// from a resource to its cell text. A projection must be deterministic (no clock,
-// no randomness) so a List renders identically on every machine and under replay.
+// Column is one display column: a header and a projection from a resource to cell
+// text. The projection must be deterministic (no clock, no randomness) so a List
+// renders the same on every machine and under replay.
 type Column struct {
 	Header  string
 	Project func(resource.Resource) string
 }
 
-// Descriptor declares how a kind is presented in the read model: its resource
-// kind name and the columns a list shows. Supplying a Descriptor is the only step
-// needed to make a kind appear in list/describe and, later, the remote API and
-// dashboard, because every reader projects through it.
+// Descriptor declares how a kind is presented: its kind name and list columns. Every
+// reader projects through it.
 type Descriptor struct {
 	Kind    string
 	Columns []Column
 }
 
-// Table is a rendered, kind-agnostic result: the column headers and one row per
-// resource, in a stable order. A renderer (text, JSON, HTML) formats it; the read
-// model itself never formats.
+// Table is a kind-agnostic result: headers and one row per resource, in stable order.
+// Renderers format it; the read model never does.
 type Table struct {
 	Columns []string
 	Rows    []Row
@@ -50,10 +48,8 @@ type Row struct {
 	Cells []string
 }
 
-// List returns every live resource of the descriptor's kind whose labels satisfy
-// sel (a nil selector matches all), each projected through the descriptor's
-// columns. Results follow the store's order (scope then name), so the table is
-// deterministic.
+// List returns the live resources of d's kind whose labels match sel (nil matches
+// all), projected through d's columns, in the store's scope-then-name order.
 func List(ctx context.Context, store resource.Store, d Descriptor, sel resource.Selector) (Table, error) {
 	rs, err := store.ListAll(ctx, d.Kind, sel)
 	if err != nil {
@@ -78,9 +74,8 @@ func project(d Descriptor, rs []resource.Resource) Table {
 	return t
 }
 
-// Detail is a single resource fully described: the resource itself, its one-row
-// projection through the descriptor (with the column headers), and its recent
-// change history from the event log.
+// Detail is one resource, its row projection with headers, and its recent change
+// history.
 type Detail struct {
 	Resource resource.Resource
 	Columns  []string
@@ -88,12 +83,10 @@ type Detail struct {
 	Events   []spine.Event
 }
 
-// Describe returns the resource addressed by id together with its recent change
-// history. History is the resource's own mutations on the store's stream (when
-// it was created, updated, or deleted), decoded and filtered to this resource, in
-// order and capped to the last tail (tail <= 0 returns all). It reads through the
-// same store and event log the rest of the system writes, so a describe and a
-// replay of the same resource agree. A nil log yields an empty history.
+// Describe returns the resource with id and its own mutations from the store's
+// stream, in order, capped to the last tail (tail <= 0 returns all). It reads the
+// same store and log the system writes, so a describe and a replay agree. A nil log
+// yields no history.
 func Describe(ctx context.Context, store resource.Store, log spine.Log, d Descriptor, id string, tail int) (Detail, error) {
 	r, err := store.GetByID(ctx, id)
 	if err != nil {
@@ -107,9 +100,8 @@ func Describe(ctx context.Context, store resource.Store, log spine.Log, d Descri
 	return Detail{Resource: r, Columns: t.Columns, Row: t.Rows[0], Events: events}, nil
 }
 
-// history reads the resource mutation stream and returns the events whose
-// post-image is the resource with this id, in stream order, capped to the last
-// tail.
+// history returns the stream events whose post-image is resource id, capped to the
+// last tail.
 func history(ctx context.Context, log spine.Log, id string, tail int) ([]spine.Event, error) {
 	if log == nil {
 		return nil, nil
@@ -142,18 +134,13 @@ type FieldDelta struct {
 	B     string
 }
 
-// Diff compares two resources field by field over their Spec and Status, returning the
-// fields that differ in a stable, path-sorted order. A field present on only one side
-// compares against the empty string on the other. It walks the stored JSON rather than
-// a typed struct, so it is kind-agnostic: flynn diff and any future face (the remote
-// API, a dashboard) share this one comparison for every kind, the same way they share
-// List and Describe. Envelope metadata (ids, versions, timestamps) is excluded; the
-// diff is of declared and observed content, not bookkeeping.
+// Diff compares the Spec and Status of two resources and returns the differing
+// fields sorted by path. A field on one side only compares against the empty string.
+// It walks the stored JSON, so it works for every kind. Envelope metadata (ids,
+// versions, timestamps) is excluded.
 func Diff(a, b resource.Resource) []FieldDelta {
 	av, bv := flattenResource(a), flattenResource(b)
-	// The key set is the union of two field maps. Hint with one side's length rather
-	// than the sum, so the capacity computation cannot overflow; the map grows to the
-	// true union as needed.
+	// Size the hint from one side, not the sum, so the capacity cannot overflow.
 	keys := make(map[string]struct{}, len(av))
 	for k := range av {
 		keys[k] = struct{}{}
@@ -171,9 +158,8 @@ func Diff(a, b resource.Resource) []FieldDelta {
 	return out
 }
 
-// flattenResource renders a resource's Spec and Status as a flat map of dotted paths to
-// cell strings, the shape Diff compares. The spec and status namespaces are kept
-// distinct so a field of the same name in each never collides.
+// flattenResource maps Spec and Status to dotted paths and cell strings, under
+// separate spec and status prefixes so same-named fields never collide.
 func flattenResource(r resource.Resource) map[string]string {
 	out := map[string]string{}
 	flattenInto(out, "spec", r.Spec)
@@ -192,9 +178,9 @@ func flattenInto(out map[string]string, prefix string, raw json.RawMessage) {
 	flattenValue(out, prefix, v)
 }
 
-// flattenValue walks a decoded JSON value, recording each object leaf under its dotted
-// path. Objects recurse; scalars and arrays are rendered as a single cell (arrays via
-// compact JSON), so a nested spec diffs at field granularity without exploding arrays.
+// flattenValue records each object leaf under its dotted path. An array renders as
+// one compact-JSON cell, so a nested spec diffs per field without one entry per
+// element.
 func flattenValue(out map[string]string, path string, v any) {
 	if m, ok := v.(map[string]any); ok {
 		for k, val := range m {
@@ -205,22 +191,18 @@ func flattenValue(out map[string]string, path string, v any) {
 	out[path] = scalar(v)
 }
 
-// Name projects the resource's logical name. It is the column nearly every kind
-// lists first.
+// Name projects the resource's logical name.
 func Name() func(resource.Resource) string {
 	return func(r resource.Resource) string { return r.Name }
 }
 
-// SpecField projects a string value from the resource Spec JSON at path, or the
-// empty string when the path is absent. Scalars are stringified, so a Descriptor
-// can surface a typed field without this package importing the domain that
-// defines it.
+// SpecField projects the Spec JSON value at path as a string, or "" when absent, so a
+// Descriptor can show a typed field without this package importing its domain.
 func SpecField(path ...string) func(resource.Resource) string {
 	return func(r resource.Resource) string { return jsonField(r.Spec, path) }
 }
 
-// StatusField projects a string value from the resource Status JSON at path, the
-// observed-state counterpart of SpecField.
+// StatusField is [SpecField] for the Status JSON.
 func StatusField(path ...string) func(resource.Resource) string {
 	return func(r resource.Resource) string { return jsonField(r.Status, path) }
 }

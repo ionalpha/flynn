@@ -15,20 +15,14 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// ModelAuditor rules on the terms that do not reduce to a command ("changes stay within
-// the scope the objective describes"): a judgement no exit code settles. It reads the run's
-// own recorded events and asks a model. It is the weaker of the two auditors, so three
-// rules keep it from becoming a formality.
+// ModelAuditor rules on terms no exit code settles ("changes stay within scope") by asking
+// a model over the run's recorded events. Three rules keep this weaker auditor honest:
 //
-// It will not rule on an absence. A log does not contain what is absent, so a model reading
-// one reports "I found nothing" whether the run swept the tree or never looked. Admission
-// refuses an unsearchable term (goal.AssertsAbsence); one the model reads as an absence
-// claim defeated that recognizer, and is refused.
-//
-// It will not stand in for a written check: a term declaring one is audited by running it.
-//
-// A verdict must cite the record. An uncited "the term holds" is what a run under completion
-// pressure produces most easily, so it stops the goal. The citation goes on the spine.
+//   - It refuses an absence claim, because a log shows "nothing found" whether or not
+//     anyone looked. Such a term slipped past goal.AssertsAbsence at admission.
+//   - It refuses a term that declares a check, which must be run.
+//   - A verdict must cite the record, because an uncited "holds" is the easiest answer
+//     under completion pressure. The citation is recorded.
 type ModelAuditor struct {
 	model     llm.Model
 	log       spine.Log
@@ -37,10 +31,9 @@ type ModelAuditor struct {
 	maxEvents int
 }
 
-// defaultAuditSystem frames the model as an auditor rather than a reviewer, and puts the
-// two disclosures it must make (is this an absence claim, what did you read) before the
-// verdict. The order is the point: a model that has already written "holds" will justify
-// it, and a model that has already named what it read has bounded what it can claim.
+// defaultAuditSystem asks for the absence check and the citation before the verdict,
+// because a model that has written "holds" will justify it, while one that has named
+// what it read has bounded what it can claim.
 const defaultAuditSystem = `You audit one term of an autonomous run: something the run was required to keep true the whole time it worked. You are given the term and the run's own recorded event log.
 
 Rule on the term from the record alone. Where the record does not show something, that is not permission to assume the best about it.
@@ -54,22 +47,19 @@ Return ONLY a JSON object (no prose, no code fence):
 {"absence":boolean,"cited":string,"held":boolean,"detail":string}
 "cited" is what you read. "detail" is what you observed, and is required whenever held is false.`
 
-// maxAuditEvents bounds how much of the run's record one audit renders. An audit runs after
-// every step, so the record it reads grows across a run while the term it rules on does
-// not, and the tail is where the step being audited is. It is a cost bound, not a
-// correctness one: a term that needs the whole history to settle is a term wanting a check.
+// maxAuditEvents keeps the tail of the record, where the audited step is, to bound cost.
+// A term that needs the whole history wants a check.
 const maxAuditEvents = 200
 
-// maxAuditPayload bounds one rendered event's payload, so a single large tool result does
-// not crowd the rest of the record out of the request.
+// maxAuditPayload bounds one event's payload, so a large tool result cannot crowd out the
+// rest of the record.
 const maxAuditPayload = 400
 
 // ModelAuditorOption configures a ModelAuditor.
 type ModelAuditorOption func(*ModelAuditor)
 
-// WithAuditSystem overrides the standing instruction framing the audit. The default puts
-// the absence disclosure and the citation ahead of the verdict; an override that drops
-// either leaves a model free to rule first and account for it afterwards.
+// WithAuditSystem overrides the system prompt. An override that drops the absence check
+// or the citation lets a model rule first and justify afterwards.
 func WithAuditSystem(s string) ModelAuditorOption {
 	return func(a *ModelAuditor) {
 		if strings.TrimSpace(s) != "" {
@@ -78,7 +68,7 @@ func WithAuditSystem(s string) ModelAuditorOption {
 	}
 }
 
-// WithAuditMaxTokens caps the output length requested of the model.
+// WithAuditMaxTokens caps the model's output (default 1024).
 func WithAuditMaxTokens(n int) ModelAuditorOption {
 	return func(a *ModelAuditor) {
 		if n > 0 {
@@ -87,7 +77,7 @@ func WithAuditMaxTokens(n int) ModelAuditorOption {
 	}
 }
 
-// WithAuditWindow sets how many of the run's most recent events one audit reads.
+// WithAuditWindow sets how many recent events one audit reads (default 200).
 func WithAuditWindow(n int) ModelAuditorOption {
 	return func(a *ModelAuditor) {
 		if n > 0 {
@@ -96,9 +86,8 @@ func WithAuditWindow(n int) ModelAuditorOption {
 	}
 }
 
-// NewModelAuditor builds an auditor that rules on prose terms by asking m over the run's
-// record on log. The log is both what the auditor reads and where the audit is recorded,
-// so it is the same one the rest of the run writes to.
+// NewModelAuditor asks m over the record on log, and records audits on the same log, so
+// pass the run's own.
 func NewModelAuditor(m llm.Model, log spine.Log, opts ...ModelAuditorOption) *ModelAuditor {
 	a := &ModelAuditor{
 		model:     m,
@@ -115,11 +104,8 @@ func NewModelAuditor(m llm.Model, log spine.Log, opts ...ModelAuditorOption) *Mo
 
 var _ goal.InvariantAuditor = (*ModelAuditor)(nil)
 
-// Audit rules on every term it is handed and returns a breach for each that did not hold.
-//
-// The record is read once and every term is ruled on against that one reading, so all the
-// terms of a pass are judged against the same run rather than against a record that moved
-// underneath them.
+// Audit returns a breach for each term that did not hold. The record is read once, so
+// every term in a pass is judged against the same run.
 func (a *ModelAuditor) Audit(ctx context.Context, r resource.Resource, spec goal.Spec, _ goal.Status, terms []goal.Invariant) ([]goal.Breach, error) {
 	if len(terms) == 0 {
 		return nil, nil
@@ -148,9 +134,8 @@ func (a *ModelAuditor) Audit(ctx context.Context, r resource.Resource, spec goal
 	return breaches, nil
 }
 
-// auditTerm asks the model about one term and turns the reply into a verdict, refusing the
-// two replies that look like verdicts and are not: a term the model reads as an absence
-// claim, and a verdict resting on nothing.
+// auditTerm refuses the two replies that look like verdicts and are not: an absence
+// claim and an uncited ruling.
 func (a *ModelAuditor) auditTerm(ctx context.Context, spec goal.Spec, term goal.Invariant, record string) (held bool, detail, cited string, err error) {
 	if strings.TrimSpace(term.Check) != "" {
 		return false, "", "", fault.New(fault.Terminal, "audit_check_not_run",
@@ -192,7 +177,6 @@ func (a *ModelAuditor) auditTerm(ctx context.Context, spec goal.Spec, term goal.
 	return false, clip(detail, maxDetail), cited, nil
 }
 
-// auditVerdict is the wire shape the auditor returns.
 type auditVerdict struct {
 	Absence bool   `json:"absence"`
 	Cited   string `json:"cited"`
@@ -200,11 +184,8 @@ type auditVerdict struct {
 	Detail  string `json:"detail"`
 }
 
-// parseAuditVerdict extracts the JSON object from the reply. Models wrap JSON in prose or
-// a code fence despite instructions, so the outermost object is taken. A reply with no
-// object, or one that does not parse, is a terminal fault rather than a default verdict:
-// the default that suggests itself is the zero value, which reads as "the term holds", and
-// an auditor whose parse failure means "holds" is worse than no auditor.
+// parseAuditVerdict takes the outermost object, because models wrap JSON in prose or a
+// fence. An unparseable reply is Terminal, because the zero verdict reads as "holds".
 func parseAuditVerdict(text string) (auditVerdict, error) {
 	raw := extractObject(text)
 	if raw == "" {
@@ -217,8 +198,7 @@ func parseAuditVerdict(text string) (auditVerdict, error) {
 	return v, nil
 }
 
-// extractObject returns the outermost JSON object in text (from the first "{" to the last
-// "}"), or "" if there is none.
+// extractObject returns text from the first "{" to the last "}", or "".
 func extractObject(text string) string {
 	start := strings.IndexByte(text, '{')
 	end := strings.LastIndexByte(text, '}')
@@ -228,9 +208,8 @@ func extractObject(text string) string {
 	return text[start : end+1]
 }
 
-// auditPrompt renders the goal's objective, the term under audit and the run's record. The
-// objective is included because a term is stated against it: "changes stay in scope" means
-// nothing without the scope the goal describes.
+// auditPrompt includes the objective, because "changes stay in scope" means nothing
+// without the scope it describes.
 func auditPrompt(spec goal.Spec, term goal.Invariant, record string) string {
 	var b strings.Builder
 	b.WriteString("The run's objective:\n")
@@ -246,9 +225,8 @@ func auditPrompt(spec goal.Spec, term goal.Invariant, record string) string {
 	return b.String()
 }
 
-// readRecord renders the tail of the run's own event stream. It reads the goal's stream,
-// which is where the run's steps, tool calls and governance decisions land, so the auditor
-// rules over what the run did rather than over what the run says it did.
+// readRecord renders the tail of the goal's stream, so the auditor rules on what the run
+// did, not what it says it did.
 func (a *ModelAuditor) readRecord(ctx context.Context, r resource.Resource) (string, error) {
 	if a.log == nil {
 		return "", fault.New(fault.Terminal, "audit_no_log",
@@ -273,10 +251,8 @@ func (a *ModelAuditor) readRecord(ctx context.Context, r resource.Resource) (str
 	return b.String(), nil
 }
 
-// renderPayload flattens an event payload into one line with its keys in a stable order, so
-// two renderings of the same record are the same text and a term is not judged differently
-// on a map iteration. Each value is clipped, because one large tool result would otherwise
-// crowd the rest of the record out of the window.
+// renderPayload sorts keys, so a term is never judged differently on map iteration
+// order.
 func renderPayload(payload map[string]any) string {
 	if len(payload) == 0 {
 		return ""
@@ -293,13 +269,9 @@ func renderPayload(payload map[string]any) string {
 	return strings.Join(parts, " ")
 }
 
-// recordAudit appends the audit to the goal's stream, marked as asserted: nothing was run
-// for this verdict, and the record says so rather than letting a model's judgement read
-// like an observed exit code. What the auditor cited rides along, because a verdict whose
-// citation is not kept is one nobody can go back and check.
-//
-// A failure to write it fails the audit, for the reason it does in the command auditor: an
-// audit nobody can show happened is what the record exists to prevent.
+// recordAudit marks the audit asserted, because nothing was run, and keeps the citation
+// so the verdict can be checked later. A failed write fails the audit, as in
+// [CommandAuditor].
 func (a *ModelAuditor) recordAudit(ctx context.Context, r resource.Resource, term goal.Invariant, held bool, detail, cited string) error {
 	payload := map[string]any{
 		chain.InvariantKey:      term.ID,
@@ -310,9 +282,6 @@ func (a *ModelAuditor) recordAudit(ctx context.Context, r resource.Resource, ter
 	if detail != "" {
 		payload[chain.InvariantDetailKey] = detail
 	}
-	// ActorSystem: the runtime asked the auditor and recorded what came back. The
-	// asserted marker is what keeps this distinguishable from an executed audit, so the
-	// actor does not have to carry that distinction as well.
 	if _, err := a.log.Append(ctx, spine.AppendInput{
 		Stream:  r.Name,
 		Type:    chain.InvariantAudited,

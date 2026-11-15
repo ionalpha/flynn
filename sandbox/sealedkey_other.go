@@ -2,8 +2,6 @@
 
 package sandbox
 
-// GrantSealedKeyReadable is a no-op off Windows. A confined signer on Linux or macOS reads
-// its sealed key through ordinary POSIX file permissions (the key file is the operator's
-// own, and the sandbox does not strip its read access), so there is no package SID to grant
-// and nothing to do here.
+// GrantSealedKeyReadable is a no-op, because the signer reads the key through
+// ordinary file permissions the sandbox does not strip.
 func GrantSealedKeyReadable(string) error { return nil }

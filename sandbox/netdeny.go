@@ -5,41 +5,30 @@ import (
 	"fmt"
 )
 
-// ErrNetworkDeny reports that a Local asked for no network ([WithNetworkDenied]) on a
-// confinement tier that cannot enforce it: the write-restricted token that
-// [WithDefaultConfinement] selects on Windows. It fails the launch, and
-// [WithBestEffortConfinement] never absorbs it, because a command that was to have no
-// network and ran with the host's is the failure the request exists to prevent.
-// [WithOpenNetworkWhereUndeniable] is the explicit acceptance that lets the command run
-// with the network open.
+// ErrNetworkDeny reports [WithNetworkDenied] on a tier that cannot enforce it, the
+// Windows write-restricted token. [WithBestEffortConfinement] never absorbs it;
+// only [WithOpenNetworkWhereUndeniable] lets the command run.
 var ErrNetworkDeny = errors.New("sandbox: cannot deny the network to the command")
 
-// WithOpenNetworkWhereUndeniable accepts running with the host's network on a tier that
-// cannot deny it. A Local that asked for [WithNetworkDenied] on such a tier refuses every
-// launch with [ErrNetworkDeny]; with this option it runs, and [Local.NetworkDenied] then
-// reports false so a record built from the Local says the network was open. It changes
-// nothing where the tier can deny the network (see [NetworkDenySupported]), so a caller
-// can set it on every platform and still get the denial where there is one.
+// WithOpenNetworkWhereUndeniable runs with the host network where the tier cannot
+// deny it, and [Local.NetworkDenied] then reports false. Where the tier can deny
+// it ([NetworkDenySupported]) it changes nothing, so it is safe on every platform.
 func WithOpenNetworkWhereUndeniable() LocalOption {
 	return func(l *Local) { l.networkOpenOK = true }
 }
 
-// NetworkDenySupported reports whether the confinement [WithDefaultConfinement] selects
-// can deny the network to a command. It is true on Linux and macOS and false on Windows,
-// whose write-restricted token has no network control and which denies the network only
-// under the AppContainer tier (see [WithKernelConfinement]) that the default does not use.
-// A caller can choose what to do there before a launch refuses.
+// NetworkDenySupported reports it for [WithDefaultConfinement]: false on Windows,
+// whose default token has no network control; only the AppContainer tier
+// ([WithKernelConfinement]) denies it there.
 func NetworkDenySupported() bool { return networkDenyEnforceable(true) }
 
-// networkDenied reports whether commands run with no network: it was asked for and this
-// Local's tier enforces it. The one answer [Local.NetworkDenied] and the launch guard share,
-// so a record never claims a denial the guard let through unenforced.
+// networkDenied is shared by [Local.NetworkDenied] and the launch guard, so a
+// record never claims a denial that was not enforced.
 func (l *Local) networkDenied() bool {
 	return l.denyNetwork && networkDenyEnforceable(l.hostReadable)
 }
 
-// guardNetworkDeny refuses a launch that asked for no network on a tier that cannot
-// provide it, unless the Local accepted the open network.
+// guardNetworkDeny honours [WithOpenNetworkWhereUndeniable].
 func (l *Local) guardNetworkDeny() error {
 	if !l.denyNetwork || networkDenyEnforceable(l.hostReadable) || l.networkOpenOK {
 		return nil

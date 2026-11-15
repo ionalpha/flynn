@@ -12,13 +12,8 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// startStream launches a streamed subprocess. Unconfined, it runs through the standard
-// library exactly like the other platforms. Confined, it runs the program directly (no
-// shell) inside an AppContainer with the same policy Exec uses: the working directory the
-// one writable location, the network granted only when it was not denied, and the process
-// hardened with the mitigation policies. The AppContainer is applied through process
-// creation, which an exec.Cmd cannot carry, so the confined path does not go through
-// startStreamExec.
+// startStream confines with Exec's AppContainer policy, applied at process
+// creation, which an exec.Cmd cannot carry, so it bypasses startStreamExec.
 func (l *Local) startStream(ctx context.Context, spec StreamSpec, confined bool) (*StreamProcess, error) {
 	if !confined {
 		return l.startStreamExec(ctx, spec, false)
@@ -26,15 +21,10 @@ func (l *Local) startStream(ctx context.Context, spec StreamSpec, confined bool)
 	return l.startStreamAppContainer(ctx, spec)
 }
 
-// startStreamAppContainer starts spec.Argv inside the working directory's AppContainer
-// and returns a handle to its live stdout, bound to ctx: a cancellation terminates the
-// process. It reuses spawnAppContainer (shared with the one-shot Exec path); the only
-// differences are that the program is run directly from its argv rather than through
-// cmd.exe, and the process is handed back running rather than drained to completion.
+// startStreamAppContainer shares spawnAppContainer with Exec but runs argv
+// without cmd.exe and returns the process running. Cancelling ctx terminates it.
 func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*StreamProcess, error) {
-	// The program is found on the sandbox's PATH and run directly. Resolving it here (not
-	// leaving it to the loader) keeps the failure legible and matches how the other
-	// platforms exec the argv without a shell.
+	// Resolved here so a missing program gives a clear error.
 	appPath, err := exec.LookPath(spec.Argv[0])
 	if err != nil {
 		return nil, fmt.Errorf("sandbox: stream: command not found: %s: %w", spec.Argv[0], err)
@@ -45,8 +35,7 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 
 	var p *acProcess
 	if l.hostReadable {
-		// The write-restricted tier: no container identity, no read grants (the host is
-		// readable by the user's own access), only the workspace write grant.
+		// The write-restricted tier needs only the workspace write grant.
 		if err := grantRestrictedDir(l.root, l.root); err != nil {
 			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 		}
@@ -89,9 +78,7 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 		}
 	}
 
-	// Bind the process to ctx: a cancellation (a halt or shutdown) terminates it, which
-	// closes its output pipe so a blocked read returns and Wait then completes. The watcher
-	// stops when the process exits on its own, signalled by the wait closing exited.
+	// Terminating on cancel closes the pipe, so a blocked read returns.
 	exited := make(chan struct{})
 	go func() {
 		select {
@@ -101,8 +88,7 @@ func (l *Local) startStreamAppContainer(ctx context.Context, spec StreamSpec) (*
 		}
 	}()
 
-	// The parent's read end of the combined-output pipe, as a live stream. Closing the
-	// file (in wait) closes the handle, so closeProcess must not also close read.
+	// Closing stdout in wait closes p.read, so closeProcess must not.
 	stdout := os.NewFile(uintptr(p.read), "sandbox-appcontainer-stdout")
 
 	var once sync.Once

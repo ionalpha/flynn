@@ -8,8 +8,8 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// The in-toto and SLSA types this verifier reads. Anything else is refused: a
-// statement whose meaning this code does not know is a statement it cannot check.
+// The in-toto and SLSA types this verifier reads. Anything else is refused, because a
+// statement of unknown meaning cannot be checked.
 const (
 	statementType = "https://in-toto.io/Statement/v1"
 	predicateType = "https://slsa.dev/provenance/v1"
@@ -59,10 +59,9 @@ func (b *bundle) statement() (*statement, error) {
 	return &s, nil
 }
 
-// checkStatement holds the signed provenance to the same story the certificate tells.
-// The certificate says which workflow signed; the provenance says which workflow
-// built. If those two disagree, one of them is describing a different build, and this
-// verifier does not get to choose which one to believe.
+// checkStatement holds the signed provenance to the certificate. The certificate says
+// which workflow signed and the provenance says which workflow built; if they
+// disagree, one describes a different build and the verifier cannot choose.
 func (p policy) checkStatement(s *statement, id identity) error {
 	bd := s.Predicate.BuildDefinition
 	if bd.BuildType != buildType {
@@ -81,9 +80,9 @@ func (p policy) checkStatement(s *statement, id identity) error {
 	return nil
 }
 
-// artifacts maps each named artifact to the sha256 the signed provenance gives it.
-// This map is the whole point of the verification: a caller pins its download to a
-// digest from here, so what lands on disk is what this build produced or nothing is.
+// artifacts maps each named artifact to the sha256 the signed provenance gives it. A
+// caller pins its download to a digest from here, so what lands on disk is what this
+// build produced or nothing is.
 func (s *statement) artifacts() (map[string]string, error) {
 	if len(s.Subject) == 0 {
 		return nil, fault.New(fault.Terminal, CodeStatement, "the signed provenance covers no artifacts")
@@ -95,9 +94,8 @@ func (s *statement) artifacts() (map[string]string, error) {
 
 	out := make(map[string]string, len(s.Subject))
 	for _, sub := range s.Subject {
-		// A name that is not a plain file name has no business being matched against a
-		// release asset, and a path separator in one is how a name gets to mean a
-		// different file than it appears to.
+		// A name that is not a plain file name cannot match a release asset, and a path
+		// separator lets a name mean a different file than it appears to.
 		if sub.Name == "" || strings.ContainsAny(sub.Name, `/\`) {
 			return nil, fault.New(fault.Terminal, CodeStatement,
 				"the signed provenance names an artifact that is not a plain file name: "+sub.Name)

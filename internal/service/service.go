@@ -1,14 +1,12 @@
-// Package service models a deployed workload as a typed resource on the event-sourced
-// foundation. When a hosting extension's deploy operation succeeds, the operator
-// surface materializes a Service here: which provider deployed it, what it deploys
-// (a static site, a container, a VPS), the external id and URL the provider returned,
-// and the state the workload should be driven toward. A deployed app is therefore not
-// fire-and-forget. The record is admitted, versioned, and provenance-stamped like
-// every other kind, so a reconcile loop can later track its health, restart it, or
-// tear it down, and the control plane can read it back.
+// Package service models a deployed workload as a typed resource. When a hosting
+// extension's deploy succeeds, the operator materializes a Service here: the provider,
+// the target (static site, container, VPS), the external id and URL the provider
+// returned, and the desired state. The record is admitted, versioned and
+// provenance-stamped like any kind, so a reconcile loop can track its health, restart
+// it or tear it down, and the control plane can read it back.
 //
-// The secret a deploy used never enters a Service: only the credential's name is
-// recorded; the value stays in the vault. The Service is safe to list and sync.
+// A Service records only the name of the credential a deploy used; the value stays in
+// the vault, so a Service is safe to list and sync.
 package service
 
 import (
@@ -31,9 +29,9 @@ const (
 // ErrNotFound is returned when a service does not exist.
 var ErrNotFound = errors.New("service: not found")
 
-// Target classifies what a hosting provider deploys, so the operator (and, later, the
-// agent) can pick a provider that can satisfy a goal. The set is small on purpose: a
-// provider declares the targets it supports, and a deploy records the one it used.
+// Target classifies what a hosting provider deploys, so the operator can pick a
+// provider that satisfies a goal. A provider declares the targets it supports, and a
+// deploy records the one it used.
 type Target string
 
 const (
@@ -83,22 +81,21 @@ type Spec struct {
 	// later status/teardown resolves the same one. The value stays in the vault.
 	Credential string `json:"credential,omitempty"`
 	// Address is provider-opaque addressing the deploy recorded so a later status or
-	// teardown can re-find the same workload (e.g. a Pages account id and project name).
-	// The supervisor never interprets these: it replays them verbatim into the
-	// provider's status/teardown operation, so the provider alone decides what it needs
-	// to address its own workload. Never a secret; the credential stays in the vault.
+	// teardown re-finds the workload (a Pages account id and project name). The
+	// supervisor replays it verbatim into the provider's operation without reading it,
+	// so the provider alone decides what it needs. Never a secret.
 	Address map[string]string `json:"address,omitempty"`
 }
 
-// Status is a service's observed state, set by the deploy/teardown path and (later) a
-// reconcile loop rather than admitted against the spec schema.
+// Status is a service's observed state, set by the deploy and teardown path and a
+// reconcile loop instead of admitted against the spec schema.
 type Status struct {
 	// Phase is a short lifecycle word: "deployed", "stopped", "failed".
 	Phase string `json:"phase,omitempty"`
 	// ObservedURL is the last URL a status check saw the workload at.
 	ObservedURL string `json:"observedURL,omitempty"`
-	// LastDeploy is the RFC3339 time of the last deploy, supplied by the caller's clock
-	// (never read from the wall clock here, so the record stays replay-equivalent).
+	// LastDeploy is the RFC3339 time of the last deploy from the caller's clock, never
+	// the wall clock here, so the record stays replay-equivalent.
 	LastDeploy string `json:"lastDeploy,omitempty"`
 }
 
@@ -166,8 +163,7 @@ type Store struct {
 // Service kind with the registry rs admits against (see RegisterKind).
 func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
 
-// Put creates or updates the named service, writing both its spec and status in one
-// record. The deploy path uses it to register a freshly deployed workload.
+// Put creates or updates the named service, spec and status in one record.
 func (s *Store) Put(ctx context.Context, name string, spec Spec, status Status) (Service, error) {
 	if name == "" || spec.Provider == "" {
 		return Service{}, errors.New("service: a service needs a name and a provider")
@@ -224,9 +220,8 @@ func (s *Store) List(ctx context.Context) ([]Service, error) {
 	return out, nil
 }
 
-// Delete removes the named service record. It is the bookkeeping half of a teardown:
-// the remote workload is removed by the provider's teardown operation, this retires
-// the record. A missing service is not an error.
+// Delete removes the named service record, the bookkeeping half of a teardown whose
+// remote half is the provider's teardown operation. A missing service is not an error.
 func (s *Store) Delete(ctx context.Context, name string) error {
 	err := s.rs.Delete(ctx, Kind, s.scope, name)
 	if errors.Is(err, resource.ErrNotFound) {
@@ -235,7 +230,6 @@ func (s *Store) Delete(ctx context.Context, name string) error {
 	return err
 }
 
-// toService builds the typed view from a stored resource.
 func toService(r resource.Resource) (Service, error) {
 	spec, err := DecodeSpec(r)
 	if err != nil {

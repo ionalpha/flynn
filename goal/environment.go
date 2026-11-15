@@ -9,47 +9,29 @@ import (
 	"strings"
 )
 
-// A check can fail in three different ways, and only one of them is the work being wrong.
-// The program can run and exit non-zero, which is a run being told its work is not done and
-// is what non-convergence (converge.go) counts. The program can be one the host does not
-// have, so nothing was checked at all; that is the environment, and repeating the build
-// step cannot change it. Or a file in the workspace can stand in for the program the check
-// names, so what ran was not the check the record holds. This file tells the first from the
-// other two.
-
 const (
-	// exitCmdNotFound is what cmd.exe exits with when it cannot find the program it was
-	// asked to run.
 	exitCmdNotFound = 9009
-	// exitShNotFound is what a POSIX shell exits with for the same condition.
-	exitShNotFound = 127
+	exitShNotFound  = 127
 
-	// EnvironmentRepeatLimit is how many consecutive verifications may find the same
-	// program missing before the goal stops. The first tells the agent, which may be able
-	// to install the program; the second says it did not.
+	// EnvironmentRepeatLimit is two, because after the first the agent may install the
+	// program and the second shows it did not.
 	EnvironmentRepeatLimit = 2
 )
 
 var (
-	// cmdNotFound is cmd.exe's own sentence. It is anchored to a line start because cmd
-	// prints it as a line of its own, and a test that quotes the phrase inside a longer line
-	// has run its check.
+	// cmdNotFound is anchored to a line start, because a test quoting the phrase mid-line
+	// has run.
 	cmdNotFound = regexp.MustCompile(`(?m)^'([^']+)' is not recognized as an internal or external command`)
 	shNotFound  = regexp.MustCompile(`(?m)([^\s:]+): (?:command )?not found\s*$`)
-	// psNotFound is PowerShell's wording, which carries no distinctive exit code (it is 1),
-	// so the text is the only evidence and the phrase has to be PowerShell's own.
+	// psNotFound matches PowerShell's own phrase, because it exits 1 and the text is the
+	// only evidence.
 	psNotFound = regexp.MustCompile(`The term '([^']+)' is not recognized as the name of a cmdlet`)
 )
 
-// MissingCommand reports the program a check named that the host could not find, and false
-// when the check ran, or failed for another reason.
-//
-// cmd.exe prints the same sentence whatever it then exits with: 9009 for a bare program,
-// but 1 when the missing program is the left side of a redirect or a chain (a field run
-// saw `skill_read x >NUL` exit 1). So cmd's sentence is evidence at any non-zero exit, and
-// 9009 is evidence even when the text was lost. A POSIX shell's "not found" is not: it is
-// common in the output of a check that ran, so it counts only at 127. PowerShell exits 1
-// with its own phrase, so the phrase is the evidence.
+// MissingCommand reports a program the host could not find. cmd's sentence counts at any
+// non-zero exit, because cmd exits 1 for a missing program in a redirect or chain, and
+// 9009 counts without text. A shell's "not found" counts only at 127, because it is common
+// in output of a check that ran.
 func MissingCommand(check string, exitCode int, output string) (string, bool) {
 	if exitCode == 0 {
 		return "", false
@@ -69,8 +51,6 @@ func MissingCommand(check string, exitCode int, output string) (string, bool) {
 	return "", false
 }
 
-// firstSubmatch is the program the output names, or the check's own first word when the
-// shell did not say.
 func firstSubmatch(re *regexp.Regexp, output, check string) string {
 	if m := re.FindStringSubmatch(output); m != nil {
 		return m[1]
@@ -81,10 +61,8 @@ func firstSubmatch(re *regexp.Regexp, output, check string) string {
 	return strings.TrimSpace(check)
 }
 
-// classifyUnrunnable turns an executed verdict that failed because the host lacks the
-// check's program into an unexecuted one saying so. Nothing was verified, so the verdict
-// must not carry execution provenance: it would otherwise be counted as the work failing
-// its check, and the goal would stop as not converging on a check that never ran.
+// classifyUnrunnable strips execution provenance from a missing-program failure, so it is
+// not counted toward non-convergence.
 func classifyUnrunnable(check string, v ItemVerdict) ItemVerdict {
 	if !v.Executed || v.Passed {
 		return v
@@ -101,24 +79,18 @@ func classifyUnrunnable(check string, v ItemVerdict) ItemVerdict {
 	return v
 }
 
-// StalledForEnvironment reports whether the same program has been found missing often
-// enough that another build step will not change it.
+// StalledForEnvironment reports whether one program reached [EnvironmentRepeatLimit].
 func (s Status) StalledForEnvironment() bool {
 	return s.MissingCommand != "" && s.MissingRepeat >= EnvironmentRepeatLimit
 }
 
-// EnvironmentReason is the stall message for a check whose program the host does not have.
-// It names the program, because that is the one fact an operator needs to fix it, and says
-// the work was not judged.
+// EnvironmentReason names the program, the one fact an operator needs.
 func (s Status) EnvironmentReason() string {
 	return fmt.Sprintf("the check cannot run on this host: the program %q was not found on %d consecutive verifications. "+
 		"The work was not judged. Rewrite the item's check with a program this host has, or install %s.",
 		s.MissingCommand, s.MissingRepeat, s.MissingCommand)
 }
 
-// observeMissing folds one verdict into the missing-program count: the same program again
-// extends it, a different one restarts it, and any verdict that is not a missing program
-// ends it.
 func (s *Status) observeMissing(missing string) {
 	switch missing {
 	case "":
@@ -130,20 +102,13 @@ func (s *Status) observeMissing(missing string) {
 	}
 }
 
-// standInExts are the suffixes a shell resolves a bare program name through. They are
-// checked on every platform: a file written to answer to the check's command is a stand-in
-// whichever shell happens to read the check.
+// standInExts are checked on every platform, because a stand-in works whichever shell
+// reads the check.
 var standInExts = []string{"", ".bat", ".cmd", ".com", ".exe", ".ps1"}
 
-// ShadowedCommands returns the programs a check names that a file directly in dir stands
-// in for, such as a test.bat beside a check that runs `test`.
-//
-// A check is the record's, written before the work and judged after it, so a file that
-// answers to the check's own command makes the check measure what the agent wrote and not
-// what the objective asked for. That is the agent editing its verifier, and it is refused
-// as tampering and not accepted as a fix. Only the directory itself is searched, which is
-// where cmd.exe looks first; a path-qualified command is the author naming the file, and is
-// left alone.
+// ShadowedCommands finds a file in dir standing in for a check's program, such as test.bat
+// for `test`. That is the agent editing its verifier and is refused as tampering. Only dir
+// is searched, where cmd.exe looks first; a path-qualified command is left alone.
 func ShadowedCommands(check, dir string) []string {
 	if dir == "" {
 		return nil
@@ -165,10 +130,8 @@ func ShadowedCommands(check, dir string) []string {
 	return shadowed
 }
 
-// NamedCommands returns the programs a check runs whose name is among names, in order and
-// once each. It is how a planner notices a check that calls one of the run's own tools: a
-// tool is a function the model calls, not a program a shell can start, so such a check can
-// only ever report the program missing.
+// NamedCommands lets a planner catch a check that calls one of the run's tools, which no
+// shell can start. Each name appears once, in order.
 func NamedCommands(check string, names []string) []string {
 	var found []string
 	for _, word := range commandWords(check) {
@@ -179,7 +142,6 @@ func NamedCommands(check string, names []string) []string {
 	return found
 }
 
-// commandSeparators split a check into the segments each of which starts with a program.
 var commandSeparators = strings.NewReplacer("&&", "\n", "||", "\n", "|", "\n", ";", "\n", "$(", "\n", "(", "\n", "`", "\n")
 
 func startsWord(w string) bool {
@@ -190,10 +152,8 @@ func startsWord(w string) bool {
 	return c == '_' || c == '.' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
 }
 
-// commandWords is the first word of each command in a check line, unquoted, in order. It
-// reads the shell's grammar only as far as the separators that start a new command; a
-// word that is an argument is never returned, so a file named like an argument cannot
-// read as a stand-in.
+// commandWords never returns an argument, so a file named like one cannot read as a
+// stand-in.
 func commandWords(check string) []string {
 	var words []string
 	for _, segment := range strings.Split(commandSeparators.Replace(check), "\n") {
@@ -202,8 +162,7 @@ func commandWords(check string) []string {
 			continue
 		}
 		word := strings.Trim(fields[0], `"'`)
-		// A leading punctuation mark is the tail of a construct this does not parse (the
-		// ")" closing a substitution), and a "=" makes the word an assignment.
+		// Leading punctuation is an unparsed construct's tail; "=" is an assignment.
 		if !startsWord(word) || strings.Contains(word, "=") {
 			continue
 		}

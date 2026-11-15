@@ -12,69 +12,47 @@ import (
 	"github.com/ionalpha/flynn/procs"
 )
 
-// errServeConfineUnsupported is returned when a confined background server is requested
-// on a platform that cannot apply its kernel confinement to a backgrounded process (its
-// confinement is applied through a blocking launch that yields no backgroundable handle).
-// Serve refuses rather than starting the server at the directory-jail floor while the
-// sandbox reports the confined tier. It is a governance refusal (Forbidden), like the
-// other confinement-unsupported refusals; only [WithBestEffortConfinement] drops to the
-// floor instead.
+// errServeConfineUnsupported is Forbidden: the platform confines only through a
+// blocking launch, and starting at the jail floor would misreport the tier. Only
+// [WithBestEffortConfinement] drops to the floor.
 var errServeConfineUnsupported = fault.New(fault.Forbidden, "sandbox_serve_confine_unsupported",
 	"sandbox: kernel confinement cannot be applied to a background process on this platform; refusing rather than serving the process unconfined")
 
-// ServeSpec describes a long-lived process to run in the background inside the sandbox.
-// It is the counterpart of Command for a server that must keep running and be reached
-// over a loopback port, rather than a one-shot command whose output is collected and
-// returned. The program is run directly from its argv, never through a shell, so a
-// model id or weights path in the arguments cannot be reinterpreted as shell syntax.
+// ServeSpec describes a server reached over loopback. Argv never passes through a
+// shell, so a model id or weights path cannot become shell syntax.
 type ServeSpec struct {
-	// Argv is the program and its arguments, executed directly without a shell. Argv[0]
-	// is the binary to run; the rest are passed verbatim.
+	// Argv[0] is the binary; the rest pass verbatim.
 	Argv []string
-	// Confine requests the platform's kernel confinement (a read-only host and the
-	// syscall filter) for the process where the Local was built to provide it. Network
-	// is deliberately left reachable so a loopback server the process binds stays
-	// reachable from this host; denying outbound egress while keeping loopback is a
-	// separate, finer policy layered on top, not part of starting the server.
+	// Confine applies the Local's read-only host and syscall filter. The network
+	// stays reachable so the loopback server can be reached; egress is a separate
+	// policy.
 	Confine bool
 }
 
-// Process is a handle to a background process started by Serve. It is safe for
-// concurrent use: Stop, Wait, Done, and Output may be called from any goroutine. The
-// process is not tied to the context passed to Serve; it runs until it exits on its
-// own or Stop is called, so a server outlives the call that started it.
+// Process is safe for concurrent use. It ignores Serve's context and runs until
+// it exits or Stop is called.
 type Process struct {
 	cmd  *exec.Cmd
 	tail *tailBuffer
 	done chan struct{}
-	// release frees what the launch holds for this process alone, notably a governed-egress
-	// proxy serving only this child. It runs once the process is reaped.
+	// release frees per-process launch state, such as an egress proxy, after reap.
 	release func()
-	// reaped tells the process registry this child is no longer live. It runs from reap,
-	// the one goroutine that waits on the command, and never from a diagnostics sampler.
+	// reaped runs only from reap, the one goroutine that waits on the command.
 	reaped func()
 	mu     sync.Mutex
 	waited bool
 	exwait error
 }
 
-// tailBufferCap bounds how much of a server's combined output is retained for
-// diagnostics. Only the most recent bytes matter when a launch fails, and a server
-// can log indefinitely, so the buffer keeps a fixed-size tail rather than growing.
+// tailBufferCap bounds retained output because a server can log forever and a
+// failed launch needs only the tail.
 const tailBufferCap = 16 << 10 // 16 KiB
 
-// Serve starts spec.Argv as a background process in the sandbox working directory with
-// the deny-by-default environment (the host's environment is never inherited, exactly
-// as for Exec), and returns a handle once the process has started. A failure to start is an
-// error; a process that starts and later exits is reported through the handle. When
-// spec.Confine is set, the process is launched under the kernel confinement this Local was
-// configured for, so a runtime parsing untrusted weights runs read-only to the host and
-// behind the syscall filter where the platform enforces them.
+// Serve starts spec.Argv in the working directory without the host environment.
+// Only a failure to start is an error; a later exit shows on the handle.
 //
-// Where a platform cannot carry its confinement onto a backgroundable handle (Windows,
-// whose AppContainer is applied through a blocking launch), an explicitly confined Serve is
-// refused rather than started at the directory-jail floor under a tier the trust gate relied
-// on; only [WithBestEffortConfinement] may drop to the floor, as in Exec.
+// Windows applies AppContainer through a blocking launch, so a confined Serve is
+// refused there unless [WithBestEffortConfinement] allows the floor.
 func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return nil, errors.New("sandbox: serve: no command")
@@ -83,15 +61,10 @@ func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 	if err := l.guardLaunch(); err != nil {
 		return nil, err
 	}
-	// Egress requires the confined path (its OS-level denial composes into confine)
-	// whenever it is configured, regardless of spec.Confine, and like Exec is never
-	// weakened by the opt-in fallback.
+	// Egress always forces confinement and the fallback never weakens it.
 	confine := l.egress != nil || (spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp))
-	// On a platform that cannot apply its kernel confinement to a backgrounded process,
-	// startProcess would run the server unconfined while the sandbox still reported the
-	// confined tier. Rather than that silent drop, refuse the launch. Only the opt-in
-	// (with no egress and no network denial) falls to the directory-jail floor, and it
-	// reports having done so.
+	// startProcess would run unconfined under the confined tier, so refuse. Only the
+	// opt-in, without egress or network denial, falls to the floor, and says so.
 	if confine && !backgroundConfinementExpressible() {
 		if !l.fallBackUnexpressible(errServeConfineUnsupported) {
 			return nil, errServeConfineUnsupported
@@ -99,28 +72,23 @@ func (l *Local) Serve(_ context.Context, spec ServeSpec) (*Process, error) {
 		return l.startProcess(spec.Argv, false)
 	}
 	p, err := l.startProcess(spec.Argv, confine)
-	// A confined launch that could not start (an error, not a non-zero exit) runs again at
-	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	// A start error, unlike a non-zero exit, retries at the floor under the opt-in.
 	if l.fallBack(err, confine) {
 		return l.startProcess(spec.Argv, false)
 	}
 	return p, err
 }
 
-// startProcess builds and starts the background process once, applying confinement only
-// when confined is true, and returns its handle.
 func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 	//nolint:gosec // running the gated runtime binary is this primitive's purpose; isolation is the sandbox's job, applied below
 	c := procexec.Command(argv[0], argv[1:]...)
 	c.Dir = l.root
-	// Deny-by-default environment: never inherit the host's, so no secret the agent
-	// holds reaches the server. It sees only the minimal baseline plus explicit grants.
+	// No agent secret reaches the server through the environment.
 	c.Env = l.env()
 	tail := newTailBuffer(tailBufferCap)
 	c.Stdout = tail
 	c.Stderr = tail
-	// Start the egress proxy and inject its variables before confine, so confine can
-	// compose the allow-only-proxy rule into the same enforcement action.
+	// The proxy starts before confine so confine can add the proxy-only rule.
 	release := func() {}
 	if l.egressActive() {
 		var err error
@@ -143,9 +111,7 @@ func (l *Local) startProcess(argv []string, confined bool) (*Process, error) {
 	return p, nil
 }
 
-// reap waits for the process to exit exactly once and records the outcome, then closes
-// done so every Done/Wait observer is released. Wait() reuses the recorded result so
-// the OS-level Wait is never called twice.
+// reap is the only caller of the OS Wait, which must not run twice.
 func (p *Process) reap() {
 	err := p.cmd.Wait()
 	p.reaped()
@@ -156,8 +122,7 @@ func (p *Process) reap() {
 	close(p.done)
 }
 
-// Done returns a channel closed when the process exits, so a caller can select on it
-// alongside a health check or a context.
+// Done is closed when the process exits.
 func (p *Process) Done() <-chan struct{} { return p.done }
 
 // Running reports whether the process has not yet exited.
@@ -178,13 +143,10 @@ func (p *Process) PID() int {
 	return p.cmd.Process.Pid
 }
 
-// Output returns the retained tail of the process's combined stdout and stderr, for
-// surfacing why a server failed to come up.
+// Output returns the tail of combined stdout and stderr.
 func (p *Process) Output() string { return p.tail.String() }
 
-// Wait blocks until the process exits or ctx is done. It returns the process's exit
-// error (nil on a clean exit), or ctx.Err() if the context fires first. The process
-// is not killed on a context timeout; the caller decides whether to Stop it.
+// Wait does not kill the process when ctx ends; the caller decides on Stop.
 func (p *Process) Wait(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -196,10 +158,7 @@ func (p *Process) Wait(ctx context.Context) error {
 	}
 }
 
-// Stop ends the process and waits for it to exit. It is idempotent: calling it after
-// the process has already exited returns nil. A kill is used rather than a graceful
-// signal because the server holds no state worth flushing and a prompt, certain stop
-// is what a lifecycle command needs.
+// Stop is idempotent. It kills because the server has no state to flush.
 func (p *Process) Stop() error {
 	if !p.Running() {
 		return nil
@@ -210,14 +169,12 @@ func (p *Process) Stop() error {
 	<-p.done
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	// A killed process reports a non-nil wait error; that is the expected outcome of
-	// Stop, not a failure, so it is not surfaced.
+	// The kill's wait error is expected.
 	return nil
 }
 
-// tailBuffer is an io.Writer that retains only the most recent cap bytes written to
-// it. It is safe for concurrent writes (the standard library writes stdout and stderr
-// from separate goroutines) and reads.
+// tailBuffer keeps the last cap bytes. It is safe for concurrent use because
+// stdout and stderr are written from separate goroutines.
 type tailBuffer struct {
 	mu  sync.Mutex
 	buf []byte

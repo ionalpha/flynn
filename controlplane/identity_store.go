@@ -1,17 +1,5 @@
 package controlplane
 
-// Persistent instance identity. The keystone token treats an Identity's public key as
-// the instance's verifiable id, but a freshly-generated-per-process key means every
-// restart is a new principal: tokens issued to the old key stop verifying, and audit
-// loses the thread across restarts. This file seals the Ed25519 seed in the existing
-// vault so identity is stable at rest. The seed (32 bytes, base64) is the only secret;
-// the public key and id derive from it, so persisting the seed persists the identity.
-//
-// The vault is reached through a narrow SeedVault port (the subset of vault.Store this
-// needs), not by importing vault: the cryptographic core stays free of the credential
-// backend, and a test supplies an in-memory map. The seed is carried as a secret.Text
-// so it inherits the vault's redaction and sealed-at-rest handling and is never logged.
-
 import (
 	"context"
 	"crypto/ed25519"
@@ -25,10 +13,8 @@ import (
 // IdentityVaultRef is the vault reference the instance identity seed is sealed under.
 const IdentityVaultRef = "controlplane/instance-identity"
 
-// SeedVault is the slice of a credential vault this package needs to persist an
-// identity: read a sealed value, write one. It is exactly satisfied by *vault.Store, so
-// the production wiring passes the real vault while a test passes an in-memory stub, and
-// controlplane never has to import the vault backend.
+// SeedVault is the subset of *vault.Store needed to persist an identity, so this
+// package does not import the vault backend and a test can use a map.
 type SeedVault interface {
 	// Lookup returns secret.ErrNotFound for a ref that was never sealed. That is the
 	// signal LoadOrCreateIdentity reads as "first run" before it mints a new seed, so an
@@ -37,18 +23,14 @@ type SeedVault interface {
 	Set(ctx context.Context, ref string, value secret.Text) error
 }
 
-// Seed returns the identity's 32-byte Ed25519 seed, the single secret the rest of the
-// keypair derives from. It is the value LoadOrCreateIdentity seals in the vault. Holding
-// it is equivalent to holding the private key, so callers must treat it as a secret and
-// never log or persist it unsealed.
+// Seed returns the 32-byte Ed25519 seed the keypair derives from. Holding it is
+// holding the private key: never log it or store it unsealed.
 func (i *Identity) Seed() []byte {
 	return i.priv.Seed()
 }
 
-// IdentityFromSeed reconstructs an identity from a 32-byte Ed25519 seed, the inverse of
-// Seed. A seed of the wrong length is rejected rather than silently truncated, so a
-// corrupted or foreign sealed value fails closed instead of yielding a usable-but-wrong
-// identity.
+// IdentityFromSeed rebuilds an identity from a 32-byte seed. Any other length is
+// rejected, so a corrupt sealed value fails instead of yielding a wrong identity.
 func IdentityFromSeed(seed []byte) (*Identity, error) {
 	if len(seed) != ed25519.SeedSize {
 		return nil, fmt.Errorf("controlplane: identity seed must be %d bytes, got %d", ed25519.SeedSize, len(seed))
@@ -61,15 +43,12 @@ func IdentityFromSeed(seed []byte) (*Identity, error) {
 	return &Identity{pub: pub, priv: priv}, nil
 }
 
-// LoadOrCreateIdentity returns the instance's stable identity: it reads the sealed seed
-// from the vault and reconstructs the keypair, or, on first run (no sealed seed yet),
-// generates a fresh identity and seals its seed before returning it. Either way the
-// returned identity is the same one a later restart will load, so the instance's public
-// key and principal id survive restarts rather than churning per process.
-//
-// It fails closed on a present-but-corrupt seed (a wrong length or undecodable value):
-// rather than silently minting a new identity and orphaning every token issued to the
-// old key, it surfaces the error so the operator notices a tampered or truncated vault.
+// LoadOrCreateIdentity returns an identity that is stable across restarts, so tokens
+// issued to it keep verifying and audit keeps one principal. It loads the seed sealed
+// under ref, or on first run generates one and seals it before returning. The seed
+// travels as a secret.Text, so it is redacted and never logged. A present but corrupt
+// seed is an error rather than a reason to mint a new identity and orphan every token
+// issued to the old one.
 func LoadOrCreateIdentity(ctx context.Context, v SeedVault, ref string) (*Identity, error) {
 	if v == nil {
 		return nil, errors.New("controlplane: load identity: nil vault")

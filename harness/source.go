@@ -1,19 +1,15 @@
 package harness
 
-// ProfileSource resolves the measured capability profile for a model, keyed by its selector
-// (the provider:model or runtime:model id). A source that has no measurement for a model returns
-// ok=false, and the caller treats the model as unknown, which yields the most conservative plan.
-// It is the read side of the capability store: an evaluation harness writes profiles in, and the
-// assembly reads them out here to decide how much to scaffold a run.
+// ProfileSource resolves a model's measured profile by selector (provider:model or
+// runtime:model). ok=false means unmeasured, which yields the most conservative
+// plan. An evaluation harness writes profiles; the assembly reads them here.
 type ProfileSource interface {
 	Profile(model string) (ModelProfile, bool)
 }
 
-// PlanFor resolves model's profile from src and maps it to a scaffolding plan against the
-// advertised context window. A nil source, or a model the source has not measured, is treated as
-// unknown: the zero profile, which Adapt turns into the fully scaffolded plan. This makes the
-// safe default automatic, so a model is only driven leanly once it has been measured and found
-// reliable, never on assumption.
+// PlanFor maps model's profile from src to a plan. A nil source or unmeasured
+// model gets the zero profile and the full scaffolding, so a model runs lean only
+// once it has been measured as reliable.
 func PlanFor(src ProfileSource, model string, advertisedContext int) Plan {
 	var p ModelProfile
 	if src != nil {
@@ -24,8 +20,7 @@ func PlanFor(src ProfileSource, model string, advertisedContext int) Plan {
 	return Adapt(p, advertisedContext)
 }
 
-// StaticProfiles is a ProfileSource backed by a fixed map, for seeding known profiles ahead of a
-// live evaluation store. A nil or absent entry reads as unmeasured.
+// StaticProfiles is a ProfileSource over a fixed map, for seeding known profiles.
 type StaticProfiles map[string]ModelProfile
 
 // Profile returns the profile recorded for model, if any.

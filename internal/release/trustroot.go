@@ -15,28 +15,26 @@ import (
 	"github.com/ionalpha/flynn/internal/trustanchor"
 )
 
-// The trust anchors are compiled into the binary rather than fetched, because a trust
-// root you download at verification time is only as trustworthy as the connection you
-// downloaded it over, which is precisely the thing being defended against. Rotating
-// them means shipping a release, which is the same act a user already has to trust.
+// The trust anchors are compiled in because a root downloaded at verification time is
+// only as trustworthy as the connection it came over, which is the thing defended
+// against. Rotating them means shipping a release, an act a user already trusts.
 //
-// The Rekor key is checkable against evidence anyone can reproduce: its sha256 is the
-// log id that appears in every Sigstore bundle flynn has ever published, and the
-// trustRoot constructor enforces that correspondence at startup.
+// The Rekor key is checkable by anyone: its sha256 is the log id in every Sigstore
+// bundle flynn has published, and the trustRoot constructor enforces that at startup.
 //
-// The anchor files live in internal/trustanchor and are embedded there once, because
-// internal/sigstore pins the same Fulcio chain for extension releases. A second copy
-// here would go stale the first time Sigstore rotated.
+// The anchor files are embedded once in internal/trustanchor, because
+// internal/sigstore pins the same Fulcio chain for extension releases and a second
+// copy would go stale at Sigstore's first rotation.
 var trustFiles fs.FS = trustanchor.Files
 
 // embeddedTrustRoot is the process-wide trust root, built once. A failure here is a
-// broken build, not a runtime condition, so it is fatal at first use rather than an
-// error every caller has to thread through.
+// broken build, so it is fatal at first use instead of an error every caller threads
+// through.
 var embeddedTrustRoot = mustTrustRoot()
 
-// trustRoot holds the anchors a release signature is checked against: the certificate
-// authority that issues the signing certificates, and the public key of the
-// transparency log that has to have recorded the signature.
+// trustRoot holds the anchors a release signature is checked against: the authority
+// that issues signing certificates, and the key of the transparency log that must have
+// recorded the signature.
 type trustRoot struct {
 	roots         *x509.CertPool
 	intermediates *x509.CertPool
@@ -56,9 +54,9 @@ func newTrustRoot() (*trustRoot, error) {
 	return loadTrustRoot(trustFiles)
 }
 
-// loadTrustRoot builds a trust root from a filesystem holding the two anchors. The filesystem
-// stays a parameter because a broken anchor set has to be refused outright rather than
-// half-loaded, and that is the one failure this package cannot recover from.
+// loadTrustRoot builds a trust root from a filesystem holding the two anchors. A
+// broken anchor set is refused whole, never half-loaded, because this package cannot
+// recover from it.
 func loadTrustRoot(fsys fs.FS) (*trustRoot, error) {
 	chain, err := fs.ReadFile(fsys, "trust/fulcio.pem")
 	if err != nil {
@@ -88,9 +86,8 @@ func loadTrustRoot(fsys fs.FS) (*trustRoot, error) {
 		if !c.IsCA {
 			return nil, fmt.Errorf("the certificate authority chain contains a non-CA certificate (%s)", c.Subject.CommonName)
 		}
-		// A root is self-issued; anything else is an intermediate. Sorting them by what
-		// they are, rather than by their order in the file, keeps the pool correct if the
-		// upstream chain is ever emitted in a different order.
+		// A root is self-issued and anything else is an intermediate. Sorting by that,
+		// instead of file order, keeps the pool correct if upstream reorders the chain.
 		if bytes.Equal(c.RawIssuer, c.RawSubject) {
 			r.roots.AddCert(c)
 		} else {
@@ -116,9 +113,9 @@ func loadTrustRoot(fsys fs.FS) (*trustRoot, error) {
 	}
 	r.logKey = ec
 
-	// The log identifies itself in every bundle by the sha256 of its DER public key.
-	// Deriving the id from the key we hold, rather than trusting the id the bundle
-	// states, is what makes "this was logged in Rekor" mean the log we actually pinned.
+	// The log names itself in every bundle by the sha256 of its DER public key. The id
+	// is derived from the pinned key, ignoring the bundle's claim, so "logged in Rekor"
+	// means the log pinned here.
 	sum := sha256.Sum256(blk.Bytes)
 	r.logKeyID = sum[:]
 	return r, nil

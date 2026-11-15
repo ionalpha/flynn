@@ -11,10 +11,9 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// The Fulcio certificate extensions that carry who built the artifact. The signing
-// certificate is short-lived and carries no name; these are the identity, and they
-// are asserted by the certificate authority off the back of GitHub's OIDC token, not
-// by the artifact or by us.
+// The Fulcio certificate extensions that carry who built the artifact. The
+// short-lived signing certificate carries no name; these are the identity, asserted by
+// the certificate authority from GitHub's OIDC token.
 var (
 	oidIssuer         = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 8}
 	oidBuildSignerURI = asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 57264, 1, 9}
@@ -38,12 +37,11 @@ type identity struct {
 // checkIdentity refuses any certificate that is not this project's release workflow
 // running on a version tag.
 //
-// The numeric repository and owner ids matter as much as the URLs. A GitHub
-// repository name can be renamed and the old name can then be claimed by someone
-// else, and a URL-only check would happily accept the impostor's workflow; the
-// numeric ids never move. Requiring a tag ref (rather than any ref) means a signature
-// produced from a branch, a pull request, or a workflow_dispatch on a fork is not a
-// release, no matter how genuine its certificate is.
+// The numeric repository and owner ids are checked with the URLs because a renamed
+// repository's old name can be claimed by someone else, and a URL-only check would
+// accept the impostor's workflow; the ids never move. A tag ref is required, so a
+// signature from a branch, a pull request or a fork's workflow_dispatch is no
+// release, however genuine its certificate.
 func (p policy) checkIdentity(leaf *x509.Certificate) (identity, error) {
 	if len(leaf.URIs) != 1 {
 		return identity{}, fault.New(fault.Terminal, CodeIdentity,
@@ -107,10 +105,9 @@ func (p policy) checkIdentity(leaf *x509.Certificate) (identity, error) {
 	return identity{signer: signer, tag: tag, ref: ref, commit: commit}, nil
 }
 
-// fulcioExtensions reads the certificate's identity extensions. The values are
-// DER-encoded UTF8 strings in the current extension set; the pre-2023 extensions
-// carried bare strings, and a certificate mixing the two is refused rather than
-// half-read.
+// fulcioExtensions reads the certificate's identity extensions, DER-encoded UTF8
+// strings in the current set. The pre-2023 extensions carried bare strings, and a
+// certificate mixing the two is refused.
 func fulcioExtensions(leaf *x509.Certificate) (map[string]string, error) {
 	out := make(map[string]string, 8)
 	for _, e := range leaf.Extensions {
@@ -120,8 +117,7 @@ func fulcioExtensions(leaf *x509.Certificate) (map[string]string, error) {
 		var s string
 		rest, err := asn1.Unmarshal(e.Value, &s)
 		if err != nil || len(rest) != 0 {
-			// Not a DER string: one of the legacy bare-string extensions. This verifier
-			// reads only the DER set, so it ignores those rather than guessing.
+			// A legacy bare-string extension; only the DER set is read.
 			continue
 		}
 		out[e.Id.String()] = s

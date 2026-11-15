@@ -16,29 +16,19 @@ import (
 	"github.com/ionalpha/flynn/netguard"
 )
 
-// Control variables passed to the re-executed launcher child for governed egress (see
-// attachEgress and serveEgressFromNetns). They tell the launcher to build the proxy
-// endpoint inside its network namespace, and which inherited descriptor to hand the
-// listening socket back on. The launcher strips them before running the command.
+// The egress launcher variables: build the proxy endpoint in the namespace, and
+// the descriptor to return it on. The launcher strips them before the command.
 const (
 	envEgress   = "FLYNN_SANDBOX_EGRESS"
 	envEgressFD = "FLYNN_SANDBOX_EGRESS_FD"
 )
 
-// attachEgress governs a Linux child's outbound network. The child runs in its own network
-// namespace, with no interfaces and no routes, so it can reach neither the internet nor a
-// proxy on the host's loopback (a different interface in a different namespace). The
-// listening socket must be created inside the child's namespace, which only the launcher can.
-//
-// So the launcher creates it and hands it back over a unix socketpair as an SCM_RIGHTS
-// descriptor. A socket keeps the namespace it was created in, so accepting on it here, in the
-// host namespace, takes the child's connections to its own loopback, and the proxy's outbound
-// dials use the host namespace under the one netguard policy.
-//
-// What makes this unbypassable is the missing route (a direct dial fails with ENETUNREACH),
-// not the proxy variables the child may ignore. One proxy serves one child, since one
-// namespace's loopback is reachable only from inside it; the returned release ends it when
-// the child exits and is also registered on the egress config for a launch that dies first.
+// attachEgress receives over SCM_RIGHTS the listener the launcher made in the
+// child's routeless namespace, which cannot reach the host loopback. A socket keeps
+// its namespace for life, so accepting here takes the child's loopback connections
+// while the proxy dials from the host namespace. The missing route enforces it: a
+// direct dial fails with ENETUNREACH whatever the child does with the proxy
+// variables. One proxy serves one child.
 func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
 	parent, child, err := openHandoff(c, "egress", envEgress, envEgressFD)
 	if err != nil {
@@ -46,15 +36,14 @@ func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
 	}
 
 	h := &egressHandoff{parent: parent, child: child, policy: l.egress.policy, owner: l.egress}
-	// Registered on the Local as well as returned: a caller that forgets to release, or a
-	// launch that fails before it can, is still cleaned up when the sandbox closes.
+	// Registered as well as returned, so a launch that never releases is cleaned up
+	// at close.
 	l.egress.addChild(h, h.release)
 	go h.serve()
 	return h.release, nil
 }
 
-// addChild registers the teardown for a proxy serving one child, under a key its owner
-// can drop it by. close runs whatever is still registered.
+// addChild registers one child's proxy teardown under key; close runs what remains.
 func (e *egressConfig) addChild(key any, release func()) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -71,22 +60,18 @@ func (e *egressConfig) dropChild(key any) {
 	delete(e.perChild, key)
 }
 
-// liveChildren counts the per-child proxies still registered. It exists for the test that
-// a finished command does not leave one behind.
+// liveChildren counts registered proxies, so a test can see one was not leaked.
 func (e *egressConfig) liveChildren() int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return len(e.perChild)
 }
 
-// egressHandoff owns one child's proxy: the socketpair the launcher hands its listening
-// socket back on, the proxy serving that socket, and the teardown of both.
+// egressHandoff owns one child's handoff socketpair, proxy and teardown.
 type egressHandoff struct {
 	parent *net.UnixConn // this end of the handoff socketpair
-	// child is the launcher's end. It belongs to the exec.Cmd from the moment it is put in
-	// ExtraFiles: Start reads its descriptor to dup into the child, so closing it anywhere
-	// but release (which runs after the launch is done with it) races that read and can
-	// pull the descriptor out from under a launch. serve must not touch it.
+	// child belongs to the exec.Cmd once in ExtraFiles. Start dups its descriptor,
+	// so only release may close it; an earlier close races Start.
 	child  *os.File
 	policy netguard.Policy
 	owner  *egressConfig // where this handoff is registered until it releases
@@ -97,16 +82,10 @@ type egressHandoff struct {
 	stop context.CancelFunc
 }
 
-// serve waits for the launcher to hand back the socket it created inside the network
-// namespace, then serves the egress proxy on it until release. It runs for the life of
-// one child.
-//
-// A launcher that dies before sending (a failed mount setup, a command that does not
-// exist) leaves this receive blocked until release, and the launch fails on its own error.
-// The receive cannot be given an EOF instead, because the only other holder of the
-// launcher's end is the exec.Cmd, which owns it. A handoff that fails here is not a hole:
-// the child would be running in a namespace with no route and no endpoint, so it reaches
-// nothing. The failure is closed either way.
+// serve runs the proxy on the handed-back listener until release. A launcher that
+// dies before sending leaves the receive blocked until release; it cannot get an
+// EOF, because the exec.Cmd holds the other end. The child then has no route and
+// no endpoint, so the failure is closed.
 func (h *egressHandoff) serve() {
 	fd, err := recvListener(h.parent)
 	if err != nil {
@@ -129,8 +108,7 @@ func (h *egressHandoff) serve() {
 	_ = px.Serve(ctx, ln)
 }
 
-// release tears the handoff and its proxy down. It is idempotent, and unblocks a serve
-// still waiting on a launcher that never sent.
+// release is idempotent, and unblocks a serve still waiting on the launcher.
 func (h *egressHandoff) release() {
 	h.once.Do(func() {
 		h.owner.dropChild(h)
@@ -148,19 +126,12 @@ func (h *egressHandoff) release() {
 	})
 }
 
-// errNoListener reports a launcher that closed the handoff without sending its listening
-// socket, which means the child never got a proxy endpoint.
+// errNoListener means the launcher closed the handoff without sending a listener.
 var errNoListener = errors.New("sandbox: egress handoff closed without a listening socket")
 
-// recvListener blocks until the launcher sends its listening socket over the handoff, and
-// returns the received descriptor. Exactly one descriptor is expected; anything else is a
-// protocol error rather than something to guess at, and any descriptors received
-// alongside are closed rather than leaked.
-//
-// It reads through the net.UnixConn rather than the raw descriptor so that a release
-// racing this receive (a launcher that died before sending) unblocks it through the
-// runtime poller instead of closing a descriptor this goroutine is sitting in a syscall
-// on.
+// recvListener expects one descriptor and closes any extras. It reads through
+// the net.UnixConn so a racing release unblocks it through the runtime poller,
+// because closing a descriptor under a blocked syscall is unsafe.
 func recvListener(sock *net.UnixConn) (int, error) {
 	oob := make([]byte, unix.CmsgSpace(4))
 	buf := make([]byte, 1)

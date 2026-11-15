@@ -8,27 +8,17 @@ import (
 )
 
 const (
-	// NoProgressLimit is how many consecutive steps a goal may make no substantive
-	// change before it is stopped for lack of progress. It is small on purpose: a run
-	// idle for three straight steps is looping, and it sits well below DefaultMaxSteps
-	// so a stuck goal is caught by the loop and not by the budget running out.
+	// NoProgressLimit is the idle steps before a stop. Three idle steps is a loop, and
+	// the limit sits well below DefaultMaxSteps so the loop is caught before the budget.
 	NoProgressLimit = 3
-	// progressWarnAt is the streak at which the goal is first told it is stalling: one
-	// step before the limit, because a goal told it is stalling sometimes changes course
-	// and un-stalls itself, and a warning that arrives only as the run is killed is no
-	// warning at all.
+	// progressWarnAt is one step before the limit, because a warned goal sometimes
+	// changes course.
 	progressWarnAt = 2
 )
 
-// ObserveProgress folds one completed step's progress fingerprint into the idle streak
-// and returns the streak after this step. A fingerprint that differs from the last
-// recorded mark is progress: the streak resets to zero and the new mark is stored. An
-// identical fingerprint is an idle step: the streak increments. Either way the step's
-// summary is recorded as what the goal was last doing, so a stall can name it.
-//
-// The first observed step is always progress: there is no prior mark to be idle
-// against, so the step that established the baseline is never charged as idle. This
-// relies on the non-empty fingerprint contract stated on [ProgressProbe].
+// ObserveProgress returns the idle streak after one step. The summary is kept so a stall
+// can name it. The first step sets the baseline and is never idle, which relies on the
+// non-empty fingerprint contract on [ProgressProbe].
 func (s *Status) ObserveProgress(fingerprint, summary string) int {
 	s.LastActivity = summary
 	if s.ProgressMark == "" || fingerprint != s.ProgressMark {
@@ -40,15 +30,13 @@ func (s *Status) ObserveProgress(fingerprint, summary string) int {
 	return s.IdleStreak
 }
 
-// StalledForNoProgress reports whether the idle streak has reached the limit: the goal
-// has made no substantive change for NoProgressLimit consecutive steps and must stop.
+// StalledForNoProgress reports whether the streak reached [NoProgressLimit].
 func (s Status) StalledForNoProgress() bool {
 	return s.IdleStreak >= NoProgressLimit
 }
 
-// NoProgressReason is the stall message, naming what the goal was last doing when it
-// stopped, so the record says "stuck doing X" rather than the budget reason a
-// no-progress loop would otherwise reach. It is the reason a no-progress stall carries.
+// NoProgressReason names what the goal was last doing, so the record says what it was
+// stuck on.
 func (s Status) NoProgressReason() string {
 	if s.LastActivity == "" {
 		return fmt.Sprintf("no progress for %d consecutive steps", s.IdleStreak)
@@ -56,11 +44,8 @@ func (s Status) NoProgressReason() string {
 	return fmt.Sprintf("no progress for %d consecutive steps; last doing: %s", s.IdleStreak, s.LastActivity)
 }
 
-// ProgressWarning returns the nudge to hand the agent when it is stalling but not yet
-// stopped: from progressWarnAt up to (but not including) the limit, a message naming the
-// streak. It returns "" below the warning point, and "" at the limit, where the goal is
-// stopped rather than warned. Kept here so the exact wording is one string the reconciler
-// stamps and the executor delivers.
+// ProgressWarning returns "" outside [progressWarnAt, NoProgressLimit), because at the
+// limit the goal is stopped instead. The reconciler and executor share this one string.
 func ProgressWarning(streak int) string {
 	if streak < progressWarnAt || streak >= NoProgressLimit {
 		return ""
@@ -68,20 +53,13 @@ func ProgressWarning(streak int) string {
 	return fmt.Sprintf("Idle streak: %d step(s) without progress. Make a substantive change or the run will stop.", streak)
 }
 
-// ProgressProbe computes a fingerprint of the substantive work observable for a goal as
-// of now, over the durable record the runtime keeps (steps and tool calls on the spine,
-// files touched, ledger items advanced, git commits). The reconciler compares successive
-// fingerprints: an unchanged one is an idle step, a changed one is progress. Summary
-// describes the last thing the goal did, so a stall can name it.
+// ProgressProbe fingerprints a goal's durable work; an unchanged fingerprint is an idle
+// step. It must not key on the working tree alone, because a clean tree after a commit
+// reads as idle and a non-git root disables the check.
 //
-// A probe must not key on the working tree alone: a clean tree after a commit would read
-// as no progress, and a non-git workspace root would disable the check.
-//
-// A probe must return a non-empty fingerprint even when nothing substantive happened (a
-// stable encoding of the empty signal set), so two do-nothing steps compare equal and
-// the streak advances; "" reads as the baseline step every time (see
-// [Status.ObserveProgress]) and the goal never stalls. A probe error is the
-// reconciler's to classify: a transient read failure is not a terminal stall.
+// The fingerprint must be non-empty even when nothing happened, because "" reads as the
+// baseline every time ([Status.ObserveProgress]) and the goal never stalls. A transient
+// error is not a terminal stall.
 type ProgressProbe interface {
 	Progress(ctx context.Context, r resource.Resource) (fingerprint, summary string, err error)
 }

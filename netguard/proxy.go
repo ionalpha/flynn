@@ -12,36 +12,22 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// Proxy is a forward egress proxy that authorizes every upstream connection through a
-// Policy, so a child process pointed at it (HTTP_PROXY / HTTPS_PROXY / ALL_PROXY) gets
-// the same default-deny egress control the agent's own dials get. It is how the one
-// egress policy engine governs a process whose own code we do not control: the child
-// dials the proxy, the proxy enforces the policy after DNS resolution (rebinding-safe,
-// via the same DialControl as Client and Dialer), and a denied destination is refused
-// before any connection is made.
-//
-// It speaks the standard proxy protocol: CONNECT to tunnel TLS (and any other TCP a
-// client opens through CONNECT), and absolute-form requests to forward plain HTTP. It
-// holds no listener of its own; a caller serves it on a loopback listener (through
-// bindguard), so the proxy is reachable only on the host it runs on.
+// Proxy is a forward proxy that applies a [Policy] to a child process pointed at
+// it through HTTP_PROXY, HTTPS_PROXY or ALL_PROXY. It checks the requested name
+// against AllowHosts, then dials through [DialControl]. It tunnels CONNECT and
+// forwards absolute-form HTTP. Serve it on a loopback listener from bindguard so
+// only the local host can reach it.
 type Proxy struct {
 	policy Policy
 	dialer *net.Dialer
 }
 
-// NewProxy returns a proxy that admits only what p allows. Upstream connections are
-// dialed through a policy-enforcing dialer, so the address rules are applied at connect
-// time on the resolved address (the same DialControl Client and Dialer use). The name
-// allowlist (p.AllowHosts) is applied earlier, on the requested destination name, before
-// the connection is dialed.
+// NewProxy returns a proxy that admits only what p allows.
 func NewProxy(p Policy) *Proxy {
 	return &Proxy{policy: p, dialer: Dialer(p)}
 }
 
-// hostAllowed reports whether the destination the client asked to reach passes the
-// policy's name allowlist. hostport is the request authority (host or host:port); the
-// port is stripped before the name is checked. An empty allowlist admits any name, so
-// the address rules on the resolved connection alone decide.
+// hostAllowed takes the request authority, with or without a port.
 func (px *Proxy) hostAllowed(hostport string) bool {
 	host := hostport
 	if h, _, err := net.SplitHostPort(hostport); err == nil {
@@ -50,9 +36,8 @@ func (px *Proxy) hostAllowed(hostport string) bool {
 	return px.policy.AllowsHost(host)
 }
 
-// Handler returns the proxy's HTTP handler: CONNECT requests are tunneled, everything
-// else is treated as a forward-proxy request and relayed. Mount it on an http.Server
-// served on a loopback listener.
+// Handler tunnels CONNECT and relays every other request as a forward proxy.
+// Serve it only on a loopback listener.
 func (px *Proxy) Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodConnect {
@@ -63,24 +48,18 @@ func (px *Proxy) Handler() http.Handler {
 	})
 }
 
-// dialUpstream dials addr through the policy-enforcing dialer. A policy refusal surfaces
-// as a Forbidden error (see policyRefused), so the caller can answer 403 (denied) versus
-// 502 (unreachable).
+// dialUpstream returns a fault.Forbidden error for a policy refusal, so the
+// caller can answer 403 instead of 502.
 func (px *Proxy) dialUpstream(ctx context.Context, addr string) (net.Conn, error) {
 	return px.dialer.DialContext(ctx, "tcp", addr)
 }
 
-// policyRefused reports whether err is a policy refusal (Forbidden) rather than a
-// transport failure, so a blocked destination is distinguishable from an unreachable one.
 func policyRefused(err error) bool { return err != nil && fault.Classify(err) == fault.Forbidden }
 
-// handleConnect tunnels a CONNECT request: it dials the target through the policy and,
-// on success, splices the client and upstream connections byte-for-byte. A policy
-// refusal is a 403; an unreachable target is a 502.
+// handleConnect answers 403 for a policy refusal and 502 for an unreachable
+// target.
 func (px *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
-	// Gate on the requested destination name before resolving or dialing it, so a name
-	// outside the allowlist is refused without a lookup. The resolved-address rules still
-	// apply below through the policy-enforcing dialer.
+	// Check the name first, so a name outside the allowlist is never looked up.
 	if !px.hostAllowed(r.Host) {
 		http.Error(w, "egress denied by policy", http.StatusForbidden)
 		return
@@ -112,15 +91,11 @@ func (px *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	splice(client, upstream)
 }
 
-// handleForward relays a plain-HTTP forward-proxy request. It dials the origin through
-// the policy and writes the request out, then copies the response back, so a denied
-// origin never receives the request.
 func (px *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	if !r.URL.IsAbs() || r.URL.Host == "" {
 		http.Error(w, "proxy: expected an absolute-form request", http.StatusBadRequest)
 		return
 	}
-	// Gate on the requested origin name before resolving or dialing it.
 	if !px.hostAllowed(r.URL.Host) {
 		http.Error(w, "egress denied by policy", http.StatusForbidden)
 		return
@@ -140,8 +115,7 @@ func (px *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	}
 	defer func() { _ = upstream.Close() }()
 
-	// Write the request to the origin in origin form (strip the proxy scheme/host), then
-	// stream the response back verbatim.
+	// An empty RequestURI makes Write emit origin form.
 	outReq := r.Clone(r.Context())
 	outReq.RequestURI = ""
 	if err := outReq.Write(upstream); err != nil {
@@ -163,8 +137,8 @@ func (px *Proxy) handleForward(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, resp.Body)
 }
 
-// Serve runs the proxy on ln until ctx is cancelled, then shuts it down. ln should be a
-// loopback listener (opened through bindguard) so the proxy is reachable only locally.
+// Serve runs the proxy on ln until ctx is cancelled. ln should be a loopback
+// listener from bindguard.
 func (px *Proxy) Serve(ctx context.Context, ln net.Listener) error {
 	srv := &http.Server{Handler: px.Handler(), ReadHeaderTimeout: 10 * time.Second}
 	go func() { //nolint:gosec // G118: the drain runs because ctx is already done; a fresh context bounds shutdown, the dead one cannot
@@ -179,9 +153,8 @@ func (px *Proxy) Serve(ctx context.Context, ln net.Listener) error {
 	return nil
 }
 
-// splice copies bytes in both directions between two connections until either side
-// closes, then returns. Each direction is closed for writing once its source is
-// drained so a half-closed peer still completes.
+// splice copies both directions and returns when both are drained. Each side is
+// half-closed once its source ends, so a half-closed peer still completes.
 func splice(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	cp := func(dst, src net.Conn) {

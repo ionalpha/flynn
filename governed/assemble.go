@@ -32,16 +32,13 @@ import (
 	"github.com/ionalpha/flynn/tools"
 )
 
-// ToolBridge supplies the tools loaded extensions contribute. The extension loader
-// satisfies it.
+// ToolBridge supplies the tools loaded extensions contribute.
 type ToolBridge interface {
 	Tools() []mission.Tool
 }
 
-// parts are the ingredients every assembly shares: the sandbox, the session that records
-// the run, the toolset, the grant that bounds every action, and the governance sink.
-// Every mode builds from one of these, so the confinement, the tool surface, the
-// recording and the grant are defined once and cannot drift between modes.
+// parts are what every mode builds from, so confinement, tools, recording and grant
+// cannot drift between modes.
 type parts struct {
 	sb      sandbox.Sandbox
 	owned   io.Closer
@@ -69,7 +66,7 @@ func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*p
 	p := &parts{sess: sess, sink: spinesink.New(log, sess.ID())}
 
 	if c.hasToolset {
-		// The caller's grant is the complete authority; there is nothing to derive it from.
+		// The caller's grant is the whole authority.
 		p.toolset, p.grant = c.toolset, c.toolGrant
 		return p, nil
 	}
@@ -86,10 +83,8 @@ func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*p
 			}
 			workdir = cwd
 		}
-		// Secure by default: a model-authored command runs kernel-confined, with no network
-		// and no view of the host's credential locations, unless the caller's policy says
-		// otherwise. The policy is stated on the stream before anything runs in it, so it
-		// precedes the session's opening event.
+		// By default a command runs kernel-confined with no network and no view of host
+		// credentials. The policy is recorded before the session's opening event.
 		sb, err := sandbox.NewLocal(workdir, c.shell.options()...)
 		if err != nil {
 			return nil, err
@@ -103,10 +98,8 @@ func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*p
 		p.sb, p.owned = sb, sb
 	}
 
-	// The working-tree tools, the skill tools when there is a store behind them, and the
-	// tools loaded extensions contribute. They are one toolset from here on: the grant is
-	// built from whatever this list holds, so a tool that is offered is a tool the waist
-	// admits, and adding one cannot leave its authority behind.
+	// The grant is built from this list, so every offered tool is admitted and none is
+	// admitted without being offered.
 	toolset := append(tools.New(p.sb).Tools(), c.skills.Tools()...)
 	if c.bridge != nil {
 		taken := map[string]bool{}
@@ -114,8 +107,8 @@ func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*p
 			taken[t.Def().Name] = true
 		}
 		for _, t := range c.bridge.Tools() {
-			// An extension tool that reuses a built-in's name would inherit that name's
-			// grant, so a third-party extension could stand in for `shell`.
+			// A reused name would inherit the built-in's grant, so an extension could pose
+			// as `shell`.
 			if name := t.Def().Name; taken[name] {
 				_ = p.close()
 				return nil, fmt.Errorf("governed: extension tool %q shadows a tool the run already offers", name)
@@ -127,8 +120,7 @@ func newParts(ctx context.Context, c *config, log spine.Log, withSpawn bool) (*p
 
 	var names []string
 	if c.hasCaps {
-		// An archetype run is the least-privilege boundary: exactly what it declares, plus
-		// the model call every run needs.
+		// An archetype run gets exactly what it declares, plus the model call.
 		names = append(append(names, c.caps...), mission.ActionModelGenerate)
 	} else {
 		for _, t := range toolset {
@@ -164,9 +156,8 @@ func (c *config) mode() (Mode, error) {
 	return mode, nil
 }
 
-// checkWaiversAgainstOptions refuses a waiver for a guard the same option set also
-// configures: the record would say the guard was given up while the run carried it, or the
-// reverse, and a reader cannot tell which statement to believe.
+// checkWaiversAgainstOptions refuses waiving a guard the options also configure, because
+// the record would then contradict itself.
 func (c *config) checkWaiversAgainstOptions() error {
 	if _, w := c.waivers[GuardApproval]; w && (len(ApprovalPolicy(c.approve)) > 0 || c.prompter != nil) {
 		return errors.New("governed: Waive(GuardApproval) contradicts WithApproval")
@@ -180,8 +171,7 @@ func (c *config) checkWaiversAgainstOptions() error {
 	return nil
 }
 
-// checkSandboxOptions rejects the combinations that claim a sandbox, or a shell policy over
-// one, the mode does not have.
+// checkSandboxOptions rejects claiming a sandbox, or a shell policy, the mode lacks.
 func (c *config) checkSandboxOptions(mode Mode) error {
 	_, sandboxWaived := c.waivers[GuardSandbox]
 	switch {
@@ -199,8 +189,8 @@ func (c *config) checkSandboxOptions(mode Mode) error {
 	return nil
 }
 
-// check rejects option combinations that would claim a guard the run does not have. It
-// runs before anything is built so a contradiction leaves nothing to clean up.
+// check rejects options claiming a guard the run lacks. It runs before anything is built,
+// so a contradiction leaves nothing to clean up.
 func (c *config) check(mode Mode) error {
 	if err := c.checkSandboxOptions(mode); err != nil {
 		return err
@@ -220,9 +210,8 @@ func (c *config) check(mode Mode) error {
 	return nil
 }
 
-// statePool makes the posture state the limits of the pool the run will be charged
-// against. Opening returns a pool that already exists, as on a resume, so the limits asked
-// for are not necessarily the ones in force, and the record states the latter.
+// statePool records the opened pool's limits, because on a resume Open returns the
+// existing pool and its limits may differ from those asked for.
 func (r *Run) statePool(pool resource.Resource) error {
 	spec, err := budgetpkg.DecodeSpec(pool)
 	if err != nil {
@@ -232,13 +221,11 @@ func (r *Run) statePool(pool resource.Resource) error {
 	return nil
 }
 
-// Assemble composes one governed run over b. model drives the loop and may be nil only
-// with [WithExternalAgent]. The spend ceiling from [WithBudget] is opened, each waiver is
-// recorded as a [WaivedEventType] event and the posture as a [PostureEventType] event
-// before it returns, so the ceiling and the record are in place ahead of the first action
-// however the goal is later started: [Run.Submit], [Run.Resume], [Run.Do], or a caller that
-// drives [Run.Runtime] itself. A resumed run is a new assembly and states its own.
-// The caller owns the returned run for the length of one goal and closes it.
+// Assemble composes one governed run over b. model may be nil only with
+// [WithExternalAgent]. Before it returns, the [WithBudget] ceiling is opened and waivers
+// ([WaivedEventType]) and posture ([PostureEventType]) are recorded, so they precede the
+// first action however the goal starts, including through [Run.Runtime]. The caller owns
+// the run for one goal and closes it.
 func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) (*Run, error) {
 	if err := b.validate(); err != nil {
 		return nil, err
@@ -274,10 +261,8 @@ func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) 
 		_ = p.close()
 		return nil, err
 	}
-	// Done last so a build that failed leaves no ceiling or waiver behind for a run that
-	// never existed, and before the caller can start the run, so the ceiling is in force
-	// and the posture is on the record ahead of its first action on every path that starts
-	// one. The waivers go first: they say what was given up, the posture what remains.
+	// After build, so a failed build leaves no ceiling or waiver behind. Waivers precede
+	// the posture: what was given up, then what remains.
 	if c.budget != nil && run.posture.Budget {
 		pool, err := budgetpkg.NewLedger(b.Resources).Open(ctx, p.sess.ID(), resource.Scope{}, *c.budget)
 		if err == nil {
@@ -299,7 +284,6 @@ func Assemble(ctx context.Context, model llm.Model, b Backends, opts ...Option) 
 	return run, nil
 }
 
-// stack and gate state shared by the builders below.
 type gates struct {
 	stack *approvalStack
 	brk   *brakes.Hook
@@ -309,9 +293,8 @@ type gates struct {
 func (c *config) gates(b Backends, p *parts) (gates, error) {
 	var g gates
 	if _, waived := c.waivers[GuardApproval]; !waived {
-		// Built against the session's own id, which is the stream its authorization
-		// decisions are recorded on, so a run's approvals are sealed with the rest of what
-		// it did rather than landing in a log beside it.
+		// Approvals are recorded on the session's own stream, sealed with the rest of the
+		// run.
 		stack, err := newApprovalStack(c.approve, b.Log, p.sess.ID())
 		if err != nil {
 			return g, err
@@ -319,10 +302,8 @@ func (c *config) gates(b Backends, p *parts) (gates, error) {
 		g.stack = stack
 	}
 	if _, waived := c.waivers[GuardBrakes]; !waived {
-		// Held rather than built inline because two things are wired from it: the waist the
-		// run dispatches through, and the halt an operator's kill engages. They have to be
-		// the same brake; a kill bound to a second one would engage a halt nothing on the
-		// run's path consults.
+		// One brake serves dispatch and the operator's kill, because a kill bound to a
+		// second brake would halt nothing the run consults.
 		g.brk = c.newBrakes()
 	}
 	if _, waived := c.waivers[GuardBudget]; !waived {
@@ -331,8 +312,8 @@ func (c *config) gates(b Backends, p *parts) (gates, error) {
 	return g, nil
 }
 
-// brakeLimits is the limits the run's brakes are built with, so the posture states the
-// ones in force and not the ones asked for.
+// brakeLimits is shared by the brakes and the posture, so the posture states the limits
+// in force.
 func (c *config) brakeLimits() brakes.Limits {
 	if c.brake != nil {
 		return *c.brake
@@ -346,10 +327,8 @@ func defaultBrakeLimits() brakes.Limits {
 
 func (c *config) newBrakes() *brakes.Hook { return brakes.NewHook(c.brakeLimits(), nil) }
 
-// DefaultBrakes builds the run's safety governor: the circuit breaker that halts a
-// runaway from outside the model loop. Its rate is a generous backstop that fires only on
-// a degenerate tight loop, never on legitimate tool use. Each call returns a fresh Hook
-// with its own in-memory kill-switch, so a run's breaker state and halt are its own.
+// DefaultBrakes returns a brake at [DefaultMaxActionsPerMinute]. Each call has its own
+// in-memory kill-switch, so runs do not share breaker state.
 func DefaultBrakes() *brakes.Hook { return brakes.NewHook(defaultBrakeLimits(), nil) }
 
 func (c *config) observer(p *parts) mission.Reporter {
@@ -382,9 +361,8 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 		post.AllowanceActions = slices.Sorted(maps.Keys(outside))
 	}
 	if mode == ModeExternal {
-		// An external agent loop runs its own tools beyond the approval gate, so the gate is
-		// built and never consulted. Claiming it would tell a reader of the record that a
-		// human could stop an action nothing routes through one.
+		// An external loop's tools bypass the approval gate, so the posture must not claim
+		// it.
 		post.Approval, post.ApprovalActions = false, nil
 	}
 	if g.pool != nil && c.budget != nil {
@@ -405,8 +383,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 		WorkerPoll:         50 * time.Millisecond,
 		DriveSubmittedOnly: true,
 	}
-	// Never assigned from a nil hook: Halt is an interface, and a typed nil would read as
-	// a halt that is wired.
+	// Halt is an interface, so a typed nil would read as wired.
 	if g.brk != nil {
 		cfg.Halt = g.brk
 		post.Halt = true
@@ -446,10 +423,8 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 			hooks = append(hooks, g.pool)
 		}
 		cfg.Units = orchestration.Units(spawner, orchestration.UnitGovernor(p.sb, hooks...))
-		// A unit is settled from its child's ledger, so the evidence loop has to be closed
-		// or every unit fails as unproven: the child carries the unit's verify clause as a
-		// ledger item and nothing else would run it. The ledger, not the model's final
-		// answer, decides a goal that carries one.
+		// A unit settles from its child's ledger, and only this verifier runs the unit's
+		// verify clause, so without it every unit fails as unproven.
 		cfg.Verifier = evidence.NewCommandVerifier(p.sb, contained(p.sb)...)
 		cfg.CheckDir = c.checkDir()
 		cfg.Evidence = evidence.NewSpineEvidence(b.Log)
@@ -464,19 +439,14 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	default:
 		cfg.Executor, cfg.Stop = c.executor(model, b, p, g), mission.Convergence{}
 		if c.planning {
-			// The item's declared check is model-authored, so it runs in the run's own
-			// sandbox under the same containment gate as the agent's shell tool.
-			//
-			// It deliberately does not take the governance event sink, and neither does the
-			// auditor: a dispatcher's correlation ids are monotonic within that dispatcher,
-			// so two dispatchers writing lifecycle events to one stream emit colliding call ids,
-			// and the record then reads as one call both refused and completed. The
-			// verdict is on the record as the item-verified event the gate consumes.
+			// A model-authored check runs in the run's sandbox under the shell tool's
+			// containment gate. The verifier and auditor take no event sink, because two
+			// dispatchers on one stream emit colliding call ids. The verdict is recorded as
+			// the item-verified event.
 			cfg.Verifier = evidence.NewCommandVerifier(p.sb, contained(p.sb)...)
 			cfg.CheckDir = c.checkDir()
 			cfg.Evidence = evidence.NewSpineEvidence(b.Log)
-			// The planner admits each check with the verifier that will later run it, so a
-			// check refused here is one that would have stalled or falsely proven the item.
+			// The planner admits each check with the verifier that will run it.
 			cfg.Planner = planner(model, p.toolset, mission.WithPlannerAdmission(mission.Admission{
 				Verifier: cfg.Verifier, Recorder: evidence.NewSpineEvidence(b.Log), Dir: cfg.CheckDir, Confined: p.sb != nil,
 			}))
@@ -492,8 +462,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 		return nil, err
 	}
 	if spawner != nil {
-		// Bound after the runtime exists: the executor holds the spawner and the runtime
-		// holds the executor, so binding at construction would be a cycle.
+		// Bound late, because runtime holds executor holds spawner.
 		spawner.SetEnqueue(func(ctx context.Context, key resource.Key) error {
 			_, rerr := rt.Resume(ctx, key.Name)
 			return rerr
@@ -505,9 +474,7 @@ func (c *config) build(model llm.Model, b Backends, p *parts, mode Mode) (*Run, 
 	}, nil
 }
 
-// contained is the dispatch options the run-level checkers share: the capability
-// admitter and the containment gate, so a model-authored clause is treated as untrusted
-// work.
+// contained treats a model-authored check as untrusted work.
 func contained(sb sandbox.Sandbox) []dispatch.Option {
 	return []dispatch.Option{
 		dispatch.WithAdmitter(capability.Admitter{}),
@@ -515,9 +482,8 @@ func contained(sb sandbox.Sandbox) []dispatch.Option {
 	}
 }
 
-// planner is the ledger planner for a run, told which tools the run has. A check is a shell
-// command and a tool is not one, so a plan that checks an action by calling the tool is sent
-// back to the model before it reaches the ledger and stalls the goal on a check that never ran.
+// planner is told the run's tool names, so a plan whose check calls a tool instead of a
+// shell command is sent back before it stalls the goal.
 func planner(model llm.Model, toolset []mission.Tool, extra ...mission.PlannerOption) *mission.Planner {
 	names := make([]string, 0, len(toolset))
 	for _, t := range toolset {
@@ -526,7 +492,7 @@ func planner(model llm.Model, toolset []mission.Tool, extra ...mission.PlannerOp
 	return mission.NewPlanner(model, append([]mission.PlannerOption{mission.WithPlannerTools(names...)}, extra...)...)
 }
 
-// executor builds the native mission executor for the conversation and toolset modes.
+// executor serves the conversation and toolset modes.
 func (c *config) executor(model llm.Model, b Backends, p *parts, g gates) *mission.Executor {
 	opts := []mission.Option{
 		mission.WithTools(p.toolset...),
@@ -537,9 +503,7 @@ func (c *config) executor(model llm.Model, b Backends, p *parts, g gates) *missi
 		mission.WithCompactionBudget(DefaultCompactionBudget),
 	}
 	if p.sb != nil {
-		// Gate every action on containment sufficiency, as the router does for the other
-		// modes: a work kind whose trust needs stronger isolation than the sandbox gives is
-		// refused rather than downgraded.
+		// A work kind needing more isolation than the sandbox gives is refused.
 		opts = append(opts, mission.WithSandbox(p.sb))
 	}
 	if g.pool != nil {
@@ -550,24 +514,18 @@ func (c *config) executor(model llm.Model, b Backends, p *parts, g gates) *missi
 	}
 	opts = append(opts, g.stack.options(g.stack.recording(c.prompter))...)
 	opts = append(opts, allowanceOptions(c.outside)...)
-	// The model's scaffolding plan goes last so a present field overrides the lean
-	// defaults while an absent one leaves them in place.
+	// The model plan goes last, so a set field overrides the defaults.
 	opts = append(opts, mission.PlanOptions(c.plan)...)
 	return mission.NewExecutor(model, opts...)
 }
 
-// judges wires the run-level judges onto cfg: the invariant auditor, the steer judge,
-// and for a conversation the progress and refusal probes. They need the run's sandbox,
-// so a mode without one has none, and a waived [GuardAudit] drops all of them.
+// judges needs the run's sandbox, so a mode without one gets no judges, and a waived
+// [GuardAudit] drops them all. Only a conversation gets the progress and refusal probes.
 func (c *config) judges(cfg *runtime.Config, post *Posture, model llm.Model, log spine.Log, p *parts, fanout, waived bool) {
 	if waived || p.sb == nil {
 		return
 	}
-	// A term that declares no check goes to the model auditor, which reads the run's own
-	// recorded events and refuses to rule on a claim that something is absent or cite
-	// nothing. Both refusals stop the goal, the same fail-closed direction as an
-	// unrunnable check. The event sink is left off for the reason the verifier leaves it
-	// off.
+	// A term with no check goes to the model auditor. No event sink, as for the verifier.
 	cfg.Auditor = evidence.NewCommandAuditor(p.sb, log, evidence.NewModelAuditor(model, log), contained(p.sb)...)
 	cfg.SteerJudge = evidence.NewModelSteerJudge(model, log)
 	post.Auditor, post.SteerJudge = true, true
@@ -579,11 +537,9 @@ func (c *config) judges(cfg *runtime.Config, post *Posture, model llm.Model, log
 	post.Progress, post.Refusals = true, true
 }
 
-// checkDir is the directory a ledger check runs in, which the worker searches for a file
-// standing in for the check's command. It is the run's working directory when governed
-// built the sandbox, and empty when the host supplied one, because a host sandbox has no
-// path the run chose and the process's directory would refuse checks for files the check
-// never sees.
+// checkDir is where a ledger check runs. It is empty for a host sandbox, which has no
+// path the run chose, so the process directory cannot refuse checks for files it never
+// sees.
 func (c *config) checkDir() string {
 	if c.sandbox != nil {
 		return ""
@@ -591,9 +547,8 @@ func (c *config) checkDir() string {
 	return c.progressDir()
 }
 
-// progressDir is the directory the progress probe reads git HEAD from. A host sandbox
-// has no path the run chose, so the probe watches the working directory the run was
-// given or the process's.
+// progressDir is where the progress probe reads git HEAD: the given workdir, or the
+// process's.
 func (c *config) progressDir() string {
 	if c.workdir != "" {
 		return c.workdir

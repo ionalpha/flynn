@@ -17,22 +17,18 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// App is a GitHub App's credentials and the installation it acts as. It is a
-// value type holding no mutable state, so a Config carrying one is safe to copy.
-//
-// The zero value is unusable. Build one with the App's client ID (or numeric App
-// ID), the installation ID, and the RSA private key GitHub issued at registration.
+// App is a GitHub App's credentials and the installation it acts as. It holds
+// no mutable state, so a Config carrying one is safe to copy.
 type App struct {
-	// Issuer is the App's client ID (preferred) or its numeric App ID as a string.
-	// It becomes the "iss" claim of the signed assertion.
+	// Issuer is the App's client ID (preferred) or numeric App ID: the "iss"
+	// claim.
 	Issuer string
 
-	// InstallationID identifies the installation whose token the App mints. An App
-	// with no installation has no repository access.
+	// InstallationID is the installation whose token the App mints.
 	InstallationID int64
 
-	// PrivateKey signs the assertion. It is the App's sole credential and grants
-	// everything its installations do; store it in the vault, not on disk.
+	// PrivateKey signs the assertion. It grants everything the App's
+	// installations can do, so keep it in the vault.
 	PrivateKey *rsa.PrivateKey
 }
 
@@ -44,12 +40,11 @@ const (
 )
 
 // tokenRefreshWindow is how long before expiry a cached installation token is
-// discarded. An installation token lives an hour; refreshing a minute early means
-// a token is never handed to a request that outlives it.
+// discarded, so no request outlives its token. Tokens live an hour.
 const tokenRefreshWindow = time.Minute
 
-// authenticator mints and caches installation tokens for one App. It owns the only
-// mutable state in this package, so it is always held by pointer.
+// authenticator mints and caches installation tokens for one App. It is held
+// by pointer because it owns mutable state.
 type authenticator struct {
 	app     App
 	clock   clock.Clock
@@ -61,8 +56,7 @@ type authenticator struct {
 	expires time.Time
 }
 
-// token returns a valid installation token, minting a new one when the cache is
-// empty or close to expiry. It is safe for concurrent use.
+// token is safe for concurrent use.
 func (a *authenticator) installationToken(ctx context.Context) (secret.Text, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -87,8 +81,7 @@ func (a *authenticator) installationToken(ctx context.Context) (secret.Text, err
 	return a.token, nil
 }
 
-// assertion builds and signs the RS256 JSON Web Token GitHub accepts in exchange
-// for an installation token.
+// assertion signs the RS256 JWT GitHub exchanges for an installation token.
 func (a *authenticator) assertion(now time.Time) (secret.Text, error) {
 	if a.app.Issuer == "" {
 		return secret.Text{}, errors.New("github: App.Issuer is required")
@@ -108,9 +101,8 @@ func (a *authenticator) assertion(now time.Time) (secret.Text, error) {
 
 	signing := header + "." + payload
 	digest := sha256.Sum256([]byte(signing))
-	// The random parameter of SignPKCS1v15 is legacy and unused, so signing needs no
-	// entropy source. That matters here: direct crypto/rand is denied outside package
-	// ids, because unrouted randomness defeats deterministic replay.
+	// SignPKCS1v15 ignores its random parameter. That keeps this off crypto/rand,
+	// which is denied outside package ids so replay stays deterministic.
 	sig, err := rsa.SignPKCS1v15(nil, a.app.PrivateKey, crypto.SHA256, digest[:])
 	if err != nil {
 		return secret.Text{}, fmt.Errorf("github: signing app assertion: %w", err)
@@ -118,7 +110,6 @@ func (a *authenticator) assertion(now time.Time) (secret.Text, error) {
 	return secret.New(signing + "." + encodeSegment(sig)), nil
 }
 
-// exchange trades a signed assertion for an installation token and its expiry.
 func (a *authenticator) exchange(ctx context.Context, assertion secret.Text) (secret.Text, time.Time, error) {
 	url := fmt.Sprintf("%s/app/installations/%d/access_tokens", a.apiBase, a.app.InstallationID)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, http.NoBody)
@@ -151,7 +142,6 @@ func (a *authenticator) exchange(ctx context.Context, assertion secret.Text) (se
 	return secret.New(body.Token), body.ExpiresAt, nil
 }
 
-// jsonSegment marshals v and encodes it as a base64url JWT segment.
 func jsonSegment(v any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -160,5 +150,4 @@ func jsonSegment(v any) (string, error) {
 	return encodeSegment(b), nil
 }
 
-// encodeSegment applies the unpadded base64url encoding JWT requires.
 func encodeSegment(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }

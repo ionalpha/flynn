@@ -7,35 +7,18 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// The pause reads the same record the route-around verdict reads, on the same probe, in the
-// same place in the pass: after a completed step is observed, before the goal parks, plans,
-// fans out, settles its ledger or is asked whether it is done. It has to be above the stop
-// evaluator for the reason the audit does. A run that was refused an irreversible action and
-// then reported the objective achieved has done one of two things, and neither of them is
-// what it says: it found another way, or it is calling the objective met without the part it
-// was refused. Asking the evaluator first would take its word for which.
-//
-// It reuses the refusal probe rather than adding one, because the ask is already on the
-// record: the waist writes the rule that refused alongside the action, so the refusal that
-// says a run wanted authority it was not given is the same kind of entry as the refusal that
-// says a run kept pushing. One read per pass answers both.
-
-// AllowanceStallReason is the condition reason a paused goal carries, distinct from the
-// other stall reasons because it is the one that is answerable: the goal is stopped waiting
-// on a declaration, not stopped because something failed.
+// AllowanceStallReason marks the one stall an author can answer, by declaring the
+// allowance.
 const AllowanceStallReason = "AwaitingAllowance"
 
-// AllowanceResumeReason is the condition reason recorded when a paused goal is released by
-// its author declaring the allowance. It is written as the stall condition going False, so
-// the record shows the pause being answered rather than just ending.
+// AllowanceResumeReason is written with the stall condition going False, so the record
+// shows the pause answered.
 const AllowanceResumeReason = "AllowanceDeclared"
 
-// pauseForAllowance parks a goal whose record shows it was refused an irreversible action
-// nobody declared, and releases one whose author has since declared it.
-//
-// The release half is not bookkeeping. A pause is meant to be answered, so the run that
-// resumes has to stop reading as stopped: leaving the stall condition True would leave a
-// working goal describing itself as blocked on a question that has been answered.
+// pauseForAllowance runs before the stop evaluator, because a run refused an irreversible
+// action that then claims success either routed around the refusal or skipped the part it
+// was refused. On release it clears the stall condition so a working goal stops reading as
+// blocked.
 func (g *Reconciler) pauseForAllowance(ctx context.Context, r resource.Resource, spec Spec, status *Status, specHash string, refusals []Refusal) (reconcile.Result, bool, error) {
 	ask, need := ReadAllowanceAsk(refusals, spec.Allowances)
 	if !need {
@@ -50,10 +33,8 @@ func (g *Reconciler) pauseForAllowance(ctx context.Context, r resource.Resource,
 	return g.stalled(ctx, r, status, specHash, AllowanceStallReason, ask.AskReason())
 }
 
-// pausedForAllowance reports whether the status this pass decoded is one a previous pass
-// parked on an undeclared action. It reads the condition rather than a field of its own,
-// because the condition is what the pause wrote and a second copy of the same fact is a
-// second thing that can be wrong.
+// pausedForAllowance reads the condition the pause wrote, so no second copy of the fact can
+// disagree with it.
 func (s Status) pausedForAllowance() bool {
 	for _, c := range s.Conditions {
 		if c.Type == CondStalled {

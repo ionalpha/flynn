@@ -1,15 +1,10 @@
-// Package dependency manages the external command-line programs Flynn needs to operate
-// but does not ship in its own binary (for example a hosting provider's CLI). It is the
-// generic, spec-driven analogue of the model-runtime provisioner: a dependency is a typed
-// resource whose spec is pure data (how to detect it on the host, the minimum version that
-// is acceptable, and the pinned per-platform artifacts to install when it is missing), and
-// one engine reads any such spec to satisfy it.
+// Package dependency provisions the external CLI programs Flynn needs but does not
+// ship, such as a hosting provider's CLI. A dependency is a resource whose spec is
+// data: how to detect the program, its version floor and pinned per-platform
+// artifacts. One engine satisfies any spec and hard-codes no tool.
 //
-// The policy is detect-installed-first: a program already present on the host that meets
-// the version floor is used as-is, with no download. Only when none is present, or the
-// present one is below the floor, does Flynn provision the pinned build, fetched and
-// verified through the same hardened acquire path the model runtime uses. The program is
-// data here; the engine never hard-codes a tool.
+// An installed program at or above the floor is used as-is. Otherwise Flynn
+// provisions the pinned build through the acquire path the model runtime uses.
 package dependency
 
 import (
@@ -32,11 +27,10 @@ const (
 // ErrNotFound is returned when a dependency spec does not exist.
 var ErrNotFound = errors.New("dependency: not found")
 
-// Release is one pinned artifact for a single platform: where to fetch it, the digest it
-// must match, its archive format, and the executable inside it. It is the data the acquire
-// layer needs to install a verified build, with the platform it targets.
+// Release is one pinned artifact for one platform: source, digest, archive format
+// and executable, as the acquire package needs.
 type Release struct {
-	// GOOS and GOARCH are the platform this build targets (Go's runtime.GOOS/GOARCH).
+	// GOOS and GOARCH are the target platform, as runtime.GOOS and runtime.GOARCH.
 	GOOS   string `json:"goos"`
 	GOARCH string `json:"goarch"`
 	// URL is the https source of the release archive.
@@ -47,35 +41,33 @@ type Release struct {
 	SizeBytes int64 `json:"sizeBytes"`
 	// Archive is the container format: "zip" or "tar.gz".
 	Archive string `json:"archive"`
-	// BinName is the executable to locate inside the extracted archive (for example
-	// "flyctl" or "flyctl.exe").
+	// BinName is the executable to locate in the extracted archive ("flyctl",
+	// "flyctl.exe").
 	BinName string `json:"binName"`
 }
 
-// Spec is the desired shape of an external dependency: pure data, no secret. It says how to
-// recognize the program on the host, the floor below which a build is refused, the version
-// to install when provisioning, and the pinned artifacts to install per platform.
+// Spec describes an external dependency as data with no secret: how to recognize
+// it, the refused-below floor, the version to provision and the per-platform
+// artifacts.
 type Spec struct {
 	// Description is a short human summary of what the program is.
 	Description string `json:"description,omitempty"`
-	// Binaries are the executable names that satisfy this dependency, in preference order,
-	// searched on PATH for the detect-installed-first check (for example ["flyctl", "fly"]).
+	// Binaries are the executable names that satisfy the dependency, searched on
+	// PATH in preference order (["flyctl", "fly"]).
 	Binaries []string `json:"binaries"`
-	// VersionArgs are the arguments that make the program print its version (for example
-	// ["version"] or ["--version"]). Empty skips the version probe: any present binary is
-	// accepted and no floor is enforced on a system install.
+	// VersionArgs make the program print its version (["version"], ["--version"]).
+	// Empty skips the probe, so any present binary is accepted without a floor.
 	VersionArgs []string `json:"versionArgs,omitempty"`
-	// VersionRegex extracts the version token from the program's version output; capture
-	// group one is parsed as the version. Empty parses the whole output.
+	// VersionRegex extracts the version from the output from capture group one.
+	// Empty parses the whole output.
 	VersionRegex string `json:"versionRegex,omitempty"`
-	// MinVersion is the floor: a present or provisioned build below it is refused. Empty
-	// imposes no floor.
+	// MinVersion is the floor; a build below it is refused. Empty means no floor.
 	MinVersion string `json:"minVersion,omitempty"`
-	// Pin is the version Flynn provisions when the dependency is missing. It must be at or
-	// above MinVersion; the build-time gate enforces this.
+	// Pin is the version provisioned when missing. The build-time gate holds it at
+	// or above MinVersion.
 	Pin string `json:"pin,omitempty"`
-	// Releases are the pinned per-platform artifacts to fetch when provisioning. At least
-	// the current platform must be covered for provisioning to be possible there.
+	// Releases are the pinned per-platform artifacts. Provisioning needs one for the
+	// current platform.
 	Releases []Release `json:"releases,omitempty"`
 }
 
@@ -119,8 +111,7 @@ var KindDef = resource.Kind{
 	Plural:     "dependencies",
 }
 
-// RegisterKind registers the Dependency kind so a store admits dependency specs. It is
-// idempotent.
+// RegisterKind registers the Dependency kind with reg. It is idempotent.
 func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 
 // DecodeSpec reads the typed spec from a resource.
@@ -132,8 +123,7 @@ func DecodeSpec(r resource.Resource) (Spec, error) {
 	return s, nil
 }
 
-// ReleaseFor returns the release in s targeting the given platform, or false when the spec
-// ships no build for it.
+// ReleaseFor returns the release for the platform, or false when s ships none.
 func (s Spec) ReleaseFor(goos, goarch string) (Release, bool) {
 	for _, r := range s.Releases {
 		if r.GOOS == goos && r.GOARCH == goarch {
@@ -149,15 +139,15 @@ type Dependency struct {
 	Spec Spec
 }
 
-// Store is the typed dependency facade over a resource.Store. Dependency specs live in the
+// Store is the typed dependency facade over a resource.Store. Specs live in the
 // instance-global scope, addressed by name.
 type Store struct {
 	rs    resource.Store
 	scope resource.Scope
 }
 
-// NewStore returns a dependency facade over rs. The caller must have registered the
-// Dependency kind with the registry rs admits against (see RegisterKind).
+// NewStore returns a facade over rs, whose registry must have the Dependency kind
+// (see RegisterKind).
 func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
 
 // Put creates or updates the named dependency spec.
@@ -212,7 +202,6 @@ func (s *Store) List(ctx context.Context) ([]Dependency, error) {
 	return out, nil
 }
 
-// toDependency builds the typed view from a stored resource.
 func toDependency(r resource.Resource) (Dependency, error) {
 	spec, err := DecodeSpec(r)
 	if err != nil {

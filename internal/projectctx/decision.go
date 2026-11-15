@@ -50,15 +50,14 @@ const (
 type Basis string
 
 const (
-	// BasisFlag is: the mode was set explicitly to trust or skip.
+	// BasisFlag means the mode was set explicitly to trust or skip.
 	BasisFlag Basis = "flag"
-	// BasisRemembered is: an earlier approval of this exact content was found.
+	// BasisRemembered means an earlier approval of this exact content was found.
 	BasisRemembered Basis = "remembered"
-	// BasisPrompt is: a person was asked and answered.
+	// BasisPrompt means a person was asked and answered.
 	BasisPrompt Basis = "prompt"
-	// BasisUnattended is: the mode was ask and there was no one to ask, so the files were
-	// skipped. It is recorded as its own basis so that a skipped run can be told apart
-	// from one where someone declined.
+	// BasisUnattended means the mode was ask and no one could answer, so the files were
+	// skipped. It is its own basis so an unattended skip is told apart from a refusal.
 	BasisUnattended Basis = "unattended"
 )
 
@@ -145,11 +144,10 @@ func Decide(set Set, p Policy) Decision {
 	return d
 }
 
-// Prompt is the text to add to the system prompt, or "" when the files were not
-// loaded. Each file sits in a tag whose closing form repeats the file's hash. The
-// hash is of the file's own bytes, so a file cannot contain its closing tag without
-// first knowing its own hash, and the lead-in tells the model that nothing inside a
-// fence has the operator's authority.
+// Prompt is the text to add to the system prompt, or "" when nothing loaded. Each file
+// sits in a tag whose closing form repeats the hash of the file's own bytes, so a file
+// cannot contain its closing tag without knowing its own hash. The lead-in tells the
+// model that nothing inside a fence has the operator's authority.
 func (d Decision) Prompt() string {
 	if d.Verdict != Loaded {
 		return ""
@@ -219,10 +217,9 @@ func (b Basis) words() string {
 // projects it into its own vocabulary, and a test pins the two names equal.
 const EventType = "project.context"
 
-// Append records the decision on a run's stream. The payload carries strings and
-// integers only, which the chain's canonical encoding requires, and a hash for every
-// file so a verifier can tell which text the model was given without it being in
-// the record.
+// Append records the decision on a run's stream. The payload holds only strings and
+// integers, as the chain's canonical encoding requires, plus a hash per file so a
+// verifier can tell which text the model saw without the text being in the record.
 func (d Decision) Append(ctx context.Context, log spine.Log, stream string) error {
 	payload := map[string]any{
 		"verdict": string(d.Verdict),
@@ -254,7 +251,6 @@ func (d Decision) Append(ctx context.Context, log spine.Log, stream string) erro
 	return err
 }
 
-// filesLines renders one line per file: the path, its hash and size, then any flags.
 func (d Decision) filesLines() string {
 	lines := make([]string, len(d.Set.Files))
 	for i, f := range d.Set.Files {

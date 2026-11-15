@@ -1,25 +1,21 @@
-// Package selfupdate lets an installed flynn replace itself with a newer one, without
-// a shell script, a package manager, or any tool the user does not already have.
+// Package selfupdate lets an installed flynn replace itself with a newer one, with no
+// shell script, package manager or other tool.
 //
-// The security of an update path is not in how it downloads: it is in what it refuses
-// to install. Everything this package fetches is treated as hostile until the signed
-// provenance in internal/release says otherwise, and the provenance is what the
-// download is then pinned to. A compromised mirror, a hostile proxy, a certificate
-// authority in the wrong hands, or a GitHub outage substituting the wrong bytes all
-// end the same way: a digest that does not match, and nothing written.
+// An update path is as secure as what it refuses to install. Everything fetched is
+// hostile until the signed provenance checked by internal/release vouches for it, and
+// the download is then pinned to that provenance. A compromised mirror, a hostile
+// proxy, a rogue certificate authority or a GitHub fault serving the wrong bytes all
+// end with a digest mismatch and nothing written.
 //
-// The release listing is the one input that is not signed, and it is used only to
-// enumerate candidates, never as evidence. An attacker who controls it can hide new
-// versions or offer old ones, so this package remembers the highest version it has
-// ever verified and the newest it has ever been offered, and refuses to move backwards
-// past either without being asked in as many words.
+// The release listing is the one unsigned input, used only to enumerate candidates.
+// Whoever controls it can hide new versions or offer old ones, so the package
+// remembers the highest version it verified and the newest it was offered, and moves
+// below either only when explicitly asked.
 //
-// The install is the other half, and it is where update mechanisms usually break: the
-// new binary is staged in the same directory as the one it replaces so the swap is a
-// rename within one filesystem, the running binary's path is resolved through its
-// symlinks so the write lands where it was aimed, an install owned by a package
-// manager is refused rather than trampled, and the new binary is made to prove it runs
-// before it is kept. Nothing that has not verified is ever executed.
+// The install stages the new binary beside the one it replaces, so the swap is a
+// rename within one filesystem; resolves the running binary's symlinks, so the write
+// lands where aimed; refuses an install a package manager owns; and makes the new
+// binary prove it runs before keeping it. Nothing unverified is executed.
 package selfupdate
 
 import (
@@ -70,8 +66,8 @@ const (
 	maxArchiveBytes = 512 << 20
 
 	listingTimeout = 30 * time.Second
-	// smokeTestTimeout bounds the one execution of the new binary. Printing a version
-	// is instant; a binary that cannot manage it in this long is not one to install.
+	// smokeTestTimeout bounds the one run of the new binary. Printing a version is
+	// instant, so a binary that cannot do it in this long is not installed.
 	smokeTestTimeout = 30 * time.Second
 )
 
@@ -82,9 +78,9 @@ type Updater struct {
 	fetcher *fetch.Downloader
 	clock   clock.Clock
 
-	// These are injected so a test can run the whole path, including the install, in a
-	// temporary directory against a local server, rather than only testing the parts
-	// that do not touch the disk. The parts that touch the disk are the risky ones.
+	// These are injected so a test can run the whole path, install included, in a
+	// temporary directory against a local server, because the disk-touching steps
+	// carry the risk.
 	listingURL   string
 	downloadBase string
 	exe          func() (string, error)
@@ -118,8 +114,8 @@ func New(dataDir string, opts ...Option) *Updater {
 	return u
 }
 
-// Release is one release the listing offered. It is unverified: the tag is a candidate
-// to go and check, not a fact.
+// Release is one release the listing offered. It is unverified: the tag is a
+// candidate to check.
 type Release struct {
 	Version     Version
 	Prerelease  bool
@@ -128,9 +124,8 @@ type Release struct {
 	Current bool
 }
 
-// List reports the releases that exist, newest first. It verifies nothing, because
-// there is nothing here to verify: the listing exists to answer "what should I go and
-// check", and every answer it gives is checked before a byte of it is installed.
+// List reports the releases that exist, newest first. It verifies nothing: the listing
+// only says what to check, and everything is verified before a byte is installed.
 func (u *Updater) List(ctx context.Context) ([]Release, error) {
 	raw, err := u.get(ctx, u.listingURL, maxListingBytes)
 	if err != nil {
@@ -150,7 +145,7 @@ func (u *Updater) List(ctx context.Context) ([]Release, error) {
 	out := make([]Release, 0, len(entries))
 	for _, e := range entries {
 		v, ok := ParseVersion(e.TagName)
-		// A tag that is not a version is not a release this binary knows how to be.
+		// A tag that is not a version names nothing this binary can become.
 		if !ok || e.Draft {
 			continue
 		}
@@ -173,17 +168,17 @@ type Request struct {
 	// To pins an exact version. Empty means the newest release.
 	To string
 	// AllowPrerelease lets a prerelease be chosen as the newest. An explicit To always
-	// wins over this: asking for a version by name is asking for it.
+	// wins over it.
 	AllowPrerelease bool
-	// AllowDowngrade permits installing a version older than the running one (or older
-	// than the highest ever verified here). It is off by default because a downgrade is
-	// an attack far more often than it is an intention.
+	// AllowDowngrade permits a version older than the running one or than the highest
+	// verified here. It is off by default because a downgrade is far more often an
+	// attack than an intention.
 	AllowDowngrade bool
 }
 
-// Plan is a verified, ready-to-apply upgrade. Holding one means the provenance already
-// checked out: the signature, the identity, and the transparency-log entry. What is
-// left is the download, which is pinned to Digest, and the install.
+// Plan is a verified upgrade ready to apply: the signature, identity and
+// transparency-log entry have checked out. The download, pinned to Digest, and the
+// install remain.
 type Plan struct {
 	Current    Version
 	Target     Version
@@ -191,32 +186,31 @@ type Plan struct {
 	Asset      string
 	Digest     string
 	URL        string
-	// Path is the binary that will be replaced: the running executable with its
-	// symlinks resolved, which is not always the path the user typed.
+	// Path is the binary to replace: the running executable with its symlinks
+	// resolved, which may differ from the path the user typed.
 	Path string
-	// install carries the vetted destination. It is unexported so a caller cannot hand
-	// Apply a destination that never went through resolveTarget's refusals.
+	// install is unexported so a caller cannot hand Apply a destination that skipped
+	// resolveTarget's refusals.
 	install installTarget
-	// Downgrade is set when the target is older than the floor, which only a Request
-	// that said so out loud can produce.
+	// Downgrade is set when the target is below the floor, which only a Request that
+	// asked for it can produce.
 	Downgrade bool
-	// Warning carries something the operator needs to read even though the plan is
-	// valid, such as a listing that went backwards.
+	// Warning is something the operator must read though the plan is valid, such as a
+	// listing that went backwards.
 	Warning string
 }
 
 // UpToDate reports whether the plan would install what is already running.
 func (p Plan) UpToDate() bool { return p.Current.Compare(p.Target) == 0 }
 
-// Check verifies what the newest (or requested) release is and what installing it
-// would mean, without installing anything and without writing to the binary's
-// directory. It is what `flynn version check` and `flynn upgrade --check` run.
+// Check works out the newest or requested release and what installing it would mean,
+// without installing or writing to the binary's directory. `flynn version check` and
+// `flynn upgrade --check` run it.
 func (u *Updater) Check(ctx context.Context, req Request) (Plan, error) {
 	cur, ok := ParseVersion(u.current())
 	if !ok || isSourceBuild(u.current()) {
-		// A binary built from a checkout has no release to be newer than, and no signed
-		// provenance ever named it. Upgrading it would silently discard whatever local
-		// build the developer is standing on.
+		// A binary built from a checkout has no release to be newer than and no signed
+		// provenance. Upgrading it would discard the developer's local build.
 		return Plan{}, fault.New(fault.Terminal, CodeDevBuild,
 			"this flynn was built from source ("+u.current()+"), so there is no released version to upgrade from. "+
 				"Install a released build to use `flynn upgrade`.")
@@ -235,10 +229,9 @@ func (u *Updater) Check(ctx context.Context, req Request) (Plan, error) {
 
 	var warning string
 	if prev, stale := st.staleListing(newestOf(releases)); stale {
-		// This is not a reason to refuse: the operator may have legitimately been shown a
-		// yanked release. It is a reason to say so loudly, because the alternative is a
-		// machine that reports "up to date" while being held on an old version by someone
-		// who controls its view of the world.
+		// The operator may legitimately have been shown a yanked release, so this does
+		// not refuse. It warns, because otherwise a machine held on an old version by
+		// whoever controls its view would report "up to date".
 		warning = "the release listing no longer offers " + prev + ", which this machine has seen before. " +
 			"That can mean a release was withdrawn, or that something is holding this machine back from newer ones."
 	}
@@ -251,15 +244,14 @@ func (u *Updater) Check(ctx context.Context, req Request) (Plan, error) {
 				" (a downgrade to a version with known holes is the oldest trick there is). Pass --allow-downgrade if that is really what you want.")
 	}
 
-	// Everything above this line came from an unsigned listing. Everything below it is
-	// checked against the trust root compiled into this binary.
+	// Everything above came from the unsigned listing. Everything below is checked
+	// against the trust root compiled into this binary.
 	prov, err := u.provenance(ctx, target)
 	if err != nil {
 		return Plan{}, err
 	}
-	// The provenance is signed, but "signed" is not "signed for the thing I asked for":
-	// a genuine bundle from a different release would otherwise let an attacker who can
-	// swap assets serve v0.1.0's bundle in v0.9.0's place.
+	// A genuine bundle from a different release is still signed, so without this an
+	// attacker who can swap assets could serve v0.1.0's bundle in v0.9.0's place.
 	if prov.Tag != target.String() {
 		return Plan{}, fault.New(fault.Terminal, release.CodeUnexpectedTag,
 			"the signed provenance served for "+target.String()+" is the provenance of "+prov.Tag)
@@ -290,12 +282,12 @@ func (u *Updater) Check(ctx context.Context, req Request) (Plan, error) {
 	}, nil
 }
 
-// Apply installs a plan. It is separate from Check so that the command can show the
-// operator exactly what verified, and what it is about to do, before it does it.
+// Apply installs a plan. It is separate from Check so the command can show the
+// operator what verified and what it will do before doing it.
 func (u *Updater) Apply(ctx context.Context, p Plan) error {
-	// The archive is downloaded into the destination directory rather than the system
-	// temp directory: the binary that comes out of it is renamed over the running one,
-	// and a rename only works, let alone atomically, within a single filesystem.
+	// The archive is downloaded into the destination directory because the binary
+	// from it is renamed over the running one, and a rename works, atomically, only
+	// within one filesystem.
 	work, err := os.MkdirTemp(p.install.Dir, stagedPrefix+"work-*")
 	if err != nil {
 		return fault.Wrap(fault.Terminal, CodeInstall, err)
@@ -303,8 +295,8 @@ func (u *Updater) Apply(ctx context.Context, p Plan) error {
 	defer func() { _ = os.RemoveAll(work) }()
 
 	archive := filepath.Join(work, p.Asset)
-	// The digest comes from the signed provenance, so this download either produces
-	// exactly the bytes the flynn release workflow built, or it produces nothing.
+	// The digest comes from the signed provenance, so this download yields exactly the
+	// bytes the release workflow built or nothing.
 	if _, err := u.fetcher.Fetch(ctx, fetch.Request{
 		URL:          p.URL,
 		Dest:         archive,
@@ -320,9 +312,8 @@ func (u *Updater) Apply(ctx context.Context, p Plan) error {
 	}
 
 	// The binary is verified, so running it is safe, and running it is the only way to
-	// find out that it runs: a correct download of a binary for the wrong libc, or one
-	// the local security software will refuse to execute, is still a binary that will
-	// not start. Better to find that out now, while the old one is still in place.
+	// learn it runs: a binary for the wrong libc, or one local security software
+	// refuses, will not start. Finding out now leaves the old one in place.
 	if err := u.smokeTest(ctx, staged, p.Target); err != nil {
 		_ = os.Remove(staged)
 		return err
@@ -332,24 +323,24 @@ func (u *Updater) Apply(ctx context.Context, p Plan) error {
 		return err
 	}
 
-	// The floor only ever rises. Recording it after the install, rather than before,
-	// means a failed upgrade cannot raise the bar for the next one.
+	// The floor only rises. It is recorded after the install, so a failed upgrade
+	// cannot raise the bar for the next one.
 	st := loadState(u.dataDir)
 	if v, ok := ParseVersion(st.HighestVerified); !ok || p.Target.Compare(v) > 0 {
 		st.HighestVerified = p.Target.String()
 	}
 	st.LastCheck = u.clock.Now().UTC()
 	if err := saveState(u.dataDir, st); err != nil {
-		// The binary is installed and working. Failing the command now would tell the
-		// operator the upgrade did not happen, which would be false.
+		// The binary is installed and working, so failing the command would wrongly
+		// report that the upgrade did not happen.
 		return nil
 	}
 	return nil
 }
 
-// RecordSeen remembers the newest release the listing has offered, so a listing that
-// later goes backwards can be noticed. It is called after a successful listing, and a
-// failure to write it is not a failure of the command.
+// RecordSeen remembers the newest release the listing offered, so a listing that later
+// goes backwards is noticed. It runs after a successful listing, and a failed write
+// does not fail the command.
 func (u *Updater) RecordSeen(releases []Release) {
 	newest := newestOf(releases)
 	st := loadState(u.dataDir)
@@ -360,12 +351,10 @@ func (u *Updater) RecordSeen(releases []Release) {
 	_ = saveState(u.dataDir, st)
 }
 
-// smokeTest runs the staged binary and requires it to report the version it is
-// supposed to be. Only a verified binary ever reaches this point, and it still runs
-// through the sandbox boundary rather than with this process's ambient authority:
-// a binary that was downloaded a second ago is exactly the kind of thing that should
-// not be handed the agent's environment, its credentials, or its network, merely to
-// answer what version it is.
+// smokeTest runs the staged binary and requires it to report the version it should be.
+// Only a verified binary gets here, and it still runs inside the sandbox boundary,
+// because a binary downloaded a second ago should not get the agent's environment,
+// credentials or network just to print its version.
 func (u *Updater) smokeTest(ctx context.Context, staged string, want Version) error {
 	ctx, cancel := context.WithTimeout(ctx, smokeTestTimeout)
 	defer cancel()
@@ -386,9 +375,8 @@ func (u *Updater) smokeTest(ctx context.Context, staged string, want Version) er
 			fmt.Sprintf("the new binary exited %d when asked for its version, so it was not installed", res.ExitCode))
 	}
 	out := []byte(res.Output)
-	// The release build stamps its version without the tag's leading "v", so the strings
-	// differ even when the versions do not. They are compared as versions for that
-	// reason, not as text.
+	// The release build stamps its version without the tag's leading "v", so the two
+	// are compared as versions, since the strings differ.
 	got := strings.TrimSpace(string(out))
 	reported, ok := ParseVersion(got)
 	if !ok || reported.Compare(want) != 0 {
@@ -399,7 +387,7 @@ func (u *Updater) smokeTest(ctx context.Context, staged string, want Version) er
 }
 
 // provenance downloads a release's bundle and verifies it. The bytes are hostile until
-// Verify says they are not.
+// Verify accepts them.
 func (u *Updater) provenance(ctx context.Context, v Version) (release.Provenance, error) {
 	raw, err := u.get(ctx, u.downloadBase+v.String()+"/"+bundleAsset, maxBundleBytes)
 	if err != nil {
@@ -427,8 +415,8 @@ func (u *Updater) get(ctx context.Context, url string, limit int64) ([]byte, err
 		return nil, fault.New(fault.Transient, CodeListing,
 			fmt.Sprintf("HTTP %d from %s", resp.StatusCode, url))
 	}
-	// Read one byte past the ceiling so an over-long body is refused rather than
-	// truncated into something that parses as if it were complete.
+	// Read one byte past the ceiling so an over-long body is refused instead of
+	// truncated into something that parses as complete.
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, fault.Wrap(fault.Transient, CodeListing, err)
@@ -475,8 +463,8 @@ func newestOf(releases []Release) Version {
 }
 
 func sortReleasesNewestFirst(rs []Release) {
-	// Insertion sort: a release listing is a page of a hundred at most, and this keeps
-	// the ordering in the same file as the comparison it depends on.
+	// Insertion sort: a listing page holds at most a hundred releases, and this keeps
+	// the ordering beside the comparison it depends on.
 	for i := 1; i < len(rs); i++ {
 		for j := i; j > 0 && rs[j].Version.Compare(rs[j-1].Version) > 0; j-- {
 			rs[j], rs[j-1] = rs[j-1], rs[j]
@@ -484,10 +472,9 @@ func sortReleasesNewestFirst(rs []Release) {
 	}
 }
 
-// assetName is the release archive for the platform this binary is running on. It is
-// derived from this process's own GOOS and GOARCH and never from anything downloaded,
-// so a hostile listing cannot talk this machine into installing a binary for another
-// platform (or into naming a file it should not).
+// assetName is the release archive for this platform, derived from this process's
+// GOOS and GOARCH and never from anything downloaded, so a hostile listing cannot get
+// a binary for another platform installed, or name a file it should not.
 func (u *Updater) assetName() string {
 	if u.goos == "windows" {
 		return fmt.Sprintf("flynn_%s_%s.zip", u.goos, u.goarch)
@@ -502,16 +489,16 @@ func (u *Updater) binaryName() string {
 	return "flynn"
 }
 
-// isSourceBuild reports whether a version string names a build that no release ever
-// published: the "0.0.0-dev" default, or a version carrying a VCS revision. Both parse
-// as versions, which is precisely the trap: left alone, a developer's own build would
-// compare as an ancient prerelease and be "upgraded" out from under them.
+// isSourceBuild reports whether v names a build no release published: the
+// "0.0.0-dev" default or a version carrying a VCS revision. Both parse as versions, so
+// without this a developer's build would compare as an ancient prerelease and be
+// upgraded away.
 func isSourceBuild(v string) bool {
 	return v == "" || strings.HasPrefix(v, "0.0.0-dev") || strings.Contains(v, "+")
 }
 
-// current is the version this binary was built as. It is injectable so a test can
-// stand in a released version without being built like one.
+// current is the version this binary was built as. It is injectable so a test can use
+// a released version.
 func (u *Updater) current() string {
 	if u.version != "" {
 		return u.version

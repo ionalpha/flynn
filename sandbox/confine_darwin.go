@@ -9,29 +9,22 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// sandboxExec is the macOS sandbox launcher: it applies a profile to a command and
-// then runs it under that confinement. It ships with the OS at a fixed path.
+// sandboxExec ships with macOS at a fixed path.
 const sandboxExec = "/usr/bin/sandbox-exec"
 
-// kernelConfinementSupported reports whether this platform can enforce the network,
-// filesystem, and syscall confinement, which it can on macOS through the sandbox
-// profile applied by confine.
+// kernelConfinementSupported is true through the seatbelt profile.
 func kernelConfinementSupported() bool { return true }
 
-// egressEnforceable reports whether governed child egress can be enforced here. On macOS
-// the seatbelt profile allows outbound only to the loopback proxy and denies the rest, so
-// it can.
+// egressEnforceable is true because the seatbelt profile allows outbound only to
+// the loopback proxy.
 func egressEnforceable() bool { return true }
 
-// backgroundConfinementExpressible reports whether kernel confinement can be applied to a
-// backgrounded process (the Serve path). On macOS it can: confine wraps the child in the
-// sandbox launcher with a seatbelt profile, which holds identically whether the process is
-// run to completion or started and left running. Serve carries the same tier as Exec.
+// backgroundConfinementExpressible is true because a seatbelt profile holds for a
+// backgrounded process too, so Serve gets Exec's tier.
 func backgroundConfinementExpressible() bool { return true }
 
-// egressAddr returns the running proxy's address for the seatbelt allow-only-proxy rule,
-// or "" when egress is not configured. It reads under the egress lock, which the launch
-// path has already released after starting the proxy.
+// egressAddr returns "" without egress. The launch path releases the egress lock
+// after starting the proxy, so this cannot deadlock.
 func (l *Local) egressAddr() string {
 	if l.egress == nil {
 		return ""
@@ -41,17 +34,10 @@ func (l *Local) egressAddr() string {
 	return l.egress.addr
 }
 
-// confine applies the kernel-enforced isolation a Local was configured for to a
-// command about to run, by wrapping it in the macOS sandbox launcher with a profile
-// built from the same options the Linux adapter reads. With no options it does
-// nothing. Network denial removes all socket access; filesystem confinement makes the
-// host read-only except the working directory and the sandbox's scratch directory; syscall confinement
-// refuses the privileged file operations a command in its own tree never needs. The
-// profile and the launcher together are the macOS counterpart of the Linux network
-// namespace, read-only mount view, and syscall filter.
-//
-// If the launcher is missing the command is refused rather than run unconfined, so a
-// caller that asked for confinement never silently gets an unconfined command.
+// confine wraps c in sandbox-exec with a profile built from the options Linux
+// reads: network denial removes socket access, a read-only host leaves the
+// workspace and scratch writable, and the syscall rule refuses privileged file
+// operations. A missing launcher refuses the command.
 func (l *Local) confine(c *exec.Cmd) error {
 	if !l.denyNetwork && !l.readonlyFS && !l.seccomp && l.egress == nil {
 		return nil
@@ -60,10 +46,8 @@ func (l *Local) confine(c *exec.Cmd) error {
 		return fault.New(fault.Forbidden, "sandbox_confine_unsupported",
 			"sandbox: the macOS sandbox launcher is not available; refusing rather than running the command unconfined")
 	}
-	// When egress is governed, the profile allows outbound only to the loopback proxy,
-	// composed into this single profile rather than a second sandbox-exec wrapping.
-	// A read-only host leaves the child no temp directory or cache location of its own, so
-	// the scratch directory is granted and the environment pointed at it.
+	// A read-only host leaves the child no temp or cache directory, so scratch is
+	// granted.
 	var writable []string
 	if l.readonlyFS {
 		var err error
@@ -73,15 +57,12 @@ func (l *Local) confine(c *exec.Cmd) error {
 	}
 	profile := seatbeltProfile(l.root, l.denyNetwork, l.readonlyFS, l.seccomp, l.egressAddr(), writable...) +
 		seatbeltHidden(l.unreadable)
-	// Wrap the existing command: the launcher applies the profile, then execs the real
-	// command (still c.Args from here on) under it. c.Path points at the launcher; the
-	// original program name stays as the launcher's first non-flag argument.
+	// The original program name becomes the launcher's first non-flag argument.
 	c.Args = append([]string{sandboxExec, "-p", profile}, c.Args...)
 	c.Path = sandboxExec
 	return nil
 }
 
-// platformConfinementTier names the macOS kernel-confinement mechanism. The tier
-// read-permits the host by construction (a Seatbelt profile that denies writes), so
-// WithHostReadable selects no different mechanism here.
+// platformConfinementTier ignores WithHostReadable, because the seatbelt profile
+// already leaves the host readable.
 func (l *Local) platformConfinementTier() string { return "seatbelt" }

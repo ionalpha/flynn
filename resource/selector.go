@@ -24,15 +24,14 @@ const (
 	OpNotIn
 )
 
-// Requirement is one label constraint. Values is empty for existence operators,
-// a single element for (in)equality, and a set for In/NotIn.
+// Requirement is one label constraint. Values is empty for existence operators, one
+// element for = and !=, and a set for In and NotIn.
 type Requirement struct {
 	Key    string
 	Op     Op
 	Values []string
 }
 
-// matches reports whether labels satisfy this requirement.
 func (req Requirement) matches(labels map[string]string) bool {
 	v, ok := labels[req.Key]
 	switch req.Op {
@@ -53,10 +52,8 @@ func (req Requirement) matches(labels map[string]string) bool {
 	}
 }
 
-// Selector is a conjunction of requirements: a resource matches when its labels
-// satisfy every requirement. The empty Selector matches everything. This is the
-// universal declarative query plane over all kinds (the Kubernetes label-selector
-// model).
+// Selector is a conjunction of requirements, the Kubernetes label-selector model;
+// the empty Selector matches everything.
 type Selector []Requirement
 
 // Matches reports whether the labels satisfy all requirements.
@@ -100,7 +97,6 @@ func parseRequirement(p string) (Requirement, error) {
 	if p == "" {
 		return Requirement{}, errors.New("resource: empty selector requirement")
 	}
-	// Set operators: "key in (a, b)" / "key notin (a, b)".
 	if i := strings.Index(p, "("); i >= 0 {
 		if !strings.HasSuffix(p, ")") {
 			return Requirement{}, fmt.Errorf("resource: malformed set requirement %q", p)

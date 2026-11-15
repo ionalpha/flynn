@@ -9,10 +9,9 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// hostLimiters enforces a minimum interval between requests to the same host. It
-// hands out reservation slots spaced interval apart, reading the current time from
-// the clock so a clock.Manual makes the spacing deterministic. A zero interval
-// disables limiting. Safe for concurrent use.
+// hostLimiters spaces requests to one host at least interval apart, reading time
+// from the clock so a clock.Manual makes it deterministic. A zero interval disables
+// limiting. It is safe for concurrent use.
 type hostLimiters struct {
 	mu       sync.Mutex
 	clk      clock.Clock
@@ -20,10 +19,9 @@ type hostLimiters struct {
 	next     map[string]time.Time
 }
 
-// reserve claims the next send slot for host and returns how long the caller must
-// wait before using it. Slots are spaced interval apart from the later of now and
-// the host's previously reserved slot, so concurrent callers queue rather than
-// stampede. With a zero interval it always returns 0.
+// reserve claims host's next send slot and returns the wait before using it. Slots
+// are spaced interval after the later of now and the previous slot, so concurrent
+// callers queue. A zero interval returns 0.
 func (h *hostLimiters) reserve(host string) time.Duration {
 	if h.interval <= 0 {
 		return 0
@@ -39,12 +37,10 @@ func (h *hostLimiters) reserve(host string) time.Duration {
 	return slot.Sub(now)
 }
 
-// jitter spreads backoff waits using an injected entropy source rather than a
-// package-level random generator, so the transport keeps the project's invariant
-// that only package ids owns a rand source. A deterministic reader makes the jitter
-// reproducible for replay; a nil source means jitter is disabled and backoff stays
-// exactly the deterministic schedule. Guarded by a mutex so concurrent retries share
-// the source safely.
+// jitter spreads backoff waits from an injected entropy source, because only package
+// ids may own a rand source. A deterministic reader makes jitter reproducible for
+// replay; a nil source disables it. A mutex lets concurrent retries share the
+// source.
 type jitter struct {
 	mu  sync.Mutex
 	src io.Reader
@@ -52,9 +48,8 @@ type jitter struct {
 
 func newJitter(src io.Reader) *jitter { return &jitter{src: src} }
 
-// upTo returns a value in [0, d) drawn from the entropy source. A non-positive d,
-// or any read failure, returns 0, so a starved entropy source degrades to no jitter
-// rather than an error.
+// upTo returns a value in [0, d) from the entropy source. A non-positive d or a read
+// failure returns 0, so a starved source means no jitter instead of an error.
 func (j *jitter) upTo(d time.Duration) time.Duration {
 	if d <= 0 {
 		return 0

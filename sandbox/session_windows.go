@@ -13,18 +13,12 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// duplexConfinementExpressible is true on Windows: an AppContainer (or the write-restricted
-// token tier) can carry a duplex session's three inherited pipe handles (a live stdin and
-// separate stdout and stderr) exactly as it carries the streaming launch's, so a confined
-// session runs under the container rather than being refused. Governed per-host egress still
-// has no Windows enforcement leg and is refused earlier, at guardEgress; network is denied or
-// allowed wholesale through the container's internetClient capability.
+// duplexConfinementExpressible is true because both Windows tiers carry a
+// session's three inherited pipes. Governed egress is refused earlier, at
+// guardEgress; network is all or nothing through internetClient.
 func duplexConfinementExpressible() bool { return true }
 
-// startSession launches a duplex session. Unconfined, it runs through the standard library
-// like the other platforms. Confined, it runs inside the AppContainer (or the workspace's
-// write-restricted token) with the same policy Exec and Stream use, handing the process's
-// live stdin, stdout, and stderr pipes back to the caller.
+// startSession confines with the policy Exec and Stream use.
 func (l *Local) startSession(ctx context.Context, spec SessionSpec, confined bool) (*Session, error) {
 	if !confined {
 		return l.startSessionExec(ctx, spec, false)
@@ -32,12 +26,8 @@ func (l *Local) startSession(ctx context.Context, spec SessionSpec, confined boo
 	return l.startSessionAppContainer(ctx, spec)
 }
 
-// startSessionAppContainer starts spec.Argv confined and returns a Session over its own
-// stdio pipes, bound to ctx: cancelling ctx (a Stop or a shutdown) terminates the process,
-// which closes its pipes so a blocked read returns and Wait completes. It mirrors
-// startStreamAppContainer's container setup (the same identity, grants, capabilities, and
-// mitigation policy) and differs only in wiring three separate pipes for the interactive
-// conversation instead of one combined output stream.
+// startSessionAppContainer matches startStreamAppContainer's setup but wires three
+// separate pipes. Cancelling ctx terminates the process, closing its pipes.
 func (l *Local) startSessionAppContainer(ctx context.Context, spec SessionSpec) (*Session, error) {
 	appPath, err := exec.LookPath(spec.Argv[0])
 	if err != nil {
@@ -48,7 +38,7 @@ func (l *Local) startSessionAppContainer(ctx context.Context, spec SessionSpec) 
 
 	var p *acProcess
 	if l.hostReadable {
-		// The write-restricted tier: no container identity, only the workspace write grant.
+		// The write-restricted tier needs only the workspace write grant.
 		if err := grantRestrictedDir(l.root, l.root); err != nil {
 			return nil, fmt.Errorf("sandbox: grant working directory: %w", err)
 		}
@@ -91,8 +81,7 @@ func (l *Local) startSessionAppContainer(ctx context.Context, spec SessionSpec) 
 		}
 	}
 
-	// Bind the process to an internal context cancelled by Stop, so a Stop or a shutdown
-	// terminates it, which closes its pipes so a blocked read returns and Wait completes.
+	// Stop cancels sctx, which terminates the process.
 	sctx, cancel := context.WithCancel(ctx)
 	exited := make(chan struct{})
 	go func() {
@@ -107,8 +96,7 @@ func (l *Local) startSessionAppContainer(ctx context.Context, spec SessionSpec) 
 	stdout := os.NewFile(uintptr(p.read), "sandbox-appcontainer-stdout")
 	stderrFile := os.NewFile(uintptr(p.errRead), "sandbox-appcontainer-stderr")
 
-	// Drain the child's stderr into a bounded tail so a chatty child cannot block on a full
-	// stderr pipe and so its diagnostics are retained without unbounded buffering.
+	// Drained into a bounded tail so a chatty child cannot block on a full pipe.
 	tail := newTailBuffer(tailBufferCap)
 	go func() { _, _ = io.Copy(tail, stderrFile) }()
 

@@ -1,11 +1,11 @@
-// Package reliability measures whether a model is dependable enough to drive an agent loop,
-// which is a different question from whether a machine can run it. It runs a fixed, version
-// pinned battery of probes against any llm.Model and scores three capabilities that decide
-// whether an agentic run finishes or stalls: emitting well-formed tool calls, adhering to a
-// tool's argument schema, and following direct instructions. The result maps to a
-// harness.ModelProfile, so a measurement made here drives how hard the harness scaffolds that
-// model at the dispatch waist. The battery is the same regardless of which model is behind the
-// port, so a quantized local model and a hosted one are scored on identical terms.
+// Package reliability measures whether a model is dependable enough to drive an agent
+// loop, a separate question from whether a machine can run it. It runs a fixed,
+// versioned battery of probes against any llm.Model and scores three capabilities that
+// decide whether an agentic run finishes: well-formed tool calls, adherence to a tool's
+// argument schema, and following direct instructions. The result maps to a
+// harness.ModelProfile, which sets how hard the harness scaffolds the model. The
+// battery is the same for every model, so a quantized local model and a hosted one are
+// scored on identical terms.
 package reliability
 
 import (
@@ -15,12 +15,12 @@ import (
 	"github.com/ionalpha/flynn/llm"
 )
 
-// BatteryVersion pins the probe set. A score is only comparable to another taken at the same
-// version, so it is recorded alongside the result and bumped whenever a probe changes.
+// BatteryVersion pins the probe set. A score is comparable only to one taken at the
+// same version, so it is recorded with the result and bumped when a probe changes.
 const BatteryVersion = "1"
 
-// dimension is one capability the battery measures. Each maps to a field of the resulting
-// profile, so the three together are exactly the reliability fingerprint the harness reads.
+// dimension is one capability the battery measures. Each maps to a field of the
+// profile, and the three together are the reliability fingerprint the harness reads.
 type dimension int
 
 const (
@@ -29,9 +29,9 @@ const (
 	dimInstruction                  // follows a direct, checkable instruction
 )
 
-// Report is the outcome of running the battery: how many probes passed in each dimension, and
-// the battery version the run used. The scores are derived from it, so the raw tallies stay
-// available for a detailed report.
+// Report is the outcome of a battery run: per-dimension tallies and the battery
+// version. The scores derive from the tallies, which stay available for a detailed
+// report.
 type Report struct {
 	Version string
 	Dims    map[dimension]Tally
@@ -43,8 +43,8 @@ type Tally struct {
 	Attempted int
 }
 
-// score is the pass fraction in [0,1]; an unattempted dimension scores 0, the conservative
-// unknown, so a battery that could not exercise a capability does not vouch for it.
+// score is the pass fraction in [0,1]. An unattempted dimension scores 0, so a battery
+// that could not exercise a capability does not vouch for it.
 func (t Tally) score() float64 {
 	if t.Attempted == 0 {
 		return 0
@@ -52,9 +52,9 @@ func (t Tally) score() float64 {
 	return float64(t.Passed) / float64(t.Attempted)
 }
 
-// Profile maps the report to the capability fingerprint the harness consumes. EffectiveContext
-// is left zero: this battery does not probe context length, so it makes no claim about it, and
-// the harness treats the unknown conservatively. The other three dimensions map directly.
+// Profile maps the report to the harness's capability fingerprint. EffectiveContext is
+// zero because this battery does not probe context length, and the harness treats the
+// unknown conservatively.
 func (r Report) Profile() harness.ModelProfile {
 	return harness.ModelProfile{
 		ToolCallReliability:  r.Dims[dimToolCall].score(),
@@ -63,11 +63,11 @@ func (r Report) Profile() harness.ModelProfile {
 	}
 }
 
-// Score runs the full battery against model and returns the tallied report. Each probe is one
-// model call with pinned decoding, so the measurement is reproducible on a runtime that honors
-// the seed. A probe whose call errors counts as a failure, not a skipped probe: a model that
-// cannot answer reliably is, for this purpose, unreliable. The context bounds the whole run, so
-// a cancelled measurement returns its error rather than a partial score.
+// Score runs the battery against model and returns the tallied report. Each probe is
+// one call with pinned decoding, so the measurement reproduces on a runtime that
+// honors the seed. A probe whose call errors counts as failed, since a model that
+// cannot answer is unreliable here. ctx bounds the whole run, so a cancelled
+// measurement returns its error instead of a partial score.
 func Score(ctx context.Context, model llm.Model) (Report, error) {
 	rep := Report{Version: BatteryVersion, Dims: map[dimension]Tally{}}
 	for _, p := range battery() {

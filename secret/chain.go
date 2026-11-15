@@ -5,13 +5,9 @@ import (
 	"errors"
 )
 
-// Chain resolves a reference through an ordered list of Sources, returning the
-// first value found. It is how a binary composes credential backends without the
-// call site knowing the order: try the OS keychain, then a sealed file, then the
-// environment, and stop at the first hit. A Source that returns ErrNotFound is
-// skipped; any other error stops the chain and is returned, so a locked keychain
-// or a corrupt vault surfaces rather than being silently masked by a later
-// fallback. With no source holding the reference the chain returns ErrNotFound.
+// Chain returns the first value the sources yield, in order. A source returning
+// [ErrNotFound] is skipped; any other error is returned at once, so a locked
+// keychain is reported instead of hidden by a later fallback.
 func Chain(sources ...Source) Source { return chain(sources) }
 
 type chain []Source

@@ -1,11 +1,10 @@
 // Package projectctx loads a repository's instruction files (AGENTS.md,
 // AGENTS.override.md, CLAUDE.md) into a session's prompt as untrusted context, and
-// records the decision to do so.
+// records the decision.
 //
-// The files are written by whoever controls the repository, which is not the
-// operator of the session: a cloned repository can carry any text in them. Loading
-// one is therefore a trust decision, not a convenience, and the package keeps four
-// properties:
+// Whoever controls the repository writes these files, and that is not the session's
+// operator: a cloned repository can carry any text. Loading one is a trust decision,
+// so the package keeps four properties:
 //
 //   - Nothing loads without a decision. [Decide] resolves a flag, then a remembered
 //     choice for this exact content, then an interactive question; with no one to ask
@@ -13,17 +12,16 @@
 //   - The decision is visible and recorded. [Decision.Summary] is the line a user
 //     sees, and [Decision.Append] writes the same facts, with a hash of every file, to
 //     the run's spine stream, so the sealed record shows which instructions the model
-//     was given.
+//     got.
 //   - The text is fenced as data. [Decision.Prompt] wraps each file in a tag whose
-//     closing form carries a hash of the file, which a file cannot predict about
-//     itself, so it cannot close its own fence and continue as the system prompt.
+//     closing form carries the file's hash, which a file cannot predict, so it cannot
+//     close its own fence and continue as the system prompt.
 //   - The session is tainted. [Decision.Taint] returns provenance reasons in the
-//     memory guard's untrusted external scheme, which the caller feeds into the
-//     same taint scope tool output uses, so nothing learned from a session that read
-//     these files is pushed at wake.
+//     memory guard's untrusted external scheme, fed into the taint scope tool output
+//     uses, so nothing learned from a session that read these files is pushed at wake.
 //
-// The package reads files and writes one JSON file for remembered choices; it knows
-// nothing about the REPL, the terminal or any host.
+// The package reads files and writes one JSON file of remembered choices; it knows
+// nothing of the REPL, the terminal or a host.
 package projectctx
 
 import (
@@ -64,19 +62,18 @@ const (
 type File struct {
 	// Path is slash-separated and relative to [Set.Root].
 	Path string
-	// SHA256 is the hex hash of the bytes read, after the size cap. It covers exactly
-	// what the model is shown, so a remembered approval lapses when that text changes
-	// and does not when only an unread tail does.
+	// SHA256 is the hex hash of the bytes read, after the size cap, so a remembered
+	// approval lapses when the shown text changes and survives a change to an unread
+	// tail.
 	SHA256 string
 	// Bytes is how many bytes were read.
 	Bytes int
 	// Truncated reports that the file was longer than the cap allowed.
 	Truncated bool
-	// Findings names the kinds of hidden-text signals the memory guard's screen found
-	// in the raw bytes (invisible characters, bidirectional overrides, tag-character
-	// payloads, override phrasing). They are shown to the person deciding; the
-	// characters themselves are stripped from [File.Content] whether or not anyone
-	// reads the warning.
+	// Findings names the hidden-text signals the memory guard's screen found in the raw
+	// bytes (invisible characters, bidirectional overrides, tag-character payloads,
+	// override phrasing), shown to the person deciding. The characters are stripped from
+	// [File.Content] either way.
 	Findings []string
 	// Content is the text shown to the model, with control and format characters
 	// removed and invalid UTF-8 replaced.
@@ -124,16 +121,16 @@ func (s Set) Paths() []string {
 	return out
 }
 
-// Discover finds the instruction files that apply to workdir. It looks in the
-// working directory and each parent up to the enclosing git checkout; with no
-// checkout it looks in the working directory alone, because walking further would load
-// a file from a directory the user never chose (a home directory, a shared parent).
+// Discover finds the instruction files that apply to workdir: in it and each parent up
+// to the enclosing git checkout, or in workdir alone when there is no checkout,
+// because walking further would load a file from a directory the user never chose (a
+// home directory, a shared parent).
 //
-// A candidate is skipped, not loaded, when it is a symlink that leaves the root (a
-// repository could point CLAUDE.md at a file in the user's home directory), is not a
-// regular file, or contains a NUL byte. Within one directory [FileOverride] replaces
-// [FileAgents], and a [FileClaude] with the same content as the file before it is
-// dropped, since the two are often one file under two names.
+// A candidate is skipped when it is a symlink leaving the root (a repository could
+// point CLAUDE.md at a file in the user's home), is not a regular file, or holds a NUL
+// byte. Within one directory [FileOverride] replaces [FileAgents], and a [FileClaude]
+// with the same content as the file before it is dropped, since the two are often one
+// file under two names.
 func Discover(workdir string) (Set, error) {
 	abs, err := filepath.Abs(workdir)
 	if err != nil {
@@ -269,10 +266,9 @@ func readCandidate(c candidate, limit int) (File, string) {
 }
 
 // sanitize replaces invalid UTF-8 and drops control and format characters other than
-// tab, newline and carriage return. Format characters are the carrier for text a
-// reviewer cannot see (zero-width, bidirectional and tag characters), so removing
-// the class is simpler and safer than listing them; it also removes the joiner in a
-// multi-part emoji, which an instruction file can live without.
+// tab, newline and carriage return. Format characters carry text a reviewer cannot see
+// (zero-width, bidirectional, tag), so the whole class goes; that also drops the joiner
+// in a multi-part emoji, which an instruction file can spare.
 func sanitize(s string) string {
 	s = strings.ToValidUTF8(s, "�")
 	return strings.Map(func(r rune) rune {

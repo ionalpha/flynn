@@ -11,17 +11,9 @@ import (
 	"github.com/ionalpha/flynn/netguard"
 )
 
-// attachEgress points a child that shares the host's network stack at the sandbox's
-// proxy: the proxy listens on the host's loopback, and the standard proxy variables in
-// the child's environment name it. One proxy serves every child, started on first use.
-//
-// This is only half of the enforcement. The child's environment is advice it could
-// ignore; what makes the proxy the single way out is the platform's confine denying the
-// child's direct egress (on macOS, a seatbelt profile that allows outbound only to the
-// proxy's address). On a platform with no such leg, egressEnforceable is false and the
-// launch has already refused before reaching here.
-// The one proxy is shared by every child and lives as long as the Local, so a launch here
-// holds nothing of its own and its release is a no-op. Close stops the proxy.
+// attachEgress sets the proxy variables for a child on the host stack. The child
+// may ignore them; confine enforces the proxy by denying other egress (seatbelt on
+// macOS). One proxy serves every child until Close, so the release is a no-op.
 func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
 	addr, err := l.egress.ensureProxy()
 	if err != nil {
@@ -31,9 +23,7 @@ func (l *Local) attachEgress(c *exec.Cmd) (func(), error) {
 	return func() {}, nil
 }
 
-// ensureProxy starts the egress proxy once, on a loopback listener, and returns its
-// address. Subsequent calls return the running proxy's address. The proxy lives until
-// the Local is closed.
+// ensureProxy starts the loopback proxy on first call and returns its address.
 func (e *egressConfig) ensureProxy() (string, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

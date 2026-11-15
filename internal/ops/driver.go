@@ -12,37 +12,34 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Driver supervises deployed workloads by running their provider's hosting-contract
-// operations. It is the bridge from the provider-agnostic supervisor to a concrete
-// provider: given a service, it resolves the extension that provider belongs to, loads
-// it, and invokes the well-known "status" or "teardown" operation. The operation runs
-// through the same governed transport, credential resolution, role check, and egress
-// confinement every operation uses, so supervision is no more privileged than a deploy.
+// Driver supervises deployed workloads by running their provider's "status" and
+// "teardown" hosting operations. Each runs through the same governed transport,
+// credential resolution, role check and egress confinement as any operation, so
+// supervision is no more privileged than a deploy.
 //
-// It speaks no provider protocol of its own. What a provider needs to re-address its
-// workload (an account id, a project name, a server id) travels on the service's
-// Address map, which the driver replays into the operation input verbatim.
+// It speaks no provider protocol. What a provider needs to re-address a workload (an
+// account id, a project name, a server id) travels on the service's Address map and is
+// replayed verbatim into the operation input.
 type Driver struct {
 	store  resource.Store
 	loader *extension.Loader
 	scope  resource.Scope
 
-	// mu serializes resolve+load+invoke so a single shared loader is never reloaded for
-	// a second provider mid-call. Supervision is not latency-critical, so serializing
-	// provider calls is an acceptable cost for not racing the loader's mount table.
+	// mu serializes resolve, load and invoke so the shared loader is never reloaded for
+	// another provider mid-call. Supervision is not latency-critical, so this costs
+	// little.
 	mu sync.Mutex
 }
 
-// NewDriver builds an ops-backed supervision driver. store is the resource store the
-// extensions live in; loader resolves an extension's surfaces to callable tools (it
-// must have the ops surface handler registered, the same loader the deploy path uses).
+// NewDriver builds a supervision driver over the extensions in store. loader must have
+// the ops surface handler registered, as the deploy path's loader does.
 func NewDriver(store resource.Store, loader *extension.Loader) *Driver {
 	return &Driver{store: store, loader: loader}
 }
 
 // Observe runs the provider's "status" operation and reads the workload's health from
-// the result. A provider that declares no status operation cannot be observed, which is
-// not an error: the supervisor keeps the last known status and re-checks later.
+// it. A provider with no status operation is not an error: the supervisor keeps the
+// last known status and re-checks later.
 func (d *Driver) Observe(ctx context.Context, svc service.Service) (service.Observation, error) {
 	out, found, err := d.invoke(ctx, svc, OpStatus)
 	if err != nil {
@@ -54,10 +51,10 @@ func (d *Driver) Observe(ctx context.Context, svc service.Service) (service.Obse
 	return parseObservation(out), nil
 }
 
-// Teardown runs the provider's "teardown" operation to remove the workload. A provider
-// that declares no teardown operation cannot retire the workload itself: that is a
-// terminal condition the operator must resolve (remove the workload by hand, then
-// `flynn services rm`), reported rather than retried so the supervisor does not spin.
+// Teardown runs the provider's "teardown" operation. A provider without one cannot
+// retire the workload, a terminal condition the operator resolves (remove it by hand,
+// then `flynn services rm`). It is reported once and never retried, so the supervisor
+// does not spin.
 func (d *Driver) Teardown(ctx context.Context, svc service.Service) error {
 	_, found, err := d.invoke(ctx, svc, OpTeardown)
 	if err != nil {
@@ -70,9 +67,9 @@ func (d *Driver) Teardown(ctx context.Context, svc service.Service) error {
 	return nil
 }
 
-// invoke resolves the provider's extension, loads it, and runs its named hosting
-// operation with the service's identity envelope. It reports found=false when the
-// provider does not declare that operation, distinct from an invocation error.
+// invoke runs the provider's named hosting operation with the service's identity
+// envelope. found is false when the provider does not declare the operation, which is
+// distinct from an error.
 func (d *Driver) invoke(ctx context.Context, svc service.Service, opName string) (out string, found bool, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
@@ -93,10 +90,8 @@ func (d *Driver) invoke(ctx context.Context, svc service.Service, opName string)
 	return "", false, nil
 }
 
-// resolve finds the extension a provider belongs to. The common case is an extension
-// whose name is the provider, so it tries a direct read first; failing that it scans
-// for one whose declared provider matches, which covers a provider exposed under a
-// different extension name.
+// resolve finds a provider's extension: usually the one named for the provider, read
+// directly, else one whose declared provider matches.
 func (d *Driver) resolve(ctx context.Context, provider string) (resource.Resource, error) {
 	if r, err := d.store.Get(ctx, extension.Kind, d.scope, provider); err == nil {
 		return r, nil
@@ -120,11 +115,10 @@ func (d *Driver) resolve(ctx context.Context, provider string) (resource.Resourc
 		"ops: no extension provides "+provider+" (configure it with flynn integrations)")
 }
 
-// identityInput builds the operation input that re-addresses a workload: the recorded
-// external id, live URL, and service name, plus the provider's own opaque Address keys
-// flattened to the top level so a provider operation reads them as ordinary config
-// (e.g. {{config.account_id}}). Address keys never overwrite the reserved identity
-// fields.
+// identityInput builds the input that re-addresses a workload: the external id, live
+// URL and service name, plus the provider's Address keys at the top level so an
+// operation reads them as config ({{config.account_id}}). An Address key never
+// overwrites a reserved identity field.
 func identityInput(svc service.Service) json.RawMessage {
 	in := map[string]any{
 		"name":       svc.Name,
@@ -144,10 +138,9 @@ func identityInput(svc service.Service) json.RawMessage {
 	return b
 }
 
-// parseObservation reads a workload's health from a status operation's result. Provider
-// result shapes vary, so it scans the common field names and tolerates a result wrapped
-// under a "result" key. Anything it cannot read is left empty, which the supervisor
-// treats as "unchanged".
+// parseObservation reads a workload's health from a status result. Result formats vary,
+// so it scans common field names and accepts a result wrapped under a "result" key.
+// What it cannot read stays empty, which the supervisor treats as unchanged.
 func parseObservation(raw string) service.Observation {
 	var v any
 	if err := json.Unmarshal([]byte(raw), &v); err != nil {
@@ -176,5 +169,5 @@ func firstString(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// guard: a Driver satisfies the supervisor's provider boundary.
+// Driver implements the supervisor's [service.Driver].
 var _ service.Driver = (*Driver)(nil)

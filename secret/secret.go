@@ -1,22 +1,10 @@
-// Package secret is the agent's in-memory credential primitive: a string-like
-// value that holds an API key, token, or password but refuses to render itself.
-// Every way a value normally escapes a process by accident - fmt verbs, JSON
-// encoding, structured logs, an event written to the spine - returns a fixed
-// redaction marker instead of the secret. The value leaves only through one
-// explicit, grep-able call, Expose, used at the single point where it crosses the
-// network boundary (an Authorization header). A credential leak by stray %v or a
-// logged struct is therefore not a bug to be careful about, it is unrepresentable.
+// Package secret holds credentials in a [Text] that renders as [Redacted] under
+// every fmt verb, JSON and text encoding, so a stray %v or a logged struct
+// cannot leak a key. The value leaves only through [Text.Expose]. [Source]
+// resolves a credential by name.
 //
-// Text pairs with Source, the vault port: where a named credential reference
-// resolves to a value. The default EnvSource reads the process environment so the
-// agent runs with zero setup; an OS keychain, an age-encrypted file vault, a KMS,
-// or a remote broker are swap-in adapters of the same port, the credential analog
-// of state.Provider.
-//
-// Honest scope: Go strings and the garbage collector make true zeroization
-// best-effort. Text stores its bytes in a slice it owns and Destroy overwrites
-// them, but copies the runtime made before Destroy (or that escaped via Expose)
-// are beyond reach. The redaction guarantees are exact; the wiping is mitigation.
+// Redaction is exact; wiping is best-effort, because [Text.Destroy] cannot reach
+// copies the runtime or an earlier Expose made.
 package secret
 
 import (
@@ -26,21 +14,18 @@ import (
 	"io"
 )
 
-// Redacted is what every rendering of a Text shows in place of the value. It is
-// deliberately not empty so a redacted secret is visible as such in output rather
-// than looking like a missing field.
+// Redacted is what every rendering of a [Text] shows. It is non-empty so a
+// redacted secret does not read as a missing field.
 const Redacted = "[REDACTED]"
 
-// Text holds a secret value and renders only as Redacted. The zero value is a
-// valid empty secret. Text is a value type; copying it shares the underlying
-// bytes, so Destroy on any copy clears them for all. It is safe to read
-// concurrently; Destroy must not race a concurrent Expose.
+// Text holds a secret value. The zero value is an empty secret. Copies share
+// their bytes, so Destroy on one clears all. Reads are safe concurrently;
+// Destroy must not race Expose.
 type Text struct {
 	b []byte
 }
 
-// New wraps a plaintext value in a Text. The input string's bytes are copied into
-// storage the Text owns, so the caller may discard or overwrite its own copy.
+// New copies value into storage the [Text] owns.
 func New(value string) Text {
 	if value == "" {
 		return Text{}
@@ -48,26 +33,22 @@ func New(value string) Text {
 	return Text{b: []byte(value)}
 }
 
-// Expose returns the underlying plaintext. This is the one audited point where a
-// secret becomes an ordinary string: call sites are intentionally easy to grep,
-// and it should be used only where the value must cross a boundary the agent does
-// not control (a request header). Do not log, format, or store the result.
+// Expose returns the plaintext. Call it only where the value leaves the process
+// (a request header), and never log, format or store the result. It is the one
+// call an audit greps for.
 func (t Text) Expose() string { return string(t.b) }
 
 // Empty reports whether the secret holds no value.
 func (t Text) Empty() bool { return len(t.b) == 0 }
 
-// Equal compares two secrets in constant time, so a comparison does not leak the
-// value through timing. Two empty secrets are equal.
+// Equal compares in constant time so timing does not leak the value. Two empty
+// secrets are equal.
 func (t Text) Equal(other Text) bool {
 	return subtle.ConstantTimeCompare(t.b, other.b) == 1
 }
 
-// Destroy overwrites the secret's bytes with zeros and empties the receiver.
-// Because copies of a Text share the same backing array, the wipe clears the
-// value for every copy; the receiver is additionally reset so it reports Empty. It
-// is best-effort (see the package doc): it cannot reach copies the runtime made
-// during a GC move, or a string an earlier Expose returned.
+// Destroy zeroes the bytes every copy shares and empties the receiver. It cannot
+// reach a copy the garbage collector made or a string Expose returned.
 func (t *Text) Destroy() {
 	for i := range t.b {
 		t.b[i] = 0
@@ -75,28 +56,20 @@ func (t *Text) Destroy() {
 	t.b = nil
 }
 
-// Format implements fmt.Formatter, which fmt consults before Stringer, GoStringer,
-// or struct-field reflection for every verb. It writes Redacted unconditionally,
-// so even a numeric verb (%d, %x) that would otherwise recurse into the byte slice
-// and print its contents cannot reveal the value.
+// Format writes [Redacted] for every verb. fmt consults it before Stringer and
+// reflection, so %d and %x cannot print the byte slice.
 func (t Text) Format(f fmt.State, _ rune) { _, _ = io.WriteString(f, Redacted) }
 
-// String implements fmt.Stringer and returns Redacted, for callers that invoke
-// Stringer directly rather than through fmt (where Format already guards).
+// String returns [Redacted], for callers that use Stringer outside fmt.
 func (t Text) String() string { return Redacted }
 
-// GoString implements fmt.GoStringer so the %#v verb (used by test helpers and
-// struct dumps) also redacts.
+// GoString returns [Redacted].
 func (t Text) GoString() string { return Redacted }
 
-// MarshalText makes Text redact under any encoding that honors
-// encoding.TextMarshaler, and lets a struct field of type Text serialize safely
-// without a custom marshaler on the parent.
+// MarshalText returns [Redacted], so a Text field redacts under any
+// TextMarshaler-aware encoding without help from its parent struct.
 func (t Text) MarshalText() ([]byte, error) { return []byte(Redacted), nil }
 
-// MarshalJSON ensures a Text encodes as the redaction marker string, never the
-// value, so a secret embedded in a struct cannot leak into JSON written to a log,
-// an API response, or the event spine. Together with Format (which guards every
-// fmt verb) this covers both the JSON and the text rendering paths a structured
-// logger uses, so a Text logged through any handler shows only the marker.
+// MarshalJSON encodes [Redacted]. With Format it covers the JSON and text slog
+// handlers.
 func (t Text) MarshalJSON() ([]byte, error) { return json.Marshal(Redacted) }

@@ -1,15 +1,13 @@
-// Package grade scores how far an agent got toward an objective, not just whether
-// it finished. An objective is expressed as a Ladder of ordered Milestones, each a
-// deterministic ground-truth Check; grading awards partial credit for the rungs the
-// agent actually reached. This turns a binary pass/fail into a dense signal: a run
-// that finds and reproduces a fault but does not exploit it scores meaningfully
-// above one that does nothing, which is what makes graded runs useful to learn
-// from and to compare.
+// Package grade scores how far an agent got toward an objective. An objective is a
+// Ladder of ordered Milestones, each a deterministic ground-truth Check, and grading
+// awards partial credit for the rungs reached. A run that finds and reproduces a
+// fault without exploiting it scores above one that does nothing, so graded runs
+// can be compared and learned from.
 //
-// Checks evaluate against Evidence, the recorded effects of a run (its spine
-// events) plus the answers it gave to posed questions. Grading itself is pure: the
-// same evidence grades identically on every machine and under replay, so a recorded
-// run can be re-graded for free when the grader improves.
+// Checks evaluate Evidence: a run's spine events plus its answers to posed
+// questions. Grading is pure, so the same evidence grades identically on every
+// machine and under replay, and a recorded run can be re-graded when the grader
+// improves.
 package grade
 
 import (
@@ -20,10 +18,9 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// Evidence is what a Check reasons over: the ground-truth record of a run. Events
-// are the effects already durable on the spine (files touched, exit codes, results),
-// and Answer looks up the run's response to a posed question by key. Grading never
-// reads the agent's narration, only this recorded truth.
+// Evidence is the ground-truth record of a run a Check reads: the effects durable on
+// the spine (files touched, exit codes, results) and the answers to posed questions.
+// Grading never reads the agent's narration.
 type Evidence interface {
 	// Events returns the recorded events for the run under grading.
 	Events() []spine.Event
@@ -32,8 +29,8 @@ type Evidence interface {
 	Answer(key string) (string, bool)
 }
 
-// MapEvidence is a ready Evidence built from a slice of events and a map of posed
-// answers, for tests and for adapting an in-memory run.
+// MapEvidence is an Evidence built from events and a map of answers, for tests and
+// in-memory runs.
 type MapEvidence struct {
 	Recorded []spine.Event
 	Answers  map[string]string
@@ -48,14 +45,12 @@ func (m MapEvidence) Answer(key string) (string, bool) {
 	return v, ok
 }
 
-// Check is a deterministic predicate over evidence: did this milestone's
-// ground-truth condition hold? It returns the outcome and a short human-readable
-// detail. A Check must not consult a clock or randomness, so a grade is reproducible.
+// Check is a deterministic predicate over evidence, returning the outcome and a
+// short detail. It must not consult a clock or randomness, so a grade reproduces.
 type Check func(ctx context.Context, ev Evidence) (passed bool, detail string, err error)
 
-// Milestone is one rung of a ladder: a named condition worth Weight toward the
-// total, satisfied when its Check passes. Weight defaults to 1 when zero; a negative
-// weight is treated as 0.
+// Milestone is one rung of a ladder, worth Weight when its Check passes. A zero
+// Weight counts as 1 and a negative one as 0.
 type Milestone struct {
 	Name   string
 	Weight float64
@@ -66,13 +61,11 @@ type Milestone struct {
 type Mode int
 
 const (
-	// Cumulative awards credit for the leading run of passed rungs and stops at the
-	// first failure: the classic progress ladder (find, then reproduce, then exploit)
-	// where a later rung is meaningless without the earlier ones. Rungs after the
-	// first failure are not evaluated.
+	// Cumulative credits the leading run of passed rungs and stops at the first
+	// failure, for a progress ladder (find, reproduce, exploit) where a later rung
+	// means nothing without the earlier ones. Later rungs are not evaluated.
 	Cumulative Mode = iota
-	// Independent evaluates and scores every rung on its own, awarding credit for any
-	// that pass regardless of order.
+	// Independent scores every rung on its own, in any order.
 	Independent
 )
 
@@ -83,9 +76,8 @@ type Ladder struct {
 	Milestones []Milestone
 }
 
-// Rung is one milestone's graded outcome. Reached reports whether the rung was
-// evaluated (always true in Independent mode; false for rungs past the first failure
-// in Cumulative mode).
+// Rung is one milestone's outcome. Reached reports whether it was evaluated: always
+// in Independent mode, never past the first failure in Cumulative mode.
 type Rung struct {
 	Name    string
 	Weight  float64
@@ -94,9 +86,9 @@ type Rung struct {
 	Detail  string
 }
 
-// Grade is a ladder's partial-credit result: the per-rung outcomes, the attained and
-// total weight, the normalized Score in [0,1], and Reached, the number of passed
-// rungs (in Cumulative mode this is the highest rung reached).
+// Grade is a ladder's partial-credit result: per-rung outcomes, attained and total
+// weight, Score in [0,1], and Reached, the count of passed rungs (in Cumulative mode
+// the highest rung reached).
 type Grade struct {
 	Ladder   string
 	Mode     Mode
@@ -107,10 +99,8 @@ type Grade struct {
 	Reached  int
 }
 
-// Grade evaluates the ladder against ev and returns the partial-credit result. In
-// Cumulative mode it stops crediting at the first failed rung and leaves the rest
-// unreached; in Independent mode it scores every rung. An empty ladder scores 0 over
-// a total of 0. A Check error aborts grading and is returned.
+// Grade evaluates the ladder against ev. An empty ladder scores 0 over a total of 0.
+// A Check error aborts grading and is returned.
 func (l Ladder) Grade(ctx context.Context, ev Evidence) (Grade, error) {
 	g := Grade{Ladder: l.Name, Mode: l.Mode, Rungs: make([]Rung, 0, len(l.Milestones))}
 	stopped := false
@@ -162,10 +152,9 @@ func effectiveWeight(w float64) float64 {
 	}
 }
 
-// EventRecorded passes when the evidence holds a recorded event of eventType for
-// which match returns true; a nil match accepts any event of that type. It is the
-// ground-truth check: a milestone counts only when the effect is on the spine, not
-// when the agent claims it happened.
+// EventRecorded passes when the evidence holds an event of eventType for which match
+// returns true; a nil match accepts any. A milestone counts only when its effect is
+// on the spine, whatever the agent claims.
 func EventRecorded(eventType string, match func(payload map[string]any) bool) Check {
 	return func(_ context.Context, ev Evidence) (bool, string, error) {
 		for _, e := range ev.Events() {
@@ -180,10 +169,9 @@ func EventRecorded(eventType string, match func(payload map[string]any) bool) Ch
 	}
 }
 
-// AnswerEquals passes when the run's answer for key equals want after trimming
-// surrounding whitespace and folding case. It is the posed-question primitive: ask a
-// question whose ground-truth answer is known (where the fault is, the final token)
-// and verify the response against it.
+// AnswerEquals passes when the answer for key equals want, trimmed and
+// case-folded. It verifies a posed question with a known answer (where the fault
+// is, the final token).
 func AnswerEquals(key, want string) Check {
 	return func(_ context.Context, ev Evidence) (bool, string, error) {
 		got, ok := ev.Answer(key)
@@ -197,8 +185,8 @@ func AnswerEquals(key, want string) Check {
 	}
 }
 
-// AnswerMatches passes when the run's answer for key satisfies match. Use it when an
-// answer is not a single canonical string: several acceptable forms, or a pattern.
+// AnswerMatches passes when the answer for key satisfies match, for answers with
+// several acceptable forms or a pattern.
 func AnswerMatches(key string, match func(answer string) bool) Check {
 	return func(_ context.Context, ev Evidence) (bool, string, error) {
 		got, ok := ev.Answer(key)

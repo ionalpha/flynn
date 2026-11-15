@@ -9,19 +9,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// redirectStdout keeps the original stdout as a private handle and makes the process's
-// standard output handle the write end of a pipe.
+// redirectStdout keeps the original stdout as a private handle and makes the standard
+// output handle the write end of a pipe. Windows has no descriptor table, so both
+// routes to stdout are replaced: the standard handle, via [windows.SetStdHandle], and
+// [os.Stdout], which captured the old handle at startup.
 //
-// Windows has no descriptor table to rewrite. Code reaches stdout through the standard
-// handle, which [windows.SetStdHandle] replaces, and through [os.Stdout], a Go variable
-// that captured the old handle at startup and is replaced as well.
-//
-// The private handle is a duplicate that is not inheritable, and the original is marked
-// not inheritable too. A child normally gets only the handles named for it, because Go's
-// process start and the sandbox's AppContainer launch both pass an explicit handle list;
-// clearing inheritance covers any launch that inherits every inheritable handle instead.
-// The original is not closed because standard output and standard error can be the same
-// handle, and closing it would take standard error with it.
+// The private handle is a non-inheritable duplicate, and the original is marked
+// non-inheritable too. Go's process start and the sandbox's AppContainer launch pass an
+// explicit handle list; clearing inheritance covers a launch that inherits every
+// inheritable handle. The original is not closed because stdout and stderr can be the
+// same handle.
 func redirectStdout() (frames, strays *os.File, err error) {
 	h, err := windows.GetStdHandle(windows.STD_OUTPUT_HANDLE)
 	if err != nil {
@@ -56,8 +53,8 @@ func redirectStdout() (frames, strays *os.File, err error) {
 	if err := windows.SetStdHandle(windows.STD_OUTPUT_HANDLE, windows.Handle(pw.Fd())); err != nil {
 		return fail("repoint stdout handle", err)
 	}
-	// os.Stdout is the only reference to the pipe's write end; a collected file would close
-	// the handle the process now treats as standard output.
+	// os.Stdout is the only reference to the pipe's write end, so it must stay
+	// reachable; a collected file would close the process's standard output.
 	os.Stdout = pw
 	return os.NewFile(uintptr(dup), "stdio-frames"), pr, nil
 }

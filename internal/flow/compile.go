@@ -7,21 +7,15 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// This file is the compile pass: it checks a decoded Flow's structure and parses
-// every expression, template, and templated body into its evaluated form exactly
-// once. Decode runs it and keeps the result on the Flow, so execution never lexes
-// or parses; a transform over N elements evaluates one parsed AST N times instead
-// of parsing the identical source N times. The compiled tree is read-only after
-// compile, so one Flow value can run concurrently.
-
-// compiledFlow is the executable form of a Flow: the same step tree with every
-// expression and template parsed and every JSON body pre-decoded.
+// compiledFlow is the executable form of a Flow, built once by Decode, with every
+// expression and template parsed and every JSON body decoded. Execution never lexes
+// or parses, and the tree is read-only, so one Flow can run concurrently.
 type compiledFlow struct {
 	steps []compiledStep
 }
 
-// compiledStep mirrors Step with its action block in compiled form. Exactly one
-// action pointer is set, matching op; compileStep enforces that.
+// compiledStep mirrors Step in compiled form. Exactly one action pointer is set,
+// matching op.
 type compiledStep struct {
 	id string
 	op Op
@@ -103,10 +97,8 @@ type compiledSecret struct {
 	target map[string]*template
 }
 
-// compileFlow checks the flow's structure and parses everything, returning the
-// executable tree. It is static admission: a flow that compiles never fails later
-// for a structural or parse reason, only for a runtime value error or a resource
-// cap.
+// compileFlow checks the structure and parses everything. A flow that compiles can
+// fail later only on a runtime value or a resource cap.
 func compileFlow(f Flow) (*compiledFlow, error) {
 	if len(f.Steps) == 0 {
 		return nil, fault.New(fault.Terminal, "flow_no_steps", "flow: a flow needs at least one step")
@@ -389,8 +381,8 @@ func compileSecret(a *SecretAction) (*compiledSecret, error) {
 	return c, nil
 }
 
-// compileExpr parses an expression, reporting a parse error as a terminal fault so
-// a bad expression is rejected at admission.
+// compileExpr reports a parse error as a terminal fault, so a bad expression is
+// rejected at admission.
 func compileExpr(src string) (node, error) {
 	n, err := parseExpr(src)
 	if err != nil {
@@ -422,9 +414,8 @@ func compileTemplateMap(m map[string]string) (map[string]*template, error) {
 	return out, nil
 }
 
-// compileBody decodes a JSON body and compiles it, so execution renders the
-// pre-decoded structure instead of unmarshalling and re-parsing per run. An empty
-// body compiles to nil.
+// compileBody decodes and compiles a JSON body once, so a run never unmarshals or
+// parses it. An empty body compiles to nil.
 func compileBody(raw json.RawMessage) (*compiledValue, error) {
 	if len(raw) == 0 {
 		return nil, nil
@@ -437,9 +428,7 @@ func compileBody(raw json.RawMessage) (*compiledValue, error) {
 }
 
 // compiledValue is a decoded JSON value with every string leaf compiled as a
-// template, the parsed form deep templating renders from. Object keys are not
-// templated (only values), so the shape of a body stays fixed while its data is
-// filled in.
+// template. Keys are not templated, so a body's structure stays fixed.
 type compiledValue struct {
 	tmpl *template // set for a string leaf
 	list []*compiledValue
@@ -480,10 +469,8 @@ func compileValue(v any) (*compiledValue, error) {
 	}
 }
 
-// render evaluates the value against a scope, preserving the surrounding
-// structure. A string leaf that is a whole-template single expression takes the
-// expression's typed value, so a body field can become a list or number, not only
-// a string.
+// render evaluates the value, keeping its structure. A leaf that is one whole
+// expression takes the typed value, so a body field can be a list or number.
 func (c *compiledValue) render(s *scope) (any, error) {
 	switch {
 	case c.tmpl != nil:

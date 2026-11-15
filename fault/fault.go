@@ -1,7 +1,6 @@
-// Package fault is the agent's canonical error model: typed, wrapped errors
-// classified by how a caller should react. The router, governor, and reconciler
-// branch on a failure's Class, never on string matching, so behaviour stays
-// consistent across processes (fleet/P2P) and through the event log and replay.
+// Package fault is the agent's error model: wrapped errors classified by how a
+// caller should react. The router, governor and reconciler branch on Class, so
+// behaviour is the same across processes and through the event log and replay.
 package fault
 
 import (
@@ -20,18 +19,17 @@ const (
 	Terminal Class = "terminal"
 	// NeedsApproval means a governance gate paused the action for a human.
 	NeedsApproval Class = "needs_approval"
-	// BudgetExceeded means the governor's token/cost ceiling was hit.
+	// BudgetExceeded means the governor's token or cost ceiling was hit.
 	BudgetExceeded Class = "budget_exceeded"
-	// Forbidden means a governance gate denied the action outright: it is outside
-	// the run's capability grant and must not be retried or escalated.
+	// Forbidden means a gate denied the action because it is outside the run's
+	// grant; it must not be retried or escalated.
 	Forbidden Class = "forbidden"
 	// Cancelled means the context was cancelled or its deadline passed.
 	Cancelled Class = "cancelled"
 )
 
-// Error is a classified, wrapped error. Code is a short stable identifier for
-// the error kind (meaningful across processes and in the event log); Class is
-// the reaction; the wrapped error, if any, is reachable via errors.Unwrap.
+// Error is a classified, wrapped error. Code is a short identifier for the kind,
+// stable across processes and in the event log; Class is the reaction.
 type Error struct {
 	Code    string
 	Class   Class
@@ -53,24 +51,22 @@ func (e *Error) Error() string {
 	}
 }
 
-// Unwrap returns the wrapped error, if any.
+// Unwrap returns the wrapped cause, if any.
 func (e *Error) Unwrap() error { return e.wrapped }
 
-// New builds a classified Error with no wrapped cause.
+// New builds a classified Error with no cause.
 func New(class Class, code, message string) *Error {
 	return &Error{Code: code, Class: class, Message: message}
 }
 
-// Wrap builds a classified Error around an existing cause. The cause supplies
-// the message; use New when there is no underlying error to wrap.
+// Wrap builds a classified Error whose message is the cause's.
 func Wrap(class Class, code string, err error) *Error {
 	return &Error{Code: code, Class: class, wrapped: err}
 }
 
-// Classify returns the Class a caller should act on. It honours an explicit
-// *Error in the chain, maps context cancellation/deadline, and otherwise treats
-// the failure as Terminal - unknown errors are not retried by default; retry is
-// opted into by classifying explicitly.
+// Classify returns the Class a caller should act on: an *Error in the chain wins,
+// context cancellation and deadline map to Cancelled, and anything else is
+// Terminal, so an error is retried only when it was classified for it.
 func Classify(err error) Class {
 	if err == nil {
 		return ""
@@ -87,15 +83,10 @@ func Classify(err error) Class {
 	}
 }
 
-// CodeOf returns the stable identifier of the error kind, or "" when the chain
-// carries no classified error and so names no kind.
-//
-// It answers a different question from Classify, and a recorded refusal needs
-// both. The class says how a caller should react; the code says which rule
-// spoke. "forbidden" tells a reader that a wall exists, "capability_denied"
-// tells them which wall, and a reader deciding whether a run kept pushing on one
-// wall or bumped into several has nothing to work with unless the record says
-// which.
+// CodeOf returns the kind's identifier, or "" when the chain has no classified
+// error. A recorded refusal needs it beside the class: "forbidden" says a rule
+// refused, "capability_denied" says which, so a reader can tell one rule hit
+// repeatedly from several.
 func CodeOf(err error) string {
 	if err == nil {
 		return ""
@@ -107,5 +98,4 @@ func CodeOf(err error) string {
 	return ""
 }
 
-// Compile-time check that Error satisfies the error interface.
 var _ error = (*Error)(nil)

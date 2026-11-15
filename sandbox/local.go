@@ -20,72 +20,53 @@ import (
 	"github.com/ionalpha/flynn/internal/procexec"
 )
 
-// Local is the in-process sandbox tier: the floor that runs everywhere with no
-// host support required. It confines all file operations to a working-directory
-// root (a path that escapes via "..", an absolute path, or a symlink pointing
-// outside is denied) and runs commands in that directory. It is not strong
-// isolation on its own - a command it runs otherwise has the host user's privileges
-// outside the working tree. WithNetworkDenied, WithReadOnlyFS, and WithSeccomp add
-// kernel-enforced network, filesystem, and syscall isolation where the platform
-// supports it; the container, microVM, and remote tiers build on the same Sandbox
-// port. Local is always present underneath them as the default-deny FS floor.
+// Local is the in-process tier and runs on every host. File operations are
+// confined to a root: "..", an absolute path or an escaping symlink is denied.
+// A command it runs otherwise has the host user's privileges, so it is not
+// strong isolation alone. WithNetworkDenied, WithReadOnlyFS and WithSeccomp add
+// kernel isolation where the platform supports it. Local is the FS floor under
+// every other tier.
 type Local struct {
 	root        string // absolute, symlinks resolved
 	execTimeout time.Duration
 	resLimits   ResourceLimits    // host memory/process caps applied where the platform can (see WithResourceLimits)
 	granted     map[string]string // env vars explicitly granted into commands
 	denyNetwork bool              // run commands with no network (see WithNetworkDenied)
-	// networkOpenOK accepts the host's network on a tier that cannot deny it, instead of
-	// refusing the launch (see WithOpenNetworkWhereUndeniable).
+	// networkOpenOK accepts an open network on a tier that cannot deny it (see
+	// WithOpenNetworkWhereUndeniable).
 	networkOpenOK bool
 	readonlyFS    bool           // run commands with a read-only host (see WithReadOnlyFS)
 	seccomp       bool           // run commands under a syscall filter (see WithSeccomp)
 	egress        *egressConfig  // govern child egress through a netguard proxy (see WithEgress)
 	forward       *forwardConfig // forward one host-loopback address into the child's namespace (see WithLoopbackForward)
-	// readableDirs are directories outside the workspace that a confined child may read,
-	// granted to it on launch and revoked on Close (see WithReadableDir). They let a
-	// governed external CLI read its own auth or config home, which lives outside the
-	// sandbox root. On Linux and macOS a read-only host already permits the read, so this
-	// takes effect only where the confinement is default-deny for reads (Windows).
+	// readableDirs are granted on launch and revoked on Close (see WithReadableDir).
 	readableDirs []string
-	// writableDirs are directories outside the workspace that a confined child may write,
-	// granted on launch and revoked on Close (see WithWritableDir). They let a governed
-	// external CLI keep its own mutable state (a refreshed credential, a session log)
-	// somewhere the run controls, without widening the workspace itself. Unlike
-	// readableDirs this takes effect on every platform, because every confinement tier
-	// denies writes outside the workspace by default.
+	// writableDirs are granted on launch and revoked on Close (see WithWritableDir).
 	writableDirs []string
-	// scratch is the per-sandbox scratch directory a confined child uses for temp files and
-	// toolchain caches (see scratchDir).
+	// scratch holds a confined child's temp files and caches (see scratchDir).
 	scratch scratchState
 	// unreadable are paths hidden from a confined command (see WithUnreadablePaths).
 	unreadable []string
-	// confineUnsupported is set when the default confinement was asked for on a platform
-	// that has no kernel confinement, so a launch has to refuse (see guardUnsupported).
+	// confineUnsupported makes a launch refuse because the platform has no kernel
+	// confinement (see guardUnsupported).
 	confineUnsupported bool
-	// hostReadable selects a confinement tier that leaves the host readable while still
-	// confining writes to the workspace (see WithHostReadable). It changes nothing on the
-	// platforms whose kernel tier is already read-permitting; on Windows it selects the
-	// write-restricted token in place of the AppContainer.
+	// hostReadable selects the write-restricted token on Windows (see
+	// WithHostReadable).
 	hostReadable bool
-	// floor is whether a launch the host refuses may run at the process-jail floor; it is
-	// off unless WithBestEffortConfinement turns it on.
+	// floor lets a refused launch run at the process-jail floor (see
+	// WithBestEffortConfinement).
 	floor floorPolicy
-	// selfExe overrides the re-exec target used by filesystem confinement; empty means
-	// the running binary (/proc/self/exe). Tests set it to a missing path to force a
-	// confinement start failure and exercise the opt-in fallback deterministically.
+	// selfExe overrides the re-exec target; empty means /proc/self/exe. Tests set a
+	// missing path to force a confinement start failure.
 	selfExe string
-	// selfTest marks the Local that runs the confinement readiness check, whose launches
-	// must not go back through the gate that runs the check. Only the check builds one.
+	// selfTest marks the readiness check's own Local, whose launches must skip the
+	// gate that runs the check.
 	selfTest bool //nolint:unused // set and read only by the Linux readiness check and gate
-	// onExit, when set, is told how a command that exited non-zero ended, so the readiness
-	// check can see a kill by signal that ExecResult's exit code cannot carry. Only the
-	// check sets it.
+	// onExit lets the readiness check see a kill by signal, which ExecResult's exit
+	// code cannot carry.
 	onExit func(*exec.ExitError)
-	// probeOnce guards the one-time runtime probe of whether kernel confinement can
-	// actually be established under this Local's configuration on this host, and
-	// probeOK caches its result. The platform predicate (kernelConfinementSupported) is
-	// a compile-time optimism; the probe is the runtime truth the trust gate relies on.
+	// probeOnce guards the one runtime probe of kernel confinement and probeOK caches
+	// it (see kernelConfinementEnforceable).
 	probeOnce sync.Once
 	probeOK   bool
 }
@@ -93,9 +74,8 @@ type Local struct {
 // LocalOption configures a Local sandbox.
 type LocalOption func(*Local)
 
-// WithExecTimeout caps how long a single command may run (0, the default, applies
-// no cap beyond the caller's context). It is the integration point the
-// resource-limit and circuit-breaker layer builds on.
+// WithExecTimeout caps one command's run time. Zero, the default, applies only
+// the caller's context.
 func WithExecTimeout(d time.Duration) LocalOption {
 	return func(l *Local) {
 		if d > 0 {
@@ -104,47 +84,32 @@ func WithExecTimeout(d time.Duration) LocalOption {
 	}
 }
 
-// ResourceLimits caps a sandboxed command's use of host resources beyond the
-// wall-clock cap (WithExecTimeout): the memory it may commit and the number of
-// processes it may spawn. A zero field applies no cap on that axis, so the zero
-// value changes nothing and the always-on floor stays out of a legitimate build's
-// way. It is the always-present tier's coarse backstop against a memory bomb or a
-// fork storm; the container and microVM tiers enforce hard CPU, memory, and PID
-// caps for untrusted work, where the runtime gives every axis a real cgroup.
+// ResourceLimits caps a command's committed memory and process count. A zero
+// field applies no cap, so the zero value changes nothing.
 //
-// Enforcement is per platform and best effort at this tier. Windows applies it
-// through the confined command's job object (a real memory and active-process cap).
-// The Linux and macOS floors do not yet impose it (a per-run cgroup needs cgroup-v2
-// delegation that is not guaranteed for an unprivileged agent); a command that needs
-// a hard cap there runs under the container or microVM tier.
+// Windows enforces it through the confined command's job object. Linux and macOS
+// do not, because a per-run cgroup needs cgroup-v2 delegation an unprivileged
+// agent may lack; a hard cap there needs the container or microVM tier.
 type ResourceLimits struct {
-	// MemoryMiB caps the memory the command (and its job, where the platform caps a
-	// tree) may commit, in MiB. Zero applies no memory cap.
+	// MemoryMiB caps committed memory in MiB, for the whole job where the platform
+	// caps a tree.
 	MemoryMiB int
-	// MaxProcesses caps how many processes the command may have running at once, a
-	// fork-bomb backstop. Zero uses the platform's generous default cap.
+	// MaxProcesses caps concurrently running processes. Zero uses the platform's
+	// default cap.
 	MaxProcesses int
 }
 
-// set reports whether any axis is capped.
 func (r ResourceLimits) set() bool { return r.MemoryMiB > 0 || r.MaxProcesses > 0 }
 
-// WithResourceLimits caps the memory and process count of commands the sandbox
-// runs, on top of the wall-clock cap. The zero value applies no cap, so a caller
-// that does not set it is unaffected. See ResourceLimits for the per-platform
-// enforcement and why the always-on floor does not impose a hard memory cap by
-// default.
+// WithResourceLimits applies limits; see ResourceLimits for where each is
+// enforced.
 func WithResourceLimits(r ResourceLimits) LocalOption {
 	return func(l *Local) { l.resLimits = r }
 }
 
-// WithEnv grants additional environment variables into commands the sandbox runs.
-// A command's environment is otherwise a minimal, secret-free baseline (see Exec):
-// the host's environment is never inherited, so the agent's own credentials are
-// withheld by construction. This is the only way a variable beyond the baseline
-// reaches a command, the brokered path a capability grant feeds. A granted value
-// overrides the baseline value for the same key. Secrets must not be granted here;
-// they belong in a request the sandbox never sees, not a child's environment.
+// WithEnv grants variables beyond the secret-free baseline; it is the only way
+// one reaches a command. A granted value overrides a baseline key. Never grant a
+// secret here, because the child can read and leak it.
 func WithEnv(vars map[string]string) LocalOption {
 	return func(l *Local) {
 		if len(vars) == 0 {
@@ -159,62 +124,41 @@ func WithEnv(vars map[string]string) LocalOption {
 	}
 }
 
-// WithNetworkDenied runs commands with no network access, the OS counterpart of the
-// in-process egress policy: a command the sandbox runs cannot reach out (no exfil, no
-// command-and-control), which matters most for code we do not fully trust. It is
-// enforced by the kernel, by running the command in a network namespace with no
-// interfaces, so the command sees only a down loopback and no routes. On a platform
-// or host that cannot provide it, a command run under this option fails rather than
-// running with the network silently still open: on Windows the write-restricted token
-// that [WithDefaultConfinement] selects has no network control, so the launch refuses with
-// [ErrNetworkDeny] unless [WithOpenNetworkWhereUndeniable] accepts the open network.
+// WithNetworkDenied runs commands in a network namespace with no interfaces, so
+// they see a down loopback and no routes. Where that cannot be enforced, the
+// launch fails. The Windows write-restricted token that [WithDefaultConfinement]
+// selects has no network control, so it refuses with [ErrNetworkDeny] unless
+// [WithOpenNetworkWhereUndeniable] is set.
 func WithNetworkDenied() LocalOption {
 	return func(l *Local) { l.denyNetwork = true }
 }
 
-// NetworkDenied reports whether the commands this Local launches run with no network:
-// [WithNetworkDenied] (or [WithKernelConfinement]) was applied and the tier enforces it.
-// It is false on a tier that cannot deny the network (see [NetworkDenySupported]) even
-// when the denial was asked for, so a record of the run states what the sandbox that
-// launches the commands does and not what its caller meant to pass.
+// NetworkDenied reports whether the network is denied and the tier enforces it.
+// It is false on a tier that cannot deny it (see [NetworkDenySupported]) even
+// when asked, so a run record states what was enforced.
 func (l *Local) NetworkDenied() bool { return l.networkDenied() }
 
-// WithReadOnlyFS runs commands against a read-only view of the host: the command can
-// read what the host user can, but the only thing it can write is its own working
-// directory (and a private scratch area). A command we do not fully trust therefore
-// cannot tamper with host files, plant a persistent change outside the working tree,
-// or modify another project. It is enforced by the kernel, by running the command in
-// a mount namespace where every host mount is read-only and only the working tree is
-// remounted writable. On a platform that cannot provide it, a command run under this
-// option fails rather than running with the host filesystem silently still writable.
+// WithReadOnlyFS lets commands write only the working tree and a private scratch
+// area. It runs them in a mount namespace with every host mount read-only and
+// the tree remounted writable. Where that cannot be enforced, the launch fails.
 func WithReadOnlyFS() LocalOption {
 	return func(l *Local) { l.readonlyFS = true }
 }
 
-// WithHostReadable selects the confinement tier that confines writes to the workspace
-// but leaves the host filesystem readable to the child, for a program the deny-by-default
-// read posture would break. Writes are still kernel-enforced: outside the workspace the
-// child cannot create, modify, or delete anything.
+// WithHostReadable leaves the host readable and still confines writes to the
+// workspace. It changes nothing on Linux and macOS, which already read-permit.
+// On Windows it replaces the AppContainer with a write-restricted token: a
+// contained token cannot query the drive-letter objects that map an NT path to
+// a DOS path, so path canonicalization fails, and no file grant fixes that.
 //
-// It is a deliberate, recorded weakening of the read posture, so a caller names it only for
-// a child that needs it. Linux and macOS already read-permit under WithReadOnlyFS, so there
-// it changes no behavior. On Windows it replaces the AppContainer with a write-restricted
-// token: a contained token cannot query the drive-letter objects that map an NT path back
-// to a DOS path, so canonicalizing any path fails inside it, and no filesystem grant can fix
-// that because the object denied is not a file.
-//
-// Callers that gate on containment should record which tier ran (see ConfinementTier): both
-// report ContainmentKernel, but this one does not confine reads.
+// Both tiers report ContainmentKernel, so record ConfinementTier as well.
 func WithHostReadable() LocalOption {
 	return func(l *Local) { l.hostReadable = true }
 }
 
-// ConfinementTier names the mechanism that will confine a command this sandbox runs, for
-// the record a governed run keeps. It reports the tier the configuration selects, not a
-// weaker fallback a host might drop to, and it is a name rather than a level: two tiers
-// can bound a code-execution exploit equally (both report ContainmentKernel) while
-// confining reads differently, and a record that stored only the level could not tell
-// them apart.
+// ConfinementTier names the tier the configuration selects, ignoring any
+// fallback. Two tiers with the same Containment can confine reads differently,
+// so a run record stores this name too.
 func (l *Local) ConfinementTier() string {
 	if !l.kernelConfinementEnforceable() {
 		return tierFloor
@@ -222,27 +166,15 @@ func (l *Local) ConfinementTier() string {
 	return l.platformConfinementTier()
 }
 
-// ErrReadGrant reports that a directory named by WithReadableDir could not be granted to
-// the confined child. It fails the launch and is never absorbed by the opt-in
-// fallback: that fallback exists for a host which cannot establish confinement at all,
-// and letting it swallow this error would turn a failure to apply an explicitly requested
-// access grant into a silent, unconfined run of the very command the grant was for. A
-// caller that sees it must treat the sandbox as unusable rather than retry without it.
+// ErrReadGrant reports a WithReadableDir grant that failed. The opt-in fallback
+// never absorbs it, because that would run the command unconfined. Treat the
+// sandbox as unusable.
 var ErrReadGrant = errors.New("sandbox: cannot grant read access to a configured directory")
 
-// WithReadableDir grants a confined child read access to a directory outside the
-// workspace. By default confinement is default-deny for reads on the platforms that can
-// enforce it (a Windows AppContainer can read only what it is granted), so a governed
-// external CLI cannot reach its own auth or config home, which lives outside the sandbox
-// root. Naming that directory here grants the child read (and traverse) on it for the
-// life of the sandbox and revokes the grant on Close. The access is read-only: the child
-// still cannot write outside the workspace.
-//
-// On Linux and macOS a read-only host already permits reads of the whole filesystem, so
-// the child reads the directory in place and this option adds nothing; it takes effect
-// only where the confinement denies reads by default. The path is resolved to an
-// absolute, symlink-free form once, like the root. Passing a path keeps a credential in
-// its home directory rather than copying it into the workspace.
+// WithReadableDir grants read and traverse on a directory outside the workspace
+// until Close, for an external CLI's auth or config home. It has effect only
+// where reads are denied by default (a Windows AppContainer); Linux and macOS
+// already permit them. The path is resolved once, like the root.
 func WithReadableDir(paths ...string) LocalOption {
 	return func(l *Local) {
 		for _, p := range paths {
@@ -261,26 +193,16 @@ func WithReadableDir(paths ...string) LocalOption {
 	}
 }
 
-// ErrWriteGrant reports that a directory named by WithWritableDir could not be granted to
-// the confined child. Like ErrReadGrant it fails the launch and is never absorbed by the
-// opt-in fallback: a write grant that silently did not apply would leave the child
-// unable to save state it is expected to save, and a fallback that dropped confinement
-// instead would hand it the whole host to write to.
+// ErrWriteGrant reports a WithWritableDir grant that failed. Like ErrReadGrant,
+// the fallback never absorbs it, because that would let the child write the
+// whole host.
 var ErrWriteGrant = errors.New("sandbox: cannot grant write access to a configured directory")
 
-// WithWritableDir grants a confined child write access to a directory outside the
-// workspace, in addition to the workspace itself. Every confinement tier denies writes
-// outside the workspace by default, so an external CLI that must persist its own state
-// (a refreshed OAuth token, a session rollout, a log) has nowhere to put it. Naming that
-// directory here grants the child write on it for the life of the sandbox and revokes the
-// grant on Close.
-//
-// This is the one option that widens what a confined child can change on the host, so it
-// is deliberately not part of any default tier and the caller names an exact directory.
-// Point it at a directory the run owns and can destroy, never at a host location whose
-// contents outlive the sandbox: a confined child is untrusted, and whatever it can write
-// it can also corrupt. The path is resolved to an absolute, symlink-free form once, like
-// the root, so a symlink swapped in later cannot redirect the grant.
+// WithWritableDir grants write on a directory outside the workspace until Close,
+// for an external CLI's state such as a refreshed token. It is the only option
+// that widens what a child can change, so no default tier sets it. Name a
+// directory the run owns and can destroy, because the child can corrupt it. The
+// path is resolved once, so a later symlink swap cannot redirect the grant.
 func WithWritableDir(paths ...string) LocalOption {
 	return func(l *Local) {
 		for _, p := range paths {
@@ -299,14 +221,9 @@ func WithWritableDir(paths ...string) LocalOption {
 	}
 }
 
-// WritableDirs reports the directories outside the workspace that a confined child of
-// this sandbox may write, in the resolved form the grants were made against. It is the
-// audit surface of WithWritableDir: these are the only host locations a confined child
-// could have changed, so a caller can state them next to the confinement tier rather than
-// leaving the widening implicit. The slice is a copy, so a caller cannot widen the grants
-// by writing to it. The scratch directory is not listed: it is created by the sandbox
-// for temp files and caches, private to it and removed on Close, rather than a location
-// the caller chose to widen.
+// WritableDirs returns a copy of the resolved WithWritableDir grants, the only
+// host locations outside the workspace a child could change. The private
+// scratch directory is omitted.
 func (l *Local) WritableDirs() []string {
 	if len(l.writableDirs) == 0 {
 		return nil
@@ -316,23 +233,16 @@ func (l *Local) WritableDirs() []string {
 	return out
 }
 
-// WithSeccomp runs commands under a syscall filter that refuses the calls a command
-// working in its own directory has no honest need for and that would let it escalate
-// privilege, escape its confinement, tamper with the kernel, or reach into other
-// processes. Ordinary file, process, memory, and IO calls are left allowed, so normal
-// commands run unaffected; a refused call fails with a permission error rather than
-// killing the command. It is enforced by the kernel and inherited across the exec. On
-// a platform that cannot provide it, a command run under this option fails rather than
-// running with no syscall filter in place.
+// WithSeccomp refuses syscalls used to escalate privilege, escape confinement,
+// tamper with the kernel or reach other processes. A refused call fails with a
+// permission error instead of killing the command. The filter survives exec.
+// Where it cannot be enforced, the launch fails.
 func WithSeccomp() LocalOption {
 	return func(l *Local) { l.seccomp = true }
 }
 
-// WithKernelConfinement enables the full kernel-confined tier in one call: no
-// network, a read-only host, and the syscall filter together. A Local built with it
-// reports ContainmentKernel where the platform enforces the confinement, the level
-// suitable for semi-trusted, model-authored code. It is the same as passing
-// WithNetworkDenied, WithReadOnlyFS, and WithSeccomp.
+// WithKernelConfinement is WithNetworkDenied, WithReadOnlyFS and WithSeccomp
+// together. Where enforced, Containment reports ContainmentKernel.
 func WithKernelConfinement() LocalOption {
 	return func(l *Local) {
 		l.denyNetwork = true
@@ -341,19 +251,15 @@ func WithKernelConfinement() LocalOption {
 	}
 }
 
-// WithDefaultConfinement is the secure-by-default baseline: it enables the kernel
-// confinements the current platform can enforce. It enables the read-only host and the
-// syscall filter, so a command reads the host and works in its directory but cannot change
-// the host. It leaves the network open and hides no path: which paths hold credentials is
-// the caller's knowledge, so a caller running a model's commands adds [WithNetworkDenied]
-// and [WithUnreadablePaths] itself.
+// WithDefaultConfinement enables the read-only host and the syscall filter. It
+// leaves the network open and hides no path, because only the caller knows which
+// paths hold credentials; add [WithNetworkDenied] and [WithUnreadablePaths].
 //
-// A launch the host refuses (on Linux, unprivileged user namespaces restricted by sysctl,
-// AppArmor or a service unit) fails closed with a [RefusedError] and never runs the command
-// unconfined; so does a platform with no kernel confinement. [WithBestEffortConfinement]
-// is the explicit opt-in to the process-jail floor. On Windows the baseline uses the
-// write-restricted token, not the AppContainer, which denies reads unless a directory
-// carries an ACE for the app package (see nodejs/node#63590).
+// A refused launch (on Linux, user namespaces restricted by sysctl, AppArmor or
+// a service unit) fails with a [RefusedError], as does a platform with no kernel
+// confinement; see [WithBestEffortConfinement]. Windows uses the write-restricted
+// token, because the AppContainer denies reads without an ACE for the package
+// (see nodejs/node#63590).
 func WithDefaultConfinement() LocalOption {
 	return func(l *Local) {
 		if kernelConfinementSupported() {
@@ -366,9 +272,8 @@ func WithDefaultConfinement() LocalOption {
 	}
 }
 
-// NewLocal builds a Local sandbox rooted at dir. The root is resolved to an
-// absolute, symlink-free path once, so confinement checks compare against a stable
-// base.
+// NewLocal resolves dir to an absolute, symlink-free root once, so every check
+// compares against the same base.
 func NewLocal(dir string, opts ...LocalOption) (*Local, error) {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
@@ -389,10 +294,8 @@ var _ Sandbox = (*Local)(nil)
 // Root returns the absolute working directory the sandbox is confined to.
 func (l *Local) Root() string { return l.root }
 
-// Close releases resources. The in-process tier holds none itself, but a platform's
-// confinement may leave persistent state (a registered container profile on Windows),
-// and a governed-egress sandbox holds a running proxy; both are released here.
-// closePlatform is a no-op where there is nothing to release.
+// Close releases platform state, such as a registered Windows container profile,
+// and a running egress proxy.
 func (l *Local) Close() error {
 	if l.egress != nil {
 		l.egress.close()
@@ -403,18 +306,12 @@ func (l *Local) Close() error {
 	return l.closePlatform()
 }
 
-// Containment reports how strongly this Local confines the commands it runs. The level
-// measures the kernel-enforced filesystem and syscall confinement that bounds a
-// code-execution exploit. By default it is a process jail (ContainmentNone): it confines
-// paths and scrubs the environment but shares the host kernel, so it is for trusted code
-// only. When the read-only host and the syscall filter are both enabled and the platform
-// enforces them, it rises to ContainmentKernel, the boundary for semi-trusted,
-// model-authored code over a shared kernel.
+// Containment is ContainmentNone (a process jail, for trusted code) unless the
+// read-only host and syscall filter are both enabled and enforceable on this
+// host; then it is ContainmentKernel.
 //
-// Network egress is a separate axis, governed by the egress policy, and is not part of the
-// level: folding it in would stop the secure default, which leaves egress to the per-run
-// policy, from reporting the tier it provides. The level never claims ContainmentKernel
-// where the platform cannot enforce the confinement.
+// Network egress is excluded because the egress policy governs it per run, so
+// the default can still report its tier.
 func (l *Local) Containment() Containment {
 	if l.kernelConfinementEnforceable() {
 		return ContainmentKernel
@@ -422,17 +319,11 @@ func (l *Local) Containment() Containment {
 	return ContainmentNone
 }
 
-// kernelConfinementEnforceable reports whether this Local both is configured for the
-// kernel-confined tier and can actually establish it on this host right now, probed
-// once and cached. It is the honest input to the trust gate: kernelConfinementSupported
-// is a compile-time platform predicate that says only that the OS has the mechanism,
-// but a host can have the mechanism and still refuse it at run time (unprivileged user
-// namespaces disabled, a missing re-exec target). Because the gate admits semi-trusted,
-// model-authored code on the reported level, the report has to reflect what the host
-// will actually enforce, or the gate admits work on a guarantee that does not hold and
-// the opt-in fallback then runs it unconfined. A sandbox not configured for the
-// tier (it lacks the read-only host or the syscall filter) is never the kernel tier and
-// is not probed.
+// kernelConfinementEnforceable probes once and caches. kernelConfinementSupported
+// only says the OS has the mechanism; a host can still refuse it (user
+// namespaces disabled, a missing re-exec target). The trust gate admits work on
+// this answer, so it must be what the host enforces. An unconfigured sandbox is
+// not probed.
 func (l *Local) kernelConfinementEnforceable() bool {
 	if !l.readonlyFS || !l.seccomp || !kernelConfinementSupported() {
 		return false
@@ -441,14 +332,8 @@ func (l *Local) kernelConfinementEnforceable() bool {
 	return l.probeOK
 }
 
-// probeConfinement runs a trivial no-op command under this Local's confinement, with
-// the fallback bypassed, and reports whether the confinement could be
-// established. Where the host refuses the setup the confined attempt fails to start and
-// the probe reports false, so Containment never claims a tier the host will not enforce.
-// The probe is a real confined launch (the only faithful test of whether the setup
-// works), run once per sandbox and cached; it is a no-op command in the sandbox root
-// with the secret-free environment, so it has no side effects beyond a short-lived
-// process.
+// probeConfinement launches a no-op command confined, with the fallback
+// bypassed, because only a real launch shows whether the host allows the setup.
 func (l *Local) probeConfinement() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -494,8 +379,7 @@ func (l *Local) within(p string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// rel renders an absolute path back as root-relative for callers, so they never
-// see absolute host paths.
+// rel keeps absolute host paths out of results.
 func (l *Local) rel(abs string) string {
 	if r, err := filepath.Rel(l.root, abs); err == nil {
 		return filepath.ToSlash(r)
@@ -503,67 +387,51 @@ func (l *Local) rel(abs string) string {
 	return abs
 }
 
-// Exec runs a command through a per-OS shell in the working directory. A non-zero
-// exit is returned as a result, not an error; only a failure to start (or a
-// cancelled context) is an error.
+// Exec runs command in the root through the platform shell. A non-zero exit is
+// a result; only a start failure or cancellation is an error.
 //
-// When the kernel refuses the configured confinement on this host, for example where
-// unprivileged user namespaces are restricted, Exec returns the refusal and does not run
-// the command. Only a Local built with [WithBestEffortConfinement] runs it again at the
-// process-jail floor, and then reports each such run.
+// A refused confinement is returned and the command does not run, unless
+// [WithBestEffortConfinement] reruns it at the floor and reports it.
 func (l *Local) Exec(ctx context.Context, cmd Command) (ExecResult, error) {
 	if l.execTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, l.execTimeout)
 		defer cancel()
 	}
-	// Governed egress and a read-deny set fail closed where they cannot be enforced, before
-	// any dispatch (the Windows command path does not run through confine).
+	// Checked before dispatch because the Windows path skips confine.
 	if err := l.guardLaunch(); err != nil {
 		return ExecResult{}, err
 	}
-	// Egress, like the other confinement axes, requires the confined path so its OS-level
-	// denial is applied; unlike them it is never weakened by the opt-in fallback.
+	// The fallback never weakens egress.
 	confined := l.denyNetwork || l.readonlyFS || l.seccomp || l.egress != nil
 	res, err := l.execOnce(ctx, cmd, confined)
-	// A confined run that could not start (an error, not a non-zero exit) is run again at
-	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	// Only a start failure reruns at the floor, and only under the opt-in.
 	if l.fallBack(err, confined) {
 		return l.execOnce(ctx, cmd, false)
 	}
 	return res, err
 }
 
-// execOnce runs the command once, applying the configured confinement only when
-// confined is true.
 func (l *Local) execOnce(ctx context.Context, cmd Command, confined bool) (ExecResult, error) {
 	name, args := shell(cmd.Line)
 	return l.runShell(ctx, name, args, cmd.Stdin, confined)
 }
 
-// runWithExecCmd runs a command through the standard library in the working directory
-// with the deny-by-default environment, applying this platform's in-process
-// confinement via confine when confined is true. It is the execution path for every
-// platform's unconfined commands and for confinement that can be expressed on an
-// exec.Cmd (the network, filesystem, and syscall isolation on Linux and macOS). A
-// confined command on Windows cannot be expressed this way and takes a different path;
-// see runShell.
+// runWithExecCmd runs unconfined commands and Linux and macOS confined ones,
+// whose confinement fits on an exec.Cmd. Windows confinement does not; see
+// runShell.
 func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, stdin []byte, confined bool) (ExecResult, error) {
 	//nolint:gosec // running a model-supplied command is the bash tool's purpose; isolation is this sandbox's job, hardened by the stronger tiers
 	c := procexec.CommandContext(ctx, name, args...)
 	c.Dir = l.root
-	// A command that reads a secret on stdin (a credential import) gets it from a pipe,
-	// not its arguments, so the value is never on the command line or in a log.
+	// A secret arrives on stdin so it never appears on a command line or in a log.
 	if len(stdin) > 0 {
 		c.Stdin = bytes.NewReader(stdin)
 	}
-	// Deny-by-default environment: never inherit the host's, so the agent's API
-	// keys and every other process secret are withheld from a model-run command.
-	// The command sees only a minimal baseline plus what WithEnv explicitly grants.
+	// The host environment is never inherited, so the agent's keys stay out.
 	c.Env = l.env()
-	// Start the egress proxy and inject its variables before confine, so the platform's
-	// confine can read the proxy address and compose the allow-only-proxy network rule
-	// into the same enforcement action (one seatbelt profile / one namespace).
+	// The proxy starts before confine, which needs its address to build the
+	// allow-only-proxy rule into the same profile or namespace.
 	if l.egressActive() {
 		release, err := l.startEgress(c)
 		if err != nil {
@@ -576,10 +444,8 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 			return ExecResult{}, fmt.Errorf("sandbox: confine: %w", err)
 		}
 	}
-	// The child is counted for the duration it actually runs, because the registry
-	// answers "children right now" and a bash tool call that never returns is exactly
-	// what an operator is looking for. runCounted brackets a confirmed start, so a spawn
-	// that fails to start is never counted and stdout+stderr are combined as before.
+	// The registry answers "children right now", so a hung call must be listed;
+	// runCounted counts only a confirmed start.
 	var buf bytes.Buffer
 	c.Stdout, c.Stderr = &buf, &buf
 	err := runCounted(c)
@@ -598,9 +464,8 @@ func (l *Local) runWithExecCmd(ctx context.Context, name string, args []string, 
 	return res, nil
 }
 
-// ReadFile reads a confined file. The open is symlink-safe (see confinedOpen): a path
-// component swapped to an escaping symlink after the resolve check cannot redirect the
-// read outside the root.
+// ReadFile opens through confinedOpen, so a symlink swapped in after the check
+// cannot redirect the read.
 func (l *Local) ReadFile(_ context.Context, path string) ([]byte, error) {
 	abs, err := l.resolve(path)
 	if err != nil {
@@ -614,10 +479,8 @@ func (l *Local) ReadFile(_ context.Context, path string) ([]byte, error) {
 	return io.ReadAll(f)
 }
 
-// WriteFile writes a confined file, creating parent directories. The open is symlink-safe
-// (see confinedOpen): a symlink swapped into the target path after the resolve check
-// cannot redirect the write outside the root, and a terminal symlink is refused rather
-// than written through.
+// WriteFile creates parent directories and opens through confinedOpen, so a
+// swapped symlink cannot redirect the write and a terminal symlink is refused.
 func (l *Local) WriteFile(_ context.Context, path string, data []byte) (err error) {
 	abs, err := l.resolve(path)
 	if err != nil {
@@ -635,7 +498,7 @@ func (l *Local) WriteFile(_ context.Context, path string, data []byte) (err erro
 	return err
 }
 
-// Glob lists confined paths matching a shell pattern, relative to the root.
+// Glob returns root-relative matches.
 func (l *Local) Glob(_ context.Context, pattern string) ([]string, error) {
 	matches, err := filepath.Glob(filepath.Join(l.root, pattern))
 	if err != nil {
@@ -667,11 +530,8 @@ func (l *Local) Walk(_ context.Context, root string) ([]string, error) {
 	return out, walkErr
 }
 
-// env builds the environment a command runs with: the values of the baseline keys
-// that are set on the host, plus any explicitly granted variables (which override
-// a baseline key of the same name). The host environment is never passed through,
-// so no credential the agent holds can reach a command unless it was granted by
-// name. The result is sorted for a stable, testable ordering.
+// env returns the set baseline keys plus grants, which override them, sorted so
+// tests see a stable order.
 func (l *Local) env() []string {
 	vals := make(map[string]string, len(baselineEnvKeys)+len(l.granted))
 	for _, k := range baselineEnvKeys {
@@ -690,12 +550,9 @@ func (l *Local) env() []string {
 	return out
 }
 
-// baselineEnvKeys are the only host environment variables a sandboxed command
-// inherits: just enough for a shell to start and find tools, a home, and a temp
-// directory. The list is deliberately tiny and holds no credential-bearing names;
-// anything else a command needs must be granted explicitly with WithEnv. It is
-// platform-split because the two shells need different essentials (cmd.exe will not
-// start without SystemRoot).
+// baselineEnvKeys are the host variables a command inherits: enough for a shell,
+// tools, a home and a temp directory, and no credential names. The lists differ
+// because cmd.exe will not start without SystemRoot.
 var baselineEnvKeys = baselineKeys()
 
 func baselineKeys() []string {
@@ -709,8 +566,7 @@ func baselineKeys() []string {
 	return []string{"PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE", "TERM"}
 }
 
-// shell returns the per-OS command that runs a shell command string: a POSIX shell
-// everywhere except Windows, where cmd.exe is the only one guaranteed present.
+// shell uses cmd.exe on Windows, the only shell guaranteed present.
 func shell(command string) (string, []string) {
 	if runtime.GOOS == "windows" {
 		return "cmd", []string{"/c", command}

@@ -6,36 +6,27 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// sensitiveFlags are the flag-name fragments whose value is a credential. A flag
-// whose name contains any of these has its value replaced, whether it was passed
-// as --name=value or as --name value.
+// sensitiveFlags are flag-name fragments whose value is a credential, redacted in
+// both --name=value and --name value form.
 var sensitiveFlags = []string{"token", "key", "secret", "password", "passwd", "credential", "auth"}
 
-// freeTextCommands are the subcommands whose arguments are user text rather than
-// identifiers. A goal's objective can contain anything the user knows, and
-// `auth set` carries a credential, so nothing after either is recorded.
+// freeTextCommands take user text: an objective can hold anything, and `auth set`
+// carries a credential, so nothing after either is recorded.
 var freeTextCommands = map[string]bool{"goal": true, "auth": true}
 
-// credentialPrefixes are the shapes a bare credential takes when it reaches a
-// command line without a flag naming it. They are cheap to spot and cheap to be
-// wrong about: over-redacting an argument costs a reader nothing, and writing a
-// live API key into a file an operator will mail around costs them a rotation.
+// credentialPrefixes are the shapes of a bare credential with no flag naming it.
+// Over-redacting costs a reader nothing; a leaked API key costs a rotation.
 var credentialPrefixes = []string{"sk-", "sk_", "ghp_", "gho_", "ghu_", "ghs_", "github_pat_", "xoxb-", "xoxp-", "AKIA", "AIza", "hf_"}
 
-// RedactArgs returns args with every credential and every piece of free user text
-// replaced by secret.Redacted. The result is safe to write into a bundle manifest
-// that an operator will attach to a bug report.
+// RedactArgs returns args with credentials and free user text replaced by
+// secret.Redacted, safe for a manifest attached to a bug report. It redacts
+// credential-named flag values, everything after a free-text subcommand and bare
+// arguments with a credential prefix. Program path, flag names, subcommands and
+// ordinary values stay, so the line still says what was profiled.
 //
-// It redacts the value of any flag whose name looks like a credential, every argument
-// following a subcommand that takes free text (a goal's objective, an `auth set` key),
-// and any bare argument with a recognizable credential prefix. The program path, flag
-// names, subcommands and ordinary values are kept, because a fully redacted command line
-// tells a reader nothing about what was profiled. It reuses secret.Text, so the agent has
-// one rendering of a withheld value.
-//
-// A subcommand is recognized by name wherever it appears among the bare arguments, not by
-// position: this package does not know which of flynn's flags take a value, and guessing
-// wrong about position would silently leave an objective in the clear.
+// A subcommand is recognized by name anywhere among bare arguments, because this
+// package does not know which flags take a value, and a positional guess could
+// leave an objective in the clear.
 func RedactArgs(args []string) []string {
 	if len(args) == 0 {
 		return nil
@@ -48,7 +39,7 @@ func RedactArgs(args []string) []string {
 	for i, arg := range args {
 		switch {
 		case i == 0:
-			// The program path. Which binary ran is part of the evidence.
+			// Which binary ran is part of the evidence.
 			out = append(out, arg)
 
 		case redactNext:
@@ -66,10 +57,8 @@ func RedactArgs(args []string) []string {
 			case inline:
 				out = append(out, name+"="+redacted())
 			default:
-				// The value is the next token, unless this is a boolean flag and the next
-				// token is another flag. Telling those apart needs the flag set, which
-				// this package does not have, so the next token is redacted only when it
-				// does not itself look like a flag.
+				// Without the flag set a boolean flag is indistinguishable, so the next token
+				// is redacted only when it does not look like a flag.
 				out = append(out, arg)
 				redactNext = i+1 < len(args) && !strings.HasPrefix(args[i+1], "-")
 			}
@@ -87,11 +76,10 @@ func RedactArgs(args []string) []string {
 	return out
 }
 
-// redacted renders a withheld value through the agent's single redactor.
+// redacted renders a withheld value through the agent's one redactor.
 func redacted() string { return secret.New("").String() }
 
-// sensitiveFlagName reports whether a flag's name, with its leading dashes
-// stripped, names a credential.
+// sensitiveFlagName reports whether a flag name, dashes stripped, names a credential.
 func sensitiveFlagName(flag string) bool {
 	name := strings.ToLower(strings.TrimLeft(flag, "-"))
 	for _, frag := range sensitiveFlags {
@@ -102,8 +90,8 @@ func sensitiveFlagName(flag string) bool {
 	return false
 }
 
-// looksLikeCredential reports whether a bare argument carries the prefix of a
-// well-known credential format, with enough trailing material to be a real one.
+// looksLikeCredential reports whether arg has a known credential prefix and enough
+// after it to be one.
 func looksLikeCredential(arg string) bool {
 	for _, p := range credentialPrefixes {
 		if len(arg) > len(p)+8 && strings.HasPrefix(arg, p) {

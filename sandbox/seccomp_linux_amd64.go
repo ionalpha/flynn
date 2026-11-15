@@ -4,19 +4,15 @@ package sandbox
 
 import "golang.org/x/sys/unix"
 
-// seccompAuditArch is the audit-architecture token the filter checks against, so a
-// program built for another architecture (where these numbers mean other calls) is
-// killed rather than mis-filtered.
+// seccompAuditArch kills a program of another architecture, where these numbers
+// mean other calls.
 const seccompAuditArch = uint32(unix.AUDIT_ARCH_X86_64)
 
-// installSeccomp installs the x86-64 syscall filter for a confined command.
+// installSeccomp installs the x86-64 filter.
 func installSeccomp() error { return installFilter(seccompAuditArch, deniedSyscalls) }
 
-// deniedSyscalls is the set of syscalls a confined command may not make on x86-64. It
-// targets the calls that let a process escalate privilege, escape its confinement,
-// tamper with the kernel, or reach into other processes, none of which a command
-// working in its own directory has any honest need for. Ordinary file, process,
-// memory, and IO calls are left allowed, so normal commands run unaffected.
+// deniedSyscalls covers escalation, escape, kernel tampering and reaching other
+// processes. Ordinary file, process, memory and IO calls stay allowed.
 var deniedSyscalls = []int{
 	// Reaching into or controlling other processes.
 	unix.SYS_PTRACE,
@@ -29,8 +25,7 @@ var deniedSyscalls = []int{
 	unix.SYS_CHROOT,
 	unix.SYS_UNSHARE,
 	unix.SYS_SETNS,
-	// Resolving a file by kernel handle sidesteps the directory the command is
-	// confined to, so both halves of that interface are refused.
+	// A file handle sidesteps the confined directory.
 	unix.SYS_OPEN_BY_HANDLE_AT,
 	unix.SYS_NAME_TO_HANDLE_AT,
 	// Loading or unloading kernel code, or booting a new kernel.
@@ -42,8 +37,7 @@ var deniedSyscalls = []int{
 	unix.SYS_CREATE_MODULE,
 	unix.SYS_GET_KERNEL_SYMS,
 	unix.SYS_QUERY_MODULE,
-	// Loading kernel programs, performance counters, and the in-kernel keyring,
-	// each a known privilege-escalation surface.
+	// Kernel programs, performance counters and the keyring: escalation routes.
 	unix.SYS_BPF,
 	unix.SYS_PERF_EVENT_OPEN,
 	unix.SYS_KEYCTL,

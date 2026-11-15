@@ -14,24 +14,20 @@ import (
 	"github.com/ionalpha/flynn/internal/closeerr"
 )
 
-// Extraction ceilings. The archive is already digest-verified before it gets here, so
-// these are not defending against a hostile mirror: they defend against the case where
-// the release pipeline itself produces something malformed, and against the day this
-// code is reused on an archive that was not pinned. A verifier that only holds when
-// the caller did its job is not a verifier.
+// Extraction ceilings. The archive is digest-verified before it gets here, so these
+// guard against a malformed release from the pipeline itself and against reuse of
+// this code on an unpinned archive. A verifier that holds only when the caller did its
+// job is no verifier.
 const (
 	maxArchiveEntries = 64
 	maxBinaryBytes    = 512 << 20
 )
 
-// extractBinary pulls exactly one member, the flynn binary, out of a release archive
-// and writes it to dst. Nothing else in the archive is written anywhere.
-//
-// It is deliberately not a general-purpose extractor. It never creates a directory, a
-// symlink, or any file other than dst, so the archive cannot name a path outside the
-// destination (zip slip), cannot point a link at something on the host, and cannot
-// drop a second file next to the binary. The name it looks for is chosen by this
-// process from its own GOOS, never read from the archive.
+// extractBinary writes exactly one member of a release archive, the flynn binary, to
+// dst. It never creates a directory, a symlink or any file other than dst, so the
+// archive cannot name a path outside the destination (zip slip), point a link at the
+// host, or drop a second file beside the binary. The name it looks for comes from this
+// process's GOOS, never from the archive.
 func extractBinary(archivePath, binaryName, dst string, mode os.FileMode) error {
 	switch {
 	case strings.HasSuffix(archivePath, ".tar.gz"):
@@ -70,9 +66,8 @@ func extractFromTarGz(archivePath, binaryName, dst string, mode os.FileMode) err
 		if !matchesEntry(h.Name, binaryName) {
 			continue
 		}
-		// A link, a device node, or a directory wearing the binary's name is not the
-		// binary, and following one is how an extractor gets talked into writing
-		// somewhere it was never asked to write.
+		// A link, a device node or a directory with the binary's name is no binary, and
+		// following one is how an extractor is tricked into writing elsewhere.
 		if h.Typeflag != tar.TypeReg {
 			return fault.New(fault.Terminal, CodeArchive,
 				"the release archive's "+binaryName+" entry is not a regular file")
@@ -106,9 +101,8 @@ func extractFromZip(archivePath, binaryName, dst string, mode os.FileMode) error
 			return fault.New(fault.Terminal, CodeArchive,
 				"the release archive's "+binaryName+" entry is not a regular file")
 		}
-		// The uncompressed size is the archive's own claim, so it is checked here as a
-		// cheap first refusal and enforced again on the stream below, where the bytes
-		// actually arrive and cannot lie.
+		// The uncompressed size is the archive's own claim, so it is a cheap first
+		// refusal here and enforced again on the stream, where the bytes arrive.
 		if e.UncompressedSize64 > maxBinaryBytes {
 			return fault.New(fault.Terminal, CodeArchive,
 				fmt.Sprintf("the release binary claims %d bytes, over the %d-byte ceiling", e.UncompressedSize64, int64(maxBinaryBytes)))
@@ -123,10 +117,9 @@ func extractFromZip(archivePath, binaryName, dst string, mode os.FileMode) error
 	return fault.New(fault.Terminal, CodeArchive, "the release archive contains no "+binaryName)
 }
 
-// matchesEntry reports whether an archive entry is the binary being looked for. The
-// comparison is on the entry's base name, but a name that climbs out of the archive
-// or hides a separator never matches at all: an entry called "../../flynn" is not a
-// flynn to be found, it is an attempt to be found somewhere else.
+// matchesEntry reports whether an archive entry is the binary sought, by base name. A
+// name that climbs out of the archive or hides a separator never matches: an entry
+// called "../../flynn" is an attempt to be found somewhere else.
 func matchesEntry(entryName, binaryName string) bool {
 	if strings.ContainsAny(entryName, `\`) || strings.Contains(entryName, "..") {
 		return false
@@ -138,9 +131,8 @@ func matchesEntry(entryName, binaryName string) bool {
 	return clean == binaryName
 }
 
-// writeBinary streams the entry to a fresh file, refusing to overwrite one that is
-// already there, and caps the stream regardless of what the archive's header claimed
-// the size would be.
+// writeBinary streams the entry to a new file, refusing to overwrite one, and caps the
+// stream whatever size the archive header claimed.
 func writeBinary(dst string, src io.Reader, mode os.FileMode) (err error) {
 	// #nosec G304 -- dst is the staging path this package created next to the binary it
 	// is replacing; O_EXCL means it refuses to write to a file that already exists.
@@ -156,14 +148,14 @@ func writeBinary(dst string, src io.Reader, mode os.FileMode) (err error) {
 	}()
 	defer closeerr.Keep(&err, f)
 	// Read one byte past the ceiling, so a body that lied about its length is detected
-	// rather than silently truncated into a binary that is almost right.
+	// instead of truncated into a binary that is almost right.
 	n, err := io.Copy(f, io.LimitReader(src, maxBinaryBytes+1))
 	if err == nil && n > maxBinaryBytes {
 		err = fmt.Errorf("the release binary exceeds the %d-byte ceiling", int64(maxBinaryBytes))
 	}
 	if err == nil {
-		// The bytes have to be on the disk before the file is put into service: a rename
-		// is atomic with respect to the directory, not with respect to the file's content.
+		// The bytes must be on disk before the file goes into service: a rename is
+		// atomic for the directory entry, and says nothing about the file's content.
 		err = f.Sync()
 	}
 	return err

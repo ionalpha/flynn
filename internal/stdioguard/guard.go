@@ -1,26 +1,24 @@
 // Package stdioguard makes standard output carry protocol frames and nothing else.
 //
-// A headless transport speaks on the process's stdout, and the process also runs code that
-// writes to stdout without knowing that: a library that prints, a tool that was handed
-// [os.Stdout], a child process that inherited descriptor 1. One such write in the middle of
-// a stream is a corrupt frame, or worse a well-formed one the peer did not expect from us.
-// [Install] removes the possibility. It duplicates the original stdout into a private
-// writer, [Guard.Frames], that no child can inherit and no code path reaches by accident,
-// and then points the process's own stdout at a pipe the guard drains. Everything written
-// to "stdout" afterwards, by this process or by a child that inherited it, lands in that
-// pipe and is counted, sampled and optionally forwarded; none of it reaches the frame
-// stream.
+// A headless transport speaks on stdout, and the process also runs code that writes to
+// stdout unaware: a library that prints, a tool handed [os.Stdout], a child that
+// inherited descriptor 1. One such write mid-stream is a corrupt frame, or a
+// well-formed one the peer did not expect. [Install] duplicates the original stdout
+// into a private writer, [Guard.Frames], then points the process's stdout at a pipe the
+// guard drains. Everything written to stdout afterwards, by this process or an
+// inheriting child, is counted, sampled and optionally forwarded, and never reaches
+// the frame stream.
 //
-// The private writer is created before descriptor 1 is repointed and is not inheritable:
-// a child that is handed the process's standard streams gets the pipe, and a child started
-// with an explicit handle list gets only what the list names.
+// The private writer is created before descriptor 1 is repointed and is not
+// inheritable, so a child handed the standard streams gets the pipe, and a child with
+// an explicit handle list gets only what the list names.
 //
 // # Limits
 //
-// [Install] must run before anything starts writing frames and before any child is
-// started that should be diverted; output written before it is not intercepted. It runs
-// once per process. Stray bytes still in the pipe when the process exits are lost, so a
-// diagnostic that must survive a crash is written to stderr directly.
+// [Install] runs once per process, before any frame is written and before any child
+// that should be diverted starts; earlier output is not intercepted. Stray bytes still
+// in the pipe at exit are lost, so a diagnostic that must survive a crash goes to
+// stderr directly.
 package stdioguard
 
 import (
@@ -29,8 +27,8 @@ import (
 	"sync"
 )
 
-// SampleLimit is how many bytes of stray output [Guard.Stats] keeps. The first bytes are
-// kept and the rest are counted, so a runaway writer costs a counter and not memory.
+// SampleLimit is how many bytes of stray output [Guard.Stats] keeps. The rest are only
+// counted, so a runaway writer costs a counter and no memory.
 const SampleLimit = 4096
 
 // ErrAlreadyInstalled is returned by a second call to [Install]. Redirecting twice would
@@ -56,10 +54,9 @@ func WithStrayHandler(fn func(chunk []byte)) Option {
 }
 
 // WithStrayDestination forwards stray output to w as well as recording it. There is no
-// default destination. Forwarding to standard error looks natural, but when the host
-// started the process with standard error joined to standard output, that sends the stray
-// bytes straight back into the frame stream, and no portable check detects the join. A
-// caller that knows its stderr is separate can opt in.
+// default: when the host joined stderr to stdout, forwarding to stderr sends the bytes
+// back into the frame stream, and no portable check detects the join. A caller that
+// knows its stderr is separate can opt in.
 func WithStrayDestination(w io.Writer) Option {
 	return func(c *config) { c.dest = w }
 }
@@ -89,7 +86,7 @@ var (
 )
 
 // Install diverts the process's standard output and returns the Guard that owns the
-// frame writer. See the package documentation for what is and is not intercepted.
+// frame writer.
 func Install(opts ...Option) (*Guard, error) {
 	installMu.Lock()
 	defer installMu.Unlock()
@@ -104,8 +101,8 @@ func Install(opts ...Option) (*Guard, error) {
 	return newGuard(frames, strays, opts), nil
 }
 
-// newGuard starts draining strays into a Guard whose frames go to frames. It is separate
-// from [Install] so the drain can be tested without repointing the test process's stdout.
+// newGuard is separate from [Install] so the drain can be tested without repointing the
+// test process's stdout.
 func newGuard(frames io.Writer, strays io.Reader, opts []Option) *Guard {
 	g := &Guard{frames: frames, done: make(chan struct{})}
 	for _, o := range opts {
@@ -116,7 +113,7 @@ func newGuard(frames io.Writer, strays io.Reader, opts []Option) *Guard {
 }
 
 // Frames returns the writer that reaches the original stdout. Hand it to
-// ndjson.NewWriter and to nothing else; a second writer on it is a second way for bytes
+// ndjson.NewWriter and nothing else, because each extra writer is another way for bytes
 // to reach the stream.
 func (g *Guard) Frames() io.Writer { return g.frames }
 
@@ -129,9 +126,9 @@ func (g *Guard) Stats() Stats {
 	return s
 }
 
-// drain reads the stray pipe until it closes. A failed destination write is ignored:
-// losing the diagnostic copy must not stop the drain, because a full pipe would block
-// every writer in the process that thinks it is writing to stdout.
+// drain reads the stray pipe until it closes and ignores a failed destination write,
+// because a stalled drain fills the pipe and blocks every writer that thinks it is
+// writing to stdout.
 func (g *Guard) drain(r io.Reader) {
 	defer close(g.done)
 	buf := make([]byte, 4096)

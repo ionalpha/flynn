@@ -6,26 +6,13 @@ import (
 	"unicode"
 )
 
-// ErrInvariantUnsearchable reports a term that asserts an absence ("no credentials remain
-// in the tree") and declares no way to find a counterexample. A presence claim has a
-// witness, the run that produced the thing claimed. An absence claim has none: "I could
-// not find any" is worth what the search behind it was worth, and with no search a run
-// that never looked and a run that swept the tree file the same sentence. So the claim
-// must arrive with its search, and a goal stating one without it is refused at admission.
-//
-// Two checks hold the rule and neither is trusted alone: [AssertsAbsence], which reads
-// the author's words with no model in it, and the model-backed auditor, which refuses any
-// prose term it reads as an absence claim. A term that does not reduce to a search is
-// stated in the wrong direction; its presence form ("every identifier in the export
-// appears in the allowlist") is checkable.
+// ErrInvariantUnsearchable refuses an absence claim with no search at admission, because
+// "I found none" is worth only the search behind it. [AssertsAbsence] and the model auditor
+// both enforce it. A term with no search is usually checkable in its presence form.
 var ErrInvariantUnsearchable = errors.New("goal: an invariant asserting an absence must declare the search that would find one")
 
-// absenceWords are the single words that mark a statement as a claim about what is not
-// there. The list is generous: a false positive costs the author one line of check, and
-// a false negative is a term that reads as a guard and cannot be one.
-//
-// Matching is on whole words ("no" does not fire on "north"). Contractions are matched by
-// suffix, which covers the family (isn't, won't, mustn't) without listing it.
+// absenceWords is generous because a false positive costs one line of check and a false
+// negative is a guard that cannot guard. Contractions match by suffix instead.
 var absenceWords = map[string]bool{
 	// Direct negation.
 	"no": true, "none": true, "not": true, "never": true, "neither": true, "nor": true,
@@ -35,24 +22,18 @@ var absenceWords = map[string]bool{
 	// Absence stated as the outcome of an action, which is the same claim.
 	"removed": true, "deleted": true, "erased": true, "stripped": true, "purged": true,
 	"redacted": true, "excluded": true, "eliminated": true, "scrubbed": true,
-	// Absence of change, which is the shape the destructive-state failures take.
+	// Absence of change, the form destructive-state failures take.
 	"unchanged": true, "untouched": true, "unmodified": true, "unaffected": true,
 }
 
-// absencePhrases are two-word forms whose first word is ordinary on its own: "free" and
-// "clear" claim absence only in this company.
+// absencePhrases claim absence only as a pair.
 var absencePhrases = [][2]string{
 	{"free", "of"}, {"free", "from"}, {"clear", "of"}, {"rid", "of"}, {"void", "of"},
 }
 
-// AssertsAbsence reports whether a statement claims something is not there. It reads the
-// author's words with no model involved, so the rule that an absence claim needs a search
-// does not depend on a model's cooperation at admission.
-//
-// It over-reports on purpose. "The credentials were removed" is caught, and so is "the
-// output is not empty", a presence claim wearing a negation; the second author is asked
-// for a trivial search. Writing a check you did not strictly need costs a line, and being
-// waved through on a term nobody can check costs the guard.
+// AssertsAbsence uses no model, so the rule does not depend on a model's cooperation. It
+// over-reports: "the output is not empty" is caught too, and costs its author a trivial
+// search.
 func AssertsAbsence(statement string) bool {
 	words := statementWords(statement)
 	for i, w := range words {
@@ -68,10 +49,8 @@ func AssertsAbsence(statement string) bool {
 	return false
 }
 
-// statementWords lowercases a statement and splits it into words, keeping the apostrophe
-// so a contraction stays one word. Both apostrophes count, because a statement pasted
-// from a document carries the typographic one. Anything else that is not a letter or a
-// digit separates, including the hyphen in "up-to-date" and the slash in "and/or".
+// statementWords keeps both apostrophes so a contraction stays one word, because pasted
+// text carries the typographic one.
 func statementWords(statement string) []string {
 	return strings.FieldsFunc(strings.ToLower(statement), func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\'' && r != '’'

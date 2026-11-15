@@ -12,62 +12,42 @@ import (
 	"github.com/ionalpha/flynn/netguard"
 )
 
-// errEgressUnsupported is returned when a governed-egress launch is requested on a
-// platform whose enforcement leg is not present. The caller refuses the launch rather
-// than running the child with its direct egress open, so a missing leg fails closed. It
-// is a governance refusal (Forbidden), like the other confinement-unsupported refusals.
+// errEgressUnsupported refuses a governed-egress launch on a platform with no
+// enforcement leg, so a missing leg fails closed.
 var errEgressUnsupported = fault.New(fault.Forbidden, "sandbox_egress_unsupported",
 	"sandbox: governed egress is not enforceable on this platform yet; refusing rather than running with the child's direct egress open")
 
-// egressConfig is the outbound policy for the children a Local launches. When set, a
-// child is launched with its direct egress denied at the OS level and pointed at a
-// loopback proxy that admits only what the policy allows, so the one egress policy
-// engine (netguard) governs a process whose own code we do not control, and the child
-// cannot bypass it.
+// egressConfig denies a child's direct egress at the OS level and points it at a
+// loopback proxy enforcing the netguard policy, so code we do not control cannot
+// bypass the policy.
 type egressConfig struct {
 	policy netguard.Policy
 
 	mu    sync.Mutex
-	proxy net.Listener // the loopback listener the proxy serves on; started lazily
-	// addr is the proxy's address, for HTTP(S)_PROXY in the child env and for the seatbelt
-	// rule that allows only it. Only a platform whose children share the host's network
-	// stack has an address to name: a Linux child's proxy endpoint lives on its own
-	// namespace's loopback and is never referred to from out here.
+	proxy net.Listener // started lazily
+	// addr feeds HTTP(S)_PROXY and the seatbelt allow rule. It is unused on Linux,
+	// where the proxy endpoint is inside the child's namespace.
 	addr string //nolint:unused // read by the shared-network-stack leg; see attachEgress
 	stop context.CancelFunc
 
-	// perChild holds the teardown of every proxy that serves a single child and is still
-	// live, keyed by the launch that owns it. A platform whose child gets a private
-	// network stack (Linux) needs one proxy per child, since a namespace's loopback is
-	// reachable only from inside it; a platform whose child shares the host stack (macOS)
-	// leaves this empty and reuses the single lazily-started proxy above. It is a
-	// backstop, not the primary path: a launch releases its own proxy when its child
-	// exits, and drops itself from here. What remains at close is what never got that
-	// far, so a Local that ran ten thousand commands holds nothing for the ones that
-	// finished.
+	// perChild holds live per-child proxy teardowns, keyed by launch. Linux needs
+	// one proxy per child because a namespace's loopback is reachable only from
+	// inside; macOS shares the host stack and leaves this empty. A launch removes
+	// its entry when its child exits, so close releases only launches that died.
 	perChild map[any]func()
 }
 
-// GovernedEgressAvailable reports whether this platform can enforce governed child egress
-// (deny the child's direct egress and force it through the policy proxy). It is true on the
-// platforms with an enforcement leg (Linux, macOS, and Linux under WSL2) and false where one
-// is not present, so a caller can refuse a launch that needs governed egress with an
-// actionable message before it reaches the fail-closed refusal inside a launch.
+// GovernedEgressAvailable is true on Linux, macOS and WSL2, so a caller can refuse
+// with an actionable message before a launch hits the fail-closed refusal.
 func GovernedEgressAvailable() bool { return egressEnforceable() }
 
-// WithEgress governs the outbound network of every child the sandbox launches through
-// policy: the child is pointed at a loopback proxy that enforces policy, and its direct
-// egress is denied at the OS level so the proxy is the only way out. It is the OS-level
-// reuse of the same netguard policy that guards the agent's own dials. On a platform
-// whose enforcement leg is not present, a launch under this option refuses rather than
-// running with the network silently open (refuse-rather-than-weaken), exactly as
-// WithNetworkDenied does.
+// WithEgress makes a policy-enforcing loopback proxy every child's only way out.
+// Where the platform cannot enforce it, launches refuse, as with WithNetworkDenied.
 func WithEgress(policy netguard.Policy) LocalOption {
 	return func(l *Local) { l.egress = &egressConfig{policy: policy} }
 }
 
-// close stops the proxy if it is running, and releases every per-child proxy. It is
-// idempotent.
+// close is idempotent.
 func (e *egressConfig) close() {
 	e.mu.Lock()
 	if e.stop != nil {
@@ -78,8 +58,7 @@ func (e *egressConfig) close() {
 		_ = e.proxy.Close()
 		e.proxy = nil
 	}
-	// A release drops itself from perChild and so takes this lock. The map is detached
-	// here and the releases run below, unlocked, rather than deadlocking against it.
+	// A release takes this lock to drop itself, so the releases run unlocked.
 	live := e.perChild
 	e.perChild = nil
 	e.mu.Unlock()
@@ -89,10 +68,8 @@ func (e *egressConfig) close() {
 	}
 }
 
-// proxyEnvVars returns the environment that points a child at the egress proxy: the
-// standard proxy variables (upper and lower case, since tools differ) and a NO_PROXY
-// that still allows the child to reach its own loopback so a co-located service it talks
-// to locally is not forced through the proxy.
+// proxyEnvVars sets both cases because tools differ, and exempts loopback so a
+// co-located service is not forced through the proxy.
 func proxyEnvVars(addr string) map[string]string {
 	url := "http://" + addr
 	return map[string]string{
@@ -107,20 +84,10 @@ func proxyEnvVars(addr string) map[string]string {
 	}
 }
 
-// startEgress prepares c to run with its outbound traffic governed by the proxy. The
-// platform's confine applies the OS-level denial of direct egress, so the two are one
-// enforcement action (one seatbelt profile, one network namespace). A nil config is a no-op.
-//
-// Where the proxy can live differs by platform and attachEgress carries that: on macOS the
-// child shares the host's network stack, so the proxy listens on the host loopback; on
-// Linux the namespace loopback is unreachable from the host, so the socket is made inside.
-//
-// The caller gates this on egressEnforceable: a launch with egress on a platform without the
-// enforcement leg refuses (errEgressUnsupported) first, so the proxy env is never injected
-// without the OS-level denial behind it, which would be bypassable.
-//
-// The returned release must be called when the child is done, or a Local that launched many
-// children holds one proxy per launch until it closes. It is idempotent; Close calls it.
+// startEgress attaches the proxy; confine applies the matching OS denial. The
+// caller checks egressEnforceable first, because proxy variables without the
+// denial are bypassable. The release must be called when the child is done, or
+// the Local holds a proxy per launch until Close.
 func (l *Local) startEgress(c *exec.Cmd) (release func(), err error) {
 	var releases []func()
 	runReleases := func() {
@@ -135,10 +102,8 @@ func (l *Local) startEgress(c *exec.Cmd) (release func(), err error) {
 		}
 		releases = append(releases, r)
 	}
-	// The inbound forward is the counterpart of egress: it hands the child one host-loopback
-	// address (the run's MCP bridge) reachable from inside its namespace, without opening the
-	// rest of the host loopback. It rides the same launch, so it is attached here, and its
-	// listener is created in the same namespace the egress leg set up.
+	// The inbound forward exposes one host-loopback address (the MCP bridge) and
+	// shares the namespace egress set up.
 	if l.forward != nil {
 		r, err := l.attachLoopbackForward(c)
 		if err != nil {
@@ -153,11 +118,8 @@ func (l *Local) startEgress(c *exec.Cmd) (release func(), err error) {
 	return runReleases, nil
 }
 
-// guardEgress refuses a governed-egress launch on a platform whose enforcement leg is
-// not present, so egress fails closed (refuse-rather-than-weaken) rather than running
-// the child with its direct egress open. It is called at the launch entry points (Exec,
-// Serve) before any dispatch, since the Windows command path does not run through
-// confine.
+// guardEgress runs at the launch entry points, because the Windows command path
+// does not run through confine.
 func (l *Local) guardEgress() error {
 	if l.egress != nil && !egressEnforceable() {
 		return errEgressUnsupported
@@ -165,8 +127,7 @@ func (l *Local) guardEgress() error {
 	return nil
 }
 
-// mergeEnv overlays vars onto a KEY=VALUE environment, replacing any existing entry for
-// the same key, and returns it sorted (stable for tests and logs).
+// mergeEnv returns the result sorted, so tests and logs are stable.
 func mergeEnv(env []string, vars map[string]string) []string {
 	merged := make(map[string]string, len(env)+len(vars))
 	for _, kv := range env {
@@ -185,6 +146,5 @@ func mergeEnv(env []string, vars map[string]string) []string {
 	return out
 }
 
-// egressActive reports whether this Local governs child egress, so the launch paths
-// know to call startEgress and treat the launch as one that must be confined.
+// egressActive means the launch must call startEgress and be confined.
 func (l *Local) egressActive() bool { return l.egress != nil }

@@ -4,20 +4,16 @@ package sandbox
 
 import "golang.org/x/sys/unix"
 
-// seccompAuditArch is the audit-architecture token the filter checks against, so a
-// program built for another architecture (where these numbers mean other calls) is
-// killed rather than mis-filtered.
+// seccompAuditArch kills a program of another architecture, where these numbers
+// mean other calls.
 const seccompAuditArch = uint32(unix.AUDIT_ARCH_AARCH64)
 
-// installSeccomp installs the AArch64 syscall filter for a confined command.
+// installSeccomp installs the AArch64 filter.
 func installSeccomp() error { return installFilter(seccompAuditArch, deniedSyscalls) }
 
-// deniedSyscalls is the set of syscalls a confined command may not make on AArch64. It
-// mirrors the x86-64 set for every call that exists on this architecture. The obsolete
-// x86-only calls (create_module, get_kernel_syms, query_module, modify_ldt, iopl,
-// ioperm, uselib) and nfsservctl are absent from the AArch64 (generic) syscall table,
-// so there is no number to deny and they are simply omitted; a process cannot invoke a
-// call the architecture does not define.
+// deniedSyscalls mirrors the x86-64 set. create_module, get_kernel_syms,
+// query_module, modify_ldt, iopl, ioperm, uselib and nfsservctl are absent from the
+// AArch64 table, so there is nothing to deny.
 var deniedSyscalls = []int{
 	// Reaching into or controlling other processes.
 	unix.SYS_PTRACE,
@@ -30,8 +26,7 @@ var deniedSyscalls = []int{
 	unix.SYS_CHROOT,
 	unix.SYS_UNSHARE,
 	unix.SYS_SETNS,
-	// Resolving a file by kernel handle sidesteps the directory the command is
-	// confined to, so both halves of that interface are refused.
+	// A file handle sidesteps the confined directory.
 	unix.SYS_OPEN_BY_HANDLE_AT,
 	unix.SYS_NAME_TO_HANDLE_AT,
 	// Loading or unloading kernel code, or booting a new kernel.
@@ -40,8 +35,7 @@ var deniedSyscalls = []int{
 	unix.SYS_DELETE_MODULE,
 	unix.SYS_KEXEC_LOAD,
 	unix.SYS_KEXEC_FILE_LOAD,
-	// Loading kernel programs, performance counters, and the in-kernel keyring,
-	// each a known privilege-escalation surface.
+	// Kernel programs, performance counters and the keyring: escalation routes.
 	unix.SYS_BPF,
 	unix.SYS_PERF_EVENT_OPEN,
 	unix.SYS_KEYCTL,

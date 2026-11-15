@@ -11,50 +11,29 @@ import (
 	"github.com/ionalpha/flynn/internal/procexec"
 )
 
-// errSessionConfineUnsupported is returned when a confined duplex session is requested on
-// a platform that cannot apply its kernel confinement to a backgrounded, still-writable
-// process. Like Serve, Session refuses rather than starting the process at the
-// directory-jail floor while the sandbox reports the confined tier: an out-of-process
-// extension that cannot be contained must not run at all. It is a governance refusal
-// (Forbidden); only [WithBestEffortConfinement] drops to the floor instead.
+// errSessionConfineUnsupported is Forbidden: an extension that cannot be
+// contained does not run. Only [WithBestEffortConfinement] drops to the floor.
 var errSessionConfineUnsupported = fault.New(fault.Forbidden, "sandbox_session_confine_unsupported",
 	"sandbox: kernel confinement cannot be applied to a duplex background process on this platform; refusing rather than running the extension unconfined")
 
-// SessionSpec describes a long-lived process to run inside the sandbox with BOTH its
-// standard input and output held open as live pipes, for a request/response conversation
-// over its own stdio. It is the duplex counterpart of Stream (stdin written once then
-// closed) and Serve (backgrounded, reached over a loopback port): the out-of-process
-// extension host speaks MCP JSON-RPC to a subprocess for the life of the process.
-//
-// The channel is the process's own anonymous stdio pipes and nothing else: a pipe fd is
-// private to this parent and its child, where a loopback port any co-located process could
-// bind or capture is not, so an extension cannot be snooped or injected on. The program runs
-// directly from Argv, never through a shell, so no argument is reinterpreted as shell
-// syntax, and the deny-by-default environment applies as for Exec, Stream, and Serve: no
-// secret the agent holds reaches the process unless Env grants it by name.
+// SessionSpec runs a process with stdin and stdout held open, for MCP JSON-RPC
+// over stdio. Anonymous pipes are private to parent and child, where any local
+// process could bind or capture a loopback port. No shell runs Argv, and only
+// Env grants secrets.
 type SessionSpec struct {
-	// Argv is the program and its arguments, executed directly without a shell. Argv[0] is
-	// the binary to run; the rest are passed verbatim. For an extension it is a fixed,
-	// signature-verified path with fixed arguments, never model-influenced.
+	// Argv for an extension is a signature-verified path with fixed arguments that
+	// the model cannot influence.
 	Argv []string
-	// Env grants additional KEY=VALUE variables on top of the deny-by-default baseline. A
-	// granted value overrides the baseline value for the same key. An extension is launched
-	// with a minimal env and no secrets; a scoped bridge token, when one is needed, reaches
-	// the child here rather than on the command line.
+	// Env overrides the baseline per key. A scoped bridge token goes here, off the
+	// command line.
 	Env []string
-	// Confine requests the platform's kernel confinement (a read-only host and the syscall
-	// filter, plus the network isolation the Local was configured for). It composes with a
-	// governed-egress Local: when egress is configured the launch is confined regardless of
-	// this flag, so the OS-level denial that pins the child to the proxy is always in force.
+	// Confine applies the Local's kernel confinement. Configured egress confines
+	// regardless, so the proxy pin always holds.
 	Confine bool
 }
 
-// Session is a running confined subprocess whose stdin and stdout are live pipes and
-// whose stderr is retained as a bounded tail for diagnostics. It is safe for concurrent
-// use: Stdin, Stdout, Stderr, Wait, and Stop may be called from any goroutine. The
-// process runs until it exits on its own or Stop is called; Stop kills it and releases
-// its resources, so an extension leaves no orphan when it is disabled or the host shuts
-// down.
+// Session is safe for concurrent use. Stop kills the process, so a disabled
+// extension leaves no orphan.
 type Session struct {
 	stdin  io.WriteCloser
 	stdout io.Reader
@@ -67,22 +46,17 @@ type Session struct {
 	waitErr error
 }
 
-// Stdin is the process's standard input, held open for the caller to write requests to.
-// Closing it signals end-of-input to the process; Stop closes it as part of teardown.
+// Stdin signals end of input when closed; Stop closes it.
 func (s *Session) Stdin() io.WriteCloser { return s.stdin }
 
-// Stdout is the process's live standard output, for the caller to read replies from. It
-// must be drained for the process to make progress.
+// Stdout must be drained for the process to make progress.
 func (s *Session) Stdout() io.Reader { return s.stdout }
 
-// Stderr returns the retained tail of the process's standard error, for surfacing why an
-// extension misbehaved or failed to come up. It is bounded, so a chatty process cannot
-// grow it without limit.
+// Stderr returns a bounded tail of standard error.
 func (s *Session) Stderr() string { return s.tail.String() }
 
-// Wait blocks until the process exits and returns its outcome (nil on a clean exit, a
-// non-nil error on a non-zero exit or a Stop-driven kill). It is idempotent: the OS-level
-// wait runs once and its result is memoised, so Wait and Stop may both be called.
+// Wait memoises the OS wait, so Wait and Stop may both be called. A Stop kill
+// returns an error.
 func (s *Session) Wait() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -94,46 +68,30 @@ func (s *Session) Wait() error {
 	return s.waitErr
 }
 
-// Stop ends the process and waits for it to exit. It is idempotent and safe to call more
-// than once. It cancels the launch context (killing the process), closes the stdin pipe,
-// and reaps the process so no descendant is left behind.
+// Stop is idempotent. It kills, closes stdin and reaps, so no descendant remains.
 func (s *Session) Stop() error {
 	s.cancel()
 	if s.stdin != nil {
 		_ = s.stdin.Close()
 	}
-	// A killed process reports a non-nil wait error; that is the expected outcome of Stop,
-	// not a failure, so Wait's result is consumed but not surfaced here.
+	// The kill's wait error is expected.
 	_ = s.Wait()
 	return nil
 }
 
-// Session launches spec.Argv as a confined duplex subprocess and returns a handle to its
-// stdin and stdout pipes, its stderr tail, and its lifecycle. Confinement follows the
-// same rules as Exec, Stream, and Serve: a governed-egress Local always takes the confined
-// path so its OS-level egress denial holds; an explicit Confine request is honoured where
-// the platform can enforce it, and a confinement that cannot be established fails the
-// launch rather than dropping to an unconfined run (refuse-rather-than-downgrade), unless
-// the Local was built with [WithBestEffortConfinement]. Where a platform cannot carry its
-// confinement onto a still-writable background process, a confined Session is refused
-// rather than run unconfined, exactly as Serve refuses a confined background server.
+// Session confines as Serve does: confinement that cannot be established fails
+// the launch unless [WithBestEffortConfinement] is set.
 func (l *Local) Session(ctx context.Context, spec SessionSpec) (*Session, error) {
 	if len(spec.Argv) == 0 || spec.Argv[0] == "" {
 		return nil, errors.New("sandbox: session: no command")
 	}
-	// Governed egress fails closed on a platform without an enforcement leg, before any
-	// launch.
+	// Governed egress fails closed on a platform without an enforcement leg.
 	if err := l.guardLaunch(); err != nil {
 		return nil, err
 	}
-	// Egress requires the confined path (its OS-level denial composes into confine)
-	// whenever it is configured, regardless of spec.Confine, and like Exec is never
-	// weakened by the opt-in fallback.
+	// Egress always forces confinement and the fallback never weakens it.
 	confined := l.egress != nil || (spec.Confine && (l.denyNetwork || l.readonlyFS || l.seccomp))
-	// On a platform that cannot apply its kernel confinement to a duplex background
-	// process, refuse rather than silently dropping to the directory-jail floor under a
-	// tier the trust gate relied on. Only the opt-in (no egress, no network denial) falls to
-	// the floor, as Serve permits.
+	// Only the opt-in, without egress or network denial, falls to the floor.
 	if confined && !duplexConfinementExpressible() {
 		if !l.fallBackUnexpressible(errSessionConfineUnsupported) {
 			return nil, errSessionConfineUnsupported
@@ -141,28 +99,21 @@ func (l *Local) Session(ctx context.Context, spec SessionSpec) (*Session, error)
 		return l.startSession(ctx, spec, false)
 	}
 	p, err := l.startSession(ctx, spec, confined)
-	// A confined launch that could not start (an error, not a non-zero exit) runs again at
-	// the floor only under the explicit opt-in; fallBack names what it never relaxes.
+	// A start error, unlike a non-zero exit, retries at the floor under the opt-in.
 	if l.fallBack(err, confined) {
 		return l.startSession(ctx, spec, false)
 	}
 	return p, err
 }
 
-// startSessionExec launches a duplex subprocess through the standard library, applying
-// this platform's exec.Cmd-expressible confinement via confine when confined is true. It
-// mirrors startStreamExec but wires stdin to a live pipe (rather than a one-shot reader)
-// alongside the live stdout pipe, and keeps stderr as a bounded tail rather than
-// discarding it. The process is bound to an internal context cancelled by Stop, so a kill
-// is always available regardless of the caller's context. It is the launch path for every
-// platform's exec.Cmd confinement (Linux and macOS) and for Windows's unconfined case.
+// startSessionExec binds the process to an internal context Stop cancels, so a
+// kill works whatever the caller's context. Windows uses it only unconfined.
 func (l *Local) startSessionExec(ctx context.Context, spec SessionSpec, confined bool) (*Session, error) {
 	sctx, cancel := context.WithCancel(ctx)
 	//nolint:gosec // running the gated, signature-verified extension binary is this primitive's purpose; isolation is the sandbox's job, applied by confine below
 	c := procexec.CommandContext(sctx, spec.Argv[0], spec.Argv[1:]...)
 	c.Dir = l.root
-	// Deny-by-default environment plus the caller's explicit grants; the host's is never
-	// inherited, so no agent secret leaks into an untrusted extension.
+	// No agent secret leaks into the extension through the environment.
 	c.Env = l.streamEnv(spec.Env)
 
 	stdin, err := c.StdinPipe()
@@ -178,10 +129,8 @@ func (l *Local) startSessionExec(ctx context.Context, spec SessionSpec, confined
 	tail := newTailBuffer(tailBufferCap)
 	c.Stderr = tail
 
-	// Start the egress proxy and inject its variables before confine, so confine can
-	// compose the allow-only-proxy rule into the same enforcement action; then apply the
-	// platform confinement. The pipe fds are inherited across the confinement re-exec, so
-	// they stay connected to the real command the launcher execs.
+	// The proxy starts before confine so confine can add the proxy-only rule. The
+	// pipe fds survive the launcher re-exec.
 	release := func() {}
 	if l.egressActive() {
 		if release, err = l.startEgress(c); err != nil {
