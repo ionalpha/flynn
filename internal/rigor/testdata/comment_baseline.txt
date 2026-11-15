@@ -10,31 +10,12 @@
 # violation left, so a change that fixes comments lowers or deletes the
 # lines it fixed. Never add a line or raise a count: fix the comment.
 allowance/allowance.go filler 1
-approval/approval.go deliberately 1
 brakes/brakes.go deliberately 1
 bus/bus.go deliberately 1
 chain/conformance/conformance.go deliberately 2
 chain/conformance/crypto.go deliberately 1
 chain/conformance/crypto.go length 1
 chain/verify.go deliberately 1
-cmd/flynn/driveopts.go dash 2
-cmd/flynn/driveopts.go deliberately 1
-cmd/flynn/embedder.go filler 1
-cmd/flynn/externagent.go deliberately 1
-cmd/flynn/goalspec.go length 1
-cmd/flynn/kill.go length 1
-cmd/flynn/main.go filler 1
-cmd/flynn/main.go matters 1
-cmd/flynn/memory_cmd.go deliberately 1
-cmd/flynn/onboard.go filler 1
-cmd/flynn/recall.go deliberately 1
-cmd/flynn/repl_command.go filler 1
-cmd/flynn/serve.go deliberately 2
-cmd/flynn/serve_intake.go filler 1
-cmd/flynn/skillab.go deliberately 1
-cmd/flynn/steer.go deliberately 1
-cmd/flynn/steer.go length 1
-cmd/flynn/tui.go filler 1
 controlplane/delegation.go length 1
 controlplane/name.go length 1
 controlplane/possession.go length 1
