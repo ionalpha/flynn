@@ -12,32 +12,22 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// This file holds the write-restricted confinement tier for Windows: the child runs
-// with a write-restricted primary token, so it can read what the host user can but can
-// write only where the workspace identity is explicitly granted. This is the Windows
-// implementation of the cross-platform read-only-host contract (WithReadOnlyFS): on
-// Linux and macOS the kernel tier already leaves the host readable and confines writes
-// to the working directory, and this tier gives Windows the same semantics.
+// The write-restricted tier is the Windows WithReadOnlyFS: the child reads what
+// the user can and writes only where the workspace SID is granted.
 //
-// It exists because the stronger AppContainer tier is deny-by-default for reads, and
-// that extra strictness breaks a class of ordinary programs at a primitive level: the
-// container token cannot query the drive-letter symbolic-link objects, so the
-// NT-to-DOS mapping step of GetFinalPathNameByHandle(VOLUME_NAME_DOS) fails with
-// access-denied. Any Rust program that calls std::fs::canonicalize (an external agent
-// CLI among them) dies on it, and no filesystem grant can help because the denied
-// object is not a file. A write-restricted token has no such gap: reads and object
-// queries pass the ordinary user gate, while every write is additionally checked against
-// the restricting identities (see createWriteRestrictedToken for why those are the
-// workspace SID plus Everyone, and why this tier never modifies a shared object).
+// AppContainer cannot serve here because its token cannot query the drive-letter
+// symbolic links, so GetFinalPathNameByHandle(VOLUME_NAME_DOS) is access-denied
+// and any Rust std::fs::canonicalize dies. No file grant helps, because the
+// denied object is not a file. A write-restricted token checks reads against the
+// user alone.
 
-// Token restriction flags for CreateRestrictedToken.
+// CreateRestrictedToken flags.
 const (
-	// disableMaxPrivilege removes every privilege from the new token except
-	// SeChangeNotifyPrivilege (bypass-traverse-checking, which ordinary path use needs).
+	// disableMaxPrivilege keeps only SeChangeNotifyPrivilege, which path traversal
+	// needs.
 	disableMaxPrivilege = 0x1
-	// writeRestricted makes the restricting-SID gate apply to write access only:
-	// a write is allowed only when both the ordinary user gate and an entry for one
-	// of the restricting SIDs allow it, while reads check the user gate alone.
+	// writeRestricted checks only writes against the restricting SIDs, on top of
+	// the user gate.
 	writeRestricted = 0x8
 )
 
@@ -46,22 +36,15 @@ var (
 	procCreateRestrictedToken = advapi32.NewProc("CreateRestrictedToken")
 )
 
-// restrictSIDSubAuthorities is the number of variable sub-authorities in a workspace's
-// restricting SID: the fixed service-account identifier plus four hash words.
+// restrictSIDSubAuthorities is the service-account identifier plus four hash
+// words.
 const restrictSIDSubAuthorities = 5
 
-// workspaceRestrictSID derives the restricting identity for a workspace root: a SID unique
-// to that root, held by no principal on the host, that names "code confined to this
-// workspace". It is the write gate's whole basis, so it must be unique per workspace (or one
-// sandbox's child could write another's directory) and stable across the launches of one
-// sandbox (the grant is applied once and every launch must match it). Hashing the root, as
-// the AppContainer moniker does, gives both.
-//
-// The SID is built under the service-account identifier (S-1-5-80-*) with hash-derived
-// sub-authorities. A restricting SID may not be a package or capability SID (S-1-15-*):
-// CreateRestrictedToken rejects those, so the workspace's AppContainer identity cannot serve.
-// The value is never registered with the host and grants nothing by itself; it appears only
-// as this token's restricting SID and as the trustee of the grant on the workspace directory.
+// workspaceRestrictSID hashes the root into an S-1-5-80-* SID that no principal
+// holds. It must be unique per workspace, or one child could write another's
+// directory, and stable across launches, because the grant is applied once.
+// CreateRestrictedToken rejects S-1-15-* SIDs, so the AppContainer SID cannot
+// serve.
 func workspaceRestrictSID(root string) (*windows.SID, error) {
 	sum := sha256.Sum256([]byte("flynn.sbx.restrict." + root))
 	subs := [restrictSIDSubAuthorities]uint32{80} // SECURITY_SERVICE_ID_BASE_RID
@@ -79,41 +62,20 @@ func workspaceRestrictSID(root string) (*windows.SID, error) {
 	return sid, nil
 }
 
-// createWriteRestrictedToken builds a primary token that is a write-restricted copy of
-// this process's token: same user and groups for reads, all privileges dropped, and
-// writes allowed only where one of the restricting SIDs is granted. The caller owns the
-// returned token and closes it after the child is created (the child holds its own
-// reference).
+// createWriteRestrictedToken drops every privilege and lets a write pass where the
+// object grants the workspace SID, the logon SID or Everyone. The caller closes it
+// once the child exists.
 //
-// The restricting set is three SIDs: the workspace's own restricting SID, the caller's
-// logon-session SID, and Everyone. The restricting check is satisfied when the target
-// object grants access to ANY of them, and each is load-bearing for a different reason:
+// user32 startup writes the window station and desktop, which grant the logon SID,
+// and base named objects, which grant Everyone. Without either the child dies with
+// STATUS_DLL_INIT_FAILED (0xC0000142) before main; {workspace, logon} alone fails
+// too. The tier never edits a shared object's DACL, because admitting a private SID
+// to the window station can strip the user's access and wedge the logon session.
 //
-//   - The workspace SID is what the workspace directory grants (and nothing else does), so
-//     it is the write path into the one writable location and nothing outside it.
-//   - The logon-session SID is what the interactive window station and desktop grant. A
-//     process writes to those while user32 initializes; a restricted token whose set omits
-//     the logon SID cannot, and the process dies during DLL initialization with
-//     STATUS_DLL_INIT_FAILED (0xC0000142) before it reaches main.
-//   - Everyone is what the session's base named objects grant, which a starting process
-//     also writes. Omitting it fails startup the same way even when the logon SID is
-//     present (proven: a {workspace, logon} set without Everyone still dies 0xC0000142).
-//
-// The two startup SIDs let a freshly restricted process complete its startup writes
-// WITHOUT the sandbox touching any shared object's security. That distinction matters:
-// modifying the interactive window station's access list to admit a private SID can strip
-// the interactive user's own access and wedge every later process in the logon session, so
-// this tier never modifies a shared object; it only widens the token's own restricting set
-// to identities those objects already grant.
-//
-// Neither startup SID widens the file write gate in practice. Host files grant the user
-// account SID, not Everyone and not the logon SID, so they stay unwritable (proven: codex
-// under this token cannot write its own credential home). Logon SIDs appear on window
-// stations and desktops, not on filesystem paths, so they open no file. The residual write
-// surface is the handful of world-writable locations Windows ships (shared temp, the
-// named-object namespace), which the workspace confinement was never the boundary for
-// anyway (egress and the otherwise-read-only host are). The workspace stays isolated
-// because it grants the per-workspace SID alone.
+// Host files grant the user SID, so they stay unwritable: codex under this token
+// cannot write its credential home. Logon SIDs open no file. What stays writable is
+// the world-writable shared temp and named-object namespace, which egress control
+// and the read-only host cover.
 func createWriteRestrictedToken(workspaceSID *windows.SID) (windows.Token, error) {
 	everyone, err := windows.CreateWellKnownSid(windows.WinWorldSid)
 	if err != nil {
@@ -153,14 +115,10 @@ func createWriteRestrictedToken(workspaceSID *windows.SID) (windows.Token, error
 	return restricted, nil
 }
 
-// grantDefaultDacl adds the workspace's restricting SID to the token's default DACL, the
-// access list Windows stamps on every object the child creates without naming one: pipes,
-// events, sections. A write-restricted token checks each access against the restricting
-// SIDs as well as the user, and the inherited default DACL names only the user, SYSTEM and
-// administrators, so a pipe the child creates for itself would refuse the child's own
-// write end. Go's os.Pipe fails that way ("pipe: Access is denied"), which stops `go
-// build` before it compiles anything. The entry names the per-workspace SID alone, which
-// no other principal holds, so it opens nothing outside this sandbox's own objects.
+// grantDefaultDacl adds the workspace SID to the default DACL stamped on the
+// child's pipes, events and sections. The inherited one names only the user,
+// SYSTEM and administrators, so the child's own pipe refuses its write end:
+// os.Pipe fails "pipe: Access is denied" and `go build` stops.
 func grantDefaultDacl(token windows.Token, workspaceSID *windows.SID) error {
 	var n uint32
 	_ = windows.GetTokenInformation(token, windows.TokenDefaultDacl, nil, 0, &n)
@@ -187,12 +145,9 @@ func grantDefaultDacl(token windows.Token, workspaceSID *windows.SID) error {
 	return nil
 }
 
-// logonSessionSID returns the logon-session SID from a token: the group carrying the
-// SE_GROUP_LOGON_ID attribute, a per-logon identity the interactive window station and
-// desktop grant access to. It is read from the base token rather than fabricated because
-// it is specific to this process's logon session, and a restricted child must present the
-// same one to open the station it inherits. The returned SID is owned by the garbage
-// collector (a copy), so the caller does not free it.
+// logonSessionSID returns the SE_GROUP_LOGON_ID group, read from the token because
+// the child must present this session's SID to open the station it inherits. The
+// result is a garbage-collected copy, so the caller does not free it.
 func logonSessionSID(token windows.Token) (*windows.SID, error) {
 	groups, err := token.GetTokenGroups()
 	if err != nil {
@@ -206,13 +161,9 @@ func logonSessionSID(token windows.Token) (*windows.SID, error) {
 	return nil, errors.New("no logon-session sid in token")
 }
 
-// spawnWriteRestricted creates and starts a command under the write-restricted token
-// for the workspace identified by root. The restricting SID is the workspace's own (see
-// workspaceRestrictSID), and the grant that names it on the workspace directory (see
-// grantRestrictedDir) is what opens the one writable location: a write anywhere that SID
-// is not granted fails the restricting gate regardless of the user's own access. The
-// child otherwise gets the same envelope as the container tier: only the launch pipes
-// inherited, created suspended into its job, mitigation policies applied at creation.
+// spawnWriteRestricted gives the child the container tier's envelope: only the
+// launch pipes inherited, created suspended into its job, and mitigation policies
+// applied at creation.
 func spawnWriteRestricted(appName, cmdline, root string, env *uint16, io confinedIO, resLimits ResourceLimits) (*acProcess, error) {
 	sid, err := workspaceRestrictSID(root)
 	if err != nil {
@@ -227,12 +178,8 @@ func spawnWriteRestricted(appName, cmdline, root string, env *uint16, io confine
 	return spawnConfined(appName, cmdline, root, env, nil, token, io, resLimits)
 }
 
-// grantRestrictedDir grants the workspace's restricting SID full access to dir, the
-// single write the write-restricted tier permits. Under a write-restricted token every
-// write is checked twice, against the user's own access and against the restricting SID,
-// so a directory without this entry is unwritable to the child even though the user can
-// write it. The entry is inheritable, so files and directories the child creates stay
-// writable to it.
+// grantRestrictedDir is the tier's only write grant. It is inheritable, so what
+// the child creates stays writable to it.
 func grantRestrictedDir(dir, root string) error {
 	sid, err := workspaceRestrictSID(root)
 	if err != nil {
@@ -242,10 +189,8 @@ func grantRestrictedDir(dir, root string) error {
 	return grantDir(dir, sid)
 }
 
-// revokeRestrictedDir removes the workspace's restricting-SID grant from dir, so no
-// access entry outlives the sandbox. It is best-effort for the same reason the container
-// tier's revoke is: the SID is unique to this workspace and held by no principal, so an
-// entry left behind grants nothing to anyone.
+// revokeRestrictedDir is best-effort because a leftover entry names a SID no
+// principal holds.
 func revokeRestrictedDir(dir, root string) error {
 	sid, err := workspaceRestrictSID(root)
 	if err != nil {

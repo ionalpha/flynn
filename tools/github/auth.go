@@ -11,22 +11,18 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// tokenSource yields the credential each API request carries. Two exist: a GitHub
-// App, which signs an assertion and exchanges it for a short-lived installation
-// token, and a token supplied directly. Everything above this line is identical for
-// both, so the auth choice never reaches the tools or the REST calls.
+// tokenSource yields each request's credential: an App installation token or a
+// token supplied directly. The tools and REST calls never see which.
 type tokenSource interface {
-	// installationToken returns a credential valid at the moment of the call. An
-	// implementation that mints one is responsible for its own caching and refresh.
+	// installationToken returns a credential valid now. A minting
+	// implementation caches and refreshes it.
 	installationToken(ctx context.Context) (secret.Text, error)
 }
 
-// staticSource carries a credential supplied by the caller: a workflow's ambient
-// GITHUB_TOKEN, or a personal access token. It expires when whoever issued it says
-// so, which is outside this package's knowledge, so there is nothing to refresh.
+// staticSource is a caller-supplied token (GITHUB_TOKEN or a personal access
+// token). Its expiry is unknown here, so it is never refreshed.
 type staticSource struct{ token secret.Text }
 
-// installationToken returns the caller's token unchanged.
 func (s staticSource) installationToken(context.Context) (secret.Text, error) {
 	return s.token, nil
 }
@@ -35,25 +31,21 @@ var _ tokenSource = staticSource{}
 
 var _ tokenSource = (*authenticator)(nil)
 
-// ErrNoCredential is returned when a Config carries neither a GitHub App nor a
-// token, so nothing could authenticate a request.
+// ErrNoCredential is returned when a Config has neither an App nor a token.
 var ErrNoCredential = errors.New("github: Config needs either App or Token")
 
-// ErrAmbiguousCredential is returned when a Config carries both a GitHub App and a
-// token. Choosing one silently would decide, on the caller's behalf, which identity
-// a review is published under, so it is refused instead.
+// ErrAmbiguousCredential is returned when a Config has both an App and a token,
+// because picking one would choose the identity a review is published under.
 var ErrAmbiguousCredential = errors.New("github: Config carries both App and Token; set exactly one")
 
-// zero reports whether an App carries no credential at all, which is how a Config
-// says it authenticates some other way.
+// zero reports an App with no fields set, meaning the Config uses a token.
 func (a App) zero() bool {
 	return a.Issuer == "" && a.InstallationID == 0 && a.PrivateKey == nil
 }
 
-// newTokenSource picks the credential path from a Config, refusing a Config that
-// names none or both. A partly-filled App is an error rather than a fallback: it
-// means someone believes they configured an App, and failing at construction is
-// kinder than failing at the first API call.
+// newTokenSource refuses a partly filled App instead of falling back to the
+// token, so a broken App config fails at construction and not at the first
+// API call.
 func newTokenSource(cfg Config) (tokenSource, error) {
 	hasToken := !cfg.Token.Empty()
 	hasApp := !cfg.App.zero()
@@ -84,15 +76,9 @@ func newTokenSource(cfg Config) (tokenSource, error) {
 	}, nil
 }
 
-// ParsePrivateKey reads the RSA private key a GitHub App downloads at registration.
-//
-// GitHub issues the key as PKCS#1 ("BEGIN RSA PRIVATE KEY"), but tooling that
-// round-trips it through a secret store commonly re-encodes it as PKCS#8 ("BEGIN
-// PRIVATE KEY"). Both arrive in the wild, and a caller holding PEM bytes from an
-// environment variable cannot tell which it has, so both are accepted.
-//
-// The key is the App's sole credential and grants everything its installations do.
-// It belongs in the vault, and the bytes handed here should come from there.
+// ParsePrivateKey reads a GitHub App's PEM key as PKCS#1 ("BEGIN RSA PRIVATE
+// KEY", as GitHub issues it) or PKCS#8 ("BEGIN PRIVATE KEY", as secret stores
+// often re-encode it), since a caller cannot tell which it holds.
 func ParsePrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
@@ -105,9 +91,8 @@ func ParsePrivateKey(pemBytes []byte) (*rsa.PrivateKey, error) {
 
 	parsed, err := x509.ParsePKCS8PrivateKey(block.Bytes)
 	if err != nil {
-		// Both decodings failed. Report the PKCS#8 error rather than the PKCS#1 one:
-		// a key that is neither is far more often a wrong or truncated file than a
-		// malformed PKCS#1 body, and the PKCS#8 parser says which.
+		// Report the PKCS#8 error: a key that is neither is usually a wrong or
+		// truncated file, and that parser says which.
 		return nil, fmt.Errorf("github: private key is neither PKCS#1 nor PKCS#8: %w", err)
 	}
 	key, ok := parsed.(*rsa.PrivateKey)

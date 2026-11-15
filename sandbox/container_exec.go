@@ -13,43 +13,29 @@ import (
 	"github.com/ionalpha/flynn/internal/procexec"
 )
 
-// This file is the concrete OCI backend for the container tier: it drives the host's docker
-// or podman CLI to run the command buildContainerArgv composes, and adopts the running
-// container as a Serving handle. The tier's security posture is already fixed by that pure
-// builder and the spec validation; this backend only executes the command and observes the
-// container's lifecycle, so it cannot weaken the boundary.
-//
-// The engine is driven through an injected Runner, so the argv composition, the
-// container-id handling, and the lifecycle observation are all unit-testable without a
-// container engine present. The real runner is a thin exec wrapper over the CLI. A live
-// end-to-end check against a real engine is the build-tagged oci_integration leg.
+// The OCI backend only runs the argv buildContainerArgv composed, so it cannot
+// weaken the posture. The oci_integration build tag runs it against a real engine.
 
-// containerLoopback is the host address a published container port is bound to and the host
-// the adopted Serving reports. It matches the bind in buildContainerArgv: a container server
-// is reachable only over loopback, never off the host.
+// containerLoopback must match the port bind in buildContainerArgv.
 const containerLoopback = "127.0.0.1"
 
-// engineDetectTimeout bounds the availability probe so a hung or misconfigured engine
-// reports unavailable rather than blocking selection.
+// engineDetectTimeout makes a hung engine report unavailable instead of blocking
+// selection.
 const engineDetectTimeout = 8 * time.Second
 
-// engineStopTimeout bounds a teardown so an engine that ignores the stop cannot hang the
-// caller forever.
+// engineStopTimeout bounds teardown against an engine that ignores the stop.
 const engineStopTimeout = 20 * time.Second
 
 // engineLogsTimeout bounds a diagnostic log read.
 const engineLogsTimeout = 5 * time.Second
 
-// Runner runs an OCI engine command to completion and returns its stdout. argv[0] is the
-// engine binary, the rest its arguments. It is injected so the driver's logic is testable
-// with a scripted engine; the default runner execs the CLI.
+// Runner runs an engine command and returns its stdout. Tests inject a scripted
+// engine.
 type Runner func(ctx context.Context, argv []string) (stdout string, err error)
 
-// execRunner runs the engine CLI as a host process, returning only its stdout so a value
-// the caller parses (a container id) is never corrupted by a warning on stderr; on failure
-// the stderr is folded into the error. The CLI is a trusted host command (it is how Flynn
-// invokes the isolation, not untrusted code); the container it starts is the boundary,
-// exactly as the microVM backend execs the host's VM runtime directly.
+// execRunner returns stdout alone so a stderr warning cannot corrupt a parsed
+// container id; stderr goes into the error. The CLI is trusted; the container is
+// the boundary.
 func execRunner(ctx context.Context, argv []string) (string, error) {
 	if len(argv) == 0 {
 		return "", fault.New(fault.Terminal, "container_no_argv", "container: empty engine command")
@@ -58,8 +44,7 @@ func execRunner(ctx context.Context, argv []string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	// runCounted brackets the child-process registry around a confirmed start, so an
-	// engine command that fails to start is never counted as a live child.
+	// runCounted counts a child only after a confirmed start.
 	err := runCounted(cmd)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -71,16 +56,13 @@ func execRunner(ctx context.Context, argv []string) (string, error) {
 	return stdout.String(), nil
 }
 
-// ociDriver is a ContainerDriver backed by a docker- or podman-compatible CLI. It only
-// executes the already-composed run command and observes the container, so it cannot relax
-// the posture buildContainerArgv fixed.
+// ociDriver drives a docker- or podman-compatible CLI.
 type ociDriver struct {
 	engine OCIEngine
 	run    Runner
 }
 
-// NewContainerDriver builds a driver for engine. A nil runner uses the default CLI exec
-// runner; a test supplies a scripted one.
+// NewContainerDriver uses the CLI runner when runner is nil.
 func NewContainerDriver(engine OCIEngine, runner Runner) ContainerDriver {
 	if runner == nil {
 		runner = execRunner
@@ -88,22 +70,16 @@ func NewContainerDriver(engine OCIEngine, runner Runner) ContainerDriver {
 	return &ociDriver{engine: engine, run: runner}
 }
 
-// init registers the docker and podman backends in preference order, so the binary can run
-// a container without the host wiring a driver by hand. Detection gates which (if either)
-// is actually usable; an engine whose daemon is not running reports unavailable rather than
-// being selected, the no-silent-downgrade rule.
+// init registers docker, then podman. Detection decides which is usable.
 func init() {
 	RegisterContainerDriver(NewContainerDriver(EngineDocker, nil))
 	RegisterContainerDriver(NewContainerDriver(EnginePodman, nil))
 }
 
-// Name identifies the engine for logs, errors, and the spine.
 func (d *ociDriver) Name() string { return string(d.engine) }
 
-// Detect reports whether this engine can run a container right now. `<engine> version` with
-// a server-version template succeeds only when the CLI is installed and its daemon is
-// reachable, so a CLI present with no running daemon reports unavailable rather than
-// appearing usable.
+// Detect asks for the server version, which fails when the daemon is down even
+// though the CLI is installed.
 func (d *ociDriver) Detect() Availability {
 	ctx, cancel := context.WithTimeout(context.Background(), engineDetectTimeout)
 	defer cancel()
@@ -118,11 +94,8 @@ func (d *ociDriver) Detect() Availability {
 	return Availability{OK: true, Detail: string(d.engine) + " server " + v}
 }
 
-// Run starts the container for spec and adopts it as a Serving. It runs the composed,
-// detached command, takes the container id the engine prints, and returns a handle to the
-// container's loopback endpoint. An error means no container was started. It assumes spec
-// already passed validate (the tier entry points validate before calling a driver), so it
-// only executes; it does not re-decide policy.
+// Run runs the detached command and adopts the printed container id. It expects
+// a validated spec. An error means nothing started.
 func (d *ociDriver) Run(ctx context.Context, spec ContainerSpec) (Serving, error) {
 	argv := buildContainerArgv(d.engine, spec)
 	out, err := d.run(ctx, argv)
@@ -141,10 +114,8 @@ func (d *ociDriver) Run(ctx context.Context, spec ContainerSpec) (Serving, error
 	return newContainerServing(d.engine, id, addr, d.run), nil
 }
 
-// containerServing is the handle to a running container adopted as a server. It observes the
-// container through the same engine CLI: a background wait that closes done when the
-// container exits, an inspect-free Running derived from that, a logs tail for diagnostics,
-// and a bounded stop for teardown.
+// containerServing observes the container through the engine CLI: a background
+// wait closes done on exit.
 type containerServing struct {
 	engine OCIEngine
 	id     string
@@ -157,36 +128,30 @@ type containerServing struct {
 
 var _ Serving = (*containerServing)(nil)
 
-// newContainerServing adopts a started container and begins reaping it.
 func newContainerServing(engine OCIEngine, id, addr string, run Runner) *containerServing {
 	s := &containerServing{engine: engine, id: id, addr: addr, run: run, done: make(chan struct{}), clk: clock.System{}}
 	go s.reap()
 	return s
 }
 
-// ContainerID is the engine's id for the running container, so a caller that records a
-// server across invocations can stop it later by id (a container has no host pid to signal).
+// ContainerID lets a later invocation stop the container, which has no host pid.
 func (s *containerServing) ContainerID() string { return s.id }
 
-// EngineName is the OCI engine the container runs on, recorded alongside the id so a later,
-// separate process knows which engine to drive to stop it.
+// EngineName tells a later process which engine to drive to stop it.
 func (s *containerServing) EngineName() string { return string(s.engine) }
 
-// reap blocks on `engine wait <id>`, which returns when the container exits, and closes done
-// so callers waiting on the lifecycle are released. It carries no deadline: a server
-// container runs until it exits or is stopped. A `--rm` container is removed once wait
-// returns, which is also the point past which logs and inspect no longer resolve.
+// reap has no deadline because a server runs until stopped. After `wait` returns
+// a `--rm` container is gone, and logs and inspect fail.
 func (s *containerServing) reap() {
 	_, _ = s.run(context.Background(), []string{string(s.engine), "wait", s.id})
 	close(s.done)
 }
 
-// Addr is the host loopback address the container's server answers on, or "" for a
-// non-publishing container.
+// Addr is "" for a non-publishing container.
 func (s *containerServing) Addr() string { return s.addr }
 
-// Running reports whether the container has not yet exited, read from the reaper rather than
-// a fresh inspect so a torn-down `--rm` container reads as stopped without an error.
+// Running reads the reaper instead of inspect, so a removed `--rm` container
+// reads as stopped without an error.
 func (s *containerServing) Running() bool {
 	select {
 	case <-s.done:
@@ -196,8 +161,7 @@ func (s *containerServing) Running() bool {
 	}
 }
 
-// Output returns the retained tail of the container's logs, for diagnostics. It is
-// best-effort: once a `--rm` container is gone the logs no longer resolve and this is empty.
+// Output is empty once a `--rm` container is gone.
 func (s *containerServing) Output() string {
 	ctx, cancel := context.WithTimeout(context.Background(), engineLogsTimeout)
 	defer cancel()
@@ -211,9 +175,7 @@ func (s *containerServing) Output() string {
 // Done is closed when the container exits.
 func (s *containerServing) Done() <-chan struct{} { return s.done }
 
-// Stop ends the container and waits, bounded, for the exit to be observed. It is idempotent
-// and best-effort: a container that has already exited is a no-op, and the stop command's
-// own error is not surfaced because the goal is teardown, not a report.
+// Stop is idempotent and best effort; the stop command's error is dropped.
 func (s *containerServing) Stop() error {
 	select {
 	case <-s.done:
@@ -232,9 +194,8 @@ func (s *containerServing) Stop() error {
 	return nil
 }
 
-// plausibleContainerID reports whether s looks like a container id the engine returns: a
-// non-empty run of hex (the engine prints the full 64-character id, or a 12-character short
-// id). It is a shape check so an empty or error line is not mistaken for a started container.
+// plausibleContainerID accepts non-empty hex (64 or 12 characters from the
+// engine), so an error line is never taken for a started container.
 func plausibleContainerID(s string) bool {
 	if len(s) < 12 {
 		return false
@@ -242,8 +203,7 @@ func plausibleContainerID(s string) bool {
 	return strings.TrimLeft(s, "0123456789abcdefABCDEF") == ""
 }
 
-// lastLine returns the last non-empty line of s, the line the container id is on (the engine
-// may print a pull progress line before it).
+// lastLine skips pull progress the engine may print before the container id.
 func lastLine(s string) string {
 	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
 	for i := len(lines) - 1; i >= 0; i-- {
@@ -254,11 +214,8 @@ func lastLine(s string) string {
 	return ""
 }
 
-// oneLine collapses whitespace runs to single spaces so a multi-line engine error reads as
-// one diagnostic line.
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
-// firstArg returns the engine subcommand for an error message, or "" when there is none.
 func firstArg(argv []string) string {
 	if len(argv) > 1 {
 		return argv[1]
@@ -266,19 +223,15 @@ func firstArg(argv []string) string {
 	return ""
 }
 
-// StopContainer stops a container by id on the given engine, the cross-invocation teardown
-// for a container a record names but no Serving handle is held for (a later `models stop`).
-// It drives the same trusted engine CLI; the container is the boundary, not this call.
+// StopContainer stops a container that a record names and no handle holds, as in
+// a later `models stop`.
 func StopContainer(ctx context.Context, engine OCIEngine, id string) error {
 	_, err := execRunner(ctx, []string{string(engine), "stop", id})
 	return err
 }
 
-// PullImage ensures a digest-pinned image is present, pulling it by its ref@digest (or the
-// bare digest when no ref is given). The engine resolves the reference to the pinned digest
-// and verifies the bytes against it, so the pull is tamper-evident: a moved tag cannot
-// substitute different content. It is the production ImagePuller the container provisioner
-// drives.
+// PullImage pulls by digest, and the engine verifies the bytes against it, so a
+// moved tag cannot substitute content.
 func PullImage(ctx context.Context, engine OCIEngine, ref, digest string) error {
 	target := digest
 	if ref != "" {
@@ -288,20 +241,15 @@ func PullImage(ctx context.Context, engine OCIEngine, ref, digest string) error 
 	return err
 }
 
-// EnsureContainerNetwork makes sure a named network exists for a published serving container
-// to join, so the container has a stable named network rather than the engine's shared
-// default bridge. It is idempotent: a network that already exists is reused, not recreated.
-//
-// This names the network the published container attaches to; it does not by itself block the
-// container's outbound traffic. An engine-internal network would deny egress but also disables
-// the port forwarding a served model needs, so egress is instead kept closed by the runtime's
-// own configuration (it is run offline) and, where required, a governed loopback proxy on this
-// network, not by isolating the network from the host.
+// EnsureContainerNetwork creates a named network if missing, so a container
+// avoids the default bridge. The network does not block egress: an internal one
+// would also break port forwarding, so the runtime runs offline and a proxy on
+// this network governs what remains.
 func EnsureContainerNetwork(ctx context.Context, engine OCIEngine, name string) error {
 	if name == "" {
 		return fault.New(fault.Terminal, "container_no_network_name", "container: a serving network needs a name")
 	}
-	// `network inspect` succeeds only when the network already exists; create it otherwise.
+	// `network inspect` fails when the network does not exist.
 	if _, err := execRunner(ctx, []string{string(engine), "network", "inspect", name}); err == nil {
 		return nil
 	}

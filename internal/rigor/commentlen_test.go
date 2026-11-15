@@ -23,9 +23,7 @@ const longBlockLines = 15
 // that must stay, each with the reason. A key is "<file>: <declaration>". The
 // test fails on an entry whose comment has fallen below the threshold, so the
 // list only shrinks.
-var longBlockAllowlist = map[string]string{
-	"sandbox/restricted_windows.go: createWriteRestrictedToken": "records the failure codes found by testing on Windows; the codes cannot be re-derived from the code",
-}
+var longBlockAllowlist = map[string]string{}
 
 // longBlockCeiling is the number of blocks at or over longBlockLines that are
 // not in longBlockAllowlist. It is debt: lower it when a block is cut, never

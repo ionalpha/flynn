@@ -13,9 +13,8 @@ import (
 	"syscall"
 )
 
-// Control variables passed to the re-executed launcher child (see reexecConfined
-// and RunChildLaunchIfRequested). They carry the working directory and the real
-// command across the re-exec; the launcher strips them before running the command.
+// Control variables carry the launch across the re-exec (see reexecConfined);
+// the launcher strips them before the command runs.
 const (
 	envConfine  = "FLYNN_SANDBOX_CONFINE"
 	envDir      = "FLYNN_SANDBOX_DIR"
@@ -25,48 +24,32 @@ const (
 	envWritable = "FLYNN_SANDBOX_WRITABLE"
 	envHidden   = "FLYNN_SANDBOX_UNREADABLE"
 
-	// envPrivateProc tells the launcher it runs in a PID namespace and must mount a /proc
-	// of its own. The parent decides, because only the parent can see its own mount table
-	// before the clone.
+	// envPrivateProc asks the launcher to mount its own /proc. The parent decides,
+	// because only it sees its mount table before the clone.
 	envPrivateProc = "FLYNN_SANDBOX_PRIVATE_PROC"
 )
 
-// kernelConfinementSupported reports whether this platform can enforce the network,
-// filesystem, and syscall confinement, which it can on Linux.
 func kernelConfinementSupported() bool { return true }
 
-// egressEnforceable reports whether governed child egress can be enforced here. On Linux
-// the child runs in a network namespace holding no interface but loopback and no route at
-// all, so its only way out is the proxy endpoint the launcher creates on that loopback: a
-// direct dial has nothing to leave through and fails. It can.
+// egressEnforceable is true because the child's namespace has only loopback and
+// no route, so the launcher's proxy endpoint is its only way out.
 func egressEnforceable() bool { return true }
 
-// backgroundConfinementExpressible reports whether kernel confinement can be applied to a
-// backgrounded process (the Serve path). On Linux it can: confine sets the isolation on
-// the child the standard library starts (namespace clone flags and, for the filesystem
-// and syscall filter, a re-exec launcher), which holds identically whether the process is
-// run to completion or started and left running. Serve carries the same tier as Exec.
+// backgroundConfinementExpressible is true because confine works on the exec.Cmd,
+// whether it is waited on or left running, so Serve gets Exec's tier.
 func backgroundConfinementExpressible() bool { return true }
 
-// confine applies the kernel-enforced isolation a Local was configured for to a
-// command about to run. With no options it does nothing. Network denial places the
-// command in a fresh network namespace (no interfaces, no routes, so no connection
-// can be made or accepted). Filesystem confinement places it in a mount namespace
-// where the whole host is read-only and only its working directory (plus a private
-// scratch area and the sandbox's scratch directory) is writable, so it cannot modify
-// anything outside its working tree.
-// Syscall confinement installs a filter that refuses the syscalls a command has no
-// honest need for and that would let it escalate privilege or escape. All nest
-// inside a user namespace with the caller mapped to root inside it, so an
-// unprivileged agent sets up the isolation without real root and the command gains
-// no privilege on the host.
+// confine sets the configured isolation on c. Network denial uses an empty
+// network namespace; filesystem confinement a read-only mount namespace with the
+// working tree and scratch writable; syscall confinement a filter. All nest in a
+// user namespace with the caller mapped to root, so no real root is needed and
+// the command gains no host privilege.
 func (l *Local) confine(c *exec.Cmd) error {
 	if !l.denyNetwork && !l.readonlyFS && !l.seccomp && !l.egressActive() {
 		return nil
 	}
-	// A host that refuses the confinement stops the launch here, with the reason, before
-	// any child starts. There is no branch below this that runs the command without the
-	// isolation it was configured for.
+	// A refusal stops the launch before any child starts; nothing below runs the
+	// command with less isolation.
 	if !l.selfTest {
 		if err := requireConfinement(l.hostNeeds()); err != nil {
 			return err
@@ -77,17 +60,13 @@ func (l *Local) confine(c *exec.Cmd) error {
 	}
 	sp := c.SysProcAttr
 	enterUserNamespace(sp)
-	// Governed egress needs the same fresh network namespace that denial does, for the
-	// same reason: it is what leaves the child with no route of its own. Denial stops
-	// there; egress then reopens exactly one path, a proxy endpoint on the namespace's
-	// loopback that the launcher creates and this process serves under policy.
+	// Egress uses the same empty namespace and reopens one path: a proxy endpoint
+	// on its loopback, served under policy.
 	if l.denyNetwork || l.egressActive() {
 		sp.Cloneflags |= syscall.CLONE_NEWNET
 	}
-	// Filesystem confinement, syscall confinement, and the egress endpoint all have to be
-	// set up from inside the new process, after the clone and before the command runs,
-	// which the standard library does not expose. They go through the re-exec launcher;
-	// the mount view additionally needs its own mount namespace.
+	// These must be set up inside the child between clone and exec, which os/exec
+	// does not expose, so a re-exec launcher does it.
 	if l.readonlyFS || l.seccomp || l.egressActive() {
 		var writable []string
 		if l.readonlyFS {
@@ -102,27 +81,20 @@ func (l *Local) confine(c *exec.Cmd) error {
 	return nil
 }
 
-// enterUserNamespace places the child in a new user namespace with the caller mapped to
-// root inside it. It is the one place the identity mapping is built, shared by the
-// launch path and by the readiness check, so the check exercises the mapping a launch
-// uses.
+// enterUserNamespace is shared with the readiness check, so the check tests the
+// mapping a launch uses.
 func enterUserNamespace(sp *syscall.SysProcAttr) {
 	sp.Cloneflags |= syscall.CLONE_NEWUSER
 	sp.UidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getuid(), Size: 1}}
 	sp.GidMappings = []syscall.SysProcIDMap{{ContainerID: 0, HostID: os.Getgid(), Size: 1}}
-	// Writing "deny" to setgroups is required before an unprivileged gid mapping is
-	// accepted; the Go runtime does this when this flag is false.
+	// False makes the runtime write "deny" to setgroups, which an unprivileged gid
+	// mapping requires.
 	sp.GidMappingsEnableSetgroups = false
 }
 
-// reexecConfined rewrites c to run this same binary as a launcher: the binary is
-// re-executed inside the new namespaces, applies the filesystem and syscall
-// confinement that can only be set up from inside the new process, and only then
-// executes the real command. The real command, the working directory, and which
-// confinements to apply travel across the re-exec in the environment;
-// RunChildLaunchIfRequested picks them up on the other side. writable is every directory
-// outside the working directory the child may write: the scratch directory and those named
-// with [WithWritableDir].
+// reexecConfined rewrites c to re-exec this binary as the launcher, passing the
+// command and settings in the environment to RunChildLaunchIfRequested. writable
+// is the scratch directory plus the [WithWritableDir] grants.
 func (l *Local) reexecConfined(c *exec.Cmd, writable []string) {
 	self := "/proc/self/exe"
 	if l.selfExe != "" {
@@ -153,12 +125,9 @@ func (l *Local) reexecConfined(c *exec.Cmd, writable []string) {
 	c.Args = []string{self}
 }
 
-// RunChildLaunchIfRequested is the other half of filesystem confinement. When this
-// binary is re-executed as a confinement launcher (see reexecConfined), this runs
-// the mount setup and then replaces the process with the real command, so it never
-// returns in that case. In the normal case (not a launcher) it returns immediately
-// and the program continues. The program's entry point must call it before doing any
-// other work, since a launcher process must not run the normal program at all.
+// RunChildLaunchIfRequested must be the first call in main. In a launcher process
+// it sets up confinement and execs the command, never returning; otherwise it
+// returns at once.
 func RunChildLaunchIfRequested() {
 	if os.Getenv(envConfine) != "1" {
 		return
@@ -166,8 +135,7 @@ func RunChildLaunchIfRequested() {
 	os.Exit(runConfinedChild())
 }
 
-// runConfinedChild builds the confined filesystem view and execs the real command.
-// It returns an exit code only if it fails before the exec replaces the process.
+// runConfinedChild returns only on a failure before exec.
 func runConfinedChild() int {
 	dir := os.Getenv(envDir)
 	argv, err := decodeArgv(os.Getenv(envArgv))
@@ -191,12 +159,9 @@ func runConfinedChild() int {
 			return 126
 		}
 	}
-	// Governed egress: build the proxy endpoint on this network namespace's loopback and
-	// hand the listening socket to the sandbox, which serves it under policy. It happens
-	// here, in the namespace, because nothing outside it can create a socket inside it. A
-	// failure fails the launch rather than running the command: this namespace has no
-	// route, so a command launched without its endpoint would reach nothing anyway, and a
-	// silent no-network run is a worse answer than a loud one.
+	// Only a process inside the namespace can create its proxy socket. A failure
+	// fails the launch, because the command would otherwise run with no network
+	// and no error.
 	env := strippedEnv()
 	if os.Getenv(envEgress) == "1" {
 		proxy, err := serveEgressFromNetns()
@@ -206,12 +171,8 @@ func runConfinedChild() int {
 		}
 		env = mergeEnv(env, proxy)
 	}
-	// Inbound forward: create the listening socket for the one host service the child is
-	// allowed to reach (the run's MCP bridge) on this namespace's loopback and hand it out,
-	// so the sandbox can pipe it to that host address. Like egress, it happens here because
-	// nothing outside the namespace can create a socket inside it, and a failure fails the
-	// launch rather than running a command that cannot reach the bridge it was to be governed
-	// through.
+	// The forward socket for the run's MCP bridge is made here for the same reason,
+	// and a failure also fails the launch.
 	if os.Getenv(envForward) == "1" {
 		if err := serveForwardFromNetns(); err != nil {
 			fmt.Fprintln(os.Stderr, "sandbox: confinement launcher:", err)
@@ -227,11 +188,8 @@ func runConfinedChild() int {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: command not found:", argv[0])
 		return 127
 	}
-	// Syscall filtering is installed last, just before the command runs, so it does
-	// not block the launcher's own setup above; it is inherited across the exec. The
-	// filter applies to the installing thread, and a thread carries its filter across
-	// an exec, so the install and the exec have to happen on the same thread: the lock
-	// pins this goroutine to its thread for the rest of its (short) life.
+	// The filter goes in last so it cannot block setup. It binds the installing
+	// thread and survives exec, so the lock keeps install and exec on one thread.
 	if os.Getenv(envSeccomp) == "1" {
 		runtime.LockOSThread()
 		if err := installSeccomp(); err != nil {
@@ -239,8 +197,7 @@ func runConfinedChild() int {
 			return 126
 		}
 	}
-	// Exec replaces this process, so on success nothing below runs and the control
-	// variables never reach the command (they are stripped from the environment).
+	// On success nothing below runs.
 	//nolint:gosec // running the sandbox's command is the launcher's purpose; it runs inside the confinement just built (read-only host, isolated mounts, syscall filter), which is the point
 	if err := syscall.Exec(bin, argv, env); err != nil {
 		fmt.Fprintln(os.Stderr, "sandbox: confinement launcher: exec:", err)
@@ -249,28 +206,21 @@ func runConfinedChild() int {
 	return 0
 }
 
-// confineMounts turns the launcher's mount namespace into a read-only view of the
-// host with a single writable area: the working directory, plus the scratch directory and
-// any directory the caller named with WithWritableDir. It first makes mount changes private to this
-// namespace, then remounts every existing mount read-only, gives the command a fresh
-// private scratch area so ordinary tooling still works (isolated from the host's, and
-// never placed so as to hide the working directory), and finally re-grants write
-// access to the working directory and to those extra directories. The paths named with
-// WithUnreadablePaths are hidden last, so no grant above restores one.
+// confineMounts makes mounts private, remounts all read-only, adds a private
+// scratch area that never hides the working directory, then re-grants write to
+// the working directory and writable dirs. WithUnreadablePaths are hidden last so
+// no grant restores one.
 //
-// When the parent put the command in a PID namespace ([envPrivateProc]), /proc is mounted
-// afresh first, so the mount table read next is the new one. Failing to mount it fails
-// the launch: the parent only asks where [privateProcAvailable] predicted the kernel
-// would allow it.
+// Under [envPrivateProc] /proc is mounted first, so the mount table read next is
+// the new one. A failure fails the launch; the parent asks only where
+// [privateProcAvailable] predicted success.
 func confineMounts(dir string, writable, hidden []string) error {
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
 		return fmt.Errorf("%s: %w", msgMakePrivate, err)
 	}
 	if os.Getenv(envPrivateProc) == "1" {
-		// The host's /proc lists every process the caller owns and /proc/<pid>/cmdline is
-		// readable by anyone who can list it, so a token passed to the runner as a flag
-		// would be one cat away from the command. A fresh mount shows only this
-		// namespace's processes.
+		// The host's /proc exposes /proc/<pid>/cmdline of every process the caller
+		// owns, including a token passed to the runner as a flag.
 		if err := syscall.Mount("proc", "/proc", "proc", syscall.MS_NOSUID|syscall.MS_NODEV|syscall.MS_NOEXEC|keptMountFlags("/proc"), ""); err != nil {
 			return fmt.Errorf("mount a private /proc: %w", err)
 		}
@@ -280,8 +230,7 @@ func confineMounts(dir string, writable, hidden []string) error {
 		return err
 	}
 	for _, mp := range mps {
-		// Best effort: some pseudo-filesystems reject a read-only remount, and the
-		// host stays read-only regardless because its real mounts are covered.
+		// Some pseudo-filesystems reject this; the real mounts are covered anyway.
 		_ = syscall.Mount("", mp, "", syscall.MS_REMOUNT|syscall.MS_BIND|syscall.MS_RDONLY|keptMountFlags(mp), "")
 	}
 	for _, scratch := range []string{"/dev/shm", "/tmp"} {
@@ -293,10 +242,8 @@ func confineMounts(dir string, writable, hidden []string) error {
 	if err := remountWritable(dir); err != nil {
 		return fmt.Errorf("working directory: %w", err)
 	}
-	// The extra directories are remounted after the working directory so that one nested
-	// inside it cannot undo the grant above, and a failure here fails the launch: a child
-	// told it may write a directory must actually be able to, never discover it cannot
-	// halfway through the work.
+	// After the working directory, so a nested one cannot undo that grant. A failure
+	// fails the launch so the child never finds the grant missing mid-run.
 	for _, w := range writable {
 		if pathWithin(w, dir) {
 			continue // already writable as part of the working directory
@@ -308,12 +255,9 @@ func confineMounts(dir string, writable, hidden []string) error {
 	return hideUnreadable(hidden)
 }
 
-// mountNamespaceFlags are the clone flags filesystem confinement needs: a mount namespace,
-// and a PID namespace wherever [privateProcAvailable] says the launcher can mount a /proc
-// of its own, which is what lets that /proc list only the command's own processes (see
-// confineMounts). [Local.confine] and the readiness check's mount rung both take them from
-// here, so a service unit that forbids the PID namespace fails the check rather than
-// passing it and then refusing every launch.
+// mountNamespaceFlags adds a PID namespace where [privateProcAvailable] allows a
+// private /proc. [Local.confine] and the readiness check share it, so a unit that
+// forbids PID namespaces fails the check instead of every launch.
 func mountNamespaceFlags() uintptr {
 	if privateProcAvailable() {
 		return syscall.CLONE_NEWNS | syscall.CLONE_NEWPID
@@ -321,14 +265,10 @@ func mountNamespaceFlags() uintptr {
 	return syscall.CLONE_NEWNS
 }
 
-// privateProcAvailable reports whether the kernel will let the launcher mount a /proc of
-// its own in a new PID namespace. It will not when the mount table it inherits has anything
-// mounted below /proc: a container runtime masks /proc/kcore, /proc/acpi and similar paths
-// that way, and the kernel refuses an unprivileged procfs mount that would show what the
-// existing one hides (EPERM). Asking anyway would refuse every launch on such a host, so
-// the command keeps the host's /proc there and /proc/<pid>/cmdline of the runner stays
-// readable to it. A caller that must not pass secrets on the command line has to keep
-// them out of it on those hosts.
+// privateProcAvailable is false when anything is mounted below /proc. Container
+// runtimes mask /proc/kcore, /proc/acpi and similar, and the kernel refuses
+// (EPERM) an unprivileged procfs that would reveal them. There the command keeps
+// the host /proc and can read the runner's cmdline, so keep secrets off it.
 func privateProcAvailable() bool {
 	mps, err := mountPoints()
 	if err != nil {
@@ -337,9 +277,8 @@ func privateProcAvailable() bool {
 	return !procMasked(mps)
 }
 
-// procMasked reports whether any mount point lies below /proc. The one exception is
-// /proc/sys/fs/binfmt_misc, which systemd mounts on every host and which the kernel treats
-// as a permanently empty directory, so it hides nothing.
+// procMasked ignores /proc/sys/fs/binfmt_misc: systemd mounts it everywhere and
+// the kernel treats it as permanently empty, so it hides nothing.
 func procMasked(mps []string) bool {
 	for _, mp := range mps {
 		if mp != "/proc/sys/fs/binfmt_misc" && strings.HasPrefix(mp, "/proc/") {
@@ -349,9 +288,8 @@ func procMasked(mps []string) bool {
 	return false
 }
 
-// remountWritable re-grants write access to one directory inside the read-only view, by
-// binding it onto itself (which gives it a mount of its own) and remounting that bind
-// without the read-only flag.
+// remountWritable bind-mounts dir onto itself to give it its own mount, then
+// remounts that writable.
 func remountWritable(dir string) error {
 	if err := syscall.Mount(dir, dir, "", syscall.MS_BIND|syscall.MS_REC, ""); err != nil {
 		return fmt.Errorf("bind: %w", err)
@@ -362,17 +300,14 @@ func remountWritable(dir string) error {
 	return nil
 }
 
-// restrictiveMountFlags are the mount flags that only take a capability away. A remount
-// that omits one clears it, and the kernel refuses that outright for a mount that came
-// from outside the launcher's user namespace with the flag set (it is locked there).
+// restrictiveMountFlags only remove capabilities. The kernel refuses a remount
+// that clears one on a mount from outside the user namespace, where it is locked.
 const restrictiveMountFlags = syscall.MS_NOSUID | syscall.MS_NODEV | syscall.MS_NOEXEC | syscall.MS_NOATIME | syscall.MS_NODIRATIME
 
-// keptMountFlags returns the restrictive flags the mount holding path already has, to be
-// passed again by a remount so it changes only the read-only flag. A service unit that
-// sets NoNewPrivileges=true mounts / and its private /tmp nosuid, and a remount that
-// dropped the flag fails with EPERM, which refused every confined launch under such a
-// unit and, for the read-only remount above, left the mount writable. Keeping a flag
-// never grants anything, so an unreadable path falls back to none.
+// keptMountFlags returns path's restrictive flags so a remount changes only the
+// read-only bit. Under NoNewPrivileges=true, / and /tmp are nosuid, and a remount
+// dropping it fails with EPERM, refusing every launch and leaving the read-only
+// remount undone. An unreadable path yields none.
 func keptMountFlags(path string) uintptr {
 	var st syscall.Statfs_t
 	if err := syscall.Statfs(path, &st); err != nil {
@@ -381,14 +316,12 @@ func keptMountFlags(path string) uintptr {
 	return keepRestrictive(uint64(st.Flags)) //nolint:gosec // G115: statfs flags are small non-negative mount bits
 }
 
-// keepRestrictive selects the restrictive flags from a statfs flags word, whose bits for
-// them are the mount(2) flag values.
+// keepRestrictive relies on statfs using the mount(2) values for these bits.
 func keepRestrictive(statfsFlags uint64) uintptr {
 	return uintptr(statfsFlags & restrictiveMountFlags)
 }
 
-// shadows reports whether mounting at mp would hide any of the given directories, which
-// is the case when the directory is the mount point or lies beneath it.
+// shadows reports whether mp is any of dirs or an ancestor of one.
 func shadows(mp string, dirs []string) bool {
 	for _, d := range dirs {
 		if pathWithin(d, mp) {
@@ -398,9 +331,8 @@ func shadows(mp string, dirs []string) bool {
 	return false
 }
 
-// mountPoints reads the current mount points from /proc/self/mountinfo. The mount
-// point is the fifth field; paths with spaces or other special characters are octal
-// escaped there, so they are decoded back.
+// mountPoints reads field five of /proc/self/mountinfo, decoding its octal
+// escapes.
 func mountPoints() ([]string, error) {
 	f, err := os.Open("/proc/self/mountinfo")
 	if err != nil {
@@ -423,9 +355,8 @@ func mountPoints() ([]string, error) {
 	return out, nil
 }
 
-// unescapeOctal decodes the \NNN octal escapes the kernel uses for special
-// characters in mountinfo paths (space is \040, tab \011, newline \012, backslash
-// \134).
+// unescapeOctal decodes mountinfo's \NNN escapes (space \040, tab \011, newline
+// \012, backslash \134).
 func unescapeOctal(s string) string {
 	if !strings.Contains(s, `\`) {
 		return s
@@ -454,10 +385,8 @@ func unescapeOctal(s string) string {
 	return b.String()
 }
 
-// encodeArgv encodes the command so it can travel across the re-exec in an
-// environment variable: each argument is base64-encoded (so it holds no byte that
-// the environment cannot, and no comma), and the arguments are joined with commas,
-// which the base64 alphabet never contains.
+// encodeArgv base64-encodes each argument and joins them with commas, which
+// base64 never contains, so argv fits in one environment variable.
 func encodeArgv(args []string) string {
 	enc := make([]string, len(args))
 	for i, a := range args {
@@ -466,8 +395,6 @@ func encodeArgv(args []string) string {
 	return strings.Join(enc, ",")
 }
 
-// decodeArgv reverses encodeArgv to recover the command on the other side of the
-// re-exec.
 func decodeArgv(s string) ([]string, error) {
 	if s == "" {
 		return nil, nil
@@ -484,8 +411,7 @@ func decodeArgv(s string) ([]string, error) {
 	return out, nil
 }
 
-// strippedEnv returns the process environment with the launcher's control variables
-// removed, so the command runs with the clean environment the sandbox built for it.
+// strippedEnv removes the control variables.
 func strippedEnv() []string {
 	env := os.Environ()
 	out := make([]string, 0, len(env))
@@ -510,7 +436,6 @@ func strippedEnv() []string {
 	return out
 }
 
-// platformConfinementTier names the Linux kernel-confinement mechanism. The tier
-// read-permits the host by construction (a read-only mount namespace), so
-// WithHostReadable selects no different mechanism here.
+// platformConfinementTier ignores WithHostReadable, because a read-only mount
+// namespace already permits reads.
 func (l *Local) platformConfinementTier() string { return tierNamespaceSeccomp }

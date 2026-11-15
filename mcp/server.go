@@ -1,24 +1,12 @@
-// Package mcp serves a set of the agent's tools to a Model Context Protocol
-// client over a JSON-RPC 2.0 stdio transport, so an external program (another
-// agent's harness, an editor, any MCP client) can call the agent's tools without
-// being handed the host directly.
+// Package mcp serves the agent's tools to a Model Context Protocol client over
+// stdio or streamable HTTP, and consumes tools from an MCP extension server
+// ([Client]).
 //
-// The point of the server is where a called tool runs: every tools/call is routed
-// through the same dispatch waist as a native loop, so the caller's effects are
-// admitted against the run's capability grant, gated by the containment level its
-// trust requires, subject to the safety brakes, and recorded on the event spine.
-// Presence in tools/list makes a tool reachable, never automatically permitted:
-// authority is decided at the waist at call time, exactly as it is for the agent's
-// own loop. A client that is denied sees an ordinary error tool result and can
-// adapt, while the denial lands on the spine as a rejected action.
-//
-// The server is a pure protocol and routing layer. It holds no grant and no brake
-// of its own: the governance bindings ride on the context passed to Serve (the
-// caller binds the run's grant with capability.Into and the run id with
-// brakes.Into, the same way the mission executor does before it dispatches), and
-// the server propagates that context into every Govern call. So a host that wants
-// a read-only session binds a narrow grant; a host that wants a kill-switch binds
-// the brakes; the server needs no knowledge of either.
+// Every tools/call goes through the same dispatch.Dispatcher as the native loop,
+// so it is checked against the run's capability grant, containment level and
+// brakes, and recorded on the spine. Listing a tool does not permit it. A denied
+// client gets an error tool result. The server holds no grant or brake itself:
+// the caller binds them on the context with capability.Into and brakes.Into.
 package mcp
 
 import (
@@ -35,14 +23,12 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Server exposes a fixed set of [mission.Tool] values to one MCP client connection and
-// governs every call through a dispatch waist. Construct it with NewServer and run
-// it with Serve. It is safe to reuse across sequential connections, but a single
-// Serve call drives one connection.
+// Server exposes a fixed set of [mission.Tool] values. One Serve call drives
+// one connection; connections may follow one another.
 type Server struct {
 	dispatcher *dispatch.Dispatcher
 	tools      map[string]mission.Tool
-	order      []string // tools/list order: registration order, deduped
+	order      []string // first-registration order, deduped
 	scope      state.Scope
 	goal       string
 	info       Info
@@ -51,25 +37,19 @@ type Server struct {
 // Option configures a Server at construction.
 type Option func(*Server)
 
-// WithScope sets the scope every governed tool call is attributed to on the spine,
-// so a session's actions are located on the instance/project/workspace axis like
-// any native action. The zero scope is the global scope.
+// WithScope sets the scope tool calls are recorded under. The zero scope is
+// global.
 func WithScope(s state.Scope) Option { return func(sv *Server) { sv.scope = s } }
 
-// WithGoal sets the goal id every governed tool call runs under, so the actions a
-// client drives are threaded onto the same goal as the run that hosts the server.
-// Empty means the calls belong to no specific goal.
+// WithGoal sets the goal id tool calls are recorded under. Empty means none.
 func WithGoal(id string) Option { return func(sv *Server) { sv.goal = id } }
 
-// WithInfo sets the server identity reported in the initialize handshake. A zero
-// Info reports a default name and an empty version.
+// WithInfo sets the identity reported in the initialize handshake.
 func WithInfo(i Info) Option { return func(sv *Server) { sv.info = i } }
 
-// NewServer builds a server that serves tools through d. Tools are keyed by name;
-// a later tool with a duplicate name replaces an earlier one, and tools/list
-// reports each name once in first-registration order. A nil dispatcher is
-// replaced with a zero-config one (allow-all, discard sink), so the server is
-// usable standalone, though a real host passes a governed dispatcher.
+// NewServer serves tools through d. A later tool with a duplicate name replaces
+// the earlier one; tools/list keeps first-registration order. A nil d becomes
+// dispatch.New(), which allows everything and records nothing.
 func NewServer(d *dispatch.Dispatcher, tools []mission.Tool, opts ...Option) *Server {
 	if d == nil {
 		d = dispatch.New()
@@ -95,12 +75,8 @@ func NewServer(d *dispatch.Dispatcher, tools []mission.Tool, opts ...Option) *Se
 	return s
 }
 
-// Serve reads newline-delimited JSON-RPC messages from r, dispatches each, and
-// writes replies to w, until r reaches EOF or ctx is cancelled. It returns nil on
-// a clean client disconnect (EOF) or context cancellation, and a wrapped error
-// only on an unrecoverable transport failure. Governance bindings on ctx (the
-// run's grant and brakes) are propagated into every tool call; a caller that wants
-// a governed session binds them before calling Serve.
+// Serve handles newline-delimited JSON-RPC from r until EOF or cancellation,
+// both of which return nil. Every tool call runs under ctx and its bindings.
 func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	msgs, errc := s.readLoop(ctx, r)
 	for {
@@ -131,10 +107,8 @@ func (s *Server) Serve(ctx context.Context, r io.Reader, w io.Writer) error {
 	}
 }
 
-// readLoop decodes messages off r in a goroutine and delivers them on a channel, so
-// the Serve loop can also select on ctx cancellation instead of blocking forever in
-// a read. A decode error (including EOF on disconnect) is reported once on errc and
-// ends the goroutine.
+// readLoop reads in a goroutine so Serve can select on cancellation instead of
+// blocking in a read. The first decode error, EOF included, ends it.
 func (s *Server) readLoop(ctx context.Context, r io.Reader) (<-chan inbound, <-chan error) {
 	msgs := make(chan inbound)
 	errc := make(chan error, 1)
@@ -157,13 +131,10 @@ func (s *Server) readLoop(ctx context.Context, r io.Reader) (<-chan inbound, <-c
 	return msgs, errc
 }
 
-// handle routes one inbound message to its handler and returns the response to
-// write, or write=false for a notification (which gets no reply). An unknown
-// method on a request is a method-not-found error; on a notification it is ignored.
+// handle returns false for a notification, which gets no reply.
 func (s *Server) handle(ctx context.Context, in inbound) (response, bool) {
 	if in.isNotification() {
-		// The only notification the server expects is notifications/initialized,
-		// which needs no action. Any other notification is ignored, per JSON-RPC.
+		// notifications/initialized needs no action; others are ignored.
 		return response{}, false
 	}
 	switch in.Method {
@@ -184,9 +155,6 @@ func (s *Server) handle(ctx context.Context, in inbound) (response, bool) {
 	}
 }
 
-// initialize negotiates the protocol version and reports the server's tool
-// capability and identity. It echoes the client's requested version when present,
-// so both sides settle on a version the client named.
 func (s *Server) initialize(params json.RawMessage) initializeResult {
 	version := protocolVersion
 	if len(params) > 0 {
@@ -202,9 +170,6 @@ func (s *Server) initialize(params json.RawMessage) initializeResult {
 	}
 }
 
-// toolDefs renders the exposed tools as wire declarations in list order. A tool
-// that declares no input schema gets an empty-object schema, since MCP requires
-// inputSchema to be an object.
 func (s *Server) toolDefs() []toolDef {
 	defs := make([]toolDef, 0, len(s.order))
 	for _, name := range s.order {
@@ -218,11 +183,9 @@ func (s *Server) toolDefs() []toolDef {
 	return defs
 }
 
-// callTool runs one tools/call through the dispatch waist. A malformed request (bad
-// params, missing name) is a protocol error and returns a non-nil rpcError. An
-// unknown tool, a governance denial, or a tool failure is not a protocol error: it
-// returns a tool result with IsError set so the calling model sees it and adapts,
-// while a denial is already recorded on the spine by the waist.
+// callTool returns an rpcError only for malformed params. An unknown tool, a
+// denial or a tool failure is a result with IsError set, so the model can
+// adapt; the dispatcher has already recorded a denial.
 func (s *Server) callTool(ctx context.Context, params json.RawMessage) (callResult, *rpcError) {
 	var p callParams
 	if err := json.Unmarshal(params, &p); err != nil {
@@ -238,8 +201,7 @@ func (s *Server) callTool(ctx context.Context, params json.RawMessage) (callResu
 
 	args := p.Arguments
 	if len(args) == 0 {
-		// A tool that decodes its input into a struct expects an object; an absent
-		// arguments field becomes an empty object rather than null.
+		// A tool decoding into a struct needs an object, not null.
 		args = json.RawMessage(`{}`)
 	}
 
@@ -257,20 +219,16 @@ func (s *Server) callTool(ctx context.Context, params json.RawMessage) (callResu
 	return callResult{Content: textContent(out)}, nil
 }
 
-// reply builds a success response echoing id.
 func (s *Server) reply(id json.RawMessage, result any) response {
 	return response{JSONRPC: "2.0", ID: id, Result: result}
 }
 
-// fail builds an error response echoing id.
 func (s *Server) fail(id json.RawMessage, e *rpcError) response {
 	return response{JSONRPC: "2.0", ID: id, Error: e}
 }
 
-// toolTrust returns the trust level a tool's work carries: the level it declares
-// through mission.TrustedWork, or sandbox.TrustTrusted for a tool that declares
-// none. It mirrors the mission executor so a bridged call is gated at the same
-// containment level the same tool would be on a native loop.
+// toolTrust must match the mission executor, so a bridged call gets the
+// containment level the tool gets on the native loop.
 func toolTrust(t mission.Tool) sandbox.Trust {
 	if tw, ok := t.(mission.TrustedWork); ok {
 		return tw.WorkTrust()

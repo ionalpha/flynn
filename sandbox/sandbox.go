@@ -1,15 +1,8 @@
-// Package sandbox is the agent's execution boundary: the port every run's work -
-// shell commands and file operations today, computer-use and plugin code later -
-// goes through rather than touching the host directly. It is the execution analog
-// of state.Provider. Swapping the implementation changes where and under what
-// confinement work runs without changing the tools that sit above it: an
-// in-process directory jail (Local), a hardened container, a microVM, or a remote
-// cloud sandbox are all the same port.
-//
-// Isolation is a boundary the run model goes through from the first execution path,
-// not bolted on later. The dispatch waist's Admitter decides whether an action may
-// run (the capability chokepoint); the Sandbox is where that grant becomes real
-// confinement. The two compose: governance above, isolation below.
+// Package sandbox is the port through which every run's shell commands and file
+// operations reach the host. A directory jail (Local), a container, a microVM and
+// a remote sandbox implement the same port, so tools do not change when the
+// confinement does. The dispatch Admitter decides whether an action may run; the
+// Sandbox confines it.
 package sandbox
 
 import (
@@ -20,53 +13,39 @@ import (
 
 // Command is a shell command to run inside a sandbox.
 type Command struct {
-	// Line is the command line, interpreted by the sandbox's shell.
+	// Line is interpreted by the sandbox's shell.
 	Line string
-	// Stdin, when non-empty, is written to the command's standard input and the stream
-	// is then closed. It is the safe way to pass a secret to a command that reads one on
-	// stdin (a credential import, a passphrase), because the value travels on a pipe: it
-	// is never placed on the command line (argv, visible to other processes through the
-	// process table) and never appears in the command's rendered text or any log. A
-	// caller handling a credential builds it here rather than interpolating it into Line.
+	// Stdin is written to standard input and then closed. Pass a secret here,
+	// because argv is visible in the process table and Line reaches logs.
 	Stdin []byte
 }
 
-// ExecResult is the outcome of a Command. A non-zero ExitCode is a normal result,
-// not an error: the command ran and the caller reads its output and code. An error
-// from Exec means the command could not be run at all.
+// ExecResult carries a non-zero ExitCode as a result; an error from Exec means
+// the command did not run.
 type ExecResult struct {
 	Output   string // combined stdout and stderr
 	ExitCode int
 }
 
-// Sandbox is the execution boundary. All paths are relative to the sandbox root,
-// and an implementation must reject any operation that would reach outside its
-// boundary (default-deny). Implementations must be safe for concurrent use.
-//
-// Environment isolation is part of the contract: an implementation must not pass
-// the agent's process environment through to a command it runs. A command sees
-// only a minimal, credential-free baseline plus variables granted to it
-// explicitly, so a secret the agent holds can never leak into a command's
-// environment by default. This is the execution-boundary half of the project's
-// "secrets are never materialized into the agent's environment" invariant.
+// Sandbox resolves paths against its root and rejects any that escape. It must be
+// safe for concurrent use. A command must see only a credential-free baseline plus
+// explicit grants, never the agent's environment, so no secret the agent holds
+// reaches a command by default.
 type Sandbox interface {
-	// Exec runs a command inside the sandbox.
+	// Exec errors only when the command could not run.
 	Exec(ctx context.Context, cmd Command) (ExecResult, error)
-	// ReadFile reads a file within the sandbox.
+	// ReadFile rejects a path outside the root.
 	ReadFile(ctx context.Context, path string) ([]byte, error)
-	// WriteFile writes a file within the sandbox, creating parent directories.
+	// WriteFile creates parent directories.
 	WriteFile(ctx context.Context, path string, data []byte) error
-	// Glob lists paths matching a shell pattern within the sandbox, relative to the
-	// root.
+	// Glob returns root-relative paths.
 	Glob(ctx context.Context, pattern string) ([]string, error)
-	// Walk returns the regular-file paths under root within the sandbox, relative
-	// to the sandbox root.
+	// Walk returns regular files only, relative to the sandbox root.
 	Walk(ctx context.Context, root string) ([]string, error)
-	// Close releases the sandbox's resources.
+	// Close releases the sandbox's resources, such as its scratch directory.
 	Close() error
 }
 
-// ErrDenied is returned when an operation falls outside the sandbox's grant: a
-// path that escapes the root, or (in stronger tiers) a denied syscall or egress.
-// The boundary is default-deny.
+// ErrDenied covers a path escaping the root and, in stronger tiers, a denied
+// syscall or egress.
 var ErrDenied = fault.New(fault.Terminal, "sandbox_denied", "operation denied by the sandbox boundary")

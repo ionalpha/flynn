@@ -4,14 +4,11 @@ package sandbox
 
 import "os"
 
-// init registers the KVM-backed microVM driver on Linux. Detection and boot are shared
-// through commandDriver; this file supplies only how Linux exposes its hardware boundary.
+// init registers the KVM microVM driver.
 func init() { RegisterDriver(commandDriver{name: "kvm", hardware: detectKVM}) }
 
-// detectKVM reports whether the host exposes a usable KVM device, the Linux hardware
-// virtualization boundary. Presence of the device is necessary; opening it read-write
-// confirms the current user can actually create a guest, so a host where KVM exists but is
-// inaccessible is reported unavailable rather than pretended ready.
+// detectKVM opens the device read-write, because only that confirms this user can
+// create a guest.
 func detectKVM() Availability {
 	const dev = "/dev/kvm"
 	if _, err := os.Stat(dev); err != nil {
