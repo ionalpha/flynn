@@ -11,18 +11,14 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Enqueuer hands a newly recorded entry's key to the triage controller's work
-// queue so it is reconciled promptly. reconcile.Manager.Enqueue satisfies it; the
-// resync sweep is the safety net if a hint is ever missed.
+// Enqueuer hands a recorded entry to triage promptly. reconcile.Manager satisfies
+// it; resync picks up a missed hint.
 type Enqueuer interface {
 	Enqueue(resource.Key)
 }
 
-// Ingest records inbound entries from a set of Sources as Entry resources and
-// enqueues each for triage. It is the inbound half of the boundary: it decides
-// only that an entry is durably recorded, never what to do with it. That decision
-// is the triage controller's, which keeps every disposition behind one governed
-// waist rather than scattered across adapters.
+// Ingest records entries from each [Source] and enqueues them for triage. It never
+// decides what to do with an entry; [Triage] does.
 type Ingest struct {
 	store   resource.Store
 	queue   Enqueuer
@@ -34,9 +30,9 @@ type Ingest struct {
 // IngestOption configures an Ingest.
 type IngestOption func(*Ingest)
 
-// WithIngestErrorHandler registers a callback for non-fatal errors (a source that
-// will not start, a record that fails to persist). The default discards them. It
-// may be called from several goroutines and must be safe for that.
+// WithIngestErrorHandler receives non-fatal errors: a source that will not start,
+// a record that fails to persist. The default discards them. fn is called from
+// several goroutines.
 func WithIngestErrorHandler(fn func(error)) IngestOption {
 	return func(in *Ingest) {
 		if fn != nil {
@@ -45,9 +41,7 @@ func WithIngestErrorHandler(fn func(error)) IngestOption {
 	}
 }
 
-// NewIngest builds an ingester that records entries from sources onto store and
-// enqueues each for triage on queue. The clock stamps the receipt time when a
-// source leaves it unset.
+// NewIngest returns an Ingest. clk stamps the receipt time a source leaves unset.
 func NewIngest(store resource.Store, queue Enqueuer, clk clock.Timing, sources []Source, opts ...IngestOption) *Ingest {
 	in := &Ingest{
 		store:   store,
@@ -62,9 +56,8 @@ func NewIngest(store resource.Store, queue Enqueuer, clk clock.Timing, sources [
 	return in
 }
 
-// Run starts every source and records entries until ctx is cancelled, then waits
-// for the source readers to stop. A source that fails to start is reported and
-// skipped; if none start, Run returns an error rather than blocking forever.
+// Run records entries until ctx is cancelled and the sources stop. A source that
+// fails to start is reported and skipped; Run errors when none start.
 func (in *Ingest) Run(ctx context.Context) error {
 	if len(in.sources) == 0 {
 		return errors.New("inbox: ingest has no sources")
@@ -97,9 +90,8 @@ func (in *Ingest) Run(ctx context.Context) error {
 	return ctx.Err()
 }
 
-// record stamps the source and (when unset) the receipt time, writes the entry as
-// a resource, and enqueues its key for triage. The source is stamped here, not
-// trusted from the adapter, so the reply-routing key is always authoritative.
+// record overwrites spec.Source with the source's name, so an adapter cannot route
+// replies to another sink.
 func (in *Ingest) record(ctx context.Context, source string, spec Spec) (resource.Key, error) {
 	spec.Source = source
 	if spec.ReceivedAt.IsZero() {

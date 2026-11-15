@@ -1,11 +1,6 @@
-// Package jobstest is the conformance suite for jobs.Queue. Every backend (the
-// in-memory reference, the durable SQLite default, a River or NATS adapter) runs
-// RunSuite and must behave identically, so a durable or distributed queue is held
-// to the exact enqueue, lease, retry, and lifecycle contract of the reference
-// MemoryQueue rather than re-tested by hand.
-//
-// The suite drives time through a clock.Manual so lease expiry and scheduled
-// RunAt are exercised deterministically, with no real sleeping.
+// Package jobstest is the conformance suite every jobs.Queue backend runs, so each
+// matches jobs.MemoryQueue on enqueue, lease, retry and lifecycle. Time moves through
+// a clock.Manual, so lease expiry and RunAt are tested without sleeping.
 package jobstest
 
 import (
@@ -18,15 +13,13 @@ import (
 	"github.com/ionalpha/flynn/jobs"
 )
 
-// Harness is a queue paired with the manual clock that drives it, so the suite
-// can advance time to trigger scheduling and lease expiry.
+// Harness pairs a queue with the clock it reads.
 type Harness struct {
 	Queue jobs.Queue
 	Clock *clock.Manual
 }
 
-// RunSuite runs the full jobs.Queue contract against queues built by newQueue.
-// Each subtest gets a fresh harness, with its queue closed at the end.
+// RunSuite gives each subtest a fresh harness from newQueue and closes its queue.
 func RunSuite(t *testing.T, newQueue func() Harness) {
 	t.Helper()
 	t.Run("EnqueueAppliesDefaults", func(t *testing.T) { testEnqueueDefaults(t, newQueue()) })
@@ -381,8 +374,7 @@ func testGetNotFound(t *testing.T, h Harness) {
 	}
 }
 
-// testRecoverReclaims proves prompt crash recovery: a job left running is claimable
-// again immediately after Recover, without waiting for its lease to expire.
+// testRecoverReclaims checks a running job is claimable at once after Recover.
 func testRecoverReclaims(t *testing.T, h Harness) {
 	defer func() { _ = h.Queue.Close() }()
 	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k"})
@@ -411,8 +403,8 @@ func testRecoverReclaims(t *testing.T, h Harness) {
 	}
 }
 
-// testRecoverReapsExhausted confirms Recover does not revive a job that already spent its
-// attempts: the next Claim reaps it to dead rather than re-leasing it past MaxAttempts.
+// testRecoverReapsExhausted checks the next Claim after Recover reaps a job with no
+// attempts left.
 func testRecoverReapsExhausted(t *testing.T, h Harness) {
 	defer func() { _ = h.Queue.Close() }()
 	j := mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k", MaxAttempts: 1})
@@ -434,8 +426,7 @@ func testRecoverReapsExhausted(t *testing.T, h Harness) {
 	}
 }
 
-// testRecoverIgnoresPending checks Recover only touches running jobs: a pending job is
-// left as is and the count is zero.
+// testRecoverIgnoresPending checks Recover leaves a pending job alone and counts zero.
 func testRecoverIgnoresPending(t *testing.T, h Harness) {
 	defer func() { _ = h.Queue.Close() }()
 	mustEnqueue(t, h.Queue, jobs.EnqueueParams{Kind: "k"})

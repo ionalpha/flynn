@@ -5,15 +5,10 @@ import (
 	"io"
 )
 
-// Pending returns the notices in f that apply to the running Flynn version and have not
-// already been said.
-//
-// "Already said" is where the two severities part company. A release notice or a
-// deprecation is shown once and then remembered, because repeating it is nagging. A
-// security notice is shown every single time for as long as it applies, and is only ever
-// silenced by the user moving to a version that fixes it. A user who is still exposed
-// still needs to be told, and a channel that let a vulnerability scroll past once and then
-// went quiet about it would be worse than no channel: it would look like diligence.
+// Pending returns the notices in f that apply to flynnVersion and still need showing.
+// Info and deprecation notices are shown once. A security notice is shown on every run
+// until the user is on a fixed version, because a user who is still exposed still needs
+// telling.
 func Pending(f Feed, flynnVersion string, t Trust) []Notice {
 	var out []Notice
 	for _, n := range f.Notices {
@@ -28,14 +23,9 @@ func Pending(f Feed, flynnVersion string, t Trust) []Notice {
 	return out
 }
 
-// Render writes the pending notices to w, security first, and reports whether it wrote
-// anything.
-//
-// The text has already been through Sanitize at decode, so what reaches the terminal here
-// carries no escape sequence and cannot repaint what was printed above it. A URL is
-// printed as text and is never opened. Nothing here asks a question, blocks, or changes
-// what the command was going to do: the user asked Flynn to do something, and a notice
-// interrupting that would be a channel that acts.
+// Render writes ns to w, security first, and reports whether it wrote anything. The
+// text was sanitized at decode. A URL is printed and never opened, and nothing here
+// prompts or blocks, so a notice cannot change what the command does.
 func Render(w io.Writer, ns []Notice, stale bool) bool {
 	wrote := false
 	for _, sev := range []Severity{Security, Deprecation, Info} {
@@ -50,9 +40,7 @@ func Render(w io.Writer, ns []Notice, stale bool) bool {
 			wrote = true
 		}
 	}
-	// Staleness is reported next to the notices, never instead of them, and it is
-	// reported at all precisely because an attacker who can block our origin would
-	// otherwise get silence for free and silence reads as all-clear.
+	// Reported beside the notices, so blocking the origin does not read as all-clear.
 	if stale {
 		_, _ = fmt.Fprintln(w, "notice:  the advisory feed has not been refreshed recently; this may not be the current list")
 		wrote = true
@@ -60,8 +48,7 @@ func Render(w io.Writer, ns []Notice, stale bool) bool {
 	return wrote
 }
 
-// label is the prefix a severity is announced with. Security is spelled out because it is
-// the one the user must not skim past.
+// label spells out SECURITY so the user does not skim past it.
 func label(s Severity) string {
 	switch s {
 	case Security:
@@ -73,11 +60,9 @@ func label(s Severity) string {
 	}
 }
 
-// Cached loads and re-verifies the cached feed. Every run re-checks the signature, the
-// origin, and the rollback rule against the stored trust state, so a cache file that was
-// edited on disk since it was written is discarded here rather than believed. There is no
-// fast path that skips this, because the fast path is exactly where a local attacker would
-// put words in our mouth.
+// Cached loads the cached feed and re-checks its signature, origin and rollback rule
+// on every call, so a cache file edited on disk is discarded. There is no fast path,
+// because a local attacker would use it to forge a notice.
 func Cached(store *Store, ring *Keyring) (Feed, Trust, bool) {
 	tr, err := store.LoadTrust()
 	if err != nil {
@@ -92,8 +77,7 @@ func Cached(store *Store, ring *Keyring) (Feed, Trust, bool) {
 		return Feed{}, tr, false
 	}
 	if f.Version < tr.Version {
-		// The cached document is older than the newest feed this client has trusted,
-		// which means the file was rolled back underneath us. Refuse it.
+		// The cache file was rolled back on disk.
 		return Feed{}, tr, false
 	}
 	return f, tr, true

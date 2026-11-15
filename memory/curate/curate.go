@@ -1,40 +1,26 @@
 // Package curate decides what a new memory does to the memory already stored.
+// A fact, preference or decision has one current answer, so keeping every revision
+// gives a reader contradictions. A failure or observation is the opposite: the
+// fifth failure is evidence because of the four before it.
 //
-// Replace-on-subject is right for state and wrong for experience. A preference,
-// a decision or a stated fact has one current answer, and a store that keeps
-// every revision of it hands a reader five contradictory answers and no way to
-// tell which one is in force. A failure, an attempt, an observation is the
-// opposite: the fifth failure matters precisely because there were four before
-// it, and replacing them turns an error trail into amnesia at the moment it was
-// about to become a lesson.
+// The semantics split by kind over one subject key:
 //
-// So the semantics are split by kind, over one subject key:
+//   - Replace kinds (fact, preference, decision by default) supersede the standing
+//     item of the same kind, subject and scope. The new item lists it in
+//     MemoryItem.Supersedes and the old one is tombstoned.
+//   - Append kinds (all others) join the series under the subject, which
+//     consolidation later distils into a lesson.
 //
-//   - Replace kinds (fact, preference, decision by default) supersede the
-//     standing item of the same kind on the same subject and scope, and retire it.
-//     The replacement records what it replaced (MemoryItem.Supersedes) and the
-//     loser is tombstoned, so the correction is in the record and the retirement
-//     leaves its own trail.
-//   - Append kinds (everything else) join the series under the subject and retire
-//     nothing. The series is what a consolidation pass later distils into a
-//     lesson.
+// Two protections guard failures nobody would see:
 //
-// Two write-path protections ride along with the split, both of which exist
-// because the failure they prevent is silent:
+//   - A replace write with weaker provenance than the item it would retire is
+//     demoted to an append, and the contradiction is recorded for a curator. An
+//     agent cannot overwrite the operator.
+//   - A new subject that resembles one in use ("db-choice", "database-choice") is
+//     reported, because a forked replace chain is undetectable later.
 //
-//   - An agent's conclusion never silently replaces a more trusted fact. A
-//     replace-class write whose provenance is weaker than what it would retire is
-//     demoted to an append, and the contradiction is recorded as its own episode
-//     for a curator to resolve. Nothing is refused and nothing is lost; what the
-//     agent may not do is quietly overwrite the operator.
-//   - A subject that looks like a fork of one already in use is flagged. "db-choice"
-//     and "database-choice" are one topic spelled two ways, and once both exist the
-//     replace chain has forked in a way no later read can detect.
-//
-// What this package does not do is decide anything the store could not tell it.
-// The kind vocabulary is configurable (WithClass), similarity is pluggable
-// (WithSimilarity), and both protections report through a callback rather than
-// choosing a log format for a host.
+// The vocabulary ([WithClass]) and similarity ([WithSimilarity]) are configurable,
+// and both protections report through [WithNotify].
 package curate
 
 import (
@@ -47,22 +33,18 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Class is the write semantics a memory kind carries: what a new item of that
-// kind does to the items already stored under its subject.
+// Class is what a new item of a kind does to the items under its subject.
 type Class int
 
 const (
-	// ClassAppend joins the series under the subject and retires nothing. It is the
-	// zero value and the default for an unrecognised kind, because appending is the
-	// answer that cannot lose anything: a store that guessed replace on a kind it did
-	// not know would delete the record to find out it had guessed wrong.
+	// ClassAppend retires nothing. It is the zero value and the default for an
+	// unknown kind, because appending cannot lose a record.
 	ClassAppend Class = iota
-	// ClassReplace supersedes the standing item of the same kind on the same subject
-	// and scope, and retires it.
+	// ClassReplace retires the standing item of the same kind, subject and scope.
 	ClassReplace
 )
 
-// String renders the class for a message a person reads.
+// String returns "replace" or "append".
 func (c Class) String() string {
 	if c == ClassReplace {
 		return "replace"
@@ -70,19 +52,17 @@ func (c Class) String() string {
 	return "append"
 }
 
-// Kinds carrying replace semantics by default: the three that assert a current
-// answer rather than record something that happened. A host with its own
-// vocabulary overrides this per kind with WithClass.
+// Kinds that replace by default, because each asserts a current answer. Override
+// per kind with [WithClass].
 const (
 	KindFact       = "fact"
 	KindPreference = "preference"
 	KindDecision   = "decision"
 )
 
-// KindConflict is the kind written for a contradiction that was recorded rather
-// than resolved: an agent concluded something that contradicts a fact it is not
-// trusted to overwrite. It is an append kind, and it carries the subject of the
-// conflict so the curator's read of that subject finds it.
+// KindConflict records a write that contradicted a fact it was not trusted to
+// overwrite. It appends under the conflict's subject, so a read of that subject
+// finds it.
 const KindConflict = "conflict"
 
 // defaultClasses is the built-in kind vocabulary. Anything absent appends.
@@ -92,28 +72,17 @@ var defaultClasses = map[string]Class{
 	KindDecision:   ClassReplace,
 }
 
-// ClassOf reports the semantics of a kind under the built-in vocabulary. It is
-// exported because the split is a fact about the kinds and not only about this
-// store: a consolidation pass deciding which series are worth distilling, or a
-// review queue explaining why one write retired a fact and another did not, is
-// asking this question without a store in hand. A store with its own vocabulary
-// answers for itself (see Store.ClassOf).
+// ClassOf reports a kind's class under the built-in vocabulary, for callers with no
+// store, such as consolidation. [Store.ClassOf] uses the store's vocabulary.
 func ClassOf(kind string) Class { return defaultClasses[kind] }
 
-// defaultSimilarityThreshold is how alike two subjects have to look before a write
-// reports them as a possible fork. It is tuned against the case the split cares
-// about - "db-choice" against "database-choice", one topic spelled two ways - and
-// against the pairs that must not fire, like "db-choice" against "queue-choice".
-//
-// The number only means anything against the similarity function it is paired
-// with, so a host supplying its own (WithSimilarity, typically an embedding
-// distance) sets its own threshold with it.
+// defaultSimilarityThreshold is tuned so "db-choice" and "database-choice" fire
+// and "db-choice" and "queue-choice" do not. It suits only [SubjectSimilarity]; a
+// host replacing the measure sets its own threshold.
 const defaultSimilarityThreshold = 0.6
 
-// Notice is something the write path noticed and did not refuse: a contradiction
-// it recorded instead of acting on, or a subject that looks like a fork. It is
-// reported through WithNotify so a host can log, alert or queue it for review
-// without this package choosing a format, level or sink.
+// Notice is a contradiction or a likely fork the write path reported without
+// refusing the write, delivered through [WithNotify].
 type Notice struct {
 	// Kind names what was noticed.
 	Kind NoticeKind
@@ -121,39 +90,30 @@ type Notice struct {
 	Subject string
 	// Scope is the scope the write landed in.
 	Scope state.Scope
-	// Incoming is the item as written, after any demotion. Its ID is the stored id,
-	// so a reviewer can go and read it.
+	// Incoming is the item as written, after any demotion.
 	Incoming state.MemoryItem
-	// Conflicting is the stored item the incoming write contradicted, for
-	// NoticeCrossTrust. It is the zero item for a fork notice.
+	// Conflicting is the contradicted item, for [NoticeCrossTrust] only.
 	Conflicting state.MemoryItem
-	// Similar is the existing subject the incoming one looks like a fork of, for
-	// NoticeForkedSubject. It is empty for a cross-trust notice.
+	// Similar is the subject it resembles, for [NoticeForkedSubject] only.
 	Similar string
-	// Detail is the one-line description a person reads.
+	// Detail is a one-line description.
 	Detail string
 }
 
-// NoticeKind names the class of a Notice.
+// NoticeKind names what a [Notice] reports.
 type NoticeKind string
 
 const (
-	// NoticeCrossTrust is a replace-class write that was demoted to an append
-	// because it would have retired a more trusted item.
+	// NoticeCrossTrust is a replace write demoted because it would retire a more
+	// trusted item.
 	NoticeCrossTrust NoticeKind = "cross-trust-replacement"
-	// NoticeForkedSubject is a subject new to its scope that looks like a spelling
-	// of one already in use.
+	// NoticeForkedSubject is a new subject resembling one in use in its scope.
 	NoticeForkedSubject NoticeKind = "forked-subject"
 )
 
-// Store wraps a state.MemoryStore with the write policy. Recall and every other
-// method delegate unchanged: this decides what a write means, and has no opinion
-// about reads.
-//
-// It composes with the other memory decorators rather than replacing them. A host
-// that wants both the poison gate and these semantics wraps guard.Store in this
-// one, so a refused write never reaches the policy and a policy write is screened
-// like any other.
+// Store applies the write policy over a state.MemoryStore; every other method
+// delegates. Wrap a guard.Store in it so a refused write never reaches the policy
+// and every write the policy makes is screened.
 type Store struct {
 	inner     state.MemoryStore
 	classes   map[string]Class
@@ -167,9 +127,7 @@ var _ state.MemoryStore = (*Store)(nil)
 // Option configures a Store.
 type Option func(*Store)
 
-// WithClass sets the semantics of one kind, overriding the default vocabulary. It
-// is how a host names its own kinds ("runbook" replaces, "incident" appends)
-// without this package enumerating somebody else's domain. An empty kind is
+// WithClass sets one kind's class, such as "runbook" replacing. An empty kind is
 // ignored.
 func WithClass(kind string, c Class) Option {
 	return func(s *Store) {
@@ -179,10 +137,8 @@ func WithClass(kind string, c Class) Option {
 	}
 }
 
-// WithNotify registers a callback for everything the write path noticed and did
-// not refuse (see Notice). The callback runs before Write returns, and its errors
-// are its own: a notice is an observation, and failing the write over one would
-// lose the memory to the reporting of it. Nil callbacks are ignored.
+// WithNotify registers a callback for each [Notice], run before Write returns. It
+// cannot fail the write, so reporting never loses a memory. Nil is ignored.
 func WithNotify(fn func(context.Context, Notice)) Option {
 	return func(s *Store) {
 		if fn != nil {
@@ -191,16 +147,10 @@ func WithNotify(fn func(context.Context, Notice)) Option {
 	}
 }
 
-// WithSimilarity replaces the subject similarity measure, which decides whether a
-// new subject is reported as a fork of an existing one. It must return a score in
-// [0,1] with 1 identical, and it must be symmetric, because the pair it is asked
-// about arrives in whichever order the store listed them.
-//
-// The built-in measure is lexical (see SubjectSimilarity). A host with embeddings
-// in hand passes a distance over them, which catches the pair the lexical measure
-// cannot: two spellings that share no substring at all. Pass the matching
-// threshold with WithSimilarityThreshold, since a score only means something
-// against the function that produced it. A nil function is ignored.
+// WithSimilarity replaces [SubjectSimilarity] for fork detection. fn must return a
+// score in [0,1], 1 identical, and be symmetric, because pairs arrive in list order.
+// An embedding distance catches synonyms the lexical measure misses. Set a matching
+// [WithSimilarityThreshold]. A nil function is ignored.
 func WithSimilarity(fn func(a, b string) float64) Option {
 	return func(s *Store) {
 		if fn != nil {
@@ -209,17 +159,14 @@ func WithSimilarity(fn func(a, b string) float64) Option {
 	}
 }
 
-// WithSimilarityThreshold sets the score at or above which two subjects are
-// reported as a possible fork. A threshold above 1 switches fork detection off,
-// which is the honest way for a host with no useful measure to opt out rather
-// than supplying a function that always returns zero.
+// WithSimilarityThreshold sets the score at or above which a fork is reported. Above
+// 1 turns fork detection off.
 func WithSimilarityThreshold(t float64) Option {
 	return func(s *Store) { s.threshold = t }
 }
 
-// Wrap returns a Store applying the write policy over inner. With no options it
-// uses the built-in kind vocabulary and lexical fork detection, and reports
-// nothing anywhere: add WithNotify to see what it noticed.
+// Wrap returns a Store over inner with the built-in vocabulary and lexical fork
+// detection. Without [WithNotify] nothing is reported.
 func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 	s := &Store{
 		inner:     inner,
@@ -239,20 +186,14 @@ func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 // ClassOf reports the semantics of a kind under this store's vocabulary.
 func (s *Store) ClassOf(kind string) Class { return s.classes[kind] }
 
-// Write applies the policy and persists the item.
+// Write applies the policy and stores m. An item with no subject is written
+// unchanged. Scope matches exactly: a workspace decision does not retire the
+// project-wide one, which still holds for other workspaces, and recall already
+// prefers the inner scope.
 //
-// An item with no subject is written unchanged: there is no series to reason about and
-// nothing to key a replacement on, and inventing a subject would be the store guessing.
-//
-// A subjected write reads the live items on its subject and scope first. Scope is matched
-// exactly, never widened: a workspace's decision does not retire the project-wide one it
-// inherits, which is still true for every other workspace. Overriding an inherited fact is
-// what writing at the inner scope already does, through recall's most-specific-first order.
-//
-// The write is persisted before anything is retired. A store cannot offer one transaction
-// across two calls, so the order is chosen for what a crash between them leaves: the new
-// fact stored and the old still live, which a later pass can finish, where the other order
-// would delete the standing answer and then fail to store its replacement.
+// The new item is stored before the old is retired, because there is no transaction
+// across the calls. A crash between them leaves both live, which a later pass can
+// finish; the other order could lose the answer.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
 	subject, err := state.NormalizeSubject(m.Subject)
 	if err != nil {
@@ -268,8 +209,8 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 		return state.MemoryItem{}, err
 	}
 	if len(series) == 0 {
-		// A fork can only start at the moment a subject first appears in a scope, so
-		// the scan for one runs then and not on every write to an established subject.
+		// A fork starts when a subject first appears in a scope, so only then is it
+		// scanned for.
 		s.checkFork(ctx, m)
 	}
 
@@ -277,9 +218,8 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 		return s.inner.Write(ctx, m)
 	}
 
-	// Only the same kind on the same subject is a candidate: a decision about the
-	// database does not retire the preference stated about it, and a reader asking
-	// for the standing preference would find it gone.
+	// Only the same kind is replaced: a decision does not retire a preference on
+	// the same subject.
 	standing := make([]state.MemoryItem, 0, len(series))
 	for _, it := range series {
 		if it.Kind == m.Kind {
@@ -299,20 +239,17 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 	}
 	for _, it := range standing {
 		if err := s.inner.Delete(ctx, it.ID); err != nil {
-			// The replacement is stored and says what it replaced, so the record is
-			// intact and the caller can see both. Reporting it as a write failure would
-			// invite a retry that writes the fact a second time.
+			// The replacement is stored and returned, so a retry does not write the
+			// fact twice.
 			return written, fmt.Errorf("curate: retire superseded item %s: %w", it.ID, err)
 		}
 	}
 	return written, nil
 }
 
-// seriesAt reads the live items under a subject in exactly this scope. The scope
-// filter is applied here rather than left to the query because a zero Scope means
-// "every scope" to Recall, which is the right default for a search and the wrong
-// one for a policy: a global write would otherwise collect the whole fleet's items
-// on that subject and retire them.
+// seriesAt reads the live items under subject in exactly scope. It filters here
+// because a zero Scope means every scope to Recall, and a global write would retire
+// the whole fleet's items.
 func (s *Store) seriesAt(ctx context.Context, subject string, scope state.Scope) ([]state.MemoryItem, error) {
 	items, err := s.inner.Recall(ctx, state.RecallQuery{Subjects: []string{subject}, Scope: scope})
 	if err != nil {
@@ -327,20 +264,14 @@ func (s *Store) seriesAt(ctx context.Context, subject string, scope state.Scope)
 	return out, nil
 }
 
-// moreTrustedThan reports the first standing item the incoming write is not
-// trusted enough to retire, if there is one. Trust is derived from provenance
-// (guard.TrustOfAll), which takes the weakest source of each side, so a
-// conclusion mixed from an operator's instruction and a fetched page is judged on
-// the page.
-//
-// Equal trust replaces. A second write from the operator revising their own
-// preference is the ordinary case, and a rule that demanded strictly greater
-// trust would make the standing answer permanent once written.
+// moreTrustedThan returns the first standing item m may not retire. Trust is each
+// side's weakest source (guard.TrustOfAll), so a conclusion mixing an operator's
+// words and a fetched page is judged as the page. Equal trust replaces, or an
+// operator could never revise their own preference.
 func moreTrustedThan(m state.MemoryItem, standing []state.MemoryItem) (state.MemoryItem, bool) {
 	incoming := guard.TrustOfAll(m.Sources)
 	for _, it := range standing {
-		// sandbox.Trust ascends from trusted to untrusted, so a smaller value on the
-		// stored item is a fact the incoming write is not entitled to overwrite.
+		// sandbox.Trust ascends from trusted to untrusted.
 		if guard.TrustOfAll(it.Sources) < incoming {
 			return it, true
 		}
@@ -348,14 +279,9 @@ func moreTrustedThan(m state.MemoryItem, standing []state.MemoryItem) (state.Mem
 	return state.MemoryItem{}, false
 }
 
-// recordConflict stores a demoted write and the episode that says what it
-// contradicted. The demoted item keeps its own kind and subject and supersedes
-// nothing, so it reads as one more claim on the subject rather than as the answer.
-//
-// The episode is written after the item and carries its id, so the curator reading
-// the conflict can reach both sides. A failure to write the episode is returned
-// with the stored item rather than instead of it: the agent's conclusion is real
-// memory and belongs in the store even when the note about it did not land.
+// recordConflict stores m, superseding nothing, then a [KindConflict] episode naming
+// both sides. If the episode fails, the stored item is still returned with the
+// error, because the conclusion is memory either way.
 func (s *Store) recordConflict(ctx context.Context, m state.MemoryItem, blocker state.MemoryItem) (state.MemoryItem, error) {
 	written, err := s.inner.Write(ctx, m)
 	if err != nil {
@@ -372,9 +298,8 @@ func (s *Store) recordConflict(ctx context.Context, m state.MemoryItem, blocker 
 		Subject: m.Subject,
 		Scope:   m.Scope,
 		Content: detail,
-		// The episode is about both sides, so it credits both and supersedes neither.
-		// Its own provenance is the incoming write's: a note about an untrusted
-		// conclusion is not more trustworthy than the conclusion.
+		// The incoming write's provenance, because a note about an untrusted
+		// conclusion is no more trusted than it.
 		Sources: m.Sources,
 		Anchors: m.Anchors,
 		Tainted: m.Tainted,
@@ -385,22 +310,15 @@ func (s *Store) recordConflict(ctx context.Context, m state.MemoryItem, blocker 
 	return written, nil
 }
 
-// checkFork reports a subject that is new to its scope and looks like a spelling
-// of one already in use there. It only ever reports: a store that refused the
-// write would be asserting that its similarity measure is right, and a lexical
-// measure is a heuristic that fires on "prod-deploy" against "prod-deployment"
-// and misses two words for one thing that share no letters.
-//
-// A threshold above 1 disables the scan entirely, including the read it needs, so
-// opting out costs nothing per write.
+// checkFork reports, and never refuses, because the measure is a heuristic. A
+// threshold above 1 skips the read too, so opting out costs nothing.
 func (s *Store) checkFork(ctx context.Context, m state.MemoryItem) {
 	if s.notify == nil || s.threshold > 1 {
 		return
 	}
 	items, err := s.inner.Recall(ctx, state.RecallQuery{Scope: m.Scope})
 	if err != nil {
-		// A fork notice is an observation about the store, and failing a write because
-		// the observation could not be made would trade the memory for the warning.
+		// A failed observation must not fail the write.
 		return
 	}
 	best, score := "", 0.0
@@ -427,7 +345,6 @@ func (s *Store) report(ctx context.Context, n Notice) {
 	}
 }
 
-// trustName renders a trust level for a message a person reads.
 func trustName(t sandbox.Trust) string {
 	switch t {
 	case sandbox.TrustTrusted:
@@ -439,9 +356,7 @@ func trustName(t sandbox.Trust) string {
 	}
 }
 
-// truncate bounds a quoted content excerpt so one long memory cannot turn the
-// conflict episode into a copy of it. It cuts on a rune boundary, so a multi-byte
-// character is never split into mojibake in a record nobody will re-derive.
+// truncate cuts s to limit runes, on a rune boundary so no character is split.
 func truncate(s string, limit int) string {
 	if len(s) <= limit {
 		return s
@@ -453,16 +368,12 @@ func truncate(s string, limit int) string {
 	return strings.TrimSpace(string(r[:limit])) + "..."
 }
 
-// Recall delegates unchanged. The policy is about what a write means; a reader
-// still sees every live item, including two that contradict each other, and
-// decides for itself.
+// Recall delegates unchanged, so a reader sees contradicting items too.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	return s.inner.Recall(ctx, q)
 }
 
-// Delete delegates unchanged. Retiring an item by hand is exactly what a host does
-// to resolve a conflict this package recorded, so it is not the policy's to
-// second-guess.
+// Delete delegates unchanged; it is how a host resolves a recorded conflict.
 func (s *Store) Delete(ctx context.Context, id string) error { return s.inner.Delete(ctx, id) }
 
 // RecordPush delegates unchanged.

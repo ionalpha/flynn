@@ -1,7 +1,6 @@
-// Package memorytest is the conformance suite for state.MemoryStore. Every backing
-// (the in-memory resource store, the SQLite resource store, a host's) runs RunSuite
-// and must behave identically, so the typed memory facade is held to one contract no
-// matter which resource backend it sits on.
+// Package memorytest is the conformance suite for state.MemoryStore. Every backend
+// (in-memory, SQLite, a host's) runs [RunSuite], so the memory facade has one
+// contract whatever stores it.
 package memorytest
 
 import (
@@ -14,8 +13,8 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// RunSuite runs the full MemoryStore contract against stores built by newStore. Each
-// subtest gets a fresh, empty store.
+// RunSuite runs the MemoryStore contract, with a fresh store from newStore for each
+// subtest.
 func RunSuite(t *testing.T, newStore func() state.MemoryStore) {
 	t.Helper()
 	t.Run("WriteRecall", func(t *testing.T) { testWriteRecall(t, newStore()) })
@@ -47,34 +46,29 @@ func testWriteRecall(t *testing.T, mem state.MemoryStore) {
 	}
 	wantSources(t, "the written item", a, "chat")
 
-	// A second write in another scope is a distinct record with its own id.
 	b := write(t, mem, state.MemoryItem{Kind: "fact", Content: "deploys go to Cloudflare", Scope: state.Scope{Project: "x"}})
 	if b.ID == a.ID {
 		t.Fatal("each write must be a distinct record")
 	}
 
-	// Recall matches content, case-insensitively, and spans scopes by default.
+	// Recall spans scopes by default.
 	wantOrder(t, "case-insensitive recall",
 		recall(t, mem, state.RecallQuery{Query: "PREFERS", Limit: 10}),
 		"the user prefers Go")
-	// A set scope narrows the search, and excludes the global fact.
 	wantOrder(t, "scoped recall",
 		recall(t, mem, state.RecallQuery{Query: "deploys", Scope: state.Scope{Project: "x"}}),
 		"deploys go to Cloudflare")
 	wantCount(t, "scoped recall of a fact that lives in the global scope",
 		recall(t, mem, state.RecallQuery{Query: "prefers", Scope: state.Scope{Project: "x"}}), 0)
-	// An empty query matches every live item across scopes; the limit caps results.
 	wantCount(t, "recall with an empty query (which spans both scopes)",
 		recall(t, mem, state.RecallQuery{}), 2)
 	wantCount(t, "recall capped at 1",
 		recall(t, mem, state.RecallQuery{Limit: 1}), 1)
 }
 
-// testScopeResolution pins the hierarchical read: an item written at an outer
-// scope must be recallable from an inner one when the query asks to widen, and
-// must stay invisible when it does not. This is the read an agent running
-// workspace-under-project issues on every turn, so a backend that resolves scopes
-// exactly and only exactly returns nothing useful to it.
+// testScopeResolution pins the hierarchical read: an outer item is recallable from
+// an inner scope only when the query widens. An agent issues this read every turn,
+// so a backend matching scopes exactly returns it nothing useful.
 func testScopeResolution(t *testing.T, mem state.MemoryStore) {
 	var (
 		instance  = state.Scope{Instance: "i"}
@@ -88,40 +82,33 @@ func testScopeResolution(t *testing.T, mem state.MemoryStore) {
 	write(t, mem, state.MemoryItem{Kind: "fact", Content: "workspace: ship", Scope: workspace})
 	write(t, mem, state.MemoryItem{Kind: "fact", Content: "sibling: ship", Scope: sibling})
 
-	// Without widening, a scoped recall sees its own scope and nothing else.
 	wantOrder(t, "unwidened recall",
 		recall(t, mem, state.RecallQuery{Query: "ship", Scope: workspace}),
 		"workspace: ship")
 
-	// Widening walks the ancestors: own scope, project, instance, global - and
-	// still never the sibling workspace, which encloses nothing.
+	// Widening walks the ancestors and never reaches a sibling.
 	wantOrder(t, "widened recall, most-specific first and no sibling scope",
 		recall(t, mem, state.RecallQuery{Query: "ship", Scope: workspace, IncludeAncestors: true}),
 		"workspace: ship", "project: ship", "instance: ship", "global: ship")
 
-	// The chain skips a level that is empty rather than inventing one: a scope with
-	// no instance resolves straight through to the global scope.
+	// An empty level is skipped: a scope with no instance resolves to global.
 	wantOrder(t, "widened recall from an instance-less scope",
 		recall(t, mem, state.RecallQuery{Query: "ship", Scope: state.Scope{Project: "p"}, IncludeAncestors: true}),
 		"global: ship")
 
-	// Limit applies after resolution, so the most-specific results are the ones
-	// that survive the cap rather than whichever the backend happened to scan first.
+	// Limit applies after resolution, so the most specific results survive the cap.
 	wantOrder(t, "widened recall capped at 2",
 		recall(t, mem, state.RecallQuery{Query: "ship", Scope: workspace, IncludeAncestors: true, Limit: 2}),
 		"workspace: ship", "project: ship")
 
-	// Widening a zero scope is still the unfiltered read, not the global scope.
+	// Widening a zero scope reads everything.
 	wantCount(t, "widened recall with a zero scope (which spans everything)",
 		recall(t, mem, state.RecallQuery{Query: "ship", IncludeAncestors: true}), 5)
 }
 
-// The helpers below keep each assertion in the suite to a single call. That is
-// partly readability, and partly so the failure branches - which by construction
-// never run on a green build - live in one place instead of being duplicated at
-// every assertion, where they would read as a wall of untested lines.
+// The helpers below make each assertion one call, so the failure branches, which
+// never run on a green build, are written once.
 
-// write persists an item, failing the test if the store rejects it.
 func write(t *testing.T, mem state.MemoryStore, it state.MemoryItem) state.MemoryItem {
 	t.Helper()
 	got, err := mem.Write(context.Background(), it)
@@ -131,7 +118,6 @@ func write(t *testing.T, mem state.MemoryStore, it state.MemoryItem) state.Memor
 	return got
 }
 
-// recall runs a query, failing the test if the store errors.
 func recall(t *testing.T, mem state.MemoryStore, q state.RecallQuery) []state.MemoryItem {
 	t.Helper()
 	got, err := mem.Recall(context.Background(), q)
@@ -141,8 +127,7 @@ func recall(t *testing.T, mem state.MemoryStore, q state.RecallQuery) []state.Me
 	return got
 }
 
-// only runs a query that must match exactly one item and returns it, so an
-// assertion about that item does not have to re-check the count first.
+// only returns the one item q must match.
 func only(t *testing.T, mem state.MemoryStore, q state.RecallQuery) state.MemoryItem {
 	t.Helper()
 	got := recall(t, mem, q)
@@ -152,9 +137,8 @@ func only(t *testing.T, mem state.MemoryStore, q state.RecallQuery) state.Memory
 	return got[0]
 }
 
-// wantSources fails unless the item carries exactly this provenance, in order. No
-// expected sources means the item must carry none, which is distinct from carrying
-// one empty string.
+// wantSources fails unless the item has exactly these sources, in order. No want
+// means none, which differs from one empty string.
 func wantSources(t *testing.T, what string, it state.MemoryItem, want ...string) {
 	t.Helper()
 	if len(want) == 0 && len(it.Sources) == 0 {
@@ -165,9 +149,8 @@ func wantSources(t *testing.T, what string, it state.MemoryItem, want ...string)
 	}
 }
 
-// wantExpiry fails unless the item carries exactly this expiry, and unless it was
-// persisted at all: a store that quietly discarded an already-expired write would
-// otherwise satisfy every recall assertion in the suite by having nothing to hide.
+// wantExpiry also fails on an unpersisted item, because a store that dropped an
+// expired write would pass every recall assertion with nothing to hide.
 func wantExpiry(t *testing.T, what string, it state.MemoryItem, want time.Time) {
 	t.Helper()
 	if it.ID == "" {
@@ -178,7 +161,6 @@ func wantExpiry(t *testing.T, what string, it state.MemoryItem, want time.Time) 
 	}
 }
 
-// mustDelete tombstones an item, failing with why the delete was expected to work.
 func mustDelete(t *testing.T, mem state.MemoryStore, id, why string) {
 	t.Helper()
 	if err := mem.Delete(context.Background(), id); err != nil {
@@ -186,7 +168,6 @@ func mustDelete(t *testing.T, mem state.MemoryStore, id, why string) {
 	}
 }
 
-// wantOrder fails unless the recall returned exactly these contents, in order.
 func wantOrder(t *testing.T, what string, got []state.MemoryItem, want ...string) {
 	t.Helper()
 	if c := contents(got); !slices.Equal(c, want) {
@@ -194,9 +175,8 @@ func wantOrder(t *testing.T, what string, got []state.MemoryItem, want ...string
 	}
 }
 
-// wantSet fails unless the recall returned exactly these contents, in any order.
-// It is the assertion for questions about which items came back, so a set answer
-// cannot accidentally pin an ordering the contract leaves to CreatedAt.
+// wantSet ignores order, so a membership check does not pin an order the contract
+// leaves to CreatedAt.
 func wantSet(t *testing.T, what string, got []state.MemoryItem, want ...string) {
 	t.Helper()
 	c := contents(got)
@@ -207,7 +187,6 @@ func wantSet(t *testing.T, what string, got []state.MemoryItem, want ...string) 
 	}
 }
 
-// wantCount fails unless the recall returned exactly n items.
 func wantCount(t *testing.T, what string, got []state.MemoryItem, n int) {
 	t.Helper()
 	if len(got) != n {
@@ -215,9 +194,8 @@ func wantCount(t *testing.T, what string, got []state.MemoryItem, n int) {
 	}
 }
 
-// wantIncreasingStamps fails unless the items were stamped strictly in order. The
-// time-window assertions compare against real stamps, so two writes landing on one
-// clock tick would quietly weaken them rather than fail.
+// wantIncreasingStamps fails on a shared timestamp, which would weaken the window
+// assertions without failing them.
 func wantIncreasingStamps(t *testing.T, items []state.MemoryItem) {
 	t.Helper()
 	for i := 1; i < len(items); i++ {
@@ -228,15 +206,11 @@ func wantIncreasingStamps(t *testing.T, items []state.MemoryItem) {
 	}
 }
 
-// testSelectors covers the non-lexical selectors: the kind filter and the
-// CreatedAt window. They are what lets a caller inject preferences without
-// dragging every observation along, and read "the last month" without pulling all
-// of history back to filter it in the host.
+// testSelectors covers the kind filter and the CreatedAt window, which let a caller
+// read one kind or one period without filtering all history in the host.
 func testSelectors(t *testing.T, mem state.MemoryStore) {
-	// The window bounds come from what the store stamped, not from times supplied
-	// here: CreatedAt is the backend's to assign on create (the resource-backed
-	// facade always stamps its own), so a suite that dictated timestamps would be
-	// testing one backend's write path rather than the shared read contract.
+	// The bounds come from the store's stamps, because CreatedAt is the backend's to
+	// assign.
 	written := make([]state.MemoryItem, 0, 4)
 	for i, w := range []struct{ kind, content string }{
 		{"preference", "prefers tabs"},
@@ -245,17 +219,15 @@ func testSelectors(t *testing.T, mem state.MemoryStore) {
 		{"preference", "prefers dark mode"},
 	} {
 		if i > 0 {
-			// Separate the writes past any platform's clock granularity (Windows
-			// ticks at a few hundred microseconds), so the four stamps are strictly
-			// increasing and the window assertions below are exact rather than
-			// quietly degenerating to "everything is on one side" on a fast runner.
+			// Exceed clock granularity (a few hundred microseconds on Windows), so the
+			// stamps strictly increase on a fast runner.
 			time.Sleep(2 * time.Millisecond)
 		}
 		written = append(written, write(t, mem, state.MemoryItem{Kind: w.kind, Content: w.content}))
 	}
 	wantIncreasingStamps(t, written)
 
-	// A kind filter admits only the listed kinds, and several kinds are a union.
+	// Several kinds are a union.
 	wantSet(t, "recall of kind preference",
 		recall(t, mem, state.RecallQuery{Kinds: []string{"preference"}}),
 		"prefers tabs", "prefers dark mode")
@@ -264,15 +236,13 @@ func testSelectors(t *testing.T, mem state.MemoryStore) {
 	wantCount(t, "recall of an unused kind",
 		recall(t, mem, state.RecallQuery{Kinds: []string{"nonesuch"}}), 0)
 
-	// The window is half-open [Since, Until), checked against the stamps the store
-	// actually assigned rather than against an assumed clock resolution.
+	// The window is half-open [Since, Until).
 	pivot := written[2].CreatedAt
 	since := recall(t, mem, state.RecallQuery{Since: pivot})
 	until := recall(t, mem, state.RecallQuery{Until: pivot})
 	wantSet(t, "recall since the pivot, which is inclusive", since, sortedContents(written[2:])...)
 	wantSet(t, "recall until the pivot, which is exclusive", until, sortedContents(written[:2])...)
-	// The two halves partition the whole: nothing is dropped or double-counted at
-	// the boundary, which is the property "half-open" is there to buy.
+	// The halves partition the whole, with nothing dropped or doubled at the pivot.
 	if len(since)+len(until) != len(written) {
 		t.Fatalf("Since and Until at one pivot returned %d + %d, want %d", len(since), len(until), len(written))
 	}
@@ -282,24 +252,20 @@ func testSelectors(t *testing.T, mem state.MemoryStore) {
 	wantCount(t, "recall with no window",
 		recall(t, mem, state.RecallQuery{}), len(written))
 
-	// The selectors compose, and the limit caps what survives them rather than
-	// capping first and letting the selectors empty the result.
+	// The limit caps what survives the selectors.
 	full := recall(t, mem, state.RecallQuery{Kinds: []string{"preference"}, Since: written[0].CreatedAt})
 	wantCount(t, "recall of kind preference within the window", full, 2)
 	capped := recall(t, mem, state.RecallQuery{Kinds: []string{"preference"}, Limit: 1})
 	wantOrder(t, "recall of kind preference capped at 1", capped, full[0].Content)
-	// A limit alongside a window has to cap what the window left, not cap first
-	// and hand back short. A backend that pushes the limit into its query language
-	// but the window into a later pass gets this wrong in exactly that way.
+	// A backend applying the limit in its query and the window afterwards fails
+	// this.
 	wantOrder(t, "recall within the window capped at 1",
 		recall(t, mem, state.RecallQuery{Kinds: []string{"preference"}, Since: written[0].CreatedAt, Limit: 1}),
 		full[0].Content)
 }
 
-// testRelevance covers the score every recall now carries and the floor and
-// ordering built on it. It asserts the contract's rules rather than any backend's
-// numbers: a store that cannot rank scores every match 1, so these hold whether or
-// not the backend has real ranking to offer.
+// testRelevance covers the score, floor and ordering. It asserts rules, not numbers,
+// because a store that cannot rank scores every match 1.
 func testRelevance(t *testing.T, mem state.MemoryStore) {
 	for _, c := range []string{"alpha beta gamma", "alpha beta", "alpha"} {
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: c})
@@ -311,58 +277,49 @@ func testRelevance(t *testing.T, mem state.MemoryStore) {
 		if it.Score <= 0 || it.Score > 1 {
 			t.Fatalf("item %q scored %v, want a match in (0,1]", it.Content, it.Score)
 		}
-		// Relevance order is non-increasing in score, whatever the scores are.
 		if i > 0 && it.Score > hits[i-1].Score {
 			t.Fatalf("relevance order rose at %d: %v then %v", i, hits[i-1].Score, it.Score)
 		}
 	}
 
-	// A floor above every score empties the result; the default floor of zero
-	// admits everything, including from a backend that does not rank at all.
+	// The default floor of zero admits everything, even from a backend that does not
+	// rank.
 	wantCount(t, "recall with a floor above the scale",
 		recall(t, mem, state.RecallQuery{Query: "alpha", MinScore: 1.0001}), 0)
 	wantCount(t, "recall with the default floor",
 		recall(t, mem, state.RecallQuery{Query: "alpha"}), 3)
 
-	// Score is a read-side annotation, never part of the record: writing an item
-	// that carries one does not persist it.
+	// Score is read-side only and is not persisted.
 	if got := write(t, mem, state.MemoryItem{Kind: "fact", Content: "delta", Score: 0.5}); got.Score != 0 {
 		t.Fatalf("Write returned Score %v, want it cleared", got.Score)
 	}
 }
 
-// testQueryWords holds a store to answering a question by its words rather than by
-// the question as one phrase. A phrase read returns nothing for a question phrased
-// differently from the stored sentence, and an empty answer looks the same as an
-// empty store, so the agent proceeds without a fact it holds. The rules are the
-// plan in recallplan.Plan: every word must match first, and only when no item
-// holds them all does the recall widen to items holding some, a full match
-// outranking a partial one.
+// testQueryWords holds a store to matching a question by its words, because a
+// phrase match returns nothing for different phrasing and an empty answer looks
+// like an empty store. The rules are recallplan.Plan's: all words first, and only
+// when nothing has them all, items with some, full matches ranked first.
 func testQueryWords(t *testing.T, mem state.MemoryStore) {
 	decision := write(t, mem, state.MemoryItem{Kind: "fact", Content: "We decided to keep the database on PostgreSQL after the migration review"})
 	write(t, mem, state.MemoryItem{Kind: "fact", Content: "The review of the deploy pipeline is on Fridays"})
 	backups := write(t, mem, state.MemoryItem{Kind: "fact", Content: "Database backups run nightly"})
 
-	// The words are in the item, out of order and not adjacent, and the question
-	// carries words and punctuation the item does not. The two other items each hold
-	// one of the question's content words and must stay out: widening is a fallback
-	// for an empty answer, not a way to pad a full one.
+	// The words are in the item out of order. The other items each hold one content
+	// word and must stay out, because widening only applies to an empty answer.
 	got := recall(t, mem, state.RecallQuery{Query: "Which database did we keep after the review?"})
 	wantSet(t, "a question whose words are in the item, not adjacent", got, decision.Content)
 
-	// Nothing holds all four words, so the recall widens: the items holding some of
-	// them come back, and the one holding more of them first.
+	// Nothing holds all four words, so the recall widens, fuller matches first.
 	got = recall(t, mem, state.RecallQuery{Query: "database nightly backups restore", Order: state.OrderRelevance})
 	wantOrder(t, "a question no item answers in full", got, backups.Content, decision.Content)
 	if got[0].Score < got[1].Score {
 		t.Fatalf("the fuller match scored %v below the partial one at %v", got[0].Score, got[1].Score)
 	}
 
-	// A word nothing holds answers nothing; widening does not invent a match.
 	wantCount(t, "a question none of whose words appear", recall(t, mem, state.RecallQuery{Query: "kubernetes terraform"}), 0)
 
-	// Text that is query syntax in some full-text engines is matched as text: it
-	// must not error, and it must not turn into a match for every item.
+	// Full-text query syntax is matched as text, without error or matching
+	// everything.
 	for _, q := range []string{`database AND`, `NEAR(database`, `"database`, `data*`, `-database`, `title:database`, `???`} {
 		got, err := mem.Recall(context.Background(), state.RecallQuery{Query: q})
 		if err != nil {
@@ -374,43 +331,31 @@ func testQueryWords(t *testing.T, mem state.MemoryStore) {
 	}
 }
 
-// testProvenance pins provenance as a list. An item distilled from several inputs
-// has to be able to say so: a purge of everything one compromised source
-// contributed to has to find the items where it was one contributor among several,
-// and a store that kept only the first or last of them would silently miss exactly
-// those.
+// testProvenance pins provenance as a list, so purging a compromised source finds
+// the items where it was one of several.
 func testProvenance(t *testing.T, mem state.MemoryStore) {
 	many := []string{"user:operator", "tool:web-fetch", "agent:run-7"}
-	// The order is the writer's and survives the round trip through storage, so a
-	// reader can tell the primary source from the incidental ones if the writer
-	// meant anything by the order.
+	// The writer's order survives storage.
 	wantSources(t, "Write of a multi-source item",
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: "distilled from three inputs", Sources: many}), many...)
 	wantSources(t, "recall of the multi-source item",
 		only(t, mem, state.RecallQuery{Query: "distilled"}), many...)
 
-	// No provenance is empty, not a one-element list holding an empty string: an
-	// item with no recorded origin must be distinguishable from one sourced to "".
+	// No provenance must stay distinguishable from one source "".
 	wantSources(t, "Write of an item with no sources",
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: "no recorded origin"}))
 	wantSources(t, "recall of the item with no provenance",
 		only(t, mem, state.RecallQuery{Query: "recorded"}))
 
-	// One source is the ordinary case and stays a one-element list rather than
-	// collapsing back to a bare string somewhere in the backend.
 	wantSources(t, "Write of a single-source item",
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: "single origin", Sources: []string{"chat"}}), "chat")
 }
 
-// testTaint pins the taint flag as part of the record. A backend that dropped it
-// would read back an item that looks clean, and the digest that reads the store
-// would push the laundered fact it was written to keep out - a silent failure with
-// no error anywhere, which is why this is a contract test and not a backend's own.
+// testTaint pins the taint flag as stored. A backend that dropped it would let the
+// digest push a laundered fact, with no error anywhere.
 //
-// The flag is deliberately independent of provenance here: the items below carry
-// agent- and user-scheme sources, the ones that look most trustworthy, because a
-// backend that "helpfully" recomputed taint from sources would pass a test that
-// only ever tainted tool-sourced writes.
+// The items carry agent and user sources, so a backend that recomputed taint from
+// sources fails.
 func testTaint(t *testing.T, mem state.MemoryStore) {
 	clean := write(t, mem, state.MemoryItem{
 		Kind: "fact", Content: "an untainted note", Sources: []string{"agent:run-1"},
@@ -432,14 +377,11 @@ func testTaint(t *testing.T, mem state.MemoryStore) {
 		t.Fatalf("recall of the clean item returned it tainted: %+v", got)
 	}
 
-	// A taint does not hide anything: the item is recallable like any other, which
-	// is the whole distinction between the taint flag and the ingest refusal.
+	// A tainted item is still recallable, unlike an ingest refusal.
 	wantCount(t, "recall spanning both items", recall(t, mem, state.RecallQuery{}), 2)
 
-	// A user-scheme source does not clear a taint. This is the ordering the design
-	// turns on - taint beats provenance, never the other way round - and a backend
-	// that stored the flag but let a trusted source override it on read would put
-	// exactly the laundered item back in the push set.
+	// Taint beats provenance: a user source does not clear it, or the laundered item
+	// returns to the push set.
 	fromUser := write(t, mem, state.MemoryItem{
 		Kind: "preference", Content: "operator said so, in a poisoned context",
 		Sources: []string{"user:operator"}, Tainted: true,
@@ -452,18 +394,15 @@ func testTaint(t *testing.T, mem state.MemoryStore) {
 	}
 }
 
-// testAnchors pins anchors as opaque refs: stored, matched, never resolved. The
-// property that matters most here is the one a backend is tempted to improve on -
-// that an anchor pointing at nothing is a perfectly good anchor. A store that
-// checked refs, or dropped the ones it could not resolve, would need a resolver for
-// a namespace it does not own, and would quietly delete facts whose subject it
-// merely could not see.
+// testAnchors pins anchors as opaque refs: stored, matched, never resolved. An
+// anchor pointing at nothing is valid. A store that dropped unresolvable refs would
+// need a resolver for a namespace it does not own, and would delete facts whose
+// subject it cannot see.
 func testAnchors(t *testing.T, mem state.MemoryStore) {
 	ctx := context.Background()
 	widget := state.Anchor{Kind: "widget", ID: "w-1"}
 	gadget := state.Anchor{Kind: "gadget", ID: "g-9"}
-	// Deliberately the same id under a different kind, so a backend that matched on
-	// the id alone would fail rather than pass by coincidence.
+	// The same id under another kind, so matching on id alone fails.
 	widgetShapedGadget := state.Anchor{Kind: "gadget", ID: "w-1"}
 
 	both := write(t, mem, state.MemoryItem{
@@ -474,9 +413,8 @@ func testAnchors(t *testing.T, mem state.MemoryStore) {
 	})
 	write(t, mem, state.MemoryItem{Kind: "fact", Content: "about nothing in particular"})
 
-	// The round trip, and canonical form: a caller may pass anchors in any order,
-	// and every backend stores and returns the same sorted, deduplicated list, so
-	// the same anchor set encodes identically wherever it lands.
+	// Every backend returns anchors sorted and deduplicated, so one set encodes one
+	// way.
 	wantAnchors(t, "Write of a two-anchor item", both, gadget, widget)
 	wantAnchors(t, "recall of the two-anchor item",
 		only(t, mem, state.RecallQuery{Query: "spans"}), gadget, widget)
@@ -489,41 +427,34 @@ func testAnchors(t *testing.T, mem state.MemoryStore) {
 	wantAnchors(t, "Write of an unanchored item",
 		write(t, mem, state.MemoryItem{Kind: "fact", Content: "unanchored"}))
 
-	// The ride-along read: a ref in hand, no lexical query, and back come the facts
-	// about that ref and nothing else. This is the shape pull-only search cannot
-	// serve, because it needs the reader to already suspect the fact exists.
+	// The ride-along read: a ref and no query returns that ref's facts only.
 	wantSet(t, "recall by anchor with no query",
 		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget}}),
 		"about the widget only", "spans two subjects", "written with a repeat")
 
-	// Any-of, not all-of: an item anchored to one of the refs asked for matches, and
-	// an item anchored to several of them comes back once rather than per match.
+	// Anchors match any-of, and an item matching several returns once.
 	wantSet(t, "recall by either of two anchors",
 		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget, gadget}}),
 		"about the widget only", "spans two subjects", "written with a repeat")
 
-	// Both halves are matched. Kind is what keeps two systems' ids from colliding,
-	// so it cannot be the half a backend optimizes away.
+	// Kind is matched too, because it keeps two systems' ids apart.
 	wantCount(t, "recall by a matching id under the wrong kind",
 		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widgetShapedGadget}}), 0)
 
-	// An anchor nothing is stored under is an empty result, not an error: the store
-	// has no way to tell a ref that never existed from one whose referent is gone,
-	// and must not try.
+	// An unknown anchor is empty, without error, because the store cannot tell a ref
+	// that never existed from one whose referent is gone.
 	wantCount(t, "recall by an unknown anchor",
 		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{{Kind: "widget", ID: "gone"}}}), 0)
 
-	// Anchors compose with the other selectors rather than replacing them, and the
-	// combination narrows.
+	// Anchors narrow along with the other selectors.
 	wantSet(t, "recall by anchor and content",
 		recall(t, mem, state.RecallQuery{Query: "widget", Anchors: []state.Anchor{widget}}),
 		"about the widget only")
 	wantCount(t, "recall by anchor and a non-matching kind",
 		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget}, Kinds: []string{"preference"}}), 0)
 
-	// Anchors are about, sources are from. An item carrying both keeps them
-	// separate; a backend that folded either into the other would pass every
-	// assertion above.
+	// Anchors say what an item is about and sources where it came from. A backend
+	// folding one into the other passes every assertion above.
 	mixed := write(t, mem, state.MemoryItem{
 		Kind:    "fact",
 		Content: "learned from a tool while working on the widget",
@@ -533,17 +464,15 @@ func testAnchors(t *testing.T, mem state.MemoryStore) {
 	wantSources(t, "Write of an item with both", mixed, "tool:web-fetch")
 	wantAnchors(t, "Write of an item with both", mixed, widget)
 
-	// A tombstone drops out of an anchored recall too, not only a lexical one. On a
-	// backend that indexes anchors separately this is a second index to keep honest.
+	// A tombstone leaves an anchored recall too, which is a separate index on some
+	// backends.
 	mustDelete(t, mem, both.ID, "the anchored item was just written and is live")
 	wantSet(t, "recall by anchor after a delete",
 		recall(t, mem, state.RecallQuery{Anchors: []state.Anchor{widget}}),
 		"about the widget only", "written with a repeat",
 		"learned from a tool while working on the widget")
 
-	// Shape is the whole of what a write may check, and it is checked: half an
-	// anchor can never match anything, so storing it would be storing a ref that is
-	// dead on arrival.
+	// A write checks shape only. Half an anchor can never match, so it is refused.
 	for _, bad := range []state.Anchor{{Kind: "widget"}, {ID: "w-1"}, {}} {
 		_, err := mem.Write(ctx, state.MemoryItem{
 			Kind: "fact", Content: "malformed anchor", Anchors: []state.Anchor{bad},
@@ -556,18 +485,14 @@ func testAnchors(t *testing.T, mem state.MemoryStore) {
 		recall(t, mem, state.RecallQuery{Query: "malformed"}), 0)
 }
 
-// testSubjects pins the subject as a stored, normalized key rather than a phrase
-// in the content. The two properties a backend can get wrong independently are
-// both here: that two spellings of one topic land on the same key, and that the
-// filter matches that key exactly rather than searching the text for it. A store
-// that filtered subjects lexically would pass every recall assertion below except
-// the ones about items that never mention their own subject.
+// testSubjects pins the subject as a stored, normalized key. Spellings of one topic
+// share a key, and the filter matches the key exactly, so a store searching content
+// fails on items that never mention their subject.
 func testSubjects(t *testing.T, mem state.MemoryStore) {
 	ctx := context.Background()
 
-	// The three spellings a writer plausibly reaches for, all naming one topic.
-	// They must come back identical, or the write policy that reads by subject sees
-	// three chains where there is one.
+	// Three spellings of one topic must store identically, or a policy reading by
+	// subject sees three chains.
 	for _, spelling := range []string{"db-choice", "DB Choice", "db_choice"} {
 		got := write(t, mem, state.MemoryItem{
 			Kind: "decision", Content: "wrote it as " + spelling, Subject: spelling,
@@ -576,16 +501,14 @@ func testSubjects(t *testing.T, mem state.MemoryStore) {
 			t.Fatalf("Write of subject %q stored %q, want %q", spelling, got.Subject, "db-choice")
 		}
 	}
-	// Deliberately never says "db-choice" in its content: this is the item a
-	// lexical filter would miss and an exact key match must find.
+	// The content omits "db-choice", so a lexical filter misses it.
 	write(t, mem, state.MemoryItem{
 		Kind: "decision", Content: "we are going with Postgres", Subject: "db-choice",
 	})
 	write(t, mem, state.MemoryItem{
 		Kind: "decision", Content: "the queue runs on NATS", Subject: "queue-choice",
 	})
-	// No subject at all: the item about nothing in particular, which must not be
-	// swept up by a filter for somebody else's key.
+	// An unsubjected item must not match another key.
 	write(t, mem, state.MemoryItem{Kind: "observation", Content: "the build was slow today"})
 
 	wantSet(t, "recall by subject with no query",
@@ -597,25 +520,21 @@ func testSubjects(t *testing.T, mem state.MemoryStore) {
 		"the queue runs on NATS")
 	wantCount(t, "recall by a subject nothing was written under",
 		recall(t, mem, state.RecallQuery{Subjects: []string{"nothing-here"}}), 0)
-	// The filter is exact, so the un-normalized spelling of a stored subject matches
-	// nothing: a caller filters on the form the write path stored.
+	// The filter is exact, so an un-normalized spelling matches nothing.
 	wantCount(t, "recall by an un-normalized subject",
 		recall(t, mem, state.RecallQuery{Subjects: []string{"DB Choice"}}), 0)
-	// The empty subject is a value like any other, and is the one a filter can only
-	// reach by asking for it.
+	// The empty subject matches only when asked for.
 	wantSet(t, "recall by the empty subject",
 		recall(t, mem, state.RecallQuery{Subjects: []string{""}}),
 		"the build was slow today")
 
-	// Subject composes with the other selectors rather than replacing them.
 	wantSet(t, "recall by subject and content",
 		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}, Query: "Postgres"}),
 		"we are going with Postgres")
 	wantCount(t, "recall by subject and a non-matching kind",
 		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}, Kinds: []string{"observation"}}), 0)
 
-	// A tombstoned item leaves the subject's series, so a policy reading the series
-	// does not decide against a fact somebody retired.
+	// A tombstoned item leaves the series, so a policy does not weigh a retired fact.
 	retired := write(t, mem, state.MemoryItem{
 		Kind: "decision", Content: "an earlier answer", Subject: "db-choice",
 	})
@@ -623,8 +542,7 @@ func testSubjects(t *testing.T, mem state.MemoryStore) {
 	wantCount(t, "recall by subject after a delete",
 		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}}), 4)
 
-	// A subject with nothing to key on is refused rather than silently stored as
-	// unsubjected, which would leave the writer believing it had a key.
+	// An unkeyable subject is refused, so the writer does not believe it has a key.
 	for _, bad := range []string{"---", ".", " ?! "} {
 		_, err := mem.Write(ctx, state.MemoryItem{
 			Kind: "decision", Content: "unkeyable subject", Subject: bad,
@@ -637,11 +555,9 @@ func testSubjects(t *testing.T, mem state.MemoryStore) {
 		recall(t, mem, state.RecallQuery{Query: "unkeyable"}), 0)
 }
 
-// testSupersedes pins supersession as a recorded link and nothing more. The rule a
-// backend is most likely to improve on is the one asserted hardest here: writing a
-// replacement does not retire what it replaced. Inferring the tombstone would make
-// a host unable to record a correction while deliberately keeping both facts live,
-// and would hide the retirement from the audit trail that Delete leaves.
+// testSupersedes pins supersession as a link only: a replacement does not retire
+// what it replaced. An inferred tombstone would stop a host keeping both facts live,
+// and would skip the audit trail Delete leaves.
 func testSupersedes(t *testing.T, mem state.MemoryStore) {
 	ctx := context.Background()
 	first := write(t, mem, state.MemoryItem{
@@ -656,14 +572,13 @@ func testSupersedes(t *testing.T, mem state.MemoryStore) {
 	}
 	wantSupersedes(t, "recall of the superseding item",
 		only(t, mem, state.RecallQuery{Query: "Postgres"}), first.ID)
-	// Both are live: the link is a record of what replaced what, not an instruction.
+	// Both stay live.
 	wantCount(t, "recall of the subject after a supersession",
 		recall(t, mem, state.RecallQuery{Subjects: []string{"db-choice"}}), 2)
 	wantSupersedes(t, "recall of the superseded item",
 		only(t, mem, state.RecallQuery{Query: "MySQL"}))
 
-	// Canonical form, as for anchors: sorted and deduplicated, so one consolidation
-	// distilling the same series twice encodes identically both times.
+	// Sorted and deduplicated, so distilling one series twice encodes identically.
 	a := write(t, mem, state.MemoryItem{Kind: "episode", Content: "failure one", Subject: "flaky-deploy"})
 	b := write(t, mem, state.MemoryItem{Kind: "episode", Content: "failure two", Subject: "flaky-deploy"})
 	ids := []string{a.ID, b.ID}
@@ -674,14 +589,12 @@ func testSupersedes(t *testing.T, mem state.MemoryStore) {
 	})
 	wantSupersedes(t, "Write of a lesson distilled from two episodes", lesson, ids...)
 
-	// An id naming an item that is gone is a dead link, not an error: nothing here
-	// resolves ids, exactly as nothing resolves an anchor's ref.
+	// An id of a deleted item stays as a dead link, because ids are not resolved.
 	mustDelete(t, mem, a.ID, "the episode was just written and is live")
 	wantSupersedes(t, "recall of a lesson whose episode was deleted",
 		only(t, mem, state.RecallQuery{Query: "cold"}), ids...)
 
-	// Self-supersession is refused: the chain is walked backwards, and a self-loop
-	// is a walk with no end for no meaning anybody can state.
+	// Self-supersession is refused, because walking the chain would never end.
 	self := "mem-self-loop"
 	_, err := mem.Write(ctx, state.MemoryItem{
 		ID: self, Kind: "decision", Content: "supersedes itself", Supersedes: []string{self},
@@ -699,8 +612,7 @@ func testSupersedes(t *testing.T, mem state.MemoryStore) {
 		recall(t, mem, state.RecallQuery{Query: "supersedes"}), 0)
 }
 
-// wantSupersedes fails unless the item supersedes exactly these ids, in canonical
-// order. No expected ids means the item must supersede nothing.
+// wantSupersedes compares in canonical order; no want means none.
 func wantSupersedes(t *testing.T, what string, it state.MemoryItem, want ...string) {
 	t.Helper()
 	if len(want) == 0 && len(it.Supersedes) == 0 {
@@ -711,8 +623,7 @@ func wantSupersedes(t *testing.T, what string, it state.MemoryItem, want ...stri
 	}
 }
 
-// wantAnchors fails unless the item carries exactly these anchors, in canonical
-// order. No expected anchors means the item must carry none.
+// wantAnchors compares in canonical order; no want means none.
 func wantAnchors(t *testing.T, what string, it state.MemoryItem, want ...state.Anchor) {
 	t.Helper()
 	if len(want) == 0 && len(it.Anchors) == 0 {
@@ -723,19 +634,13 @@ func wantAnchors(t *testing.T, what string, it state.MemoryItem, want ...state.A
 	}
 }
 
-// testExpiry pins MemoryItem.ExpiresAt across every recall shape a backend
-// implements. The shapes matter more than the rule here: a backend that pushes the
-// expiry predicate into its query language for the general case, but keeps a
-// fast-path statement for the scoped no-query read an agent issues at startup, will
-// serve expired memory from exactly that path and pass a test that only exercised
-// the general one.
+// testExpiry pins MemoryItem.ExpiresAt across every recall shape, because a backend
+// with a fast path for the startup read can serve expired memory from that path
+// alone.
 func testExpiry(t *testing.T, mem state.MemoryStore) {
 	scope := state.Scope{Project: "p"}
-	// The expiry times are anchored to a stamp the store itself assigned, not to
-	// this process's clock. Recall judges expiry against the backend's clock, so a
-	// suite reading its own time would be asserting the two clocks agree rather
-	// than asserting the contract. An hour either side is wide enough that the
-	// assertions do not depend on how long the test takes to run.
+	// Times are relative to a store-assigned stamp, because recall judges expiry by
+	// the backend's clock. An hour either side makes test duration irrelevant.
 	anchor := write(t, mem, state.MemoryItem{
 		Kind: "fact", Content: "permanent credential", Scope: scope,
 	}).CreatedAt
@@ -749,52 +654,40 @@ func testExpiry(t *testing.T, mem state.MemoryStore) {
 		Kind: "fact", Content: "live credential", Scope: scope, ExpiresAt: future,
 	})
 
-	// Write accepts an already-expired item and hands it back intact, rather than
-	// rejecting it or silently clearing the field.
+	// Write accepts an expired item with the field intact.
 	wantExpiry(t, "Write of an already-expired item", dead, past)
 
 	live := []string{"live credential", "permanent credential"}
-	// The scoped, query-less read: the startup shape, and the one most likely to
-	// have its own code path.
+	// The startup read, the most likely to have its own path.
 	wantSet(t, "scoped recall with no query", recall(t, mem, state.RecallQuery{Scope: scope}), live...)
-	// The lexical read, which on a full-text backend is a different query entirely.
+	// The lexical read is a separate query on a full-text backend.
 	wantSet(t, "recall by content", recall(t, mem, state.RecallQuery{Query: "credential"}), live...)
-	// The unfiltered read.
 	wantSet(t, "unfiltered recall", recall(t, mem, state.RecallQuery{}), live...)
 	// With a kind filter, which some backends push into the query and some do not.
 	wantSet(t, "recall of kind fact", recall(t, mem, state.RecallQuery{Kinds: []string{"fact"}}), live...)
 	// Widened over a scope chain, the shape that cannot use a prepared statement.
 	wantSet(t, "widened recall",
 		recall(t, mem, state.RecallQuery{Scope: scope, IncludeAncestors: true}), live...)
-	// Ordered by relevance, so the expired row cannot come back through the ranking
-	// path either.
 	wantSet(t, "relevance-ordered recall",
 		recall(t, mem, state.RecallQuery{Query: "credential", Order: state.OrderRelevance}), live...)
-	// A limit must cap what survived expiry, not cap first and then drop the expired
-	// row out of the capped set, which would hand back one item instead of two.
+	// The limit caps what survived expiry; capping first would return one item.
 	wantCount(t, "recall capped at 2", recall(t, mem, state.RecallQuery{Scope: scope, Limit: 2}), 2)
 
-	// Expiry hides a fact from retrieval; it is not a deletion. The expired item is
-	// still a live record, so Delete finds it and tombstones it rather than
-	// reporting it already gone.
+	// Expiry only hides an item from recall, so Delete still finds it.
 	mustDelete(t, mem, dead.ID, "expiry is not deletion, so an expired item is still there to tombstone")
 }
 
-// testUsage pins the usage instrumentation: what counts as a push, what counts as
-// a use, and the organic/primed split that keeps the two apart. The split is the
-// point of the whole feature, so a backend that records a use without its origin,
-// or that lets a push masquerade as a read, fails here.
+// testUsage pins push and use counting and the organic and primed split. A backend
+// that drops a use's origin, or counts a push as a read, fails.
 func testUsage(t *testing.T, mem state.MemoryStore) {
 	ctx := context.Background()
 	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "the deploy target is Cloudflare"})
 	b := write(t, mem, state.MemoryItem{Kind: "preference", Content: "the user prefers Go"})
 
-	// Nothing has been read, so there is nothing to report. An untouched item has
-	// no row rather than a zeroed one, so it stays distinguishable from an item
-	// that was pushed and ignored.
+	// An untouched item has no row, so it differs from one pushed and ignored.
 	wantUsageCount(t, "before any read", wantUsage(t, "before any read", mem, nil), 0)
 
-	// A push counts once per item, however many times the caller names it.
+	// A push counts once per item, however often it is named.
 	mustRecordPush(t, mem, []string{a.ID, b.ID, a.ID})
 	rows := wantUsage(t, "after one push", mem, []string{a.ID, b.ID})
 	wantUsageCount(t, "after one push", rows, 2)
@@ -803,9 +696,8 @@ func testUsage(t *testing.T, mem state.MemoryStore) {
 		wantStamps(t, "after one push", u, true, false)
 	}
 
-	// The two origins are counted apart. A primed use is a real use, so it clears
-	// Ignored, but it lands in its own counter because it says more about the push
-	// than about the item.
+	// A primed use clears Ignored but has its own counter, because it says more
+	// about the push than the item.
 	mustRecordUse(t, mem, a.ID, state.UsagePrimed)
 	mustRecordUse(t, mem, b.ID, state.UsageOrganic)
 	mustRecordUse(t, mem, b.ID, state.UsageOrganic)
@@ -814,28 +706,24 @@ func testUsage(t *testing.T, mem state.MemoryStore) {
 	wantStamps(t, "after a primed use", ua, true, true)
 	wantCounts(t, "after two organic uses", wantOneUsage(t, "after two organic uses", mem, b.ID), 1, 2, 0)
 
-	// An origin the contract does not recognise is refused rather than guessed at,
-	// and records nothing.
+	// An unknown origin is refused and records nothing.
 	wantErrIs(t, "RecordUse with no origin",
 		mem.RecordUse(ctx, a.ID, state.UsageOrigin("")), state.ErrInvalid)
 	wantErrIs(t, "RecordUse with an unknown origin",
 		mem.RecordUse(ctx, a.ID, state.UsageOrigin("guessed")), state.ErrInvalid)
 
-	// A set carrying an id with no item behind it records nothing at all, so a
-	// stale digest entry surfaces instead of quietly accruing counts.
+	// One unknown id fails the whole set, so a stale digest entry surfaces.
 	wantErrIs(t, "RecordPush over an unknown id",
 		mem.RecordPush(ctx, []string{a.ID, "missing"}), state.ErrNotFound)
 	wantErrIs(t, "RecordUse of an unknown id",
 		mem.RecordUse(ctx, "missing", state.UsageOrganic), state.ErrNotFound)
 	wantCounts(t, "after the rejected push", wantOneUsage(t, "after the rejected push", mem, a.ID), 1, 0, 1)
 
-	// An empty push is a no-op, not an error: a digest that selected nothing has
-	// nothing to report.
+	// An empty push succeeds, because an empty digest has nothing to report.
 	wantErrIs(t, "RecordPush(nil)", mem.RecordPush(ctx, nil), nil)
 
-	// Usage outlives the item. A tombstoned item can no longer be pushed, but what
-	// was already recorded stays readable, so a curator can still see what was put
-	// in front of readers before it was retired.
+	// Usage outlives the item, so a curator sees what was shown before retirement.
+	// A tombstoned item cannot be pushed.
 	mustDelete(t, mem, b.ID, "the item was just written and is live")
 	wantErrIs(t, "RecordPush of a tombstoned item",
 		mem.RecordPush(ctx, []string{b.ID}), state.ErrNotFound)
@@ -849,13 +737,9 @@ func testUsage(t *testing.T, mem state.MemoryStore) {
 	}
 }
 
-// testPromotions pins the push-eligibility gate: one decision in force per item,
-// revisable, attributable, and refused where it could not be audited.
-//
-// The property the digest depends on is the boring one - an item nobody has
-// reviewed has no row at all. A backend that materialized a false row instead would
-// read identically to a reviewer's explicit refusal, and the audit could no longer
-// tell silence from a decision anybody made.
+// testPromotions pins one revisable, attributed decision per item, refused when it
+// could not be audited. An unreviewed item has no row, so an audit can tell silence
+// from a refusal.
 func testPromotions(t *testing.T, mem state.MemoryStore) {
 	a := write(t, mem, state.MemoryItem{Kind: "fact", Content: "the deploy target is Cloudflare"})
 	b := write(t, mem, state.MemoryItem{Kind: "preference", Content: "the user prefers Go"})
@@ -874,12 +758,9 @@ func testPromotions(t *testing.T, mem state.MemoryStore) {
 	if only := wantOnePromotion(t, "after one promotion", mem, a.ID); !only.Promoted {
 		t.Fatalf("the promotion did not survive the round trip: %+v", only)
 	}
-	// Only the reviewed item has a row. The other is not promoted, and says so by
-	// its absence rather than by a row nobody wrote.
 	wantPromotionCount(t, "the unreviewed item", wantPromotions(t, "the unreviewed item", mem, []string{b.ID}), 0)
 
-	// A revision replaces the decision in force rather than accruing a second row,
-	// and advances the record's version so a reader can tell it moved.
+	// A revision replaces the row and advances its version.
 	revoked := mustPromote(t, mem, state.PromotionDecision{MemoryID: a.ID, By: "user:operator", Reason: "stale"})
 	if revoked.Promoted || revoked.Reason != "stale" {
 		t.Fatalf("revocation returned %+v, want it not promoted", revoked)
@@ -891,13 +772,11 @@ func testPromotions(t *testing.T, mem state.MemoryStore) {
 	if now := wantOnePromotion(t, "after the revocation", mem, a.ID); now.Promoted {
 		t.Fatalf("the revoked item reads as promoted: %+v", now)
 	}
-	// A revoked row is a decision, and it is not a promotion: the set a digest
-	// filters on holds neither the revoked item nor the unreviewed one.
+	// The promoted set excludes revoked and unreviewed items.
 	if set := state.PromotedSet(wantPromotions(t, "the promoted set", mem, nil)); len(set) != 0 {
 		t.Fatalf("PromotedSet = %v, want nothing promoted", set)
 	}
 
-	// A decision that could not be audited is refused: no reviewer, no item.
 	wantPromoteErr(t, "a promotion with no reviewer", mem,
 		state.PromotionDecision{MemoryID: a.ID, Promoted: true}, state.ErrInvalid)
 	wantPromoteErr(t, "a promotion with no item", mem,
@@ -905,8 +784,7 @@ func testPromotions(t *testing.T, mem state.MemoryStore) {
 	wantPromoteErr(t, "a promotion of an unknown item", mem,
 		state.PromotionDecision{MemoryID: "missing", Promoted: true, By: "user:operator"}, state.ErrNotFound)
 
-	// A decision outlives its item, like usage: what was approved before an item was
-	// retired stays readable, and the tombstoned item cannot be promoted afresh.
+	// A decision outlives its item, which cannot then be promoted again.
 	mustPromote(t, mem, state.PromotionDecision{MemoryID: b.ID, Promoted: true, By: "user:operator"})
 	mustDelete(t, mem, b.ID, "the item was just written and is live")
 	wantPromoteErr(t, "a promotion of a tombstoned item", mem,
@@ -915,12 +793,10 @@ func testPromotions(t *testing.T, mem state.MemoryStore) {
 		t.Fatalf("the decision did not outlive its item: %+v", kept)
 	}
 
-	// A filtered read takes several ids at once, which is the shape a digest asks
-	// in: one lookup for the whole candidate set rather than one per item.
+	// The digest reads its whole candidate set in one call.
 	pair := wantPromotions(t, "a read of both items", mem, []string{a.ID, b.ID})
 	wantPromotionCount(t, "a read of both items", pair, 2)
 
-	// An empty id list is the whole-store read, ordered by item.
 	all := wantPromotions(t, "the unfiltered read", mem, nil)
 	wantPromotionCount(t, "the unfiltered read", all, 2)
 	if all[0].MemoryID > all[1].MemoryID {
@@ -937,9 +813,7 @@ func mustPromote(t *testing.T, mem state.MemoryStore, d state.PromotionDecision)
 	return got
 }
 
-// wantPromoteErr fails unless the decision is refused with the expected error, and
-// unless nothing was recorded: a refused decision that left a row behind would be a
-// promotion nobody made.
+// wantPromoteErr also fails if a refused decision left a row.
 func wantPromoteErr(t *testing.T, what string, mem state.MemoryStore, d state.PromotionDecision, want error) {
 	t.Helper()
 	before := wantPromotions(t, what, mem, nil)
@@ -977,8 +851,7 @@ func wantOnePromotion(t *testing.T, what string, mem state.MemoryStore, id strin
 	return rows[0]
 }
 
-// wantUsage reads usage for the given ids (nil for every row) and fails on error.
-// It does not assert the contents; the caller does.
+// wantUsage reads usage for ids, or every row for nil.
 func wantUsage(t *testing.T, what string, mem state.MemoryStore, ids []string) []state.MemoryUsage {
 	t.Helper()
 	rows, err := mem.Usage(context.Background(), ids)
@@ -995,8 +868,7 @@ func wantUsageCount(t *testing.T, what string, rows []state.MemoryUsage, want in
 	}
 }
 
-// wantOneUsage reads the single usage row for one item, failing unless exactly one
-// instance has recorded against it.
+// wantOneUsage fails unless exactly one instance recorded usage for id.
 func wantOneUsage(t *testing.T, what string, mem state.MemoryStore, id string) state.MemoryUsage {
 	t.Helper()
 	rows := wantUsage(t, what, mem, []string{id})
@@ -1007,8 +879,7 @@ func wantOneUsage(t *testing.T, what string, mem state.MemoryStore, id string) s
 	return rows[0]
 }
 
-// wantCounts fails unless the row carries exactly these counts, and unless the
-// derived UseCount and Ignored agree with them.
+// wantCounts also checks the derived UseCount and Ignored.
 func wantCounts(t *testing.T, what string, u state.MemoryUsage, pushes, organic, primed int64) {
 	t.Helper()
 	uses := organic + primed
@@ -1018,9 +889,8 @@ func wantCounts(t *testing.T, what string, u state.MemoryUsage, pushes, organic,
 	}
 }
 
-// wantStamps fails unless the row's two timestamps are set exactly where they
-// should be. They are checked apart from the counters because keeping a push from
-// looking like a read is the whole reason there are two of them.
+// wantStamps checks the timestamps apart from the counters, because the two stamps
+// exist to keep a push from looking like a read.
 func wantStamps(t *testing.T, what string, u state.MemoryUsage, pushed, used bool) {
 	t.Helper()
 	if u.LastPushedAt.IsZero() == pushed || u.LastUsedAt.IsZero() == used {
@@ -1058,9 +928,8 @@ func contents(items []state.MemoryItem) []string {
 	return out
 }
 
-// sortedContents is contents for assertions about which items came back rather
-// than in what order, so a set comparison does not accidentally pin an ordering
-// the contract leaves to CreatedAt.
+// sortedContents compares sets, so a test does not pin the CreatedAt ordering the
+// contract leaves open.
 func sortedContents(items []state.MemoryItem) []string {
 	out := contents(items)
 	slices.Sort(out)

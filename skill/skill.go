@@ -1,14 +1,9 @@
-// Package skill provides skills as a typed facade over the unified resource
-// foundation. A skill is stored as a resource.Resource of kind "Skill": the slug is
-// the resource name, the scope is the resource namespace, and the name/body/tags
-// live in a schema-validated Spec. The facade implements state.SkillStore, so call
-// sites keep the same ergonomic, type-safe API while the data lives on one
-// event-sourced store with one envelope, one schema/admission path, and one
-// provenance/sync model shared with every other kind.
+// Package skill implements state.SkillStore over a resource.Store. A skill is a
+// resource of kind "Skill" whose name is the slug and whose scope is the namespace,
+// so skills share one envelope, admission path and sync model with every other kind.
 //
-// Search is a read model over that store: the facade ranks live skills by a
-// case-insensitive scan today, and a backend can maintain a full-text projection of
-// the same resource events without changing this contract.
+// Search ranks live skills by a case-insensitive scan; a backend can add a full-text
+// projection of the same events without changing the contract.
 package skill
 
 import (
@@ -25,16 +20,15 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// GroupVersion is the skill kind's API group/version. The `.ionagent.io` suffix
-// marks it unmistakably as ours, never a Kubernetes built-in.
+// GroupVersion is the skill kind's API group and version. The suffix keeps it apart
+// from Kubernetes built-ins.
 const GroupVersion = "skill.ionagent.io/v1"
 
 // Kind is the resource kind name skills are stored under.
 const Kind = "Skill"
 
-// specSchema is the JSON Schema a skill's Spec must satisfy (admission). It
-// constrains structure (typed fields, no stray keys) without over-requiring, so a
-// skill that carries only a slug is still valid.
+// specSchema is checked at admission. It requires no field, so a skill with only a
+// slug is valid, and refuses unknown keys.
 var specSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -51,8 +45,7 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// KindDef is the Skill kind definition, the value registered with a resource
-// registry so the store admits skills.
+// KindDef is the Skill kind registered with a resource registry.
 var KindDef = resource.Kind{
 	APIVersion: GroupVersion,
 	Name:       Kind,
@@ -61,48 +54,37 @@ var KindDef = resource.Kind{
 	Plural:     "skills",
 }
 
-// RegisterKind registers the Skill kind with reg so a resource store admits
-// skills. It is idempotent: registering again replaces the definition.
+// RegisterKind registers [KindDef] with reg. Registering again replaces it.
 func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 
-// spec is the typed shape of a skill resource's Spec (the JSON validated by
-// specSchema). Empty fields are omitted so a bare skill hashes and validates as a
-// minimal object.
+// spec is the Spec [specSchema] validates. Every field is omitempty, so adding a
+// field leaves the hash of a skill stored without it unchanged.
 type spec struct {
-	Name string `json:"name,omitempty"`
-	// Description is omitempty like every other field, so a skill stored before the
-	// field existed keeps the spec hash it already had rather than being rewritten.
+	Name        string   `json:"name,omitempty"`
 	Description string   `json:"description,omitempty"`
 	Body        string   `json:"body,omitempty"`
 	Tags        []string `json:"tags,omitempty"`
-	// Offers keeps the `uses` key it was written under, and reads back every count
-	// accumulated before offers and reads were told apart: that counter only ever
-	// moved when a skill was put in front of a run. Reads and wins-on-reads are new
-	// keys for the two facts it was mistaken for. The old `wins` key is still
-	// admitted, so a spec stored before the split validates, and nothing decodes it:
-	// it counted offers on successful runs, which is not a fact about the skill.
+	// Offers is stored under `uses`, which only ever counted offers. The schema
+	// still admits `wins` so older specs validate, and nothing decodes it because it
+	// counted offers on successful runs.
 	Offers int    `json:"uses,omitempty"`
 	Reads  int    `json:"reads,omitempty"`
 	Wins   int    `json:"read_wins,omitempty"`
 	Check  string `json:"check,omitempty"`
 }
 
-// Store is the typed skill facade over a resource.Store. It is the SkillStore the
-// agent uses; underneath, every read and write is a resource operation on one
-// event-sourced foundation.
+// Store is the state.SkillStore the agent uses.
 type Store struct {
 	rs resource.Store
 }
 
 var _ state.SkillStore = (*Store)(nil)
 
-// NewStore returns a skill facade over rs. The caller must have registered the
-// Skill kind with the registry rs admits against (see RegisterKind).
+// NewStore returns a Store over rs, whose registry must hold [KindDef].
 func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
 
-// Upsert creates or updates a skill keyed by (Scope, Slug), mapping it to a Skill
-// resource and back. Versioning, origin preservation, and optimistic concurrency
-// are the resource foundation's, so the contract matches every other kind.
+// Upsert creates or updates the skill keyed by (Scope, Slug). Versioning, origin and
+// optimistic concurrency come from the resource store.
 func (s *Store) Upsert(ctx context.Context, sk state.Skill) (state.Skill, error) {
 	r, err := toResource(sk)
 	if err != nil {
@@ -116,7 +98,7 @@ func (s *Store) Upsert(ctx context.Context, sk state.Skill) (state.Skill, error)
 }
 
 // Get returns a live skill by id or slug, or state.ErrNotFound. A slug is resolved
-// across every scope (the SkillStore handle is scope-independent).
+// across every scope.
 func (s *Store) Get(ctx context.Context, idOrSlug string) (state.Skill, error) {
 	r, err := s.resolve(ctx, idOrSlug)
 	if err != nil {
@@ -134,18 +116,11 @@ func (s *Store) List(ctx context.Context, scope state.Scope) ([]state.Skill, err
 	return toSkills(rs)
 }
 
-// Search returns live skills whose name, description, body, or tags contain the
-// words of query (case insensitive, in any order), across every scope, best match
-// first and capped at limit (limit <= 0 means no cap). Every word must match; only
-// when no skill holds them all does it widen to skills holding any content word, as
-// [recallplan.Plan] lays out. An empty query matches every live skill, in slug order.
-//
-// The description is searched because it is the text an author writes to be found
-// by, so skipping it would refuse to find a skill by its own discovery text.
-//
-// Ordering by match rather than by slug is what makes the limit a top-k: cutting an
-// alphabetical list keeps the skills whose names sort early, which excludes the
-// best answer without reporting anything.
+// Search returns live skills in every scope whose name, description, body and tags
+// hold the words of query, case insensitive, best match first, at most limit (<= 0
+// is no cap). When no skill holds every word it widens to any content word, as
+// [recallplan.Plan] lays out. An empty query returns every live skill in slug order.
+// Ranking before the cut makes limit a top-k.
 func (s *Store) Search(ctx context.Context, query string, limit int) ([]state.Skill, error) {
 	rs, err := s.rs.ListAll(ctx, Kind, nil)
 	if err != nil {
@@ -181,9 +156,7 @@ func (s *Store) Delete(ctx context.Context, idOrSlug string) error {
 	return translateErr(s.rs.Delete(ctx, Kind, r.Scope, r.Name))
 }
 
-// resolve finds a live skill resource by id (fast path) or slug (a scope-spanning
-// scan, since the slug handle carries no scope). Returns state.ErrNotFound if no
-// live skill matches.
+// resolve tries the id lookup first, then scans every scope for the slug.
 func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource, error) {
 	r, err := s.rs.GetByID(ctx, idOrSlug)
 	if err == nil {
@@ -204,9 +177,8 @@ func (s *Store) resolve(ctx context.Context, idOrSlug string) (resource.Resource
 	return resource.Resource{}, state.ErrNotFound
 }
 
-// toResource maps a skill to its Skill resource. The slug is the resource name and
-// the scope is the namespace; the sync version is carried through so the store
-// enforces the same opt-in optimistic concurrency the skill contract promises.
+// toResource carries SyncVersion so the store enforces the skill contract's opt-in
+// optimistic concurrency.
 func toResource(sk state.Skill) (resource.Resource, error) {
 	body, err := json.Marshal(spec{Name: sk.Name, Description: sk.Description, Body: sk.Body, Tags: sk.Tags, Offers: sk.Offers, Reads: sk.Reads, Wins: sk.Wins, Check: sk.Check})
 	if err != nil {
@@ -228,8 +200,6 @@ func toResource(sk state.Skill) (resource.Resource, error) {
 	}, nil
 }
 
-// toSkill maps a Skill resource back to the typed skill. The resource's content
-// Version is the skill's revision, and the shared envelope fields carry across.
 func toSkill(r resource.Resource) (state.Skill, error) {
 	sp, err := resource.DecodeSpec[spec](r)
 	if err != nil {
@@ -272,8 +242,7 @@ func toSkills(rs []resource.Resource) ([]state.Skill, error) {
 	return out, nil
 }
 
-// lessBySlug orders skills by slug with an ID tiebreak, a total order even when a
-// slug repeats across scopes.
+// lessBySlug breaks ties on ID because a slug can repeat across scopes.
 func lessBySlug(a, b state.Skill) bool {
 	if a.Slug != b.Slug {
 		return a.Slug < b.Slug
@@ -281,10 +250,8 @@ func lessBySlug(a, b state.Skill) bool {
 	return a.ID < b.ID
 }
 
-// searchPlanned answers a non-empty query from skills by the plan of
-// [recallplan.Plan], best match first. A skill matches when its name, description, body and tags
-// together hold the attempt's terms: the words of a question are rarely all in one
-// field.
+// searchPlanned matches terms against all fields joined, because a question's words
+// are rarely all in one field.
 func searchPlanned(skills []state.Skill, query string) []state.Skill {
 	hits := recallplan.Select(query, skills, searchText, 0)
 	score := make(map[string]float64, len(hits))
@@ -302,19 +269,14 @@ func searchPlanned(skills []state.Skill, query string) []state.Skill {
 	return out
 }
 
-// searchText is every field a search reaches, as one string to match terms against.
 func searchText(sk state.Skill) string {
 	return strings.Join([]string{sk.Name, sk.Description, sk.Body, strings.Join(sk.Tags, " ")}, "\n")
 }
 
-// matchScore says how well a skill answers a query, so a capped search returns the
-// best matches rather than the first ones alphabetically. A hit counts for what the
-// field it landed in is worth: the description is written to be searched, the name
-// is the handle someone types, tags are deliberate, and the body is long enough
-// that a passing mention there says little. Repeats count, and the body's are
-// capped, so a long document cannot outscore a description that is about the query.
-// Each term scores on its own and the scores add, so a skill that holds more of the
-// terms outranks one that holds fewer.
+// matchScore weights a hit by field: description 10, name 5, tags 3, body 1, because
+// a passing mention in a long body says little. Body hits are capped at
+// [maxBodyHitsScored] so a long document cannot outscore a description about the
+// query. Term scores add, so more matched terms rank higher.
 func matchScore(sk state.Skill, terms []string) float64 {
 	total := 0.0
 	for _, term := range terms {
@@ -334,9 +296,7 @@ func matchScore(sk state.Skill, terms []string) float64 {
 // maxBodyHitsScored bounds how far repeating a word in a body can lift a skill.
 const maxBodyHitsScored = 3
 
-// translateErr maps the resource foundation's errors onto the state boundary's, so a
-// SkillStore caller sees state.ErrConflict / state.ErrNotFound regardless of the
-// backing store.
+// translateErr maps resource errors to state.ErrConflict and state.ErrNotFound.
 func translateErr(err error) error {
 	switch {
 	case err == nil:

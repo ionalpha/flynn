@@ -2,13 +2,10 @@ package watch
 
 import "strings"
 
-// Clear removes the marker on the given 1-based line from content and reports
-// whether it changed anything. The marker's comment is stripped from its line; if
-// nothing but whitespace remains the line is dropped entirely, otherwise the code
-// before the comment is kept. A line that no longer holds a marker (already cleared,
-// edited out) leaves content untouched and returns false, so a lost race clears
-// nothing rather than corrupting the file. The file's newline style is preserved:
-// a trailing carriage return on the target line survives when the code is kept.
+// Clear removes the marker comment on the 1-based line, dropping the line when
+// only whitespace remains and keeping a trailing carriage return. A line that no
+// longer holds a marker is left alone and Clear returns false, so a lost race
+// changes nothing.
 func Clear(content []byte, line int) ([]byte, bool) {
 	if line < 1 {
 		return content, false

@@ -8,15 +8,13 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// Origin names this feed and its format version. It is inside the signed payload, so a
-// document signed for some other purpose by the same key can never be read as a notice
-// feed, and a future format change is a new origin rather than a silent reinterpretation
-// of the same bytes.
+// Origin names the feed and its format version inside the signed payload, so another
+// document signed by the same key cannot be read as a feed, and a format change gets a
+// new origin.
 const Origin = "flynn/notices/v1"
 
-// Limits on what a feed may contain. They bound the memory a hostile origin can make a
-// client spend, and they bound the screen: a feed cannot bury a real advisory under a
-// thousand entries, and one notice cannot scroll the terminal away.
+// Limits on a feed. They bound memory and the screen, so a feed cannot bury an
+// advisory under many entries or scroll it away.
 const (
 	MaxNotices    = 32
 	MaxFloors     = 16
@@ -25,23 +23,20 @@ const (
 	MaxIDLen      = 64
 	MaxURLLen     = 200
 	MaxVersionLen = 32
-	// MaxFeedBytes caps the signed document itself. A notice feed is a few kilobytes;
-	// anything approaching this is not a feed we published.
+	// MaxFeedBytes caps the signed document. A real feed is a few kilobytes.
 	MaxFeedBytes = 256 << 10
 )
 
-// Severity says how loudly a notice is shown and, more importantly, what it means. Only
-// these three exist: an unknown severity is a decoding failure, not a fourth kind
-// rendered as a curiosity.
+// Severity decides how a notice is shown. An unknown severity fails decoding.
 type Severity string
 
 const (
-	// Security is a vulnerability in Flynn itself. It is shown on every run until the
-	// user is on a version that fixes it; it cannot be dismissed away.
+	// Security is a vulnerability in Flynn. It is shown on every run until the user
+	// is on a fixed version.
 	Security Severity = "security"
 	// Deprecation is behaviour that will be removed or changed. It is shown once.
 	Deprecation Severity = "deprecation"
-	// Info is a release notice or announcement. It is shown once, quietly.
+	// Info is a release notice or announcement. It is shown once.
 	Info Severity = "info"
 )
 
@@ -50,10 +45,8 @@ func (s Severity) Valid() bool {
 	return s == Security || s == Deprecation || s == Info
 }
 
-// Failure codes. They are stable dotted identifiers so a refusal names the check that
-// failed rather than just "invalid feed", which matters when the thing being refused is
-// a security advisory and the user needs to know whether they are being attacked or
-// whether we shipped a bad file.
+// Failure codes. Each names the check that failed, so a refused advisory tells the
+// user whether it was an attack or a bad file.
 const (
 	CodeDecode        = "notices.decode"
 	CodeEncode        = "notices.encode"
@@ -70,77 +63,58 @@ const (
 	CodeStateNotSaved = "notices.state_not_saved"
 )
 
-// Notice is one thing we have to tell the user.
+// Notice is one message for the user. Text fields are sanitized at decode.
 type Notice struct {
-	// ID is stable and unique within a feed. It is what a client remembers when it has
-	// already shown a notice, so reusing an ID for different content silently suppresses
-	// the new content.
-	ID string
-	// Severity selects how it is shown and whether it can be dismissed.
+	// ID is unique within a feed. A client remembers shown notices by ID, so reusing
+	// one for new content suppresses it.
+	ID       string
 	Severity Severity
-	// Summary is the one line the user sees. Sanitized before it reaches a terminal.
+	// Summary is the one line the user sees.
 	Summary string
-	// Detail is the optional longer text shown by `flynn notices`. Sanitized too.
+	// Detail is the longer text shown by `flynn notices`. Optional.
 	Detail string
-	// URL points at the full writeup. It is printed as text and never opened: a feed
-	// that could open a browser would be a feed that could act.
+	// URL is printed and never opened.
 	URL string
-	// AffectedFrom is the first Flynn version the notice applies to. Empty means every
-	// version from the beginning.
+	// AffectedFrom is the first version affected; empty means all earlier versions.
 	AffectedFrom string
-	// FixedIn is the first Flynn version that resolves it, and the notice does not apply
-	// from there on. Empty means no version fixes it (an announcement, or an advisory
-	// with no fix released yet), so it applies to every version at or above
-	// AffectedFrom.
+	// FixedIn is the first fixed version; empty means no fix has shipped.
 	FixedIn string
 }
 
-// Floor is a minimum safe version for a local inference runtime, carried in the feed so a
-// parser flaw disclosed after a release can still raise the gate on an installed Flynn.
-//
-// This is the one thing in a feed that is not inert text, and it is allowed for exactly
-// one reason: it can only ever tighten. The client takes the higher of its compiled-in
-// floor and this one (see inference.Raise), and no path exists to lower a floor. An
-// attacker holding the origin and the signing key can therefore only make Flynn refuse to
-// run a runtime, never make it run a vulnerable one. A denial of service is loud and
-// recoverable; a relaxed gate on a parser with a live remote-code-execution bug is not.
+// Floor is a minimum safe version for a local inference runtime, so a flaw disclosed
+// after a release can raise the gate on installed binaries. It is the only part of a
+// feed that acts, and it can only tighten: the client takes the higher of its own
+// floor and this one (inference.Raise). An attacker holding the signing key can make
+// Flynn refuse a runtime but never run a vulnerable one.
 type Floor struct {
-	// Runtime is the runtime this floor applies to ("llama.cpp", "ollama", "vllm"). A name
-	// Flynn does not drive is ignored, not invented.
+	// Runtime is "llama.cpp", "ollama" or "vllm"; another name is ignored.
 	Runtime string
-	// MinVersion is the oldest version considered safe, in that runtime's own version
-	// shape (a build number for llama.cpp, a semver for the others).
+	// MinVersion uses the runtime's own scheme: a build number for llama.cpp, semver
+	// for the others.
 	MinVersion string
-	// AdvisoryID names what the floor is for, so a refusal from a floor this build was not
-	// compiled with still tells the user what to go and read.
+	// AdvisoryID tells the user what to read when this floor refuses a runtime.
 	AdvisoryID string
 }
 
-// Feed is the signed document: every notice we currently have, plus the two fields that
-// make replaying or suppressing it detectable.
+// Feed is the signed document.
 type Feed struct {
-	// Version increases with every publication and never decreases. It is the whole
-	// anti-rollback mechanism: a client refuses a feed older than the newest one it has
-	// already trusted, so an old feed cannot be replayed over a new one.
+	// Version rises with every publication; [Accept] refuses one below the newest
+	// trusted.
 	Version uint64
-	// Issued is when this feed was signed.
+	// Issued is when the feed was signed.
 	Issued time.Time
-	// Expires is when this feed stops being believable. We re-sign on a schedule even
-	// when nothing changed, so a client that sees an expired feed has learned something
-	// real: it is not being shown the current one.
+	// Expires is set by a scheduled re-sign, so an expired feed means the client is
+	// not seeing the current one.
 	Expires time.Time
-	// Notices is the full current set, not a delta. A feed is the complete state, so a
-	// client that missed ten publications is not missing ten notices.
+	// Notices is the complete current set, so a client that missed publications
+	// misses no notices.
 	Notices []Notice
-	// Floors are the runtime version gates in force. They only ever tighten (see Floor).
-	Floors []Floor
+	Floors  []Floor
 }
 
-// canonicalEnc and canonicalDec are the shared CBOR modes the signed payload is defined
-// by: RFC 8949 core deterministic encoding out, and a strict decoder in that rejects
-// duplicate map keys and indefinite-length items, the two ambiguities that would let two
-// different byte strings claim to be the same feed. This is the same pairing chain/ uses,
-// and for the same reason: the bytes that are signed must have exactly one meaning.
+// canonicalEnc is RFC 8949 core deterministic encoding. canonicalDec rejects
+// duplicate map keys and indefinite lengths, so signed bytes have one meaning, as in
+// chain/.
 var (
 	canonicalEnc cbor.EncMode
 	canonicalDec cbor.DecMode
@@ -163,10 +137,8 @@ func init() {
 	canonicalDec = dec
 }
 
-// wireFeed and wireNotice are the on-the-wire shape. They are separate from Feed and
-// Notice so the field names in the signed document are fixed by this file and cannot
-// drift when someone renames a Go field, and so times cross the wire as unambiguous Unix
-// seconds rather than a formatted string with a timezone in it.
+// wireFeed is the signed shape, kept apart from [Feed] so renaming a Go field cannot
+// change the document, and times travel as Unix seconds.
 type wireFeed struct {
 	Origin  string       `cbor:"origin"`
 	Version uint64       `cbor:"version"`
@@ -192,7 +164,6 @@ type wireNotice struct {
 	FixedIn      string `cbor:"fixed_in"`
 }
 
-// payload encodes f as the deterministic CBOR bytes that get signed.
 func payload(f Feed) ([]byte, error) {
 	w := wireFeed{
 		Origin:  Origin,
@@ -223,14 +194,9 @@ func payload(f Feed) ([]byte, error) {
 	return b, nil
 }
 
-// decodePayload decodes and structurally validates a signed payload. It runs only on
-// bytes whose signature already verified, but it is still written as though the bytes
-// were hostile: our own signing key could be misused, or a future publisher could make a
-// mistake, and neither should be able to hand a client a feed it will mis-render.
-//
-// Every text field is sanitized here rather than at the print site, so there is exactly
-// one place where feed text becomes something a terminal will see, and no future caller
-// can forget to go through it.
+// decodePayload treats verified bytes as hostile anyway, since the signing key can be
+// misused. Every text field is sanitized here, the one place feed text enters, so no
+// print site can forget.
 func decodePayload(b []byte) (Feed, error) {
 	var w wireFeed
 	if err := canonicalDec.Unmarshal(b, &w); err != nil {
@@ -256,9 +222,8 @@ func decodePayload(b []byte) (Feed, error) {
 		if id == "" {
 			return Feed{}, fault.New(fault.Terminal, CodeMalformed, "notices: a notice has no id")
 		}
-		// A duplicate id is refused rather than deduplicated: the client keys "already
-		// shown" on the id, so two different notices under one id would mean showing the
-		// first and permanently swallowing the second.
+		// Refused: shown state is keyed by id, so a second notice under the id would
+		// never appear.
 		if seen[id] {
 			return Feed{}, fault.New(fault.Terminal, CodeMalformed, "notices: duplicate notice id "+id)
 		}
@@ -291,9 +256,8 @@ func decodePayload(b []byte) (Feed, error) {
 	for _, wf := range w.Floors {
 		runtime := Sanitize(wf.Runtime, MaxIDLen)
 		version := Sanitize(wf.MinVersion, MaxVersionLen)
-		// A floor with no runtime or no version gates nothing. It is dropped rather than
-		// rejected: a malformed floor must not be able to take the whole feed down with
-		// it, because the feed is also how a security advisory reaches the user.
+		// Dropped so a malformed floor cannot take the advisories in the same feed
+		// down with it.
 		if runtime == "" || version == "" {
 			continue
 		}

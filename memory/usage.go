@@ -12,19 +12,16 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// defaultInstanceID is the instance usage is attributed to when the caller sets
-// none. It matches the in-memory state provider's default, so the two backends
-// attribute the same reads to the same name in a test that runs both.
+// defaultInstanceID matches the in-memory state provider's default, so a test
+// running both backends sees one name.
 const defaultInstanceID = "local"
 
-// usageWriteAttempts bounds the read-modify-write retry on a usage record. Only
-// this instance writes its own record, so a conflict here means two of its own
-// goroutines recorded at once; one retry apiece settles that, and a store that
-// keeps conflicting is reporting a real problem rather than contention to spin on.
+// usageWriteAttempts bounds the retry on a usage record. Only this instance writes
+// its record, so a conflict is two of its goroutines, and repeated conflicts are a
+// fault to report.
 const usageWriteAttempts = 3
 
-// usageSpecSchema is the JSON Schema a usage record's Spec must satisfy. The
-// counters are unbounded but never negative: a usage record only ever counts up.
+// usageSpecSchema keeps counters non-negative; usage only counts up.
 var usageSpecSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -40,10 +37,8 @@ var usageSpecSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// usageSpec is the stored shape of a state.MemoryUsage. The timestamps are
-// pointers so a record that has only ever been pushed omits the used-at key
-// entirely, rather than encoding the zero time and hashing as though something
-// had happened at the start of the epoch.
+// usageSpec stores a state.MemoryUsage. The times are pointers so an unset one is
+// omitted instead of encoded as the zero time.
 type usageSpec struct {
 	MemoryID     string     `json:"memory_id"`
 	InstanceID   string     `json:"instance_id"`
@@ -54,17 +49,13 @@ type usageSpec struct {
 	LastUsedAt   *time.Time `json:"last_used_at,omitempty"`
 }
 
-// usageName is the natural name of the usage record for one item on one instance.
 func usageName(memoryID, instanceID string) string {
 	return usageNamePrefix + memoryID + "-" + instanceID
 }
 
-// RecordPush counts one push of each item against this instance. Every id is
-// resolved first, so a set carrying an unknown or tombstoned id records nothing.
-//
-// The records are then written one at a time, because a resource store commits one
-// resource at a time. A store that fails midway leaves the earlier items counted,
-// which is the honest failure for a counter: the push it recorded did happen.
+// RecordPush counts one push of each item against this instance. Every id resolves
+// first, so an unknown or tombstoned id records nothing. Records are written one at
+// a time, so a failure midway leaves earlier pushes counted, which did happen.
 func (s *Store) RecordPush(ctx context.Context, memoryIDs []string) error {
 	if len(memoryIDs) == 0 {
 		return nil
@@ -72,8 +63,7 @@ func (s *Store) RecordPush(ctx context.Context, memoryIDs []string) error {
 	seen := make(map[string]bool, len(memoryIDs))
 	items := make([]resource.Resource, 0, len(memoryIDs))
 	for _, id := range memoryIDs {
-		// A repeated id counts once: one digest cannot push the same item twice, so
-		// counting it twice would record a caller's slip as an observation.
+		// A repeated id counts once, because one digest cannot push an item twice.
 		if seen[id] {
 			continue
 		}
@@ -117,13 +107,7 @@ func (s *Store) RecordUse(ctx context.Context, memoryID string, origin state.Usa
 	})
 }
 
-// Usage returns the per-instance usage records for these items, or every record
-// the store holds when no ids are given.
-//
-// It reads across scopes and filters here rather than resolving each item's scope
-// first: a usage record lives in its item's scope, so a per-item read would be one
-// lookup plus one scoped list per item to answer a question the caller asks about
-// a whole digest at once.
+// Usage returns the usage records for these items, or all of them for no ids.
 func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUsage, error) {
 	out, err := listByMemoryID(ctx, s, UsageKind, memoryIDs, toUsage, func(u state.MemoryUsage) string { return u.MemoryID })
 	if err != nil {
@@ -133,12 +117,9 @@ func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUs
 	return out, nil
 }
 
-// listByMemoryID reads every record of kind, decodes each one and keeps those whose item
-// the caller named, or all of them when memoryIDs is empty. Usage and Promotions both
-// answer a question about a whole digest, so both list across scopes and filter here.
-//
-// The filter is a set built once rather than a scan per record: a digest read passes as
-// many ids as it has items, and the store holds a record per item per instance.
+// listByMemoryID lists kind across scopes and keeps the records for memoryIDs, or
+// all for none. Callers ask about a whole digest, and a per-item read would cost a
+// lookup and a scoped list per item.
 func listByMemoryID[T any](
 	ctx context.Context,
 	s *Store,
@@ -172,10 +153,9 @@ func listByMemoryID[T any](
 	return out, nil
 }
 
-// mutateUsage applies mutate to this instance's usage record for an item and
-// stores it, creating the record if this instance has not touched the item before.
-// The read carries its sync version into the write, so a concurrent recorder loses
-// the write rather than the increment, and the loop then re-reads and reapplies.
+// mutateUsage applies mutate to this instance's record, creating it if needed. The
+// read's sync version goes into the write, so a concurrent recorder loses the write
+// and retries, and no increment is lost.
 func (s *Store) mutateUsage(ctx context.Context, memoryID string, scope resource.Scope, mutate func(*usageSpec)) error {
 	name := usageName(memoryID, s.instanceID)
 	var lastErr error
@@ -215,10 +195,8 @@ func (s *Store) mutateUsage(ctx context.Context, memoryID string, scope resource
 		if err != nil {
 			return translateErr(err)
 		}
-		// The record is keyed by the instance it belongs to, so a store that
-		// attributes the write to a different instance would file this instance's
-		// reads under a name nothing else uses. Fail here, where it is one
-		// misconfigured option, rather than in a metric that quietly halves.
+		// A store stamping another instance would file these counts under a name
+		// nothing reads. Fail here, where the cause is one option.
 		if out.OriginInstanceID != "" && out.OriginInstanceID != s.instanceID {
 			return fmt.Errorf("memory: usage attributed to instance %q but this store records as %q: %w",
 				out.OriginInstanceID, s.instanceID, state.ErrInvalid)
@@ -228,8 +206,6 @@ func (s *Store) mutateUsage(ctx context.Context, memoryID string, scope resource
 	return lastErr
 }
 
-// toUsage maps a usage resource back to the typed record, carrying the shared
-// envelope across as every other read on this facade does.
 func toUsage(r resource.Resource) (state.MemoryUsage, error) {
 	sp, err := resource.DecodeSpec[usageSpec](r)
 	if err != nil {

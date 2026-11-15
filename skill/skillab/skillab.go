@@ -1,32 +1,14 @@
-// Package skillab measures whether a skill helps.
+// Package skillab measures whether a skill helps: on the exercises it claims, does a
+// run with it beat a run without it? Each exercise ends in a command that passes or
+// fails. The two conditions differ by one skill, and runs repeat because run-to-run
+// variance exceeds the effect.
 //
-// Every published skill library was written by people confident their skills
-// worked, and none of them measured it. The strongest sourcing anyone offers is a
-// count of remembered failures, which is anecdote. A library that wants to claim
-// more than taste needs an instrument that existed before the content, because an
-// instrument built afterwards is built to agree with what was already written.
+// [NoDifference] is a verdict, and the action is deleting the skill. A set where
+// every run passes in both conditions cannot tell them apart, and [Report] says so.
 //
-// The question it answers is narrow on purpose: for this skill, on exercises it claims
-// to cover, does a run with it beat a run without it? Everything here serves that.
-// An exercise set per skill, each exercise ending in a command that passes or fails on its
-// own. Two conditions that differ by one skill. Repeats, because the variance
-// between runs is larger than the effect being measured. One verdict.
-//
-// # No measurable difference is a verdict
-//
-// It has to be able to say a skill did nothing, and that has to be a result someone
-// acts on by deleting the skill. A harness whose only outcomes are "helped" and
-// "helped a lot" measures nothing, and a set where every run passes in both
-// conditions is one that cannot tell the two apart. Report says so rather
-// than reporting a clean pass.
-//
-// # The exercise set is not in the pack
-//
-// A skill's exercises live outside the tree the pack ships, so the agent cannot read
-// them through skill_resource while working. A check the agent can see is a target
-// rather than a measurement, and the same is true of an eval: a skill authored
-// against its own exercises passes its own exercises. The holdout half exists for the same
-// reason, and is worth writing by someone other than the skill's author.
+// Exercises live outside the shipped pack, so the agent cannot read them through
+// skill_resource; a check the agent can see is a target. The holdout half should be
+// written by someone other than the skill's author.
 package skillab
 
 import (
@@ -38,48 +20,36 @@ import (
 	"strings"
 )
 
-// Exercise is one measurable job: an objective in the words a user would give it, and a
-// command whose exit status is the whole verdict on whether the run did it.
-//
-// The verifier is deterministic and is run after the agent stops, so nothing the
-// model says about its own work counts. That is the same instrument the skill
-// `check` field uses and the same shape the published benchmarks use, which is what
-// makes a result here comparable to one there.
+// Exercise is an objective and a Verify command whose exit status is the verdict.
+// Verify runs after the agent stops, so nothing the model says about its work
+// counts.
 type Exercise struct {
 	Objective string
 	Verify    string
-	// Fixture names the directory under FixturesDir copied into the trial's working
-	// directory before the run. Empty means the run starts in an empty directory,
-	// which suits an exercise that builds something and not one that begins from an
-	// existing state.
+	// Fixture names the directory under [FixturesDir] copied in before the run;
+	// empty starts in an empty directory.
 	Fixture string
-	// Holdout marks an exercise from the held-out half of the set: written to measure the
-	// skill rather than by whoever wrote it. A gap between the two halves is the
-	// signature of a skill authored against its own eval.
+	// Holdout marks the held-out half. A gap between the halves shows a skill
+	// written against its own eval.
 	Holdout bool
-	// Source and Line locate the row, so a failure to parse or an exercise that never
-	// passes in either condition names somewhere to edit.
+	// Source and Line locate the row for error messages.
 	Source string
 	Line   int
 }
 
-// Name is the short label a report uses for an exercise: the objective, since that is
-// what distinguishes one row from another to a reader.
+// Name is the exercise's label in a report, its objective.
 func (t Exercise) Name() string { return t.Objective }
 
 // Set is one skill's exercise set, open half and holdout half together.
 type Set struct {
 	Skill     string
 	Exercises []Exercise
-	// fsys and dir locate the set, so an exercise's fixture can be copied into a trial's
-	// working directory later without the caller having to carry where the set was
-	// read from alongside the set itself.
+	// fsys and dir locate the set for [Set.Materialise].
 	fsys fs.FS
 	dir  string
 }
 
-// Materialise puts an exercise's starting state into dest, the trial's working
-// directory. An exercise with no fixture starts in the empty directory it was given.
+// Materialise copies e's fixture into dest, the trial's working directory.
 func (s Set) Materialise(e Exercise, dest string) error {
 	if e.Fixture == "" {
 		return nil
@@ -99,17 +69,15 @@ func (s Set) Holdout() int {
 }
 
 const (
-	// ExercisesFile is the open half of a skill's exercise set, written alongside the skill.
+	// ExercisesFile is the open half of the set.
 	ExercisesFile = "exercises.txt"
-	// HoldoutFile is the half kept back from the skill's author. It is optional here
-	// and required by judgement: a skill measured only on the exercises its author chose
-	// has been measured against itself.
+	// HoldoutFile is the half kept from the skill's author. It is optional, but a
+	// skill measured only on its author's exercises was measured against itself.
 	HoldoutFile = "holdout.txt"
 )
 
-// LoadSet reads a skill's exercise set from dir: ExercisesFile, plus HoldoutFile when it is
-// there. A missing ExercisesFile is an error, because a skill with no exercise set has not
-// been measured and the harness will not pretend otherwise by reporting on nothing.
+// LoadSet reads [ExercisesFile] and, if present, [HoldoutFile] from dir. A missing
+// ExercisesFile is an error, so the harness never reports on nothing.
 func LoadSet(fsys fs.FS, dir, skill string) (Set, error) {
 	set := Set{Skill: skill, fsys: fsys, dir: dir}
 	open, err := fs.ReadFile(fsys, path(dir, ExercisesFile))
@@ -136,10 +104,8 @@ func LoadSet(fsys fs.FS, dir, skill string) (Set, error) {
 	if len(set.Exercises) == 0 {
 		return Set{}, fmt.Errorf("skillab: %s has an empty exercise set", skill)
 	}
-	// A named fixture that is not there is refused now rather than when the trial that
-	// needs it starts. By then the harness has been charging for model calls for
-	// several minutes, and the run it fails is one arm of one pair, which would leave
-	// the report unable to say what the missing half would have done.
+	// A missing fixture is refused at load, before any model calls are paid for and
+	// before it can fail one arm of a pair.
 	for _, t := range set.Exercises {
 		if t.Fixture == "" {
 			continue
@@ -152,14 +118,12 @@ func LoadSet(fsys fs.FS, dir, skill string) (Set, error) {
 	return set, nil
 }
 
-// LoadDir reads a skill's exercise set from a directory on disk, which is where an
-// author keeps one while writing the skill.
+// LoadDir reads a skill's exercise set from a directory on disk.
 func LoadDir(dir, skill string) (Set, error) {
 	return LoadSet(os.DirFS(dir), ".", skill)
 }
 
-// path joins a directory and a file for an fs.FS, whose separator is always a slash
-// regardless of the host.
+// path joins with a slash, because fs.FS uses one on every host.
 func path(dir, file string) string {
 	dir = strings.TrimSuffix(filepath.ToSlash(dir), "/")
 	if dir == "" || dir == "." {
@@ -168,19 +132,12 @@ func path(dir, file string) string {
 	return dir + "/" + file
 }
 
-// exerciseSep separates a row's two columns. A pipe, so an objective and a shell command
-// can each hold whatever punctuation they need.
 const exerciseSep = "|"
 
-// ParseExercises reads exercise rows: `objective | verify command`, one per line, with `#`
-// opening a comment and blank lines ignored. Both columns are required, because a
-// exercise with no verifier has no outcome and a verifier with no objective measures a
-// run nobody asked for.
-//
-// A row may open with a fixture in brackets, `[broken-parser] objective | verify`,
-// naming the state the run starts from. It goes in front rather than in a third
-// column so the verifier stays the last field and can hold as many pipes as a shell
-// command needs.
+// ParseExercises reads rows of `objective | verify command`, with `#` comments and
+// blank lines. Both columns are required. A row may open with a fixture,
+// `[broken-parser] objective | verify`, so the verifier stays last and can hold
+// pipes.
 func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error) {
 	var out []Exercise
 	for i, raw := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
@@ -218,11 +175,8 @@ func ParseExercises(data []byte, source string, holdout bool) ([]Exercise, error
 	return out, nil
 }
 
-// splitFixture takes an optional leading `[name]` off a row and returns it with the
-// rest of the line. An opening bracket with no closing one is an error rather than
-// an objective that happens to start with a bracket: reading it as prose would run
-// the exercise in an empty directory and report the result as if the state had been
-// there.
+// splitFixture treats an unclosed [ as an error, because reading it as prose would
+// run the exercise without its fixture.
 func splitFixture(line, source string, num int) (fixture, rest string, err error) {
 	trimmed := strings.TrimLeft(line, " \t")
 	if !strings.HasPrefix(trimmed, "[") {

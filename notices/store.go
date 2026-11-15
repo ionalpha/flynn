@@ -12,23 +12,18 @@ import (
 	"github.com/ionalpha/flynn/internal/fsatomic"
 )
 
-// Trust is what a client remembers between runs. It is small on purpose: the highest feed
-// version it has ever trusted (which is what makes a rollback detectable across runs, not
-// just within one), when it last managed to check, and which notices it has already
-// shown.
+// Trust is what a client remembers between runs.
 type Trust struct {
-	// Version is the highest feed version ever accepted. It only ever increases.
+	// Version is the highest feed version ever accepted, so a rollback is detected
+	// across runs. It never decreases.
 	Version uint64 `json:"version"`
-	// Checked is when a feed was last accepted, used to decide whether to look again.
+	// Checked is when a feed was last accepted; [Due] reads it.
 	Checked time.Time `json:"checked"`
-	// Shown holds the ids of notices already displayed, so a release notice appears once
-	// instead of on every run. Security notices ignore this: they are shown for as long
-	// as they apply, because a user who is still on a vulnerable version still needs to
-	// know, however bored they are of hearing it.
+	// Shown holds the ids of one-shot notices already displayed. Security notices
+	// are never recorded.
 	Shown []string `json:"shown"`
 }
 
-// hasShown reports whether id has already been displayed.
 func (t Trust) hasShown(id string) bool {
 	for _, s := range t.Shown {
 		if s == id {
@@ -38,19 +33,14 @@ func (t Trust) hasShown(id string) bool {
 	return false
 }
 
-// Store is the client's on-disk notice state under the data directory: the last accepted
-// feed document, and the trust state above.
-//
-// The cached document is kept as the signed bytes, not as a decoded feed. It is therefore
-// re-verified from scratch on every run, which means a local attacker who edits the cache
-// file has not forged a notice, they have merely destroyed one: the edited document fails
-// its signature check and is discarded. Caching decoded text would have handed them a way
-// to put words in Flynn's mouth.
+// Store holds the last accepted feed and the [Trust] state under the data directory.
+// The feed is cached as signed bytes and re-verified on every run, so a local attacker
+// who edits it can destroy a notice but cannot forge one.
 type Store struct {
 	dir string
 }
 
-// NewStore returns the store rooted at the data directory.
+// NewStore returns the store under dataDir/notices.
 func NewStore(dataDir string) *Store {
 	return &Store{dir: filepath.Join(dataDir, "notices")}
 }
@@ -58,11 +48,8 @@ func NewStore(dataDir string) *Store {
 func (s *Store) feedPath() string  { return filepath.Join(s.dir, "feed.cose") }
 func (s *Store) trustPath() string { return filepath.Join(s.dir, "trust.json") }
 
-// LoadTrust reads the trust state. A missing file is the first run and yields a zero
-// Trust, which trusts nothing and has seen nothing. A corrupt file is an error rather
-// than a silent reset: resetting would drop the highest-version-ever mark, which is
-// exactly the state a rollback attack needs gone, so a client that quietly rebuilt it
-// from nothing would be doing the attacker's work.
+// LoadTrust returns a zero Trust when the file is missing. A corrupt file is an error,
+// because resetting it would drop the rollback mark a rollback attack needs gone.
 func (s *Store) LoadTrust() (Trust, error) {
 	b, err := os.ReadFile(s.trustPath())
 	if errors.Is(err, fs.ErrNotExist) {
@@ -78,8 +65,8 @@ func (s *Store) LoadTrust() (Trust, error) {
 	return t, nil
 }
 
-// SaveTrust writes the trust state atomically, so an interrupted write cannot leave a
-// truncated file that the next run reads as "no rollback mark".
+// SaveTrust writes atomically, so an interrupted write cannot leave a truncated file
+// that loses the rollback mark.
 func (s *Store) SaveTrust(t Trust) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fault.Wrap(fault.Terminal, CodeStateNotSaved, err)
@@ -106,7 +93,7 @@ func (s *Store) LoadFeed() ([]byte, error) {
 	return b, nil
 }
 
-// SaveFeed caches the signed document.
+// SaveFeed writes doc atomically; [Refresh] calls it only after doc verified.
 func (s *Store) SaveFeed(doc []byte) error {
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return fault.Wrap(fault.Terminal, CodeStateNotSaved, err)
@@ -117,8 +104,8 @@ func (s *Store) SaveFeed(doc []byte) error {
 	return nil
 }
 
-// MarkShown records that these notices have been displayed. Security notices are not
-// recorded: they are meant to keep appearing while they apply.
+// MarkShown records the one-shot notices in shown and saves t. Security notices are
+// skipped so they keep appearing.
 func (s *Store) MarkShown(t Trust, shown []Notice) (Trust, error) {
 	changed := false
 	for _, n := range shown {
@@ -131,9 +118,8 @@ func (s *Store) MarkShown(t Trust, shown []Notice) (Trust, error) {
 	if !changed {
 		return t, nil
 	}
-	// The shown list is bounded by the same ceiling as a feed, dropping the oldest ids
-	// first. A dropped id can only cause an old notice to be shown once more, which is
-	// harmless; an unbounded list would grow forever on a long-lived install.
+	// Keep the newest ids so the list stays bounded; a dropped id only lets an old
+	// notice show once more.
 	if len(t.Shown) > MaxNotices*4 {
 		t.Shown = t.Shown[len(t.Shown)-MaxNotices*4:]
 	}

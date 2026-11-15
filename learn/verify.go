@@ -9,52 +9,41 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Verdict is the outcome of verifying a skill's check. Ran reports whether the
-// check actually executed: a check that ran and did not verify is proven broken,
-// while one that could not run (none was supplied, or the sandbox failed to start
-// it) is simply unproven. Detail is a short human-readable reason.
+// Verdict is the result of a skill's check. Ran false means no check or a sandbox
+// that could not start it, so the skill is unverified; Ran without Verified means
+// broken. Detail is a short reason for a person.
 type Verdict struct {
 	Verified bool
 	Ran      bool
 	Detail   string
 }
 
-// Verifier decides whether a skill lesson is sound by running its check. It is the
-// gate that makes a captured procedure trustworthy in proportion to evidence: the
-// Curator crystallizes a verified skill, drops a proven-broken one, and keeps an
-// unproven one tagged unverified.
+// Verifier runs a skill lesson's check.
 type Verifier interface {
-	// Verify runs l's check and reports the verdict. scope is the run the lesson
-	// belongs to: it carries through to governance and the audit trail when the
-	// check is dispatched as an action (see GovernedVerifier), so a verification is
-	// attributed to the same scope as the work that proposed it.
+	// Verify runs l's check. scope attributes the check to the run that proposed it
+	// when [GovernedVerifier] dispatches it.
 	Verify(ctx context.Context, l Lesson, scope state.Scope) (Verdict, error)
 }
 
-// SandboxFactory creates the sandbox a single verification runs in. A fresh
-// sandbox per check keeps verifications independent and confines a check the same
-// way the agent's own tools are confined.
+// SandboxFactory creates one sandbox per check, so checks stay independent and are
+// confined like the agent's tools.
 type SandboxFactory func(ctx context.Context) (sandbox.Sandbox, error)
 
-// SandboxVerifier runs a skill's check as a shell command in a sandbox and treats a
-// zero exit code as verification. Running the candidate before keeping it is what
-// separates a procedure that works from one that merely sounds plausible; doing it
-// inside the sandbox is what makes executing model-proposed commands safe.
+// SandboxVerifier runs a check as a shell command in a sandbox; exit 0 verifies.
+// The sandbox is what makes running a model-proposed command safe.
 type SandboxVerifier struct {
 	newSandbox SandboxFactory
 }
 
-// NewSandboxVerifier builds a verifier that runs each check in a sandbox from f.
+// NewSandboxVerifier runs each check in a sandbox from f.
 func NewSandboxVerifier(f SandboxFactory) *SandboxVerifier {
 	return &SandboxVerifier{newSandbox: f}
 }
 
 var _ Verifier = (*SandboxVerifier)(nil)
 
-// Verify runs l's check in a fresh sandbox. A skill with no check is unproven
-// (Ran=false), not broken. A sandbox that cannot start the check is unproven too,
-// not an error, so a verification-environment hiccup keeps the skill (tagged
-// unverified) rather than discarding it; only a cancelled context is a hard error.
+// Verify returns Ran false for a lesson with no check or a sandbox that fails, so a
+// sandbox fault keeps the skill unverified. Only a cancelled context is an error.
 func (v *SandboxVerifier) Verify(ctx context.Context, l Lesson, _ state.Scope) (Verdict, error) {
 	check := strings.TrimSpace(l.Check)
 	if l.Kind != LessonSkill || check == "" {

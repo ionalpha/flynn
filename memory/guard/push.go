@@ -7,31 +7,22 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Eligibility is whether a memory item may be pushed at a reader unasked - put in
-// the wake digest that every agent gets on every wake, rather than returned to a
-// caller who searched for it.
-//
-// The distinction is the whole point of this file. A recall is a reader asking a
-// question and getting an answer it can weigh; a push is content arriving in the
-// prompt with no question behind it, on every wake, for as long as the item lives.
-// One poisoned pushed line is therefore worth more to an attacker than any number
-// of recallable ones, so the push set is a strict subset of the recall set and
-// everything here is about keeping it small.
+// Eligibility is whether an item may be pushed unasked, in the wake digest every
+// agent gets. A recalled answer is weighed by the reader who asked; a pushed line
+// arrives on every wake with no question behind it. One poisoned pushed line is
+// worth more to an attacker than any number of recallable ones, so the push set is a
+// small subset of the recall set.
 type Eligibility int
 
 const (
-	// PushOnPromotion means the item may be auto-pushed once a trusted reviewer has
-	// promoted it, and not before. It is the zero value, and the answer for the
-	// agent's own untainted notes: the bulk of what a curator writes, useful enough
-	// to want in the digest and not vouched-for enough to put there unreviewed.
+	// PushOnPromotion is the zero value: it allows a push only after a trusted reviewer
+	// promotes the item. It covers the agent's own untainted notes.
 	PushOnPromotion Eligibility = iota
-	// PushAllowed means the item may be auto-pushed as it stands. It is the operator's
-	// own instruction, untainted: the principal's stated preference, which the agent
-	// is meant to act on without being asked twice.
+	// PushAllowed allows a push as is. It covers the operator's untainted
+	// instructions.
 	PushAllowed
-	// PushDenied means the item is never auto-pushed, and no promotion changes that.
-	// It is recallable like anything else; a reader that goes looking for it gets it,
-	// with its provenance, and decides what to do.
+	// PushDenied forbids a push whatever the promotion. The item stays recallable
+	// with its provenance.
 	PushDenied
 )
 
@@ -46,20 +37,15 @@ func (e Eligibility) String() string {
 	}
 }
 
-// PushEligibility classifies an item for the wake digest. It is a pure function of the
-// stored record, so the digest builder, a review queue and a backend pre-filtering its own
-// rows cannot drift apart on what is pushable. The rules, in the order they apply:
+// PushEligibility classifies an item for the digest. It is pure, so the digest, a
+// review queue and a backend pre-filter agree. In order:
 //
-//   - A tainted item is denied outright: untrusted input was in the context that produced
-//     the fact (state.MemoryItem.Tainted), and a reviewer reading the finished sentence
-//     reads what the attacker wanted written.
-//   - An untrusted-provenance item (tool output, an inbound message, a fetched page) is
-//     denied: it is attacker-influenceable by construction.
-//   - An operator-authored item is allowed; everything else (the agent's own notes, no
-//     recorded provenance) waits for promotion.
+//   - Tainted (state.MemoryItem.Tainted) is denied, because a reviewer of the final
+//     sentence reads what the attacker wanted written.
+//   - Untrusted provenance is denied.
+//   - Operator-authored is allowed; anything else waits for promotion.
 //
-// Denied is terminal: an LLM promotion reviewer is itself attack surface, so letting it
-// clear the attacker-influenced categories would put the whole gate inside the blast radius.
+// Denied is terminal, because a model reviewer can itself be attacked.
 func PushEligibility(it state.MemoryItem) Eligibility {
 	if it.Tainted {
 		return PushDenied
@@ -74,10 +60,8 @@ func PushEligibility(it state.MemoryItem) Eligibility {
 	}
 }
 
-// PushEligible reports whether the item may be auto-pushed, given whether a trusted
-// reviewer has promoted it. It is the predicate the digest builder filters on;
-// promoted comes from the promotion record, and false is the safe answer for a
-// caller that has not looked one up.
+// PushEligible reports whether the item may be pushed given its promotion. Pass
+// false when the promotion was not looked up.
 func PushEligible(it state.MemoryItem, promoted bool) bool {
 	switch PushEligibility(it) {
 	case PushAllowed:
@@ -89,21 +73,15 @@ func PushEligible(it state.MemoryItem, promoted bool) bool {
 	}
 }
 
-// PromotionReader is the slice of state.MemoryStore Pushable needs: the decision
-// rows for a set of items. A whole store satisfies it, and so does a cache or a
-// test double, without either having to be a memory store.
+// PromotionReader is the part of state.MemoryStore that [Pushable] needs, so a cache
+// or test double can serve it.
 type PromotionReader interface {
 	Promotions(ctx context.Context, memoryIDs []string) ([]state.MemoryPromotion, error)
 }
 
-// Pushable returns the items of in that may be auto-pushed, resolving promotions
-// through store. It is the call a digest builder makes, and the reason the
-// promotion lookup is not folded into PushEligibility: eligibility is a pure
-// function of a record, and a pure function has no business doing IO.
-//
-// Only the items whose classification actually turns on a promotion are looked up.
-// A digest of the operator's own memory therefore costs no promotion read at all,
-// and one of unreviewed agent notes costs exactly one.
+// Pushable returns the pushable items of in, reading promotions through store. The
+// lookup is kept out of [PushEligibility] so that stays pure. Only items awaiting
+// promotion are looked up, in at most one read.
 func Pushable(ctx context.Context, store PromotionReader, in []state.MemoryItem) ([]state.MemoryItem, error) {
 	var pending []string
 	for _, it := range in {
@@ -122,11 +100,8 @@ func Pushable(ctx context.Context, store PromotionReader, in []state.MemoryItem)
 	return FilterPushable(in, func(id string) bool { return promoted[id] }), nil
 }
 
-// FilterPushable returns the items of in that may be auto-pushed, in order.
-// promoted answers whether an item id carries a promotion; a nil func is "nothing
-// is promoted", which yields the operator's own untainted memories and nothing
-// else - the smallest digest the policy allows and a usable default for a host with
-// no promotion flow yet.
+// FilterPushable returns the pushable items of in, in order. A nil promoted means
+// nothing is promoted, which keeps only the operator's untainted items.
 func FilterPushable(in []state.MemoryItem, promoted func(id string) bool) []state.MemoryItem {
 	out := make([]state.MemoryItem, 0, len(in))
 	for _, it := range in {

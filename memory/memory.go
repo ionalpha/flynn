@@ -1,15 +1,10 @@
-// Package memory provides the agent's memory as a typed facade over the unified
-// resource foundation. A memory item is stored as a resource.Resource of kind
-// "Memory": it has no natural name, so each write is a create with a server-assigned
-// name (GenerateName), and the kind/content/source live in a schema-validated Spec.
-// The facade implements state.MemoryStore, so call sites keep the same ergonomic API
-// while the data lives on one event-sourced store with one envelope, one
-// schema/admission path, and one provenance/sync model shared with every other kind.
+// Package memory implements state.MemoryStore over resource.Store. An item is a
+// resource of kind "Memory" with a server-assigned name, because it has no natural
+// one, and a schema-validated Spec. It shares the envelope, admission and sync
+// model of every other kind.
 //
-// Recall is a read model over that store: the facade ranks live items by a
-// case-insensitive content scan, most-specific scope first then most-recent first,
-// and a backend can maintain a full-text or vector projection of the same resource
-// events without changing this contract.
+// Recall is a case-insensitive content scan. A backend may project the same events
+// into a full-text or vector index without changing the contract.
 package memory
 
 import (
@@ -27,38 +22,31 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// GroupVersion is the memory kind's API group/version. The `.ionagent.io` suffix
-// marks it unmistakably as ours, never a Kubernetes built-in.
+// GroupVersion is the memory API group and version. The `.ionagent.io` suffix keeps
+// it apart from Kubernetes built-ins.
 const GroupVersion = "memory.ionagent.io/v1"
 
-// Kind is the resource kind name memory items are stored under.
+// Kind is the resource kind of a memory item.
 const Kind = "Memory"
 
-// UsageKind is the resource kind name per-instance memory usage is stored under.
+// UsageKind is the resource kind of per-instance usage.
 const UsageKind = "MemoryUsage"
 
-// PromotionKind is the resource kind name a memory item's push-eligibility
-// decision is stored under.
+// PromotionKind is the resource kind of a push-eligibility decision.
 const PromotionKind = "MemoryPromotion"
 
-// namePrefix is the GenerateName prefix for a memory item's server-assigned name
-// (Name = "mem-" + ID), since memory items carry no natural name.
+// namePrefix makes an item's name "mem-" + ID.
 const namePrefix = "mem-"
 
-// usageNamePrefix starts the natural name of a usage record,
-// "memuse-<memoryID>-<instanceID>". Usage has a natural name where the item it is
-// about does not: the pair it is keyed by is exactly what identifies it, so the
-// record is addressable without a lookup and an update is an ordinary Put.
+// usageNamePrefix starts "memuse-<memoryID>-<instanceID>". The pair identifies the
+// record, so it is addressable without a lookup and an update is a Put.
 const usageNamePrefix = "memuse-"
 
-// promotionNamePrefix starts the natural name of a decision record,
-// "mempromo-<memoryID>". One item has one decision in force, so the item's id is
-// the whole key and a revision is an ordinary Put.
+// promotionNamePrefix starts "mempromo-<memoryID>". One item has one decision in
+// force, so its id is the whole key.
 const promotionNamePrefix = "mempromo-"
 
-// specSchema is the JSON Schema a memory item's Spec must satisfy (admission). It
-// constrains structure without over-requiring, so an item carrying only content is
-// still valid.
+// specSchema requires no field, so an item with only content is valid.
 var specSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -86,8 +74,7 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// KindDef is the Memory kind definition, the value registered with a resource
-// registry so the store admits memory items.
+// KindDef is the Memory kind definition.
 var KindDef = resource.Kind{
 	APIVersion: GroupVersion,
 	Name:       Kind,
@@ -96,13 +83,9 @@ var KindDef = resource.Kind{
 	Plural:     "memories",
 }
 
-// UsageKindDef is the MemoryUsage kind definition: one resource per memory item
-// per instance, holding how often that instance pushed the item at a reader and
-// how often it was used (see state.MemoryUsage).
-//
-// Usage is its own kind rather than a field on the item, because a memory item is
-// append-only and its spec is what the writer asserted. Folding a counter into it
-// would rewrite the record, and its content hash, every time somebody read it.
+// UsageKindDef is the MemoryUsage kind definition: one record per item per
+// instance (see state.MemoryUsage). It is a separate kind because items are
+// append-only, and a counter inside one would change its hash on every read.
 var UsageKindDef = resource.Kind{
 	APIVersion: GroupVersion,
 	Name:       UsageKind,
@@ -111,14 +94,9 @@ var UsageKindDef = resource.Kind{
 	Plural:     "memoryusages",
 }
 
-// PromotionKindDef is the MemoryPromotion kind definition: one resource per memory
-// item, holding the reviewer decision in force about whether it may be auto-pushed
-// (see state.MemoryPromotion).
-//
-// It is a separate kind for the same reason usage is. The item is append-only and
-// its spec is what its writer asserted; a promotion is a later, revisable judgment
-// by somebody else, and folding it in would move the item's content hash every time
-// a reviewer changed their mind.
+// PromotionKindDef is the MemoryPromotion kind definition: one reviewer decision per
+// item on whether it may be auto-pushed (see state.MemoryPromotion). It is separate
+// so a revised decision does not change the item's hash.
 var PromotionKindDef = resource.Kind{
 	APIVersion: GroupVersion,
 	Name:       PromotionKind,
@@ -127,9 +105,8 @@ var PromotionKindDef = resource.Kind{
 	Plural:     "memorypromotions",
 }
 
-// RegisterKind registers the Memory, MemoryUsage and MemoryPromotion kinds with reg
-// so a resource store admits memory items, their usage and their push decisions. It
-// is idempotent: registering again replaces the definitions.
+// RegisterKind registers the Memory, MemoryUsage and MemoryPromotion kinds with reg.
+// Registering again replaces the definitions.
 func RegisterKind(reg *resource.Registry) error {
 	if err := reg.Register(KindDef); err != nil {
 		return err
@@ -140,25 +117,13 @@ func RegisterKind(reg *resource.Registry) error {
 	return reg.Register(PromotionKindDef)
 }
 
-// spec is the typed shape of a memory resource's Spec (the JSON validated by
-// specSchema). Empty fields are omitted so a minimal item hashes and validates as a
-// small object.
-// Spec fields are omitempty so a minimal item hashes and validates as a small
-// object. Source is the pre-list provenance field: never written any more, still
-// decoded, because resources already stored under the old shape must keep their
-// provenance when they are read back.
-// ExpiresAt is a pointer so the common never-expires item omits it entirely: a
-// time.Time value would encode the zero time into every spec and change what a
-// minimal item hashes to.
-// Tainted is omitempty for the same reason: the common untainted item encodes and
-// hashes exactly as it did before the field existed, so adding it does not rewrite
-// what every stored item hashes to.
+// spec is a memory item's Spec. Every field is omitempty, and ExpiresAt is a
+// pointer, so adding a field never changes the hash of a stored item that lacks it.
+// Source is read and never written, so items stored before Sources keep their
+// provenance.
 type spec struct {
-	Kind    string `json:"kind,omitempty"`
-	Content string `json:"content,omitempty"`
-	// Subject and Supersedes are omitempty for the same reason Tainted is: the
-	// common item carries neither, and encoding an empty slug and a null list into
-	// every spec would move what every already-stored item hashes to.
+	Kind       string     `json:"kind,omitempty"`
+	Content    string     `json:"content,omitempty"`
 	Subject    string     `json:"subject,omitempty"`
 	Supersedes []string   `json:"supersedes,omitempty"`
 	Sources    []string   `json:"sources,omitempty"`
@@ -168,9 +133,7 @@ type spec struct {
 	Tainted    bool       `json:"tainted,omitempty"`
 }
 
-// anchor is the stored shape of a state.Anchor. It exists so the spec's JSON keys
-// are lowercase like every other field here, rather than inheriting the exported Go
-// names, and so the schema above has something stable to validate against.
+// anchor stores a state.Anchor with the lowercase JSON keys specSchema validates.
 type anchor struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -198,9 +161,7 @@ func decodeAnchors(in []anchor) []state.Anchor {
 	return out
 }
 
-// Store is the typed memory facade over a resource.Store. It is the MemoryStore the
-// agent uses; underneath, every write and recall is a resource operation on one
-// event-sourced foundation.
+// Store is the state.MemoryStore over a resource.Store.
 type Store struct {
 	rs         resource.Store
 	clk        clock.Clock
@@ -212,10 +173,8 @@ var _ state.MemoryStore = (*Store)(nil)
 // Option configures a Store.
 type Option func(*Store)
 
-// WithClock sets the clock Recall judges MemoryItem.ExpiresAt against. The default
-// is the system clock; a test that writes an item expiring in an hour and then
-// wants to see it gone passes a clock.Manual and moves it, rather than sleeping.
-// A nil clock is ignored.
+// WithClock sets the clock for expiry and usage times (default the system clock),
+// so a test can advance a clock.Manual. A nil clock is ignored.
 func WithClock(c clock.Clock) Option {
 	return func(s *Store) {
 		if c != nil {
@@ -224,13 +183,9 @@ func WithClock(c clock.Clock) Option {
 	}
 }
 
-// WithInstanceID sets the instance usage is attributed to (default "local", the
-// same default the in-memory state provider uses). It must be the identity the
-// underlying resource store stamps its writes with: usage is counted per
-// instance, so two names for one instance would split its counters in half and
-// report the fleet as more diverse than it is. A write that lands under a
-// different origin is rejected rather than recorded, so a mismatch shows up on
-// the first push instead of in the metrics months later.
+// WithInstanceID sets the instance usage is attributed to (default "local"). It must
+// match the identity the resource store stamps, or one instance's counters split
+// across two names. A mismatch fails the first usage write.
 func WithInstanceID(id string) Option {
 	return func(s *Store) {
 		if id != "" {
@@ -239,9 +194,8 @@ func WithInstanceID(id string) Option {
 	}
 }
 
-// NewStore returns a memory facade over rs. The caller must have registered the
-// Memory and MemoryUsage kinds with the registry rs admits against (see
-// RegisterKind).
+// NewStore returns a Store over rs, whose registry must hold the kinds from
+// [RegisterKind].
 func NewStore(rs resource.Store, opts ...Option) *Store {
 	s := &Store{rs: rs, clk: clock.System{}, instanceID: defaultInstanceID}
 	for _, o := range opts {
@@ -250,9 +204,7 @@ func NewStore(rs resource.Store, opts ...Option) *Store {
 	return s
 }
 
-// Write persists a memory item as a new Memory resource, assigning the id and name
-// from the foundation's single ID source. Memory is append-only: each Write is a
-// distinct record, never an update of a prior one.
+// Write stores m as a new record with a store-assigned id. Memory is append-only.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
 	r, err := toResource(m)
 	if err != nil {
@@ -265,13 +217,11 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 	return toItem(out)
 }
 
-// Recall returns live memory items whose content contains the words of the query
-// (case insensitive, in any order), most-specific scope first then most-recent
-// first, capped at q.Limit (<= 0 means no cap). Every word must match; only when
-// no item holds them all does the recall widen to items holding any of the query's
-// content words, as [recallplan.Plan] lays out. A zero Scope spans every scope; a
-// set Scope narrows to it, and widens back out over that scope's ancestors when
-// q.IncludeAncestors is set. An empty query matches every live item.
+// Recall returns live items whose content holds the query's words, in any case and
+// order, sorted most-specific scope then newest, capped at q.Limit (<= 0 is no cap).
+// When no item holds every word, it widens to items holding some, per
+// [recallplan.Plan]. A zero Scope spans all scopes; q.IncludeAncestors adds the
+// scope's ancestors. An empty query matches every live item.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	rs, err := s.list(ctx, q)
 	if err != nil {
@@ -282,8 +232,7 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 		return nil, err
 	}
 	query := strings.TrimSpace(q.Query)
-	// One clock reading for the whole recall, so every item is judged expired
-	// against the same instant.
+	// One reading, so every item is judged against the same instant.
 	now := s.clk.Now()
 	selected := make([]state.MemoryItem, 0, len(all))
 	for _, it := range all {
@@ -304,8 +253,7 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 	return out, nil
 }
 
-// scoreAll scores every item 1, since with no query there is nothing to grade, and
-// drops those under floor.
+// scoreAll scores every item 1, since an empty query grades nothing.
 func scoreAll(items []state.MemoryItem, floor float64) []state.MemoryItem {
 	out := make([]state.MemoryItem, 0, len(items))
 	for _, it := range items {
@@ -317,13 +265,8 @@ func scoreAll(items []state.MemoryItem, floor float64) []state.MemoryItem {
 	return out
 }
 
-// matchPlanned selects the items that answer query, scored by the share of the
-// matched words each holds. A substring scan cannot grade a match by how rare its
-// words are, but a partial match found by widening scores below a full one and
-// below 1, which state.MemoryItem.Score reserves for "matched, no opinion on how
-// well". A projection that can rank (a full-text or vector index over the same
-// resource events) reports its own score here without any other part of this
-// contract changing.
+// matchPlanned scores each hit by its share of the query words, so a widened partial
+// match scores below 1, which state.MemoryItem.Score reserves for an ungraded match.
 func matchPlanned(items []state.MemoryItem, query string, floor float64) []state.MemoryItem {
 	hits := recallplan.Select(query, items, func(it state.MemoryItem) string { return it.Content }, floor)
 	out := make([]state.MemoryItem, 0, len(hits))
@@ -334,10 +277,8 @@ func matchPlanned(items []state.MemoryItem, query string, floor float64) []state
 	return out
 }
 
-// list reads the resources a recall query covers: every scope for an unfiltered
-// query, else one List per scope in the resolution chain. The chain is at most
-// four scopes deep, so the widened read costs a bounded handful of scoped Lists
-// rather than a ListAll that pulls every scope's memory back to filter it here.
+// list reads every scope for an unscoped query, else one List per scope in the
+// chain. The chain is at most four deep, which is cheaper than ListAll and a filter.
 func (s *Store) list(ctx context.Context, q state.RecallQuery) ([]resource.Resource, error) {
 	chain := q.ScopeChain()
 	if chain == nil {
@@ -366,14 +307,11 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return translateErr(s.rs.Delete(ctx, Kind, r.Scope, r.Name))
 }
 
-// toResource maps a memory item to its Memory resource. The item has no natural
-// name, so a create carries GenerateName and the store assigns Name = mem-<id>;
-// the sync version carries through so the store enforces optimistic concurrency.
+// toResource carries the sync version through so the store enforces optimistic
+// concurrency.
 func toResource(m state.MemoryItem) (resource.Resource, error) {
-	// Anchors are canonicalized here rather than trusted from the caller: this
-	// facade writes through resource.Store and so never passes state.Stamper, which
-	// is where the other backends normalize. Both paths have to agree, or the same
-	// write would hash differently depending on which store it landed on.
+	// Normalized here because this path skips state.Stamper, where other backends
+	// normalize; otherwise one write would hash differently per backend.
 	anchors, err := state.NormalizeAnchors(m.Anchors)
 	if err != nil {
 		return resource.Resource{}, err
@@ -382,9 +320,8 @@ func toResource(m state.MemoryItem) (resource.Resource, error) {
 	if err != nil {
 		return resource.Resource{}, err
 	}
-	// The self-loop half of the check needs an id, and a create has none until the
-	// store assigns one below; an id the caller supplied is checked. A generated id
-	// is fresh, so it cannot be in a list the caller wrote before it existed.
+	// The self-loop check needs an id. A create has none yet, and a generated id
+	// cannot appear in a list written before it existed.
 	supersedes, err := state.NormalizeSupersedes(m.Supersedes, m.ID)
 	if err != nil {
 		return resource.Resource{}, err
@@ -417,8 +354,7 @@ func toResource(m state.MemoryItem) (resource.Resource, error) {
 	}, nil
 }
 
-// toItem maps a Memory resource back to the typed memory item. The shared envelope
-// fields carry across so provenance and sync behave like every other kind.
+// toItem maps a Memory resource to an item, envelope included.
 func toItem(r resource.Resource) (state.MemoryItem, error) {
 	sp, err := resource.DecodeSpec[spec](r)
 	if err != nil {
@@ -426,8 +362,7 @@ func toItem(r resource.Resource) (state.MemoryItem, error) {
 	}
 	sources := sp.Sources
 	if len(sources) == 0 && sp.Source != "" {
-		// Written before provenance became a list; keep the one source it recorded
-		// rather than reading the item back with none.
+		// An item stored with the single Source field.
 		sources = []string{sp.Source}
 	}
 	var expires time.Time
@@ -468,9 +403,7 @@ func toItems(rs []resource.Resource) ([]state.MemoryItem, error) {
 	return out, nil
 }
 
-// translateErr maps the resource foundation's errors onto the state boundary's, so a
-// MemoryStore caller sees state.ErrConflict / state.ErrNotFound regardless of the
-// backing store.
+// translateErr maps resource errors to state.ErrConflict and state.ErrNotFound.
 func translateErr(err error) error {
 	switch {
 	case err == nil:

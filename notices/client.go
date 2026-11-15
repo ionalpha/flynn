@@ -8,8 +8,8 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// Client is the whole notice channel as one thing a command can call: it shows what the
-// last accepted feed says, and it looks for a newer one when it is time to.
+// Client is the notice channel as a command uses it: show the cached feed, refresh it
+// when due.
 type Client struct {
 	Source  Source
 	Ring    *Keyring
@@ -29,15 +29,10 @@ func NewClient(dataDir, flynnVersion string) *Client {
 	}
 }
 
-// Show prints the notices that apply to this version and have not been said, from the
-// cached feed, and marks the one-shot ones as said. It reports whether it printed
-// anything.
-//
-// It never touches the network, so it cannot make a command slower or fail one that would
-// otherwise have worked, and it is safe on a machine with no route out. Every failure
-// along the way (no cache, unreadable cache, a cached document that no longer verifies) is
-// simply no notices: this is a channel for telling the user things, and it has no business
-// turning into an error that stops the work they actually asked for.
+// Show prints the pending notices from the cached feed, marks the one-shot ones shown,
+// and reports whether it printed anything. It never touches the network, and every
+// failure (no cache, an unreadable one, one that no longer verifies) means no notices,
+// so it cannot slow or fail the command.
 func (c *Client) Show(w io.Writer) bool {
 	if !enabled(c.Ring) {
 		return false
@@ -52,18 +47,16 @@ func (c *Client) Show(w io.Writer) bool {
 		return false
 	}
 	wrote := Render(w, pending, stale)
-	// A failure to record what was shown means a notice may be shown twice. That is the
-	// harmless direction, so it is not worth failing anything over.
+	// A failed write only means a notice may be shown twice.
 	if tr, err := c.Store.MarkShown(tr, pending); err == nil {
 		_ = tr
 	}
 	return wrote
 }
 
-// Floors returns the runtime version gates the last accepted feed carries, or nothing when
-// there is no trusted feed. The caller applies them (see inference.Raise), and applying
-// them can only ever tighten a gate: this package deliberately does not import the
-// inference package, so there is no path here that could reach in and relax one.
+// Floors returns the runtime version gates in the cached feed, or nil. The caller
+// applies them with inference.Raise, which can only tighten a gate; this package does
+// not import inference, so it has no way to relax one.
 func (c *Client) Floors() []Floor {
 	if !enabled(c.Ring) {
 		return nil
@@ -75,14 +68,9 @@ func (c *Client) Floors() []Floor {
 	return f.Floors
 }
 
-// RefreshIfDue fetches a new feed when the refresh interval has elapsed, and does nothing
-// otherwise. It is meant to be called in the background: what it fetches is shown by the
-// next run, not this one, which is what keeps the notice channel off the path of the
-// command the user is waiting for.
-//
-// An error is returned for a caller that wants to report it (`flynn notices --refresh`
-// does). The background caller ignores it: a notice check that failed is not something to
-// interrupt a user's run about, and the next run tries again.
+// RefreshIfDue fetches a new feed when [Due]. What it fetches is shown by the next run,
+// which keeps the fetch off the command's path. `flynn notices --refresh` reports the
+// error; [Client.Background] ignores it and the next run tries again.
 func (c *Client) RefreshIfDue(ctx context.Context) error {
 	if !enabled(c.Ring) {
 		return nil
@@ -105,18 +93,15 @@ func (c *Client) Refresh(ctx context.Context) error {
 	return err
 }
 
-// Background starts the refresh in a goroutine and returns immediately, so a command pays
-// nothing for the notice channel: not the DNS lookup, not the connection, not the read. If
-// the process exits before the fetch finishes, nothing is lost. The feed was already going
-// to be shown on the next run, and the next run will try again.
+// Background runs [Client.RefreshIfDue] in a goroutine, so a command waits on no DNS,
+// connection or read. A process that exits first loses nothing; the next run retries.
 func (c *Client) Background(ctx context.Context) {
 	if !enabled(c.Ring) {
 		return
 	}
 	go func() {
-		// The fetch is detached from the command's context on purpose: cancelling the
-		// user's work should not be the thing that decides whether we ever hear about a
-		// vulnerability, and the fetch bounds itself with FetchTimeout anyway.
+		// Detached from ctx so cancelling the command does not cancel the advisory
+		// fetch; FetchTimeout bounds it.
 		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), FetchTimeout+time.Second)
 		defer cancel()
 		_ = c.RefreshIfDue(bg)

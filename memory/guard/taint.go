@@ -9,10 +9,8 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// taintScope is the mutable taint state a run carries. It lives behind a context
-// value as a pointer because taint is discovered during the run - a tool returns
-// a page halfway through - and a context value fixed at the top of the run could
-// only record what was already known when it started.
+// taintScope is a run's taint. It is a pointer in the context because taint is
+// found during the run.
 type taintScope struct {
 	mu      sync.Mutex
 	tainted bool
@@ -21,22 +19,17 @@ type taintScope struct {
 
 type taintKey struct{}
 
-// NewTaintScope returns ctx carrying a fresh, untainted taint scope: the span
-// within which untrusted input is remembered. A run opens one before it reads
-// anything, so a write late in the run still knows what the run consumed early.
+// NewTaintScope returns ctx with a clean taint scope. Open it before the run reads
+// anything, so a late write knows what was read early.
 //
-// Scopes do not nest into one another. A scope opened inside another is its own,
-// and marking the inner one leaves the outer clean, which is what a caller
-// deliberately isolating a subtask wants. A caller that wants the taint to reach
-// the outer run passes the outer context down rather than opening a new scope.
+// Scopes do not nest: tainting an inner one leaves the outer clean, which isolates a
+// subtask. To share taint, pass the outer context down.
 func NewTaintScope(ctx context.Context) context.Context {
 	return context.WithValue(ctx, taintKey{}, &taintScope{})
 }
 
-// Tainted reports whether untrusted input has been observed in ctx's scope. A
-// context with no scope reports false: an unmarked run is not evidence of
-// laundering, and answering true would make every write of a host that has not
-// adopted taint scopes ineligible for the wake digest.
+// Tainted reports untrusted input seen in ctx's scope. With no scope it is false, or
+// a host without scopes could push nothing to the digest.
 func Tainted(ctx context.Context) bool {
 	sc := scopeOf(ctx)
 	if sc == nil {
@@ -47,9 +40,8 @@ func Tainted(ctx context.Context) bool {
 	return sc.tainted
 }
 
-// TaintReasons returns the reasons recorded on ctx's scope, in the order they were
-// marked, deduplicated. It is what an audit reads to answer why a fact was kept out
-// of the digest; a clean or scopeless context returns nothing.
+// TaintReasons returns the scope's distinct reasons in marking order, for auditing
+// why a fact was kept out of the digest.
 func TaintReasons(ctx context.Context) []string {
 	sc := scopeOf(ctx)
 	if sc == nil {
@@ -60,10 +52,8 @@ func TaintReasons(ctx context.Context) []string {
 	return slices.Clone(sc.reasons)
 }
 
-// MarkTainted records that untrusted input entered ctx's scope, with a short reason
-// for the audit trail ("tool:shell", "web:fetch"). It is idempotent per reason and
-// monotone: nothing un-taints a scope. A context with no scope is a no-op, so a
-// host can call it unconditionally.
+// MarkTainted records untrusted input with a reason such as "tool:shell". Nothing
+// clears a scope; a repeated reason is kept once. Without a scope it does nothing.
 func MarkTainted(ctx context.Context, reason string) {
 	sc := scopeOf(ctx)
 	if sc == nil {
@@ -77,13 +67,9 @@ func MarkTainted(ctx context.Context, reason string) {
 	}
 }
 
-// Observe records the arrival of content from sources into ctx's scope, marking it
-// tainted for each untrusted one. It is the call a host puts on its ingest path -
-// a tool result, an inbound message, a fetched page - so taint is recorded where
-// the content enters rather than reconstructed later from what a write claims.
-//
-// It reports whether the scope is tainted afterwards, including by an earlier
-// observation, so a caller can branch on it without a second call.
+// Observe marks the scope for each untrusted source. A host calls it where content
+// enters, because a write's claimed sources can omit what the run read. It reports
+// whether the scope is now tainted, including from earlier calls.
 func Observe(ctx context.Context, sources ...string) bool {
 	for _, s := range sources {
 		if TrustOf(s) == sandbox.TrustUntrusted {
@@ -93,15 +79,10 @@ func Observe(ctx context.Context, sources ...string) bool {
 	return Tainted(ctx)
 }
 
-// TaintItem returns it with Tainted set if the item's own provenance is untrusted
-// or ctx's scope is tainted, leaving an already-tainted item tainted. It is the
-// single definition of what taints a write, applied by Store.Write, and exported so
-// a host writing through its own path arrives at the same answer.
-//
-// Provenance is folded in here rather than left to the eligibility read because the
-// two answer different questions at different times: what the run consumed is known
-// only at the write, and an item whose sources are rewritten by a later consolidation
-// pass must not be able to shed a taint it earned.
+// TaintItem sets Tainted if the item's provenance is untrusted or ctx is tainted,
+// and never clears it. [Store.Write] applies it; it is exported so a host writing
+// elsewhere agrees. Provenance is folded in at write, so a later rewrite of the
+// sources cannot shed the taint.
 func TaintItem(ctx context.Context, it state.MemoryItem) state.MemoryItem {
 	if it.Tainted {
 		return it

@@ -12,27 +12,18 @@ import (
 	"github.com/ionalpha/flynn/internal/closeerr"
 )
 
-// A trial starts in an empty directory, which is fine for an exercise that says
-// "write me a parser" and useless for one that says "the tests fail after my
-// change". Work that begins from an existing state has to be given that state, or
-// the exercise measures whether the model can invent a plausible bug to fix.
-//
-// A fixture is that state: a directory tree copied into the fresh working directory
-// before the run starts. It lives beside the exercise set rather than in the pack,
-// for the reason the whole set does. A defect the agent can read the answer to is
-// not a defect.
 const (
-	// FixturesDir holds one subdirectory per fixture, under a skill's exercise set.
+	// FixturesDir holds one directory tree per fixture, the starting state copied
+	// into a trial so an exercise like "the tests fail" has code to fix. It sits
+	// beside the exercise set and outside the pack, so the agent cannot read it.
 	FixturesDir = "fixtures"
 
-	// maxFixtureFiles bounds what one exercise can copy. Well above any real fixture
-	// and low enough that a directory pointed at the wrong place fails fast.
+	// maxFixtureFiles is far above a real fixture, so a wrong directory fails fast.
 	maxFixtureFiles = 2048
 )
 
-// ValidateFixture refuses a fixture name that could address anything other than one
-// directory under FixturesDir. Names come from a file an author edits, so this is
-// the check that keeps a stray "../" from writing outside the working directory.
+// ValidateFixture refuses a name that is not one directory under [FixturesDir], so a
+// stray "../" cannot write outside the working directory.
 func ValidateFixture(name string) error {
 	switch {
 	case name == "":
@@ -40,20 +31,15 @@ func ValidateFixture(name string) error {
 	case name == "." || name == "..":
 		return fmt.Errorf("skillab: %q is not a fixture name", name)
 	case strings.ContainsAny(name, `/\`):
-		// Both separators, on every host. An absolute path needs no case of its own:
-		// on either platform it holds one of these before it holds anything else.
+		// Both separators on every host; this also refuses absolute paths.
 		return fmt.Errorf("skillab: fixture %q holds a path separator; a fixture is one directory under %s", name, FixturesDir)
 	}
 	return nil
 }
 
-// CopyFixture writes the fixture named by an exercise into dest, which is the trial's
-// working directory. dir is the skill's exercise set directory within fsys.
-//
-// Only regular files and directories are copied. A symbolic link is refused rather
-// than followed: fs.FS closes lexical traversal, and os.DirFS follows a link once it
-// opens one, so a fixture holding a link to /etc would otherwise copy it into the
-// working directory of every trial.
+// CopyFixture copies fixture name from the exercise set at dir in fsys into dest.
+// Symlinks are refused, because os.DirFS follows them and a link to /etc would be
+// copied into every trial.
 func CopyFixture(fsys fs.FS, dir, name, dest string) error {
 	if err := ValidateFixture(name); err != nil {
 		return err
@@ -88,15 +74,13 @@ func CopyFixture(fsys fs.FS, dir, name, dest string) error {
 		return err
 	}
 	if files == 0 {
-		// An empty fixture is the same as no fixture, and it is always a mistake: the
-		// author meant to seed a state and seeded nothing, which the run cannot notice.
+		// An empty fixture is always an authoring mistake the run cannot notice.
 		return fmt.Errorf("skillab: fixture %s is empty", name)
 	}
 	return nil
 }
 
-// copyFile writes one fixture file, preserving whether it is executable. A fixture
-// carrying a reproduction script is useless if the run cannot run it.
+// copyFile keeps the executable bit, so a reproduction script still runs.
 func copyFile(fsys fs.FS, src, dest string) (err error) {
 	in, err := fsys.Open(src)
 	if err != nil {
@@ -123,6 +107,4 @@ func copyFile(fsys fs.FS, src, dest string) (err error) {
 	return err
 }
 
-// fixturePath is the set-relative path of a fixture directory, for the error a load
-// raises when an exercise names one that is not there.
 func fixturePath(name string) string { return path(FixturesDir, name) }
