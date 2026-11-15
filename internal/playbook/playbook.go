@@ -1,14 +1,11 @@
-// Package playbook turns a multi-step operational procedure into a typed resource that
-// Flynn can run: provision the command-line tools it needs, run them, verify the outcome,
-// and register what it produced as a supervised Service. A playbook is the outcome-level
-// companion to an integration: an integration spec says how to call one API operation, a
-// playbook spec says how to accomplish a goal by composing many steps.
+// Package playbook stores and runs multi-step operational procedures: provision the
+// CLI tools needed, run them, check the outcome, and register the result as a
+// supervised service. An integration calls one API operation; a playbook composes
+// many steps toward a goal.
 //
-// A playbook is data. Its body is a declarative flow (the same interpreter an integration
-// uses, extended with the dependency, exec, and assert ops), so the stored spec is exactly
-// what runs, and a runtime-authored playbook has no path to arbitrary code: every effect
-// goes through a port the runner wires (a sandboxed command runner, the dependency manager,
-// the resource store), never an ambient capability.
+// A playbook is a declarative flow, so the stored spec is what runs and a
+// runtime-authored playbook cannot run arbitrary code: every effect goes through a
+// port the [Runner] wires.
 package playbook
 
 import (
@@ -33,30 +30,24 @@ const (
 // ErrNotFound is returned when a playbook does not exist.
 var ErrNotFound = errors.New("playbook: not found")
 
-// ServiceBlock declares how to classify the supervised Service a playbook registers when
-// its flow succeeds. The live fields (the service name, its URL, the provider's external
-// id, and the addressing the supervisor replays) come from the flow's return value, so all
-// templating stays inside the flow; this block supplies only the static classification.
+// ServiceBlock is the static classification of the service a playbook registers.
+// Name, URL, external id and address come from the flow's return value, so all
+// templating stays inside the flow.
 type ServiceBlock struct {
-	// Provider is the provider that owns the workload (for example "fly").
+	// Provider owns the workload, for example "fly".
 	Provider string `json:"provider"`
-	// Target classifies the workload (static-site, container, vps). Optional.
+	// Target is static-site, container or vps. Optional.
 	Target service.Target `json:"target,omitempty"`
 }
 
-// Spec is the desired shape of a playbook: a description, an optional input schema for the
-// config an operator supplies, the flow that carries out the procedure, and an optional
-// service block to register on success.
+// Spec is a playbook's stored definition.
 type Spec struct {
-	// Description is a short human summary of what the playbook accomplishes.
 	Description string `json:"description,omitempty"`
-	// Inputs is a JSON Schema describing the config an operator passes to a run. It is
-	// documentation and (later) validation; the runner exposes the config to the flow as
-	// "config" regardless.
+	// Inputs is a JSON Schema for the run's config. It is not enforced: the runner
+	// passes the config to the flow as given.
 	Inputs json.RawMessage `json:"inputs,omitempty"`
-	// Flow is the declarative procedure the playbook runs, in the flow interpreter's shape.
-	Flow json.RawMessage `json:"flow"`
-	// Service, when set, is the supervised Service to register from the flow's result.
+	Flow   json.RawMessage `json:"flow"`
+	// Service, when set, is registered from the flow's result on success.
 	Service *ServiceBlock `json:"service,omitempty"`
 }
 
@@ -80,7 +71,7 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// KindDef is the Playbook kind definition registered with a resource registry.
+// KindDef is the Playbook resource kind.
 var KindDef = resource.Kind{
 	APIVersion: GroupVersion,
 	Name:       Kind,
@@ -89,7 +80,7 @@ var KindDef = resource.Kind{
 	Plural:     "playbooks",
 }
 
-// RegisterKind registers the Playbook kind so a store admits playbooks. It is idempotent.
+// RegisterKind registers [KindDef] with reg. It is idempotent.
 func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 
 // DecodeSpec reads the typed spec from a resource.
@@ -101,8 +92,8 @@ func DecodeSpec(r resource.Resource) (Spec, error) {
 	return s, nil
 }
 
-// DecodeFlow parses and validates the playbook's flow, so a caller can confirm the
-// procedure is well-formed before running it (the build-time gate uses this).
+// DecodeFlow parses and validates the flow; the build-time gate calls it on every
+// bundled playbook.
 func (s Spec) DecodeFlow() (flow.Flow, error) { return flow.Decode(s.Flow) }
 
 // Playbook is the typed view of a playbook resource.
@@ -111,15 +102,14 @@ type Playbook struct {
 	Spec Spec
 }
 
-// Store is the typed playbook facade over a resource.Store. Playbooks live in the
-// instance-global scope, addressed by name.
+// Store keeps playbooks in the instance-global scope of a resource store, by name.
 type Store struct {
 	rs    resource.Store
 	scope resource.Scope
 }
 
-// NewStore returns a playbook facade over rs. The caller must have registered the Playbook
-// kind with the registry rs admits against (see RegisterKind).
+// NewStore returns a Store over rs. The Playbook kind must already be registered
+// with rs's registry ([RegisterKind]).
 func NewStore(rs resource.Store) *Store { return &Store{rs: rs} }
 
 // Put creates or updates the named playbook.

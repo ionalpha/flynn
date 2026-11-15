@@ -1,24 +1,11 @@
-// Package skillstyle refuses the marks an authored skill must not carry: the
-// punctuation that reads as machine-written, the identifiers that belong to the
-// system that produced the skill rather than to the reader, and the internal names
-// that were never meant to leave the workspace.
+// Package skillstyle refuses marks an authored skill must not carry: machine-style
+// punctuation, identifiers from the system that produced it, and internal names.
+// It is code because a style rule kept by rereading does not survive twenty skills
+// revised across many sessions.
 //
-// # Why this is code and not a checklist
-//
-// A pack's whole argument is that a skill is a procedure with a proof rather than an
-// opinion with confident prose. A style rule enforced by "re-read everything before
-// the pull request" is an opinion about the prose, held by whoever is reading that
-// day, which is the same shape as the thing the pack exists to replace. Twenty
-// skills, each revised several times across many sessions, is the volume at which a
-// hand-held rule stops holding.
-//
-// # What it does not do
-//
-// It does not judge vocabulary. Several of the words that mark generated text are
-// ordinary English, and a check that fires on a legitimate use gets switched off
-// inside a month, so that half needs an escape designed before it is worth having.
-// What is here is the half with no legitimate use: three punctuation marks, the
-// shape of an internal identifier, and a short list of names.
+// It does not judge vocabulary. Many tell words are ordinary English, and a check
+// that fires on legitimate use gets switched off, so only marks with no legitimate
+// use are refused.
 package skillstyle
 
 import (
@@ -30,13 +17,11 @@ import (
 	"unicode/utf8"
 )
 
-// Finding is one refusal, addressed precisely enough to fix without rereading the
-// rule. A report a reader cannot act on is a report that gets suppressed.
+// Finding is one refusal, precise enough to fix without rereading the rule.
 type Finding struct {
 	// Path is the file, relative to the tree that was checked.
 	Path string
-	// Line and Column are 1-based, Column counted in runes so it lines up with what
-	// an editor shows rather than with the byte offset.
+	// Line and Column are 1-based; Column counts runes, as an editor does.
 	Line, Column int
 	// Match is the exact text that was refused.
 	Match string
@@ -44,24 +29,19 @@ type Finding struct {
 	Rule, Why string
 }
 
-// String renders a finding as one line, in the form editors and CI logs already
-// know how to turn into a link.
+// String renders path:line:col, which editors and CI logs turn into a link.
 func (f Finding) String() string {
 	return fmt.Sprintf("%s:%d:%d: %s: %q. %s", f.Path, f.Line, f.Column, f.Rule, f.Match, f.Why)
 }
 
-// rule is one refused pattern with the advice that goes with it.
 type rule struct {
 	name string
 	why  string
 	pat  *regexp.Regexp
 }
 
-// rules are applied to every line of every file in a pack, in this order.
-//
-// The dashes are three separate refusals rather than one character class, because
-// the replacement differs: an em-dash wants a colon, a semicolon, parentheses or a
-// full stop, while a spaced en-dash between numbers wants "to".
+// rules apply to every line in order. The dashes are separate rules because their
+// replacements differ.
 var rules = []rule{
 	{
 		name: "em-dash",
@@ -105,9 +85,8 @@ var rules = []rule{
 	},
 }
 
-// Check returns every refusal in content, addressed against path. It reads line by
-// line so a finding carries a position, and it never stops at the first: an author
-// fixing one mark at a time across twenty skills is the cost this exists to avoid.
+// Check returns every refusal in content, ordered by position, and never stops at
+// the first, so an author fixes them in one pass.
 func Check(path string, content []byte) []Finding {
 	var out []Finding
 	for i, line := range strings.Split(string(content), "\n") {
@@ -134,12 +113,9 @@ func Check(path string, content []byte) []Finding {
 	return out
 }
 
-// CheckFS returns every refusal in every regular file under root in fsys, ordered by
-// path. Everything in a skill directory is checked, not only SKILL.md: a reference
-// document is read by the same person and carries the same marks.
-//
-// An unreadable file is a finding of its own rather than an error return, so one
-// broken file cannot hide the twenty findings in the files beside it.
+// CheckFS checks every regular file under root in fsys, ordered by path, because
+// reference documents reach the same reader as SKILL.md. An unreadable file is a
+// finding, so it cannot end the walk and report a clean pack.
 func CheckFS(fsys fs.FS, root string) ([]Finding, error) {
 	var out []Finding
 	err := fs.WalkDir(fsys, root, func(p string, d fs.DirEntry, err error) error {
@@ -158,9 +134,6 @@ func CheckFS(fsys fs.FS, root string) ([]Finding, error) {
 	return out, nil
 }
 
-// checkFile returns the refusals in one file, or the single finding that says the
-// file could not be read. Reading is a finding rather than a failure so that one
-// broken path cannot end the walk and report a clean pack.
 func checkFile(fsys fs.FS, p string) []Finding {
 	b, err := fs.ReadFile(fsys, p)
 	if err != nil {
@@ -173,8 +146,7 @@ func checkFile(fsys fs.FS, p string) []Finding {
 	return Check(p, b)
 }
 
-// Report renders findings as one line each, ready to hand to a test failure. It
-// returns "" for no findings, so a caller can test the report rather than the count.
+// Report renders one finding per line, and "" for none.
 func Report(findings []Finding) string {
 	if len(findings) == 0 {
 		return ""

@@ -1,14 +1,10 @@
-// Package inbox is the agent's unified inbound boundary. Every message or event
-// the agent receives, from any source, is recorded as an Entry resource and then
-// triaged into an action: a reply, a goal, a memory write, a notification, or
-// nothing. Separating where input arrives (a Source) from what the agent does
-// about it (the triage reconciler) means a new platform is a small adapter rather
-// than new agent logic, and every inbound item is durable, replayable, audited,
-// and governed at one waist.
+// Package inbox records every inbound message or event as an Entry resource and
+// triages it into a reply, a goal or nothing. A [Source] only records entries and
+// [Triage] alone decides what to do, so a new platform is a small adapter and every
+// disposition goes through one policy.
 //
-// Entry is the inbound envelope expressed on the same resource + reconcile
-// foundation as Goal: declarative and level-triggered, so triage is crash-resumable
-// and a lost change hint is recovered by resync rather than dropping the input.
+// Entries are reconciled level-triggered like goals, so triage resumes after a
+// crash and a lost change hint is recovered by resync.
 package inbox
 
 import (
@@ -25,11 +21,10 @@ const (
 	Kind = "Entry"
 )
 
-// Phase is a coarse lifecycle summary of an entry: received, triaged into a
-// disposition, then a terminal acted or dropped.
+// Phase is an entry's lifecycle stage.
 type Phase string
 
-// The phases an entry moves through, from received to a terminal acted or dropped.
+// Acted and Dropped are terminal.
 const (
 	PhaseReceived Phase = "Received" // recorded, not yet triaged
 	PhaseTriaged  Phase = "Triaged"  // a disposition was chosen, action in progress
@@ -41,7 +36,7 @@ const (
 // triaged.
 type Disposition string
 
-// The dispositions triage can choose for an entry.
+// Store and Notify are reserved; [Triage] treats them as Drop.
 const (
 	DispositionReply  Disposition = "Reply"  // answer in the originating conversation
 	DispositionGoal   Disposition = "Goal"   // run it as a goal
@@ -50,7 +45,7 @@ const (
 	DispositionDrop   Disposition = "Drop"   // intentionally ignore
 )
 
-// Standard condition types (kstatus-style: present and True only when noteworthy).
+// Condition types, kstatus-style: present and True only when noteworthy.
 const (
 	CondTriaged = "Triaged" // True once a disposition has been chosen
 	CondActed   = "Acted"   // True once the disposition has completed
@@ -72,46 +67,43 @@ var specSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// Spec is an inbound entry's content: where it came from and what it carries. It
-// is immutable input, set once when the entry is received.
+// Spec is an inbound entry's content, set once on receipt.
 type Spec struct {
-	// Source names the adapter the entry arrived on, e.g. "telegram". Replies are
-	// routed back to the Sink registered under this name.
+	// Source names the adapter, e.g. "telegram"; replies go to the [Sink] of the
+	// same name.
 	Source string `json:"source"`
-	// Conversation identifies the thread on the source platform and is the reply
-	// address scope. Empty for sources that are not conversational (a monitor).
+	// Conversation is the reply address on the platform. Empty for sources that are
+	// not conversational, such as a monitor.
 	Conversation string `json:"conversation,omitempty"`
-	// Sender is the platform user id or handle, for routing and audit. Optional.
+	// Sender is the platform user id or handle. Optional.
 	Sender string `json:"sender,omitempty"`
-	// Type is the nature of the entry; defaults to "message" when unset.
-	Type string `json:"type,omitempty"`
-	// Content is the message body or event payload.
+	// Type defaults to "message".
+	Type    string `json:"type,omitempty"`
 	Content string `json:"content,omitempty"`
 	// Metadata carries source-specific extras without widening the schema.
 	Metadata map[string]string `json:"metadata,omitempty"`
-	// ReceivedAt is when the source observed the entry.
+	// ReceivedAt is when the source observed the entry; the ingester fills it
+	// when unset.
 	ReceivedAt time.Time `json:"receivedAt,omitempty"`
 }
 
 // Status is an entry's observed triage state.
 type Status struct {
-	Phase Phase `json:"phase,omitempty"`
-	// Disposition is the action triage chose; empty until triaged.
+	Phase       Phase       `json:"phase,omitempty"`
 	Disposition Disposition `json:"disposition,omitempty"`
-	// ObservedSpecHash is the resource.SpecHash triage last acted on, so a
-	// re-reconcile is a no-op once the entry has settled.
+	// ObservedSpecHash is the spec hash triage last acted on, so a re-reconcile of
+	// a settled entry is a no-op.
 	ObservedSpecHash string `json:"observedSpecHash,omitempty"`
-	// GoalName is the goal an entry was routed to, set when Disposition is Goal.
+	// GoalName is the [Worker] handle for a Reply or Goal disposition.
 	GoalName   string      `json:"goalName,omitempty"`
 	Conditions []Condition `json:"conditions,omitempty"`
 	Message    string      `json:"message,omitempty"`
 }
 
-// Condition is one standard status condition (the shared resource.Condition).
+// Condition is a status condition.
 type Condition = resource.Condition
 
-// RegisterKind registers the Entry kind so entries can be stored and admitted
-// like any other resource.
+// RegisterKind registers the Entry kind with reg.
 func RegisterKind(reg *resource.Registry) error {
 	return reg.Register(resource.Kind{
 		APIVersion: GroupVersion,
@@ -131,8 +123,8 @@ func DecodeStatus(r resource.Resource) (Status, error) { return resource.DecodeS
 // Encode marshals the status for writing back onto a resource.
 func (s Status) Encode() (json.RawMessage, error) { return resource.EncodeStatus(s) }
 
-// SetCondition upserts c by type, stamping LastTransitionTime only when the status
-// value actually changes, so a no-op reconcile does not churn the time.
+// SetCondition upserts c by type. LastTransitionTime changes only with the status
+// value, so a no-op reconcile does not churn it.
 func (s *Status) SetCondition(c Condition, now time.Time) {
 	s.Conditions = resource.SetCondition(s.Conditions, c, now)
 }

@@ -6,81 +6,54 @@ import (
 	"strings"
 )
 
-// The metadata encoding convention.
-//
-// The specification's metadata map holds "properties not defined by the Agent Skills spec",
-// as strings, so anything we carry beyond the defined fields encodes itself as one. Ion
-// Alpha's importer reads what Flynn writes, and drift between the two silently loses data.
-//
-// Keys carry a reverse-DNS prefix. The map is one flat namespace shared with every other
-// tool that writes to it, so an unprefixed "check" or "tags" collides with a pack authored
-// against another runtime; the prefix lets a foreign pack round-trip through us untouched.
-//
-// Lists encode as a JSON array, not a delimited string. A delimited encoding must answer
-// what happens to a value containing the delimiter, and every answer is an escaping scheme
-// or silent data loss. JSON is unambiguous and distinguishes an empty list from an absent key.
+// Metadata keys Flynn writes. Every value is a string, and the importer on the host
+// reads what Flynn writes, so a change here loses data on the other side.
 const (
-	// MetadataPrefix namespaces every metadata key Flynn writes. Reserved: a key
-	// under it is ours to define, and a reader may assume no other tool writes there.
-	//
-	// The domain is the product's own and not the organisation's, because this string
-	// travels: it is written into files other runtimes read, and what it has to
-	// identify is which tool wrote the key. A bare "flynn/" would not do that. The map
-	// is one flat namespace, "flynn" has belonged to more than one piece of software,
-	// and a name nobody owns is a name anyone can also use.
+	// MetadataPrefix namespaces every key Flynn writes, because the metadata map is
+	// one flat namespace shared with every tool and an unprefixed "tags" would
+	// collide. It is the product's domain: the string travels to other runtimes and
+	// must identify the writer, and a bare "flynn/" is a name anyone can use.
 	MetadataPrefix = "flynnhq.com/"
 
-	// retiredPrefix is the namespace Flynn wrote before 2026-08-09, carried on the
-	// read path only. A skill exported by an earlier build still parses, and nothing
-	// writes this again, so the old keys leave the corpus as skills are rewritten
-	// rather than by a migration nobody could run over files on someone else's disk.
+	// retiredPrefix is the namespace written before 2026-08-09. It is read and never
+	// written, so old keys disappear as skills are rewritten, with no migration over
+	// files on other people's disks.
 	retiredPrefix = "ionagent.io/"
 
-	// MetaCheck is the skill's verification command, the shell line that re-grades it
-	// as the environment changes. A plain string, so it is stored as written.
+	// MetaCheck is the shell command that re-grades the skill, stored as written.
 	MetaCheck = MetadataPrefix + "check"
 
-	// MetaTags is the skill's tag list, JSON-encoded per EncodeList.
+	// MetaTags is the tag list, encoded by [EncodeList].
 	MetaTags = MetadataPrefix + "tags"
 
-	// MetaTitle is the skill's human-readable title, which the format has no field
-	// for: its name is an identifier, constrained to lowercase and hyphens, and a
-	// title is prose. Written only when the title says something the name does not,
-	// so a skill whose title is just its slug does not carry a redundant key.
+	// MetaTitle is the prose title, which the format has no field for. It is written
+	// only when it differs from the name.
 	MetaTitle = MetadataPrefix + "title"
 )
 
-// EncodeList renders a list of strings as one metadata value. A nil or empty list
-// encodes as "[]" rather than "", so a caller that stored an empty list and one
-// that stored nothing are distinguishable by whether the key is present at all.
+// EncodeList renders a list as a JSON array, because a delimited string needs an
+// escaping scheme for the delimiter. A nil list encodes as "[]", so an empty list
+// and an absent key stay distinct.
 func EncodeList(vs []string) string {
 	if vs == nil {
 		vs = []string{}
 	}
-	// The error is discarded because marshaling a []string cannot produce one: every
-	// Go string encodes, invalid UTF-8 included, which encoding/json rewrites to the
-	// replacement rune rather than refusing. Returning an error here would put a
-	// branch in every caller for a case that cannot occur.
+	// Marshalling a []string cannot fail; invalid UTF-8 becomes the replacement rune.
 	b, _ := json.Marshal(vs)
 	return string(b)
 }
 
-// DecodeList reads a metadata value written by EncodeList. It is strict: a value
-// that is not a JSON array of strings is an error, never a best guess. A pack from
-// a registry can carry anything under our prefix, and a decoder that falls back to
-// treating the raw string as a single-element list turns a malformed field into a
-// plausible tag that no one notices.
+// DecodeList reads a value written by [EncodeList]. Anything but a JSON array of
+// strings is an error, because a registry pack can put anything under our prefix
+// and a fallback would turn a malformed field into a plausible tag.
 func DecodeList(v string) ([]string, error) {
-	// Decoded through *string rather than string so a null element is visible. Into a
-	// []string, JSON null becomes "" without an error, which would turn a malformed
-	// list into one carrying a silent empty tag.
+	// *string exposes a null element, which a []string would decode as "".
 	var raw []*string
 	if err := json.Unmarshal([]byte(v), &raw); err != nil {
 		return nil, fmt.Errorf("%w: metadata list %q is not a JSON string array: %w", ErrInvalid, v, err)
 	}
 	if raw == nil {
-		// "null" unmarshals into a nil slice without erroring. It is not what
-		// EncodeList writes, and it is not an empty list.
+		// "null" decodes to nil without error and is not an empty list.
 		return nil, fmt.Errorf("%w: metadata list is null, want a JSON string array", ErrInvalid)
 	}
 	out := make([]string, len(raw))
@@ -93,22 +66,15 @@ func DecodeList(v string) ([]string, error) {
 	return out, nil
 }
 
-// IsOurs reports whether a metadata key is in the namespace Flynn reserves. Use it
-// to split a foreign pack's metadata from our own: keys it rejects are carried
-// through untouched on export, because they belong to whoever wrote them.
-//
-// The retired namespace counts as ours. A key we wrote under the old prefix is not
-// somebody else's to preserve, and treating it as foreign would export both spellings
-// side by side for the rest of that skill's life.
+// IsOurs reports whether key is under [MetadataPrefix] or the retired prefix. Other
+// keys pass through export untouched. The retired prefix counts as ours, or export
+// would carry both spellings for the rest of the skill's life.
 func IsOurs(key string) bool {
 	return strings.HasPrefix(key, MetadataPrefix) || strings.HasPrefix(key, retiredPrefix)
 }
 
-// Get reads one of our metadata values, accepting the retired prefix for the same
-// field. key is the current spelling, as in MetaCheck; a document written by an
-// earlier build answers through the old one. The current spelling wins when a
-// document somehow carries both, since that is the one this build would have
-// written.
+// Get reads key, such as [MetaCheck], falling back to its retired spelling. The
+// current spelling wins when both are present.
 func Get(meta map[string]string, key string) (string, bool) {
 	if v, ok := meta[key]; ok {
 		return v, true

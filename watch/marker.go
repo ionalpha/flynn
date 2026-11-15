@@ -1,10 +1,7 @@
-// Package watch turns in-tree source comments into governed run inputs. It tails a
-// working tree for trailing comments that open with an ai! marker (change the code) or
-// an ai? marker (answer a question). These are the markers aider's watch mode uses, so
-// a developer who knows them there can use them here. When one appears it becomes a
-// turn the agent runs, and the marker's file and line are carried onto the run so its
-// provenance lands in the sealed record like any other input. The marker is cleared
-// once picked up so the same request never fires twice.
+// Package watch turns source comments that start with ai! (change the code) or ai?
+// (answer a question) into agent turns. These are the markers aider's watch mode
+// uses. The marker's file and line go onto the run's sealed record, and the marker
+// is cleared once picked up so it never fires twice.
 package watch
 
 import (
@@ -12,9 +9,8 @@ import (
 	"strings"
 )
 
-// Kind is a marker's intent. Act (ai!) asks the agent to change the code; Ask (ai?)
-// asks it to answer about the code. Both become a turn input; the kind is carried so
-// the composed objective can tell the run to edit versus explain.
+// Kind is a marker's intent, carried so the objective can ask for an edit or an
+// explanation.
 type Kind string
 
 const (
@@ -24,33 +20,23 @@ const (
 	Ask Kind = "ai?"
 )
 
-// Marker is one ai! / ai? request found in a source file: the intent, the file and
-// 1-based line it sits on, the instruction text after the marker token, and the
-// code on that line with the marker comment removed (the local context the request
-// is about). Provenance renders File and Line for the recorded objective.
+// Marker is one request found in a source file.
 type Marker struct {
 	Kind Kind
-	File string
-	Line int
-	Text string
-	Code string
+	File string // root-relative, slash-separated
+	Line int    // 1-based
+	Text string // the instruction after the marker token
+	Code string // the code on the line, marker comment removed
 }
 
-// commentLeaders are the comment openers a marker can trail, longest first so a
-// leader that is a prefix of another (// before /) is matched at its full length.
-// The token immediately after the leader must be ai! or ai?, which keeps a bare
-// "ai!" appearing mid-code from ever reading as a marker.
+// commentLeaders are the comment openers a marker can follow. Requiring the marker
+// right after a leader keeps an "ai!" in code from reading as a marker.
 var commentLeaders = []string{"<!--", "//", "/*", "--", "#", ";"}
 
-// closers strip a marker's trailing block-comment terminator so the instruction
-// does not carry "*/" or "-->" into the objective.
 var closers = []string{"-->", "*/"}
 
-// ScanLine reports the marker on a single line, if any. It finds the earliest
-// comment leader whose following token is ai! or ai?, takes the rest of the comment
-// as the instruction (trailing block terminators removed), and returns the code
-// before the comment as context. ok is false when the line holds no marker or the
-// instruction is empty (an empty marker has nothing to run).
+// ScanLine reports the marker on one line. The earliest leader wins. ok is false
+// when there is no marker or its instruction is empty.
 func ScanLine(line string) (kind Kind, instruction, code string, ok bool) {
 	best := -1
 	for _, leader := range commentLeaders {
@@ -73,8 +59,8 @@ func ScanLine(line string) (kind Kind, instruction, code string, ok bool) {
 	return kind, instruction, code, best >= 0
 }
 
-// markerToken reports whether s opens with an ai! or ai? token that is not glued to
-// a longer word (so "ai!!" or "airplane" never match), returning the token's Kind.
+// markerToken requires whitespace or end of string after the token, so "ai!!"
+// does not match.
 func markerToken(s string) (Kind, bool) {
 	for _, k := range []Kind{Act, Ask} {
 		if strings.HasPrefix(s, string(k)) {
@@ -87,7 +73,8 @@ func markerToken(s string) (Kind, bool) {
 	return "", false
 }
 
-// stripClosers removes a single trailing block-comment terminator from s.
+// stripClosers removes one trailing "*/" or "-->" so it stays out of the
+// objective.
 func stripClosers(s string) string {
 	trimmed := strings.TrimRight(s, " \t")
 	for _, c := range closers {
@@ -98,8 +85,7 @@ func stripClosers(s string) string {
 	return s
 }
 
-// Scan finds every marker in a file's content, tagging each with the file path and
-// its 1-based line. Lines without a marker are skipped.
+// Scan returns every marker in content, tagged with file.
 func Scan(file string, content []byte) []Marker {
 	var markers []Marker
 	for i, line := range strings.Split(string(content), "\n") {
@@ -112,8 +98,8 @@ func Scan(file string, content []byte) []Marker {
 	return markers
 }
 
-// Provenance renders where a marker came from for the recorded objective, e.g.
-// "cmd/flynn/run.go:42 (ai!)". It is stable so a run's inputs are diffable.
+// Provenance renders the marker as "cmd/flynn/run.go:42 (ai!)". The format is
+// stable so a run's inputs can be diffed.
 func (m Marker) Provenance() string {
 	return m.File + ":" + strconv.Itoa(m.Line) + " (" + string(m.Kind) + ")"
 }

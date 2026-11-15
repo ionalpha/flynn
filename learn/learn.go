@@ -1,26 +1,15 @@
-// Package learn is the agent's learning loop: it turns a finished run into durable
-// knowledge the agent can reuse, so experience compounds across runs instead of
-// being discarded when a conversation ends.
+// Package learn turns a finished run into skills and memories later runs can reuse.
 //
-// This package is the capture half. A Curator takes the outcome of a run, asks a
-// Distiller what reusable lesson it taught, and writes the result to the skill and
-// memory stores, stamped with the run's provenance. Capture is outcome-gated: only
-// a run that actually converged is distilled, so the agent never crystallizes a
-// lesson from work that failed or stalled. That gate, plus the provenance stamp,
-// is what keeps a self-curating skill set from degrading into noise: every stored
-// lesson is traceable to a run that met its goal.
+// A [Curator] asks a [Distiller] what a run taught and stores each lesson stamped
+// with the run's provenance. Only a converged run is distilled, so every stored
+// lesson traces to a run that met its goal and failed work teaches nothing.
 //
-// A skill can also carry an executable check. When a Verifier is supplied, the
-// Curator runs that check in a sandbox before crystallizing the skill: a skill
-// whose check runs and fails is proven broken and dropped, never stored; one that
-// passes is tagged verified; one with no runnable check is kept but tagged
-// unverified. A captured procedure is thus trusted in proportion to evidence that
-// it actually works, rather than on the model's say-so alone.
+// With a [Verifier], a skill's check runs in a sandbox first. A check that runs and
+// fails drops the skill; a pass tags it verified; no runnable check tags it
+// unverified.
 //
-// The Distiller is a port. The model-backed implementation (ModelDistiller) asks a
-// language model to summarize the run; a test supplies a scripted one. The Curator
-// itself contains no model dependency, so its gating, provenance, and persistence
-// are deterministic and fully testable.
+// The Curator has no model dependency, so gating, provenance and persistence are
+// deterministic. [ModelDistiller] is the model-backed Distiller.
 package learn
 
 import (
@@ -33,96 +22,69 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// LessonKind selects where a distilled lesson is stored: a reusable Skill (a
-// procedure the agent can apply again) or a Memory item (a fact or observation to
-// recall).
+// LessonKind selects the store a lesson goes to.
 type LessonKind string
 
 const (
-	// LessonSkill is a reusable procedure, stored as a skill keyed by its slug so a
-	// later run with the same lesson updates rather than duplicates it.
+	// LessonSkill is a procedure, keyed by slug so a repeat lesson updates the skill.
 	LessonSkill LessonKind = "skill"
-	// LessonMemory is a fact or observation, stored as an append-only memory item.
+	// LessonMemory is a fact, stored as an append-only memory item.
 	LessonMemory LessonKind = "memory"
 )
 
-// Lesson is one piece of durable knowledge a Distiller proposes from a run. Title
-// names a skill (and seeds its slug); for a memory item it is an optional label.
-// Body is the lesson itself.
+// Lesson is one item a Distiller proposes. Title seeds a skill's slug; for a memory
+// it is an optional label.
 type Lesson struct {
 	Kind  LessonKind
 	Title string
 	Body  string
 	Tags  []string
-	// Check is an optional shell command that verifies a skill works: it is run in
-	// a sandbox and a zero exit code means the skill is sound. Empty means the skill
-	// has no executable check. Ignored for memory items, which are not executable.
+	// Check is an optional shell command run in a sandbox; exit 0 means the skill
+	// works. Ignored for memory items.
 	Check string
 }
 
-// Outcome is the finished run a Curator learns from: what it set out to do, what it
-// produced, the conversation it took to get there, whether it converged, the scope
-// the knowledge belongs to, and a provenance string identifying the run.
+// Outcome is the finished run a Curator learns from.
 type Outcome struct {
 	Objective  string
 	Result     string
 	Transcript []llm.Message
 	Converged  bool
 	Scope      state.Scope
-	// Source identifies the run this knowledge came from (a session or stream id),
-	// stamped onto every captured item so a lesson is always traceable to its run.
+	// Source is the session or stream id stamped on every captured item.
 	Source string
-	// SkillsRead are the ids of the skills the run loaded the body of, in the order
-	// it loaded them. A memory lesson from this run is anchored to each of them, so
-	// the next read of that skill surfaces what was learned while working from it.
-	//
-	// Loaded, not offered. A skill named in the prompt establishes nothing: the run
-	// may have read past it. Loading one is an act the run chose, which makes it the
-	// best evidence available that the run was working on that procedure, and the
-	// caller already has the list because reinforcement is credited from it.
-	//
-	// This is the closest to aboutness Flynn can compute on its own, and it is a
-	// proxy rather than a judgment: a run that loads five procedures anchors its
-	// lesson to all five, and the surfacing cap is what keeps that from being a
-	// reader's problem. Skill lessons take no anchors, because a skill already
+	// SkillsRead are the ids of skills whose body the run loaded, in load order. A
+	// memory lesson is anchored to each, so the next read of that skill surfaces it.
+	// Offered skills are excluded because the run may have ignored them; loading is
+	// the run's choice. A run that loads five anchors to all five, and the surfacing
+	// cap bounds what a reader sees. Skill lessons take no anchors because a skill
 	// carries its own evidence (Offers, Reads, Wins).
 	SkillsRead []string
 }
 
-// Distiller turns a run outcome into zero or more lessons. Returning none is a
-// valid result: not every run teaches something worth keeping.
+// Distiller turns a run outcome into zero or more lessons.
 type Distiller interface {
 	Distill(ctx context.Context, o Outcome) ([]Lesson, error)
 }
 
-// Tags stamped onto a captured skill to record its provenance and how much its
-// soundness was verified, so the curator lifecycle (and a human) can rank and decay
-// skills by evidence rather than treating every capture as equally trustworthy.
+// Tags on a captured skill, so the curator lifecycle can rank and decay skills by
+// evidence.
 const (
-	// provenanceTag marks a skill as machine-learned from a run, distinct from one
-	// a human authored.
+	// provenanceTag marks a skill learned from a run; a skill without it is authored.
 	provenanceTag = "learned"
-	// verifiedTag marks a skill whose check ran and passed in a sandbox.
-	verifiedTag = "verified"
-	// unverifiedTag marks a skill kept without passing a check (it had none, or the
-	// check could not be run).
+	verifiedTag   = "verified"
+	// unverifiedTag marks a skill whose check was absent or could not run.
 	unverifiedTag = "unverified"
 )
 
-// memoryKind is the memory item kind captured lessons are stored under.
 const memoryKind = "lesson"
 
-// ErrBundledScope is returned when the learning loop is asked to write into
-// state.BundledScope, which belongs to the skills shipped in the binary. It is a
-// wiring mistake at the call site rather than a condition the loop can encounter
-// from data, so it is reported instead of skipped: silently capturing nothing
-// would look identical to a run that taught nothing.
+// ErrBundledScope reports a Curate call into state.BundledScope, which holds the
+// skills shipped in the binary. It is a wiring mistake, so it is an error: capturing
+// nothing would look like a run that taught nothing.
 var ErrBundledScope = errors.New("learn: bundled scope is reserved for skills shipped in the binary")
 
-// Curator is the capture half of the learning loop: it distills a converged run
-// into lessons and persists them, stamped with provenance. It holds no model
-// dependency of its own; the Distiller supplies that. With a Verifier set, a
-// skill's executable check gates whether it is crystallized.
+// Curator distills a converged run into lessons and stores them.
 type Curator struct {
 	distiller Distiller
 	skills    state.SkillStore
@@ -133,16 +95,13 @@ type Curator struct {
 // Option configures a Curator.
 type Option func(*Curator)
 
-// WithVerifier gates skill capture on an executable check: a skill whose check
-// runs and fails is dropped, one that passes is tagged verified, and one with no
-// runnable check is kept tagged unverified. Without a verifier, skills are kept as
-// captured (untagged by verification).
+// WithVerifier gates skill capture on the skill's check. Without one, skills carry
+// no verification tag.
 func WithVerifier(v Verifier) Option {
 	return func(c *Curator) { c.verifier = v }
 }
 
-// NewCurator builds a Curator over a distiller and the skill and memory stores it
-// writes to.
+// NewCurator returns a Curator writing to skills and memories.
 func NewCurator(d Distiller, skills state.SkillStore, memories state.MemoryStore, opts ...Option) *Curator {
 	c := &Curator{distiller: d, skills: skills, memories: memories}
 	for _, o := range opts {
@@ -151,13 +110,9 @@ func NewCurator(d Distiller, skills state.SkillStore, memories state.MemoryStore
 	return c
 }
 
-// Captured is what a Curate call persisted, returned for audit and for the caller
-// to surface ("learned 2 skills, 1 memory from this run"). Dropped holds skill
-// lessons rejected because their check ran and failed, so a caller can report what
-// was discarded as broken rather than silently losing it. Skipped holds skill
-// lessons that collided with an existing authored skill and were not stored, so the
-// caller can tell "learned nothing new" apart from "would have overwritten curated
-// content".
+// Captured is what a Curate call stored. Dropped holds skill lessons whose check
+// failed. Skipped holds skill lessons whose slug an authored or bundled skill owns,
+// so a caller can tell them apart from a run that taught nothing.
 type Captured struct {
 	Skills   []state.Skill
 	Memories []state.MemoryItem
@@ -165,17 +120,16 @@ type Captured struct {
 	Skipped  []Lesson
 }
 
-// Curate distills o and persists the resulting lessons, returning what it stored.
-// It is outcome-gated: a run that did not converge yields nothing, so a failed or
-// stalled run never crystallizes a lesson. A lesson missing a body is skipped. The
-// first store error aborts and is returned, with whatever was stored before it.
+// Curate distills o and stores the lessons. An unconverged run yields nothing and a
+// lesson with no body is skipped. The first store error is returned with what was
+// stored before it.
 func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 	var captured Captured
 	if o.Scope == state.BundledScope {
 		return captured, ErrBundledScope
 	}
 	if !o.Converged {
-		return captured, nil // gate: capture only from runs that met their goal
+		return captured, nil
 	}
 	lessons, err := c.distiller.Distill(ctx, o)
 	if err != nil {
@@ -202,23 +156,14 @@ func (c *Curator) Curate(ctx context.Context, o Outcome) (Captured, error) {
 	return captured, nil
 }
 
-// captureSkill stores a skill lesson into captured, or records in captured why it
-// was not stored.
+// captureSkill stores l or records in captured why it did not.
 //
-// The learning loop never overwrites a human-authored skill. A skill that exists in
-// the scope without the learned-provenance tag is curated content (authored, or
-// shipped in a pack), and a distilled lesson must not silently replace its body,
-// check or tags. That, and a bundled slug, are decided before the check runs, so a
-// capture that will not be stored costs no sandbox time.
-//
-// A bundled skill owns its slug everywhere, not only in its own scope. Writing a
-// learned skill under a bundled slug would store a record that no read can reach:
-// Get resolves a slug across scopes by earliest created row, and a bundled skill is
-// seeded before any run distils anything. Skipping it reports the collision instead.
+// A skill in the scope without [provenanceTag] is authored or from a pack, and a
+// lesson never replaces it. A bundled slug is skipped in every scope because Get
+// resolves a slug by earliest created row and bundled skills are seeded first, so
+// the learned record would be unreachable. Both are checked before the sandbox runs.
 func (c *Curator) captureSkill(ctx context.Context, o Outcome, l Lesson, bundled map[string]bool, captured *Captured) error {
 	slug := slugify(l.Title)
-	// One lookup answers both questions: whether an authored skill owns this name and,
-	// if a learned skill does, what evidence to carry over.
 	prev, prevErr := c.skills.Get(ctx, slug)
 	existsInScope := prevErr == nil && prev.Scope == o.Scope
 	if (existsInScope && !isLearned(prev.Tags)) || bundled[slug] {
@@ -243,8 +188,7 @@ func (c *Curator) captureSkill(ctx context.Context, o Outcome, l Lesson, bundled
 		Check: l.Check,
 		Scope: o.Scope,
 	}
-	// Re-capturing a learned skill keeps the outcome evidence it has already earned,
-	// so reinforcement is not reset every time the same lesson is learned again.
+	// Carry evidence over so re-learning a lesson does not reset reinforcement.
 	if existsInScope {
 		skill.Offers, skill.Reads, skill.Wins = prev.Offers, prev.Reads, prev.Wins
 	}
@@ -256,10 +200,9 @@ func (c *Curator) captureSkill(ctx context.Context, o Outcome, l Lesson, bundled
 	return nil
 }
 
-// verifiedTags returns the tags a skill lesson is stored with, and false when its
-// check ran and failed: the skill is proven broken, so it is dropped rather than
-// crystallized. An error means the verification infrastructure failed (a cancelled
-// context, say), which says nothing about the skill.
+// verifiedTags returns the tags to store l with, and false when its check ran and
+// failed. An error is a verifier failure, such as a cancelled context, and says
+// nothing about the skill.
 func (c *Curator) verifiedTags(ctx context.Context, l Lesson, scope state.Scope) (tags []string, keep bool, err error) {
 	tags = withProvenance(l.Tags)
 	if c.verifier == nil {
@@ -274,11 +217,10 @@ func (c *Curator) verifiedTags(ctx context.Context, l Lesson, scope state.Scope)
 	case v.Ran:
 		return nil, false, nil
 	default:
-		return append(tags, unverifiedTag), true, nil // no check, or it could not be run
+		return append(tags, unverifiedTag), true, nil
 	}
 }
 
-// captureMemory stores a memory lesson into captured.
 func (c *Curator) captureMemory(ctx context.Context, o Outcome, l Lesson, captured *Captured) error {
 	mi, err := c.memories.Write(ctx, state.MemoryItem{
 		Kind:    memoryKind,
@@ -294,11 +236,8 @@ func (c *Curator) captureMemory(ctx context.Context, o Outcome, l Lesson, captur
 	return nil
 }
 
-// bundledSlugs is the set of slugs owned by the skills shipped in the binary. It
-// is read by listing the reserved scope rather than by looking each candidate slug
-// up with Get, because Get resolves a slug across every scope and would answer
-// about the wrong record exactly when the answer matters. One list per Curate call
-// covers every lesson in it; the bundled set is a pack, not a corpus.
+// bundledSlugs lists state.BundledScope once per Curate call. Get would resolve a
+// colliding slug across scopes and could return the learned record instead.
 func (c *Curator) bundledSlugs(ctx context.Context) (map[string]bool, error) {
 	all, err := c.skills.List(ctx, state.BundledScope)
 	if err != nil {
@@ -311,10 +250,7 @@ func (c *Curator) bundledSlugs(ctx context.Context) (map[string]bool, error) {
 	return out, nil
 }
 
-// sourcesOf renders an outcome's single provenance string as a memory item's
-// source list. A lesson distilled from one outcome has one origin; an outcome with
-// no recorded source produces no entry rather than a blank one, so provenance is
-// either real or absent.
+// sourcesOf returns nil for an empty source so a memory never carries a blank one.
 func sourcesOf(source string) []string {
 	if source == "" {
 		return nil
@@ -322,8 +258,7 @@ func sourcesOf(source string) []string {
 	return []string{source}
 }
 
-// withProvenance ensures the learned-provenance tag is present exactly once,
-// preserving the distiller's own tags.
+// withProvenance adds [provenanceTag] once without mutating tags.
 func withProvenance(tags []string) []string {
 	for _, t := range tags {
 		if t == provenanceTag {
@@ -333,9 +268,6 @@ func withProvenance(tags []string) []string {
 	return append(append([]string(nil), tags...), provenanceTag)
 }
 
-// isLearned reports whether a skill carries the learned-provenance tag. A skill
-// without it was authored by a human or shipped in a pack, which the capture path
-// must not overwrite.
 func isLearned(tags []string) bool {
 	for _, t := range tags {
 		if t == provenanceTag {
@@ -345,9 +277,8 @@ func isLearned(tags []string) bool {
 	return false
 }
 
-// slugify renders a title as a stable skill slug: lowercased, with each run of
-// non-alphanumeric characters collapsed to a single hyphen and the ends trimmed.
-// An empty result falls back to "skill" so a slug is always non-empty.
+// slugify lowercases s and collapses each run of other characters to one hyphen.
+// An empty result becomes "skill".
 func slugify(s string) string {
 	var b strings.Builder
 	dash := false
@@ -367,11 +298,8 @@ func slugify(s string) string {
 	if out == "" {
 		return "skill"
 	}
-	// A learned skill has to be exportable as a conformant SKILL.md, whose name
-	// field caps at skillmd.MaxNameLen. Bound the slug here, where the name is
-	// minted, rather than discovering the violation at export. The slug is ASCII
-	// (lowercase letters, digits and hyphens), so a byte cut is a rune cut; trim
-	// again in case it landed on a hyphen.
+	// SKILL.md caps a name at skillmd.MaxNameLen, so bound it where it is minted.
+	// The slug is ASCII, so a byte cut is a rune cut.
 	if len(out) > skillmd.MaxNameLen {
 		out = strings.Trim(out[:skillmd.MaxNameLen], "-")
 	}

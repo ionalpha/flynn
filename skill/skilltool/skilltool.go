@@ -1,29 +1,14 @@
-// Package skilltool exposes the second and third stages of the Agent Skills
-// disclosure model as tools the agent calls, rather than as text the runtime
-// injects.
+// Package skilltool offers the second and third stages of Agent Skills disclosure,
+// the SKILL.md body and the resources it addresses, as tools the agent calls.
+// Recall puts stage one, name and description, in the prompt.
 //
-// The specification describes three stages. The first is metadata: a skill's name
-// and description, the only text a runtime loads before anything has decided the
-// skill is relevant. The second is the instructions: the whole SKILL.md body, loaded
-// once the skill is activated. The third is the resources it addresses, read only
-// when the body points at one. Recall carries stage one into the prompt; this
-// package is stages two and three.
+// A tool call is an event on the spine, so a skill that was read can be told apart
+// from one that was only offered, and a run's outcome can be credited to what it
+// read. Text pasted into a prompt gives no such record.
 //
-// # Why these are tools and not more injection
-//
-// A tool call is an event on the spine. Offered-and-ignored, read-and-the-run-failed
-// and read-and-the-run-won are three different facts about a skill, and only the
-// first is knowable when a skill's text is pasted into a system prompt: nothing
-// distinguishes text the model used from text it read past. Grading a skill by what
-// it did for a run needs that distinction, so the read has to be an act rather than
-// an ambient condition.
-//
-// # Failure is loud
-//
-// Every path here either returns the whole thing or returns an error naming what was
-// wrong. Nothing truncates. A model working from the first half of a procedure is
-// the failure this package exists to remove, and a silently clipped body would
-// reintroduce it one layer further in.
+// Every tool returns the whole result or an error naming what was wrong. Nothing
+// truncates, because a model working from half a procedure is worse off than one
+// told it failed.
 package skilltool
 
 import (
@@ -45,35 +30,24 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// MaxBodyRunes caps the body skill_read will hand back. The specification
-// recommends an instruction body under 5,000 tokens and a SKILL.md under 500 lines;
-// this is roughly twice that, so an authored skill never meets it and a skill that
-// does is malformed rather than merely long. Refusing is deliberate: the alternative
-// is returning a procedure with its ending cut off, which is worse than saying so.
+// MaxBodyRunes caps the body skill_read returns, at about twice the specification's
+// 5,000-token recommendation, so only a malformed skill reaches it. A longer body is
+// refused, never cut.
 const MaxBodyRunes = 40_000
 
 var (
-	// ErrUnknownSkill reports a name no skill answers to. It is distinct from a skill
-	// that exists and cannot be read, because the two call for different repair: one
-	// is a wrong name, the other is a broken record.
+	// ErrUnknownSkill reports a name no skill answers to, a wrong name rather than a
+	// broken record.
 	ErrUnknownSkill = errors.New("skilltool: no such skill")
-	// ErrUnreadable reports a skill whose body cannot be handed over as it stands:
-	// empty, or past MaxBodyRunes.
+	// ErrUnreadable reports a body that is empty or past [MaxBodyRunes].
 	ErrUnreadable = errors.New("skilltool: skill body unreadable")
-	// ErrNoResource reports a path the skill does not address. Only the resources the
-	// pack loader recorded are readable, so this covers both a file that is not there
-	// and a file that is there and is not part of the skill.
+	// ErrNoResource reports a path outside the resources the pack loader recorded,
+	// whether or not the file exists.
 	ErrNoResource = errors.New("skilltool: no such skill resource")
 )
 
-// Set is the skill toolset over a skill store and the pack tree whose resources it
-// reads. Construct it with New and hand its tools to a mission executor alongside
-// the working-tree tools.
-//
-// A Set belongs to one run, and it is also that run's record of which skills it
-// loaded: every body handed over is remembered, and Reads returns them when the run
-// ends. That record is what the run's outcome is credited to, so the set has to
-// outlive the tool calls and be reachable by whoever grades the run.
+// Set is the skill toolset for one run and that run's record of the skills it read.
+// [Set.Reads] returns the record for grading, so the Set must outlive the tool calls.
 type Set struct {
 	skills state.SkillStore
 	packs  fs.FS
@@ -84,27 +58,16 @@ type Set struct {
 	reads []string
 }
 
-// Notes is a source of what else is known about a skill, attached to the read of it.
-//
-// It is an interface and not a memory store because nothing here is a memory
-// concept: this package knows that something may have text to add about the skill it
-// just handed over, and no more. What is selected, what is admitted and how it is
-// introduced belong to whoever implements this, the same way the wake digest leaves
-// its framing to the host that injects it.
+// Notes supplies text to attach to a skill read. The implementer decides what is
+// selected and how it is framed; this package knows nothing about memory.
 type Notes interface {
-	// ForSkill returns text to attach to a read of the skill with this id, or empty
-	// for nothing to add. It is called after the body has been resolved, so it runs
-	// only for a read that succeeded.
-	//
-	// It returns no error on purpose. A note is an extra, and the caller asked for a
-	// procedure: an implementation that cannot read its own store has nothing to add
-	// and says so by returning empty, rather than failing somebody else's tool call.
+	// ForSkill returns text for a successful read of skillID, or "". It returns no
+	// error, so a failing note source returns "" and the read still succeeds.
 	ForSkill(ctx context.Context, skillID string) string
 }
 
-// New builds the skill toolset over skills, reading resources from the pack in the
-// binary. Options replace that pack, which is how a test points at a tree with
-// resources in it and how an installed pack on disk will be reached.
+// New builds the toolset over skills, reading resources from the pack in the binary
+// unless [WithPack] replaces it.
 func New(skills state.SkillStore, opts ...Option) *Set {
 	s := &Set{skills: skills, packs: bundled.FS(), root: bundled.Root}
 	for _, o := range opts {
@@ -116,31 +79,25 @@ func New(skills state.SkillStore, opts ...Option) *Set {
 // Option configures a Set.
 type Option func(*Set)
 
-// WithPack reads resources from the skill tree rooted at root in fsys instead of the
-// pack in the binary. The filesystem is the boundary: fs.FS refuses "..", absolute
-// and rooted paths by contract, so a set built over one tree cannot read out of it.
+// WithPack reads resources from root in fsys. fs.FS refuses ".." and absolute paths,
+// so the set cannot read outside that tree.
 func WithPack(fsys fs.FS, root string) Option {
 	return func(s *Set) { s.packs, s.root = fsys, root }
 }
 
-// WithNotes attaches n to every successful skill_read, so what the install has
-// learned about a procedure arrives with the procedure. A nil n leaves reads
-// unannotated, which is what a run with no memory behind it gets.
+// WithNotes attaches n's text to every successful skill_read. A nil n adds nothing.
 func WithNotes(n Notes) Option {
 	return func(s *Set) { s.notes = n }
 }
 
-// Tools returns the skill toolset as [mission.Tool] values, ready to register with an
-// executor. It is empty when there is no store behind it, so a run assembled without
-// durable skills offers no tool it cannot answer.
+// Tools returns the toolset as [mission.Tool] values. It is empty without a store,
+// so a run never offers a tool it cannot answer.
 func (s *Set) Tools() []mission.Tool {
 	if s == nil || s.skills == nil {
 		return nil
 	}
 	return []mission.Tool{readTool{s}, resourceTool{s}}
 }
-
-// --- skill_read ---------------------------------------------------------------
 
 type readTool struct{ s *Set }
 
@@ -177,30 +134,19 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	if n := utf8.RuneCountInString(body); n > MaxBodyRunes {
 		return "", fmt.Errorf("%w: %s is %d characters, over the %d limit", ErrUnreadable, sk.Slug, n, MaxBodyRunes)
 	}
-	// The run has now loaded this skill, and that is the fact its outcome is credited
-	// to. Recorded here, past every refusal above, so a name that resolved to nothing
-	// readable never counts as a read: what is being claimed is that the procedure
-	// reached the model, and a returned error did not.
+	// Recorded after every refusal, so only a body that reached the model counts.
 	t.s.recordRead(sk.ID)
-	// The resources are listed rather than read. A body that points at a script names
-	// it in prose, and the model needs the addressable set to know that path is one it
-	// may ask for; the bytes stay where they are until it does.
+	// Resources are listed, not read, so the model knows which paths it may ask for.
 	out := []string{body}
 	res, note := t.s.resources(sk)
 	switch {
 	case note != "":
-		// The procedure is what was asked for, and a pack that will not load is not a
-		// reason to withhold it. Said out loud rather than passed over: a bundled skill
-		// whose tree this binary cannot read is a real fault, and the model is better
-		// off knowing that a list exists and it is not being given one.
+		// The body is still returned, with a note that the resource list is missing.
 		out = append(out, "("+note+")")
 	case len(res) > 0:
 		out = append(out, "Resources for this skill, readable with skill_resource:\n- "+strings.Join(res, "\n- "))
 	}
-	// What the install has learned about this procedure rides along with it, last, so
-	// the procedure is read before anything anybody has said about it. The read the
-	// model made is still answered by the body above; this is the ride-along, and it
-	// is the caller's business to say so in its own words.
+	// Notes go last, so the procedure is read before anything said about it.
 	if t.s.notes != nil {
 		if n := strings.TrimSpace(t.s.notes.ForSkill(ctx, sk.ID)); n != "" {
 			out = append(out, n)
@@ -208,8 +154,6 @@ func (t readTool) Invoke(ctx context.Context, input json.RawMessage) (string, er
 	}
 	return strings.Join(out, "\n\n"), nil
 }
-
-// --- skill_resource -----------------------------------------------------------
 
 type resourceTool struct{ s *Set }
 
@@ -245,10 +189,8 @@ func (t resourceTool) Invoke(ctx context.Context, input json.RawMessage) (string
 	if note != "" {
 		return "", fmt.Errorf("%w: %s", ErrNoResource, note)
 	}
-	// Membership in the addressed set is the whole access check, compared exactly. The
-	// loader built that set by walking the skill's own directory, so a path it holds
-	// cannot leave the skill and a path it does not hold is refused without any
-	// reasoning about what the string might mean.
+	// Exact membership in the loader's list is the whole access check, so no path
+	// string is interpreted.
 	if !slices.Contains(res, in.Path) {
 		return "", fmt.Errorf("%w: %s does not address %q", ErrNoResource, sk.Slug, in.Path)
 	}
@@ -259,12 +201,8 @@ func (t resourceTool) Invoke(ctx context.Context, input json.RawMessage) (string
 	return string(b), nil
 }
 
-// --- the read record ------------------------------------------------------------
-
-// recordRead notes that the run loaded this skill's body. Ids, because that is what
-// reinforcement credits and what names one record where two scopes hold the same
-// slug. Repeats are kept as they happen and deduped on the way out, so the record
-// stays a plain append under whatever concurrency the executor runs tools with.
+// recordRead stores ids, because reinforcement credits ids and two scopes can share
+// a slug. It only appends under the lock; [Set.Reads] dedupes.
 func (s *Set) recordRead(id string) {
 	if s == nil || id == "" {
 		return
@@ -274,10 +212,9 @@ func (s *Set) recordRead(id string) {
 	s.reads = append(s.reads, id)
 }
 
-// Reads returns the ids of the skills this run loaded, deduped, in the order they
-// were first read. It is the run's evidence of what it took up, and the argument
-// Reinforce expects; a run that read nothing returns nothing, which is a fact worth
-// recording rather than an absence to fill in from the offers.
+// Reads returns the ids of the skills this run read, deduped, in first-read order,
+// as learn.Reinforce expects. A run that read nothing returns nothing; the offers do
+// not count.
 func (s *Set) Reads() []string {
 	if s == nil {
 		return nil
@@ -296,11 +233,7 @@ func (s *Set) Reads() []string {
 	return out
 }
 
-// --- shared -------------------------------------------------------------------
-
-// get resolves the name the model used to a live skill. The store takes an id or a
-// slug, and the slug is what recall offers, so the model's own vocabulary resolves
-// without a lookup table.
+// get passes the model's name to the store, which accepts the slug recall offered.
 func (s *Set) get(ctx context.Context, name string) (state.Skill, error) {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -316,17 +249,10 @@ func (s *Set) get(ctx context.Context, name string) (state.Skill, error) {
 	return sk, nil
 }
 
-// resources returns the paths a skill addresses, or none when it addresses nothing
-// this process can reach. Only the bundled scope is reachable today: a stored skill
-// records its content, not where the tree it came from lives, so a skill learned
-// here or imported from a directory has no resources to offer until installed packs
-// have a home on disk.
-//
-// A pack that should be readable and is not comes back as a note rather than an
-// error, because there is nothing a caller can do differently about it. It is the
-// case where the store holds a bundled skill this binary no longer ships, which a
-// downgrade produces and the next seed resolves; the skill's own content is in the
-// store either way.
+// resources lists a bundled skill's resource paths. Other scopes have none, because
+// a stored skill does not record where its tree lives. A bundled skill this binary
+// does not ship, as after a downgrade, returns a note instead of an error, because
+// the caller cannot act on it and the next seed fixes it.
 func (s *Set) resources(sk state.Skill) (paths []string, note string) {
 	if sk.Scope != state.BundledScope {
 		return nil, ""

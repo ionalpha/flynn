@@ -1,20 +1,9 @@
-// Package jobs is the agent's durable work queue: a port for work that must
-// survive a restart and be retried until it succeeds or is exhausted. Scheduled
-// automations, delayed and retried side effects, and fan-out work are enqueued
-// here rather than run inline, so a crash between "decide to do X" and "X done"
-// loses nothing.
+// Package jobs defines the durable, at-least-once work queue, so a crash between
+// deciding to do work and finishing it loses nothing. Workers claim jobs under a
+// lease, and a crashed worker's jobs return to the queue when the lease expires.
 //
-// Like state, spine, and observe, the queue is a PORT with a zero-dependency
-// default and heavy backends as opt-in adapters. The default is SQLite-backed
-// (durable, single file, no setup); a fast in-memory queue is the reference for
-// tests and ephemeral use. River (Postgres) and NATS/JetStream (cross-process,
-// fleet, k8s) attach later as adapters held to the same jobstest conformance
-// suite. Workers claim jobs under a lease, so a crashed worker's in-flight jobs
-// return to the queue when the lease expires rather than being lost.
-//
-// The queue is distinct from its neighbours: the bus is at-most-once ambient
-// signalling, the spine is the durable ordered truth log. The queue is durable,
-// at-least-once, retried work that the bus and spine are not.
+// [MemoryQueue] is the reference backend; every backend runs the jobstest suite and
+// uses the transition functions here, so all make the same decisions.
 package jobs
 
 import (
@@ -28,43 +17,41 @@ import (
 type State string
 
 const (
-	// StatePending is ready to run at or after RunAt, awaiting a worker.
+	// StatePending is claimable once RunAt has passed.
 	StatePending State = "pending"
-	// StateRunning is claimed by a worker under an unexpired lease.
+	// StateRunning is held under a lease; an expired lease makes it claimable again.
 	StateRunning State = "running"
-	// StateDone is completed successfully; terminal.
+	// StateDone is terminal.
 	StateDone State = "done"
-	// StateDead is failed and out of attempts; terminal, retained for inspection.
+	// StateDead is terminal and kept for inspection.
 	StateDead State = "dead"
 )
 
-// DefaultQueue is the lane a job lands in when EnqueueParams.Queue is empty.
+// DefaultQueue is used when a Queue field is empty.
 const DefaultQueue = "default"
 
-// Job is one unit of durable work. Payload is opaque bytes so the queue is
-// agnostic to encoding; the typed-handler layer marshals it.
+// Job is one unit of durable work. The queue never interprets Kind or Payload.
 type Job struct {
 	ID      string
 	Queue   string
-	Kind    string // selects the handler; the queue itself never interprets it
+	Kind    string // selects the handler
 	Payload []byte
 	Scope   state.Scope
 
 	State       State
-	Attempt     int    // attempts started so far (0 until first claim)
-	MaxAttempts int    // attempts allowed before the job goes dead
-	LastError   string // fault class + message from the most recent failure
+	Attempt     int // attempts started; 0 until first claim
+	MaxAttempts int
+	LastError   string // fault class and message of the latest failure
 
-	RunAt        int64 // unix nanos: earliest time the job may be claimed
-	LeaseExpires int64 // unix nanos: when a running job's claim lapses (0 if not running)
+	RunAt        int64 // unix nanos; earliest claim time
+	LeaseExpires int64 // unix nanos; 0 unless running
 
-	OriginInstanceID string // instance that enqueued the job, for fleet attribution
+	OriginInstanceID string // instance that enqueued the job
 	CreatedAt        int64
 	UpdatedAt        int64
 }
 
-// EnqueueParams describes a job to enqueue. Only Kind is required; the queue
-// fills in safe defaults (DefaultQueue, MaxAttempts, RunAt = now).
+// EnqueueParams describes a job to enqueue. Only Kind is required.
 type EnqueueParams struct {
 	Queue       string
 	Kind        string
@@ -74,66 +61,51 @@ type EnqueueParams struct {
 	RunAt       int64 // unix nanos; 0 means as soon as possible
 }
 
-// DefaultMaxAttempts is the retry ceiling applied when EnqueueParams.MaxAttempts
-// is unset. The job runs once and is retried up to this many times in total.
+// DefaultMaxAttempts is the total number of attempts, first run included, when
+// EnqueueParams.MaxAttempts is unset.
 const DefaultMaxAttempts = 25
 
 // ClaimParams describes a worker's request to lease ready jobs.
 type ClaimParams struct {
 	Queue    string // empty means DefaultQueue
-	Limit    int    // max jobs to claim; <= 0 means 1
-	LeaseFor int64  // lease duration in nanos; the claim is held this long
+	Limit    int    // <= 0 means 1
+	LeaseFor int64  // nanos
 }
 
 // Queue is the durable work-queue port. Implementations must be safe for
 // concurrent use and must claim each ready job to at most one worker at a time.
 type Queue interface {
-	// Enqueue persists a new job and returns it with its assigned ID and defaults
-	// applied.
+	// Enqueue returns the job with its ID and defaults applied.
 	Enqueue(ctx context.Context, p EnqueueParams) (Job, error)
-	// Claim leases up to Limit ready jobs from a queue: jobs that are pending with
-	// RunAt in the past, or running jobs whose lease has expired (a crashed
-	// worker's work). Claimed jobs move to StateRunning with their Attempt
-	// incremented and a fresh lease, and are returned to the caller.
+	// Claim leases up to Limit jobs that are [Claimable], in RunAt, creation and
+	// ID order, incrementing each Attempt.
 	Claim(ctx context.Context, p ClaimParams) ([]Job, error)
-	// Complete marks a claimed job done. It is an error to complete a job that is
-	// not running.
+	// Complete returns [ErrNotRunning] for a job that is not running.
 	Complete(ctx context.Context, id string) error
-	// Fail records a failed attempt. If attempts remain the job returns to pending
-	// with RunAt = retryAt (the caller computes backoff); otherwise it goes dead. A
-	// negative retryAt fails the job permanently (dead now, no further attempts),
-	// for a cause the caller knows is not retryable.
+	// Fail records a failed attempt: back to pending at retryAt while attempts
+	// remain, else dead. A negative retryAt makes the job dead at once.
 	Fail(ctx context.Context, id, errMsg string, retryAt int64) error
-	// Get returns a job by ID.
 	Get(ctx context.Context, id string) (Job, error)
-	// Recover makes jobs left running by a crashed worker immediately claimable,
-	// returning how many were reset. Startup calls it once under the single-instance
-	// lock, where no live worker holds a lease, so a run interrupted mid-step is
-	// re-dispatched at once instead of waiting out its lease (up to several minutes). It
-	// does not change a job's attempt count; a job that already exhausted its attempts
-	// is reaped to dead by the next Claim rather than retried.
+	// Recover makes every running job claimable now and returns the count. Startup
+	// calls it under the single-instance lock, where no live worker holds a lease,
+	// so an interrupted run resumes without waiting out its lease. Attempt counts
+	// are unchanged.
 	Recover(ctx context.Context) (int, error)
-	// Close releases the queue's resources.
 	Close() error
 }
 
-// Waker is an optional Queue capability: a queue that can observe its own
-// in-process writes exposes a ready channel, so a worker wakes the moment work
-// is enqueued instead of discovering it on its next idle poll. The signal is
-// advisory and coalesced (one buffered slot): receiving one does not guarantee
-// a claimable job, and a missed one costs nothing because the worker's poll
-// remains the fallback. The poll is also the only path for scheduled RunAt
-// arrivals and for writes from other processes, which a queue cannot signal.
+// Waker is an optional [Queue] capability that wakes a worker on an in-process
+// write instead of its next poll. The signal is advisory and coalesced, so a
+// worker still polls: polling is the only way to see a RunAt arriving or a write
+// from another process.
 type Waker interface {
-	// Ready returns the channel signalled after a job is enqueued or returned to
-	// pending for retry. Every call returns the same channel.
+	// Ready is signalled after an enqueue or a retry. Every call returns the same
+	// channel.
 	Ready() <-chan struct{}
 }
 
-// Notify sends the coalesced, non-blocking ready signal a Waker delivers: if
-// the channel's buffered slot is free the signal is queued, otherwise one is
-// already pending and this one merges into it. Shared so every backend
-// coalesces identically and none can block a writer on a slow worker.
+// Notify sends a [Waker] signal without blocking; if one is already pending the
+// two merge. Every backend uses it so none can block a writer on a slow worker.
 func Notify(ch chan<- struct{}) {
 	select {
 	case ch <- struct{}{}:
@@ -141,30 +113,19 @@ func Notify(ch chan<- struct{}) {
 	}
 }
 
-// Sentinel errors, fault-classified so callers branch on the class rather than
-// on string matching.
+// Sentinel errors.
 var (
-	// ErrNotFound is returned by Get/Complete/Fail for an unknown job ID.
 	ErrNotFound = fault.New(fault.Terminal, "job_not_found", "job not found")
-	// ErrNotRunning is returned by Complete/Fail when the job is not currently
-	// leased (already done, dead, or never claimed).
+	// ErrNotRunning covers a job that is done, dead or never claimed.
 	ErrNotRunning = fault.New(fault.Terminal, "job_not_running", "job is not running")
-	// ErrInvalidJob is returned by Enqueue for params that cannot describe a job
-	// (an empty Kind).
+	// ErrInvalidJob is an empty Kind.
 	ErrInvalidJob = fault.New(fault.Terminal, "job_invalid", "invalid job")
 )
 
-// --- shared lifecycle logic (one source of truth for every backend) ---------
-//
-// These functions hold the queue's semantics so the in-memory, SQLite, and any
-// future adapter make byte-for-byte identical enqueue/claim/retry decisions. A
-// backend only supplies storage and atomic claim selection; the transitions
-// themselves live here, which is why jobstest can hold every backend to the same
-// contract.
-
-// BuildJob constructs the job an Enqueue stores, applying defaults (DefaultQueue,
-// DefaultMaxAttempts, RunAt = now). The caller validates that p.Kind is non-empty
-// and supplies the assigned id, now (unix nanos), and origin instance.
+// BuildJob returns the job Enqueue stores, with defaults applied. A backend
+// supplies storage and atomic claim selection; the functions from here down are
+// the transitions, shared so every backend decides the same way. The caller
+// checks p.Kind first.
 func BuildJob(p EnqueueParams, now int64, id, instanceID string) Job {
 	queue := p.Queue
 	if queue == "" {
@@ -193,7 +154,7 @@ func BuildJob(p EnqueueParams, now int64, id, instanceID string) Job {
 	}
 }
 
-// ClaimDefaults resolves a ClaimParams to a concrete queue and limit.
+// ClaimDefaults returns p's queue and limit with defaults applied.
 func ClaimDefaults(p ClaimParams) (queue string, limit int) {
 	queue = p.Queue
 	if queue == "" {
@@ -206,11 +167,9 @@ func ClaimDefaults(p ClaimParams) (queue string, limit int) {
 	return queue, limit
 }
 
-// Claimable reports whether a job may be claimed at time now: a pending job whose
-// RunAt has arrived, or a running job whose lease has expired and still has
-// attempts left (crash recovery). Each claim is an attempt, so a job whose lease
-// expires after its final attempt is not reclaimed (it is timed out, see
-// ExpiredExhausted) rather than retried past MaxAttempts.
+// Claimable reports whether j is pending with RunAt passed, or running with an
+// expired lease and attempts left. Each claim is an attempt, so an expired job
+// with none left is [ExpiredExhausted] and never exceeds MaxAttempts.
 func Claimable(j Job, now int64) bool {
 	switch j.State {
 	case StatePending:
@@ -222,15 +181,13 @@ func Claimable(j Job, now int64) bool {
 	}
 }
 
-// ExpiredExhausted reports whether a running job has timed out on its final
-// attempt: its lease has expired and no attempts remain. Such a job is reaped to
-// dead by Claim rather than left as a zombie or retried forever.
+// ExpiredExhausted reports whether a running job's lease expired on its last
+// attempt. Claim reaps such a job to dead.
 func ExpiredExhausted(j Job, now int64) bool {
 	return j.State == StateRunning && j.LeaseExpires <= now && j.Attempt >= j.MaxAttempts
 }
 
-// MarkTimedOut transitions a job that exhausted its attempts by lease expiry to
-// dead, recording why. Used by Claim's reap step.
+// MarkTimedOut makes an [ExpiredExhausted] job dead.
 func MarkTimedOut(j *Job, now int64) {
 	j.State = StateDead
 	j.LastError = "lease expired without completion"
@@ -238,18 +195,14 @@ func MarkTimedOut(j *Job, now int64) {
 	j.UpdatedAt = now
 }
 
-// MarkRecovered expires a running job's lease so the next Claim reclaims it at once,
-// leaving the attempt count untouched. Startup crash recovery uses it: under the
-// single-instance lock a job still running belongs to a dead predecessor, so its lease
-// need not be waited out. A job whose attempts are already spent is not revived; the
-// next Claim reaps it to dead (see ExpiredExhausted).
+// MarkRecovered expires j's lease, leaving Attempt alone, so a job with no
+// attempts left is reaped by the next Claim instead of revived.
 func MarkRecovered(j *Job, now int64) {
 	j.LeaseExpires = 0
 	j.UpdatedAt = now
 }
 
-// MarkClaimed transitions a job into a fresh lease: running, one more attempt,
-// and a lease ending leaseFor nanos from now.
+// MarkClaimed starts an attempt under a lease ending leaseFor nanos after now.
 func MarkClaimed(j *Job, now, leaseFor int64) {
 	j.State = StateRunning
 	j.Attempt++
@@ -257,22 +210,19 @@ func MarkClaimed(j *Job, now, leaseFor int64) {
 	j.UpdatedAt = now
 }
 
-// MarkDone transitions a job to done and clears its lease.
+// MarkDone makes j done and clears its lease.
 func MarkDone(j *Job, now int64) {
 	j.State = StateDone
 	j.LeaseExpires = 0
 	j.UpdatedAt = now
 }
 
-// MarkFailed transitions a running job after a failed attempt: back to pending
-// (RunAt = retryAt) while attempts remain, or dead once they are exhausted.
+// MarkFailed applies [Queue.Fail]'s rule. A negative retryAt marks a cause that
+// cannot succeed, so no attempts are spent on it.
 func MarkFailed(j *Job, errMsg string, retryAt, now int64) {
 	j.LastError = errMsg
 	j.LeaseExpires = 0
 	j.UpdatedAt = now
-	// A negative retryAt means the cause is not retryable (a terminal failure): the
-	// job goes dead at once rather than burning attempts on a step that cannot
-	// succeed. Otherwise it deads only once attempts are exhausted.
 	if retryAt < 0 || j.Attempt >= j.MaxAttempts {
 		j.State = StateDead
 		return
@@ -281,10 +231,8 @@ func MarkFailed(j *Job, errMsg string, retryAt, now int64) {
 	j.RunAt = retryAt
 }
 
-// Backoff returns the delay before the attempt-th retry (1-based), doubling from
-// base and capped at ceiling. It is the default exponential policy a worker
-// applies when computing Fail's retryAt; callers may substitute their own.
-// attempt <= 0 is treated as 1.
+// Backoff returns the delay before retry number attempt (1-based; lower counts as
+// 1), doubling from base and capped at ceiling.
 func Backoff(attempt int, base, ceiling int64) int64 {
 	if attempt < 1 {
 		attempt = 1
@@ -292,8 +240,7 @@ func Backoff(attempt int, base, ceiling int64) int64 {
 	d := base
 	for i := 1; i < attempt; i++ {
 		d *= 2
-		// Doubling can overflow int64 into a negative value; treat any overflow
-		// or cap breach as the ceiling.
+		// d < base catches int64 overflow.
 		if d >= ceiling || d < base {
 			return ceiling
 		}

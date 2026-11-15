@@ -2,26 +2,15 @@ package curate
 
 import "strings"
 
-// minAbbreviation is the shortest prefix treated as an abbreviation of a longer
-// token. One character is not evidence of anything: "d" prefixes "deploy",
-// "database" and "docs" alike, and scoring it as a near-match would report a fork
-// between every subject starting with the same letter.
+// minAbbreviation is the shortest abbreviation counted, because one letter would
+// match every subject sharing it.
 const minAbbreviation = 2
 
-// SubjectSimilarity scores how alike two normalized subjects look, in [0,1] with 1
-// identical. It is the default measure behind fork detection; a host with embeddings
-// replaces it (WithSimilarity).
-//
-// It compares subjects token by token, because the forks that matter share a word and
-// differ in one: "db-choice" against "database-choice" is a fork, "db-choice" against
-// "queue-choice" is two topics, and a character measure over the whole string scores the
-// second pair higher. Within a token an abbreviation is a partial match ("db" for
-// "database"), scoring lower as it gets shorter relative to the word.
-//
-// The score is symmetric: the greedy pairing runs both ways and the lower score wins, so
-// the answer does not depend on which subject the store listed first, and the conservative
-// direction suits a signal that costs a person attention each time it fires. It cannot see
-// through a synonym ("db-choice" and "storage-engine"); only an embedding measure closes that.
+// SubjectSimilarity scores two normalized subjects in [0,1], 1 identical. It compares
+// tokens, because a whole-string character measure scores "db-choice" closer to
+// "queue-choice" than to "database-choice". An abbreviation ("db" for "database")
+// is a partial match. The pairing runs both ways and the lower score wins, so it is
+// symmetric and errs against firing. It cannot see synonyms.
 func SubjectSimilarity(a, b string) float64 {
 	if a == b {
 		if a == "" {
@@ -59,18 +48,10 @@ func greedyScore(from, to []string) float64 {
 	return total / float64(max(len(from), len(to)))
 }
 
-// tokenScore scores one token against another: 1 for equal, a fraction for an
-// abbreviation, 0 otherwise. The fraction starts at a half so an abbreviation is
-// always worth less than a match, and rises with how much of the longer token the
-// shorter one covers, so a two-letter stand-in for a long word scores near the
-// floor.
-//
-// Abbreviation covers both shapes people actually write: a truncation
-// ("deployment" to "deploy") and a contraction ("database" to "db", which is not
-// a prefix of anything). Both are read as the short token appearing inside the
-// long one in order, starting from the same letter. The shared first letter is
-// what keeps an accidental subsequence out: without it, almost any short token is
-// a subsequence of almost any long one.
+// tokenScore is 1 for equal tokens, 0.5 to 1 for an abbreviation by coverage of the
+// longer token, and 0 otherwise. A truncation ("deploy") and a contraction ("db")
+// are both an in-order subsequence; requiring the same first letter excludes
+// accidental subsequences.
 func tokenScore(a, b string) float64 {
 	if a == b {
 		return 1

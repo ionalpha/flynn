@@ -1,7 +1,5 @@
-// Package skilltest is the conformance suite for state.SkillStore. Every backing
-// (the in-memory resource store, the SQLite resource store, a host's) runs RunSuite
-// and must behave identically, so the typed skill facade is held to one contract no
-// matter which resource backend it sits on.
+// Package skilltest is the conformance suite for state.SkillStore. Every backend,
+// including a host's, runs [RunSuite] so the skill facade has one contract.
 package skilltest
 
 import (
@@ -12,8 +10,7 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// RunSuite runs the full SkillStore contract against stores built by newStore. Each
-// subtest gets a fresh, empty store.
+// RunSuite runs the contract with a fresh, empty store from newStore per subtest.
 func RunSuite(t *testing.T, newStore func() state.SkillStore) {
 	t.Helper()
 	t.Run("UpsertGetListSearch", func(t *testing.T) { testCRUD(t, newStore()) })
@@ -23,11 +20,9 @@ func RunSuite(t *testing.T, newStore func() state.SkillStore) {
 	t.Run("SearchWords", func(t *testing.T) { testSearchWords(t, newStore()) })
 }
 
-// testSearchWords holds a search to matching by words rather than by the query as
-// one phrase, since a skill is looked for with the words of the task and not with a
-// sentence copied from its body. Every word must match first, and only when no skill
-// holds them all does the search widen to skills holding some, as in
-// recallplan.Plan.
+// testSearchWords requires word matching, because a skill is found with a task's
+// words. All words must match; only when no skill holds them all does the search
+// widen to skills holding some, as in recallplan.Plan.
 func testSearchWords(t *testing.T, sk state.SkillStore) {
 	ctx := context.Background()
 	for _, s := range []state.Skill{
@@ -78,10 +73,8 @@ func testSearchWords(t *testing.T, sk state.SkillStore) {
 	}
 }
 
-// testDescription holds every backend to carrying the specification's description
-// field. It is the only text a conformant runtime loads at discovery, so a backend
-// that drops it makes the skill undiscoverable rather than merely incomplete, and
-// it is separate from Body precisely so it cannot be reconstructed from one.
+// testDescription requires the description field to survive, because it is the
+// only text loaded at discovery and cannot be rebuilt from Body.
 func testDescription(t *testing.T, sk state.SkillStore) {
 	ctx := context.Background()
 
@@ -113,12 +106,9 @@ func testDescription(t *testing.T, sk state.SkillStore) {
 		t.Fatalf("List returned description %q, want %q", listed[0].Description, desc)
 	}
 
-	// Search reaches the description, and this is the part that decides whether a
-	// skill is ever offered. The word below appears nowhere but there, which is the
-	// normal case for a well-written skill: the description states the situation the
-	// skill is for, and the body states the procedure. A backend that indexes only
-	// the body answers every objective phrased the way a user phrases one with
-	// nothing, and the skill is invisible without anything reporting a fault.
+	// Search must index the description. The word below appears only there, as is
+	// normal: the description names the situation and the body the procedure. A
+	// body-only index hides the skill with no fault reported.
 	found, err := sk.Search(ctx, "reviewed", 0)
 	if err != nil {
 		t.Fatal(err)
@@ -127,9 +117,7 @@ func testDescription(t *testing.T, sk state.SkillStore) {
 		t.Fatalf("Search on a word only the description carries = %+v, want the deploy skill", found)
 	}
 
-	// A skill with no description is a legal record, not an error: the store holds
-	// what it is given, and refusing an empty description belongs to the writer, which
-	// is the boundary that decides what may be published.
+	// An empty description is legal here; refusing it is the writer's job.
 	empty, err := sk.Upsert(ctx, state.Skill{Slug: "undescribed", Body: "b"})
 	if err != nil {
 		t.Fatal(err)
@@ -138,8 +126,7 @@ func testDescription(t *testing.T, sk state.SkillStore) {
 		t.Fatalf("a skill created without a description came back with %q", empty.Description)
 	}
 
-	// An update clears the field when the update omits it, the same as every other
-	// spec field: an upsert is a whole-record write, not a patch.
+	// Omitting the field clears it, because an upsert writes the whole record.
 	cleared, err := sk.Upsert(ctx, state.Skill{Slug: "deploy", Name: "Deploy", Body: "ship it"})
 	if err != nil {
 		t.Fatal(err)

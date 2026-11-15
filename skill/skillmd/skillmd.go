@@ -1,34 +1,24 @@
-// Package skillmd reads and writes SKILL.md, the file at the center of the Agent
-// Skills format (https://agentskills.io/specification). A skill is a directory
-// holding a SKILL.md plus optional scripts/, references/ and assets/ siblings; this
-// package owns the file, not the directory, so it stays a pure codec that a loader
-// can point at any bytes it has already decided to trust enough to read.
+// Package skillmd reads and writes SKILL.md, the file of the Agent Skills format
+// (https://agentskills.io/specification). It handles the file only; the skill
+// directory and its scripts/, references/ and assets/ belong to the loader.
 //
-// # Two levels of strictness, on purpose
+// # Strictness
 //
-// Parse is tolerant and Validate is strict, and the split is the whole design.
-// Import has to swallow the existing ecosystem, where roughly forty-five clients
-// write SKILL.md files with no shared validator and the specification is silent on
-// what an unrecognized frontmatter key means. Export has to emit something a
-// conformant reader cannot reject. So Parse fails only on input it genuinely cannot
-// represent, keeping unknown keys in Doc.Unknown rather than discarding or refusing
-// them, and Validate applies the specification's own constraints to a document we
-// are about to publish. A caller that reads a third-party pack calls Parse; a caller
-// that writes one calls Validate first.
+// [Parse] is tolerant and [Validate] is strict. About forty-five clients write
+// SKILL.md with no shared validator, and the specification does not say what an
+// unknown frontmatter key means, so Parse fails only on input it cannot represent
+// and keeps unknown keys in Doc.Unknown. Validate applies the specification before
+// anything is published. Import calls Parse; export calls Validate first.
 //
-// # Why this does not use a YAML library
+// # Grammar
 //
-// The specification's frontmatter is a closed set of six keys: five scalars and one
-// flat map of string to string. Reading that does not need a general YAML engine,
-// and pulling one in would hand a parser with anchors, aliases, merge keys,
-// implicit type coercion and recursive expansion the job of reading files fetched
-// from public registries. The grammar here covers what the format actually uses,
-// plain and quoted scalars, block scalars, comments and one level of nesting under
-// metadata, and refuses the rest by construction. Less to get wrong, and it fuzzes.
+// The frontmatter is six keys: five scalars and one flat string map. A YAML library
+// would bring anchors, aliases, merge keys, type coercion and recursive expansion to
+// files fetched from public registries. This grammar reads plain and quoted scalars,
+// block scalars, comments and one level under metadata, and refuses the rest.
 //
-// Everything this package rejects, it rejects loudly. A malformed document is never
-// silently reported as an empty skill, because a silently empty skill is a skill
-// whose instructions vanished while its name still shows up in a menu.
+// A malformed document is an error, never an empty skill, because an empty skill
+// keeps its name in a menu after its instructions are gone.
 package skillmd
 
 import (
@@ -39,12 +29,8 @@ import (
 	"unicode/utf8"
 )
 
-// Limits the specification states, in runes, plus one this package adds.
-//
-// MaxNameLen, MaxDescriptionLen and MaxCompatibilityLen are the specification's.
-// MaxDocSize is ours: the format sets no ceiling, and a loader reading an untrusted
-// tree needs one, because "no limit" against a hostile pack means the first
-// pathological file decides how much memory the process uses.
+// Limits in runes from the specification, plus MaxDocSize in bytes. The format sets
+// no size ceiling, so without MaxDocSize a hostile file would decide memory use.
 const (
 	MaxNameLen          = 64
 	MaxDescriptionLen   = 1024
@@ -52,12 +38,10 @@ const (
 	MaxDocSize          = 1 << 20
 )
 
-// Sentinel errors. Callers distinguish "this is not a SKILL.md at all" from "this is
-// a SKILL.md that breaks a rule", because a loader walking a directory tree treats
-// those differently: the first is a file to skip, the second is a pack to reject.
+// Sentinel errors. A loader skips a file with [ErrNoFrontmatter] and rejects a pack
+// whose SKILL.md breaks a rule.
 var (
-	// ErrNoFrontmatter reports input that does not open with a frontmatter block.
-	// The specification requires the document to begin at byte 0 with a --- line.
+	// ErrNoFrontmatter reports input without a --- line at byte 0.
 	ErrNoFrontmatter = errors.New("skillmd: no frontmatter")
 	// ErrUnterminated reports a frontmatter block that is never closed.
 	ErrUnterminated = errors.New("skillmd: unterminated frontmatter")
@@ -69,62 +53,39 @@ var (
 	ErrInvalid = errors.New("skillmd: invalid document")
 )
 
-// Doc is one parsed SKILL.md: the frontmatter fields the specification defines, the
-// markdown body, and whatever else the frontmatter carried.
-//
-// Unknown holds top-level frontmatter keys the specification does not define, in the
-// order they appeared. The specification does not say whether a reader may accept
-// them, and the ecosystem disagrees with itself (anthropics/skills#249: the official
-// skill-creator tells authors "Do not include any other fields in YAML frontmatter",
-// which contradicts the specification's own optional set). Keeping them costs
-// nothing, makes a round trip lossless for files we did not write, and leaves the
-// judgment to Validate, which is the only place that decides what we are willing to
-// publish.
+// Doc is one parsed SKILL.md. Undefined top-level keys are kept in Unknown, because
+// the ecosystem disagrees on whether they are allowed (anthropics/skills#249), and
+// keeping them makes a round trip lossless; [Validate] refuses them on publish.
 type Doc struct {
-	// Name is the skill's identifier and must match its directory name. Required.
+	// Name must match the directory name. Required.
 	Name string
-	// Description states what the skill does and when to use it. Required. It is
-	// the only body text loaded at discovery, so it is what activation keys on.
+	// Description is the only text loaded at discovery, so activation keys on it.
+	// Required.
 	Description string
-	// License names a license or points at a bundled license file. Optional.
-	License string
-	// Compatibility states environment or product requirements. Optional. This is
-	// where a skill that needs a particular runtime says so, rather than inventing
-	// a key for it.
+	License     string
+	// Compatibility states runtime or product requirements.
 	Compatibility string
-	// AllowedTools is the specification's allowed-tools field, split on spaces.
-	//
-	// Treat it as a claim, never as a grant. It is a skill declaring which tools it
-	// would like pre-approved, it is marked experimental, and the specification says
-	// nothing about trust, so honoring it from a pack we did not author would let a
-	// downloaded text file widen its own permissions.
+	// AllowedTools is allowed-tools split on spaces. It is a claim and never a
+	// grant: honouring it from a foreign pack would let a downloaded file widen its
+	// own permissions.
 	AllowedTools []string
-	// Metadata is the specification's sanctioned extension point, "properties not
-	// defined by the Agent Skills spec". Values are strings, so a structured
-	// extension has to encode itself.
-	Metadata map[string]string
-	// Unknown holds undefined top-level keys, preserved for lossless round trips.
-	Unknown map[string]string
-	// unknownOrder keeps Unknown's original key order so Format round-trips a
-	// foreign document byte for byte instead of reordering someone else's file.
-	unknownOrder []string
-	// Body is the markdown after the frontmatter, with the single newline that
-	// separates it from the closing --- removed.
+	// Metadata is the specification's extension map; structured values must encode
+	// themselves as strings.
+	Metadata     map[string]string
+	Unknown      map[string]string
+	unknownOrder []string // so [Format] keeps a foreign file's key order
+	// Body is the markdown after the closing ---, without the newline that ends it.
 	Body string
 }
 
-// Parse reads a SKILL.md into a Doc. It is deliberately tolerant: it fails on input
-// it cannot represent, not on input that breaks a specification rule, so a caller
-// importing a third-party pack gets the document and can decide what to do about it.
-// Call Validate for the specification's constraints.
+// Parse reads a SKILL.md. It fails only on input it cannot represent; call [Validate]
+// for the specification's rules.
 func Parse(src []byte) (Doc, error) {
 	if len(src) > MaxDocSize {
 		return Doc{}, fmt.Errorf("%w: %d bytes exceeds %d", ErrTooLarge, len(src), MaxDocSize)
 	}
 	text := string(src)
-	// A byte order mark before the opening --- is common enough from Windows
-	// editors that refusing it would reject files whose author did nothing wrong.
-	// Spelled as an escape so the source stays readable and greppable.
+	// Windows editors often write a byte order mark.
 	text = strings.TrimPrefix(text, "\ufeff")
 
 	rest, ok := trimOpener(text)
@@ -143,25 +104,21 @@ func Parse(src []byte) (Doc, error) {
 	return doc, nil
 }
 
-// trimOpener consumes the leading --- line, reporting whether it was there. The
-// specification requires it at byte 0, so leading blank lines are not skipped.
+// trimOpener does not skip leading blank lines, because the opener must be at byte 0.
 func trimOpener(text string) (string, bool) {
 	for _, opener := range []string{"---\r\n", "---\n"} {
 		if strings.HasPrefix(text, opener) {
 			return text[len(opener):], true
 		}
 	}
-	// A document that is nothing but "---" has an opener and no closer, which is
-	// unterminated rather than absent. Report it as opened so the caller gets the
-	// more specific error.
+	// A bare "---" is opened, so Parse reports [ErrUnterminated].
 	if strings.TrimRight(text, "\r\n") == "---" {
 		return "", true
 	}
 	return "", false
 }
 
-// splitAtCloser divides the text after the opener into the frontmatter block and the
-// body at the first line that is exactly ---, reporting whether that line exists.
+// splitAtCloser splits at the first line that is exactly ---.
 func splitAtCloser(text string) (front, body string, ok bool) {
 	offset := 0
 	for offset <= len(text) {
@@ -177,7 +134,6 @@ func splitAtCloser(text string) (front, body string, ok bool) {
 	return "", "", false
 }
 
-// nextLine returns the line beginning at offset and the offset of the line after it.
 func nextLine(text string, offset int) (line string, next int) {
 	if offset >= len(text) {
 		return "", offset
@@ -189,9 +145,8 @@ func nextLine(text string, offset int) (line string, next int) {
 	return text[offset : offset+end], offset + end + 1
 }
 
-// parseFrontmatter reads the block between the --- lines. The grammar is one
-// key: value pair per line at indent zero, with metadata optionally opening an
-// indented block of the same shape, plus block scalars and full-line comments.
+// parseFrontmatter reads one key: value per line at indent zero, with metadata
+// opening one indented block of the same shape.
 func parseFrontmatter(front string) (Doc, error) {
 	doc := Doc{}
 	lines := splitLines(front)
@@ -232,7 +187,6 @@ func parseFrontmatter(front string) (Doc, error) {
 	return doc, nil
 }
 
-// assign places a parsed scalar on the field its key names, or records it as unknown.
 func (d *Doc) assign(key, value string) error {
 	switch key {
 	case "name":
@@ -246,9 +200,7 @@ func (d *Doc) assign(key, value string) error {
 	case "allowed-tools":
 		d.AllowedTools = strings.Fields(value)
 	case "metadata":
-		// metadata with an inline value is a flow mapping or a mistake. This
-		// grammar does not read flow collections, and guessing at one would be a
-		// worse failure than saying so.
+		// An inline metadata value is a flow mapping, which this grammar refuses.
 		return fmt.Errorf("%w: metadata must be an indented block, not an inline value", ErrSyntax)
 	default:
 		if d.Unknown == nil {
@@ -262,9 +214,8 @@ func (d *Doc) assign(key, value string) error {
 	return nil
 }
 
-// parseNestedMap reads the indented block under metadata, returning it and how many
-// lines it consumed. Every entry in the block must share one indent, so a document
-// cannot smuggle a second nesting level past a reader that has no way to represent it.
+// parseNestedMap returns the metadata block and the lines it consumed. Every entry
+// must share one indent, so a second nesting level is an error.
 func parseNestedMap(lines []string) (map[string]string, int, error) {
 	out := map[string]string{}
 	indent := -1
@@ -299,8 +250,6 @@ func parseNestedMap(lines []string) (map[string]string, int, error) {
 	return out, consumed, nil
 }
 
-// readScalar resolves a value that may be inline or a block scalar introduced by
-// | or >, returning it and how many following lines it consumed.
 func readScalar(value string, following []string) (string, int, error) {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "|" || trimmed == ">" || trimmed == "|-" || trimmed == ">-" ||
@@ -311,10 +260,8 @@ func readScalar(value string, following []string) (string, int, error) {
 	return scalar, 0, err
 }
 
-// readBlockScalar reads an indented block under a | or > introducer. A literal block
-// keeps its newlines, a folded block joins its lines with spaces, and the chomping
-// indicator decides the trailing newline: - strips it, + keeps every one, and the
-// default clips to a single newline.
+// readBlockScalar reads a | or > block. Chomping: - strips the trailing newline, +
+// keeps every one, and the default keeps one.
 func readBlockScalar(introducer string, following []string) (string, int, error) {
 	style := introducer[0]
 	chomp := byte(0)
@@ -348,7 +295,7 @@ func readBlockScalar(introducer string, following []string) (string, int, error)
 		return "", consumed, fmt.Errorf("%w: block scalar has no content", ErrSyntax)
 	}
 
-	// Trailing blank lines belong to the chomping decision, not to the content.
+	// Chomping decides trailing blank lines.
 	trailing := 0
 	for len(block) > 0 && block[len(block)-1] == "" {
 		block = block[:len(block)-1]
@@ -363,8 +310,7 @@ func readBlockScalar(introducer string, following []string) (string, int, error)
 	}
 
 	switch chomp {
-	case '-':
-		// strip: no trailing newline at all
+	case '-': // strip keeps no trailing newline
 	case '+':
 		text += strings.Repeat("\n", trailing+1)
 	default:
@@ -375,8 +321,7 @@ func readBlockScalar(introducer string, following []string) (string, int, error)
 	return text, consumed, nil
 }
 
-// foldLines joins a folded block scalar's lines. A blank line is a paragraph break
-// and survives as a newline; everything else joins with a single space.
+// foldLines joins lines with a space and keeps a blank line as a newline.
 func foldLines(block []string) string {
 	var b strings.Builder
 	for i, line := range block {
@@ -395,9 +340,7 @@ func foldLines(block []string) string {
 	return b.String()
 }
 
-// splitKeyValue divides a key: value line. The key is everything before the first
-// colon; a line with no colon is not a mapping entry and this grammar has nothing
-// else it could be.
+// splitKeyValue splits at the first colon; a line without one is an error.
 func splitKeyValue(raw string) (key, value string, err error) {
 	line := strings.TrimRight(raw, "\r")
 	idx := strings.IndexByte(line, ':')
@@ -411,10 +354,8 @@ func splitKeyValue(raw string) (key, value string, err error) {
 	return key, line[idx+1:], nil
 }
 
-// unquote resolves a plain, single-quoted or double-quoted scalar. Anchors, aliases,
-// explicit tags and flow collections are refused rather than guessed at: this
-// grammar covers what the format uses, and pretending to understand the rest would
-// turn a parse error into a wrong value.
+// unquote refuses anchors, aliases, tags and flow collections, so unsupported YAML
+// is an error and never a wrong value.
 func unquote(s string) (string, error) {
 	if s == "" {
 		return "", nil
@@ -455,9 +396,8 @@ func unquoteSingle(s string) (string, error) {
 	return b.String(), nil
 }
 
-// unquoteDouble resolves a double-quoted scalar with the escapes the format
-// realistically uses. An unrecognized escape is an error, not a passthrough, so a
-// document never parses into something subtly different from what it says.
+// unquoteDouble supports \n, \t, \r, \" and \\. Any other escape is an error, so a
+// value never parses into something other than what it says.
 func unquoteDouble(s string) (string, error) {
 	if len(s) < 2 || !strings.HasSuffix(s, `"`) {
 		return "", fmt.Errorf("%w: unterminated double-quoted scalar %q", ErrSyntax, s)
@@ -491,7 +431,6 @@ func unquoteDouble(s string) (string, error) {
 	return b.String(), nil
 }
 
-// splitLines splits a frontmatter block into lines without keeping the newlines.
 func splitLines(front string) []string {
 	if front == "" {
 		return nil
@@ -499,30 +438,21 @@ func splitLines(front string) []string {
 	return strings.Split(strings.TrimSuffix(front, "\n"), "\n")
 }
 
-// isSkippable reports whether a frontmatter line carries no mapping entry: a blank
-// line, or a full-line comment.
-//
-// Only full-line comments count. A trailing " # ..." stays part of the value,
-// because guessing where a comment starts inside an unquoted scalar is how a
-// description silently loses its second half.
+// isSkippable reports a blank line or a full-line comment. A trailing " #" stays in
+// the value, because guessing where a comment starts would truncate a description.
 func isSkippable(raw string) bool {
 	trimmed := strings.TrimSpace(strings.TrimRight(raw, "\r"))
 	return trimmed == "" || strings.HasPrefix(trimmed, "#")
 }
 
-// indentOf counts the leading spaces on a line. Tabs are not indentation in YAML and
-// are not treated as such here.
+// indentOf counts leading spaces only; YAML does not indent with tabs.
 func indentOf(raw string) int {
 	return len(raw) - len(strings.TrimLeft(raw, " "))
 }
 
-// Validate reports whether a document satisfies the specification. It is the gate for
-// anything we publish, and it is deliberately not applied on read.
-//
-// dirName is the name of the directory holding the SKILL.md; the specification
-// requires the name field to match it. Pass an empty string to skip that check when
-// the document has no directory yet, which is the case for one being authored in
-// memory.
+// Validate applies the specification to a document before it is published; [Parse]
+// does not. Name must equal dirName unless dirName is empty, as for a document with
+// no directory yet.
 func Validate(d Doc, dirName string) error {
 	if err := ValidateName(d.Name); err != nil {
 		return err
@@ -547,13 +477,9 @@ func Validate(d Doc, dirName string) error {
 	return nil
 }
 
-// ValidateName applies the specification's rule for the name field: 1 to 64
-// characters, lowercase alphanumeric and hyphens only, no leading or trailing
-// hyphen, and no consecutive hyphens.
-//
-// Written out rather than expressed as a regular expression so each rejection can
-// say which rule it broke. A loader reporting "invalid name" against a pattern
-// leaves an author guessing; naming the rule does not.
+// ValidateName checks a name is 1 to [MaxNameLen] lowercase letters, digits and
+// hyphens, with no hyphen at either end or twice in a row. Each rule has its own
+// error so an author learns which one broke.
 func ValidateName(name string) error {
 	n := utf8.RuneCountInString(name)
 	if n == 0 || n > MaxNameLen {
@@ -577,9 +503,8 @@ func ValidateName(name string) error {
 	return nil
 }
 
-// Format renders a document back to SKILL.md bytes. Round trips are lossless for
-// anything Parse accepted, including the unknown keys and their original order, so
-// importing and re-exporting a foreign pack does not quietly rewrite it.
+// Format renders d as SKILL.md. Anything [Parse] accepted round-trips, unknown keys
+// and their order included, so re-exporting a foreign pack leaves it unchanged.
 func Format(d Doc) ([]byte, error) {
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -591,9 +516,7 @@ func Format(d Doc) ([]byte, error) {
 		writeField(&b, "allowed-tools", strings.Join(d.AllowedTools, " "))
 	}
 	for _, key := range d.unknownKeys() {
-		// Unlike a defined field, an undefined one is written even when its value is
-		// empty. Omitting a blank optional field of ours keeps a rendered document
-		// tidy; omitting someone else's key loses information we promised to carry.
+		// Written even when empty, because dropping a foreign key loses data.
 		b.WriteString(key)
 		b.WriteString(": ")
 		b.WriteString(quoteInline(d.Unknown[key]))
@@ -614,8 +537,7 @@ func Format(d Doc) ([]byte, error) {
 	return []byte(b.String()), nil
 }
 
-// unknownKeys returns the unknown keys in the order Parse saw them, falling back to
-// sorted order for a document assembled in memory rather than read from a file.
+// unknownKeys falls back to sorted order for a document built in memory.
 func (d Doc) unknownKeys() []string {
 	if len(d.unknownOrder) == len(d.Unknown) {
 		return d.unknownOrder
@@ -623,8 +545,7 @@ func (d Doc) unknownKeys() []string {
 	return sortedKeys(d.Unknown)
 }
 
-// writeField emits one key: value line, skipping an empty optional value so a
-// rendered document carries no blank fields.
+// writeField skips an empty value.
 func writeField(b *strings.Builder, key, value string) {
 	if value == "" {
 		return
@@ -635,10 +556,8 @@ func writeField(b *strings.Builder, key, value string) {
 	b.WriteString("\n")
 }
 
-// quote renders a top-level scalar, preferring a block scalar for multi-line values
-// because a description is read by people, and falling back to a double-quoted
-// scalar whenever a block would not survive the trip back. A value that round trips
-// is worth more than a pretty file.
+// quote writes a multi-line value as a block scalar for readers, and double-quotes
+// it when a block would not round-trip.
 func quote(s string) string {
 	if strings.Contains(s, "\n") {
 		if !blockSafe(s) {
@@ -660,13 +579,9 @@ func quote(s string) string {
 	return quoteInline(s)
 }
 
-// blockSafe reports whether a multi-line value survives a literal block scalar.
-//
-// Two shapes do not. A value whose first content line is itself indented sets the
-// block's indent above the indent the later lines get, and YAML ends the block at the
-// first line below it, truncating the value. A value with a trailing newline cannot
-// be expressed with the strip indicator this writer uses, since trailing blank lines
-// are exactly what strip removes. Both go out double-quoted instead.
+// blockSafe reports whether a value survives a |- block. An indented line would set
+// the block indent too high and truncate the value, and strip chomping cannot carry
+// a leading or trailing newline.
 func blockSafe(s string) bool {
 	if strings.HasSuffix(s, "\n") || strings.HasPrefix(s, "\n") {
 		return false
@@ -682,9 +597,8 @@ func blockSafe(s string) bool {
 	return true
 }
 
-// quoteInline renders a scalar on one line, which is the only shape a value nested
-// under metadata can take: parseNestedMap reads a single line per key, so a block
-// scalar written there would not be read back at all.
+// quoteInline writes one line, the only shape metadata values take, because
+// parseNestedMap reads one line per key.
 func quoteInline(s string) string {
 	if needsQuoting(s) {
 		return `"` + escapeDouble(s) + `"`
@@ -692,9 +606,8 @@ func quoteInline(s string) string {
 	return s
 }
 
-// needsQuoting reports whether a plain scalar would be read back as something other
-// than itself: one this grammar refuses, one that would look like a comment or a
-// nested key, or one whose whitespace would be trimmed away.
+// needsQuoting reports whether a plain scalar would read back differently: refused,
+// taken for a comment or key, or trimmed.
 func needsQuoting(s string) bool {
 	if s == "" {
 		return true
@@ -712,8 +625,7 @@ func needsQuoting(s string) bool {
 	return strings.Contains(s, ": ") || strings.HasSuffix(s, ":")
 }
 
-// escapeDouble escapes a scalar for a double-quoted context, covering exactly the
-// escapes unquoteDouble resolves.
+// escapeDouble covers exactly the escapes unquoteDouble reads.
 func escapeDouble(s string) string {
 	r := strings.NewReplacer(
 		`\`, `\\`,
@@ -725,8 +637,7 @@ func escapeDouble(s string) string {
 	return r.Replace(s)
 }
 
-// sortedKeys returns a map's keys in sorted order, so rendering is deterministic and
-// a formatted document does not churn between runs.
+// sortedKeys keeps rendering deterministic.
 func sortedKeys(m map[string]string) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

@@ -8,29 +8,22 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Store wraps a state.MemoryStore with the write-time ingest gate: content from an
-// untrusted source that carries a screening hit (a hidden-instruction payload or
-// overt injection phrasing) is refused before it is ever persisted, so it can never
-// be recalled later. It is a decorator, so a host opts in by wrapping its own store
-// and the underlying persistence, recall ranking, and provenance are unchanged.
+// Store wraps a state.MemoryStore and refuses, before persisting, untrusted content
+// with a screening hit, so it can never be recalled. A host opts in by wrapping its
+// store; persistence, ranking and provenance are unchanged.
 //
-// The gate fires only for untrusted-origin content. The agent's own run and the
-// operator's own instructions are allowed through even if they trip the phrase
-// screen, because a legitimate note may quote an injection string (a note about an
-// attack, a captured lesson); refusing those would tax honest work with no security
-// gain, since trusted-origin content is not the poisoning vector. This mirrors the
-// package thesis: trust is the wall, the phrase screen is a bar-raiser.
+// Only untrusted-origin content is gated. The agent's and operator's notes may quote
+// an injection string, such as a note about an attack, and they are not the
+// poisoning vector.
 type Store struct {
 	inner state.MemoryStore
 	audit func(context.Context, Refusal)
 }
 
-// Refusal is the record of a refused write, passed to the audit callback so a host
-// can append it to the spine (poison attempts leave a trail).
+// Refusal records a refused write for the audit callback.
 type Refusal struct {
-	// Sources is the refused item's full provenance, not just the source that made
-	// it untrusted: an audit of a poisoning attempt wants every input the write
-	// claimed, including the trusted ones it was mixed with.
+	// Sources is the full provenance, trusted sources included, because an audit
+	// wants every input the write claimed.
 	Sources  []string
 	Trust    sandbox.Trust
 	Findings []Finding
@@ -39,9 +32,8 @@ type Refusal struct {
 // Option configures a Store.
 type Option func(*Store)
 
-// WithAudit registers a callback invoked for every refused write, so the host can
-// record the attempt on the append-only spine. The callback runs before Write
-// returns its error. Nil callbacks are ignored.
+// WithAudit sets a callback for each refused write, run before Write returns its
+// error, so the host can record the attempt. Nil is ignored.
 func WithAudit(fn func(context.Context, Refusal)) Option {
 	return func(s *Store) {
 		if fn != nil {
@@ -50,9 +42,8 @@ func WithAudit(fn func(context.Context, Refusal)) Option {
 	}
 }
 
-// Wrap returns a Store guarding inner. With no options it refuses poisoned
-// untrusted writes silently (the error is the only signal); add WithAudit to record
-// attempts.
+// Wrap returns a Store guarding inner. Without [WithAudit] the returned error is
+// the only record of a refusal.
 func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 	s := &Store{inner: inner}
 	for _, o := range opts {
@@ -63,16 +54,12 @@ func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 
 var _ state.MemoryStore = (*Store)(nil)
 
-// Write screens the item and refuses an untrusted-origin write that carries a
-// screening hit, returning a Forbidden fault; otherwise it records the write's taint
-// and delegates to the inner store. The screen runs on the item's content; trust
-// comes from its Sources via TrustOfAll, which takes the weakest of them, so mixing
-// one trusted input into a distilled item does not buy it past the gate.
+// Write refuses untrusted content with a screening hit with a Forbidden fault.
+// Trust is [TrustOfAll], so one trusted source does not carry an item past the gate.
 //
-// Taint is recorded here rather than left to the caller because this is the one
-// place every guarded write passes through while the writing context is still in
-// hand (see TaintItem). It is not a refusal: a tainted item is stored and recalled
-// normally, and only the wake digest treats it differently.
+// Otherwise it records taint ([TaintItem]) and writes. Taint is set here because
+// every guarded write passes through with its context. A tainted item is stored and
+// recalled normally; only the digest excludes it.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
 	trust := TrustOfAll(m.Sources)
 	if trust == sandbox.TrustUntrusted {
@@ -87,10 +74,7 @@ func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem
 	return s.inner.Write(ctx, TaintItem(ctx, m))
 }
 
-// Recall delegates unchanged. Retrieval-side trust is available to callers via
-// TrustOfAll on each item's Sources, so a governance gate can treat an untrusted-origin
-// memory as data rather than as the agent's vetted intent without this store having
-// to alter the recall contract.
+// Recall delegates unchanged. Callers derive trust with [TrustOfAll] on each item.
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	return s.inner.Recall(ctx, q)
 }
@@ -100,10 +84,7 @@ func (s *Store) Delete(ctx context.Context, id string) error {
 	return s.inner.Delete(ctx, id)
 }
 
-// RecordPush delegates unchanged. The gate is a write-time ingest screen on
-// content, and usage carries none: an item that got past the screen is an item
-// this store has no further opinion about, and refusing to count reads of it would
-// leave the selection policy blind on exactly the corpus the guard admitted.
+// RecordPush delegates unchanged, because usage carries no content to screen.
 func (s *Store) RecordPush(ctx context.Context, memoryIDs []string) error {
 	return s.inner.RecordPush(ctx, memoryIDs)
 }
@@ -118,11 +99,8 @@ func (s *Store) Usage(ctx context.Context, memoryIDs []string) ([]state.MemoryUs
 	return s.inner.Usage(ctx, memoryIDs)
 }
 
-// Promote delegates unchanged. The gate does not second-guess a reviewer: whether
-// a promotion can make an item pushable at all is decided by PushEligibility on the
-// read, where a tainted or untrusted-origin item is denied whatever its decision
-// record says. Refusing the write instead would leave the operator unable to record
-// a decision the store then ignores anyway.
+// Promote delegates unchanged. [PushEligibility] denies tainted and untrusted items
+// on read whatever the decision says.
 func (s *Store) Promote(ctx context.Context, d state.PromotionDecision) (state.MemoryPromotion, error) {
 	return s.inner.Promote(ctx, d)
 }

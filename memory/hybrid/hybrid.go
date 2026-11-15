@@ -1,30 +1,15 @@
-// Package hybrid recalls memory by two measures at once: the word match the
-// backing store already computes, and the meaning match an embedding gives, fused
-// into one ranking by reciprocal rank.
+// Package hybrid ranks recall by the store's word match and an embedding's meaning
+// match, fused by reciprocal rank. A fact asked for in different words than it was
+// written in shares no term with the query, so a lexical index misses it; an
+// identifier or error code is matched exactly by the index and blurred by an
+// embedding. Fusing covers both.
 //
-// It exists because of how memory is actually read. A fact is written in the
-// wording of the day it was learned, and asked for months later in the wording of
-// the question, which shares no term with it. A lexical index answers that recall
-// with nothing: the fact is stored, it is live, it is in scope, and the reader is
-// told there is nothing. An embedding measure connects the two spellings and a
-// lexical one cannot, so this ranks by both and lets each cover what the other
-// misses. The reverse case is just as real: an identifier, an error code or a
-// person's name is matched exactly by the lexical index and blurred by an
-// embedding, which is why this fuses the two rather than replacing one with the
-// other.
+// The host supplies the model as an [Embedder]. A Store without one delegates every
+// recall unchanged.
 //
-// Host neutrality. Nothing here computes an embedding. Embedder is the whole
-// boundary: a host with a model in hand supplies one, and a host with none gets
-// exactly the lexical behaviour it had before, because a Store with no embedder
-// delegates every recall unchanged. No model, dimension, provider or distance
-// function is named anywhere in this package.
-//
-// What it does not do. Vectors are computed on the read path and cached in
-// process, not written to the store: a memory item is append-only and its record
-// is what its writer asserted, and putting a model call in the write path would
-// make writing memory fail when a model is down. The cost of that choice is a cold
-// first recall, which is bounded by the candidate cap, and re-embedding after a
-// restart.
+// Vectors are computed on the read path and cached in process, so a model outage
+// cannot fail a memory write. The cost is a cold first recall, bounded by the
+// candidate cap, and re-embedding after a restart.
 package hybrid
 
 import (
@@ -39,57 +24,35 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// defaultRankConstant is the k in reciprocal rank fusion: a rank contributes
-// 1/(k+rank), so k sets how sharply the top of a list beats the rest of it. 60 is
-// the value the method was published with and the one every implementation since
-// has used; it is deliberately large, so a list's ranks 1 and 5 differ by little
-// and agreement between the two lists decides more than depth within either.
+// defaultRankConstant is the k in 1/(k+rank). 60 is the published value; a large k
+// makes agreement between the lists count more than position within one.
 const defaultRankConstant = 60
 
-// defaultCandidates caps how many items each measure ranks. Fusion needs a pool
-// the lexical read cannot produce on its own (see Recall), and that pool is read
-// and embedded per recall, so it has to be bounded by something. 200 is the
-// working guess at "wide enough that the reworded fact is in it, small enough to
-// embed on a read"; a host with a larger corpus or a cheaper model raises it with
-// WithCandidates.
+// defaultCandidates caps how many items each measure ranks, because the pool is read
+// and embedded per recall. 200 is a guess; raise it with [WithCandidates].
 const defaultCandidates = 200
 
-// defaultDepth caps how many of the candidate pool count as matched by meaning.
-// It is what stops fusion from turning a query into "return everything": the pool
-// is every live item in scope, and being in it is not evidence of anything, so
-// only the closest few are treated as hits. 20 is the usual reading depth for
-// rank fusion, and comfortably more than a digest or a prompt will carry.
+// defaultDepth caps how many pool items count as matched by meaning, because the
+// pool is every live item in scope and membership is no evidence of a match.
 const defaultDepth = 20
 
-// defaultCacheSize caps the in-process vector cache. Memory content is immutable,
-// so a cached vector never goes stale and the only reason to bound the cache is
-// the memory it holds. 4096 entries covers the working set of a session several
-// times over.
+// defaultCacheSize caps the vector cache in entries. Content is immutable, so a
+// cached vector never goes stale.
 const defaultCacheSize = 4096
 
-// ErrNotFused reports that a recall came back ranked by the lexical measure alone,
-// because the embedder failed. It is returned alongside the items, never instead
-// of them: the reader asked for memory and the lexical answer is the same answer
-// the store gives with no embedder configured, so failing the read would trade a
-// usable result for the news that it is not the better one. A caller that only
-// wants results ignores an error matching this; a caller watching recall quality
-// wants to know the meaning half went missing.
+// ErrNotFused reports a lexical-only ranking because the embedder failed. It is
+// returned with the items, never instead of them, so a caller that only wants
+// results can ignore it.
 var ErrNotFused = errors.New("hybrid: ranked without embeddings")
 
-// Embedder turns text into vectors. It is the only thing a host has to supply to
-// get hybrid recall, and the only place a model appears in this package.
-//
-// Embed must return one vector per input text, in the same order. Vectors need
-// not be normalized; similarity is cosine, which normalizes as it goes. Two
-// vectors of different lengths score 0 against each other rather than failing the
-// recall, so re-embedding a corpus under a new model degrades results until it
-// finishes instead of emptying every read while it runs.
+// Embedder turns text into vectors. Embed returns one vector per text, in order.
+// Vectors need not be normalized. Vectors of different lengths score 0, so a corpus
+// part re-embedded under a new model degrades recall instead of failing it.
 type Embedder interface {
 	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
-// Store is a memory store that ranks recall by lexical and embedding similarity
-// together. Every other operation delegates to the store it wraps.
+// Store ranks recall by fused similarity; every other method delegates.
 type Store struct {
 	inner      state.MemoryStore
 	emb        Embedder
@@ -106,10 +69,8 @@ var _ state.MemoryStore = (*Store)(nil)
 // Option configures a Store.
 type Option func(*Store)
 
-// WithEmbedder sets the model that turns text into vectors. Without one, a Store
-// is a pass-through: recall is exactly what the inner store returns, which is the
-// honest answer for a host that has no model rather than a half-ranking from a
-// substitute. A nil embedder is ignored.
+// WithEmbedder sets the model. Without one, a Store passes recall through. Nil is
+// ignored.
 func WithEmbedder(e Embedder) Option {
 	return func(s *Store) {
 		if e != nil {
@@ -118,11 +79,8 @@ func WithEmbedder(e Embedder) Option {
 	}
 }
 
-// WithRankConstant sets the k in reciprocal rank fusion (default 60). A smaller k
-// makes the top of each list dominate; a larger one makes agreement between the
-// two lists matter more than position within either. A non-positive value is
-// ignored, since 1/(0+rank) would make rank 1 worth as much as the rest of the
-// list put together.
+// WithRankConstant sets k (default 60). A smaller k favours the top of each list.
+// A non-positive value is ignored.
 func WithRankConstant(k float64) Option {
 	return func(s *Store) {
 		if k > 0 {
@@ -131,11 +89,8 @@ func WithRankConstant(k float64) Option {
 	}
 }
 
-// WithWeights sets how much each measure counts, lexical then embedding (default
-// 1 and 1). A host whose corpus is mostly identifiers and error codes leans
-// lexical; one whose memory is mostly prose leans the other way. Zero on one side
-// switches that measure off, which is a supported way to A/B the ranking. Negative
-// weights, or two zeros, are ignored: a ranking has to be built out of something.
+// WithWeights sets the lexical and embedding weights (default 1 and 1). Zero turns
+// one measure off. Negative weights, or two zeros, are ignored.
 func WithWeights(lexical, embedding float64) Option {
 	return func(s *Store) {
 		if lexical < 0 || embedding < 0 || lexical+embedding == 0 {
@@ -145,9 +100,9 @@ func WithWeights(lexical, embedding float64) Option {
 	}
 }
 
-// WithCandidates sets how many items each measure ranks before fusion (default
-// 200). It bounds both the pool read from the store and the number of items
-// embedded on a cold recall. A non-positive value is ignored.
+// WithCandidates sets how many items each measure ranks (default 200), which bounds
+// the pool read and the items embedded on a cold recall. A non-positive value is
+// ignored.
 func WithCandidates(n int) Option {
 	return func(s *Store) {
 		if n > 0 {
@@ -156,10 +111,8 @@ func WithCandidates(n int) Option {
 	}
 }
 
-// WithDepth sets how many of the candidate pool count as matched by meaning
-// (default 20). Raising it lets a weaker embedding match still earn a place in
-// the fused ranking; lowering it makes the meaning half stricter. A non-positive
-// value is ignored: a depth of zero is WithWeights(1, 0) said obscurely.
+// WithDepth sets how many pool items count as matched by meaning (default 20). A
+// non-positive value is ignored; use WithWeights(1, 0) to turn meaning off.
 func WithDepth(n int) Option {
 	return func(s *Store) {
 		if n > 0 {
@@ -178,8 +131,7 @@ func WithCacheSize(n int) Option {
 	}
 }
 
-// Wrap returns a Store over inner. With no embedder it delegates every recall
-// unchanged, so wrapping is safe before a host has a model to give it.
+// Wrap returns a Store over inner. Without an embedder it changes nothing.
 func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 	s := &Store{
 		inner:      inner,
@@ -196,19 +148,14 @@ func Wrap(inner state.MemoryStore, opts ...Option) *Store {
 	return s
 }
 
-// Recall returns memory ranked by the two measures fused, capped at q.Limit.
+// Recall returns memory ranked by the fused measures. It reads the inner store
+// twice: once with the query, and once without the text but with every other
+// selector, because a reworded fact appears only in that second pool.
 //
-// It reads the inner store twice, because fusion needs a list the lexical read cannot
-// produce. The first read is the query as asked. The second drops the query text and keeps
-// every other selector: the pool of live, in-scope items of the kinds and anchors asked
-// for, whether or not they share a word with the question. The reworded fact appears only
-// there, the case this package exists for. Being in the pool is not a match: only its
-// closest items count as matched by meaning (see rankByMeaning and WithDepth).
-//
-// Both reads drop q.MinScore and take q.Limit up to the candidate cap: the inner scales are
-// not the fused score, and a limit before fusion would cut rows fusion would promote. Both
-// apply to the fused ranking. With no query text or no embedder, Recall delegates unchanged;
-// an embedder that fails returns the lexical results with ErrNotFused.
+// Both reads drop q.MinScore and use the candidate cap as the limit, because the
+// inner score is not the fused score and an early limit would cut rows fusion
+// promotes. Both apply to the fused list. With no query text or no embedder, Recall
+// delegates; a failing embedder returns the lexical results with [ErrNotFused].
 func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	query := strings.TrimSpace(q.Query)
 	if query == "" || s.emb == nil {
@@ -229,12 +176,8 @@ func (s *Store) Recall(ctx context.Context, q state.RecallQuery) ([]state.Memory
 	return s.finish(q, s.fuse(lexical, ranked)), nil
 }
 
-// innerQuery is the recall the inner store is asked for: q with the text replaced,
-// the floor and ordering set for a candidate list, and the limit widened to the
-// candidate cap. Relevance order matters on the lexical read, where it decides
-// which rows survive the cap; on the pool read the store has nothing to rank by
-// and returns its recency order, which is the right thing to truncate by when the
-// pool is bigger than the cap.
+// innerQuery builds a candidate read. The lexical read orders by relevance, which
+// decides what survives the cap; the pool read keeps recency order.
 func (s *Store) innerQuery(q state.RecallQuery, query string) state.RecallQuery {
 	iq := q
 	iq.Query = query
@@ -246,14 +189,9 @@ func (s *Store) innerQuery(q state.RecallQuery, query string) state.RecallQuery 
 	return iq
 }
 
-// rankByMeaning returns the pool's closest items to the query by cosine
-// similarity, best first, with the item ID as the tiebreak so equal scores rank
-// deterministically.
-//
-// Two things cut the list down, and both are the same point: being in the pool is
-// not a match. An item scoring zero or below shares no meaning with the query at
-// all and is dropped outright, and past the reading depth an item is only nearer
-// than the rest of a corpus that has nothing to do with the question.
+// rankByMeaning returns the pool items closest to query, best first, ties broken by
+// ID for determinism. Items scoring 0 or below, and those past the depth, are
+// dropped, because pool membership is not a match.
 func (s *Store) rankByMeaning(ctx context.Context, query string, pool []state.MemoryItem) ([]state.MemoryItem, error) {
 	texts := make([]string, 0, len(pool)+1)
 	texts = append(texts, query)
@@ -286,20 +224,14 @@ func (s *Store) rankByMeaning(ctx context.Context, query string, pool []state.Me
 	return out, nil
 }
 
-// fuse combines the two rankings by reciprocal rank and returns one deduplicated
-// list carrying the fused score. Items are keyed by ID, so an item in both lists
-// appears once with the score both ranks earned it.
-//
-// An item scoring zero is dropped rather than returned at the bottom. That is what
-// a switched-off measure means: WithWeights(1, 0) has to return what the lexical
-// measure found and nothing else, not the whole candidate pool ranked behind it.
+// fuse merges the rankings by ID with the fused score. An item scoring zero is
+// dropped, so WithWeights(1, 0) returns only what the lexical measure found.
 func (s *Store) fuse(lexical, meaning []state.MemoryItem) []state.MemoryItem {
 	scores := make(map[string]float64, len(lexical)+len(meaning))
 	addReciprocalRanks(scores, lexical, s.lexWeight, s.k)
 	addReciprocalRanks(scores, meaning, s.vecWeight, s.k)
-	// The best a single item can score is first place in both lists, so dividing by
-	// that puts the fused score on the (0,1] scale state.MemoryItem.Score is defined
-	// in and keeps a MinScore floor meaningful.
+	// Dividing by first place in both lists puts the score on the (0,1] scale
+	// MinScore expects.
 	best := (s.lexWeight + s.vecWeight) / (s.k + 1)
 	out := make([]state.MemoryItem, 0, len(scores))
 	seen := make(map[string]bool, len(scores))
@@ -314,8 +246,7 @@ func (s *Store) fuse(lexical, meaning []state.MemoryItem) []state.MemoryItem {
 	return out
 }
 
-// addReciprocalRanks adds each item's 1/(k+rank) contribution, weighted. A weight
-// of zero adds nothing, which is how a measure is switched off.
+// addReciprocalRanks adds each item's weighted 1/(k+rank).
 func addReciprocalRanks(scores map[string]float64, items []state.MemoryItem, weight, k float64) {
 	if weight == 0 {
 		return
@@ -325,9 +256,8 @@ func addReciprocalRanks(scores map[string]float64, items []state.MemoryItem, wei
 	}
 }
 
-// finish applies the caller's floor, ordering and limit to a fused list. It is
-// also the path the degraded answer takes, so a lexical-only result is ordered and
-// capped the same way a fused one is.
+// finish applies the caller's floor, order and limit, to the lexical-only fallback
+// too.
 func (s *Store) finish(q state.RecallQuery, items []state.MemoryItem) []state.MemoryItem {
 	out := make([]state.MemoryItem, 0, len(items))
 	for _, it := range items {
@@ -343,17 +273,11 @@ func (s *Store) finish(q state.RecallQuery, items []state.MemoryItem) []state.Me
 	return out
 }
 
-// SubjectSimilarity returns a subject measure backed by the same embedder and the
-// same cache, for memory/curate's fork detection (curate.WithSimilarity). The
-// lexical measure curate ships with cannot see through a synonym: "db-choice" and
-// "storage-engine" are one topic that shares no token. This can, and sharing the
-// cache means a subject already embedded on a recall costs nothing on the write.
-//
-// The score is cosine clamped to [0,1] and is symmetric, as that option requires.
-// A failing embedder scores 0, which reports no fork: the measure decides whether
-// to tell somebody two subjects look alike, and having no evidence is not evidence.
-// Pass a matching threshold with curate.WithSimilarityThreshold, since a score only
-// means something against the function that produced it.
+// SubjectSimilarity returns an embedding measure for curate.WithSimilarity, which
+// catches synonyms such as "db-choice" and "storage-engine". It shares the recall
+// cache. The score is cosine clamped to [0,1] and symmetric. A failing embedder
+// scores 0, so no evidence reports no fork. Set curate.WithSimilarityThreshold to
+// match.
 func (s *Store) SubjectSimilarity(ctx context.Context) func(a, b string) float64 {
 	return func(a, b string) float64 {
 		if s.emb == nil || a == "" || b == "" {
@@ -370,12 +294,9 @@ func (s *Store) SubjectSimilarity(ctx context.Context) func(a, b string) float64
 	}
 }
 
-// vectors returns a vector per text, embedding only the ones not already cached
-// and doing so in one call. Identical texts are embedded once.
+// vectors returns a vector per text, embedding the uncached ones in one call.
 func (s *Store) vectors(ctx context.Context, texts []string) ([][]float32, error) {
-	// The answer is assembled from this map rather than read back out of the cache,
-	// so a cache too small to hold one call's texts still answers that call
-	// correctly and only loses the entries for the next one.
+	// Answer from this map, so a cache smaller than one call still answers it.
 	have := make(map[string][]float32, len(texts))
 	var missing []string
 	for _, t := range texts {
@@ -409,10 +330,8 @@ func (s *Store) vectors(ctx context.Context, texts []string) ([][]float32, error
 	return out, nil
 }
 
-// embedText is what an item is embedded as: its subject, then its content. The
-// subject is a slug, so its dashes become spaces, and it goes first because it is
-// the item's topic in the writer's own words and a truncating model keeps what it
-// reads first.
+// embedText is the subject then the content, subject first because a truncating
+// model keeps what it reads first.
 func embedText(it state.MemoryItem) string {
 	if it.Subject == "" {
 		return it.Content
@@ -420,15 +339,12 @@ func embedText(it state.MemoryItem) string {
 	return strings.TrimSpace(subjectText(it.Subject) + " " + it.Content)
 }
 
-// subjectText renders a subject slug as the phrase it stands for, so a model reads
-// "db choice" rather than one unknown token.
+// subjectText turns dashes into spaces, so a model reads "db choice" as words.
 func subjectText(subject string) string {
 	return strings.ReplaceAll(subject, "-", " ")
 }
 
-// cosine is the similarity between two vectors, in [-1,1]. Vectors of different
-// lengths, or a zero vector, score 0: a corpus half re-embedded under a new model
-// should degrade, not fail.
+// cosine is in [-1,1]. Mismatched lengths or a zero vector score 0.
 func cosine(a, b []float32) float64 {
 	if len(a) != len(b) || len(a) == 0 {
 		return 0
@@ -446,10 +362,8 @@ func cosine(a, b []float32) float64 {
 	return dot / (math.Sqrt(na) * math.Sqrt(nb))
 }
 
-// vecCache holds embeddings by the text they were computed from, bounded by
-// entry count and evicting in insertion order. Keying by text rather than by item
-// ID means the write path's subject lookups and the read path's item lookups share
-// one cache, and two items with identical content are embedded once.
+// vecCache holds vectors by text, evicting oldest first. Keying by text lets
+// subject and item lookups share entries and embeds identical content once.
 type vecCache struct {
 	mu    sync.Mutex
 	max   int
@@ -486,8 +400,7 @@ func (c *vecCache) resize(limit int) {
 	c.evict()
 }
 
-// evict drops the oldest entries until the cache is within its cap. The caller
-// holds the lock.
+// evict trims to the cap. The caller holds the lock.
 func (c *vecCache) evict() {
 	for len(c.order) > c.max {
 		delete(c.vecs, c.order[0])
@@ -495,8 +408,7 @@ func (c *vecCache) evict() {
 	}
 }
 
-// Write delegates unchanged. Nothing is embedded here: see the package comment on
-// why a model call has no business in the write path.
+// Write delegates unchanged and embeds nothing.
 func (s *Store) Write(ctx context.Context, m state.MemoryItem) (state.MemoryItem, error) {
 	return s.inner.Write(ctx, m)
 }

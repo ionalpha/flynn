@@ -12,18 +12,14 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// Result is the outcome of a playbook run: the flow's return value, and the supervised
-// Service the run registered (nil when the playbook declares none or the result carried no
-// workload to track).
+// Result is the outcome of a playbook run.
 type Result struct {
-	Output  any
-	Service *service.Service
+	Output  any              // the flow's return value
+	Service *service.Service // nil when none was registered
 }
 
-// Runner executes a playbook's flow with the effect ports wired and, on success, registers
-// the supervised Service the playbook declares. It holds no playbook knowledge: it runs
-// whatever flow the spec carries, and the only things it can do are the ones its ports
-// allow (run a command in the sandbox, resolve a dependency, write a service record).
+// Runner runs a playbook's flow. The flow can do only what the wired ports allow:
+// run a sandboxed command, resolve a dependency, confirm, stage a secret.
 type Runner struct {
 	exec     flow.Execer
 	deps     flow.DependencyResolver
@@ -37,7 +33,7 @@ type Runner struct {
 // RunnerOption configures a Runner.
 type RunnerOption func(*Runner)
 
-// WithClock sets the time source used to stamp a registered service (default clock.System).
+// WithClock sets the clock that stamps a registered service (default clock.System).
 func WithClock(c clock.Timing) RunnerOption {
 	return func(r *Runner) {
 		if c != nil {
@@ -46,29 +42,25 @@ func WithClock(c clock.Timing) RunnerOption {
 	}
 }
 
-// WithConfirmer sets the port that asks the operator to approve a playbook's confirm steps
-// (an interactive terminal prompt, or a fail-closed instruction for a non-interactive run).
+// WithConfirmer sets the port that asks the operator to approve confirm steps.
 // Without it, a confirm step fails closed.
 func WithConfirmer(c flow.Confirmer) RunnerOption {
 	return func(r *Runner) { r.confirm = c }
 }
 
-// WithObserver sets the port that watches each command and dependency step as it runs, so a
-// host can show progress while a playbook executes. Without it, the playbook still runs;
-// nothing is reported.
+// WithObserver sets the port that reports each command and dependency step, so a
+// host can show progress. It is optional.
 func WithObserver(o flow.Observer) RunnerOption {
 	return func(r *Runner) { r.observer = o }
 }
 
-// WithCredentialSink sets the port that materializes a playbook's secret steps into a
-// provider's secret store. Without it, a secret step fails closed.
+// WithCredentialSink sets the port for secret steps. Without it, a secret step
+// fails closed.
 func WithCredentialSink(s flow.CredentialSink) RunnerOption {
 	return func(r *Runner) { r.sink = s }
 }
 
-// NewRunner builds a playbook runner. exec runs the flow's exec steps (through the
-// sandbox); deps resolves its dependency steps (through the dependency manager); svc is the
-// service store a successful run registers its workload in (nil disables registration).
+// NewRunner returns a Runner. A nil svc disables service registration.
 func NewRunner(exec flow.Execer, deps flow.DependencyResolver, svc *service.Store, opts ...RunnerOption) *Runner {
 	r := &Runner{exec: exec, deps: deps, svc: svc, clk: clock.System{}}
 	for _, o := range opts {
@@ -77,10 +69,8 @@ func NewRunner(exec flow.Execer, deps flow.DependencyResolver, svc *service.Stor
 	return r
 }
 
-// Run executes the playbook's flow with config exposed to it, then registers the declared
-// supervised Service from the flow's result. A flow failure is returned as-is; the service
-// is registered only after the flow succeeds, so a failed run never records a workload it
-// did not finish standing up.
+// Run runs the flow with config and then registers the declared service. A failed
+// flow registers nothing, so no workload is recorded that was not stood up.
 func (r *Runner) Run(ctx context.Context, pb Playbook, config map[string]any) (Result, error) {
 	f, err := pb.Spec.DecodeFlow()
 	if err != nil {
@@ -104,10 +94,9 @@ func (r *Runner) Run(ctx context.Context, pb Playbook, config map[string]any) (R
 	return res, nil
 }
 
-// register reads the live workload fields from the flow result and records a supervised
-// Service, so what the playbook stood up is held in its desired state afterward. The flow
-// result is expected to be an object carrying at least a name and a url; addressing the
-// supervisor replays is taken verbatim from an "address" object when present.
+// register records the service from the flow result, an object with name (or
+// service), url, externalID (or id) and an optional address object. The name
+// defaults to the playbook's.
 func (r *Runner) register(ctx context.Context, pb Playbook, out any) (*service.Service, error) {
 	if r.svc == nil {
 		return nil, nil
@@ -141,14 +130,13 @@ func (r *Runner) register(ctx context.Context, pb Playbook, out any) (*service.S
 	return &svc, nil
 }
 
-// SandboxExecer adapts a sandbox to the flow's Execer port, so a playbook's exec steps run
-// confined in the sandbox rather than spawning a process directly.
+// SandboxExecer runs a playbook's exec steps in a sandbox.
 type SandboxExecer struct{ sb sandbox.Sandbox }
 
-// NewSandboxExecer wraps a sandbox as a flow command runner.
+// NewSandboxExecer returns a SandboxExecer over sb.
 func NewSandboxExecer(sb sandbox.Sandbox) SandboxExecer { return SandboxExecer{sb: sb} }
 
-// Exec runs the command through the sandbox and returns its exit code and combined output.
+// Exec returns the exit code and combined output.
 func (e SandboxExecer) Exec(ctx context.Context, req flow.ExecRequest) (flow.ExecResult, error) {
 	if e.sb == nil {
 		return flow.ExecResult{}, fault.New(fault.Terminal, "playbook_no_sandbox", "playbook: no sandbox configured for exec")
@@ -160,14 +148,14 @@ func (e SandboxExecer) Exec(ctx context.Context, req flow.ExecRequest) (flow.Exe
 	return flow.ExecResult{ExitCode: res.ExitCode, Output: res.Output}, nil
 }
 
-// ManagerResolver adapts the dependency manager to the flow's DependencyResolver port, so a
-// playbook's dependency steps ensure a program is present and yield the path to run it.
+// ManagerResolver resolves a playbook's dependency steps through a dependency
+// manager.
 type ManagerResolver struct{ mgr *dependency.Manager }
 
-// NewManagerResolver wraps a dependency manager as a flow dependency resolver.
+// NewManagerResolver returns a ManagerResolver over mgr.
 func NewManagerResolver(mgr *dependency.Manager) ManagerResolver { return ManagerResolver{mgr: mgr} }
 
-// Resolve satisfies the named dependency and returns the path to run it.
+// Resolve installs the named dependency if needed and returns its path.
 func (m ManagerResolver) Resolve(ctx context.Context, name string) (string, error) {
 	if m.mgr == nil {
 		return "", fault.New(fault.Terminal, "playbook_no_deps", "playbook: no dependency manager configured")
@@ -179,7 +167,6 @@ func (m ManagerResolver) Resolve(ctx context.Context, name string) (string, erro
 	return got.Path, nil
 }
 
-// firstString returns the first key in m whose value is a non-empty string.
 func firstString(m map[string]any, keys ...string) string {
 	for _, k := range keys {
 		if s, ok := m[k].(string); ok && s != "" {
@@ -189,8 +176,8 @@ func firstString(m map[string]any, keys ...string) string {
 	return ""
 }
 
-// stringMap reads a flow result's "address" object into a string map, dropping any
-// non-string value, so the supervisor only ever replays string addressing.
+// stringMap drops non-string values, so the supervisor replays only string
+// addressing.
 func stringMap(v any) map[string]string {
 	m, ok := v.(map[string]any)
 	if !ok || len(m) == 0 {
@@ -208,7 +195,6 @@ func stringMap(v any) map[string]string {
 	return out
 }
 
-// guards: the adapters satisfy the flow ports.
 var (
 	_ flow.Execer             = SandboxExecer{}
 	_ flow.DependencyResolver = ManagerResolver{}

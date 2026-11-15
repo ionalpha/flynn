@@ -8,19 +8,13 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// wilsonZ is the z-score for a 95% confidence interval, used by the Wilson lower
-// bound that ranks skills by evidence.
+// wilsonZ is the z-score for a 95% confidence interval.
 const wilsonZ = 1.96
 
-// Confidence estimates how reliably a skill helps, as the Wilson lower bound of its
-// win rate (wins over reads). The lower bound is the principled small-sample
-// estimate: it is conservative when evidence is thin, so a skill that won its only
-// read does not outrank one that won 50 of 55, and it rises toward the raw win
-// rate as evidence accumulates. It is 0 when the skill has never been read.
-//
-// Grading a skill by its confirmed outcomes is what makes this learning loop
-// self-correcting where a recency- or usage-only one is not: a skill that keeps
-// being read in failing runs decays however often it is offered.
+// Confidence is the Wilson lower bound of wins over reads, in [0, 1], and 0 for an
+// unread skill. The bound is low when evidence is thin, so a skill that won its only
+// read ranks below one that won 50 of 55. A skill read in failing runs decays
+// however often it is offered.
 func Confidence(reads, wins int) float64 {
 	if reads <= 0 || wins <= 0 {
 		return 0
@@ -38,20 +32,13 @@ func Confidence(reads, wins int) float64 {
 	return lb
 }
 
-// Reinforce records one run's outcome against the skills the run read: each is read once
-// more, and once more a win if the run succeeded, so a skill is ranked and retired by how
-// it performs. A duplicate or empty reference, or one with no live skill, is skipped; the
-// first store error is returned. Each skill is a read-modify-write, safe under the agent's
-// single-writer local store.
+// Reinforce adds a read to each skill in ids, and a win if success. Empty, duplicate
+// and unknown ids are skipped; the first store error is returned. Each update is a
+// read-modify-write, safe only under a single-writer store.
 //
-// Pass the skills the run actually loaded, from the skill toolset's record of what it
-// served, not the ones recall offered. An offer is a keyword match and shows nothing about
-// whether the model took the skill up; crediting the outcome to every skill in the prompt
-// makes the win rate a property of the run, not of the skill. Offer records that half.
-//
-// Pass ids, not slugs. Recall is scope-blind, so two scopes may hold the same slug, and
-// Get resolves a slug by earliest created row, crediting whichever record is older. An id
-// names the record that was actually put in front of the model.
+// Pass the ids the skill toolset served. Crediting every offered skill would make
+// the win rate measure the run; [Offer] records offers. Pass ids because two scopes
+// may share a slug and Get resolves a slug by earliest created row.
 func Reinforce(ctx context.Context, skills state.SkillStore, ids []string, success bool) error {
 	return accrue(ctx, skills, ids, func(sk *state.Skill) {
 		sk.Reads++
@@ -61,22 +48,14 @@ func Reinforce(ctx context.Context, skills state.SkillStore, ids []string, succe
 	})
 }
 
-// Offer records that a run was shown these skills, without claiming anything about
-// what it did with them. It is the other half of Reinforce and takes the ids recall
-// surfaced, so offered-and-never-read stays visible: a skill with many offers and no
-// reads has a description that is not selling a body that might have helped, which is
-// a defect in the writing rather than in the skill.
-//
-// Offers never feed Confidence or Decay. A skill is not worse for being offered to
-// runs that turned out not to need it.
+// Offer adds an offer to each skill recall surfaced. Many offers and no reads point
+// at a weak description. Offers never feed [Confidence] or [Decay], because a skill
+// is not worse for being offered to runs that did not need it.
 func Offer(ctx context.Context, skills state.SkillStore, ids []string) error {
 	return accrue(ctx, skills, ids, func(sk *state.Skill) { sk.Offers++ })
 }
 
-// accrue applies bump to each distinct live skill named in ids and writes it back,
-// skipping empty, duplicate and unknown references and returning the first store
-// error. Both counters move through here so neither can drift on which references
-// it honours.
+// accrue is shared by [Reinforce] and [Offer] so both skip the same ids.
 func accrue(ctx context.Context, skills state.SkillStore, ids []string, bump func(*state.Skill)) error {
 	seen := map[string]bool{}
 	for _, id := range ids {
@@ -99,30 +78,21 @@ func accrue(ctx context.Context, skills state.SkillStore, ids []string, bump fun
 	return nil
 }
 
-// DecayPolicy decides when a skill is retired: once it has at least MinReads of
-// evidence and its confidence is below MinConfidence, it has been tried enough and
-// helped too rarely to keep surfacing.
-//
-// The threshold counts reads, so a skill is only ever retired over runs that loaded
-// it. A skill that keeps being offered and never read is not retired by this policy:
-// nothing has tried it, and the repair is to its description.
+// DecayPolicy retires a skill with at least MinReads reads and [Confidence] below
+// MinConfidence. Only reads count, so a skill offered and never read is kept; its
+// description needs the fix.
 type DecayPolicy struct {
 	MinReads      int
 	MinConfidence float64
 }
 
-// DefaultDecay retires a skill only after a fair number of reads with a poor
-// confirmed win rate, so a still-unproven skill keeps its chance.
+// DefaultDecay is 5 reads below 0.2 confidence.
 func DefaultDecay() DecayPolicy { return DecayPolicy{MinReads: 5, MinConfidence: 0.2} }
 
-// Decay archives the skills in scope that the policy judges unhelpful, returning
-// the ones it archived. Archiving is a soft delete (a tombstone), so a retired
-// skill is recoverable and never silently lost, and a skill with little evidence is
-// kept because it has not yet earned retirement.
-//
-// The bundled scope is refused with ErrBundledScope: a skill shipped in the binary
-// is replaced by an upgrade, not retired by a policy, and archiving one would leave
-// a tombstone for the next seed to fight with.
+// Decay archives the skills in scope that p retires and returns them. Archiving is a
+// tombstone, so a retired skill is recoverable. state.BundledScope returns
+// [ErrBundledScope] because an upgrade replaces a bundled skill and a tombstone
+// would conflict with the next seed.
 func Decay(ctx context.Context, skills state.SkillStore, scope state.Scope, p DecayPolicy) ([]state.Skill, error) {
 	if scope == state.BundledScope {
 		return nil, ErrBundledScope

@@ -7,26 +7,8 @@ import (
 	"path"
 )
 
-// The directory layer, over an fs.FS rather than the filesystem.
-//
-// A skill is a directory, not a file: SKILL.md at its root plus optional scripts/,
-// references/ and assets/ siblings. Taking fs.FS rather than a path means the same
-// loader reads the pack embedded in the binary (embed.FS), a pack on disk
-// (os.DirFS), and a pack in a test (fstest.MapFS), and it means the loader cannot
-// reach outside the tree it was handed: fs.FS rejects "..", absolute paths and
-// rooted paths by contract, so traversal is closed by construction rather than by a
-// check someone has to remember to write.
-//
-// Siblings are addressed, never inlined. Their paths are recorded and their bytes
-// are left where they are, which is what the format's execution-stage disclosure
-// asks for: activation loads the body, and a script is read only if something
-// decides to run it. Inlining would put every byte of every resource into the
-// activation budget the layout exists to protect.
-
 // MaxResources caps the sibling files one skill may address. The specification sets
-// no limit; a loader reading a tree it did not author needs one, because a pack with
-// a hundred thousand files in scripts/ otherwise decides how much memory this
-// process uses. The cap is far above any plausible authored skill.
+// no limit, so without one a hostile pack would decide memory use.
 const MaxResources = 256
 
 // ResourceDirs are the sibling directories the layout defines. Anything else at the
@@ -34,8 +16,7 @@ const MaxResources = 256
 var ResourceDirs = []string{"scripts", "references", "assets"}
 
 var (
-	// ErrNoSkillMD reports a directory with no SKILL.md. It is the "this is not a
-	// skill" error, distinct from a SKILL.md that breaks a rule.
+	// ErrNoSkillMD reports a directory with no SKILL.md, which is not a skill.
 	ErrNoSkillMD = errors.New("skillmd: no SKILL.md")
 	// ErrLayout reports a directory tree the layout does not allow: a nested
 	// resource directory, an entry that is not a regular file, or more resources
@@ -43,34 +24,27 @@ var (
 	ErrLayout = errors.New("skillmd: unexpected layout")
 )
 
-// Pack is one loaded skill directory: the validated document plus the relative
-// paths of the siblings it may reach. Resources are paths, not contents.
+// Pack is one loaded skill directory. It is read through an fs.FS, so the same code
+// loads embed.FS, os.DirFS and fstest.MapFS, and fs.FS refuses ".." and absolute
+// paths, which closes traversal. Resources are recorded as paths and never read, so
+// activation loads only the body and a script is read when something runs it.
 type Pack struct {
-	// Dir is the path Load was given, relative to the fs.FS root.
+	// Dir is relative to the fs.FS root.
 	Dir string
-	// Doc is the parsed and validated SKILL.md. Doc.Name equals path.Base(Dir),
-	// because the specification requires it and Load enforces it.
+	// Doc is validated, and Doc.Name equals path.Base(Dir).
 	Doc Doc
-	// Resources are the sibling files, as paths relative to Dir ("scripts/build.sh"),
-	// sorted. Reading one is the caller's decision, taken at execution time.
+	// Resources are sorted paths relative to Dir, such as "scripts/build.sh".
 	Resources []string
-	// Ignored holds root entries that are neither SKILL.md nor a resource directory,
-	// as names relative to Dir. A README, a LICENSE the license field points at, or a
-	// directory this layout does not define all land here. They are carried rather
-	// than refused, because refusing them would reject most packs in the wild, and
-	// they are reported rather than dropped, because a silently ignored directory is
-	// a pack half-read.
+	// Ignored holds other root entries, such as a README. Refusing them would
+	// reject most packs in the wild, and dropping them silently would hide a
+	// half-read pack.
 	Ignored []string
 }
 
-// Load reads the skill directory dir from fsys. It applies the specification in
-// full: the document parses, satisfies Validate, and its name matches the directory
-// name. A directory with no SKILL.md is ErrNoSkillMD; one whose layout breaks a rule
-// is ErrLayout; one whose document breaks a rule carries the codec's own error.
-//
-// dir must name a directory: the name-matches-directory rule has nothing to check
-// against "." , so the fs root itself is refused rather than loaded under a name
-// nobody chose.
+// Load reads the skill directory dir from fsys and applies the full specification,
+// including [Validate] against the directory name. It returns [ErrNoSkillMD],
+// [ErrLayout], or the codec's error for a bad document. dir "." is refused because
+// the fs root has no name to match.
 func Load(fsys fs.FS, dir string) (Pack, error) {
 	if !fs.ValidPath(dir) || dir == "." {
 		return Pack{}, fmt.Errorf("%w: %q does not name a skill directory", ErrLayout, dir)
@@ -100,8 +74,7 @@ func Load(fsys fs.FS, dir string) (Pack, error) {
 	for _, entry := range entries {
 		switch {
 		case entry.Name() == "SKILL.md":
-			// Already read. Checked for regularity here so a SKILL.md that is a
-			// symlink is refused rather than followed.
+			// Refuses a SKILL.md symlink.
 			if err := requireRegular(entry, path.Join(dir, entry.Name())); err != nil {
 				return Pack{}, err
 			}
@@ -121,13 +94,9 @@ func Load(fsys fs.FS, dir string) (Pack, error) {
 	return pack, nil
 }
 
-// LoadAll reads every skill directory directly under root. It is the packs-root
-// reader: each subdirectory claims to be a skill, so one without a SKILL.md is an
-// error rather than a directory to skip. Files directly under root are ignored,
-// since only a directory can be a skill.
-//
-// Packs come back in the order fs.ReadDir gives them, which is by filename, so the
-// result is deterministic across the embedded, on-disk and in-memory filesystems.
+// LoadAll loads every directory directly under root, in filename order. Every
+// subdirectory must be a skill, so one without a SKILL.md is an error. Files under
+// root are ignored.
 func LoadAll(fsys fs.FS, root string) ([]Pack, error) {
 	entries, err := fs.ReadDir(fsys, root)
 	if err != nil {
@@ -147,10 +116,8 @@ func LoadAll(fsys fs.FS, root string) ([]Pack, error) {
 	return packs, nil
 }
 
-// loadResourceDir lists one sibling directory. Its entries stay one level deep and
-// are regular files: a nested directory is refused rather than walked, because the
-// format addresses resources as one-segment relative paths and a tree we descend is
-// a tree whose size we did not agree to.
+// loadResourceDir refuses a nested directory, because the format addresses
+// resources one level deep and walking deeper has no size bound.
 func loadResourceDir(fsys fs.FS, dir, name string) ([]string, error) {
 	entries, err := fs.ReadDir(fsys, path.Join(dir, name))
 	if err != nil {
@@ -170,11 +137,9 @@ func loadResourceDir(fsys fs.FS, dir, name string) ([]string, error) {
 	return out, nil
 }
 
-// requireRegular refuses anything that is not a plain file. A symlink is the case
-// that matters: fs.FS closes lexical traversal, but os.DirFS follows a symlink when
-// it opens one, so a pack holding scripts/x -> /etc/shadow would otherwise be a pack
-// that addresses a file outside its own tree. Devices, sockets and named pipes are
-// refused by the same rule, since none of them is a skill resource.
+// requireRegular refuses anything but a plain file. os.DirFS follows symlinks, so
+// scripts/x -> /etc/shadow would address a file outside the pack. Devices, sockets
+// and pipes are refused too.
 func requireRegular(entry fs.DirEntry, where string) error {
 	if entry.Type() != 0 {
 		return fmt.Errorf("%w: %s is %s, want a regular file", ErrLayout, where, entry.Type())
@@ -191,9 +156,8 @@ func isResourceDir(name string) bool {
 	return false
 }
 
-// readCapped reads a SKILL.md, refusing one above MaxDocSize without reading it all.
-// The limit is applied to the reader rather than checked after the fact, so a hostile
-// document cannot cost a gigabyte of memory on its way to being rejected.
+// readCapped limits the reader to [MaxDocSize], so an oversized document is refused
+// before it is read into memory.
 func readCapped(fsys fs.FS, name string) ([]byte, error) {
 	return readCappedAt(fsys, name, MaxDocSize)
 }

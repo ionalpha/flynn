@@ -6,27 +6,19 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// RegradeResult summarizes a regrade pass: the skills whose checks were re-run and
-// what became of them.
+// RegradeResult is what a [Regrade] pass did.
 type RegradeResult struct {
-	Checked     int           // skills with a check that were re-run
-	Reconfirmed []state.Skill // checks re-ran and still passed
-	Retired     []state.Skill // checks re-ran and now failed, so they were archived
+	Checked     int           // skills whose check ran
+	Reconfirmed []state.Skill // passed, tagged verified
+	Retired     []state.Skill // failed, archived
 }
 
-// Regrade re-runs the verification check of every checkable skill in scope and
-// brings the corpus back in line with current ground truth: a skill whose check
-// still passes is re-confirmed (tagged verified), and one whose check now fails is
-// retired (archived, recoverable). Skills with no check, or whose check could not
-// run, are left untouched.
+// Regrade re-runs every skill check in scope, so a procedure that stopped working is
+// archived. A pass is tagged verified; a skill whose check cannot run is untouched.
+// A nil v does nothing. The first store or verifier error is returned.
 //
-// A procedure that has stopped working is caught and removed rather than recalled
-// forever. A nil verifier is a no-op; the first store or verifier error aborts and is
-// returned.
-//
-// The bundled scope is refused with ErrBundledScope. Skills shipped in the binary are
-// versioned with it, so a regrade there would rewrite authored tags and could archive an
-// authored skill on a check that fails because of the machine it ran on.
+// state.BundledScope returns [ErrBundledScope]: bundled skills are versioned with the
+// binary, and a check failing on one machine must not archive an authored skill.
 func Regrade(ctx context.Context, skills state.SkillStore, scope state.Scope, v Verifier) (RegradeResult, error) {
 	var res RegradeResult
 	if scope == state.BundledScope {
@@ -48,7 +40,7 @@ func Regrade(ctx context.Context, skills state.SkillStore, scope state.Scope, v 
 			return res, err
 		}
 		if !verdict.Ran {
-			continue // could not run the check: leave the skill as it stands
+			continue
 		}
 		res.Checked++
 		if verdict.Verified {
@@ -68,8 +60,7 @@ func Regrade(ctx context.Context, skills state.SkillStore, scope state.Scope, v 
 	return res, nil
 }
 
-// retagVerified ensures a re-confirmed skill is tagged verified and no longer
-// unverified, preserving its other tags.
+// retagVerified swaps [unverifiedTag] for [verifiedTag] and keeps other tags.
 func retagVerified(tags []string) []string {
 	out := make([]string, 0, len(tags)+1)
 	verified := false

@@ -1,32 +1,17 @@
-// Package consolidate turns a subject's accumulated episodes into one lesson.
+// Package consolidate distils a subject's episode series into one lesson. Episodes
+// append (see memory/curate), so a failing deploy accumulates five near-identical
+// items that a digest cannot afford to carry. The pass writes a lesson superseding
+// them and tombstones the episodes.
 //
-// It is the other half of the write-semantics split (see memory/curate). Episode
-// kinds append, so a subject that keeps going wrong accumulates a series: five
-// failures of the same deploy, each recorded when it happened. The series is
-// worth keeping while it is being written, because the fifth failure only means
-// something against the four before it. It is not worth keeping forever: nobody
-// reads five near-identical episodes, and a digest that offered them would spend
-// its whole budget saying one thing five times.
-//
-// Consolidation is where that becomes learning. The pass distils the series into
-// one lesson, records the lesson as superseding the episodes it was drawn from,
-// and tombstones them. What is left on the subject is one item that says what was
-// learned, which is the line a wake digest can afford to carry.
-//
-// Distilling is the host's. A lesson is a language judgment about what a series
-// means, and this package has no model and no business pretending to summarize.
-// The caller supplies a Distiller; everything around it - which series are ready,
-// what the lesson inherits, what gets retired, and what a re-run does - is here,
-// because those are the parts that have to be right every time and identically.
+// The host supplies the [Distiller], because summarizing needs a model. This
+// package decides which series are ready, what the lesson inherits, what is retired
+// and what a re-run does.
 //
 // # Running it again
 //
-// The pass is idempotent and resumable, which matters because it is offline work
-// that can be killed halfway. The lesson is written before the episodes are
-// retired, so a run interrupted between the two leaves a lesson that names
-// episodes still live. A later run recognises that state and finishes the
-// retirement rather than distilling a second lesson from the same series, so
-// running the pass twice produces what running it once would have.
+// The pass is idempotent, because offline work can be killed halfway. The lesson is
+// written before the episodes are retired, and a later run that finds a lesson
+// naming live episodes finishes retiring them instead of distilling again.
 package consolidate
 
 import (
@@ -40,48 +25,36 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// KindLesson is the kind a distilled lesson is written under, and KindEpisode is
-// the kind the pass reads by default. Both are the memory vocabulary the write
-// policy already uses; a host with its own names sets them (WithLessonKind,
-// WithEpisodeKinds).
+// Default kinds for lessons written and episodes read; override with
+// [WithLessonKind] and [WithEpisodeKinds].
 const (
 	KindLesson  = "lesson"
 	KindEpisode = "episode"
 )
 
-// defaultMinEpisodes is how many episodes a subject needs before its series is
-// worth distilling. Two is a coincidence and three is a pattern: consolidating a
-// pair would spend a model call to compress a series a reader could have read.
+// defaultMinEpisodes is 3, because a pair is short enough to read and not worth a
+// model call.
 const defaultMinEpisodes = 3
 
-// Series is one subject's episodes, handed to a Distiller. Episodes are oldest
-// first, because the series is a narrative and its order is the information: what
-// changed between the first failure and the last is most of what a lesson says.
+// Series is one subject's episodes, oldest first, because what changed between
+// the first and last is most of a lesson.
 type Series struct {
 	Subject  string
 	Scope    state.Scope
 	Episodes []state.MemoryItem
 }
 
-// Lesson is what a Distiller produces: the distilled content, and nothing else.
-// Provenance, anchors, taint and expiry are derived from the series by the pass
-// rather than restated here, so a distiller cannot accidentally launder a tainted
-// episode into a clean lesson or drop the sources a purge follows.
+// Lesson is a distiller's content only. The pass derives provenance, anchors, taint
+// and expiry from the series, so a distiller cannot clean a tainted episode or drop
+// the sources a purge follows.
 type Lesson struct {
-	// Content is the lesson. An empty Content declines the series: the pass writes
-	// nothing, retires nothing, and reports the subject as declined. That is the
-	// honest answer for a series a distiller cannot draw anything from, and it is
-	// safe to give, because declining costs a re-read on the next run and deleting
-	// the evidence would cost the series.
+	// Content is the lesson. Empty declines the series: nothing is written or
+	// retired, which costs only a re-read next run.
 	Content string
 }
 
-// Distiller turns a series into a lesson. It is the one part of consolidation a
-// host has to supply.
-//
-// It may be called for many subjects in one run, so an implementation backed by a
-// model is responsible for its own rate limiting and budget. An error from it
-// fails that subject and no other (see Report.Failures).
+// Distiller turns a series into a lesson. It may be called for many subjects in one
+// run, so it owns its rate limiting and budget. An error fails that subject only.
 type Distiller interface {
 	Distil(ctx context.Context, in Series) (Lesson, error)
 }
@@ -92,9 +65,8 @@ type DistillerFunc func(ctx context.Context, in Series) (Lesson, error)
 // Distil calls f.
 func (f DistillerFunc) Distil(ctx context.Context, in Series) (Lesson, error) { return f(ctx, in) }
 
-// ErrNoDistiller reports that the pass was built without one. It is returned at
-// construction time rather than on the first run, so a host wires it up wrong
-// once instead of discovering it on a nightly job.
+// ErrNoDistiller is returned by [New] for a nil store or distiller, so a miswired
+// host fails at startup and not on a nightly job.
 var ErrNoDistiller = errors.New("consolidate: a distiller is required")
 
 // Outcome is what the pass did with one subject.
@@ -103,8 +75,7 @@ type Outcome string
 const (
 	// OutcomeDistilled wrote a lesson and retired the episodes it was drawn from.
 	OutcomeDistilled Outcome = "distilled"
-	// OutcomeResumed found a lesson that already superseded the episodes in hand,
-	// left by an interrupted run, and finished retiring them.
+	// OutcomeResumed finished retiring episodes an interrupted run's lesson covers.
 	OutcomeResumed Outcome = "resumed"
 	// OutcomeTooFew left the series alone: not enough episodes yet.
 	OutcomeTooFew Outcome = "too-few"
@@ -112,24 +83,21 @@ const (
 	OutcomeDeclined Outcome = "declined"
 )
 
-// Result is what happened to one subject in one run.
+// Result is one subject's outcome in one run.
 type Result struct {
 	Subject string
 	Scope   state.Scope
 	Outcome Outcome
 	// Episodes is how many episodes were in hand when the subject was considered.
 	Episodes int
-	// Lesson is the item written, or the one an interrupted run had already
-	// written. It is the zero item when nothing was distilled.
+	// Lesson is the item written or resumed; zero when nothing was distilled.
 	Lesson state.MemoryItem
-	// Retired is the ids tombstoned, in the order they were retired.
+	// Retired is the ids tombstoned, in order.
 	Retired []string
 }
 
-// Failure is one subject the pass could not finish, and why. A sweep reports
-// these rather than returning on the first one: an offline pass over a whole
-// store must not lose two hundred healthy subjects to one that a model call
-// timed out on.
+// Failure is a subject the pass could not finish. A sweep collects these and
+// continues, so one timeout does not cost every other subject.
 type Failure struct {
 	Subject string
 	Scope   state.Scope
@@ -142,9 +110,7 @@ type Report struct {
 	Failures []Failure
 }
 
-// Distilled counts the subjects a run actually consolidated, which is the number
-// a host logs or alerts on. Resumed subjects are counted separately by Resumed:
-// they are work finished, not learning done.
+// Distilled counts subjects given a new lesson, excluding resumed ones.
 func (r Report) Distilled() int { return r.count(OutcomeDistilled) }
 
 // Resumed counts the subjects whose interrupted retirement this run finished.
@@ -172,9 +138,7 @@ type Pass struct {
 // Option configures a Pass.
 type Option func(*Pass)
 
-// WithLessonKind sets the kind a distilled lesson is written under. It must be a
-// kind the write policy treats as replaceable or appendable to taste; the pass
-// itself only ever writes one lesson per series. An empty kind is ignored.
+// WithLessonKind sets the lesson kind. An empty kind is ignored.
 func WithLessonKind(kind string) Option {
 	return func(p *Pass) {
 		if kind != "" {
@@ -183,10 +147,7 @@ func WithLessonKind(kind string) Option {
 	}
 }
 
-// WithEpisodeKinds sets which kinds the pass reads as series members. A host that
-// records "incident" and "attempt" alongside episodes consolidates all three by
-// naming them here. An empty list is ignored, since a pass that read no kinds
-// would sweep the store and do nothing.
+// WithEpisodeKinds sets the kinds read as series members. An empty list is ignored.
 func WithEpisodeKinds(kinds ...string) Option {
 	return func(p *Pass) {
 		if len(kinds) > 0 {
@@ -195,17 +156,15 @@ func WithEpisodeKinds(kinds ...string) Option {
 	}
 }
 
-// WithMinEpisodes sets how many episodes a subject needs before it is
-// consolidated. Below 2 is treated as 2: distilling a single episode is not
-// consolidation, it is rewriting one memory into another and losing the original.
+// WithMinEpisodes sets the episodes needed before distilling. Below 2 is 2, because
+// distilling one episode would only replace it.
 func WithMinEpisodes(n int) Option {
 	return func(p *Pass) {
 		p.minEpisodes = max(n, 2)
 	}
 }
 
-// New returns a consolidation pass over store, distilling through d. A nil store
-// or distiller is ErrNoDistiller rather than a Pass that fails later.
+// New returns a pass over store distilling through d.
 func New(store state.MemoryStore, d Distiller, opts ...Option) (*Pass, error) {
 	if store == nil || d == nil {
 		return nil, ErrNoDistiller
@@ -223,18 +182,9 @@ func New(store state.MemoryStore, d Distiller, opts ...Option) (*Pass, error) {
 	return p, nil
 }
 
-// Run consolidates every subject with a ready series in the scope q names, and
-// reports what it did. The query is a RecallQuery so a caller can bound the sweep
-// the way it bounds any other read - one scope, a time window, a subject list -
-// rather than this package inventing a second way to say the same things.
-//
-// The kind filter is the pass's own and overrides whatever the query carried:
-// a sweep is defined by the series it reads, and honouring a caller's kinds here
-// would let a query that asked for facts consolidate them into lessons.
-//
-// Subjects are consolidated in a stable order (subject, then scope) so two runs
-// over the same store do the same work in the same sequence, which is what makes
-// a partial run's report worth reading.
+// Run consolidates every ready series q selects. q.Kinds is replaced by the episode
+// kinds, so a query for facts cannot turn them into lessons. Subjects run in a
+// stable order, so two runs over one store do the same work in sequence.
 func (p *Pass) Run(ctx context.Context, q state.RecallQuery) (Report, error) {
 	q.Kinds = slices.Clone(p.episodeKind)
 	items, err := p.store.Recall(ctx, q)
@@ -254,17 +204,15 @@ func (p *Pass) Run(ctx context.Context, q state.RecallQuery) (Report, error) {
 	return rep, nil
 }
 
-// Subject consolidates one subject in one scope, the call a host makes when it
-// knows which series just grew rather than sweeping the store. The subject is
-// normalized first, so a caller may pass whatever spelling it has in hand.
+// Subject consolidates one subject in exactly scope, for a host that knows which
+// series grew. The subject is normalized first.
 func (p *Pass) Subject(ctx context.Context, subject string, scope state.Scope) (Result, error) {
 	key, err := state.NormalizeSubject(subject)
 	if err != nil {
 		return Result{}, err
 	}
 	if key == "" {
-		// The unsubjected items are not a series. They are every observation nobody
-		// filed under anything, and distilling them together would invent a topic.
+		// Unsubjected items share no topic, so they are not a series.
 		return Result{}, fmt.Errorf("%w: consolidation needs a subject", state.ErrInvalid)
 	}
 	items, err := p.store.Recall(ctx, state.RecallQuery{
@@ -283,13 +231,10 @@ func (p *Pass) Subject(ctx context.Context, subject string, scope state.Scope) (
 	return p.consolidate(ctx, series)
 }
 
-// consolidate applies the pass to one series.
 func (p *Pass) consolidate(ctx context.Context, s Series) (Result, error) {
 	res := Result{Subject: s.Subject, Scope: s.Scope, Episodes: len(s.Episodes)}
 
-	// An interrupted run is finished before anything new is distilled, so the
-	// second run of a killed pass retires what the first one had already accounted
-	// for instead of drawing a second lesson from the same series.
+	// Finish an interrupted run first, so the series is not distilled twice.
 	lesson, covered, err := p.interrupted(ctx, s)
 	if err != nil {
 		return Result{}, err
@@ -322,14 +267,9 @@ func (p *Pass) consolidate(ctx context.Context, s Series) (Result, error) {
 	return res, err
 }
 
-// lessonFrom builds the lesson item: the distiller's content, and everything else
-// derived from the series it came from.
-//
-// Provenance is the union of the episodes' sources, so a purge that follows one
-// compromised source still finds the lesson drawn from it. Taint spreads: a
-// lesson distilled from one tainted episode is tainted, whatever the other four
-// were, because the tainted content is in what the model read. Anchors are the
-// union too, so the lesson rides along on every ref its episodes were about.
+// lessonFrom builds the lesson item. Sources and anchors are the union of the
+// episodes', so a purge of one source finds the lesson. One tainted episode taints
+// the lesson, because the model read it.
 func (p *Pass) lessonFrom(s Series, out Lesson) state.MemoryItem {
 	it := state.MemoryItem{
 		Kind:    p.lessonKind,
@@ -349,14 +289,8 @@ func (p *Pass) lessonFrom(s Series, out Lesson) state.MemoryItem {
 	return it
 }
 
-// sharedExpiry returns the latest expiry among the episodes when every one of
-// them has one, and the zero time otherwise.
-//
-// A lesson must not outlive the facts it was drawn from, and must not die before
-// them either. If every episode is due to expire, the lesson is only about
-// material that will be gone, so it goes when the last of them does. If even one
-// episode never expires, the lesson is about something durable and inherits no
-// death date.
+// sharedExpiry returns the latest episode expiry, or zero if any episode never
+// expires, so a lesson neither outlives nor predeceases its evidence.
 func sharedExpiry(episodes []state.MemoryItem) time.Time {
 	var latest time.Time
 	for _, ep := range episodes {
@@ -370,14 +304,8 @@ func sharedExpiry(episodes []state.MemoryItem) time.Time {
 	return latest
 }
 
-// interrupted reports the lesson an earlier run had already written for this
-// series, and the episodes it named that are still live. It is what makes a
-// killed run safe to repeat.
-//
-// A lesson only counts as this series' if it supersedes at least one episode in
-// hand. Episodes written since that run are not covered by it and are left for
-// the next one, so a resumed subject finishes exactly the work the interrupted
-// run had accounted for and invents none.
+// interrupted returns an earlier lesson on the series and the live episodes it
+// supersedes. Episodes written since are not covered and wait for a later run.
 func (p *Pass) interrupted(ctx context.Context, s Series) (state.MemoryItem, []state.MemoryItem, error) {
 	if len(s.Episodes) == 0 {
 		return state.MemoryItem{}, nil, nil
@@ -405,10 +333,8 @@ func (p *Pass) interrupted(ctx context.Context, s Series) (state.MemoryItem, []s
 	return state.MemoryItem{}, nil, nil
 }
 
-// retire tombstones the episodes a lesson has taken over, returning the ids it
-// retired. An episode that is already gone is not a failure: another run, or a
-// host clearing up by hand, has done the same work, and the pass is defined by
-// the state it leaves rather than by who got there first.
+// retire tombstones episodes and returns the ids retired. An episode already gone
+// is not a failure, because the state is what was wanted.
 func (p *Pass) retire(ctx context.Context, episodes []state.MemoryItem) ([]string, error) {
 	retired := make([]string, 0, len(episodes))
 	for _, ep := range episodes {
@@ -423,10 +349,8 @@ func (p *Pass) retire(ctx context.Context, episodes []state.MemoryItem) ([]strin
 	return retired, nil
 }
 
-// groupSeries buckets recalled items by subject and scope, oldest first within a
-// series, in a stable order across runs. Unsubjected items are dropped: they are
-// not a series, and grouping them would distil a lesson about nothing in
-// particular.
+// groupSeries buckets items by subject and scope in a stable order, dropping
+// unsubjected items.
 func groupSeries(items []state.MemoryItem) []Series {
 	byKey := make(map[string]*Series)
 	for _, it := range items {
@@ -455,9 +379,8 @@ func groupSeries(items []state.MemoryItem) []Series {
 	return out
 }
 
-// sortOldestFirst puts a series into narrative order, with the id as the final
-// tiebreak so two episodes stamped on one clock tick still order the same way on
-// every run.
+// sortOldestFirst breaks ties by ID, so episodes on one clock tick order the same
+// way every run.
 func sortOldestFirst(items []state.MemoryItem) {
 	sort.Slice(items, func(i, j int) bool {
 		if !items[i].CreatedAt.Equal(items[j].CreatedAt) {
@@ -467,9 +390,8 @@ func sortOldestFirst(items []state.MemoryItem) {
 	})
 }
 
-// appendMissing appends the values not already present, preserving the order they
-// were first credited in. Provenance order is the writer's credit, so the union
-// keeps first-seen order rather than sorting it into something nobody asserted.
+// appendMissing appends values not present, keeping first-seen order because
+// source order is the writer's credit.
 func appendMissing(dst []string, add ...string) []string {
 	for _, v := range add {
 		if !slices.Contains(dst, v) {

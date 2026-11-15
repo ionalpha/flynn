@@ -5,13 +5,10 @@ import (
 	"strings"
 )
 
-// Ignore matches repo-relative paths against a set of .gitignore rules so the watch
-// walk skips the files git would. It covers the common cases: blank and # comment
-// lines, ! negation, a trailing / for directory-only rules, a leading / to anchor to
-// the root, * globs within a path segment, and ** to span segments. Last matching
-// rule wins, matching git's precedence. It is not the full gitignore grammar (no
-// character classes, no rooted-vs-nested subtleties beyond anchoring); it errs
-// toward matching the everyday patterns a working tree actually carries.
+// Ignore matches paths against .gitignore rules: # comments, ! negation, trailing
+// / for directories, leading / to anchor, * within a segment and ** across them.
+// The last matching rule wins, as in git. Character classes and nested ignore
+// files are not supported.
 type Ignore struct {
 	rules []ignoreRule
 }
@@ -23,8 +20,8 @@ type ignoreRule struct {
 	anchored bool   // a leading / or an interior / anchors the pattern to the root
 }
 
-// ParseIgnore builds an Ignore from .gitignore file contents. Paths are always
-// matched with forward slashes regardless of the host separator.
+// ParseIgnore builds an Ignore from .gitignore contents. Paths match with forward
+// slashes on every host.
 func ParseIgnore(content []byte) *Ignore {
 	ig := &Ignore{}
 	for _, line := range strings.Split(string(content), "\n") {
@@ -53,9 +50,9 @@ func ParseIgnore(content []byte) *Ignore {
 	return ig
 }
 
-// Match reports whether the repo-relative path (slash-separated) is ignored. isDir
-// lets a directory-only rule apply only to directories; a walk prunes an ignored
-// directory, so its descendants are never visited.
+// Match reports whether the repo-relative path is ignored. isDir lets a
+// directory-only rule apply. A walk prunes an ignored directory, so a negation
+// cannot re-include a file inside it.
 func (ig *Ignore) Match(rel string, isDir bool) bool {
 	rel = strings.Trim(path.Clean(strings.ReplaceAll(rel, "\\", "/")), "/")
 	if rel == "" || rel == "." {
@@ -74,8 +71,7 @@ func (ig *Ignore) Match(rel string, isDir bool) bool {
 		if r.anchored {
 			m = matchGlob(r.glob, rel)
 		} else {
-			// An unanchored pattern matches at any depth: against the basename, or as
-			// though it were prefixed with **/ against the whole path.
+			// An unanchored pattern matches at any depth.
 			m = matchGlob(r.glob, base) || matchGlob("**/"+r.glob, rel)
 		}
 		if m {
@@ -85,8 +81,6 @@ func (ig *Ignore) Match(rel string, isDir bool) bool {
 	return matched
 }
 
-// matchGlob matches a slash-separated glob against a slash-separated path, where **
-// spans zero or more segments and * / ? match within one segment (path.Match).
 func matchGlob(pattern, name string) bool {
 	return matchParts(splitSlash(pattern), splitSlash(name))
 }
@@ -98,20 +92,17 @@ func splitSlash(s string) []string {
 	return strings.Split(s, "/")
 }
 
-// matchParts is a dynamic program over segment indices rather than a recursive
-// walk: a pattern holding several ** segments would otherwise backtrack
-// exponentially against a deep path (ignore files come from the watched tree,
-// so a hostile pattern must stay cheap). prev[j] records whether the pattern
-// consumed so far matches the first j name segments; each pattern segment
-// derives the next row in O(len(name)).
+// matchParts is a dynamic program because recursive matching backtracks
+// exponentially on several ** segments, and the ignore file comes from the watched
+// tree, so a hostile pattern must stay cheap. prev[j] records whether the pattern
+// so far matches the first j name segments.
 func matchParts(pat, name []string) bool {
 	prev := make([]bool, len(name)+1)
 	cur := make([]bool, len(name)+1)
 	prev[0] = true
 	for _, p := range pat {
 		if p == "**" {
-			// ** spans zero or more segments: matched here if already matched
-			// with the same segments consumed, or with one fewer by this **.
+			// ** matches zero segments (prev[j]) or one more (cur[j-1]).
 			cur[0] = prev[0]
 			for j := 1; j <= len(name); j++ {
 				cur[j] = prev[j] || cur[j-1]

@@ -11,58 +11,40 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Defaults for a builder that is handed no options. They are working guesses,
-// stated here so a host tuning one can see what it is moving away from.
+// Defaults for a builder with no options. They are guesses.
 const (
-	// defaultBudget is the token budget one digest may spend. A few hundred tokens is
-	// affordable on every wake of every session, which is the property that matters:
-	// a digest expensive enough to think twice about is a digest that gets switched
-	// off.
+	// defaultBudget is in tokens, small enough to afford on every wake, so nobody
+	// turns the digest off.
 	defaultBudget = 512
-	// defaultExplorationQuota is the share of the budget reserved for recent,
-	// rarely-pushed items at the most specific scope. Without it the ordering is
-	// stable, so the same items win every wake, get used because they are there, and
-	// look like they earned it. A fifth is enough for a couple of lines out of a dozen.
+	// defaultExplorationQuota reserves budget for rarely pushed items, because a
+	// stable order lets the same items win, get used because they are shown, and
+	// look deserving.
 	defaultExplorationQuota = 0.2
-	// defaultSummaryChars caps one line's sentence. It is sized to read as one line in
-	// a terminal, and the id behind it is how a reader gets the rest.
+	// defaultSummaryChars fits one terminal line.
 	defaultSummaryChars = 160
-	// defaultCandidateLimit caps how many items one selection reads before choosing.
-	// A digest of a dozen lines has no use for a thousand candidates, and an uncapped
-	// read would make the cost of building it grow with the corpus forever.
+	// defaultCandidateLimit caps the read, so building cost does not grow with the
+	// corpus.
 	defaultCandidateLimit = 200
 )
 
-// DefaultDemoteAfter is how many pushes an item may go unused for before it loses
-// the standing order. It is a small number because the evidence is one-sided: a
-// session that did not use a line it was shown may simply not have needed it that
-// wake, but five wakes in front of five readers with nothing acted on is the item
-// saying what it is. Below about three the threshold reads noise as a verdict.
-//
-// It is the one default here that is exported, because it is the one another
-// surface has to agree with: a report telling a curator which items are demoted has
-// to reach the same verdict as the selection that demoted them, and it can only do
-// that by reading the threshold rather than restating it.
+// DefaultDemoteAfter is how many unused pushes demote an item. One unused wake is
+// noise; five is a verdict. It is exported so a curator report reaches the same
+// verdict as the selection.
 const DefaultDemoteAfter = 5
 
-// ErrPushNotRecorded reports that a digest was built but the push could not be
-// counted. It is returned alongside the digest, never instead of it: the lines are
-// real and the session needs them, so failing the wake to protect the
-// instrumentation would trade the product for the measurement. It mirrors
-// ridealong.ErrUsageNotRecorded, which is the same call made from the pull side.
+// ErrPushNotRecorded reports a push that was not counted. It is returned with the
+// digest, never instead, so measurement never fails a wake. It mirrors
+// ridealong.ErrUsageNotRecorded.
 var ErrPushNotRecorded = errors.New("digest: push not recorded")
 
-// Pusher records that a set of items reached a reader unasked. ridealong.Surfacer
-// is one, and is the default: it counts the push in the store and marks the run's
-// prime scope together, which is the pair that has to stay in step (see
-// ridealong.Surfacer.Push).
+// Pusher records items that reached a reader unasked. The default,
+// ridealong.Surfacer, counts the push and marks the prime scope together.
 type Pusher interface {
 	Push(ctx context.Context, memoryIDs []string) error
 }
 
-// Builder selects and renders the wake digest. It holds no per-run state; what a
-// run has already been shown lives on the context, in the prime scope the push
-// marks.
+// Builder selects and renders the wake digest. It holds no per-run state; the prime
+// scope on the context does.
 type Builder struct {
 	store      state.MemoryStore
 	push       Pusher
@@ -76,10 +58,8 @@ type Builder struct {
 // Option configures a Builder.
 type Option func(*Builder)
 
-// WithBudget sets the token budget one digest may spend. A non-positive n restores
-// the default. There is no unlimited setting: an unbudgeted digest is a context leak
-// that grows with the corpus, and the caller that genuinely wants every eligible
-// item is doing a recall.
+// WithBudget sets the token budget. A non-positive n restores the default. There is
+// no unlimited setting, because that is a recall.
 func WithBudget(n int) Option {
 	return func(b *Builder) {
 		if n <= 0 {
@@ -89,15 +69,10 @@ func WithBudget(n int) Option {
 	}
 }
 
-// WithExplorationQuota sets the share of the budget reserved for recent,
-// rarely-pushed items at the most specific scope, clamped to [0,1]. Zero turns
-// exploration off and gives the whole budget to the standing order, which is what a
-// host wants when it has its own diversity policy and not otherwise: see
-// state.Monoculture for what a fleet without one converges on.
-//
-// The reserve is not a floor on the digest's variety, only on its budget. When
-// there is nothing unexplored to spend it on it goes back to the standing order
-// rather than shortening the digest.
+// WithExplorationQuota sets the budget share for rarely pushed items at the most
+// specific scope, clamped to [0,1]. Zero turns exploration off; without another
+// diversity policy a fleet converges (see state.Monoculture). An unspent reserve
+// returns to the standing order.
 func WithExplorationQuota(q float64) Option {
 	return func(b *Builder) {
 		switch {
@@ -121,10 +96,8 @@ func WithSummaryChars(n int) Option {
 	}
 }
 
-// WithCandidateLimit caps how many items one selection reads before choosing. A
-// non-positive n restores the default. Raising it buys a deeper search of the
-// corpus for a longer read on every wake; a selection that hit the cap says so
-// (Digest.Capped) rather than reporting a full corpus it did not see.
+// WithCandidateLimit caps the items read per selection; hitting it sets
+// [Digest.Capped]. A non-positive n restores the default.
 func WithCandidateLimit(n int) Option {
 	return func(b *Builder) {
 		if n <= 0 {
@@ -134,18 +107,12 @@ func WithCandidateLimit(n int) Option {
 	}
 }
 
-// WithDemoteAfter sets how many pushes an item may go unused for before it is
-// demoted: ranked behind everything still earning its place, and passed over by the
-// exploration reserve. A non-positive n turns demotion off, which leaves push_count
-// measured and unread and the standing order deciding alone.
+// WithDemoteAfter sets the unused pushes that demote an item: ranked last and
+// skipped by exploration. A non-positive n turns demotion off.
 //
-// Demotion is a ranking, never an exclusion. A demoted item still takes whatever
-// budget the standing order leaves, so it keeps reaching readers and can still be
-// used, and one use ends the demotion (state.MemoryUsage.Ignored). Dropping it from
-// the digest instead would be one-way: an item nobody is shown is an item nobody can
-// use, so its own demotion would be the reason it never earns its way back. The same
-// reasoning is why nothing here deletes: what to do about an item the fleet has
-// ignored for months is the curator's call, and this is a selection policy.
+// A demoted item still takes leftover budget, and one use clears it
+// (state.MemoryUsage.Ignored). Excluding it would be permanent, because an item
+// never shown can never be used. Deleting is the curator's call.
 func WithDemoteAfter(n int) Option {
 	return func(b *Builder) {
 		if n < 0 {
@@ -155,9 +122,8 @@ func WithDemoteAfter(n int) Option {
 	}
 }
 
-// WithPusher sets what records a delivered digest. The default counts the push in
-// the store and marks the run's prime scope; a host that has already wired its own
-// equivalent passes it here rather than getting both.
+// WithPusher replaces the default [Pusher], so a host with its own does not record
+// twice. Nil is ignored.
 func WithPusher(p Pusher) Option {
 	return func(b *Builder) {
 		if p != nil {
@@ -183,24 +149,15 @@ func New(store state.MemoryStore, opts ...Option) *Builder {
 	return b
 }
 
-// Query is the canonical wake query for a scope: everything live at that scope and
-// at the scopes enclosing it, ordered most-specific first. It exists so the widening
-// is stated once here rather than re-derived, and correctly, by every host that
-// builds a digest.
-//
-// A zero scope spans every scope, which is the right read for a single-scope install
-// and the wrong one for a host that partitions its work; that host passes its scope.
+// Query is the wake query for scope and its ancestors, most specific first. A zero
+// scope spans every scope, so a host that partitions work passes its scope.
 func Query(scope state.Scope) state.RecallQuery {
 	return state.RecallQuery{Scope: scope, IncludeAncestors: true}
 }
 
-// Build selects the digest for q and records the push of everything it selected, so
-// a later use of a pushed item is attributed as primed rather than as the reader
-// having found it unaided. It is the call a host makes at wake, inside a context
-// carrying a prime scope (ridealong.NewPrimeScope).
-//
-// A digest that could not be counted still comes back, wrapped in
-// ErrPushNotRecorded. An empty digest records nothing and cannot fail.
+// Build selects the digest and records the push, so a later use counts as primed.
+// Call it at wake in a context with a prime scope (ridealong.NewPrimeScope). An
+// uncounted push returns the digest with [ErrPushNotRecorded].
 func (b *Builder) Build(ctx context.Context, q state.RecallQuery) (Digest, error) {
 	d, err := b.Select(ctx, q)
 	if err != nil {
@@ -216,20 +173,16 @@ func (b *Builder) Build(ctx context.Context, q state.RecallQuery) (Digest, error
 	return d, nil
 }
 
-// Select chooses the digest for q without recording anything, for a preview, a test or an
-// operator's "what would we push" tool. A host handing the result to a session calls Build,
-// or the usage numbers under-count from the first wake.
+// Select chooses the digest without recording, for previews and tests. A host
+// giving it to a session calls Build, or usage under-counts.
 //
-//  1. Recall q, capped at the candidate limit, and drop what guard.Pushable does not admit.
-//  2. Rank into the standing order: state.SortRecall, demoted items behind (WithDemoteAfter).
-//  3. Fill the budget less the exploration reserve, in the standing order.
-//  4. Fill the reserve from undemoted items at the most specific scope step 3 did not take,
-//     rarely-pushed first, most recent within that.
-//  5. Give what either pass left over back to the standing order, so an under-spent reserve
-//     shortens nobody's digest.
+//  1. Recall q up to the candidate limit and keep what guard.Pushable admits.
+//  2. Rank recall order, demoted items last.
+//  3. Fill the budget less the reserve in that order.
+//  4. Fill the reserve from untaken, undemoted items at the deepest scope.
+//  5. Return leftover budget to the standing order.
 //
-// A line that does not fit is skipped and the pass continues. What stays unselected is in
-// Digest.Dropped. Lines come back in the standing order whichever pass chose them.
+// A line that does not fit is skipped. Lines return in standing order.
 func (b *Builder) Select(ctx context.Context, q state.RecallQuery) (Digest, error) {
 	if q.Limit <= 0 || q.Limit > b.candidates {
 		q.Limit = b.candidates
@@ -271,16 +224,9 @@ func (b *Builder) Select(ctx context.Context, q state.RecallQuery) (Digest, erro
 	return d, nil
 }
 
-// usage reads the fleet-wide usage total for every candidate line, in one call, for
-// both policies that ask about it: demotion and the exploration reserve. The rows
-// are summed across instances (state.TotalUsage) rather than read per instance,
-// because an item this instance has never pushed but the rest of the fleet pushes
-// constantly is not unexplored, and an item this instance has never seen used may
-// have been used everywhere else.
-//
-// A builder with both policies off reads nothing. That keeps the wake off a store
-// call whose answer it would discard, and off failing a digest on a question the
-// selection is not asking.
+// usage reads fleet-wide totals (state.TotalUsage) in one call, because an item
+// this instance never pushed may be pushed everywhere else. With demotion and
+// exploration both off it reads nothing, so an unused read cannot fail the wake.
 func (b *Builder) usage(ctx context.Context, lines []Line) (map[string]state.MemoryUsage, error) {
 	if len(lines) == 0 || (b.quota == 0 && b.demote == 0) {
 		return nil, nil
@@ -297,8 +243,6 @@ func (b *Builder) usage(ctx context.Context, lines []Line) (map[string]state.Mem
 	for _, r := range rows {
 		byID[r.MemoryID] = append(byID[r.MemoryID], r)
 	}
-	// An item with no row has never been pushed or used, which is the zero total a
-	// missing key already reports.
 	out := make(map[string]state.MemoryUsage, len(byID))
 	for id, rs := range byID {
 		out[id] = state.TotalUsage(rs)
@@ -306,12 +250,9 @@ func (b *Builder) usage(ctx context.Context, lines []Line) (map[string]state.Mem
 	return out, nil
 }
 
-// markDemoted flags the lines pushed at least the threshold and never used, of
-// either origin. The test is state.MemoryUsage.Ignored plus the threshold: one use,
-// even a primed one, clears the flag, because a primed use still says a reader read
-// the line and did something with it. What a primed use cannot do is earn an item a
-// place it did not already hold, and it does not: this only ever lifts a demotion,
-// never awards a promotion.
+// markDemoted flags lines pushed at least the threshold and never used. One use,
+// even primed, clears it, because a reader acted on the line. A primed use only
+// lifts a demotion and never promotes.
 func (b *Builder) markDemoted(lines []Line, usage map[string]state.MemoryUsage) {
 	if b.demote == 0 {
 		return
@@ -322,9 +263,7 @@ func (b *Builder) markDemoted(lines []Line, usage map[string]state.MemoryUsage) 
 	}
 }
 
-// standing is the indices of lines in the standing order: recall order, with the
-// demoted lines after all of it and in recall order among themselves. A demotion
-// costs an item every place it held, and no more than that.
+// standing returns line indices in recall order with demoted lines last.
 func standing(lines []Line) []int {
 	out := make([]int, 0, len(lines))
 	for i := range lines {
@@ -340,8 +279,7 @@ func standing(lines []Line) []int {
 	return out
 }
 
-// render turns admitted items into candidate lines, in the order the recall
-// returned them, dropping any whose content has nothing readable in it.
+// render drops items with nothing readable.
 func (b *Builder) render(items []state.MemoryItem) []Line {
 	out := make([]Line, 0, len(items))
 	for _, it := range items {
@@ -356,9 +294,8 @@ func (b *Builder) render(items []state.MemoryItem) []Line {
 	return out
 }
 
-// fill takes lines in the given order until the budget will not stretch to the next
-// one, marking what it took, and returns what is left. A line already taken is
-// skipped, so the same order can be replayed against a second budget.
+// fill takes lines that fit, in idx order, and returns the remaining budget. Taken
+// lines are skipped, so an order can be replayed against a second budget.
 func fill(lines []Line, taken []bool, budget int, idx []int) int {
 	for _, i := range idx {
 		if taken[i] || lines[i].Tokens > budget {
@@ -370,20 +307,10 @@ func fill(lines []Line, taken []bool, budget int, idx []int) int {
 	return budget
 }
 
-// exploration returns the indices the exploration reserve may spend on: the
-// still-unselected, undemoted lines at the most specific scope present, rarely-pushed
-// first, then most recent, then by id so the order is total.
-//
-// It is confined to the most specific scope because that is where new memory lands
-// and where the standing order has the least to say: an inherited fact from a wider
-// scope that keeps winning is usually winning on merit, while a fresh workspace note
-// has no history at all and would never place against one. Ranking on push count
-// rather than on use is the whole point - an item nobody has put in front of anybody
-// has not failed, it has not been tried.
-//
-// A demoted item has been tried, repeatedly, which is why the reserve skips it. It is
-// still offered the leftover budget in the standing order afterwards, so the reserve
-// declining to spend on it costs it nothing it had not already lost.
+// exploration returns untaken, undemoted lines at the deepest scope, fewest pushes
+// first, then newest, then by id. The deepest scope is where new memory lands with
+// no history to compete on. It ranks by pushes because an item never shown has not
+// been tried.
 func (b *Builder) exploration(items []state.MemoryItem, lines []Line, taken []bool, usage map[string]state.MemoryUsage) []int {
 	if b.quota == 0 {
 		return nil
@@ -403,8 +330,7 @@ func (b *Builder) exploration(items []state.MemoryItem, lines []Line, taken []bo
 	if len(cand) == 0 {
 		return nil
 	}
-	// created is read off the recalled items rather than the lines, which carry no
-	// timestamp: a line is what a reader sees, and a rendering does not need one.
+	// Lines carry no timestamp, so read it from the items.
 	created := make(map[string]state.MemoryItem, len(items))
 	for _, it := range items {
 		created[it.ID] = it

@@ -1,25 +1,13 @@
-// Package ridealong attaches what memory knows about a thing to the read of that
-// thing. A host serving a task, an entity or a document calls Surface with the
-// anchor refs it already has in hand, and the memories anchored to them come back
-// with the response. That is cue-based associative recall: the wake digest carries
-// the standing context a session needs every time, and this carries the fact that
-// applies right now, to the thing being looked at.
+// Package ridealong attaches the memories anchored to a thing to the read of that
+// thing. A host serving a task or document calls [Surfacer.Surface] with the anchor
+// refs it holds, so a fact arrives without the reader needing a query for it.
 //
-// It answers the case a search box cannot. Pulling a memory by query requires
-// already suspecting the fact exists; a reader who has never seen it has no query
-// to type. An anchor is a cue the host already holds, so the fact arrives without
-// anybody guessing at it.
+// Every surfacing and recall through here records a use, classified by whether the
+// reader was already shown the item (see [NewPrimeScope]). Without that split, decay
+// cannot tell a useful item from one the digest keeps pushing.
 //
-// The second reason this package exists is measurement. Every surfacing and every
-// recall taken through here records a use against the item, classified by whether
-// the reader had already been shown it (see PrimeScope). Without that split the
-// decay system cannot tell an item that earns its place from one that is only ever
-// seen because the digest keeps putting it there, and last-used-at degrades into a
-// record of what was pushed.
-//
-// Host neutrality. An anchor is an opaque {Kind, ID} pair. Nothing here resolves
-// one, and no ref kind is named or special-cased: the vocabulary is the host's, and
-// an anchor pointing at something that no longer exists simply matches nothing.
+// An anchor is an opaque {Kind, ID} pair that nothing here resolves; one pointing at
+// something gone matches nothing.
 package ridealong
 
 import (
@@ -31,59 +19,36 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// defaultLimit caps a surfacing that names no limit of its own. A ride-along rides
-// on somebody else's response, so it has to be bounded by default: an uncapped one
-// would attach every memory anchored to a busy ref to every read of it. Five is the
-// working guess at "enough to be useful, small enough to read", and a caller that
-// knows better sets RecallQuery.Limit.
+// defaultLimit caps a surfacing with no Limit, because an uncapped one attaches
+// every memory on a busy ref to every read of it.
 const defaultLimit = 5
 
-// ErrUsageNotRecorded reports that memories were surfaced but the use could not be
-// counted. It is returned alongside the items, never instead of them: the reader
-// asked for memory and the memory is real, so failing the read would trade the
-// product for the instrumentation. A caller that only wants the items can ignore an
-// error matching this; a caller that reads the decay metrics wants to know its
-// numbers just went under-counted.
+// ErrUsageNotRecorded reports a use that was not counted. It is returned with the
+// items, never instead, so measurement never fails a read.
 var ErrUsageNotRecorded = errors.New("ridealong: usage not recorded")
 
-// Admission is how much of what an anchor matches may ride along on a read.
-//
-// A surfacing is content arriving with no question behind it, which is the property
-// that makes the wake digest worth attacking (see package memory/guard). It is a
-// narrower channel than the digest: it fires only when the reader opens the thing
-// the memory is anchored to, it is capped, and every delivery is counted. It is
-// still a channel, and an attacker who can write an anchored memory chooses the ref
-// it rides on, so it gets a gate of its own rather than the recall path's silence.
+// Admission is how much of what an anchor matches may ride along. A surfacing is
+// unasked content like the digest (see memory/guard), though narrower: cue-bound,
+// capped and counted. An attacker writing an anchored memory picks its ref, so it
+// has a gate.
 type Admission int
 
 const (
-	// AdmitUndenied drops what guard.PushEligibility denies outright: a tainted item,
-	// or one whose provenance is untrusted. Those two categories are
-	// attacker-influenced by construction, so they never arrive at a reader who did
-	// not ask; they stay recallable, with their provenance, by a reader who does.
-	//
-	// It is the zero value and the default. The agent's own untainted notes do ride
-	// along unpromoted, which is where this is deliberately more permissive than the
-	// digest: a cue-bound, capped delivery to a reader already looking at the anchored
-	// thing is a smaller grant than a line in every wake of every session forever.
+	// AdmitUndenied is the default: it drops what guard.PushEligibility denies, tainted
+	// or untrusted items, which stay recallable. The agent's own untainted notes
+	// ride along unpromoted, more permissive than the digest because a capped,
+	// cue-bound delivery is a smaller grant than a line in every wake.
 	AdmitUndenied Admission = iota
-	// AdmitPushable admits only what the wake digest itself could carry: the
-	// operator's own untainted memory, plus what a named reviewer has promoted. It
-	// costs a promotion lookup for the items whose answer turns on one. Choose it to
-	// hold every unasked-for delivery to a single standard.
+	// AdmitPushable admits only what the digest could carry, at the cost of a
+	// promotion lookup.
 	AdmitPushable
-	// AdmitAll admits everything the anchors matched, including tainted and
-	// untrusted-origin items. It is for a host that renders a surfaced memory with
-	// its provenance visible and treats it as data to be judged rather than as
-	// something the agent knows, and for tooling that surfaces exactly what a
-	// curator would need to review.
+	// AdmitAll admits everything, for a host that shows provenance and treats the
+	// items as data, and for curator tooling.
 	AdmitAll
 )
 
-// Surfacer reads memory on behalf of a host's own read surfaces and keeps the usage
-// signal honest while doing it. It holds no state of its own beyond the store, the
-// cap and the admission policy; what a run has been shown lives on the context
-// (NewPrimeScope), because that is the span the answer is true for.
+// Surfacer reads memory for a host and records each use. What a run was shown is
+// kept on the context ([NewPrimeScope]), the span it is true for.
 type Surfacer struct {
 	store     state.MemoryStore
 	limit     int
@@ -93,10 +58,8 @@ type Surfacer struct {
 // Option configures a Surfacer.
 type Option func(*Surfacer)
 
-// WithLimit sets the cap applied to a surfacing that names no limit of its own.
-// A non-positive n restores the default; there is no way to ask for an uncapped
-// surfacing, because the caller that genuinely wants every anchored item is doing a
-// recall and can say so with RecallQuery.Limit.
+// WithLimit sets the default cap. A non-positive n restores the default; there is
+// no uncapped surfacing, because that is a recall.
 func WithLimit(n int) Option {
 	return func(s *Surfacer) {
 		if n <= 0 {
@@ -106,10 +69,8 @@ func WithLimit(n int) Option {
 	}
 }
 
-// WithAdmission sets how much of what an anchor matches may ride along. An
-// unrecognised value is refused at construction rather than silently treated as the
-// default, because the two ends of this setting differ by exactly the content an
-// attacker gets to place.
+// WithAdmission sets the [Admission]. An unknown value panics, because guessing
+// would decide what attacker content gets through.
 func WithAdmission(a Admission) Option {
 	return func(s *Surfacer) {
 		switch a {
@@ -130,18 +91,12 @@ func New(store state.MemoryStore, opts ...Option) *Surfacer {
 	return s
 }
 
-// Surface returns the memories anchored to the query's refs, most recent first,
-// admitted by the Surfacer's policy, and counts a use of each one it returns.
+// Surface returns admitted memories anchored to q's refs, newest first, and counts
+// a use of each. A query with no anchor fails with state.ErrInvalid, because an
+// unfiltered recall would attach arbitrary memory and count it all as used.
 //
-// The query must carry at least one anchor. An anchorless surfacing is refused with
-// state.ErrInvalid rather than widened into an unfiltered recall, which would attach an
-// arbitrary slice of the corpus to a read nobody aimed at memory and count every row as
-// used. The rest of the query is honoured as-is; one with no Limit gets the Surfacer's cap.
-//
-// The cap bounds the read and the admission policy then drops from what came back, so a
-// surfacing can return fewer items than the cap while further anchored items exist.
-// Reading past the cap to refill it would let inadmissible items decide how much of the
-// corpus a read touches, a lever an attacker holds and the reader does not.
+// Admission filters after the capped read, so fewer than the cap may return. Reading
+// on to refill would let inadmissible items decide how much a read touches.
 func (s *Surfacer) Surface(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	anchors, err := state.NormalizeAnchors(q.Anchors)
 	if err != nil {
@@ -157,19 +112,10 @@ func (s *Surfacer) Surface(ctx context.Context, q state.RecallQuery) ([]state.Me
 	return s.read(ctx, q, s.admit)
 }
 
-// Recall runs an explicit recall and counts a use of everything it returns, the pull half
-// of the measurement: a session that looks for a fact and finds it has used it, and the
-// decay policy needs that recorded as surely as the push.
-//
-// The admission policy does not apply here, and no recall path applies one. A reader that
-// asks a question gets the whole answer, tainted and untrusted-origin items included,
-// carrying the provenance that says what they are. Filtering a search would hide from a
-// curator the records that most need looking at; the gate exists for content nobody asked
-// for.
-//
-// One use is counted per returned item, one write each. A caller that wants a read with no
-// measurement (a curator listing the corpus, a backup, a report) reads the store directly,
-// or tooling reads would be filed as though a session had acted on them.
+// Recall runs a recall and counts a use of each item, one write each. No admission
+// applies: an asking reader gets tainted items with their provenance, so a curator
+// sees what most needs review. Tooling that should not count reads the store
+// directly.
 func (s *Surfacer) Recall(ctx context.Context, q state.RecallQuery) ([]state.MemoryItem, error) {
 	anchors, err := state.NormalizeAnchors(q.Anchors)
 	if err != nil {
@@ -179,16 +125,9 @@ func (s *Surfacer) Recall(ctx context.Context, q state.RecallQuery) ([]state.Mem
 	return s.read(ctx, q, nil)
 }
 
-// Push counts a push of these items and records them on ctx's prime scope, so a use
-// of one later in the run is attributed as primed rather than as the reader finding
-// it unaided. It is the call the digest builder makes when it hands a digest to a
-// session.
-//
-// The two halves are here together on purpose. A store that counted the push while
-// the run forgot it had happened would go on crediting the digest's own items as
-// organically recalled, which is the exact measurement this whole subsystem exists
-// to protect. The scope is marked only after the store accepted the push, because a
-// push that failed did not reach the reader.
+// Push counts a push and marks the items on ctx's prime scope, so a later use counts
+// as primed. Both happen here so they cannot drift apart. The scope is marked only
+// after the store accepts the push, because a failed push reached nobody.
 func (s *Surfacer) Push(ctx context.Context, memoryIDs []string) error {
 	if err := s.store.RecordPush(ctx, memoryIDs); err != nil {
 		return err
@@ -197,7 +136,6 @@ func (s *Surfacer) Push(ctx context.Context, memoryIDs []string) error {
 	return nil
 }
 
-// admit applies the Surfacer's admission policy to a recall's results.
 func (s *Surfacer) admit(ctx context.Context, in []state.MemoryItem) ([]state.MemoryItem, error) {
 	switch s.admission {
 	case AdmitAll:
@@ -205,8 +143,8 @@ func (s *Surfacer) admit(ctx context.Context, in []state.MemoryItem) ([]state.Me
 	case AdmitPushable:
 		return guard.Pushable(ctx, s.store, in)
 	default:
-		// A new slice, never a filter in place: the result belongs to the store, and
-		// compacting it would write through whatever backing array it handed over.
+		// A new slice, because filtering in place would write through the store's
+		// backing array.
 		out := make([]state.MemoryItem, 0, len(in))
 		for _, it := range in {
 			if guard.PushEligibility(it) != guard.PushDenied {
@@ -217,14 +155,9 @@ func (s *Surfacer) admit(ctx context.Context, in []state.MemoryItem) ([]state.Me
 	}
 }
 
-// read recalls, applies the gate when there is one, and counts a use of each result
-// at its origin. Only what the reader ends up with is counted: an item the gate
-// dropped never reached anybody.
-//
-// Recording is best effort per item and never rewrites the result: an item that was
-// tombstoned between the recall and the count is skipped (it was really returned,
-// and there is nothing left to count it against), and any other failure is collected
-// and reported under ErrUsageNotRecorded with the items still returned.
+// read counts a use only for items past the gate. An item tombstoned since the
+// recall is skipped; other failures are joined under [ErrUsageNotRecorded] with the
+// items still returned.
 func (s *Surfacer) read(ctx context.Context, q state.RecallQuery, gate func(context.Context, []state.MemoryItem) ([]state.MemoryItem, error)) ([]state.MemoryItem, error) {
 	items, err := s.store.Recall(ctx, q)
 	if err != nil {

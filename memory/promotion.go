@@ -12,9 +12,7 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// promotionSpecSchema is the JSON Schema a promotion record's Spec must satisfy.
-// The reviewer is required for the same reason the contract requires it: a
-// decision nobody is named on cannot be audited back to anyone.
+// promotionSpecSchema requires the reviewer, so every decision can be audited.
 var promotionSpecSchema = json.RawMessage(`{
   "type": "object",
   "properties": {
@@ -28,9 +26,7 @@ var promotionSpecSchema = json.RawMessage(`{
   "additionalProperties": false
 }`)
 
-// promotionSpec is the stored shape of a state.MemoryPromotion. DecidedAt is a
-// pointer for consistency with the other optional times on this facade, though a
-// stamped decision always carries one.
+// promotionSpec stores a state.MemoryPromotion.
 type promotionSpec struct {
 	MemoryID  string     `json:"memory_id"`
 	Promoted  bool       `json:"promoted,omitempty"`
@@ -39,15 +35,10 @@ type promotionSpec struct {
 	DecidedAt *time.Time `json:"decided_at,omitempty"`
 }
 
-// promotionName is the natural name of the decision record for one item. Unlike
-// usage there is no instance in the key: a promotion is a decision about the item,
-// not an observation by an instance, and one item has one answer in force.
 func promotionName(memoryID string) string { return promotionNamePrefix + memoryID }
 
-// Promote records a reviewer's decision about an item's push eligibility, creating
-// the record or replacing the decision in force. The item is resolved first, so a
-// decision about an unknown or tombstoned id is refused rather than filed against
-// nothing.
+// Promote records or replaces a reviewer's push-eligibility decision. An unknown or
+// tombstoned item is refused.
 func (s *Store) Promote(ctx context.Context, d state.PromotionDecision) (state.MemoryPromotion, error) {
 	if !d.Valid() {
 		return state.MemoryPromotion{}, state.ErrInvalid
@@ -62,9 +53,8 @@ func (s *Store) Promote(ctx context.Context, d state.PromotionDecision) (state.M
 	if err != nil {
 		return state.MemoryPromotion{}, fmt.Errorf("memory: encode promotion spec: %w", err)
 	}
-	// The stored version carries into the write, so a decision made against a row
-	// somebody else has since revised loses the write rather than silently
-	// overwriting a newer reviewer's answer.
+	// The stored version goes into the write, so a stale decision conflicts and
+	// cannot overwrite a newer one.
 	var syncVersion int64
 	name := promotionName(d.MemoryID)
 	switch cur, err := s.rs.Get(ctx, PromotionKind, item.Scope, name); {
@@ -90,9 +80,7 @@ func (s *Store) Promote(ctx context.Context, d state.PromotionDecision) (state.M
 	return toPromotion(out)
 }
 
-// Promotions returns the decision records for these items, or every record the
-// store holds when no ids are given. Like Usage it reads across scopes and filters
-// here, because the caller asks about a whole digest at once.
+// Promotions returns the decisions for these items, or all of them for no ids.
 func (s *Store) Promotions(ctx context.Context, memoryIDs []string) ([]state.MemoryPromotion, error) {
 	out, err := listByMemoryID(ctx, s, PromotionKind, memoryIDs, toPromotion, func(p state.MemoryPromotion) string { return p.MemoryID })
 	if err != nil {
@@ -102,7 +90,6 @@ func (s *Store) Promotions(ctx context.Context, memoryIDs []string) ([]state.Mem
 	return out, nil
 }
 
-// toPromotion maps a promotion resource back to the typed record.
 func toPromotion(r resource.Resource) (state.MemoryPromotion, error) {
 	sp, err := resource.DecodeSpec[promotionSpec](r)
 	if err != nil {
