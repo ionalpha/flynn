@@ -1,36 +1,27 @@
-// Package hostneutral enforces host neutrality as a test rather than a review
-// habit: a Flynn contract names only what Flynn owns and can verify on its own.
-// Anything belonging to whoever embeds Flynn is carried as an opaque typed ref,
-// stored, indexed and matched, never resolved and never validated for referential
-// integrity.
+// Package hostneutral tests that a Flynn contract names only what Flynn owns and can
+// verify alone. Anything belonging to the embedding host is an opaque typed ref,
+// stored, indexed and matched, never resolved or checked for referential integrity.
 //
-// The direction is what matters. Flynn naming a host's concept in a contract is
-// the leak, because it makes Flynn's correctness depend on a record only the host
-// can produce: a field called TaskID cannot be exercised, or even tested, without
-// something that has tasks. Flynn handing work to a host through an interface is
-// the opposite and is how the whole architecture is meant to work.
+// Direction decides it. A host concept named in a Flynn contract makes Flynn's
+// correctness depend on a record only the host produces: a field called TaskID
+// cannot be tested without something that has tasks. Flynn handing work to a host
+// through an interface is the intended design.
 //
-// The gate is mechanical and has two halves, matching the two ways the boundary
-// gives way in practice.
+// The gate catches the two ways the boundary breaks.
 //
-// A denied noun in an exported name. The leak that prompted this arrived as a
-// design that specified memory anchors as "task IDs, entity IDs" surfaced by "the
-// context tools". Flynn has no tasks and no entities, so the criterion could not
-// be met by Flynn plus a temp SQLite file. Names are checked component by
-// component after splitting on camel case and on the underscores in a struct tag,
-// so a serialized property called task_id is caught along with the Go field.
+// A denied noun in an exported name. One leak specified memory anchors as "task IDs,
+// entity IDs"; Flynn has neither, so the criterion could not be met by Flynn and a
+// temp SQLite file. Names are split on camel case and on struct-tag underscores, so
+// a serialized task_id is caught with the Go field.
 //
-// A ref-shaped type that closes its vocabulary. A {Kind, ID} pair works as an
-// opaque ref only while Kind stays a plain string. Give it a named type and the
-// package acquires an opinion about which kinds exist, which is a host's opinion:
-// the enum has to enumerate somebody else's record types, and a ref whose kind is
-// not on the list stops round-tripping. The gate holds both halves of every
-// ref-shaped struct to string.
+// A ref-shaped type that closes its vocabulary. A {Kind, ID} pair is an opaque ref
+// only while Kind is a plain string. A named type makes the package enumerate a
+// host's record types, and a ref whose kind is not listed stops round-tripping, so
+// the gate holds both fields of a ref-shaped struct to string.
 //
-// Only the public band is scanned, because that is the surface a host depends on:
-// every package outside internal/, ignoring _test.go files. Test code names host
-// concepts freely, which is how a suite proves a ref to something Flynn cannot
-// resolve is still a perfectly good ref.
+// Only the public band is scanned, every package outside internal/ without _test.go
+// files, because a host depends on it. Tests name host concepts freely to prove a
+// ref Flynn cannot resolve is still a valid ref.
 package hostneutral
 
 import (
@@ -46,8 +37,8 @@ import (
 	"unicode"
 )
 
-// Violation is one exported name, or one ref-shaped type, that crosses the
-// boundary. Path is module-relative so the message reads the same everywhere.
+// Violation is one exported name or ref-shaped type that crosses the boundary. Path
+// is module-relative so the message reads the same everywhere.
 type Violation struct {
 	Path   string
 	Line   int
@@ -55,35 +46,31 @@ type Violation struct {
 	Reason string
 }
 
-// Policy parameterizes the gate so its logic can be tested against synthetic
-// trees while the live gate runs DefaultPolicy over the repository.
+// Policy parameterizes the gate so tests run it on synthetic trees; the live gate
+// runs DefaultPolicy over the repository.
 type Policy struct {
-	// DeniedNouns are the record types a host owns, lowercase. A name whose camel
-	// components (or whose struct-tag words) include one of these is refused.
+	// DeniedNouns are host-owned record types, lowercase. A name whose camel words or
+	// struct-tag words include one is refused.
 	DeniedNouns map[string]bool
 	// SkipDirs are directory names pruned anywhere in the walk.
 	SkipDirs map[string]bool
-	// Exempt lists "path:name" pairs that predate the gate. It exists so the gate
-	// can land over a tree it did not grow up with. It is empty, and adding to it
-	// is how the boundary erodes: the entry outlives the memory of why it was
-	// allowed. Prefer renaming the identifier.
+	// Exempt lists "path:name" pairs that predate the gate. It is empty. Each entry
+	// erodes the boundary and outlives the reason it was allowed, so rename the
+	// identifier instead.
 	Exempt map[string]bool
 }
 
 // DefaultPolicy is the live policy.
 //
-// The denied list is short on purpose: every word on it is a record type in a host's
-// tracker that Flynn does not have, so a match is a leak. Words that collide with ordinary
-// English are left off, because false positives force an exemption list and that is how the
-// rule stops being enforced:
+// Every denied word is a host tracker record type Flynn lacks, so a match is a leak.
+// Words that collide with ordinary English are left off, because false positives
+// force an exemption list and that ends enforcement:
 //
-//   - "note" is a plain noun for a line of text (govbench.Case.Note) as often as a host's
-//     document type.
-//   - "issue" is the verb in every credential package that mints something
-//     (controlplane.Issue, Issuer).
-//   - "area" and "project" are ordinary partitioning words; project is a Flynn scope level.
+//   - "note" is a line of text (govbench.Case.Note) as often as a host document.
+//   - "issue" is the verb in credential packages (controlplane.Issue, Issuer).
+//   - "area" and "project" are partitioning words; project is a Flynn scope level.
 //
-// A reviewer's sweep over prose covers those, not this.
+// A reviewer's sweep over prose covers those.
 func DefaultPolicy() Policy {
 	return Policy{
 		DeniedNouns: map[string]bool{
@@ -99,8 +86,7 @@ func DefaultPolicy() Policy {
 	}
 }
 
-// Check walks the public band under root and returns every violation, in walk
-// order.
+// Check walks the public band under root and returns every violation in walk order.
 func Check(root string, policy Policy) ([]Violation, error) {
 	var out []Violation
 	fset := token.NewFileSet()
@@ -126,8 +112,7 @@ func Check(root string, policy Policy) ([]Violation, error) {
 
 		file, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
-			// A file that does not parse is the compiler's problem, not the
-			// boundary's; the build fails on it either way.
+			// The build reports a file that does not parse.
 			return nil //nolint:nilerr // parse errors are reported by the build
 		}
 		out = append(out, checkFile(fset, file, rel, policy)...)
@@ -139,7 +124,6 @@ func Check(root string, policy Policy) ([]Violation, error) {
 	return out, nil
 }
 
-// checkFile collects the violations in one parsed file.
 func checkFile(fset *token.FileSet, file *ast.File, rel string, policy Policy) []Violation {
 	var out []Violation
 	report := func(pos token.Pos, name, reason string) {
@@ -174,9 +158,8 @@ func checkFile(fset *token.FileSet, file *ast.File, rel string, policy Policy) [
 	return out
 }
 
-// checkField reports on an exported struct field or interface method name and on
-// the serialized property names in its tag, which is where a denied noun survives
-// a Go rename.
+// checkField checks an exported field or method name and the property names in its
+// tag, where a denied noun survives a Go rename.
 func checkField(f *ast.Field, policy Policy, report func(token.Pos, string, string)) {
 	for _, id := range f.Names {
 		checkName(id, "field or interface method", policy, report)
@@ -200,16 +183,14 @@ func checkField(f *ast.Field, policy Policy, report func(token.Pos, string, stri
 }
 
 // checkSchemaLiteral reports a denied noun among the property names of a JSON
-// schema written as a Go string literal, which is how the kinds a host writes
-// resources against are declared (goal, budget, extension). A schema property is
-// contract surface as much as a Go field is, and it survives every rename of the
-// Go type beside it.
+// schema in a Go string literal, where host-facing kinds (goal, budget, extension)
+// are declared. A schema property is contract like a Go field, and survives every
+// rename of the type beside it.
 //
-// The literal has to parse as a JSON object carrying "properties" to be looked at
-// at all, so an ordinary string that happens to contain a denied word is not a
-// finding. Naming an external tool is not a leak either: externagent lists the
-// tools a Claude or Codex process exposes, which is Flynn describing something
-// outside it rather than requiring it.
+// Only a literal parsing as a JSON object with "properties" is checked, so a plain
+// string containing a denied word is no finding. Naming an external tool is no leak:
+// externagent lists the tools a Claude or Codex process exposes, describing
+// something outside Flynn without requiring it.
 func checkSchemaLiteral(lit *ast.BasicLit, policy Policy, report func(token.Pos, string, string)) {
 	if lit.Kind != token.STRING || !strings.Contains(lit.Value, `"properties"`) {
 		return
@@ -234,8 +215,8 @@ func checkSchemaLiteral(lit *ast.BasicLit, policy Policy, report func(token.Pos,
 	}
 }
 
-// schemaProperties collects the property names declared anywhere in a decoded
-// JSON schema, at every nesting level.
+// schemaProperties collects property names at every nesting level of a decoded JSON
+// schema.
 func schemaProperties(node any) []string {
 	var out []string
 	switch n := node.(type) {
@@ -256,9 +237,8 @@ func schemaProperties(node any) []string {
 	return out
 }
 
-// checkName reports an exported identifier whose camel components include a
-// denied noun. Unexported names are the package's own business: they are not part
-// of any contract and renaming them changes nothing a host can see.
+// checkName reports an exported identifier whose camel words include a denied noun.
+// Unexported names belong to no contract, so a host never sees them.
 func checkName(id *ast.Ident, kind string, policy Policy, report func(token.Pos, string, string)) {
 	if id == nil || !id.IsExported() {
 		return
@@ -272,11 +252,9 @@ func checkName(id *ast.Ident, kind string, policy Policy, report func(token.Pos,
 	}
 }
 
-// refShapedKindType reports a struct that is a {Kind, ID} ref whose Kind is not a
-// plain string, returning the offending field's rendered type. A struct qualifies
-// as ref-shaped when it declares both a Kind and an ID field and nothing else
-// beyond them, which is the shape the boundary rule is about; a large record that
-// happens to have a Kind is a different thing and is left alone.
+// refShapedKindType reports a {Kind, ID} ref struct whose Kind is not a plain
+// string, returning that field's rendered type. Only a struct with exactly the Kind
+// and ID fields qualifies; a larger record with a Kind is left alone.
 func refShapedKindType(s *ast.StructType) (string, bool) {
 	if s.Fields == nil || len(s.Fields.List) != 2 {
 		return "", false
@@ -302,8 +280,7 @@ func refShapedKindType(s *ast.StructType) (string, bool) {
 	return "Kind " + types(kind), true
 }
 
-// types renders a type expression well enough for a message. Anything it cannot
-// name is reported as "a named type", which is the part that matters.
+// types renders a type expression for a message; anything else is "a named type".
 func types(e ast.Expr) string {
 	if ident, ok := e.(*ast.Ident); ok {
 		return ident.Name
@@ -311,10 +288,9 @@ func types(e ast.Expr) string {
 	return "a named type"
 }
 
-// camelWords splits an identifier into lowercase words on camel-case boundaries,
-// so TaskID yields task, id and Issuer yields issuer rather than issue. Runs of
-// capitals stay together (ID, HTTPClient), which is what keeps an initialism from
-// shattering into letters that match nothing.
+// camelWords splits an identifier into lowercase camel-case words, so TaskID yields
+// task, id and Issuer yields issuer, never issue. Capital runs stay together (ID,
+// HTTPClient), so an initialism does not split into letters.
 func camelWords(name string) []string {
 	var out []string
 	runes := []rune(name)
@@ -322,8 +298,8 @@ func camelWords(name string) []string {
 	for i := 1; i < len(runes); i++ {
 		prev, cur := runes[i-1], runes[i]
 		boundary := unicode.IsUpper(cur) && !unicode.IsUpper(prev)
-		// The end of an initialism that runs into a new word: HTTPServer breaks
-		// before S, not before P.
+		// An initialism running into a new word breaks before its last capital:
+		// HTTPServer breaks before S.
 		if unicode.IsUpper(prev) && unicode.IsUpper(cur) && i+1 < len(runes) && unicode.IsLower(runes[i+1]) {
 			boundary = true
 		}

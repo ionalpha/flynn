@@ -1,11 +1,8 @@
-// Package ids generates time-sortable, globally-unique identifiers (UUIDv7): a
-// 48-bit millisecond timestamp followed by randomness. They sort by creation
-// time, so inserts land at the tail of a database index (tight pages, high cache
-// hit-rate) and they never collide across instances - which matters once records
-// sync across a fleet.
+// Package ids generates time-sortable unique identifiers (UUIDv7): a 48-bit
+// millisecond timestamp followed by randomness. Creation-order sorting makes inserts
+// land at an index's tail, and they cannot collide across a syncing fleet.
 //
-// Time and entropy are injectable, so a replay can reproduce the exact same IDs
-// deterministically; the package default uses the system clock and crypto/rand.
+// Time and entropy are injectable, so a replay reproduces the same IDs.
 package ids
 
 import (
@@ -19,8 +16,8 @@ import (
 )
 
 // Generator produces UUIDv7 identifiers from an injectable clock and entropy
-// source. The zero value is not usable; construct one with NewGenerator. It is
-// safe for concurrent use.
+// source. Construct it with NewGenerator; the zero value is unusable. It is safe for
+// concurrent use.
 type Generator struct {
 	clk  clock.Clock
 	rand io.Reader
@@ -40,7 +37,7 @@ func WithClock(c clock.Clock) Option {
 }
 
 // WithEntropy sets the randomness source (default: crypto/rand). A deterministic
-// reader makes generated IDs reproducible for replay.
+// reader makes IDs reproducible for replay.
 func WithEntropy(r io.Reader) Option {
 	return func(g *Generator) {
 		if r != nil {
@@ -49,8 +46,8 @@ func WithEntropy(r io.Reader) Option {
 	}
 }
 
-// NewGenerator returns a Generator, defaulting to the system clock and
-// crypto/rand.
+// NewGenerator returns a Generator on the system clock and crypto/rand unless
+// options say otherwise.
 func NewGenerator(opts ...Option) *Generator {
 	g := &Generator{clk: clock.System{}, rand: rand.Reader}
 	for _, o := range opts {
@@ -62,7 +59,7 @@ func NewGenerator(opts ...Option) *Generator {
 // New returns a new UUIDv7 in canonical 8-4-4-4-12 form.
 func (g *Generator) New() string {
 	var b [16]byte
-	// 48-bit big-endian millisecond timestamp (low 8 bits of each shift).
+	// 48-bit big-endian millisecond timestamp.
 	ms := g.clk.Now().UnixMilli()
 	b[0] = byte((ms >> 40) & 0xff)
 	b[1] = byte((ms >> 32) & 0xff)
@@ -94,16 +91,13 @@ func format(b [16]byte) string {
 	return string(dst[:])
 }
 
-// defaultTokenBytes is the entropy of a Token when no size is given: 256 bits,
-// well past the brute-force horizon for a bearer secret.
+// defaultTokenBytes is 256 bits, past the brute-force horizon for a bearer secret.
 const defaultTokenBytes = 32
 
-// Token returns an opaque, cryptographically-random secret with nBytes of entropy,
-// URL-safe base64 without padding. Unlike New, it carries no timestamp and is not an
-// identifier: it is a bearer secret (an API token, say), so it is all entropy and
-// reveals nothing about when it was made. A non-positive nBytes uses 256 bits. The
-// entropy comes from the generator's source, so a deterministic source reproduces the
-// token for a replay just as it does for an ID.
+// Token returns a random bearer secret of nBytes entropy (256 bits when
+// non-positive), URL-safe base64 without padding. It carries no timestamp, so it
+// reveals nothing about when it was made. A deterministic entropy source
+// reproduces it for replay.
 func (g *Generator) Token(nBytes int) (string, error) {
 	if nBytes <= 0 {
 		nBytes = defaultTokenBytes
@@ -118,18 +112,14 @@ func (g *Generator) Token(nBytes int) (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// def is the package default generator (system clock, crypto/rand).
 var def = NewGenerator()
 
 // New returns a new UUIDv7 from the default generator.
 func New() string { return def.New() }
 
-// Entropy returns the randomness source the given generator draws from, or the package
-// default's when g is nil. It exists so a caller that needs raw bytes rather than an
-// identifier (minting a keypair, say) takes them from the same place every identifier
-// comes from, instead of importing crypto/rand directly and putting a second,
-// un-injectable source of randomness in the process. A deterministic generator hands back
-// its deterministic reader, so a replay stays a replay all the way down.
+// Entropy returns g's randomness source, or the default generator's when g is nil.
+// A caller needing raw bytes (minting a keypair) takes them here, so the process has
+// one injectable source and a replay stays deterministic.
 func Entropy(g *Generator) io.Reader {
 	if g == nil {
 		g = def

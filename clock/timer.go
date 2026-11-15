@@ -2,26 +2,21 @@ package clock
 
 import "time"
 
-// Timer is a single-shot timer whose channel C fires once, when its deadline
-// arrives. It mirrors the slice of time.Timer that delayed-work schedulers need,
-// but is created through a Timing clock so a Manual clock makes timer-based code
-// deterministic (the timer fires on Advance/Set, never on real wall time).
+// Timer is a single-shot timer, the subset of time.Timer that schedulers need,
+// created through a [Timing] clock so a Manual clock decides when it fires.
 type Timer interface {
 	// C is the channel the timer fires on. It delivers at most one value.
 	C() <-chan time.Time
-	// Stop prevents a not-yet-fired timer from firing. It reports whether the
-	// timer was still pending (true) or had already fired or been stopped (false),
-	// matching time.Timer.Stop.
+	// Stop prevents a pending timer from firing and reports whether it was still
+	// pending, as time.Timer.Stop does.
 	Stop() bool
-	// Reset restarts the timer to fire after d from now. It reports whether the
-	// timer was still pending before the reset, matching time.Timer.Reset.
+	// Reset restarts the timer to fire d from now and reports whether it was still
+	// pending, as time.Timer.Reset does.
 	Reset(d time.Duration) bool
 }
 
-// Timing is a Clock that can also schedule timers. Components that delay work
-// (the reconciler workqueue's AddAfter/rate limiting) depend on Timing rather
-// than Clock so tests drive every delay with a Manual clock instead of sleeping.
-// Both System and Manual implement it.
+// Timing is a Clock that can also schedule timers. Code that delays work depends on
+// Timing so tests drive every delay with a Manual clock.
 type Timing interface {
 	Clock
 	// NewTimer returns a timer that fires once after d. A d <= 0 fires immediately.
@@ -30,21 +25,17 @@ type Timing interface {
 	After(d time.Duration) <-chan time.Time
 }
 
-// --- System (real time) ------------------------------------------------------
-
 type systemTimer struct{ t *time.Timer }
 
 func (s systemTimer) C() <-chan time.Time        { return s.t.C }
 func (s systemTimer) Stop() bool                 { return s.t.Stop() }
 func (s systemTimer) Reset(d time.Duration) bool { return s.t.Reset(d) }
 
-// NewTimer returns a real wall-clock timer.
+// NewTimer returns a wall-clock timer.
 func (System) NewTimer(d time.Duration) Timer { return systemTimer{time.NewTimer(d)} }
 
-// After returns a real wall-clock channel.
+// After returns a wall-clock channel.
 func (System) After(d time.Duration) <-chan time.Time { return time.After(d) }
-
-// --- Manual (deterministic) --------------------------------------------------
 
 type manualTimer struct {
 	m        *Manual
@@ -78,8 +69,8 @@ func (t *manualTimer) Reset(d time.Duration) bool {
 	return was
 }
 
-// fireLocked delivers the current time on the timer's channel without blocking
-// (the buffered, single-use channel never needs a second slot). Caller holds mu.
+// fireLocked delivers the current time without blocking; the channel is buffered
+// and fires once. Caller holds mu.
 func (t *manualTimer) fireLocked() {
 	select {
 	case t.c <- t.m.t:
@@ -130,7 +121,6 @@ func (m *Manual) fireDueLocked() {
 	m.timers = kept
 }
 
-// Compile-time checks that both clocks satisfy Timing.
 var (
 	_ Timing = System{}
 	_ Timing = (*Manual)(nil)

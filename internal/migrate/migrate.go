@@ -1,23 +1,22 @@
-// Package migrate applies versioned SQL migrations to a SQL database, safely.
+// Package migrate applies versioned SQL migrations to a SQL database.
 //
-// Migrations are SQL files named NNNN_description.sql (the leading integer is
-// the version). Each is applied once, in ascending order, in its own
-// transaction, and recorded in a schema_migrations table. The design refuses to
-// corrupt a store:
+// Migrations are files named NNNN_description.sql, the leading integer the version.
+// Each is applied once, in ascending order, in its own transaction, and recorded in
+// schema_migrations. A run never corrupts a store:
 //
-//   - Atomic: each migration runs in a transaction, so a failure leaves zero
-//     partial state (SQLite and Postgres both roll back DDL).
-//   - Fail-closed: the first failure stops the run at the last good version.
-//   - Forward-only: there are no down-migrations to run destructively in prod.
-//   - Drift-detected: a SHA-256 of every applied migration is stored; if an
-//     already-applied file is later edited, the next run refuses to proceed.
-//   - Order-checked: a new migration whose version sits below the latest applied
-//     one (an out-of-order insertion) is rejected rather than silently skipped.
+//   - Each migration runs in a transaction, so a failure leaves no partial state
+//     (SQLite and Postgres both roll back DDL).
+//   - The first failure stops the run at the last good version.
+//   - There are no down-migrations to run destructively in production.
+//   - A SHA-256 of every applied migration is stored, so an edited applied file
+//     stops the next run.
+//   - A new migration whose version sorts below the latest applied is rejected
+//     instead of skipped.
 //
-// Concurrency: each migration is applied under SQLite's write lock after a re-check
-// of schema_migrations, so processes opening the same database at once take turns and
-// the later ones skip what the first applied. The version primary key stays as the
-// backstop against a double record.
+// Each migration is applied under SQLite's write lock after a re-check of
+// schema_migrations, so processes opening one database at once take turns and the
+// later ones skip what the first applied. The version primary key backs this up
+// against a double record.
 package migrate
 
 import (
@@ -34,12 +33,10 @@ import (
 	"time"
 )
 
-// IncompatibleSchemaError reports that the database was created by a build whose
-// migrations differ from this one's: an already-applied migration's bytes changed, or a
-// new migration sorts below one already applied. The database cannot be migrated forward
-// in place (migrations are immutable), so it must be recreated or a different data
-// directory used. It is a distinct type so a caller can recognise this case and guide the
-// user to recovery rather than surface a raw error.
+// IncompatibleSchemaError reports a database created by a build with different
+// migrations: an applied migration's bytes changed, or a new one sorts below one
+// applied. Migrations are immutable, so the database must be recreated or another
+// data directory used. A distinct type lets a caller guide the user to recovery.
 type IncompatibleSchemaError struct {
 	Migration string // the offending migration file
 	Reason    string // what is wrong with it
@@ -49,9 +46,9 @@ func (e *IncompatibleSchemaError) Error() string {
 	return fmt.Sprintf("migrate: %s %s - migrations are immutable", e.Migration, e.Reason)
 }
 
-// Run applies every migration in fsys not yet recorded in schema_migrations, in
-// ascending version order, after verifying the integrity of those already
-// applied. It is idempotent: once up to date, a re-run does nothing.
+// Run applies every migration in fsys not yet recorded, in ascending version order,
+// after verifying those already applied. A re-run on an up-to-date database does
+// nothing.
 func Run(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 	migs, err := load(fsys)
 	if err != nil {
@@ -71,7 +68,7 @@ func Run(ctx context.Context, db *sql.DB, fsys fs.FS) error {
 			maxApplied = v
 		}
 	}
-	// Integrity checks before applying anything.
+	// Integrity is checked before anything is applied.
 	for _, m := range migs {
 		if sum, ok := applied[m.version]; ok {
 			if sum != m.checksum {
@@ -134,7 +131,7 @@ func load(fsys fs.FS) ([]migration, error) {
 	return out, nil
 }
 
-// parseVersion reads the leading integer of a filename, e.g. "0003_add.sql" -> 3.
+// parseVersion reads a filename's leading integer ("0003_add.sql" is 3).
 func parseVersion(name string) (int, error) {
 	base := strings.TrimSuffix(name, ".sql")
 	if i := strings.IndexByte(base, '_'); i >= 0 {
@@ -179,14 +176,13 @@ func readApplied(ctx context.Context, db *sql.DB) (map[int]string, error) {
 // apply runs m in a write-locking transaction and records it, unless the version is
 // already recorded.
 //
-// Run chose what is pending from a read outside any lock, so another process opening
-// the same database may have applied m since; applying it again fails for a migration
-// that is not idempotent (one that drops a column). BEGIN IMMEDIATE takes the write
-// lock first, so the loser waits out the busy timeout and then sees the winner's row.
-// A deferred transaction cannot do this: SQLite refuses its read-to-write upgrade at
-// once when another writer committed in between. A recorded version is still held to
-// its checksum. The statement is raw, on a pinned connection, because database/sql
-// cannot ask this driver for an immediate transaction per call.
+// Run picked the pending set from an unlocked read, so another process may have
+// applied m since, and reapplying a non-idempotent migration (a column drop) fails.
+// BEGIN IMMEDIATE takes the write lock first, so the loser waits out the busy
+// timeout and then sees the winner's row; SQLite refuses a deferred transaction's
+// read-to-write upgrade at once when another writer committed in between. A recorded
+// version is still held to its checksum. The statement is raw on a pinned
+// connection because database/sql cannot request an immediate transaction per call.
 func apply(ctx context.Context, db *sql.DB, m migration) (err error) {
 	conn, err := db.Conn(ctx)
 	if err != nil {
@@ -200,7 +196,8 @@ func apply(ctx context.Context, db *sql.DB, m migration) (err error) {
 	committed := false
 	defer func() {
 		if !committed {
-			// The caller's context may be what failed; the lock must still be released.
+			// The caller's context may be what failed, and the lock must still be
+			// released.
 			_, _ = conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`)
 		}
 	}()

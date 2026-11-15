@@ -7,17 +7,13 @@ import (
 	"path/filepath"
 )
 
-// init registers the Hyper-V microVM driver on Windows. Detection and boot are shared
-// through commandDriver; this file supplies only how Windows reports its hardware boundary.
+// init registers the Hyper-V driver; commandDriver shares detection and boot.
 func init() { RegisterDriver(commandDriver{name: "hyperv", hardware: detectHyperV}) }
 
-// detectHyperV reports whether the host has the Hyper-V platform installed, the Windows
-// hardware virtualization boundary the strong tier runs on. It keys on the Hyper-V
-// management service binary, which is installed only when the Hyper-V role is enabled, and
-// not on the host compute service, which ships more broadly (for example for Windows
-// containers) without the hypervisor. Detection is deliberately conservative: reporting the
-// tier available where it is not would admit untrusted work onto a host that cannot contain
-// it, so a missing signal reports unavailable rather than guessing yes.
+// detectHyperV keys on the Hyper-V management service binary, present only with
+// the Hyper-V role. The host compute service also ships for Windows containers
+// without the hypervisor. A missing signal reports unavailable, so untrusted work
+// never lands on a host that cannot contain it.
 func detectHyperV() Availability {
 	sysDir := os.Getenv("SystemRoot")
 	if sysDir == "" {

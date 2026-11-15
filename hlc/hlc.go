@@ -1,11 +1,9 @@
-// Package hlc is a Hybrid Logical Clock: physical wall-clock milliseconds plus a
-// logical counter. It orders events consistently across instances even when they
-// are offline, reconnect at different times, or have clock skew - which a plain
-// per-record version cannot do. Last-writer-wins conflict resolution compares
-// (Wall, Counter) then breaks ties by writer id.
+// Package hlc is a Hybrid Logical Clock: wall-clock milliseconds plus a logical
+// counter. It orders events across instances that go offline, reconnect at
+// different times or have clock skew, which a per-record version cannot.
+// Last-writer-wins compares (Wall, Counter) and breaks ties by writer id.
 //
-// The physical clock is injectable, so a replay reproduces the same timestamps
-// deterministically; the default is the system clock.
+// The physical clock is injectable, so a replay reproduces the same timestamps.
 package hlc
 
 import (
@@ -16,8 +14,8 @@ import (
 	"github.com/ionalpha/flynn/clock"
 )
 
-// Time is an HLC timestamp. It is comparable by Wall then Counter; the zero
-// value precedes every real timestamp.
+// Time is an HLC timestamp, ordered by Wall then Counter; the zero value precedes
+// every real timestamp.
 type Time struct {
 	Wall    int64  // unix milliseconds
 	Counter uint16 // logical counter, disambiguating events within the same Wall
@@ -70,7 +68,7 @@ func WithPhysical(c clock.Clock) Option {
 	}
 }
 
-// NewClock returns a Clock defaulting to the system physical clock.
+// NewClock returns a Clock on the system clock unless WithPhysical says otherwise.
 func NewClock(opts ...Option) *Clock {
 	c := &Clock{phys: clock.System{}}
 	for _, o := range opts {
@@ -92,8 +90,8 @@ func (c *Clock) Now() Time {
 	return c.last
 }
 
-// Observe advances the clock past a timestamp received from another instance
-// (during sync), preserving causality, and returns the new local time.
+// Observe advances the clock past a remote timestamp received in sync, preserving
+// causality, and returns the new local time.
 func (c *Clock) Observe(remote Time) Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -112,8 +110,8 @@ func (c *Clock) Observe(remote Time) Time {
 	return c.last
 }
 
-// tick advances the counter, rolling over to the next millisecond if the counter
-// would overflow (a theoretical 65536 events in one millisecond).
+// tick advances the counter, rolling into the next millisecond at 65536 events in
+// one millisecond.
 func tick(t Time) Time {
 	if t.Counter == math.MaxUint16 {
 		return Time{Wall: t.Wall + 1}

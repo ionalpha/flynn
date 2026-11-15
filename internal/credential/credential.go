@@ -1,15 +1,8 @@
-// Package credential models a stored credential as metadata on the resource store,
-// kept strictly separate from the secret value it points at. A Credential records
-// which integration it belongs to, what auth scheme it is, the role it may exercise,
-// whether it is the integration's default, and the vault reference the secret value
-// lives behind. The value itself never enters a Credential: it stays in the vault and
-// is resolved by reference only at the point a request is signed, so a credential is
-// safe to list, sync, and put on the event log while the secret is not.
-//
-// This decouples a credential from a provider name. An integration may hold several
-// named credentials (a production token, a staging token), each selectable by name
-// or by the integration's default, and each carrying a role that bounds what it may
-// be used for.
+// Package credential stores credential metadata on the resource store: owning
+// integration, auth scheme, role, default flag and vault reference. The secret
+// value stays in the vault and is resolved only when a request is signed, so a
+// [Credential] is safe to list, sync and log. An integration may hold several
+// named credentials.
 package credential
 
 import (
@@ -24,19 +17,12 @@ const (
 	GroupVersion = "credential.ionagent.io/v1alpha1"
 	// Kind is the resource kind name credentials are stored under.
 	Kind = "Credential"
-	// integrationLabel carries the owning integration id on the resource, so a list
-	// can be narrowed to one integration with a label selector.
+	// integrationLabel lets a label selector narrow a list to one integration.
 	integrationLabel = "credential.ionagent.io/integration"
 )
 
-// Role is the privilege level a credential may exercise. Roles are ordered
-// read < operator < admin. Role gating is opt-in per action: an action that requires
-// no role admits any credential, so an integration that does not use roles is never
-// blocked. But once an action requires a role, it is enforced least-privilege: a
-// credential must carry a role that ranks at least as high, and a role-less
-// credential cannot satisfy it. The enforcement (refusing an insufficient credential
-// for an action, recorded on the event log) is applied where a request is signed;
-// this type is the policy that boundary reads.
+// Role is the privilege level a credential may exercise, ordered read < operator
+// < admin. The signing code enforces it through [Role.Permits].
 type Role string
 
 const (
@@ -62,16 +48,14 @@ func (r Role) rank() int {
 	}
 }
 
-// Valid reports whether r is one of the known roles. The empty role is not valid as
-// a stored value (a stored role must be explicit) but is meaningful as "unscoped"
-// when passed to Permits.
+// Valid reports whether r is a known role. The empty role is invalid as a stored
+// value but means "unscoped" to Permits.
 func (r Role) Valid() bool { return r.rank() > 0 }
 
-// Permits reports whether a credential carrying this role may be used for an action
-// that requires the given role. An action that requires no role (empty) admits any
-// credential. Otherwise the requirement is enforced least-privilege: a role-less
-// credential is refused, and a credential with a role must rank at least as high as
-// the action requires.
+// Permits reports whether a credential with role r may serve an action that
+// requires the given role. An empty requirement admits any credential, so an
+// integration without roles is never blocked. Otherwise a role-less credential is
+// refused and r must rank at least as high.
 func (r Role) Permits(required Role) bool {
 	if required == "" {
 		return true
@@ -82,24 +66,23 @@ func (r Role) Permits(required Role) bool {
 	return r.rank() >= required.rank()
 }
 
-// Spec is the stored shape of a credential: pure metadata. It never carries a secret
-// value, only the vault reference to one.
+// Spec is the stored shape of a credential. It holds a vault reference, never a
+// secret value.
 type Spec struct {
-	// Integration is the id of the integration (extension) this credential belongs to.
+	// Integration is the id of the owning integration (extension).
 	Integration string `json:"integration"`
-	// Name is the credential's name within its integration (e.g. "prod-token").
+	// Name is unique within the integration (e.g. "prod-token").
 	Name string `json:"name"`
-	// AuthType is the auth scheme the credential is for (bearer, api_key, basic,
-	// oauth2). It mirrors the integration's auth type so a credential and the request
-	// it signs agree on the mechanism.
+	// AuthType is bearer, api_key, basic or oauth2, matching the integration's
+	// auth type.
 	AuthType string `json:"authType,omitempty"`
 	// Role bounds what the credential may be used for. Empty means unscoped.
 	Role Role `json:"role,omitempty"`
-	// IsDefault marks the credential selected when an integration is referenced
-	// without a credential name. At most one credential per integration is the default.
+	// IsDefault marks the credential a bare integration reference selects. At
+	// most one per integration is the default.
 	IsDefault bool `json:"isDefault,omitempty"`
-	// VaultRef is the reference the secret value is stored under in the vault. Empty
-	// defaults to "<integration>/<name>" (see VaultRef).
+	// VaultRef is where the secret value is stored. Empty means [VaultRef] of
+	// integration and name.
 	VaultRef string `json:"vaultRef,omitempty"`
 	// Description is an optional human note.
 	Description string `json:"description,omitempty"`
@@ -107,14 +90,12 @@ type Spec struct {
 
 // Status is a credential's observed state.
 type Status struct {
-	// LastUsed is the RFC3339 time the credential was last used to sign a request,
-	// supplied by the caller's clock (never read from the wall clock here, so the
-	// record stays replay-equivalent). Empty means never used.
+	// LastUsed is the RFC3339 time of the last signed request, from the caller's
+	// clock so the record replays identically. Empty means never used.
 	LastUsed string `json:"lastUsed,omitempty"`
 }
 
-// Credential is the typed view of a credential resource: its identity, spec, and
-// the resource bookkeeping a caller needs.
+// Credential is the typed view of a credential resource.
 type Credential struct {
 	ID   string
 	Spec Spec
@@ -122,12 +103,10 @@ type Credential struct {
 	Version int
 }
 
-// VaultRef returns the conventional vault reference for a credential, the form a
-// credential's secret is stored under when its spec sets no explicit VaultRef.
+// VaultRef returns the vault reference used when a [Spec] sets none.
 func VaultRef(integration, name string) string { return integration + "/" + name }
 
-// Ref returns the credential's effective vault reference: its explicit VaultRef, or
-// the conventional "<integration>/<name>" when unset.
+// Ref returns the effective vault reference.
 func (c Credential) Ref() string {
 	if c.Spec.VaultRef != "" {
 		return c.Spec.VaultRef
@@ -135,8 +114,8 @@ func (c Credential) Ref() string {
 	return VaultRef(c.Spec.Integration, c.Spec.Name)
 }
 
-// resourceName is the resource Name a credential is addressed by: "<integration>/<name>",
-// unique within the kind and matching the conventional vault reference.
+// resourceName matches [VaultRef] on purpose, so a credential's resource name
+// and default vault reference agree.
 func resourceName(integration, name string) string { return integration + "/" + name }
 
 var specSchema = json.RawMessage(`{
@@ -163,7 +142,7 @@ var KindDef = resource.Kind{
 	Plural:     "credentials",
 }
 
-// RegisterKind registers the Credential kind so a store admits credentials. It is
+// RegisterKind registers [KindDef] so a store admits credentials. It is
 // idempotent.
 func RegisterKind(reg *resource.Registry) error { return reg.Register(KindDef) }
 

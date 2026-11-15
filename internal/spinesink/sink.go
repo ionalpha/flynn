@@ -1,8 +1,6 @@
-// Package spinesink adapts the dispatch waist to the event spine: it implements
-// dispatch.EventSink by translating each dispatched action's lifecycle events
-// into spine events on a run's stream. It is the glue between two ports, so it
-// lives outside both - keeping the spine core free of any dependency on dispatch
-// or state (which would otherwise form an import cycle).
+// Package spinesink records dispatch, approval, budget and egress events onto a run's
+// spine stream. It sits outside both spine and dispatch, so the spine core takes no
+// dependency on dispatch or state, which would form an import cycle.
 package spinesink
 
 import (
@@ -15,10 +13,9 @@ import (
 	"github.com/ionalpha/flynn/state"
 )
 
-// Sink records the dispatch waist's lifecycle events (start/end/rejected) onto a
-// spine stream. Construct one per run with that run's stream id, then pass it via
-// dispatch.WithEventSink - every action that run dispatches is then captured on
-// the spine.
+// Sink records the dispatch waist's lifecycle events (start, end, rejected) onto a
+// spine stream. Construct one per run with its stream id and pass it via
+// dispatch.WithEventSink.
 type Sink struct {
 	log    spine.Log
 	stream string
@@ -31,33 +28,29 @@ func New(log spine.Log, stream string) *Sink {
 	return &Sink{log: log, stream: stream, actor: spine.ActorAgent}
 }
 
-// Append implements dispatch.EventSink by translating a dispatch event into a
-// spine event. The dispatcher's timestamp (e.At, unix nanos) is preserved so the
-// two layers agree on time.
+// Append implements dispatch.EventSink. The dispatcher's timestamp (e.At, unix nanos)
+// is preserved, so the two layers agree on time.
 func (s *Sink) Append(ctx context.Context, e dispatch.Event) error {
 	// The correlation id pairs this invocation's start with its end or rejection, so a
 	// verifier can prove no action completed without a preceding admission and no
 	// denied action also completed.
 	payload := map[string]any{"action": e.Action, "call": e.Call}
-	// Record the action's trust level, so the run's containment posture (which
-	// actions ran as model-authored or external versus the agent's own) is part of
-	// the sealed governance record, not just the live trace.
+	// The trust level puts the run's containment posture (which actions ran as
+	// model-authored or external) in the sealed record as well as the live trace.
 	if e.Trust != "" {
 		payload["trust"] = e.Trust
 	}
 	if e.Err != "" {
 		payload["error_class"] = e.Err
 	}
-	// Record which rule spoke, not only how a caller should react to it. Every gate at
-	// the waist refuses with the same few classes, so a sealed record carrying the class
-	// alone can show that a run was blocked and never show what blocked it, and a run
-	// that was refused by one gate three different ways is indistinguishable in it from
-	// a run that met three different gates once.
+	// The code names the rule that refused. Every gate refuses with the same few
+	// classes, so with the class alone the record shows that a run was blocked and
+	// never what blocked it.
 	if e.Code != "" {
 		payload["error_code"] = e.Code
 	}
-	// Record the goal the action ran under, so a fan-out's per-child governance posture
-	// (which child was admitted, which hit a boundary) is derivable from the one stream.
+	// The goal makes a fan-out's per-child governance (which child was admitted, which
+	// hit a limit) derivable from one stream.
 	if e.Goal != "" {
 		payload["goal"] = e.Goal
 	}

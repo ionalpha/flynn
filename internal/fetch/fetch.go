@@ -1,22 +1,15 @@
-// Package fetch downloads a file from an untrusted source and verifies it before it
-// is installed: the generic, security-first transport for pulling any file (model
-// weights, a plugin, a dataset) onto the local machine. It is download-and-verify
-// ONLY: it writes a verified file to disk and never parses, loads, or executes it.
-// What to do with the file, and any content policy, is the caller's concern; this
-// package guarantees that the bytes on disk are exactly what was asked for, or that
-// nothing is written at all.
+// Package fetch downloads a file from an untrusted source (model weights, a plugin,
+// a dataset) and verifies it before installing. It never parses, loads or runs the
+// file, and guarantees the bytes on disk are what was asked for or that nothing is
+// written. Content policy is the caller's. The integration request transport makes
+// API calls; this one streams a large body, caps and hashes it as it arrives,
+// verifies a digest and installs atomically.
 //
-// It is distinct from the integration request transport, which makes API calls:
-// this one streams a large body, caps and hashes it as it arrives, verifies a
-// digest, and installs atomically.
-//
-// Every layer is defensive. The transport refuses anything but https and refuses to
-// connect to a non-public address (anti-SSRF, re-checked on every redirect hop so
-// DNS rebinding cannot slip through, with no environment proxy to route around it).
-// The download is capped on the stream so a hostile server cannot exhaust the disk,
-// hashed as it is written, and verified against a caller-pinned digest so a
-// compromised source cannot substitute a file. The install is atomic, so a partial,
-// oversized, or mismatched download never appears as a usable file.
+// The transport allows only https and refuses non-public addresses, re-checked on
+// every redirect so DNS rebinding cannot pass, with no environment proxy. The
+// stream is capped so a hostile server cannot fill the disk, and the digest is
+// checked against a caller pin so a compromised source cannot substitute a file.
+// A partial, oversized or mismatched download never appears as a usable file.
 package fetch
 
 import (
@@ -36,22 +29,20 @@ import (
 	"github.com/ionalpha/flynn/netguard"
 )
 
-// defaultMaxBytes is the fallback ceiling on a download when the caller does not
-// give one, so an unbounded body can never fill the disk. Real callers pass the
-// quantization's known size plus a small margin.
+// defaultMaxBytes caps a download when the caller gives no limit, so an unbounded
+// body cannot fill the disk. Callers pass the known size plus a margin.
 const defaultMaxBytes = 100 << 30 // 100 GiB
 
 // Request describes one verified download.
 type Request struct {
-	// URL is the https source of the weights.
+	// URL is the https source.
 	URL string
-	// Dest is the final install path; the file appears here only after it verifies.
+	// Dest is the install path; the file appears there only after it verifies.
 	Dest string
-	// ExpectSHA256 is the pinned digest the download is checked against (an optional
-	// "sha256:" prefix is accepted). Empty means pin-on-fetch: the computed digest is
-	// returned but nothing pre-pinned was verified, which is lower trust.
+	// ExpectSHA256 is the pinned digest; a "sha256:" prefix is accepted. Empty is
+	// pin-on-fetch: the computed digest is returned unverified, a lower trust.
 	ExpectSHA256 string
-	// MaxBytes is the hard cap on the download size; 0 uses a safe default ceiling.
+	// MaxBytes caps the download size; 0 uses defaultMaxBytes.
 	MaxBytes int64
 }
 
@@ -60,8 +51,8 @@ type Result struct {
 	Path   string
 	Bytes  int64
 	SHA256 string
-	// Pinned is true when the bytes were verified against a caller-pinned digest, the
-	// strong-trust case; false when the digest was only computed (pin-on-fetch).
+	// Pinned is true when the bytes matched a caller-pinned digest and false on
+	// pin-on-fetch.
 	Pinned bool
 }
 
@@ -71,8 +62,7 @@ type Downloader struct{ http *http.Client }
 // Option configures a Downloader.
 type Option func(*Downloader)
 
-// WithHTTPClient injects the HTTP client, so a test can supply one that reaches a
-// local server. Production uses the default hardened client (see SafeClient).
+// WithHTTPClient injects the HTTP client, so a test can reach a local server.
 func WithHTTPClient(c *http.Client) Option {
 	return func(d *Downloader) {
 		if c != nil {
@@ -81,24 +71,23 @@ func WithHTTPClient(c *http.Client) Option {
 	}
 }
 
-// New builds a Downloader. With no client injected it uses SafeClient, the
-// anti-SSRF, https-only transport.
+// New builds a Downloader. Without an injected client it uses the https-only,
+// public-only netguard client.
 func New(opts ...Option) *Downloader {
 	d := &Downloader{}
 	for _, o := range opts {
 		o(d)
 	}
 	if d.http == nil {
-		// A download may reach any public source but never a private, loopback, or
-		// metadata address; the policy enforces that at the point of connect.
+		// A download may reach any public source and never a private, loopback or
+		// metadata address; netguard enforces it at connect.
 		d.http = netguard.Client(netguard.PublicOnly())
 	}
 	return d
 }
 
-// Fetch downloads req.URL, verifies it, and installs it atomically at req.Dest,
-// returning what was verified. It never executes the file. Any failure leaves no
-// file at Dest: a partial, oversized, or digest-mismatched download is discarded.
+// Fetch downloads req.URL, verifies it and installs it atomically at req.Dest. It
+// never runs the file. A failure leaves no file at Dest.
 func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
 	if err := checkURL(req.URL); err != nil {
 		return Result{}, err
@@ -136,15 +125,14 @@ func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
 		sum  string
 		want = strings.TrimPrefix(strings.ToLower(req.ExpectSHA256), "sha256:")
 	)
-	// The body streams into a sibling temp file and only reaches Dest once it has
-	// arrived whole and matched its digest, because everything that rejects a
-	// download runs inside the producer: an error from here abandons the temp file
-	// and leaves whatever was at Dest before untouched. A caller that finds Dest
-	// present has a file that was fully verified, never one that is still arriving.
+	// The body streams into a sibling temp file and reaches Dest only whole and
+	// digest-matched, because every rejection runs inside the producer: an error
+	// abandons the temp file and leaves Dest untouched. A present Dest is always
+	// fully verified.
 	err = fsatomic.WriteStream(req.Dest, 0o600, func(w io.Writer) error {
 		h := sha256.New()
-		// Read one byte past the cap so an over-cap body is detected rather than silently
-		// truncated to exactly the cap.
+		// Read one byte past the cap, so an over-cap body is detected rather than
+		// truncated to the cap.
 		var copyErr error
 		n, copyErr = io.Copy(io.MultiWriter(w, h), io.LimitReader(resp.Body, maxBytes+1))
 		if copyErr != nil {
@@ -161,8 +149,8 @@ func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
 		return nil
 	})
 	if err != nil {
-		// A rejection from the producer already names which rule spoke; only a failure
-		// of the write itself still needs a code.
+		// A producer rejection already names its rule; only a write failure needs a
+		// code.
 		if fault.CodeOf(err) == "" {
 			return Result{}, fault.Wrap(fault.Terminal, "fetch_install", err)
 		}
@@ -171,8 +159,8 @@ func (d *Downloader) Fetch(ctx context.Context, req Request) (Result, error) {
 	return Result{Path: req.Dest, Bytes: n, SHA256: sum, Pinned: want != ""}, nil
 }
 
-// checkURL requires an https URL with a host; the scheme guard pairs with the dial
-// guard so a credential or a request never travels in the clear.
+// checkURL requires an https URL with a host. With the dial guard it keeps
+// credentials and requests off cleartext.
 func checkURL(raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
@@ -184,7 +172,6 @@ func checkURL(raw string) error {
 	return nil
 }
 
-// tooLarge builds the oversize error, the disk-exhaustion guard's verdict.
 func tooLarge(got, limit int64) error {
 	return fault.New(fault.Terminal, "fetch_too_large",
 		fmt.Sprintf("fetch: download exceeds the %d-byte cap (saw at least %d); rejected", limit, got))

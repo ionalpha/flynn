@@ -9,9 +9,9 @@ import (
 	"github.com/ionalpha/flynn/internal/embeddedspecs"
 )
 
-// specsFS holds the official dependency specs shipped in the binary. Each is a JSON file
-// admitted against the Dependency kind like any other resource, so the set of programs
-// Flynn knows how to provision is data, auditable in the tree, not code.
+// specsFS holds the official dependency specs shipped in the binary, each admitted
+// against the Dependency kind, so the programs Flynn can provision are auditable
+// data in the tree.
 //
 //go:embed specs/*.json
 var specsFS embed.FS
@@ -26,9 +26,9 @@ var catalog struct {
 	err      error
 }
 
-// Entries returns the official dependency catalog, parsed once and ordered by name. A
-// malformed embedded spec is a programming error in this package, surfaced as an error here
-// and caught by the build-time gate.
+// Entries returns the official catalog, parsed once and ordered by name. A malformed
+// embedded spec is a bug here, returned as an error and caught by the build-time
+// gate.
 func Entries() ([]Entry, error) {
 	catalog.once.Do(loadCatalog)
 	return catalog.entries, catalog.err
@@ -47,9 +47,8 @@ func Reserved(name string) bool {
 	return catalog.reserved[name]
 }
 
-// Sync writes every bundled dependency spec into the store. It is idempotent: the resource
-// store dedups an unchanged spec by content, so re-syncing on each start is a no-op. It
-// returns the number of specs written.
+// Sync writes every bundled spec into the store and returns the count written. The
+// store dedups unchanged content, so syncing on every start is a no-op.
 func Sync(ctx context.Context, store *Store) (int, error) {
 	entries, err := Entries()
 	if err != nil {

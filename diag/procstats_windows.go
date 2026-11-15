@@ -12,16 +12,10 @@ var (
 	procGetProcessHandleCt = kernel32.NewProc("GetProcessHandleCount")
 )
 
-// openFDs counts the process's open kernel handles, which is what a descriptor is
-// on Windows. GetProcessHandleCount answers for the current process without a
-// snapshot of the whole system.
-//
-// That "without a snapshot" is why there is deliberately no childProcs here. Counting
-// children meant a CreateToolhelp32Snapshot of every process on the machine, on every
-// sample, and it answered the wrong question: a snapshot entry can name a parent pid
-// that has already exited and been reused, so the count included processes that merely
-// claim this pid as a parent. The count comes from the spawners instead, through
-// Config.Children.
+// openFDs counts the process's open kernel handles with GetProcessHandleCount, which
+// needs no system snapshot. There is no childProcs: a CreateToolhelp32Snapshot every
+// sample costs a pass over every process, and a reused parent pid miscounts strangers.
+// Config.Children supplies the count.
 func openFDs() int {
 	self, err := syscall.GetCurrentProcess()
 	if err != nil {

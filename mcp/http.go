@@ -10,19 +10,12 @@ import (
 	"github.com/ionalpha/flynn/ids"
 )
 
-// HTTPHandler adapts the server to the Model Context Protocol streamable-HTTP
-// transport, so a client that connects to a URL rather than spawning a subprocess
-// (an in-process loopback bridge is the motivating case) drives the same governed
-// tools over one HTTP endpoint. Each POST carries one JSON-RPC message and gets its
-// reply as a single application/json body; the tools here answer synchronously, so
-// the handler never needs to open a server-sent-event stream.
-//
-// base is the governed context the handler dispatches under: the caller binds the
-// run's capability grant with capability.Into and the run id with brakes.Into
-// before constructing the handler, exactly as for the stdio Serve path, and every
-// request is served on a context derived from base so a run-level halt or shutdown
-// cancels an in-flight call. token, when non-empty, is a bearer token the client
-// must present, so a loopback port a co-tenant could also reach is not open to it.
+// HTTPHandler serves the MCP streamable-HTTP transport on loopback. Each POST
+// carries one message and gets one application/json reply; tools answer
+// synchronously, so no event stream is opened. Requests run under base, which
+// carries the governance bindings as for Serve, so a halt cancels an in-flight
+// call. A non-empty token is required as a bearer token, so another local user
+// cannot use the port.
 func (s *Server) HTTPHandler(base context.Context, token string) http.Handler {
 	if base == nil {
 		base = context.Background()
@@ -30,7 +23,6 @@ func (s *Server) HTTPHandler(base context.Context, token string) http.Handler {
 	return &httpHandler{srv: s, base: base, token: token, session: ids.New()}
 }
 
-// httpHandler serves one Server over streamable HTTP.
 type httpHandler struct {
 	srv     *Server
 	base    context.Context
@@ -38,21 +30,15 @@ type httpHandler struct {
 	session string
 }
 
-// mcpSessionHeader carries the server-assigned session id, echoed by the client on
-// subsequent requests, per the streamable-HTTP transport.
 const mcpSessionHeader = "Mcp-Session-Id"
 
-// ServeHTTP implements the transport. POST carries a JSON-RPC message and returns
-// its reply (or 202 for a notification). GET and DELETE are answered minimally: this
-// endpoint offers no server-initiated stream and keeps no per-session state to tear
-// down, so a client that probes them gets a definite answer rather than a hang.
+// ServeHTTP answers a notification with 202. GET gets 405 because there is no
+// server stream, and DELETE gets 200 because there is no session state, so a
+// probing client gets an answer instead of a hang.
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// A loopback bridge is only ever driven by a local native client, never a browser.
-	// A request carrying a browser Origin, or a Host that is not the loopback
-	// interface, is a cross-origin or DNS-rebinding attempt (a page on the same host
-	// resolving an attacker domain to 127.0.0.1 to reach this port), and is refused
-	// before anything else. This is the transport's required defense against a browser
-	// reaching a local MCP server; the bearer token below is the second layer.
+	// Only a native local client drives this endpoint. A browser Origin, or a
+	// non-loopback Host from DNS rebinding, is refused first; the MCP spec
+	// requires this defense. The bearer token is the second check.
 	if r.Header.Get("Origin") != "" {
 		http.Error(w, "forbidden origin", http.StatusForbidden)
 		return
@@ -67,13 +53,9 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch r.Method {
 	case http.MethodGet:
-		// No server-initiated stream is offered; the client drives every exchange with a
-		// POST, so a GET for an event stream is declined.
 		http.Error(w, "streaming not supported", http.StatusMethodNotAllowed)
 		return
 	case http.MethodDelete:
-		// The session holds no durable per-connection state, so an explicit teardown is
-		// acknowledged and nothing needs releasing.
 		w.WriteHeader(http.StatusOK)
 		return
 	case http.MethodPost:
@@ -91,15 +73,12 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Serve on a context derived from the governed base so the run's grant and brake
-	// apply, while the request's own cancellation still aborts a call the client gave
-	// up on. The base cancelling (a halt or shutdown) cancels the request too.
+	// Either the run halting or the client giving up cancels the call.
 	ctx, cancel := mergeCancel(h.base, r.Context())
 	defer cancel()
 
 	resp, write := h.srv.handle(ctx, in)
 	if !write {
-		// A notification gets no body; acknowledge receipt.
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -107,10 +86,8 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	writeFrame(w, http.StatusOK, resp)
 }
 
-// writeFrame writes the reply as an application/json body with the given status,
-// using response.frame so the request's id survives byte for byte. A frame that
-// fails to assemble (a result that cannot marshal, a programming error) falls back
-// to a bare internal-error frame with a null id rather than an empty body.
+// writeFrame falls back to an internal-error frame with a null id when the
+// result cannot marshal, so the client never gets an empty body.
 func writeFrame(w http.ResponseWriter, status int, resp response) {
 	frame, err := resp.frame()
 	if err != nil {
@@ -121,11 +98,9 @@ func writeFrame(w http.ResponseWriter, status int, resp response) {
 	_, _ = w.Write(append(frame, '\n'))
 }
 
-// isLoopbackHost reports whether the request's Host header names the loopback
-// interface (127.0.0.1, ::1, or localhost), with or without a port. A DNS-rebinding
-// request carries the attacker's domain in Host, not a loopback address, so this
-// refuses it even when no Origin is present. An empty Host is rejected: a conformant
-// HTTP/1.1 client always sends one.
+// isLoopbackHost accepts localhost or a loopback IP, with or without a port. A
+// rebinding request carries the attacker's domain in Host, so this refuses it
+// even without an Origin. An empty Host is refused, since HTTP/1.1 requires one.
 func isLoopbackHost(host string) bool {
 	if host == "" {
 		return false
@@ -144,9 +119,8 @@ func isLoopbackHost(host string) bool {
 	return false
 }
 
-// mergeCancel returns a context that is done when either parent is done, so a
-// governed base (the run's halt/shutdown) and a per-request cancellation both abort
-// the work. The returned cancel must be called to release the watcher goroutine.
+// mergeCancel returns a context done when either parent is done. Call cancel to
+// release the AfterFunc.
 func mergeCancel(base, req context.Context) (context.Context, context.CancelFunc) {
 	ctx, cancel := context.WithCancel(base)
 	stop := context.AfterFunc(req, cancel)

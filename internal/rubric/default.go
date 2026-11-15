@@ -1,16 +1,14 @@
 package rubric
 
-// Default is the rubric for judging built work — a page, a feature, a generated
-// artifact — where "done" is a matter of quality, not a passing test. Its four axes are
-// the ones that make subjective work gradable: design quality, originality, craft, and
-// functionality. Every axis ships with calibration bands so a score means the same thing
-// across runs rather than drifting toward the middle.
+// Default is the rubric for judged work (a page, a feature, a generated artifact),
+// where done is a question of quality and no test decides it. Its four axes are design
+// quality, originality, craft and functionality, each with calibration bands so a
+// score means the same thing across runs instead of drifting to the middle.
 //
-// The weights are a tuning knob, not a neutral average. Design and originality are
-// weighted above craft and functionality on purpose: leaning the grade toward the
-// aesthetic axes pushes a generator being graded against this rubric to take visual and
-// conceptual risk rather than settle for something merely working and tidy. A caller
-// that wants the opposite — correctness above flair — reweights the axes without touching
+// Design and originality outweigh craft and functionality, so a generator graded
+// against this rubric is pushed to take visual and conceptual risk instead of settling
+// for tidy and working. A caller that wants correctness first reweights the axes
+// without touching a prompt, which is why the weights are data.
 // a prompt, which is the whole point of keeping the weights as data.
 func Default() Rubric {
 	return Rubric{

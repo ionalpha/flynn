@@ -1,10 +1,9 @@
-// Package inertext makes text that came from outside the agent safe to show a person.
-// The words in an approval request (an action name, a scope, a host) can be chosen by a
-// model, a tool or a peer, and a terminal or a log viewer interprets control bytes: an
-// escape sequence moves the cursor and repaints a line, a carriage return overwrites what
-// came before it, and a bidirectional override reorders the characters around it. Text
-// that went through [Escape] cannot do any of that, and the person reading it can see
-// that something was there.
+// Package inertext makes text from outside the agent safe to show a person. The
+// words in an approval request (an action, a scope, a host) can come from a model,
+// a tool or a peer, and a terminal or log viewer acts on control bytes: an escape
+// sequence repaints a line, a carriage return overwrites, and a bidirectional
+// override reorders characters. Text passed through [Escape] does none of that, and
+// the reader can see something was there.
 package inertext
 
 import (
@@ -14,15 +13,14 @@ import (
 	"unicode/utf8"
 )
 
-// Escape returns s with every character that a terminal or a text renderer would act on
-// replaced by a visible escape: \x1b for a control byte, \u202e for a bidirectional
-// override or another invisible format character, and \xNN for a byte that is not valid
-// UTF-8. Tabs, newlines and every ordinary character, including a backslash, pass
-// through unchanged.
+// Escape replaces every character a terminal or renderer would act on with a
+// visible escape: \x1b for a control byte, \u202e for a bidirectional override or
+// other invisible format character, \xNN for invalid UTF-8. Tabs, newlines and
+// ordinary characters, backslash included, pass unchanged.
 //
-// The output contains none of the characters it rewrites, so escaping it again changes
-// nothing. That is what lets a reader apply it to a stored record without asking whether
-// the writer already did.
+// The output contains none of the rewritten characters, so escaping twice changes
+// nothing, and a reader can apply it to a stored record without knowing whether the
+// writer did.
 func Escape(s string) string {
 	if !needsEscape(s) {
 		return s
@@ -52,10 +50,9 @@ func Escape(s string) string {
 	return b.String()
 }
 
-// Limit returns the longest prefix of s that is at most limit bytes and ends on a character
-// boundary, so the cut never produces invalid UTF-8. Apply it to text that [Escape]
-// already handled: a cut can end inside a visible escape such as \x1b, and what is left
-// is still plain characters.
+// Limit returns the longest prefix of s within limit bytes ending on a character
+// boundary, so the cut is valid UTF-8. Apply it after [Escape]: a cut inside an
+// escape such as \x1b leaves plain characters.
 func Limit(s string, limit int) string {
 	if limit <= 0 {
 		return ""
@@ -81,10 +78,9 @@ func needsEscape(s string) bool {
 	return false
 }
 
-// inert reports whether r is shown as itself. Tab and newline are kept because a
-// multi-line scope is ordinary; every other control character, and every invisible format
-// character (zero-width joiners, bidirectional marks and overrides, the byte order mark),
-// is not.
+// inert reports whether r is shown as itself. Tab and newline stay, because a
+// multi-line scope is ordinary; other control characters and invisible format
+// characters (zero-width joiners, bidirectional marks, the byte order mark) do not.
 func inert(r rune) bool {
 	switch r {
 	case '\t', '\n':

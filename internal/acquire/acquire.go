@@ -1,15 +1,12 @@
-// Package acquire obtains a pinned binary artifact and places it on disk, verified. It
-// is the content-agnostic core shared by anything that has to fetch and install an
-// external binary: a local inference runtime, an external command-line dependency. It
-// downloads a pinned archive over the hardened fetch path, verifies its digest, extracts
-// it with a path-traversal guard and a total-size ceiling, installs it atomically into a
-// target directory, and locates the wanted executable inside it.
+// Package acquire fetches a pinned binary archive, verifies its digest, extracts it
+// with a path-traversal guard and a total-size ceiling, installs it atomically and
+// locates the wanted executable. A local inference runtime and external CLI
+// dependencies share it.
 //
-// It knows nothing about what the binary is or whether it is safe to run: the caller
-// applies its own version gate before calling, and the caller runs the binary inside the
-// sandbox afterward. This package only guarantees that the bytes installed at the target
-// are the pinned, digest-verified release and that a hostile or corrupt archive can
-// neither write outside the target nor exhaust the disk.
+// It guarantees only that the installed bytes are the pinned, digest-verified
+// release and that a hostile archive can neither write outside the target nor fill
+// the disk. The caller applies its own version gate before and runs the binary in
+// the sandbox after.
 package acquire
 
 import (
@@ -29,26 +26,24 @@ import (
 	"github.com/ionalpha/flynn/internal/fetch"
 )
 
-// ArchiveKind is the container format a release ships in. Both are handled with the
-// standard library, so acquiring a binary adds no decompression dependency.
+// ArchiveKind is a release's container format. Both kinds use the standard library,
+// so acquire adds no decompression dependency.
 type ArchiveKind int
 
 const (
-	// ArchiveZip is a .zip archive (the common Windows release form).
+	// ArchiveZip is a .zip archive, the usual Windows release form.
 	ArchiveZip ArchiveKind = iota
-	// ArchiveTarGz is a gzip-compressed tar (the common Linux and macOS release form).
+	// ArchiveTarGz is a gzip-compressed tar, the usual Linux and macOS form.
 	ArchiveTarGz
 )
 
-// maxExtractBytes caps the total uncompressed size written when extracting an archive,
-// so a decompression bomb cannot fill the disk even though the compressed download was
-// itself capped. Real release archives are tens of megabytes; this leaves headroom.
+// maxExtractBytes caps total uncompressed output, so a decompression bomb cannot
+// fill the disk though the download was capped. Release archives are tens of MB.
 const maxExtractBytes = 4 << 30 // 4 GiB
 
-// Release is a single pinned artifact for one platform: where to get it, the digest it
-// must match, its container format, and which executable inside it the caller wants. A
-// release is data, fixed at build time, so the set of artifacts that can be installed is
-// auditable and cannot be redirected at runtime.
+// Release is one pinned artifact for one platform: source, digest, container
+// format and wanted executable. It is fixed at build time, so the installable set
+// is auditable and cannot be redirected at runtime.
 type Release struct {
 	// URL is the https source of the release archive.
 	URL string
@@ -58,14 +53,13 @@ type Release struct {
 	SizeBytes int64
 	// Archive is the archive's container format.
 	Archive ArchiveKind
-	// BinName is the executable to locate inside the extracted archive (for example
-	// "flynn" or "flyctl.exe"). Its sibling files are extracted alongside it.
+	// BinName is the executable to locate in the extracted archive ("flynn",
+	// "flyctl.exe"). Its sibling files are extracted beside it.
 	BinName string
-	// Companions are further archives unpacked into the same directory as the main one,
-	// for a release whose upstream splits the executable from the libraries it needs (the
-	// CUDA llama.cpp build ships its CUDA runtime DLLs as a separate archive). Each is
-	// held to its own digest and size cap, and the install is atomic across all of them: a
-	// companion that fails verification leaves nothing at the target.
+	// Companions are archives unpacked into the same directory, for an upstream
+	// that ships libraries separately (CUDA llama.cpp ships its runtime DLLs
+	// apart). Each has its own digest and size cap, and the install is atomic over
+	// all of them: a companion failing verification leaves nothing at the target.
 	Companions []Companion
 }
 
@@ -81,15 +75,14 @@ type Companion struct {
 	Archive ArchiveKind
 }
 
-// InstallTo ensures rel's binary is present at targetDir and returns the absolute path
-// to it. It is idempotent: if the binary is already present at targetDir it is reused
-// without a download and reused is true. targetDir should be a version-specific path so
-// a new version installs alongside an old one rather than over it.
+// InstallTo ensures rel's binary is at targetDir and returns its absolute path. If
+// it is already there it is reused without a download and reused is true, so
+// targetDir should be version-specific to install new versions beside old ones.
 //
-// The archive is downloaded to a temporary file next to targetDir, verified against the
-// pinned digest by the download path, then extracted into a sibling staging directory
-// and moved into place only on success, so an interrupted or corrupt install never
-// leaves a half-populated directory at targetDir.
+// The archive downloads to a temp file beside targetDir, is digest-verified, is
+// extracted into a sibling staging directory and is moved into place only on
+// success, so an interrupted or corrupt install never leaves a half-populated
+// targetDir.
 func InstallTo(ctx context.Context, dl *fetch.Downloader, rel Release, targetDir string) (binPath string, reused bool, err error) {
 	if bin, ok := FindBinary(targetDir, rel.BinName); ok {
 		return bin, true, nil
@@ -133,8 +126,8 @@ func InstallTo(ctx context.Context, dl *fetch.Downloader, rel Release, targetDir
 	return finalBin, false, nil
 }
 
-// fetchAndExtract downloads one archive into a temporary file under parent, verifies it
-// against sha256, and unpacks it into staging. The temporary file is removed on every
+// fetchAndExtract downloads one archive to a temp file under parent, verifies it
+// against sha256 and unpacks it into staging. The temp file is removed on every
 // path, so a refused archive leaves no bytes behind.
 func fetchAndExtract(ctx context.Context, dl *fetch.Downloader, parent, staging, url, sha256 string, size int64, kind ArchiveKind) error {
 	tmpArchive, err := os.CreateTemp(parent, ".acquire-*.archive")
@@ -156,10 +149,9 @@ func fetchAndExtract(ctx context.Context, dl *fetch.Downloader, parent, staging,
 	return extract(kind, archivePath, staging)
 }
 
-// extract unpacks the archive at src into destDir using the standard library for the
-// kind, guarding against path traversal and oversized output. Only regular files and
-// directories are written; anything else (a symlink, a device) is skipped, so an entry
-// cannot redirect a later write outside destDir through a link.
+// extract unpacks src into destDir, guarding against path traversal and oversized
+// output. Only regular files and directories are written, so a symlink or device
+// entry cannot redirect a later write outside destDir.
 func extract(kind ArchiveKind, src, destDir string) error {
 	switch kind {
 	case ArchiveZip:
@@ -243,16 +235,16 @@ func extractTarGz(src, destDir string) error {
 			}
 			written += n
 		default:
-			// skip symlinks, hardlinks, devices: a link entry could redirect a write
-			// outside destDir, and a release archive needs none of them.
+			// A link entry could redirect a write outside destDir, and a release
+			// archive needs none.
 		}
 	}
 	return nil
 }
 
-// writeFile copies at most limit bytes from r into a new file at dst, creating parent
-// directories, and refuses once the extraction ceiling is reached. It returns the number
-// of bytes written.
+// writeFile copies at most limit bytes from r into a new file at dst, creating
+// parent directories, and returns the bytes written. It refuses past the
+// extraction ceiling.
 func writeFile(dst string, r io.Reader, limit int64) (n int64, err error) {
 	if limit <= 0 {
 		return 0, fault.New(fault.Terminal, "acquire_too_big", "acquire: archive exceeds the extraction size limit")
@@ -260,16 +252,16 @@ func writeFile(dst string, r io.Reader, limit int64) (n int64, err error) {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o750); err != nil {
 		return 0, err
 	}
-	// 0o600: extracted files are owner-only; the wanted binary is made executable after.
+	// 0o600: extracted files are owner-only; the wanted binary is made executable later.
 	out, err := openOut(dst)
 	if err != nil {
 		return 0, fault.Wrap(fault.Terminal, "acquire_create", err)
 	}
-	// A write that fails only at close leaves a truncated file that the install would
-	// otherwise put into service, so the close error fails the extraction.
+	// A write that fails only at close leaves a truncated file the install would
+	// put into service, so the close error fails the extraction.
 	defer closeerr.Keep(&err, out)
-	// Copy one byte past the limit so an entry that exactly fills the remaining budget is
-	// still detected as overflowing the ceiling rather than silently truncated.
+	// Copy one byte past the limit, so an entry that exactly fills the budget is
+	// detected as overflow rather than truncated.
 	n, err = io.Copy(out, io.LimitReader(r, limit+1))
 	if err != nil {
 		return n, fault.Wrap(fault.Terminal, "acquire_copy", err)
@@ -277,37 +269,34 @@ func writeFile(dst string, r io.Reader, limit int64) (n int64, err error) {
 	if n > limit {
 		return n, fault.New(fault.Terminal, "acquire_too_big", "acquire: archive exceeds the extraction size limit")
 	}
-	// The bytes have to be on disk before the file is put into service.
+	// The bytes must be on disk before the file goes into service.
 	if err := out.Sync(); err != nil {
 		return n, fault.Wrap(fault.Terminal, "acquire_sync", err)
 	}
 	return n, nil
 }
 
-// outFile is the part of *os.File writeFile drives; it is an interface so a test can make
-// the close fail, which a real filesystem will not do on demand.
+// outFile is the part of *os.File writeFile uses, an interface so a test can make
+// close fail.
 type outFile interface {
 	io.Writer
 	Sync() error
 	Close() error
 }
 
-// openOut creates the extraction target. It is a variable only so a test can substitute a
-// file whose close fails.
+// openOut creates the extraction target. It is a variable so a test can substitute
+// a file whose close fails.
 var openOut = func(dst string) (outFile, error) {
 	//nolint:gosec // G304: dst is confined under destDir by SafeJoin before this write
 	return os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 }
 
-// SafeJoin resolves an archive or manifest entry name under base and confirms the result
-// stays within base. An entry that is absolute or walks out of the tree with ".." is
-// rejected outright rather than re-rooted, so a hostile archive or manifest cannot place a
-// file outside the install directory and cannot disguise its intent by relying on path
-// collapsing. [filepath.IsLocal] also refuses a reserved Windows device name such as NUL
-// or COM1, which would otherwise open the device rather than create a file. The
-// containment is then re-checked against the resolved path as defense in depth. It is
-// exported so a caller writing files from an untrusted manifest (not only the archive
-// extractor) can apply the same guard.
+// SafeJoin resolves an archive or manifest entry name under base and confirms it
+// stays within base. An absolute name or one that climbs out with ".." is refused
+// rather than re-rooted, so a hostile entry cannot place a file outside the install
+// directory. [filepath.IsLocal] also refuses reserved Windows device names such as
+// NUL or COM1, which would open the device. Containment is re-checked on the
+// resolved path. Callers writing files from an untrusted manifest use it too.
 func SafeJoin(base, name string) (string, bool) {
 	slashed := strings.ReplaceAll(name, `\`, "/")
 	local := filepath.FromSlash(path.Clean(slashed))
@@ -322,17 +311,16 @@ func SafeJoin(base, name string) (string, bool) {
 	return dst, true
 }
 
-// TraversalError is the error SafeJoin's callers return when an entry escapes the install
-// directory, so the refusal reads the same whether it came from the archive extractor or a
-// manifest writer.
+// TraversalError is the error SafeJoin's callers return for an entry that escapes
+// the install directory, so the refusal reads the same from every caller.
 func TraversalError(name string) error {
 	return fault.New(fault.Forbidden, "acquire_traversal",
 		"acquire: refusing entry that escapes the install directory: "+name)
 }
 
-// FindBinary searches the extracted tree under root for a file named binName and returns
-// its path. A release archive may place the binary at the root or under a build
-// directory depending on the platform, so it is located by name rather than a fixed path.
+// FindBinary returns the path of the file named binName under root. Archives place
+// the binary at the root or in a build directory depending on platform, so it is
+// found by name.
 func FindBinary(root, binName string) (string, bool) {
 	var found string
 	_ = filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {

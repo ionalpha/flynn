@@ -1,16 +1,13 @@
 // Package integrations turns an Extension's "integration" surface into callable
-// tools. An integration is a set of named operations that share one base URL, one
-// auth scheme, and one governed HTTP transport. Each operation is a declarative
-// flow: the common case is a single request, but an operation may chain steps
-// (fetch, reshape, branch, loop) without any compiled code. Loading an Extension
-// that declares an integration surface mounts its operations as tools the agent can
-// call; the credential is resolved by name from the vault at call time and never
-// lives in the spec.
+// tools. An integration is a set of named operations sharing one base URL, one auth
+// scheme and one governed HTTP transport. Each operation is a declarative flow,
+// usually one request, possibly chained steps (fetch, reshape, branch, loop). The
+// credential is resolved by name from the vault at call time and never lives in the
+// spec.
 //
-// This package is the bridge between three lower layers: the Extension model and
-// its handler registry, the declarative flow interpreter, and the shared request
-// transport with its auth providers. It owns none of those mechanisms; it composes
-// them so that "an API integration" is just an Extension with an integration block.
+// It composes the Extension model and handler registry, the flow interpreter and the
+// shared request transport with its auth providers, so an API integration is an
+// Extension with an integration block.
 package integrations
 
 import (
@@ -32,20 +29,17 @@ import (
 	"github.com/ionalpha/flynn/secret"
 )
 
-// Spec is the typed "integration" surface block of an Extension manifest: the set
-// of operations the integration exposes. The connection details (base URL, auth)
-// live on the enclosing Extension spec and are shared by every operation, so they
-// are declared once.
+// Spec is the "integration" block of an Extension manifest: the operations it
+// exposes. Base URL and auth are on the enclosing Extension spec, declared once for
+// every operation.
 type Spec struct {
 	Operations []Operation `json:"operations"`
 }
 
 // Operation is one callable tool. Name and Description are what the model sees;
-// Input is the JSON Schema for the tool's arguments (the values the flow reads as
-// config); Flow is the declarative procedure that runs when the tool is invoked.
-// Role is the credential role the operation requires: when a credential store is
-// configured, a credential below this role is refused before the flow runs. An empty
-// role requires no particular privilege.
+// Input is the JSON Schema of the arguments the flow reads as config; Flow runs on
+// invocation. Role is the required credential role: with a credential store, a
+// credential below it is refused before the flow runs. An empty Role requires none.
 type Operation struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -54,9 +48,9 @@ type Operation struct {
 	Flow        json.RawMessage `json:"flow"`
 }
 
-// Denial records a credential refused for an operation because its role was below
-// the operation's required role. It is handed to the audit recorder (see WithAudit)
-// so a host can write it to the event log with the caller's principal.
+// Denial records a credential refused because its role was below the operation's.
+// The audit recorder (WithAudit) receives it, so a host can log it with the
+// caller's principal.
 type Denial struct {
 	Principal      string
 	Integration    string
@@ -66,13 +60,13 @@ type Denial struct {
 }
 
 // AuditFunc receives a Denial when a role check refuses a credential. The host wires
-// it to its audit log; the integrations package stays decoupled from any log backend.
+// it to its audit log, so this package depends on no log backend.
 type AuditFunc func(Denial)
 
-// Handler is the extension.Point for the "integration" surface. It builds an
-// integration's operations into tools backed by the flow interpreter and the shared
-// transport, tracks them per extension, and exposes them through the tool-bridge. It
-// is safe for concurrent use.
+// Handler is the extension.Point for the "integration" surface. It builds
+// operations into tools on the flow interpreter and the shared transport, tracks
+// them per extension and serves them to the tool bridge. It is safe for concurrent
+// use.
 type Handler struct {
 	transport *request.Transport
 	secrets   secret.Source
@@ -88,8 +82,8 @@ type Handler struct {
 // Option configures a Handler.
 type Option func(*Handler)
 
-// WithTransport sets the HTTP transport requests are dispatched through. The default
-// is a fresh transport (anti-SSRF dialer, bounded retries, per-host rate limiting).
+// WithTransport sets the HTTP transport. The default is a fresh one (anti-SSRF
+// dialer, bounded retries, per-host rate limiting).
 func WithTransport(t *request.Transport) Option {
 	return func(h *Handler) {
 		if t != nil {
@@ -98,8 +92,8 @@ func WithTransport(t *request.Transport) Option {
 	}
 }
 
-// WithSecrets sets the vault the auth providers resolve credentials from. The
-// default reads the process environment.
+// WithSecrets sets the vault auth providers resolve from. The default reads the
+// process environment.
 func WithSecrets(s secret.Source) Option {
 	return func(h *Handler) {
 		if s != nil {
@@ -113,10 +107,9 @@ func WithLimits(l flow.Limits) Option {
 	return func(h *Handler) { h.limits = l }
 }
 
-// WithCredentials sets the credential store used to resolve an integration's
-// credential by name or default and to enforce operation roles. Without it, the
-// extension's auth credential reference is treated as a direct vault reference and no
-// role is enforced (the zero-config behaviour).
+// WithCredentials sets the credential store that resolves an integration's
+// credential by name or default and enforces operation roles. Without it the auth
+// credential reference is a direct vault reference and no role is enforced.
 func WithCredentials(c *credential.Store) Option {
 	return func(h *Handler) { h.creds = c }
 }
@@ -126,8 +119,8 @@ func WithAudit(a AuditFunc) Option {
 	return func(h *Handler) { h.audit = a }
 }
 
-// WithClock sets the clock oauth2 token expiry is measured against (default
-// clock.System). Tests pass a manual clock for determinism.
+// WithClock sets the clock oauth2 token expiry is measured on (default
+// clock.System).
 func WithClock(c clock.Clock) Option {
 	return func(h *Handler) {
 		if c != nil {
@@ -151,8 +144,8 @@ func NewHandler(opts ...Option) *Handler {
 	return h
 }
 
-// RegisterWith registers an integration-surface handler on an extension registry, so
-// a store loading an Extension with an integration block turns it into tools.
+// RegisterWith registers an integration handler on reg, so loading an Extension with
+// an integration block yields tools.
 func RegisterWith(reg *extension.Registry, opts ...Option) error {
 	return reg.Register(NewHandler(opts...))
 }
@@ -160,10 +153,9 @@ func RegisterWith(reg *extension.Registry, opts ...Option) error {
 // Capability is the surface key this handler serves.
 func (h *Handler) Capability() string { return extension.SurfaceIntegration }
 
-// OnLoad builds the integration's operations into tools. It validates the surface
-// block and every operation flow up front, and constructs the auth provider from the
-// extension's auth spec, so a misconfigured integration is rejected at load rather
-// than failing at first call.
+// OnLoad builds the integration's operations into tools. It validates the block,
+// every flow and the auth spec up front, so a misconfigured integration fails at load
+// instead of at first call.
 func (h *Handler) OnLoad(_ context.Context, m extension.Mount) error {
 	var spec Spec
 	if len(m.Block) > 0 {
@@ -175,10 +167,8 @@ func (h *Handler) OnLoad(_ context.Context, m extension.Mount) error {
 		return fault.New(fault.Terminal, "integration_no_ops", "integration: surface declares no operations")
 	}
 
-	// Validate the auth configuration up front (scheme plus its required fields, e.g.
-	// an api_key needs a parameter name, an oauth2 scheme needs a token endpoint) so a
-	// misconfigured integration is rejected at load. The credential value itself is
-	// resolved per call.
+	// The auth configuration is validated here (an api_key needs a parameter name, an
+	// oauth2 scheme a token endpoint); the credential value is resolved per call.
 	if _, err := providerFor(m.Spec.Auth, h.transport, h.clk); err != nil {
 		return err
 	}
@@ -236,8 +226,7 @@ func (h *Handler) OnUnload(_ context.Context, id string) error {
 	return nil
 }
 
-// Tools returns the tools mounted for an extension id, satisfying
-// extension.ToolSource so the loader surfaces them to the agent.
+// Tools returns the tools mounted for an extension id, as extension.ToolSource.
 func (h *Handler) Tools(id string) []mission.Tool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -247,9 +236,9 @@ func (h *Handler) Tools(id string) []mission.Tool {
 	return out
 }
 
-// opTool is one operation exposed as a mission.Tool. Invoking it runs the
-// operation's flow with the tool input as config and returns the flow result as
-// JSON. The binding resolves the credential and builds the request path per call.
+// opTool is one operation as a mission.Tool. It runs the flow with the tool input as
+// config and returns the result as JSON. The credential and request path resolve per
+// call.
 type opTool struct {
 	name    string
 	desc    string
@@ -261,8 +250,7 @@ type opTool struct {
 
 var _ mission.Tool = (*opTool)(nil)
 
-// Def describes the tool to the model. An operation with no declared input schema
-// accepts a free-form object.
+// Def describes the tool to the model. With no input schema it accepts any object.
 func (t *opTool) Def() llm.Tool {
 	schema := t.input
 	if len(schema) == 0 {
@@ -272,8 +260,7 @@ func (t *opTool) Def() llm.Tool {
 }
 
 // Invoke runs the operation flow with the decoded input as config and returns the
-// result encoded as JSON. A flow error (a failed request, a tripped cap) is returned
-// to the caller classified, never swallowed.
+// result as JSON. A flow error is returned classified.
 func (t *opTool) Invoke(ctx context.Context, input json.RawMessage) (string, error) {
 	config := map[string]any{}
 	if len(input) > 0 {
@@ -292,11 +279,10 @@ func (t *opTool) Invoke(ctx context.Context, input json.RawMessage) (string, err
 	return string(out), nil
 }
 
-// binding holds the per-extension request context shared by an integration's
-// operations: the transport, vault, base URL and egress envelope, the auth spec, and
-// (optionally) the credential store and audit recorder. It resolves the credential
-// and assembles the flow interpreter on each call, so a default change or a credential
-// rotation takes effect without reloading the extension.
+// binding is the per-extension request context an integration's operations share:
+// transport, vault, base URL, egress envelope, auth spec, and optional credential
+// store and audit recorder. It resolves the credential and builds the interpreter
+// per call, so a default change or credential rotation applies without a reload.
 type binding struct {
 	transport *request.Transport
 	secrets   secret.Source
@@ -308,24 +294,20 @@ type binding struct {
 	creds     *credential.Store
 	audit     AuditFunc
 
-	// providerMu guards providers, the per-(auth type, vault reference) cache of built
-	// auth providers. The binding outlives every call, so caching the provider here lets
-	// a stateful one (oauth2) keep its access-token cache across operations instead of
-	// re-fetching a token from the endpoint on every call.
+	// providerMu guards providers, built auth providers keyed by (auth type, vault
+	// reference). The binding outlives every call, so a stateful provider (oauth2)
+	// keeps its access token across operations.
 	providerMu sync.Mutex
 	providers  map[string]auth.Provider
 }
 
-// cachedProvider returns the auth provider for a call, building it once per distinct
-// (auth type, vault reference) key and reusing it thereafter. Reuse is what preserves a
-// stateful provider's token cache: the oauth2 provider fetches a token lazily on first
-// Apply and refreshes it near expiry, so a fresh provider per call would force an extra
-// token-endpoint round trip every time. The static schemes (none/basic/bearer/api_key)
-// resolve their secret from the vault on each Apply and hold no state, so caching them
-// is harmless. A credential rotation that changes the vault reference or auth type keys
-// a new entry and rebuilds; a same-reference secret rotation is picked up when the
-// provider next resolves the secret from the vault (and, for oauth2, when the cached
-// token expires). build is pure and cheap (no network), so it runs under the lock.
+// cachedProvider returns the provider for (authType, ref), building it once. Reuse
+// keeps oauth2's token cache, which fetches lazily and refreshes near expiry, so a
+// fresh provider per call would add a token round trip each time. The static schemes
+// resolve their secret on each Apply and hold no state. A rotation changing the
+// reference or type keys a new entry; a same-reference rotation is read on the next
+// resolve (for oauth2, when the token expires). build makes no network call, so it
+// runs under the lock.
 func (b *binding) cachedProvider(authType, ref string, build func() (auth.Provider, error)) (auth.Provider, error) {
 	key := authType + "\x00" + ref
 	b.providerMu.Lock()
@@ -344,7 +326,7 @@ func (b *binding) cachedProvider(authType, ref string, build func() (auth.Provid
 	return p, nil
 }
 
-// run resolves the auth provider (enforcing the required role) and runs the flow.
+// run resolves the auth provider, enforcing the required role, and runs the flow.
 func (b *binding) run(ctx context.Context, f flow.Flow, required credential.Role, config map[string]any) (any, error) {
 	provider, err := b.resolveProvider(ctx, required)
 	if err != nil {
@@ -356,21 +338,19 @@ func (b *binding) run(ctx context.Context, f flow.Flow, required credential.Role
 }
 
 // resolveProvider builds the auth provider for a call. With no credential store, or
-// for an integration that references no credential (a public API authenticating with
-// "none"), the auth spec is used directly and no role is checked. Otherwise the
-// reference selects a credential by name or default, the credential's role must
-// permit the operation's required role (a refusal is audited and returned as a
-// Forbidden fault), and the provider is built against the resolved credential's vault
-// reference.
+// no credential reference (a public API on "none"), the auth spec is used and no
+// role is checked. Otherwise the reference selects a credential by name or default,
+// its role must permit the required one (a refusal is audited and returned as
+// Forbidden), and the provider uses the credential's vault reference.
 func (b *binding) resolveProvider(ctx context.Context, required credential.Role) (auth.Provider, error) {
 	if b.creds == nil || b.auth.CredentialRef == "" {
 		return b.cachedProvider(b.auth.Type, b.auth.CredentialRef, func() (auth.Provider, error) {
 			return providerFor(b.auth, b.transport, b.clk)
 		})
 	}
-	// Resolving the credential and checking its role runs on every call: the credential
-	// is the authorization gate (a rotation, a role change, or a principal that may not
-	// use it must take effect immediately), and only the built provider is cached.
+	// The credential is the authorization gate, so it is resolved and its role
+	// checked every call: a rotation, a role change or a disallowed principal takes
+	// effect at once. Only the built provider is cached.
 	cred, err := b.creds.Resolve(ctx, b.auth.CredentialRef)
 	if err != nil {
 		return nil, fault.Wrap(fault.Terminal, "integration_credential", err)
@@ -390,9 +370,9 @@ func (b *binding) resolveProvider(ctx context.Context, required credential.Role)
 			fmt.Sprintf("credential %q with role %q may not perform an action requiring role %q (principal %q)",
 				cred.Ref(), cred.Spec.Role, required, principal))
 	}
-	// The effective auth type may be overridden by the credential (see
-	// providerForCredential); include it and the effective vault reference in the key so
-	// a credential that changes either rebuilds rather than reusing a stale provider.
+	// The credential may override the auth type (providerForCredential), so the key
+	// holds the effective type and vault reference and a change rebuilds the
+	// provider.
 	effType := b.auth.Type
 	if cred.Spec.AuthType != "" {
 		effType = cred.Spec.AuthType

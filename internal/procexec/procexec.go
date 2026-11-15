@@ -1,20 +1,18 @@
 // Package procexec constructs every child process Flynn starts through os/exec.
 //
-// On Windows a console program started by a parent that has no console (Flynn run from a
-// launcher, a service, an editor's task runner, or any GUI host) is given a console of its
-// own, and unless the launch asks for none that console is a window on the user's screen.
-// The window flashes for as long as the child lives, and a tool-heavy agent run opens one
-// per command. The request is a creation flag, set on the command before it starts, so it
-// has to be on every command; a single call site that builds its command with
-// [os/exec.Command] directly brings the windows back. The rigor package therefore fails
-// the build on a direct call outside this package (see its TestChildProcessesAreStartedThroughProcexec),
-// and this package is the only place the flag is spelled.
+// On Windows, a console program started by a parent with no console (a launcher, a
+// service, an editor task runner, a GUI host) gets a console of its own, shown as a
+// window unless the launch asks for none. The window stays for the child's lifetime,
+// one per command in a tool-heavy run. The request is a creation flag set before
+// start, so it must be on every command, and one direct [os/exec.Command] call brings
+// the windows back. internal/rigor fails the build on a direct call outside this
+// package (TestChildProcessesAreStartedThroughProcexec), and only this package spells
+// the flag.
 //
-// A command built here still inherits the parent's console when there is one; the flag only
-// withholds a new window, so output, exit codes and the pipes a caller wires are unchanged.
-// The one start that must reach the user's console, the editor handoff, is the documented
-// exemption in that gate rather than a variant here, because a variant that skips the flag
-// is the mistake the gate exists to stop.
+// A command built here still inherits the parent's console when there is one; output,
+// exit codes and pipes are unchanged. The editor handoff, which must reach the user's
+// console, is an exemption in that gate instead of a variant here, because a variant
+// without the flag is the mistake the gate stops.
 package procexec
 
 import (
@@ -22,17 +20,16 @@ import (
 	"os/exec" //nolint:depguard // this package is the spawn point the rest of the module goes through
 )
 
-// Command returns the command for name and its arguments, configured to open no console
-// window on Windows. It is [os/exec.Command] with that one difference; on every other
-// platform it is identical.
+// Command is [os/exec.Command] configured to open no console window on Windows. On
+// other platforms it is identical.
 func Command(name string, arg ...string) *exec.Cmd {
 	c := exec.Command(name, arg...) //nolint:gosec // the caller owns the vetting of name and arg, as with os/exec
 	c.SysProcAttr = hideWindow(c.SysProcAttr)
 	return c
 }
 
-// CommandContext is [Command] bound to ctx: the process is killed if ctx ends before it
-// does, exactly as [os/exec.CommandContext].
+// CommandContext is [Command] bound to ctx: the process is killed if ctx ends first,
+// as with [os/exec.CommandContext].
 func CommandContext(ctx context.Context, name string, arg ...string) *exec.Cmd {
 	c := exec.CommandContext(ctx, name, arg...) //nolint:gosec // the caller owns the vetting of name and arg, as with os/exec
 	c.SysProcAttr = hideWindow(c.SysProcAttr)

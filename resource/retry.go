@@ -7,28 +7,22 @@ import (
 	"runtime"
 )
 
-// maxConflictRetries bounds the optimistic-concurrency retry loops in Update and
-// UpdateByID. Each retry re-reads, so a retry is consumed only when another
-// writer landed in between; the expected contention on any one resource is a
-// handful of writers, and the bound guards a pathological writer that never
-// stops, not an expected contention level.
+// maxConflictRetries bounds Update's retry loop. A retry is spent only when another
+// writer landed in between, and contention is a handful of writers, so the bound
+// stops a writer that never stops.
 const maxConflictRetries = 1000
 
-// ErrSkipUpdate is returned by an Update mutate function to end the retry loop
-// without writing: the state the mutation observed makes the write unnecessary
-// (a park already cleared, a limit already exceeded). Update returns the
-// resource as read and a nil error.
+// ErrSkipUpdate is returned by a mutate function to end Update without writing because
+// the observed state makes the write unnecessary. Update returns the resource as read
+// and nil.
 var ErrSkipUpdate = errors.New("resource: skip update")
 
-// Update applies mutate to the resource addressed by (kind, scope, name) under
-// optimistic concurrency: read, mutate, Put, and on ErrConflict re-read and
-// reapply against the fresh version. It is the one conflict-retry policy for
-// read-modify-write updates, so every caller converges under contention the same
-// way instead of hand-rolling its own bound and yield. mutate sees a fresh copy
-// each attempt and must be safe to run more than once. A read error, a mutate
-// error other than ErrSkipUpdate, and a non-conflict write error end the loop
-// and are returned as-is (a caller maps ErrNotFound to its own semantics). An
-// exhausted retry budget returns an error matching errors.Is ErrConflict.
+// Update applies mutate to the resource at (kind, scope, name) under optimistic
+// concurrency, re-reading and reapplying on ErrConflict. It is the one
+// read-modify-write retry policy, so every caller converges the same way. mutate
+// gets a fresh copy each attempt and must be safe to rerun. Read errors, mutate
+// errors other than ErrSkipUpdate and non-conflict write errors return as-is; an
+// exhausted budget returns an error matching ErrConflict.
 func Update(ctx context.Context, store Store, kind string, scope Scope, name string, mutate func(*Resource) error) (Resource, error) {
 	return retryOnConflict(ctx, store, kind+"/"+name, mutate, func(ctx context.Context) (Resource, error) {
 		return store.Get(ctx, kind, scope, name)
@@ -57,9 +51,7 @@ func retryOnConflict(ctx context.Context, store Store, what string, mutate func(
 		}
 		out, err := store.Put(ctx, r)
 		if errors.Is(err, ErrConflict) {
-			// Put with the read SyncVersion is a compare-and-set: a concurrent
-			// writer landed in between, so yield to let it settle, then re-read
-			// and reapply against the new version.
+			// A concurrent writer landed; yield so it settles, then re-read.
 			lastErr = err
 			runtime.Gosched()
 			continue

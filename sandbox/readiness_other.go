@@ -7,9 +7,7 @@ import (
 	"runtime"
 )
 
-// checkHost reports the namespace sandbox as unavailable: it is built from Linux
-// namespaces, so no other platform can pass this check. The platforms that confine
-// commands another way do so through their own mechanisms, not this ladder.
+// checkHost reports unavailable, because the namespace sandbox is Linux-only.
 func checkHost(_ context.Context, _ needs) Readiness {
 	return Readiness{
 		Cause:       CauseUnsupportedPlatform,
@@ -20,6 +18,5 @@ func checkHost(_ context.Context, _ needs) Readiness {
 	}
 }
 
-// forgetConfinementPass has nothing to forget off Linux: there is no gate to remember a
-// pass.
+// forgetConfinementPass is a no-op, because no gate remembers a pass here.
 func (*Local) forgetConfinementPass() {}

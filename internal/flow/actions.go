@@ -10,9 +10,9 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// execHTTP renders and performs one request, returning a map output of
-// {status, headers, body} so later steps reference steps.<id>.body and .status by
-// path. The response payload is checked against the cap before it is exposed.
+// execHTTP performs one request and returns {status, headers, body}, so later steps
+// read steps.<id>.body and .status. The payload is checked against the cap before
+// it is exposed.
 func (r *run) execHTTP(ctx context.Context, a *compiledHTTP, s *scope) (any, error) {
 	if r.in.http == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_http", "flow: http step but no transport is configured")
@@ -68,8 +68,8 @@ func (r *run) execHTTP(ctx context.Context, a *compiledHTTP, s *scope) (any, err
 	}, nil
 }
 
-// execTransform reshapes a source value. The source (if any) is bound as "it" in a
-// child scope so the mode expressions read the element under transformation.
+// execTransform binds the source as "it" in a child scope, so mode expressions read
+// the element being transformed.
 func (r *run) execTransform(a *compiledTransform, s *scope) (any, error) {
 	var input any
 	if a.source != nil {
@@ -129,8 +129,7 @@ func (r *run) execTransform(a *compiledTransform, s *scope) (any, error) {
 	}
 }
 
-// execCondition evaluates the predicate and runs the matching branch, propagating a
-// return out of the branch.
+// execCondition runs the matching branch, propagating a return out of it.
 func (r *run) execCondition(ctx context.Context, a *compiledCondition, s *scope) error {
 	cond, err := evalNode(a.ifExpr, s)
 	if err != nil {
@@ -144,14 +143,11 @@ func (r *run) execCondition(ctx context.Context, a *compiledCondition, s *scope)
 	return err
 }
 
-// execLoop iterates a body over a list or a fixed count, binding the element (as
-// As, default "item") and the zero-based "index" in each iteration's scope. Every
-// iteration is charged against the loop budget and re-checks the time and
-// cancellation caps, so a loop with an empty or collect-only body still stops on a
-// deadline or a cancelled context. When Collect is set, its value per iteration is
-// gathered into the returned list. A fixed Count is iterated by index rather than
-// materialised, so a large declared count cannot allocate before the loop cap
-// applies.
+// execLoop runs the body over a list or a count, binding the element (As, default
+// "item") and the zero-based "index". Each iteration charges the loop budget and
+// rechecks the time and cancellation caps, so an empty or collect-only body still
+// stops on a deadline. A Count is iterated by index, never materialized, so a huge
+// count cannot allocate before the loop cap applies.
 func (r *run) execLoop(ctx context.Context, a *compiledLoop, s *scope) (any, error) {
 	overMode := a.over != nil
 	var list []any
@@ -171,8 +167,8 @@ func (r *run) execLoop(ctx context.Context, a *compiledLoop, s *scope) (any, err
 
 	var collected []any
 	if a.collect != nil {
-		// The loop cap bounds how many values can ever be collected, so the capacity
-		// is bounded too even when a huge count or list is declared.
+		// The loop cap bounds how many values are collected, so it bounds capacity
+		// too.
 		collected = make([]any, 0, minInt(n, r.limits.MaxLoopIterations))
 	}
 
@@ -194,8 +190,7 @@ func (r *run) execLoop(ctx context.Context, a *compiledLoop, s *scope) (any, err
 			return nil, err
 		}
 		if returned {
-			// The flow is stopping; do not collect or run Collect against this
-			// partially executed iteration's scope.
+			// The flow is stopping; do not run Collect against a partial iteration.
 			break
 		}
 		if a.collect != nil {
@@ -216,7 +211,6 @@ func minInt(a, b int) int {
 	return b
 }
 
-// execCall invokes another tool or extension and returns its result.
 func (r *run) execCall(ctx context.Context, a *compiledCall, s *scope) (any, error) {
 	if r.in.tools == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_tools", "flow: call step but no tool caller is configured")
@@ -240,9 +234,8 @@ func (r *run) execCall(ctx context.Context, a *compiledCall, s *scope) (any, err
 	return r.in.tools.Call(ctx, tool, raw)
 }
 
-// execAssert evaluates the condition and stops the flow with a terminal fault when it is
-// not truthy, so a verification step fails loudly rather than letting the flow continue
-// on a false outcome. It produces no output.
+// execAssert stops the flow with a terminal fault when the condition is not truthy,
+// so a verification step fails loudly.
 func (r *run) execAssert(a *compiledAssert, s *scope) error {
 	v, err := evalNode(a.that, s)
 	if err != nil {
@@ -260,9 +253,8 @@ func (r *run) execAssert(a *compiledAssert, s *scope) error {
 	return fault.New(fault.Terminal, "flow_assertion", msg)
 }
 
-// execExec runs a command through the injected runner (the sandbox) and returns
-// {exitCode, output}. A nonzero exit fails the step unless the action allows it, so a
-// failed command stops the flow by default rather than being silently ignored.
+// execExec runs a command through the injected sandbox runner and returns
+// {exitCode, output}. A nonzero exit fails the step unless the action allows it.
 func (r *run) execExec(ctx context.Context, a *compiledExec, s *scope) (any, error) {
 	if r.in.exec == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_exec", "flow: exec step but no runner is configured")
@@ -284,14 +276,12 @@ func (r *run) execExec(ctx context.Context, a *compiledExec, s *scope) (any, err
 	return map[string]any{"exitCode": float64(res.ExitCode), "output": res.Output}, nil
 }
 
-// maxFaultOutputBytes bounds how much command output a failure fault carries, so a chatty
-// command cannot produce an unbounded error message.
+// maxFaultOutputBytes bounds the command output a failure fault carries.
 const maxFaultOutputBytes = 2000
 
-// execFailedFault builds the terminal fault for a command that exited nonzero when the
-// step did not allow it. It carries the command and a bounded tail of its output, so the
-// failure is diagnosable from the error itself rather than an opaque exit code. The tail is
-// kept because a command's reason for failing is usually printed last.
+// execFailedFault builds the fault for a disallowed nonzero exit, carrying the
+// command and the tail of its output, where a failure reason is usually printed, so
+// the error is diagnosable alone.
 func execFailedFault(cmd string, res ExecResult) error {
 	msg := fmt.Sprintf("flow: command exited %d: %s", res.ExitCode, cmd)
 	if out := strings.TrimSpace(res.Output); out != "" {
@@ -303,8 +293,8 @@ func execFailedFault(cmd string, res ExecResult) error {
 	return fault.New(fault.Terminal, "flow_exec_failed", msg)
 }
 
-// execDependency ensures the named program is present through the injected resolver and
-// returns {path} to run it, so a later exec step can invoke it.
+// execDependency resolves the named program and returns {path}, so a later exec
+// step can run it.
 func (r *run) execDependency(ctx context.Context, a *compiledDependency, s *scope) (any, error) {
 	if r.in.deps == nil {
 		return nil, fault.New(fault.Terminal, "flow_no_deps", "flow: dependency step but no resolver is configured")
@@ -323,9 +313,8 @@ func (r *run) execDependency(ctx context.Context, a *compiledDependency, s *scop
 	return map[string]any{"path": path}, nil
 }
 
-// execConfirm shows the user the rendered message and waits for them to approve before the
-// flow continues. A declined or unanswerable confirmation returns an error, so the flow
-// stops rather than proceeding without consent. It produces no output.
+// execConfirm shows the rendered message and waits for approval. A declined or
+// unanswerable confirmation is an error, so the flow never proceeds without consent.
 func (r *run) execConfirm(ctx context.Context, a *compiledConfirm, s *scope) error {
 	if r.in.confirm == nil {
 		return fault.New(fault.Terminal, "flow_no_confirm", "flow: confirm step but no prompter is configured")
@@ -337,11 +326,10 @@ func (r *run) execConfirm(ctx context.Context, a *compiledConfirm, s *scope) err
 	return r.in.confirm.Confirm(ctx, msg)
 }
 
-// execSecret materializes the referenced secret into the named sink through the credential
-// sink port. It renders only the reference, the sink, and the target, and reports the step
-// to the observer by the reference name and sink, never the value: the value is resolved
-// and delivered entirely inside the sink, so it never enters the flow, the rendered
-// command, the step output, or a log. It produces no output.
+// execSecret materializes the referenced secret into the named sink. It renders
+// only reference, sink and target, and reports the step by reference and sink. The
+// sink resolves and delivers the value, so it never enters the flow, the command,
+// the step output or a log.
 func (r *run) execSecret(ctx context.Context, a *compiledSecret, s *scope) error {
 	if r.in.sink == nil {
 		return fault.New(fault.Terminal, "flow_no_sink", "flow: secret step but no credential sink is configured")
@@ -368,9 +356,8 @@ func (r *run) execSecret(ctx context.Context, a *compiledSecret, s *scope) error
 	return nil
 }
 
-// evalNode evaluates a compiled expression against a scope, surfacing an
-// evaluation error as a terminal fault. Parsing happened at compile, so there is
-// no parse path here.
+// evalNode evaluates a compiled expression, returning an evaluation error as a
+// terminal fault.
 func evalNode(n node, s *scope) (any, error) {
 	v, err := n.eval(s)
 	if err != nil {

@@ -1,7 +1,5 @@
-// Package telegram adapts the Telegram Bot API to the inbox Source and Sink ports.
-// It receives messages by long-polling getUpdates and replies with sendMessage,
-// using only the standard library so it ships in the single static binary with no
-// extra dependencies.
+// Package telegram adapts the Telegram Bot API to the inbox Source and Sink ports. It
+// long-polls getUpdates and replies with sendMessage, using only the standard library.
 package telegram
 
 import (
@@ -20,27 +18,23 @@ import (
 	"github.com/ionalpha/flynn/inbox"
 )
 
-// name is the source's stable identity, matching the Sink so replies route back.
+// name is the source's identity, matching the Sink so replies route back.
 const name = "telegram"
 
-// defaultAPIBase is the Telegram Bot API root. Override it in tests with
-// WithBaseURL.
 const defaultAPIBase = "https://api.telegram.org"
 
-// defaultPollTimeout is how long getUpdates is asked to hold a request open
-// waiting for a message (server-side long poll), so an idle bot makes one blocked
-// request rather than a busy loop.
+// defaultPollTimeout is how long getUpdates asks the server to hold a request open, so
+// an idle bot makes one blocked request instead of a busy loop.
 const defaultPollTimeout = 30 * time.Second
 
 // retryBackoff paces reconnection after a transient getUpdates failure.
 const retryBackoff = 2 * time.Second
 
-// maxMessageLen keeps each sendMessage under Telegram's per-message limit. A longer
-// reply is split across messages rather than rejected.
+// maxMessageLen keeps each sendMessage under Telegram's 4096-character limit. A longer
+// reply is split across messages.
 const maxMessageLen = 4000
 
-// Bot is a Telegram bot adapted to the inbox ports: it is both a Source (inbound
-// messages) and a Sink (outbound replies). Construct it with New.
+// Bot is a Telegram bot that is both an inbox Source and an inbox Sink.
 type Bot struct {
 	token   string
 	baseURL string
@@ -52,9 +46,8 @@ type Bot struct {
 // Option configures a Bot.
 type Option func(*Bot)
 
-// WithHTTPClient sets the HTTP client used for API calls. The default client has no
-// timeout because getUpdates long-polls; per-request deadlines are applied
-// internally instead.
+// WithHTTPClient sets the HTTP client for API calls. The default client has no timeout
+// because getUpdates long-polls; each request gets its own deadline instead.
 func WithHTTPClient(c *http.Client) Option {
 	return func(b *Bot) {
 		if c != nil {
@@ -81,9 +74,8 @@ func WithPollTimeout(d time.Duration) Option {
 	}
 }
 
-// WithClock sets the clock that paces reconnect backoff, so a test drives retry
-// timing with a Manual clock instead of sleeping. Production leaves the default
-// System clock.
+// WithClock sets the clock that paces reconnect backoff, so a test drives retry timing
+// with a Manual clock instead of sleeping.
 func WithClock(clk clock.Timing) Option {
 	return func(b *Bot) {
 		if clk != nil {
@@ -92,8 +84,8 @@ func WithClock(clk clock.Timing) Option {
 	}
 }
 
-// New builds a Telegram bot for the given token. The token is required and is never
-// logged or wrapped into an error.
+// New builds a Telegram bot for token. The token is required and never logged or
+// wrapped into an error.
 func New(token string, opts ...Option) (*Bot, error) {
 	if token == "" {
 		return nil, errors.New("telegram: empty bot token")
@@ -114,10 +106,9 @@ func New(token string, opts ...Option) (*Bot, error) {
 // Name identifies the source and its paired sink.
 func (b *Bot) Name() string { return name }
 
-// Receive long-polls getUpdates and streams each text message as an inbox.Spec
-// until ctx is cancelled, then closes the returned channel. Transient request
-// failures are retried after a short backoff rather than ending the stream. The
-// Spec's Source is left for the ingester to stamp.
+// Receive streams each text message as an inbox.Spec until ctx is cancelled, then
+// closes the channel. A failed poll is retried after a backoff instead of ending the
+// stream. The Spec's Source is left for the ingester to stamp.
 func (b *Bot) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 	out := make(chan inbox.Spec)
 	go func() {
@@ -152,8 +143,8 @@ func (b *Bot) Receive(ctx context.Context) (<-chan inbox.Spec, error) {
 	return out, nil
 }
 
-// Send delivers a reply to a conversation with sendMessage, splitting an over-long
-// reply into several messages so a large answer is delivered in full.
+// Send delivers a reply with sendMessage, splitting an over-long one so it arrives in
+// full.
 func (b *Bot) Send(ctx context.Context, conversation, text string) error {
 	for _, part := range splitMessage(text, maxMessageLen) {
 		body := map[string]string{"chat_id": conversation, "text": part}
@@ -165,9 +156,8 @@ func (b *Bot) Send(ctx context.Context, conversation, text string) error {
 	return nil
 }
 
-// splitMessage breaks s into chunks of at most limit runes, splitting on rune
-// boundaries so a multi-byte character is never cut. An empty string yields no
-// chunks, so nothing is sent.
+// splitMessage breaks s into chunks of at most limit runes, so a multi-byte character
+// is never cut. An empty string yields no chunks.
 func splitMessage(s string, limit int) []string {
 	if s == "" {
 		return nil
@@ -185,9 +175,8 @@ func splitMessage(s string, limit int) []string {
 	return parts
 }
 
-// getUpdates fetches the next batch of updates at or after offset, asking the
-// server to hold the request open for the poll timeout. The request deadline sits
-// above the poll timeout so the client never cancels a poll the server is honoring.
+// getUpdates fetches updates at or after offset. The request deadline sits above the
+// poll timeout, so the client never cancels a poll the server is still honouring.
 func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 	pollSecs := int(b.poll / time.Second)
 	q := url.Values{}
@@ -208,7 +197,6 @@ func (b *Bot) getUpdates(ctx context.Context, offset int64) ([]update, error) {
 	return updates, nil
 }
 
-// post calls an API method with a JSON body and decodes result into out.
 func (b *Bot) post(ctx context.Context, method string, body, out any) error {
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -222,9 +210,8 @@ func (b *Bot) post(ctx context.Context, method string, body, out any) error {
 	return b.do(req, out)
 }
 
-// do executes req and decodes the Telegram envelope, returning an error when the
-// transport fails, the HTTP status is not 200, or the API reports ok=false. The bot
-// token is never included in an error.
+// do executes req and decodes the Telegram envelope. A transport failure, a non-200
+// status and ok=false are errors, and none of them includes the bot token.
 func (b *Bot) do(req *http.Request, out any) error {
 	resp, err := b.http.Do(req)
 	if err != nil {
@@ -259,13 +246,12 @@ func (b *Bot) do(req *http.Request, out any) error {
 	return nil
 }
 
-// method builds the API URL for a bot method. The token lives in the path, as the
-// Bot API requires; callers must keep it out of logs.
+// method builds the API URL for a bot method. The token is in the path, as the Bot API
+// requires, so the URL must be kept out of logs.
 func (b *Bot) method(m string) string {
 	return b.baseURL + "/bot" + b.token + "/" + m
 }
 
-// update is one Telegram update; only text messages are consumed.
 type update struct {
 	UpdateID int64    `json:"update_id"`
 	Message  *message `json:"message"`
@@ -277,9 +263,9 @@ type message struct {
 	Text string `json:"text"`
 }
 
-// sender returns the author's numeric user id, empty when the message names none. The id
-// never changes, while a username is the author's to rename and can be claimed by someone
-// else afterwards, so an allow-list that compares senders needs the id.
+// sender returns the author's numeric user id, empty when the message names none. An
+// allow-list needs the id because it never changes, while a username can be renamed
+// and claimed by someone else.
 func (m *message) sender() string {
 	if m.From == nil {
 		return ""
@@ -296,7 +282,7 @@ type user struct {
 	Username string `json:"username"`
 }
 
-// guards: a *Bot is both an inbox Source and an inbox Sink.
+// A *Bot is both an inbox Source and an inbox Sink.
 var (
 	_ inbox.Source = (*Bot)(nil)
 	_ inbox.Sink   = (*Bot)(nil)

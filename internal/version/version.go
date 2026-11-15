@@ -11,11 +11,10 @@ var Version = "0.0.0-dev"
 // devVersion is the source default, present when no release version was stamped in.
 const devVersion = "0.0.0-dev"
 
-// released returns the release version this binary carries, or "" when it is an
-// unstamped development build. A goreleaser build sets Version through ldflags; a
-// `go install <module>@<version>` build does not, but Go records the module version in
-// the build info, so that is used as the fallback. "(devel)" is Go's placeholder for a
-// build from a local checkout and is treated as unversioned.
+// released returns the release version, or "" for an unstamped development build.
+// goreleaser sets Version through ldflags; a `go install <module>@<version>` build does
+// not, so the module version in the build info is the fallback. Go's "(devel)" marks a
+// local checkout build and counts as unversioned.
 func released() string {
 	if Version != devVersion {
 		return Version
@@ -26,8 +25,6 @@ func released() string {
 	return ""
 }
 
-// moduleVersion returns v when it is a usable module version, or "" for an absent
-// version or Go's "(devel)" placeholder (a build from a local checkout).
 func moduleVersion(v string) string {
 	if v == "" || v == "(devel)" {
 		return ""
@@ -35,16 +32,14 @@ func moduleVersion(v string) string {
 	return v
 }
 
-// IsDev reports whether this is an unstamped development build (no release version linked
-// in). A dev build keeps its durable state apart from a release build's, so an
-// in-progress schema change on a branch never touches a real installation. A build
-// installed with `go install ...@<version>` is a real release, not a dev build.
+// IsDev reports whether this is an unstamped development build. A dev build keeps its
+// durable state apart from a release build's, so a schema change on a branch never
+// touches a real installation. A `go install ...@<version>` build counts as a release.
 func IsDev() bool { return released() == "" }
 
-// Revision returns the short VCS revision the binary was built from, or "" when it was
-// not built from a checkout the toolchain could stamp (a released archive, a
-// `go install`, or a build with VCS stamping disabled). A diagnostic artifact records it
-// so a captured profile can be read against the source that produced it.
+// Revision returns the short VCS revision the binary was built from, or "" when the
+// toolchain stamped none (a released archive, a `go install`, VCS stamping disabled).
+// Diagnostic artifacts record it so a profile can be read against its source.
 func Revision() string {
 	bi, ok := debug.ReadBuildInfo()
 	if !ok {
@@ -53,9 +48,8 @@ func Revision() string {
 	return revisionFrom(bi.Settings)
 }
 
-// revisionFrom picks the VCS revision out of a build's settings and shortens it to the
-// 12-character form used everywhere it is displayed. It returns "" when the toolchain
-// stamped no revision, which is the case for a released archive or a `go install` build.
+// revisionFrom returns the stamped VCS revision shortened to the 12 characters used for
+// display, or "" when none was stamped.
 func revisionFrom(settings []debug.BuildSetting) string {
 	for _, s := range settings {
 		if s.Key == "vcs.revision" && s.Value != "" {
@@ -68,15 +62,12 @@ func revisionFrom(settings []debug.BuildSetting) string {
 	return ""
 }
 
-// buildRevision is where String reads the revision from. It is a package-level variable so
-// both shapes of a development build's version string, with a VCS stamp and without one,
-// can be exercised from a test binary, which itself carries no stamp. Production always
-// reads the real build info through Revision.
+// buildRevision is a variable so a test binary, which carries no VCS stamp, can
+// exercise both forms of a development version string.
 var buildRevision = Revision
 
-// String returns a human-readable version: the release version when one is present,
-// otherwise the source default with the VCS revision appended when the binary was built
-// from a git checkout.
+// String returns the release version when present, otherwise the source default with
+// the VCS revision appended when the binary was built from a git checkout.
 func String() string {
 	if v := released(); v != "" {
 		return v

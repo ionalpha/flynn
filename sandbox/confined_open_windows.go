@@ -8,14 +8,9 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// confinedOpen opens abs without following a terminal symlink or other reparse point, the
-// Windows analogue of O_NOFOLLOW. CreateFile with FILE_FLAG_OPEN_REPARSE_POINT targets the
-// reparse point itself rather than its target, so a symlink swapped into the final
-// component after resolve ran is opened as the link (never followed out of the root) and
-// never truncated through; the open then refuses any path whose final component is a
-// reparse point. This makes a swapped-in symlink a denial rather than a followed redirect,
-// the same outcome the Linux openat2 path gives, closing the time-of-check/time-of-use
-// window for the final component. A post-open re-validation additionally catches an
+// confinedOpen uses FILE_FLAG_OPEN_REPARSE_POINT, the Windows O_NOFOLLOW, so a
+// symlink swapped into the final component is opened as the link and refused,
+// never followed or truncated through. A post-open re-validation catches an
 // intermediate component redirected outside the root.
 func (l *Local) confinedOpen(abs string, flags int, _ os.FileMode) (*os.File, error) {
 	p, err := windows.UTF16PtrFromString(abs)
@@ -47,9 +42,8 @@ func (l *Local) confinedOpen(abs string, flags int, _ os.FileMode) (*os.File, er
 		disposition = windows.OPEN_EXISTING
 	}
 
-	// Share the file widely so the concurrent swap a TOCTOU attacker performs does not turn
-	// into a spurious sharing-violation error; correctness comes from the reparse-point
-	// refusal below, not from locking the path.
+	// Shared widely so a racing swap gives no spurious sharing violation; the
+	// reparse-point refusal provides the safety.
 	share := uint32(windows.FILE_SHARE_READ | windows.FILE_SHARE_WRITE | windows.FILE_SHARE_DELETE)
 	h, err := windows.CreateFile(p, access, share, nil, disposition,
 		windows.FILE_FLAG_OPEN_REPARSE_POINT|windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
@@ -63,7 +57,6 @@ func (l *Local) confinedOpen(abs string, flags int, _ os.FileMode) (*os.File, er
 		return nil, err
 	}
 	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
-		// The final component is a symlink/junction: refuse rather than operate on its target.
 		_ = windows.CloseHandle(h)
 		return nil, ErrDenied
 	}
