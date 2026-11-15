@@ -7,37 +7,33 @@ import (
 	"github.com/ionalpha/flynn/fault"
 )
 
-// NonceStore enforces the single-use property of an approval: once a nonce has
-// been spent, it can never be spent again, so a captured approval cannot be
-// replayed. Seen is the non-committing check the verifier uses while deciding
-// whether a quorum is met; Use is the commit it makes only once the action is
-// authorized, so a partial or failed attempt does not burn a valid approval's
-// nonce. An implementation must be safe for concurrent use. The default MemStore
-// keeps the spent set in memory; a fleet that must survive a restart supplies a
-// durable store behind the same port.
+// NonceStore keeps an approval single-use. The verifier calls Seen while
+// counting a quorum and Use only once the action is authorized, so a failed
+// attempt does not burn a valid approval's nonce. Implementations must be safe
+// for concurrent use. A fleet that must survive a restart supplies a durable
+// store in place of [MemStore].
 type NonceStore interface {
 	// Seen reports whether nonce has already been spent.
 	Seen(ctx context.Context, nonce string) (bool, error)
-	// Use marks nonce spent, returning ErrNonceUsed if it already was. It is the
-	// atomic test-and-set that makes single-use hold even under concurrency.
+	// Use marks nonce spent and returns ErrNonceUsed if it already was. It is an
+	// atomic test-and-set, so single use holds under concurrency.
 	Use(ctx context.Context, nonce string) error
 }
 
-// ErrNonceUsed means an approval's nonce has already been spent: the approval is a
-// replay and is refused.
+// ErrNonceUsed means the approval is a replay.
 var ErrNonceUsed = fault.New(fault.Forbidden, "approval_nonce_used", "approval: nonce already used (replay)")
 
-// MemStore is the default in-memory NonceStore, safe for concurrent use. Spent
-// nonces last for the life of the process; they do not survive a restart.
+// MemStore is the in-memory NonceStore, safe for concurrent use. Spent nonces do not
+// survive a restart.
 type MemStore struct {
 	mu    sync.Mutex
 	spent map[string]struct{}
 }
 
-// NewMemStore builds an empty in-memory nonce store.
+// NewMemStore returns an empty store with no nonce spent.
 func NewMemStore() *MemStore { return &MemStore{spent: map[string]struct{}{}} }
 
-// Seen reports whether nonce has been spent.
+// Seen reports whether nonce has been spent; it never errors.
 func (s *MemStore) Seen(_ context.Context, nonce string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -45,7 +41,7 @@ func (s *MemStore) Seen(_ context.Context, nonce string) (bool, error) {
 	return ok, nil
 }
 
-// Use marks nonce spent, refusing a replay.
+// Use spends nonce, returning [ErrNonceUsed] for a replay.
 func (s *MemStore) Use(_ context.Context, nonce string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

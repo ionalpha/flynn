@@ -27,14 +27,13 @@ import (
 	"github.com/ionalpha/flynn/storage/sqlite"
 )
 
-// recordEventType is the event a sealed run's signed record is stored under, on the
-// run's own stream, so the run can be verified from the durable store alone.
+// recordEventType is the event type a sealed run's signed record is stored under on
+// its own stream, so the durable store alone can verify the run.
 const recordEventType = "spine.record"
 
-// runSigner loads, or on first use creates, the instance's stable identity from the
-// vault under dataDir and returns a signer over it. The key id is the identity's
-// self-certifying principal id, so a verifier can recover the public key from a
-// signed record with no shared state.
+// runSigner loads or first creates the instance identity in the vault under dataDir.
+// The key id is the identity's self-certifying principal id, so a verifier recovers the
+// public key from a record with no shared state.
 func runSigner(ctx context.Context, dataDir string) (chain.RootSigner, error) {
 	v := vault.New(dataDir, vault.WithPassphrase(terminalPassphrase))
 	id, err := controlplane.LoadOrCreateIdentity(ctx, v, "")
@@ -44,18 +43,16 @@ func runSigner(ctx context.Context, dataDir string) (chain.RootSigner, error) {
 	return chain.NewEd25519RootSigner(id.ID(), ed25519.NewKeyFromSeed(id.Seed()))
 }
 
-// defaultSnapshotEvery is the automatic snapshot cadence: how many resource
-// mutations pass between verified checkpoints. Overridable with
-// FLYNN_SNAPSHOT_EVERY (0 disables automatic snapshots). Sealing a snapshot folds
-// the stream prefix once, so the cadence trades that write-side cost against how
-// many events a rebuild must fold past the last checkpoint.
+// defaultSnapshotEvery is the number of resource mutations between verified
+// checkpoints; FLYNN_SNAPSHOT_EVERY overrides it and 0 disables them. Each snapshot
+// folds the stream prefix once, so the cadence trades write cost against how far a
+// rebuild folds past the last checkpoint.
 const defaultSnapshotEvery = 256
 
-// snapshotOptions builds the store options that activate verified snapshots under
-// the instance signer: snapshots are sealed (checkpoint-bound, COSE-signed) with
-// the run key and verified against its self-certifying public key on rebuild.
-// With no signer it returns nothing: an unverified snapshot would be a trust hole
-// ("just believe this blob"), so without a key the store folds from the log alone.
+// snapshotOptions enables snapshots sealed under the run key (checkpoint-bound,
+// COSE-signed) and verified against its public key on rebuild. With no signer it
+// returns nothing, because an unverified snapshot would be trusted blindly; the store
+// then folds from the log alone.
 func snapshotOptions(signer chain.RootSigner) []sqlite.Option {
 	if signer == nil {
 		return nil
@@ -79,8 +76,7 @@ func snapshotOptions(signer chain.RootSigner) []sqlite.Option {
 	return []sqlite.Option{sqlite.WithSnapshotCodec(sealer), sqlite.WithSnapshotEvery(snapshotEvery())}
 }
 
-// snapshotEvery resolves the automatic snapshot cadence from the environment,
-// defaulting to defaultSnapshotEvery. Zero disables automatic snapshots.
+// snapshotEvery reads FLYNN_SNAPSHOT_EVERY, defaulting to defaultSnapshotEvery.
 func snapshotEvery() int {
 	v := os.Getenv("FLYNN_SNAPSHOT_EVERY")
 	if v == "" {
@@ -93,14 +89,14 @@ func snapshotEvery() int {
 	return k
 }
 
-// defaultCheckpointEvery is how many recorded events pass between automatic signed
-// checkpoints of a served stream's durable Merkle log. A checkpoint flushes the tiles
-// and signs the head, so the cadence trades write-side work against how many events a
-// restart must re-fold past the last checkpoint. Overridable with FLYNN_CHECKPOINT_EVERY.
+// defaultCheckpointEvery is the number of events between signed checkpoints of a served
+// stream's Merkle log; FLYNN_CHECKPOINT_EVERY overrides it. A checkpoint flushes tiles
+// and signs the head, so the cadence trades write cost against how far a restart
+// re-folds.
 const defaultCheckpointEvery = 256
 
-// checkpointEvery resolves the automatic checkpoint cadence from the environment,
-// defaulting to defaultCheckpointEvery. Zero checkpoints only on an explicit call.
+// checkpointEvery reads FLYNN_CHECKPOINT_EVERY, defaulting to defaultCheckpointEvery.
+// Zero checkpoints only on an explicit call.
 func checkpointEvery() int {
 	v := os.Getenv("FLYNN_CHECKPOINT_EVERY")
 	if v == "" {
@@ -113,10 +109,9 @@ func checkpointEvery() int {
 	return k
 }
 
-// sealRun seals the recorded stream and stores the signed record as one event on the
-// run's stream, so the run is verifiable from the durable store afterwards. The
-// record event is appended through the underlying log, not the recorder, so it is
-// not itself folded into the chain it attests.
+// sealRun stores the signed record as one event on the run's stream. It appends through
+// the underlying log, bypassing the recorder, so the record is not folded into the
+// chain it attests.
 func sealRun(ctx context.Context, store *sqlite.Store, rec *chain.RecordingLog, runID string, signer chain.RootSigner) error {
 	sealed, err := rec.Seal(runID, signer)
 	if err != nil {
@@ -135,9 +130,8 @@ func sealRun(ctx context.Context, store *sqlite.Store, rec *chain.RecordingLog, 
 	return err
 }
 
-// The results a run that did not converge records for itself. None is chain.ResultSuccess,
-// so the ground-truth tier asks nothing of them: a record that says the run was stopped
-// has no success to back.
+// Results a run that did not converge records. None is chain.ResultSuccess, so the
+// ground-truth tier asks no backing check of them.
 const (
 	resultBudget    = "budget_exceeded"
 	resultKilled    = "killed"
@@ -149,9 +143,9 @@ const (
 	outcomeReasonKey = "reason"
 )
 
-// stoppedOutcome classifies the error a run ended with into the result its record carries.
-// The stream flattens a stall into text, so a kill and a budget stop are told apart by the
-// message the stopping side wrote; a typed fault is honoured first.
+// stoppedOutcome maps a run's error to its record's result. A typed fault wins;
+// otherwise a kill and a budget stop are told apart by the message the stopping side
+// wrote, since the stream flattens a stall into text.
 func stoppedOutcome(runErr error) string {
 	msg := runErr.Error()
 	switch {
@@ -167,9 +161,8 @@ func stoppedOutcome(runErr error) string {
 	return resultError
 }
 
-// sealReported seals a run's recorded stream and says on out whether that worked. A
-// sealing failure is reported and never fails the run: the run's own result is already
-// decided, and a missing record is visible to whoever asks for it.
+// sealReported seals and reports the result on out. A sealing failure never fails the
+// run, whose result is already decided; a missing record is visible to whoever asks.
 func sealReported(ctx context.Context, out io.Writer, store *sqlite.Store, rec *chain.RecordingLog, runID string, signer chain.RootSigner) {
 	if serr := sealRun(ctx, store, rec, runID, signer); serr != nil {
 		_, _ = fmt.Fprintf(out, "  (run not sealed: %v)\n", serr)
@@ -178,16 +171,12 @@ func sealReported(ctx context.Context, out io.Writer, store *sqlite.Store, rec *
 	_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", runID)
 }
 
-// sealStopped records how a run that did not converge ended, then seals it. The outcome
-// goes on the stream first, through the recorder, so it is inside the chain the seal
-// signs and the record says how the run ended instead of reading as one that simply
-// stopped. The run's error is the caller's to return unchanged.
+// sealStopped records how a non-converged run ended, through the recorder so the
+// outcome is inside the signed chain, then seals. The caller returns runErr unchanged.
 //
-// It is what makes the stopped runs verifiable. A stall, a budget stop, an operator's
-// kill and a provider failure all return an error, and they are the runs someone goes
-// back to check. The seal runs on a context detached from ctx, because an interrupt
-// cancels ctx and a record that needs a live context to be written is lost on exactly the
-// runs that were interrupted.
+// Stalls, budget stops, kills and provider failures are the runs people check later.
+// The seal uses a context detached from ctx, because an interrupt cancels ctx and those
+// are the runs whose records must still be written.
 func sealStopped(ctx context.Context, out io.Writer, store *sqlite.Store, rec *chain.RecordingLog, runID string, signer chain.RootSigner, runErr error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
@@ -205,11 +194,10 @@ func sealStopped(ctx context.Context, out io.Writer, store *sqlite.Store, rec *c
 	sealReported(ctx, out, store, rec, runID, signer)
 }
 
-// sealResumed seals a run that `flynn resume` drove, from its durable stream: the events
-// before the resume were written by an earlier process, so no recorder in this one holds
-// them. A run that stopped records how it ended first, as [sealStopped] does. An
-// interrupt is left unsealed, because Ctrl-C on a resume detaches and the run can be
-// resumed again; a stopped outcome on its stream would then sit inside a run that went on.
+// sealResumed seals a `flynn resume` run from its durable stream, since earlier events
+// came from another process. A stopped run records its ending first, as in
+// [sealStopped]. An interrupt is left unsealed: Ctrl-C detaches and the run may resume,
+// which would leave a stopped outcome inside a run that went on.
 func sealResumed(ctx context.Context, out io.Writer, store *sqlite.Store, runID string, signer chain.RootSigner, runErr error) {
 	if errors.Is(runErr, context.Canceled) {
 		return
@@ -236,14 +224,10 @@ func sealResumed(ctx context.Context, out io.Writer, store *sqlite.Store, runID 
 	_, _ = fmt.Fprintf(out, "  run sealed; verify with: flynn spine verify %s\n", runID)
 }
 
-// sealRunFromStore seals a run's current durable stream into a signed record stored on
-// the stream, without a live recorder. It reads the run's events, folds every one
-// except a prior seal into a fresh record builder, signs the Merkle head, and appends
-// the record. Reading the durable stream (rather than a recorder accumulated in memory)
-// lets a session seal a run in-process at any point, including one continued from a
-// resumed conversation whose earlier events predate this process. Re-sealing re-folds
-// the same events (skipping the earlier record event, which is not part of the chain it
-// attests) and appends a fresh record.
+// sealRunFromStore seals a run's durable stream without a live recorder: it folds every
+// event except a prior seal, signs the Merkle head and appends the record. Reading the
+// store lets a session seal at any point, including a run whose earlier events predate
+// this process. A re-seal folds the same events and appends a fresh record.
 func sealRunFromStore(ctx context.Context, store *sqlite.Store, runID string, signer chain.RootSigner) error {
 	events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
 	if err != nil {
@@ -280,11 +264,8 @@ func sealRunFromStore(ctx context.Context, store *sqlite.Store, runID string, si
 	return err
 }
 
-// verifyStoredRun verifies a sealed run already open in store, writing its per-tier
-// report to out. It is the in-process counterpart of verifyRun, which opens its own
-// store and writes to stdout: a session that holds the store open verifies its own run
-// without reopening. It reports errChecksFailed if a tier fails, or a plain error when
-// the run carries no sealed record yet.
+// verifyStoredRun is verifyRun for a store a session already holds open. It returns
+// errChecksFailed if a tier fails, or an error when the run has no sealed record.
 func verifyStoredRun(ctx context.Context, out io.Writer, store *sqlite.Store, runID string) error {
 	events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
 	if err != nil {
@@ -300,12 +281,10 @@ func verifyStoredRun(ctx context.Context, out io.Writer, store *sqlite.Store, ru
 	return verifyRecord(out, "run "+runID, record, "")
 }
 
-// errChecksFailed reports that a record did not pass every check. The per-tier detail
-// is written to stdout; this is the concise error that sets a non-zero exit code so
-// the command can gate a script.
+// errChecksFailed makes the command exit non-zero so it can gate a script; the per-tier
+// detail is already on stdout.
 var errChecksFailed = errors.New("record did not pass all checks")
 
-// dispatchSpine handles the spine subcommands.
 func dispatchSpine(args []string, dataDir string) error {
 	const usage = "usage: flynn spine verify [--file <path> [--key <hex>]] <run-id>\n" +
 		"       flynn spine export [--out <path>] <run-id>"
@@ -341,11 +320,9 @@ func dispatchSpine(args []string, dataDir string) error {
 	return errors.New(usage)
 }
 
-// exportRun writes a sealed run's portable record to a file, so it can be verified by a
-// third party (or with `flynn spine verify --file`) without the durable store. It opens
-// the store, extracts the signed record the run carries, and writes it to path, defaulting
-// to <run-id>.flynnrecord in the current directory. A run that was never sealed is
-// reported rather than writing an empty file.
+// exportRun writes a sealed run's portable record (default <run-id>.flynnrecord in the
+// current directory), so a third party or `flynn spine verify --file` can check it
+// without the store. An unsealed run is reported and no file is written.
 func exportRun(dataDir, runID, path string) error {
 	ctx := context.Background()
 	store, err := openDataStore(ctx, dataDir)
@@ -364,10 +341,8 @@ func exportRun(dataDir, runID, path string) error {
 	return nil
 }
 
-// exportRecord extracts the signed record stored on a run's stream and writes its portable
-// bytes to path. The bytes are the same canonical artifact `chain.VerifyRun` checks, so
-// the file is independently verifiable. It reports a run with no sealed record rather than
-// writing a partial file.
+// exportRecord writes the canonical bytes `chain.VerifyRun` checks, so the file verifies
+// independently. A run with no sealed record is reported, never written partially.
 func exportRecord(ctx context.Context, store *sqlite.Store, runID, path string) error {
 	events, err := store.Log().Read(ctx, spine.Query{Stream: runID})
 	if err != nil {
@@ -383,10 +358,10 @@ func exportRecord(ctx context.Context, store *sqlite.Store, runID, path string) 
 	return fsatomic.WriteFile(path, record, 0o600)
 }
 
-// verifyRun reads a run's stored signed record and reports every tier it satisfies:
-// integrity (the events rebuild the signed Merkle root), governance (no action ran
-// without admission), and ground truth (a claimed success is backed by a passing
-// check). The signer is self-certifying, so a stored run needs only the durable store.
+// verifyRun reports every tier a stored record satisfies: integrity (events rebuild the
+// signed Merkle root), governance (no action ran unadmitted) and ground truth (a claimed
+// success is backed by a passing check). The signer is self-certifying, so only the
+// store is needed.
 func verifyRun(dataDir, runID string) error {
 	ctx := context.Background()
 	store, err := openDataStore(ctx, dataDir)
@@ -404,18 +379,15 @@ func verifyRun(dataDir, runID string) error {
 	}
 	record, err := recordFromEvents(events)
 	if err != nil {
-		// No per-run sealed record: the stream may instead be a durably checkpointed
-		// one (the served path), verifiable from its latest signed checkpoint.
+		// No sealed record: the stream may be a checkpointed one from the served path.
 		return verifyCheckpointedStream(os.Stdout, store, runID)
 	}
 	return verifyRecord(os.Stdout, "run "+runID, record, "")
 }
 
-// verifyCheckpointedStream verifies a stream that carries no single sealed record but a
-// durable, periodically checkpointed Merkle log: the events rebuild the latest signed
-// checkpoint's root (integrity), then the same governance and ground-truth tiers are
-// reported. The checkpoint's key is self-certifying, so a stored stream needs only the
-// durable store.
+// verifyCheckpointedStream verifies a stream with a periodically checkpointed Merkle log
+// in place of a sealed record: the events must rebuild the latest checkpoint's root, then
+// governance and ground truth are reported. The checkpoint key is self-certifying.
 func verifyCheckpointedStream(out io.Writer, store *sqlite.Store, stream string) error {
 	ctx := context.Background()
 	_, cose, ok, err := store.LatestCheckpoint(ctx, stream)
@@ -485,10 +457,8 @@ func verifyCheckpointedStream(out io.Writer, store *sqlite.Store, stream string)
 	return nil
 }
 
-// verifyRecordFile reads a signed record from a file and reports every tier it
-// satisfies. A record whose signer is self-certifying is verified with no further
-// input; one signed by another key (a published conformance vector) needs that key in
-// hex via --key.
+// verifyRecordFile verifies a record file. A self-certifying record needs nothing more;
+// one signed by another key (a published conformance vector) needs it in hex via --key.
 func verifyRecordFile(path, keyHex string) error {
 	record, err := os.ReadFile(path) //nolint:gosec // the path is an operator-supplied record to verify
 	if err != nil {
@@ -497,9 +467,8 @@ func verifyRecordFile(path, keyHex string) error {
 	return verifyRecord(os.Stdout, path, record, keyHex)
 }
 
-// verifyRecord resolves the record's signing key and reports, tier by tier, what the
-// record proves. It returns errChecksFailed if any tier is not satisfied, so the
-// command exits non-zero while still printing the full report.
+// verifyRecord prints the full per-tier report and returns errChecksFailed if any tier
+// fails.
 func verifyRecord(out io.Writer, label string, record []byte, keyHex string) error {
 	keyID, err := chain.RecordKeyID(record)
 	if err != nil {
@@ -528,9 +497,8 @@ func verifyRecord(out io.Writer, label string, record []byte, keyHex string) err
 	return nil
 }
 
-// reportGovernanceAndGroundTruth reports the governance and ground-truth tiers over a
-// verified event sequence and returns whether either failed. It is shared by the sealed
-// record and durable checkpoint verify paths so both report the same tiers identically.
+// reportGovernanceAndGroundTruth reports those two tiers for both verify paths, so they
+// read identically, and returns whether either failed.
 func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed bool) {
 	if gerr := chain.VerifyGovernance(events); gerr != nil {
 		_, _ = fmt.Fprintf(out, "  governance:   VIOLATION: %v\n", gerr)
@@ -539,8 +507,8 @@ func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed
 		_, _ = fmt.Fprintln(out, "  governance:   OK (no action ran without admission)")
 	}
 
-	// A run that stopped says so here, so a record that verifies is not read as one that
-	// succeeded: integrity attests the record is faithful, not that the run finished.
+	// Integrity says the record is faithful, not that the run finished, so a stopped run
+	// says so here.
 	if result, reason, ok := stoppedBy(events); ok {
 		_, _ = fmt.Fprintf(out, "  outcome:      %s (%s)\n", result, reason)
 	}
@@ -562,16 +530,14 @@ func reportGovernanceAndGroundTruth(out io.Writer, events []spine.Event) (failed
 	return failed
 }
 
-// reportProvenance prints the provenance tier a run's record vouches for, when the run
-// was driven by an external agent harness: a native run carries no declaration and
-// prints nothing (so its output is unchanged), while an external run states honestly
-// that its effects are enforced but the harness's inner reasoning is unobserved and the
-// run is non-replayable, so the record never claims the integrity of a native run.
+// reportProvenance prints the provenance tier of an external-agent run. A native run
+// has no declaration and prints nothing. An external run states that its effects are
+// enforced while the harness's reasoning is unobserved and the run cannot be replayed,
+// so the record never claims a native run's integrity.
 //
-// One part of it is a check that can fail, and it reports whether it did: the
-// declaration's attested count must match the harness's events the record actually
-// carries. A record that claims an account it does not carry is not merely uninformative
-// - it is a record whose most quotable number, "N events attested", cannot be inspected.
+// It returns whether its one check failed: the declaration's attested count must match
+// the harness events the record carries. Otherwise the record's most quoted number, "N
+// events attested", could not be inspected.
 func reportProvenance(out io.Writer, events []spine.Event) bool {
 	attested := chain.AttestedEventsOf(events)
 	if aerr := chain.VerifyAttestation(events); aerr != nil {
@@ -588,19 +554,16 @@ func reportProvenance(out io.Writer, events []spine.Event) bool {
 	}
 	_, _ = fmt.Fprintf(out, "  provenance:   effects %s, reasoning %s (external harness: %s); %s\n",
 		strings.ToUpper(p.Effects), strings.ToUpper(p.Reasoning), p.Harness, replay)
-	// The harness's own account of its episode, repeated by the record but not vouched
-	// for. Printed only when it reported something, so a run with nothing attested stays
-	// silent rather than claiming a hollow zero. The breakdown by kind is what separates
-	// this from the enforced effects above it: those the run admitted and ran, these the
-	// harness merely says it did, and the record carries its lines to prove only that it
-	// said them.
+	// The harness's own account, carried but not vouched for. It prints only when nonzero.
+	// The breakdown by kind separates what the harness says it did from the enforced
+	// effects above; the record proves only that it said them.
 	if p.AttestedEvents > 0 {
 		_, _ = fmt.Fprintf(out, "                %d event(s) %s by the harness (its own account, unverified): %s\n",
 			p.AttestedEvents, strings.ToUpper(chain.TierAttested), attestedKinds(attested))
 	}
-	// The harness's own prompt outranks the run's, so the behavioral contract is a request
-	// the run measures rather than a rule it imposes. A record whose harness ignored it
-	// carries the same signature over a larger unobserved surface, and the reader is told.
+	// The harness's prompt outranks the run's, so the behavioural contract is measured and
+	// not imposed. When the harness ignored it, the same signature covers more unobserved
+	// behaviour, and the reader is told.
 	if len(p.Drift) > 0 {
 		names := make([]string, 0, len(p.Drift))
 		for name := range p.Drift {
@@ -620,8 +583,8 @@ func reportProvenance(out io.Writer, events []spine.Event) bool {
 	return false
 }
 
-// attestedKinds summarizes the harness's recorded events by kind ("text x3,
-// bridge_call x2"), in a stable order so two verifications of one record read the same.
+// attestedKinds summarizes events by kind ("text x3, bridge_call x2") in a stable order,
+// so two verifications read the same.
 func attestedKinds(events []chain.AttestedEvent) string {
 	counts := map[string]int{}
 	for _, e := range events {
@@ -639,8 +602,8 @@ func attestedKinds(events []chain.AttestedEvent) string {
 	return strings.Join(parts, ", ")
 }
 
-// resolveKey recovers the public key a record is verified against: the supplied hex
-// key when given, otherwise the self-certifying key the record names.
+// resolveKey returns the supplied hex key, or else the self-certifying key the record
+// names.
 func resolveKey(keyID, keyHex string) (ed25519.PublicKey, error) {
 	if keyHex != "" {
 		raw, err := hex.DecodeString(keyHex)
@@ -659,8 +622,8 @@ func resolveKey(keyID, keyHex string) (ed25519.PublicKey, error) {
 	return pub, nil
 }
 
-// claimsSuccess reports whether the run records a success outcome, which is what the
-// ground-truth tier applies to. A run that claims nothing needs no backing check.
+// claimsSuccess reports a recorded success outcome, the only claim the ground-truth tier
+// checks.
 func claimsSuccess(events []spine.Event) bool {
 	for _, e := range events {
 		if e.Type != chain.OutcomeRecorded {
@@ -673,8 +636,8 @@ func claimsSuccess(events []spine.Event) bool {
 	return false
 }
 
-// stoppedBy returns the last outcome a run recorded that is not a success, which is how a
-// run that did not converge says it ended. A run that recorded none reports false.
+// stoppedBy returns the last non-success outcome, which is how a non-converged run
+// records its end.
 func stoppedBy(events []spine.Event) (result, reason string, ok bool) {
 	for _, e := range events {
 		if e.Type != chain.OutcomeRecorded {
@@ -690,7 +653,6 @@ func stoppedBy(events []spine.Event) (result, reason string, ok bool) {
 	return result, reason, ok
 }
 
-// recordFromEvents extracts the signed record stored on a run's stream.
 func recordFromEvents(events []spine.Event) ([]byte, error) {
 	for _, e := range events {
 		if e.Type != recordEventType {

@@ -12,8 +12,8 @@ import (
 )
 
 // recallLimit caps how many learned skills and memory items are injected into a
-// run's prompt. It is deliberately small: recall is precision-first, since a long,
-// loosely-relevant context degrades the model's use of it more than it helps.
+// run's prompt. It is small because recall is precision-first: a long, loosely
+// relevant context degrades the model's use of it more than it helps.
 const recallLimit = skillrecall.DefaultLimit
 
 // recallContext queries the durable skills and memory for what is relevant to the

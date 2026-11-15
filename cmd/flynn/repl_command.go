@@ -57,10 +57,9 @@ func (s *replSession) switchModel(ctx context.Context, args []string, out io.Wri
 		s.ext.model = cliModel
 
 	case s.started && (isExt || s.ext != nil):
-		// The run's record declares which harness drove it, and a record states one
-		// provenance for the whole run. Swapping the harness mid-run would seal a record
-		// whose declaration is true of only part of it, so the swap is refused rather than
-		// quietly producing that. A new session is one line away.
+		// A run's record declares one harness for the whole run, so a mid-run swap
+		// would seal a declaration true of only part of it. The swap is refused; a new
+		// session is one line away.
 		return fmt.Errorf("/model %s: this run is already being driven by %s, and a run's record declares the one harness that drove it. "+
 			"Leave and start a new session to drive %s", spec, s.harnessName(), spec)
 

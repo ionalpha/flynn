@@ -17,19 +17,16 @@ import (
 	"github.com/ionalpha/flynn/sandbox"
 )
 
-// externalAgentBackends are the CLI harness names selectable through the --model
-// spec. A spec whose scheme (the part before the first colon) names one of these is
-// not a hosted model to resolve a credential for: it routes the run to that external
-// agent CLI driver, and the rest of the spec is the model the CLI itself should
-// drive. Adding a second harness is one entry here plus a case in newExternalAgent,
-// not a new resolution path.
+// externalAgentBackends are the CLI harnesses a --model spec can select. A spec whose
+// scheme (before the first colon) names one routes the run to that CLI, with the rest
+// as the model the CLI drives, and resolves no credential. A new harness is an entry
+// here plus a case in newExternalAgent.
 var externalAgentBackends = map[string]bool{"codex": true, "claude": true}
 
-// externalAgentSpec splits a --model spec into an external-agent backend name and the
-// model string to hand the CLI, reporting whether the spec names an external agent at
-// all. A bare name selects the CLI with its own default model; a name:model spec pins
-// the model. "codex" -> ("codex", "", true); "codex:gpt-5-codex" -> ("codex",
-// "gpt-5-codex", true); "anthropic:claude-..." -> ("", "", false).
+// externalAgentSpec splits a --model spec into a backend name and the model to hand the
+// CLI, and reports whether it names an external agent. "codex" -> ("codex", "", true);
+// "codex:gpt-5-codex" -> ("codex", "gpt-5-codex", true); "anthropic:claude-..." ->
+// ("", "", false).
 func externalAgentSpec(modelSpec string) (name, model string, ok bool) {
 	name, model, _ = strings.Cut(modelSpec, ":")
 	if !externalAgentBackends[name] {
@@ -38,8 +35,7 @@ func externalAgentSpec(modelSpec string) (name, model string, ok bool) {
 	return name, model, true
 }
 
-// externalAgentNames lists the backends in a stable order, for messages that name
-// what is available.
+// externalAgentNames lists the backends in a stable order for messages.
 func externalAgentNames() []string {
 	names := make([]string, 0, len(externalAgentBackends))
 	for n := range externalAgentBackends {
@@ -49,15 +45,11 @@ func externalAgentNames() []string {
 	return names
 }
 
-// errExternalAgentUnsupported reports that command cannot drive modelSpec because the
-// spec names an external agent, and points at the invocations that can. A long-lived
-// server answers many independent requests, and an external agent's episode is one
-// conversation the CLI holds; nothing decides which request continues which
-// conversation, so the combination is refused rather than guessed at. Without this the
-// spec falls through to the native provider resolver, which has never heard of the
-// backend and rejects it as an unknown provider: true, but no help at all.
-//
-// It returns nil when the spec names a model, so a normal run is never blocked.
+// errExternalAgentUnsupported refuses command for an external-agent modelSpec and
+// names the invocations that can run one. A server answers independent requests, but an
+// episode is one conversation the CLI holds, and nothing maps requests to
+// conversations. Without this the native resolver rejects the backend as an unknown
+// provider, which tells the user nothing. It returns nil for an ordinary model spec.
 func errExternalAgentUnsupported(command, modelSpec string) error {
 	name, _, ok := externalAgentSpec(modelSpec)
 	if !ok {
@@ -71,17 +63,15 @@ func errExternalAgentUnsupported(command, modelSpec string) error {
 		command, name, modelSpec, modelSpec, modelSpec, command)
 }
 
-// externAgent is a resolved external-agent backend: the driver that builds the
-// episode loop and the model string the CLI drives, ready to plug into a run in place
-// of a native llm.Model.
+// externAgent is a resolved external-agent backend: the driver that builds the episode
+// loop and the model the CLI drives, used in place of a native llm.Model.
 type externAgent struct {
 	model  string
 	driver driver.Driver
 }
 
-// close releases what the run's episodes shared, the harness's credential-and-state home,
-// once the run that resolved this agent is over. A driver that holds nothing closes to
-// nothing, so every caller can defer it unconditionally.
+// close releases the harness home the run's episodes shared. It is safe to defer
+// unconditionally.
 func (ea *externAgent) close() {
 	if ea == nil {
 		return
@@ -91,21 +81,18 @@ func (ea *externAgent) close() {
 	}
 }
 
-// tierTallier is an external-agent driver that tallies the provenance tiers of the
-// events its episodes projected, how the harness chose its tools, and which parts of the
-// session contract it ignored. The driver port itself stays free of provenance (a native
-// loop has no tiers to report and no contract to drift from), so the host asks for the
-// capability rather than requiring it.
+// tierTallier is the optional driver capability that tallies its episodes' provenance
+// tiers, how the harness chose tools, and which session-contract parts it ignored. The
+// driver port carries no provenance, since a native loop has none to report.
 type tierTallier interface {
 	Tiers() map[externagent.Tier]int
 	Steering() externagent.Steering
 	Drift() map[string]int
 }
 
-// observedProvenance is what the host can say about an external-harness run once it has
-// finished: the harness's own account of itself, and how far it strayed from the contract
-// the run gave it. A driver that reports none of this yields a bare declaration, which
-// still names the run as externally driven.
+// observedProvenance is the harness's account of a finished run and its drift from the
+// run's contract. A driver that reports nothing still yields a declaration naming the
+// run as externally driven.
 func observedProvenance(ea *externAgent) externalProvenance {
 	d := externalProvenance{harness: ea.driver.Name()}
 	t, ok := ea.driver.(tierTallier)
@@ -118,12 +105,10 @@ func observedProvenance(ea *externAgent) externalProvenance {
 	return d
 }
 
-// codexAllowedHosts are the destination names a codex episode's confined child may
-// reach at the egress waist: the OpenAI API and ChatGPT subscription-auth endpoints
-// codex talks to. Everything else is denied, so the external harness's own provider
-// channel is contained to these names even though its inner traffic is unobserved. A
-// name that resolves to a private or rebinding address is still refused by the address
-// gate.
+// codexAllowedHosts are the only names a codex episode's confined child may reach: the
+// OpenAI API and ChatGPT subscription-auth endpoints. This contains the harness's
+// unobserved provider traffic. The address gate still refuses a name that resolves to
+// a private or rebinding address.
 var codexAllowedHosts = []string{
 	"api.openai.com",
 	"auth.openai.com",
@@ -131,49 +116,38 @@ var codexAllowedHosts = []string{
 	".chatgpt.com",
 }
 
-// codexHome is the codex home Flynn keeps for the codex backend, apart from the user's own
-// (~/.codex or their CODEX_HOME). The user signs the CLI in to it once with the CLI's own
-// login ([codexLoginCommand]), and every probe and episode points the CLI at it through
-// CODEX_HOME. Flynn never reads, copies or stores the token inside: the CLI writes it at
-// sign-in and refreshes it in place.
+// codexHome is Flynn's own codex home, apart from the user's (~/.codex or CODEX_HOME).
+// The user signs in once with [codexLoginCommand], and every probe and episode sets
+// CODEX_HOME to it. Flynn never reads, copies or stores the token; the CLI writes and
+// refreshes it.
 //
-// Keeping it apart from the user's home is the codex half of the HostConfig posture the
-// adapter declares. The user's config.toml, where they keep their MCP servers, model
-// providers and settings, is never on the child's path, so whatever the person who
-// launched the run happens to carry cannot steer an episode or hand the harness servers
-// this run neither hosts nor governs. Anything but the sign-in found in Flynn's own home is removed
-// before a spawner is built ([clearOwnHome]), because nothing Flynn does writes one
-// there. A variable so tests can point it at a temporary directory.
+// The user's config.toml (MCP servers, providers, settings) is never on the child's
+// path, so it cannot steer an episode or add servers this run does not govern.
+// [clearOwnHome] removes everything but the sign-in before a spawner is built, since
+// Flynn writes nothing else there. It is a variable so tests can redirect it.
 var codexHome = defaultCodexHome
 
-// defaultCodexHome is where [codexHome] points outside tests.
 func defaultCodexHome() string { return filepath.Join(defaultDataDir(), "codex") }
 
-// codexLoginCommand is the command that signs the codex CLI in to home with its own
-// subscription login.
+// codexLoginCommand signs the codex CLI in to home with its subscription login.
 func codexLoginCommand(home string) string {
 	return homeLoginCommand("CODEX_HOME", home, "codex login")
 }
 
-// codexAuthFiles and claudeAuthFiles are the entries of Flynn's own CLI homes that
-// [clearOwnHome] keeps: the sign-in each CLI writes with its file credential store.
-// Everything else a CLI keeps there is rebuilt when it needs it, and is also what a harness
-// would write to steer a later run: config.toml, AGENTS.md, prompts and skills for codex;
-// settings.json (hooks, permission allow rules), CLAUDE.md, agents, commands, plugins and
-// .claude.json (user-scoped MCP servers and trust decisions) for claude. Claude's account
-// details also live in .claude.json, but the token is in .credentials.json, so losing it
-// costs the CLI a re-read of the account and nothing else.
+// codexAuthFiles and claudeAuthFiles are the sign-in files [clearOwnHome] keeps. A CLI
+// rebuilds everything else, and everything else is what a harness would write to steer a
+// later run: config.toml, AGENTS.md, prompts and skills for codex; settings.json (hooks,
+// permission rules), CLAUDE.md, agents, commands, plugins and .claude.json (user MCP
+// servers, trust decisions) for claude. Claude's token is in .credentials.json, so
+// dropping .claude.json costs only an account re-read.
 var (
 	codexAuthFiles  = map[string]bool{"auth.json": true}
 	claudeAuthFiles = map[string]bool{".credentials.json": true}
 )
 
-// clearOwnHome removes everything from one of Flynn's CLI homes except the entries in keep,
-// so an episode's configuration and instructions are what its command line passes and
-// nothing else. An episode's child may write the home it runs in, so without this a harness
-// could leave settings, instructions or plugins there that steer every later run. A sign-in
-// held in the OS keyring is outside the home and untouched. A home that does not exist has
-// nothing to clear.
+// clearOwnHome removes everything from a Flynn CLI home except keep. An episode's child
+// may write its home, so without this a harness could leave settings, instructions or
+// plugins that steer every later run. A keyring sign-in is outside the home and kept.
 func clearOwnHome(label, home string, keep map[string]bool) error {
 	entries, err := os.ReadDir(home)
 	if errors.Is(err, os.ErrNotExist) {
@@ -193,10 +167,9 @@ func clearOwnHome(label, home string, keep map[string]bool) error {
 	return nil
 }
 
-// ensureOwnHome creates a CLI home Flynn keeps and sets it to owner-only. MkdirAll leaves
-// an existing directory with the mode it already had, and the home holds a bearer token,
-// so the mode is set explicitly. On Windows Chmod changes only the read-only attribute and
-// the directory's access comes from its ACL, which the per-user data directory sets.
+// ensureOwnHome creates a Flynn CLI home owner-only. The home holds a bearer token and
+// MkdirAll keeps an existing directory's mode, so the mode is set explicitly. On Windows
+// the per-user data directory's ACL governs access and Chmod only flips read-only.
 func ensureOwnHome(label, home string) error {
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return fmt.Errorf("%s home: %w", label, err)
@@ -208,13 +181,11 @@ func ensureOwnHome(label, home string) error {
 	return nil
 }
 
-// claudeAllowedHosts are the destination names a claude episode's confined child may
-// reach at the egress waist: the Anthropic API the subscription drives inference over and
-// the endpoints its OAuth session refreshes against. Everything else is denied, so the
-// external harness's own provider channel is contained to these names even though its
-// inner traffic is unobserved. A name that resolves to a private or rebinding address is
-// still refused by the address gate. Telemetry and update hosts are deliberately left off
-// until a real run shows one is needed to authenticate or infer.
+// claudeAllowedHosts are the only names a claude episode's confined child may reach:
+// the Anthropic API and the OAuth refresh endpoints. This contains the harness's
+// unobserved provider traffic. The address gate still refuses a private or rebinding
+// address. Telemetry and update hosts stay off until a run needs one to authenticate
+// or infer.
 var claudeAllowedHosts = []string{
 	"api.anthropic.com",
 	"console.anthropic.com",
@@ -222,34 +193,27 @@ var claudeAllowedHosts = []string{
 	".claude.ai",
 }
 
-// claudeHome is the Claude Code home Flynn keeps for the claude backend, apart from the
-// user's own. The user signs the CLI in to it once with the CLI's own login
-// ([claudeLoginCommand]), and every probe and episode points the CLI at it through
-// CLAUDE_CONFIG_DIR. Flynn never reads, copies or stores the token inside: the CLI writes it
-// at sign-in and refreshes it in place, and the sign-in completes in the CLI's own flow.
+// claudeHome is Flynn's own Claude Code home, apart from the user's. The user signs in
+// once with [claudeLoginCommand], and every probe and episode sets CLAUDE_CONFIG_DIR to
+// it. Flynn never reads, copies or stores the token; the CLI writes and refreshes it.
 //
-// Keeping it apart from the user's home means none of the user's own settings, hooks,
-// plugins or MCP servers are in it to steer an episode, which is what makes it acceptable
-// to grant an episode write on it ([externagent.SandboxConfig.AuthDirWritable]). The grant
-// still lets a harness sign Flynn's copy out or leave settings, CLAUDE.md, agents, commands
-// or plugins behind, so everything but the sign-in is removed before a spawner is built
-// ([clearOwnHome]). It sits under the per-user data
-// directory, so a development build and a release build keep separate sign-ins. A variable
-// so tests can point it at a temporary directory.
+// None of the user's settings, hooks, plugins or MCP servers are in it, which is why an
+// episode may write it ([externagent.SandboxConfig.AuthDirWritable]). A harness could
+// still sign it out or leave files behind, so [clearOwnHome] removes all but the sign-in
+// before a spawner is built. It is under the per-user data directory, so dev and release
+// builds sign in separately. It is a variable so tests can redirect it.
 var claudeHome = defaultClaudeHome
 
-// defaultClaudeHome is where [claudeHome] points outside tests.
 func defaultClaudeHome() string { return filepath.Join(defaultDataDir(), "claude") }
 
-// claudeLoginCommand is the command that signs the claude CLI in to home with its own
-// subscription login.
+// claudeLoginCommand signs the claude CLI in to home with its subscription login.
 func claudeLoginCommand(home string) string {
 	return homeLoginCommand("CLAUDE_CONFIG_DIR", home, "claude auth login --claudeai")
 }
 
-// homeLoginCommand is login run with env pointing the CLI at home, written for the shell
-// the user is most likely in. The PowerShell form clears the variable afterwards, so the
-// user's next plain run of the CLI in that shell is back on their own home.
+// homeLoginCommand runs login with env set to home, for the user's likely shell. The
+// PowerShell form clears the variable afterwards, so the user's next plain run uses
+// their own home.
 func homeLoginCommand(env, home, login string) string {
 	if runtime.GOOS == "windows" {
 		return "$env:" + env + " = '" + strings.ReplaceAll(home, "'", "''") +
@@ -258,11 +222,9 @@ func homeLoginCommand(env, home, login string) string {
 	return env + "='" + strings.ReplaceAll(home, "'", `'\''`) + "' " + login
 }
 
-// withHomeLogin rewrites a not-signed-in readiness for an external backend so its next step
-// signs in the home Flynn keeps for that CLI rather than the user's: the adapter's generic
-// advice (`claude auth login`, `codex login`) would sign in the home Flynn does not use and
-// leave the backend reporting itself logged out. A refusal, a missing install, and a ready
-// CLI pass through. An unknown backend passes through too.
+// withHomeLogin rewrites a not-signed-in readiness to sign in Flynn's home for that CLI.
+// The adapter's generic advice (`claude auth login`, `codex login`) signs in the user's
+// home and leaves the backend logged out. Every other readiness passes through.
 func withHomeLogin(name string, r externagent.Readiness) externagent.Readiness {
 	if !r.Available || r.Refuse || r.LoggedIn {
 		return r
@@ -280,28 +242,23 @@ func withHomeLogin(name string, r externagent.Readiness) externagent.Readiness {
 	return r
 }
 
-// externalProbeTimeout caps a single detection probe (a version or auth-status check)
-// so a hung CLI cannot stall onboarding.
+// externalProbeTimeout caps one detection probe so a hung CLI cannot stall onboarding.
 const externalProbeTimeout = 15 * time.Second
 
-// externalSpawner builds the production sandbox spawner for the named backend: the
-// external CLI runs as an untrusted subprocess under the kernel-confined floor, with a
-// deny-all-except-provider egress gate and a read grant for its own auth home. One
-// place builds the confinement envelope so detection and the live episode run under
-// the same boundary and provider allowlist, and cannot drift.
+// externalSpawner builds the backend's sandbox spawner: the CLI runs untrusted under the
+// kernel-confined floor, with egress denied except to its provider and read access to
+// its auth home. Detection and live episodes share it, so their boundary and allowlist
+// cannot drift.
 func externalSpawner(name string) (externagent.Spawner, error) {
 	switch name {
 	case "codex":
-		// The CLI is resolved before the envelope is built: the confined child is granted
-		// read on the directories holding the executable, so it must be located first. A
-		// CLI that is not installed still yields a spawner, so detection can report the
-		// missing install as onboarding rather than failing the command outright.
+		// The child is granted read on the executable's directories, so the CLI is located
+		// first. A missing CLI still yields a spawner, so detection reports it as onboarding.
 		prog, err := externagent.LocateCodex("")
 		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
 			return nil, err
 		}
-		// The CLI refuses a CODEX_HOME that does not exist, and the user's first sign-in runs
-		// against the path Flynn prints, so the home is created before anything points at it.
+		// The CLI refuses a missing CODEX_HOME, and the first sign-in uses the printed path.
 		home := codexHome()
 		if err := ensureOwnHome("codex", home); err != nil {
 			return nil, err
@@ -315,9 +272,8 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 		if err != nil && !errors.Is(err, externagent.ErrProgramNotFound) {
 			return nil, err
 		}
-		// The CLI would create its home at sign-in, but detection grants the child read on it
-		// before then, and a grant on a directory that does not exist fails the probe that
-		// reports how to sign in.
+		// Detection grants read on the home before sign-in, and a grant on a missing directory
+		// fails the probe that explains how to sign in.
 		home := claudeHome()
 		if err := ensureOwnHome("claude", home); err != nil {
 			return nil, err
@@ -331,10 +287,9 @@ func externalSpawner(name string) (externagent.Spawner, error) {
 	}
 }
 
-// codexSandboxConfig is the confinement envelope for the codex backend over its own home. The
-// home is granted write ([externagent.SandboxConfig.AuthDirWritable]) because the CLI
-// refreshes its token in place there. That grant is safe only because the home is Flynn's
-// own and holds nothing of the user's, so a test holds it to true here.
+// codexSandboxConfig lets the CLI write its home
+// ([externagent.SandboxConfig.AuthDirWritable]) to refresh its token. That is safe only
+// because the home holds nothing of the user's; a test pins it to true.
 func codexSandboxConfig(home string, prog externagent.Program) externagent.SandboxConfig {
 	return externagent.SandboxConfig{
 		AllowedHosts:    codexAllowedHosts,
@@ -343,19 +298,16 @@ func codexSandboxConfig(home string, prog externagent.Program) externagent.Sandb
 		AuthDirWritable: true,
 		ProgramDirs:     prog.ReadableDirs,
 		ProbeTimeout:    externalProbeTimeout,
-		// The codex CLI is a Rust program: it canonicalizes paths on startup, which no
-		// process can do inside a Windows AppContainer, so it runs under the tier that
-		// confines its writes to the workspace and leaves the host readable. Its writes,
-		// its egress, and its tools stay gated; only the read posture is traded, and the
-		// episode records the tier that ran.
+		// The codex CLI canonicalizes paths at startup, which no process can do inside a
+		// Windows AppContainer, so it runs with the host readable and writes confined to the
+		// workspace. Writes, egress and tools stay gated, and the episode records the tier.
 		HostReadable: true,
 	}
 }
 
-// claudeSandboxConfig is the confinement envelope for the claude backend over its own home. The
-// home is granted write ([externagent.SandboxConfig.AuthDirWritable]) because the CLI
-// refreshes its token in place there. That grant is safe only because the home is Flynn's
-// own and holds nothing of the user's, so a test holds it to true here.
+// claudeSandboxConfig lets the CLI write its home
+// ([externagent.SandboxConfig.AuthDirWritable]) to refresh its token. That is safe only
+// because the home holds nothing of the user's; a test pins it to true.
 func claudeSandboxConfig(home string, prog externagent.Program) externagent.SandboxConfig {
 	return externagent.SandboxConfig{
 		AllowedHosts:    claudeAllowedHosts,
@@ -364,25 +316,21 @@ func claudeSandboxConfig(home string, prog externagent.Program) externagent.Sand
 		AuthDirWritable: true,
 		ProgramDirs:     prog.ReadableDirs,
 		ProbeTimeout:    externalProbeTimeout,
-		// Claude Code ships as a single compiled native binary that canonicalizes paths on
-		// startup, the same operation no process can perform inside a Windows AppContainer,
-		// so it runs under the tier that confines its writes to the workspace and leaves the
-		// host readable. Its writes, its egress, and its tools stay gated; only the read
-		// posture is traded, and the episode records the tier that ran.
+		// Claude Code canonicalizes paths at startup, which no process can do inside a Windows
+		// AppContainer, so it runs with the host readable and writes confined to the workspace.
+		// Writes, egress and tools stay gated, and the episode records the tier.
 		HostReadable: true,
 	}
 }
 
-// externalAdapter builds the CLI adapter for the named backend over spawner. The
-// adapter describes how to detect the CLI and drive one episode; the codex adapter is
-// the first.
+// externalAdapter builds the adapter that detects the backend's CLI and drives one
+// episode over spawner.
 func externalAdapter(name string, spawner externagent.Spawner) (externagent.Adapter, error) {
 	switch name {
 	case "codex":
-		// Launch the native executable the npm launcher stands for, not the launcher: a
-		// script would need its interpreter reachable from inside the confinement, and an
-		// interpreter under a system-owned directory cannot be granted by an unprivileged
-		// process. An absent CLI leaves the name for Detect to report as not installed.
+		// Launch the native executable behind the npm launcher: a script needs its interpreter
+		// inside the confinement, and an unprivileged process cannot grant one under a
+		// system-owned directory. An absent CLI leaves the name for Detect to report.
 		prog, err := externagent.LocateCodex("")
 		if err != nil {
 			if !errors.Is(err, externagent.ErrProgramNotFound) {
@@ -392,9 +340,8 @@ func externalAdapter(name string, spawner externagent.Spawner) (externagent.Adap
 		}
 		return externagent.NewCodex(prog.Path, spawner), nil
 	case "claude":
-		// Launch the native binary the npm launcher stands for, not the launcher: a shim
-		// would need its shell or interpreter reachable from inside the confinement. An
-		// absent CLI leaves the name for Detect to report as not installed.
+		// Launch the native binary behind the npm launcher, whose shim needs a shell inside the
+		// confinement. An absent CLI leaves the name for Detect to report.
 		prog, err := externagent.LocateClaude("")
 		if err != nil {
 			if !errors.Is(err, externagent.ErrProgramNotFound) {
@@ -408,10 +355,9 @@ func externalAdapter(name string, spawner externagent.Spawner) (externagent.Adap
 	}
 }
 
-// newExternalAgent builds the driver for the named external agent backend, with
-// workdir as the directory the episode operates in. It shares one spawner between the
-// adapter and the driver so probes and episodes run under the same confinement. It
-// does not probe the CLI; resolveExternalAgent does that first.
+// newExternalAgent builds the backend's driver for workdir. Adapter and driver share one
+// spawner, so probes and episodes run under the same confinement. It does not probe;
+// resolveExternalAgent does.
 func newExternalAgent(name, workdir string) (*externAgent, error) {
 	spawner, err := externalSpawner(name)
 	if err != nil {
@@ -426,14 +372,8 @@ func newExternalAgent(name, workdir string) (*externAgent, error) {
 	}, nil
 }
 
-// resolveExternalAgent detects the external agent CLI and, when it is installed,
-// logged in, and new enough to be constrained, returns the driver to run it under. It
-// mirrors resolveModelOrOnboard's shape for a native provider: a hard refusal (a CLI
-// too old to lock down, a missing containment knob) is terminal, and a recoverable
-// onboarding gap (not installed, or not logged in) surfaces the CLI's own actionable
-// reason ("run `codex login`", "install it") rather than a raw error, so the user
-// knows the next step. No API key is ever asked for: an external agent authenticates
-// on its own subscription.
+// resolveExternalAgent returns the driver when the CLI is installed, signed in and new
+// enough to constrain. Errors follow [readinessError].
 func resolveExternalAgent(ctx context.Context, name, model, workdir string) (*externAgent, error) {
 	spawner, err := externalSpawner(name)
 	if err != nil {
@@ -451,11 +391,9 @@ func resolveExternalAgent(ctx context.Context, name, model, workdir string) (*ex
 	if rerr := readinessError(name, r); rerr != nil {
 		return nil, rerr
 	}
-	// A live episode confines the CLI and forces its egress through the governed proxy. Where
-	// that leg is not present, the episode would refuse mid-run rather than run the CLI with
-	// its network open. Catch it here, once the CLI is otherwise ready, so the user gets one
-	// actionable message pointing at a distribution that can run it instead of a governance
-	// refusal partway through a goal.
+	// An episode forces the CLI's egress through the governed proxy and would refuse
+	// mid-run without it. Checking here gives one message naming a distribution that can
+	// run it.
 	if !sandbox.GovernedEgressAvailable() {
 		return nil, fmt.Errorf("%s %s is installed and signed in, but this platform has no governed-egress leg, so Flynn will not run a live episode with the CLI's network open. Run Flynn inside a WSL2 distribution to drive %s here",
 			name, r.Version, name)
@@ -471,13 +409,10 @@ func resolveExternalAgent(ctx context.Context, name, model, workdir string) (*ex
 	return ea, nil
 }
 
-// readinessError turns a not-ready Readiness into the actionable error to surface to
-// the user, or nil when the CLI is ready to run. A hard refusal (Refuse) is terminal:
-// the CLI cannot be constrained to route its effects through the bridge, so the run
-// must not start it with unattested native effects. An onboarding gap (not installed,
-// or not logged in) surfaces the adapter's own actionable Reason ("run `codex login`",
-// "install it") rather than a raw error, so the user knows the next step; no API key
-// is ever requested, since an external agent authenticates on its own subscription.
+// readinessError returns nil for a ready CLI. A Refuse is terminal: the CLI cannot be
+// made to route its effects through the bridge. An onboarding gap (not installed, not
+// signed in) returns the adapter's own Reason, such as "run `codex login`". No API key
+// is asked for, since an external agent uses its own subscription.
 func readinessError(name string, r externagent.Readiness) error {
 	switch {
 	case r.Refuse:
