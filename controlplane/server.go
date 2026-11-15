@@ -16,18 +16,14 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// defaultWatchPoll is how often a watch re-reads the resource stream for new
-// events. The store records mutations on the spine but does not push a wake, so the
-// poll is the liveness floor; it is short enough to feel live and cheap because a
-// read past a cursor returns only new events.
+// defaultWatchPoll is how often a watch re-reads the resource stream. The store does
+// not push a wake, so this poll bounds latency; a read past the cursor returns only
+// new events, so it is cheap.
 const defaultWatchPoll = 250 * time.Millisecond
 
-// Server is the read/watch control-plane API over a resource store. It serves
-// get/list/watch for any registered kind, gated by the Authenticator, plus action
-// subresources (operator/admin verbs) behind the same auth boundary and a second,
-// finer gate: the caller's verified grant intersected with this instance's own local
-// grant, so a narrowed remote grant can never act beyond what the target would do
-// locally.
+// Server is the control-plane HTTP API over a resource store: get, list and watch
+// for every registered kind, plus action verbs behind a second gate, the caller's
+// grant intersected with this instance's local grant.
 type Server struct {
 	store resource.Store
 	log   spine.Log // the resource stream, tailed for watch
@@ -35,25 +31,18 @@ type Server struct {
 	obs   observe.Logger
 	poll  time.Duration
 
-	// localGrant is this instance's own action authority: the ceiling every remote
-	// caller is intersected against. It defaults to AllowAll (the zero-config
-	// instance is unconstrained locally); a host narrows it to bound what any remote
-	// caller can ever do here, independent of how broad a token they present.
+	// localGrant is the ceiling every remote caller's grant is intersected with;
+	// AllowAll by default. A host narrows it to bound what any token can do here.
 	localGrant capability.Grant
 	// admit is the capability waist the action gate runs an admitted verb through,
 	// reading the effective (intersected) grant from the request context.
 	admit dispatch.Admitter
-	// actions maps an action verb to its spec. Verbs are registered by the
-	// kill-switch and lifecycle layers via WithAction; this package owns the gate,
-	// not the verbs.
+	// actions maps a verb to its spec, registered with WithAction.
 	actions map[string]ActionSpec
 
-	// approvals verifies the signed approvals a dangerous verb requires before it runs,
-	// the second factor above scope and grant. It is nil when no approval verifier is
-	// configured, in which case a dangerous verb fails closed (cannot run) rather than
-	// running unauthorized. approvalHost is the host id stamped on the binding an
-	// approver must have signed, so an approval minted for one host cannot authorize an
-	// action on another.
+	// approvals verifies the signed approvals a dangerous verb needs; nil means a
+	// dangerous verb cannot run. approvalHost is the host id an approval must be bound
+	// to, so an approval minted for one host cannot authorize another.
 	approvals    *approval.Verifier
 	approvalHost string
 }
@@ -79,16 +68,14 @@ func WithWatchPoll(d time.Duration) Option {
 	}
 }
 
-// WithLocalGrant sets this instance's own action authority: the ceiling every remote
-// caller's grant is intersected against, so no presented token can act beyond what
-// the instance itself admits locally. The default is AllowAll (locally unconstrained).
+// WithLocalGrant sets the instance's local grant, the ceiling every remote caller's
+// grant is intersected with. The default is AllowAll.
 func WithLocalGrant(g capability.Grant) Option {
 	return func(s *Server) { s.localGrant = g }
 }
 
-// WithAdmitter overrides the capability waist the action gate admits a verb through.
-// The default is capability.Admitter, which reads the effective grant from the
-// request context; this hook exists for tests.
+// WithAdmitter replaces the admitter the action gate uses (default
+// capability.Admitter). It exists for tests.
 func WithAdmitter(a dispatch.Admitter) Option {
 	return func(s *Server) {
 		if a != nil {
@@ -97,11 +84,9 @@ func WithAdmitter(a dispatch.Admitter) Option {
 	}
 }
 
-// WithApprovals wires the verifier that checks the signed approvals a dangerous verb
-// requires, and the host id an approval must be bound to (it should match the
-// verifier's own host). Without it, a verb marked Dangerous fails closed: it cannot
-// run, because the second factor cannot be verified. A non-dangerous verb is
-// unaffected.
+// WithApprovals sets the verifier for dangerous verbs and the host id an approval
+// must be bound to, which should match the verifier's own host. Without it a
+// Dangerous verb cannot run.
 func WithApprovals(v *approval.Verifier, host string) Option {
 	return func(s *Server) {
 		s.approvals = v
@@ -109,11 +94,10 @@ func WithApprovals(v *approval.Verifier, host string) Option {
 	}
 }
 
-// WithAction registers an action verb (a kube-style subresource) and its gate. The
-// verb is served at POST /v1/{kind}/{name}/<verb>, refuses a token below spec.MinScope,
-// and admits only if the caller's grant intersected with the instance's local grant
-// permits spec.Action. Verbs with an empty Action or a nil Run are ignored, so a
-// half-declared action cannot open an ungated route.
+// WithAction registers verb at POST /v1/{kind}/{name}/<verb>. It refuses a token
+// below spec.MinScope and admits only when the caller's grant intersected with the
+// local grant permits spec.Action. A spec with an empty Action or nil Run is ignored,
+// so a half-declared action cannot open an ungated route.
 func WithAction(verb string, spec ActionSpec) Option {
 	return func(s *Server) {
 		if verb == "" || spec.Action == "" || spec.Run == nil {
@@ -123,10 +107,9 @@ func WithAction(verb string, spec ActionSpec) Option {
 	}
 }
 
-// NewServer builds the read/watch API over store, tailing log (the store's resource
-// stream) for watch, authenticated by auth. A nil auth fails closed: the server denies
-// every request rather than serving openly, so an unauthenticated API cannot be created
-// by omission.
+// NewServer builds the API over store, tailing log (the store's resource stream) for
+// watch. A nil auth denies every request, so an open API cannot be created by
+// omission.
 func NewServer(store resource.Store, log spine.Log, auth Authenticator, opts ...Option) *Server {
 	if auth == nil {
 		auth = DenyAll{}
@@ -155,28 +138,25 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /v1/{kind}/watch", s.guard(ScopeRead, s.handleWatch))
 	mux.HandleFunc("GET /v1/{kind}/{name}", s.guard(ScopeRead, s.handleGet))
 	mux.HandleFunc("GET /v1/{kind}", s.guard(ScopeRead, s.handleList))
-	// Action subresources are POSTs on a named resource: POST /v1/{kind}/{name}/<verb>.
-	// The literal verb segment and the POST method keep them distinct from the GET
-	// read routes above. Each carries its own minimum scope and grant gate.
+	// Action verbs are POSTs on a named resource, so they never collide with the GET read
+	// routes.
 	for verb, spec := range s.actions {
 		mux.HandleFunc("POST /v1/{kind}/{name}/"+verb, s.guardAction(spec, verb, s.handleAction(verb, spec)))
 	}
 	return mux
 }
 
-// Audit constants name the immutable record of who accessed the control plane. Every
-// authenticated request records its decision on AuditStream as an EvAccess event, so
-// the access history is a replayable fold over the spine, not a best-effort log.
+// The audit stream and event types. Every authenticated request records its decision
+// on AuditStream as an EvAccess event, so access history is a replayable fold over
+// the spine.
 const (
 	// AuditStream is the spine stream every control-plane access decision is recorded
 	// on, separate from the resource stream the watch tails.
 	AuditStream = "controlplane.audit"
 	// EvAccess is the event type of one access decision.
 	EvAccess = "controlplane.access"
-	// EvApproval is the event type of one signed-approval decision for a dangerous
-	// verb: who authorized (the contributing key ids), the bound action and target, and
-	// whether it was granted. It is the non-repudiable "who approved what" record,
-	// distinct from the access decision EvAccess.
+	// EvApproval is one signed-approval decision for a dangerous verb: the signing key
+	// ids, the bound action and target, and whether it was granted.
 	EvApproval = "controlplane.approval"
 )
 
@@ -185,17 +165,14 @@ const (
 	decisionAllowed         = "allowed"
 	decisionForbidden       = "forbidden"
 	decisionUnauthenticated = "unauthenticated"
-	// decisionDenied is a request that passed scope but was refused by the grant gate:
-	// the caller had the scope to ask, but neither its grant nor the instance's local
-	// grant admits the action. It is distinct from decisionForbidden (scope) so an
-	// audit reader can tell a coarse under-scoping from a fine capability denial.
+	// decisionDenied is a request that passed scope but failed the grant gate. It is
+	// kept apart from decisionForbidden so an audit reader can tell under-scoping from a
+	// capability denial.
 	decisionDenied = "denied"
 )
 
-// authorize authenticates a request and enforces the minimum scope, auditing and
-// writing the HTTP error on failure. It returns the principal and true only when both
-// pass; on a false return the response is already written and the attempt audited.
-// action is the verb being attempted ("" for a read route), recorded with the decision.
+// authorize authenticates r and enforces required. On false the error response is
+// written and the attempt audited. action is the verb attempted, "" for a read.
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request, required Scope, action string) (Principal, bool) {
 	p, err := s.auth.Authenticate(r)
 	if err != nil {
@@ -214,11 +191,10 @@ func (s *Server) authorize(w http.ResponseWriter, r *http.Request, required Scop
 	return p, true
 }
 
-// guard authenticates a request, enforces the minimum scope, and records the call on
-// the spine before handing off. A failure is a clean 401 (unauthenticated) or 403
-// (authenticated but under-scoped); each outcome, including the failures, is audited,
-// because a refused or unauthenticated attempt is itself security-relevant. Reads are
-// fully decided here, so a passing read is recorded allowed before the handler runs.
+// guard authenticates, enforces the minimum scope and audits every outcome, failures
+// included, since a refused attempt is security-relevant: 401 when unauthenticated,
+// 403 when under-scoped. A read is fully decided here, so it is recorded allowed
+// before the handler runs.
 func (s *Server) guard(required Scope, h func(http.ResponseWriter, *http.Request, Principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := s.authorize(w, r, required, "")
@@ -232,11 +208,9 @@ func (s *Server) guard(required Scope, h func(http.ResponseWriter, *http.Request
 	}
 }
 
-// guardAction is guard for an action subresource: it authenticates and enforces the
-// verb's scope, but defers the allow/deny audit to the handler, because an action has
-// a second checkpoint (the grant gate) the scope check cannot see. The handler records
-// exactly one decision for the request, allowed or denied, so an action never produces
-// a misleading "allowed" event it then refuses at the grant.
+// guardAction is guard for an action verb, except that the handler audits the
+// decision, because the grant gate runs after scope. An action so records one
+// decision and never an "allowed" it then refuses.
 func (s *Server) guardAction(spec ActionSpec, verb string, h func(http.ResponseWriter, *http.Request, Principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		p, ok := s.authorize(w, r, spec.MinScope, verb)
@@ -247,13 +221,10 @@ func (s *Server) guardAction(spec ActionSpec, verb string, h func(http.ResponseW
 	}
 }
 
-// audit records one access decision on the spine, the immutable audit trail by
-// construction: the principal (the "who"), the decision, the request method and path,
-// the action verb (empty for a read), the principal's scope, and the scope the route
-// required. The spine is the system of record; a failure to append is logged but never
-// fails the request, so trouble writing the audit degrades to the operability logger
-// rather than taking the API down. An unauthenticated attempt carries the empty
-// principal, since none was established.
+// audit appends one access decision to the spine: principal, decision, method and
+// path, verb ("" for a read), the principal's scope and the required scope. An append
+// failure is logged and never fails the request. An unauthenticated attempt has the
+// empty principal.
 func (s *Server) audit(ctx context.Context, p Principal, decision string, required Scope, action string, r *http.Request) {
 	if s.log == nil {
 		return
@@ -289,11 +260,8 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request, _ Principal)
 	writeJSON(w, http.StatusOK, listResponse{Items: rs})
 }
 
-// handleGet returns one resource by kind and name. It resolves the name across all
-// scopes to match handleList, which lists every scope: the global scope is tried
-// first (the unambiguous, n=1 case), then a by-name search over the other scopes,
-// so a resource that is listable is also gettable rather than 404ing when it lives
-// in a non-global scope.
+// handleGet returns one resource by kind and name, searching every scope as
+// handleList does: global first, then the rest, so anything listable is gettable.
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ Principal) {
 	kind, name := r.PathValue("kind"), r.PathValue("name")
 	res, found, err := s.resolve(r.Context(), kind, name)
@@ -309,14 +277,12 @@ func (s *Server) handleGet(w http.ResponseWriter, r *http.Request, _ Principal) 
 	writeJSON(w, http.StatusOK, res)
 }
 
-// getAcrossScopes finds a resource of kind by name in any scope, used when the
-// global scope has no match. It returns the first match in the store's stable order
-// (scope then name), so the result is deterministic when the same name exists in
-// more than one scope.
+// getAcrossScopes finds kind/name in any scope and returns the first match in the
+// store's scope-then-name order, so a name in several scopes resolves
+// deterministically.
 func (s *Server) getAcrossScopes(ctx context.Context, kind, name string) (resource.Resource, bool, error) {
-	// Keyed lookup when the backend offers it: seek to the name via its index instead
-	// of decoding every resource of the kind to scan names. The capability returns the
-	// first match in the same scope-then-name order the fallback would.
+	// Use the backend's keyed lookup when it has one, instead of decoding every resource
+	// of the kind; it returns the same first match.
 	if g, ok := s.store.(resource.AnyScopeGetter); ok {
 		return g.GetAnyScope(ctx, kind, name)
 	}
@@ -356,9 +322,8 @@ func (s *Server) handleWatch(w http.ResponseWriter, r *http.Request, _ Principal
 		}
 	}
 
-	// A persistent store read error should not log on every poll forever; give up
-	// after a few consecutive failures and let the client reconnect, rather than
-	// turning a broken store into an endless error stream.
+	// Give up after a few consecutive read errors and let the client reconnect, so a
+	// broken store does not log on every poll forever.
 	const maxWatchReadErrors = 5
 	t := time.NewTicker(s.poll)
 	defer t.Stop()

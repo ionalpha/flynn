@@ -15,14 +15,12 @@ const (
 	EvSummary = "rubric.summary"
 )
 
-// Record appends an assessment to the log under stream: one EvIssue event per confessed
-// issue, one EvAxis event per graded axis, then one EvSummary carrying the overall score
-// and pass/fail. Every event is stamped with the rubric's fingerprint, so the record
-// says which grader produced the verdict — the provenance a re-grade needs to tell a
-// newer grader's verdict from the one it supersedes. A verdict becomes durable,
-// auditable, and replayable on the spine like any other effect, so a run can be re-graded
-// by folding the stream when the grader improves. The events are written on the runtime's
-// authority, so their actor is system.
+// Record appends an assessment to the log under stream: one EvIssue per confessed
+// issue, one EvAxis per graded axis, then an EvSummary with the overall score and
+// pass. Every event carries the rubric's fingerprint, so a re-grade can tell a newer
+// grader's verdict from the one it supersedes, and a run can be re-graded by folding
+// the stream. The events are written on the runtime's authority, so their actor is
+// system.
 func Record(ctx context.Context, log spine.Log, stream string, a Assessment) error {
 	for _, is := range a.Issues {
 		if _, err := log.Append(ctx, spine.AppendInput{

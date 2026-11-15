@@ -10,14 +10,12 @@ import (
 	"github.com/ionalpha/flynn/spine"
 )
 
-// Stamper computes the canonical post-image of a resource mutation: it runs
-// admission (the kind must be registered and the Spec must satisfy its schema),
-// assigns identity, the sync envelope, content and sync versions, the content
-// hash, and timestamps, enforces optimistic concurrency, and builds the spine
-// event to append. Every backend routes writes through one Stamper, so the rules
-// live in exactly one place and backends cannot drift. It does no persistence: the
-// caller supplies the existing record (looked up under its own lock/transaction)
-// and persists the returned resource and event.
+// Stamper computes the canonical post-image of a resource mutation: admission,
+// identity, the sync envelope, versions, content hash, timestamps, optimistic
+// concurrency and the spine event to append. Every backend writes through one
+// Stamper, so backends cannot drift on these rules. It does no persistence: the
+// caller supplies the existing record, read under its own lock or transaction, and
+// persists the result.
 type Stamper struct {
 	instanceID string
 	clk        clock.Clock
@@ -26,8 +24,8 @@ type Stamper struct {
 	reg        *Registry
 }
 
-// NewStamper builds a Stamper from a backend's instance identity, deterministic
-// primitives, and the kind registry used for admission.
+// NewStamper builds a Stamper from a backend's instance identity, clocks, ID
+// generator and admission registry.
 func NewStamper(instanceID string, clk clock.Clock, hc *hlc.Clock, gen *ids.Generator, reg *Registry) *Stamper {
 	return &Stamper{instanceID: instanceID, clk: clk, hlc: hc, gen: gen, reg: reg}
 }
@@ -36,9 +34,8 @@ func NewStamper(instanceID string, clk clock.Clock, hc *hlc.Clock, gen *ids.Gene
 func (s *Stamper) Registry() *Registry { return s.reg }
 
 // Put stamps a create or update of r keyed by (Kind, Scope, Name). existing is the
-// stored record for that key (tombstones included, so a put over a tombstone
-// resurrects it) or nil. It admits the spec, enforces opt-in CAS, and recomputes
-// the content hash, returning the canonical resource and the event to append.
+// stored record for that key or nil; it includes tombstones, so a put over one
+// resurrects it. Put admits the spec, enforces opt-in CAS and recomputes the hash.
 func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInput, error) {
 	if r.APIVersion == "" || r.Kind == "" || (r.Name == "" && r.GenerateName == "") {
 		return Resource{}, spine.AppendInput{}, fmt.Errorf("%w: resource requires APIVersion, Kind and a Name or GenerateName", ErrInvalid)
@@ -63,9 +60,8 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 		if r.ID == "" {
 			r.ID = s.gen.New()
 		}
-		// A nameless kind gets a server-assigned name from the one ID source, so
-		// the record is addressable like any other without a facade inventing its
-		// own ID generator.
+		// A nameless kind takes its name from the one ID source, so no facade
+		// needs its own ID generator.
 		if r.Name == "" {
 			r.Name = r.GenerateName + r.ID
 		}
@@ -77,18 +73,16 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 	r.WriterActor = writerActor(r.WriterActor) // caller may mark a human write; defaults to the agent
 	r.UpdatedAt = now
 
-	// DeletionTimestamp is system-owned: a Put never sets or clears it. Preserve it
-	// from a live record so a finalizer update keeps the resource terminating;
-	// clear it on a create or on a resurrection over a tombstone (a fresh resource
-	// is not being deleted).
+	// DeletionTimestamp is system-owned and a Put never sets or clears it: keep it
+	// from a live record so a finalizer update stays terminating, and clear it on a
+	// create or resurrection.
 	if existing != nil && !existing.Deleted {
 		r.DeletionTimestamp = existing.DeletionTimestamp
 	} else {
 		r.DeletionTimestamp = nil
 	}
 
-	// Removing the last finalizer from a terminating resource completes its
-	// deletion (the record tombstones); otherwise the put leaves it live.
+	// Removing the last finalizer from a terminating resource tombstones it.
 	evType := EvPut
 	if r.DeletionTimestamp != nil && len(r.Finalizers) == 0 {
 		r.Deleted = true
@@ -108,11 +102,9 @@ func (s *Stamper) Put(existing *Resource, r Resource) (Resource, spine.AppendInp
 	return r, ev, err
 }
 
-// Delete requests deletion of the given live resource. If it has no finalizers it
-// tombstones immediately (EvDeleted). If it has finalizers it is marked
-// terminating instead: DeletionTimestamp is set and the record stays live (EvPut)
-// so its owners can run cleanup and remove their finalizer keys; the deletion
-// completes later, in Put, when the last finalizer is removed.
+// Delete requests deletion of a live resource. Without finalizers it tombstones now
+// (EvDeleted). With finalizers it sets DeletionTimestamp and stays live (EvPut) so
+// owners can clean up; Put completes the deletion when the last finalizer goes.
 func (s *Stamper) Delete(r Resource) (Resource, spine.AppendInput, error) {
 	r.Version++
 	envelope.StampBump(&r.Envelope.Envelope, s.instanceID, s.hlc.Now())
@@ -149,8 +141,8 @@ func (s *Stamper) event(typ string, r Resource) (spine.AppendInput, error) {
 	return envelope.EventInput(ResourceStream, typ, writerActor(r.WriterActor), s.instanceID, p), nil
 }
 
-// writerActor normalizes a provenance actor, defaulting the zero value to the
-// agent so every record and event carries a concrete authorship signal.
+// writerActor defaults the zero actor to the agent, so every record and event names
+// an author.
 func writerActor(a spine.ActorType) spine.ActorType {
 	if a == "" {
 		return spine.ActorAgent

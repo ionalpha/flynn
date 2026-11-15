@@ -13,11 +13,9 @@ import (
 	"github.com/ionalpha/flynn/internal/inference"
 )
 
-// Prober runs a present program's version command and returns its output. It is a narrow
-// boundary so the engine can be tested without executing anything and so the host can
-// confine the probe: the real implementation runs the program through the sandbox, never
-// spawning a process directly. A probe error means the program is absent or would not run,
-// which the engine treats as "not present" rather than trusting it blindly.
+// Prober runs a present program's version command and returns its output. The real
+// one runs through the sandbox and never spawns a process directly, and tests run
+// nothing. A probe error means absent or unusable, so the program is not trusted.
 type Prober interface {
 	Probe(ctx context.Context, name string, args []string) (string, error)
 }
@@ -26,15 +24,15 @@ type Prober interface {
 type Source string
 
 const (
-	// SourceSystem is a program already present on the host that met the floor.
+	// SourceSystem is a program already on the host that met the floor.
 	SourceSystem Source = "system"
 	// SourceProvisioned is a pinned build Flynn fetched and installed.
 	SourceProvisioned Source = "provisioned"
 )
 
-// Resolved is a satisfied dependency: what to run, the version in effect, and where it came
-// from. For a system program the path is the program name the sandbox resolves on PATH; for
-// a provisioned build it is the absolute path of the installed binary.
+// Resolved is a satisfied dependency: the path to run, the version and its source.
+// A system program's path is the name the sandbox resolves on PATH; a provisioned
+// one is the installed binary's absolute path.
 type Resolved struct {
 	Name    string
 	Path    string
@@ -42,9 +40,8 @@ type Resolved struct {
 	Source  Source
 }
 
-// Report is the observed state of a dependency without changing anything: whether a usable
-// build is present on the host, its version, whether it meets the floor, and whether Flynn
-// could provision one for this platform if it is not.
+// Report is a dependency's observed state: whether a usable build is present, its
+// version, whether it meets the floor and whether one could be provisioned here.
 type Report struct {
 	Name         string
 	Present      bool
@@ -54,10 +51,9 @@ type Report struct {
 	CanProvision bool
 }
 
-// Manager satisfies dependencies from their specs. It is detect-installed-first: a present
-// build that meets the floor is used as-is; otherwise the pinned build is fetched and
-// verified through the acquire layer and installed under the data directory. It holds no
-// program knowledge: every program is a spec it reads.
+// Manager satisfies dependencies from their specs: a present build meeting the floor
+// is used as-is, otherwise the pinned build is fetched, verified and installed under
+// the data directory. Every program is a spec it reads.
 type Manager struct {
 	store   *Store
 	dl      *fetch.Downloader
@@ -70,12 +66,11 @@ type Manager struct {
 // Option configures a Manager.
 type Option func(*Manager)
 
-// WithProber sets the version-probe boundary. A nil prober means no system program can be
-// verified, so every dependency is provisioned from its pinned build.
+// WithProber sets the version prober. With none no system program can be verified,
+// so every dependency is provisioned.
 func WithProber(p Prober) Option { return func(m *Manager) { m.prober = p } }
 
-// WithPlatform overrides the target platform (default the running GOOS/GOARCH). Tests use it
-// to exercise provisioning for a specific platform.
+// WithPlatform overrides the target platform (default the running GOOS/GOARCH).
 func WithPlatform(goos, goarch string) Option {
 	return func(m *Manager) {
 		if goos != "" {
@@ -87,8 +82,8 @@ func WithPlatform(goos, goarch string) Option {
 	}
 }
 
-// NewManager builds a dependency manager over store. dl is the verified downloader used to
-// provision a missing build; dataDir is the root the install directory lives under.
+// NewManager builds a manager over store. dl provisions missing builds, verified;
+// dataDir is the root of the install directory.
 func NewManager(store *Store, dl *fetch.Downloader, dataDir string, opts ...Option) *Manager {
 	m := &Manager{store: store, dl: dl, dataDir: dataDir, goos: runtime.GOOS, goarch: runtime.GOARCH}
 	for _, o := range opts {
@@ -97,10 +92,9 @@ func NewManager(store *Store, dl *fetch.Downloader, dataDir string, opts ...Opti
 	return m
 }
 
-// Resolve satisfies the named dependency and returns a runnable path. A present build that
-// meets the floor is returned without a download; otherwise the pinned build for this
-// platform is fetched, verified, and installed. It fails when the program is neither present
-// nor shipped for this platform, with a message telling the operator how to proceed.
+// Resolve satisfies the named dependency and returns a runnable path, downloading
+// only when no present build meets the floor. It fails, telling the operator how to
+// proceed, when the program is neither present nor shipped for this platform.
 func (m *Manager) Resolve(ctx context.Context, name string) (Resolved, error) {
 	dep, err := m.store.Get(ctx, name)
 	if err != nil {
@@ -131,9 +125,9 @@ func (m *Manager) Check(ctx context.Context, name string) (Report, error) {
 	return rep, nil
 }
 
-// detect implements the detect-installed-first policy: the first present binary that meets
-// the floor is used. A binary that cannot be probed, or is below the floor, is skipped so a
-// vulnerable or unreadable system install never shadows the pinned build.
+// detect returns the first present binary meeting the floor. An unprobeable or
+// below-floor binary is skipped, so a vulnerable or unreadable system install never
+// shadows the pinned build.
 func (m *Manager) detect(ctx context.Context, spec Spec, name string) (Resolved, bool) {
 	floor := parseFloor(spec.MinVersion)
 	for _, b := range m.presentBinaries(ctx, spec) {
@@ -145,17 +139,14 @@ func (m *Manager) detect(ctx context.Context, spec Spec, name string) (Resolved,
 	return Resolved{}, false
 }
 
-// probed is a present binary and the version read from it.
 type probed struct {
 	name string
 	ver  inference.Version
 }
 
-// presentBinaries probes each candidate binary in order and yields, lazily via a slice, the
-// ones that run and print a parseable version. With no prober or no version arguments a
-// present build cannot be verified through the sandbox, so none are reported and the pinned
-// build is preferred. It stops at the first success for Resolve's common case, but returns a
-// slice so Check and the floor-skip in detect can consider each in turn.
+// presentBinaries returns the candidate binaries that run and print a parseable
+// version. Without a prober or version arguments nothing can be verified through
+// the sandbox, so none are reported and the pinned build wins.
 func (m *Manager) presentBinaries(ctx context.Context, spec Spec) []probed {
 	if m.prober == nil || len(spec.VersionArgs) == 0 {
 		return nil
@@ -175,8 +166,8 @@ func (m *Manager) presentBinaries(ctx context.Context, spec Spec) []probed {
 	return out
 }
 
-// provision fetches and installs the pinned build for this platform, refusing a spec whose
-// pin would be below its own floor, and refusing a platform the spec ships no build for.
+// provision installs the pinned build for this platform. It refuses a pin below the
+// spec's floor and a platform the spec ships no build for.
 func (m *Manager) provision(ctx context.Context, spec Spec, name string) (Resolved, error) {
 	rel, ok := spec.ReleaseFor(m.goos, m.goarch)
 	if !ok {
@@ -211,7 +202,7 @@ func (m *Manager) provision(ctx context.Context, spec Spec, name string) (Resolv
 	return Resolved{Name: name, Path: bin, Version: spec.Pin, Source: SourceProvisioned}, nil
 }
 
-// parseFloor parses a minimum-version string, returning nil when no floor is set.
+// parseFloor returns nil when no floor is set.
 func parseFloor(minVer string) inference.Version {
 	if strings.TrimSpace(minVer) == "" {
 		return nil
@@ -219,8 +210,8 @@ func parseFloor(minVer string) inference.Version {
 	return inference.ParseVersion(minVer)
 }
 
-// parseVersion extracts the version token from raw version output (capture group one of
-// regex when set, else the whole output) and parses it to a comparable version.
+// parseVersion parses the version from raw output (capture group one of regex, else
+// the whole output).
 func parseVersion(raw, regex string) inference.Version {
 	token := strings.TrimSpace(raw)
 	if regex != "" {
@@ -233,7 +224,6 @@ func parseVersion(raw, regex string) inference.Version {
 	return inference.ParseVersion(token)
 }
 
-// archiveKind maps a spec's archive string to the acquire layer's kind.
 func archiveKind(s string) (acquire.ArchiveKind, error) {
 	switch s {
 	case "zip":
@@ -245,8 +235,8 @@ func archiveKind(s string) (acquire.ArchiveKind, error) {
 	}
 }
 
-// versionDir returns a filesystem-safe single path element naming the install directory for
-// a pinned version, so distinct versions install side by side and never collide.
+// versionDir names the install directory for a pin as one filesystem-safe path
+// element, so versions install side by side.
 func versionDir(pin string) string {
 	v := strings.TrimSpace(pin)
 	if v == "" {

@@ -1,7 +1,6 @@
 package flow
 
-// StepPhase marks whether a StepEvent is reported as a step's effect begins or after it
-// ends.
+// StepPhase marks whether a StepEvent is reported as a step begins or after it ends.
 type StepPhase int
 
 const (
@@ -11,18 +10,15 @@ const (
 	StepEnd
 )
 
-// StepEvent describes one observable step of a running flow. It is reported to an Observer
-// as the step begins and again as it ends, so a host can show progress while a flow runs
-// instead of only seeing the final result. Only steps with an external effect worth
-// watching are reported, the command and dependency steps; pure steps (transform,
-// condition, loop, return) are not, because they have nothing to watch.
+// StepEvent describes one observable step, reported as it begins and as it ends so a
+// host can show progress. Only exec and dependency steps are reported; pure steps
+// have no external effect to watch.
 type StepEvent struct {
-	// Phase is whether the step is beginning or has ended.
+	// Phase is StepBegin or StepEnd.
 	Phase StepPhase
 	// Op is the step's op (OpExec or OpDependency).
 	Op Op
-	// Detail is the human-readable subject: the rendered command for an exec step, the
-	// dependency name for a dependency step.
+	// Detail is the rendered command for exec, the dependency name for dependency.
 	Detail string
 	// ExitCode is the command's exit code, set on StepEnd for an exec step.
 	ExitCode int
@@ -32,11 +28,9 @@ type StepEvent struct {
 	Err error
 }
 
-// Observer watches a flow execute, step by step. The interpreter reports each observable
-// step as it begins (StepBegin) and after it ends (StepEnd), so a host can show progress
-// while a long-running procedure (provisioning a tool, deploying an app) happens rather
-// than only seeing the final result. A nil Observer disables reporting. Implementations
-// must not block or retain the event past the call.
+// Observer watches a flow step by step, so a host can show progress through a long
+// procedure such as provisioning or a deploy. Implementations must not block or
+// retain the event past the call.
 type Observer interface {
 	Step(StepEvent)
 }

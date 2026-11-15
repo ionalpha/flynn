@@ -7,106 +7,86 @@ import (
 	"fmt"
 )
 
-// ResourceStream is the spine stream every resource mutation is recorded on. One
-// ordered stream means a Replay folds the whole foundation back into existence.
+// ResourceStream is the spine stream for every resource mutation. One ordered
+// stream lets Replay fold the whole store back into existence.
 const ResourceStream = "resources"
 
-// Resource event types: the vocabulary of the resource stream. Each event is the
-// canonical post-image of the affected resource, so replaying in order reproduces
-// identical state. Exported so durable backends project the same vocabulary.
+// Resource event types. Each event carries the canonical post-image, so replaying
+// in order reproduces identical state. Durable backends project the same types.
 const (
 	EvPut     = "resource.put"
 	EvDeleted = "resource.deleted"
-	// EvMerged records a resource applied by cross-instance Merge: its payload is
-	// the winning post-image verbatim (the remote envelope preserved, not
-	// restamped), so every replica that folds the stream converges identically. It
-	// projects exactly like EvPut, but is a distinct type so the log stays auditable
-	// about which records arrived by local write versus fleet sync.
+	// EvMerged records a resource applied by Merge. Its payload is the winning
+	// post-image with the remote envelope unchanged, so every replica folding the
+	// stream converges. It projects like EvPut and is a separate type so the log
+	// shows which records arrived by fleet sync.
 	EvMerged = "resource.merged"
 )
 
-// payloadKey is the event payload key under which the post-image resource lives.
 const payloadKey = "resource"
 
-// Store is the generic, event-sourced port every kind is read and written
-// through: the single interface a backend implements to persist the entire
-// foundation. Adding a domain is registering a Kind, never editing this interface
-// or forking a backend. Backends (in-memory, SQLite, a host) are interchangeable,
-// held to one contract by resourcetest.RunSuite.
+// Store is the event-sourced port every kind is read and written through, the one
+// interface a backend implements. A new domain registers a Kind and never edits
+// Store. Backends (in-memory, SQLite, a host) are held to one contract by
+// resourcetest.RunSuite.
 type Store interface {
-	// Put creates or updates the resource addressed by (Kind, Scope, Name). It
-	// validates Spec against the kind's schema (admission), assigns identity,
-	// envelope, content hash, and timestamps, and records the mutation on the
-	// event log. Optimistic concurrency is opt-in via SyncVersion.
+	// Put creates or updates the resource at (Kind, Scope, Name): it admits Spec,
+	// assigns identity, envelope, hash and timestamps, and records the event.
+	// Optimistic concurrency is opt-in through SyncVersion.
 	Put(ctx context.Context, r Resource) (Resource, error)
 	// Get returns the live resource for (kind, scope, name), or ErrNotFound.
 	Get(ctx context.Context, kind string, scope Scope, name string) (Resource, error)
 	// GetByID returns the live resource by its stable id, or ErrNotFound.
 	GetByID(ctx context.Context, id string) (Resource, error)
-	// List returns the live resources of a kind in a scope whose labels satisfy
-	// the selector (nil selector matches all), ordered by name.
+	// List returns the live resources of a kind in a scope matching the selector
+	// (nil matches all), ordered by name.
 	List(ctx context.Context, kind string, scope Scope, sel Selector) ([]Resource, error)
-	// ListAll returns the live resources of a kind across every scope whose labels
-	// satisfy the selector (nil selector matches all), ordered by scope then name.
-	// It is the cross-namespace query: typed facades that resolve by a
-	// scope-independent handle (a skill slug, say) and selector-driven views over a
-	// whole kind read through it, the way Kubernetes lists a kind across all
-	// namespaces.
+	// ListAll returns the live resources of a kind in every scope matching the
+	// selector (nil matches all), ordered by scope then name. Facades that resolve
+	// a scope-independent handle, such as a skill slug, read through it.
 	ListAll(ctx context.Context, kind string, sel Selector) ([]Resource, error)
-	// Delete requests deletion of the resource addressed by (kind, scope, name), or
-	// returns ErrNotFound. With no finalizers it tombstones immediately; with
-	// finalizers it marks the resource terminating (sets DeletionTimestamp, keeps it
-	// live) and the deletion completes via Put when the last finalizer is removed.
-	// Deleting an already-terminating resource is an idempotent no-op.
+	// Delete requests deletion of the resource at (kind, scope, name), or returns
+	// ErrNotFound. Without finalizers it tombstones now; with them it sets
+	// DeletionTimestamp and Put completes the deletion when the last is removed.
+	// Deleting a terminating resource is an idempotent no-op.
 	Delete(ctx context.Context, kind string, scope Scope, name string) error
-	// Merge applies a resource replicated from another instance, converging the two
-	// without losing a write. Distinct from Put (the local-write command): Merge
-	// trusts the remote envelope (ID, origin, HLC, versions, provenance) and never
-	// restamps it, so all replicas reach byte-identical state regardless of the
-	// order replicas arrive. See Resolve for the conflict rules; the result reports
-	// whether the remote was applied, ignored as stale, or already present.
+	// Merge applies a resource replicated from another instance without losing a
+	// write. It trusts the remote envelope (ID, origin, HLC, versions, provenance)
+	// and never restamps it, so replicas reach byte-identical state in any arrival
+	// order. Resolve has the conflict rules; the result says whether the remote was
+	// applied, ignored or already present.
 	//
-	// Identity is the global ID: a record is merged against the local record with
-	// the same ID. The same (Kind, Scope, Name) created independently on two
-	// instances has two different IDs and so stays two distinct records; resolving
-	// such a name collision is a higher-level concern, not part of the apply path.
+	// A record merges against the local record with the same ID. The same (Kind,
+	// Scope, Name) created on two instances has two IDs and stays two records; the
+	// apply path does not resolve name collisions.
 	Merge(ctx context.Context, remote Resource) (MergeResult, error)
-	// Snapshot checkpoints the current projection onto the event log, so a later
-	// rebuild resumes from the snapshot and folds only the events after it instead
-	// of replaying the whole stream. A snapshot is a derived cache: it never changes
-	// what a read returns, only how fast a rebuild is.
+	// Snapshot checkpoints the projection onto the log, so a rebuild folds only
+	// later events. It changes how fast a rebuild is and never what a read returns.
 	Snapshot(ctx context.Context) error
 	// Close releases backend resources.
 	Close() error
 }
 
-// KeyLister is an optional Store capability: a key-only listing of every live
-// resource of a kind, ordered by scope then name. Callers that need addresses
-// rather than records (the reconcile resync, which only enqueues keys) read
-// through it when the backend offers it, so a periodic sweep does not copy
-// every record of the kind. Both bundled backends implement it.
+// KeyLister is an optional Store capability: the keys of every live resource of a
+// kind, ordered by scope then name. The reconcile resync uses it when offered, so
+// a sweep does not copy every record. Both bundled backends implement it.
 type KeyLister interface {
 	ListKeys(ctx context.Context, kind string) ([]Key, error)
 }
 
-// AnyScopeGetter is an optional Store capability: a keyed lookup of the first live
-// resource of a kind with a name in any scope, in the same scope-then-name order
-// ListAll surfaces. A caller resolving a scope-independent name (the control plane's
-// cross-scope get, when the global scope missed) reads through it when the backend
-// offers it, so the lookup seeks to the name instead of listing and scanning the whole
-// kind. found is false with a nil error when no scope has the name. A backend that
-// cannot answer this from an index simply does not implement it; the caller falls back
-// to ListAll and a name scan.
+// AnyScopeGetter is an optional Store capability: the first live resource of a kind
+// with a name in any scope, in ListAll's order. The control plane's cross-scope get
+// uses it when offered, so the lookup seeks the name instead of scanning the kind;
+// otherwise it falls back to ListAll. found is false with a nil error when no scope
+// has the name.
 type AnyScopeGetter interface {
 	GetAnyScope(ctx context.Context, kind, name string) (Resource, bool, error)
 }
 
-// OwnerGone reports whether r's controller owner no longer exists or is itself
-// terminating, which makes r an orphan a garbage collector should reap so an
-// owner's deletion cascades to the subtree it created. A resource with no
-// controller owner is a root and is never orphaned. The owner is resolved by its
-// stable id, so a rename never breaks the link. It is the reusable predicate a
-// kind's reconciler calls to garbage-collect owned resources.
+// OwnerGone reports whether r's controller owner is gone or terminating, which
+// makes r an orphan to reap so an owner's deletion cascades. A resource with no
+// controller owner is a root and never orphaned. The owner resolves by stable id,
+// so a rename never breaks the link.
 func OwnerGone(ctx context.Context, store Store, r Resource) (bool, error) {
 	owner, ok := r.Controller()
 	if !ok {
@@ -122,23 +102,22 @@ func OwnerGone(ctx context.Context, store Store, r Resource) (bool, error) {
 	return o.DeletionTimestamp != nil, nil // owner terminating: cascade the reap
 }
 
-// encodePayload serialises a resource to the raw JSON event payload
-// ({"resource": <record>}) with a single Marshal. The spine stores these bytes
-// verbatim (spine.AppendInput.RawPayload), so a write serialises its post-image
-// exactly once instead of Marshal-Unmarshal-Marshal through a generic tree.
+// encodePayload serializes r to the event payload {"resource": <record>} with one
+// Marshal. The spine stores the bytes verbatim, so a write serializes its
+// post-image once.
 func encodePayload(r Resource) (json.RawMessage, error) {
 	b, err := json.Marshal(r)
 	if err != nil {
 		return nil, err
 	}
-	// Appending to the fixed prefix lets append size the buffer, so no capacity is computed
-	// by adding to a length that came from the marshalled record.
+	// Appending to the fixed prefix lets append size the buffer, so no capacity is
+	// computed from the marshalled length.
 	p := append([]byte(`{"`+payloadKey+`":`), b...)
 	return append(p, '}'), nil
 }
 
-// DecodeResource reconstructs a Resource from an event payload. Durable backends
-// use it to project the same records the in-memory core does.
+// DecodeResource reconstructs a Resource from an event payload, so durable backends
+// project the same records the in-memory core does.
 func DecodeResource(payload map[string]any) (Resource, error) {
 	b, err := json.Marshal(payload[payloadKey])
 	if err != nil {
@@ -151,9 +130,8 @@ func DecodeResource(payload map[string]any) (Resource, error) {
 	return r, nil
 }
 
-// kindSpecSchema is the JSON schema for a Kind's spec: it makes "Kind" a
-// schema-validated kind like any other, so kinds the agent authors at runtime are
-// themselves admitted. This is the meta-circular base case.
+// kindSpecSchema is the JSON schema for a Kind's spec, so kinds the agent authors
+// at runtime are admitted like any other resource.
 var kindSpecSchema = json.RawMessage(`{
   "type": "object",
   "required": ["apiVersion", "name"],
@@ -166,9 +144,8 @@ var kindSpecSchema = json.RawMessage(`{
   }
 }`)
 
-// RegisterCoreKinds registers the foundation's built-in kinds, starting with Kind
-// itself (kind == "Kind"), so a Kind can be stored and validated as a Resource.
-// This bootstraps meta-circularity: the type system is data on the same store.
+// RegisterCoreKinds registers the built-in kinds, starting with Kind itself, so a
+// Kind can be stored and validated as a Resource.
 func RegisterCoreKinds(reg *Registry) error {
 	return reg.Register(Kind{
 		APIVersion: CoreGroupVersion,
@@ -180,8 +157,8 @@ func RegisterCoreKinds(reg *Registry) error {
 }
 
 // KindResource renders a Kind as a Resource of kind "Kind", so kind definitions
-// are stored and synced through the same foundation as everything else. Optional
-// fields are omitted when empty so the spec satisfies the Kind schema.
+// store and sync like everything else. Empty optional fields are omitted so the
+// spec satisfies the Kind schema.
 func KindResource(k Kind, scope Scope) (Resource, error) {
 	specMap := map[string]any{
 		"apiVersion": k.APIVersion,

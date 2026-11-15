@@ -9,10 +9,9 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// Resolved is an Agent flattened to its effective bundle: the Agent's own fields
-// composed with every base it extends. It is what a run is actually configured
-// from, so the runtime, the spawner, and the router all consume Resolved rather
-// than reaching into the composition chain themselves.
+// Resolved is an Agent flattened with every base it extends, the bundle a run is
+// configured from. The runtime, spawner and router read it, so none walks the
+// composition chain itself.
 type Resolved struct {
 	System       string
 	Capabilities []string
@@ -24,31 +23,25 @@ type Resolved struct {
 	Knowledge    []string
 }
 
-// Grant builds the capability grant for a resolved Agent: the run is admitted only
-// for the capabilities the effective bundle declares.
+// Grant builds the capability grant admitting only the bundle's capabilities.
 func (r Resolved) Grant() capability.Grant {
 	return capability.NewGrant(r.Capabilities...)
 }
 
-// Resolve loads the Agent named name from store and flattens its composition chain
-// into the effective bundle. Bases are merged in declared order, then the Agent
-// itself on top: scalar fields take the most-derived non-empty value (the Agent
-// overrides its bases; a later base overrides an earlier one), and the set fields
-// (capabilities, tools, knowledge) are the union. A composition cycle is a terminal
-// error; a diamond (two bases sharing an ancestor) is allowed. A flat Agent that
-// extends nothing resolves to itself.
+// Resolve loads the Agent named name and flattens its composition chain. Bases merge
+// in declared order with the Agent on top: a scalar takes the most-derived non-empty
+// value (a later base overrides an earlier one), and capabilities, tools and
+// knowledge are unioned. A cycle is an error; a diamond is allowed.
 func Resolve(ctx context.Context, store resource.Store, scope resource.Scope, name string) (Resolved, error) {
 	return resolve(ctx, store, scope, name, map[string]bool{})
 }
 
-// Flatten flattens a spec already in hand against store (resolving its Extends
-// chain), without a name of its own. Use it when the Agent spec is already loaded.
+// Flatten resolves the Extends chain of a spec already loaded.
 func Flatten(ctx context.Context, store resource.Store, scope resource.Scope, spec Spec) (Resolved, error) {
 	return flatten(ctx, store, scope, spec, map[string]bool{})
 }
 
-// resolve flattens the Agent named name, guarding against cycles via the active
-// path (a name already on the path being resolved again is a back-edge).
+// resolve flattens the Agent named name. A name already on path is a cycle.
 func resolve(ctx context.Context, store resource.Store, scope resource.Scope, name string, path map[string]bool) (Resolved, error) {
 	if path[name] {
 		return Resolved{}, fault.New(fault.Terminal, "agent_extends_cycle",
@@ -67,7 +60,6 @@ func resolve(ctx context.Context, store resource.Store, scope resource.Scope, na
 	return flatten(ctx, store, scope, spec, path)
 }
 
-// flatten merges the spec's bases (in order) then the spec itself.
 func flatten(ctx context.Context, store resource.Store, scope resource.Scope, spec Spec, path map[string]bool) (Resolved, error) {
 	var acc Resolved
 	for _, base := range spec.Extends {
@@ -80,8 +72,8 @@ func flatten(ctx context.Context, store resource.Store, scope resource.Scope, sp
 	return mergeSpec(acc, spec), nil
 }
 
-// mergeResolved overlays b onto acc: a non-empty scalar in b wins, and the set
-// fields union. Used to fold each base into the accumulator in order.
+// mergeResolved overlays b onto acc: a non-empty scalar in b wins and the set
+// fields union.
 func mergeResolved(acc, b Resolved) Resolved {
 	return Resolved{
 		System:       override(acc.System, b.System),
@@ -95,8 +87,8 @@ func mergeResolved(acc, b Resolved) Resolved {
 	}
 }
 
-// mergeSpec overlays an Agent's own fields onto acc (the merged bases), so the
-// Agent overrides everything it extends.
+// mergeSpec overlays an Agent's own fields onto its merged bases, so the Agent
+// overrides everything it extends.
 func mergeSpec(acc Resolved, spec Spec) Resolved {
 	return Resolved{
 		System:       override(acc.System, spec.System),
@@ -110,8 +102,7 @@ func mergeSpec(acc Resolved, spec Spec) Resolved {
 	}
 }
 
-// override returns next when it is set, else keeps cur, so the most-derived
-// non-empty value wins for a scalar field.
+// override returns next when set, else cur.
 func override(cur, next string) string {
 	if next != "" {
 		return next
@@ -119,8 +110,8 @@ func override(cur, next string) string {
 	return cur
 }
 
-// union returns the sorted, de-duplicated union of two action/ref sets, so a
-// composed bundle is deterministic regardless of merge order.
+// union returns the sorted, de-duplicated union of a and b, so a composed bundle is
+// the same in any merge order.
 func union(a, b []string) []string {
 	if len(a) == 0 && len(b) == 0 {
 		return nil

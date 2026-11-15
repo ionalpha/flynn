@@ -1,9 +1,6 @@
-// Package sqlitex is the shared SQLite engine for the agent's durable backends.
-// It owns the single way the agent opens a database (pure-Go modernc.org/sqlite,
-// no cgo), applies pragmas, caps the connection pool, runs embedded migrations,
-// and runs a transaction. The state and spine SQLite adapters build on it, so the
-// open/pragma/tx/time boilerplate lives in exactly one place instead of being
-// copied per package.
+// Package sqlitex is the one way the agent opens a SQLite database (pure-Go
+// modernc.org/sqlite, no cgo): pragmas, a capped pool, embedded migrations,
+// transactions and the on-disk time format. The state and spine adapters build on it.
 package sqlitex
 
 import (
@@ -21,9 +18,9 @@ import (
 	"github.com/ionalpha/flynn/internal/migrate"
 )
 
-// Open opens (creating if needed) a SQLite database at dsn, applies the standard pragmas,
-// caps the pool at a single connection, and migrates to the latest schema using the .sql
-// files under "migrations" in migrationsFS. dsn is a file path, or ":memory:".
+// Open opens (creating if needed) a SQLite database at dsn, a file path or ":memory:",
+// applies the standard pragmas, caps the pool at one connection, and migrates with the
+// .sql files under "migrations" in migrationsFS.
 //
 // Pragmas, chosen for an append-heavy event-sourcing workload that must be light on SSDs:
 //   - journal_mode(WAL): writes append to a log instead of rewriting pages through a
@@ -33,7 +30,7 @@ import (
 //     crash-safe; only the last few unsynced transactions can be lost on a power cut.
 //   - busy_timeout(5000) waits on a lock (see [WriteTxLock]); foreign_keys(1) is on.
 //
-// One connection: SQLite serialises writers anyway, and a single connection keeps a
+// One connection, because SQLite serialises writers anyway and one connection keeps a
 // ":memory:" database alive with a consistent view. OpenReadPool opens the read side.
 func Open(ctx context.Context, dsn string, migrationsFS fs.FS) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dsn+dsnPragmas+WriteTxLock)
@@ -68,13 +65,11 @@ const (
 )
 
 // connect makes the first connection, retrying while another process holds the file.
-//
-// The first connection on a new file switches it to WAL. That switch needs the file
-// to itself, and when it meets another process doing the same, or one opening the
-// file in the old journal mode, SQLite returns SQLITE_BUSY at once without consulting
-// busy_timeout. Two processes that start together on a fresh data directory both
-// reach this point, so the loser retries until the winner has finished; by then the
-// file is already WAL and the switch is a no-op.
+// The first connection on a new file switches it to WAL, which needs the file to
+// itself; against a concurrent switch, or a process using the old journal mode, SQLite
+// returns SQLITE_BUSY at once without consulting busy_timeout. Two processes starting
+// on a fresh data directory both get here, so the loser retries until the file is WAL
+// and its own switch is a no-op.
 func connect(ctx context.Context, db *sql.DB) error {
 	var clk clock.Timing = clock.System{}
 	for attempt := 1; ; attempt++ {
@@ -102,34 +97,29 @@ func isBusy(err error) bool {
 	return code == sqlite3.SQLITE_BUSY || code == sqlite3.SQLITE_LOCKED
 }
 
-// dsnPragmas is the shared per-connection configuration. Beyond the write-side
-// journal pragmas documented on Open:
+// dsnPragmas is the per-connection configuration. Beyond the journal pragmas on Open:
 //   - cache_size(-8000): an 8 MiB page cache per connection (the default is 2 MiB),
 //     sized for a working set of projections and recent events.
-//   - temp_store(2): temporary tables and sort spills stay in memory instead of
-//     hitting the filesystem.
+//   - temp_store(2): temporary tables and sort spills stay in memory.
 //
-// mmap_size is deliberately absent: the pure-Go driver reads through its own VFS,
-// where the pragma buys nothing.
+// mmap_size is omitted: the pure-Go driver reads through its own VFS, where the pragma
+// buys nothing.
 const dsnPragmas = "?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)" +
 	"&_pragma=journal_mode(WAL)&_pragma=synchronous(NORMAL)" +
 	"&_pragma=cache_size(-8000)&_pragma=temp_store(2)"
 
-// WriteTxLock makes every transaction a write handle begins take the write lock at BEGIN
-// (BEGIN IMMEDIATE). A deferred transaction that reads before it writes holds only a
-// read snapshot until its first write, and when another process has committed since
-// that snapshot SQLite refuses the upgrade with SQLITE_BUSY at once, without consulting
-// busy_timeout. Two flynn processes starting on one data directory meet exactly that
-// (the bundled skill seed reads, then writes). Taken at BEGIN, the lock is waited for
-// like any other. The read pool leaves it off: its transactions never write.
+// WriteTxLock makes every transaction on a write handle take the write lock at BEGIN
+// (BEGIN IMMEDIATE). A deferred transaction holds only a read snapshot until its first
+// write, and if another process committed since, SQLite refuses the upgrade with
+// SQLITE_BUSY at once, without consulting busy_timeout. Two flynn processes on one
+// data directory hit this (the bundled skill seed reads, then writes); taken at BEGIN,
+// the lock is waited for. The read pool omits it because it never writes.
 const WriteTxLock = "&_txlock=immediate"
 
-// OpenReadPool opens the read side of an already-open-and-migrated file database:
-// a pool of maxConns connections pinned read-only with query_only, so point reads
-// and sweeps run concurrently with each other and with the single writer (WAL
-// gives one writer plus N readers; a lone connection forgoes the N). It returns
-// (nil, nil) for ":memory:", which lives entirely inside its one write connection
-// and cannot be opened twice; callers fall back to the write handle.
+// OpenReadPool opens the read side of an open, migrated file database: maxConns
+// connections pinned read-only with query_only, so reads run concurrently with each
+// other and with the single writer. It returns (nil, nil) for ":memory:", which lives
+// inside its one write connection; callers fall back to the write handle.
 func OpenReadPool(dsn string, maxConns int) (*sql.DB, error) {
 	if dsn == ":memory:" {
 		return nil, nil
@@ -145,8 +135,8 @@ func OpenReadPool(dsn string, maxConns int) (*sql.DB, error) {
 	return db, nil
 }
 
-// Tx runs fn inside a transaction, committing on success and rolling back on any
-// error, so a failed multi-statement write leaves the database unchanged.
+// Tx runs fn in a transaction, committing on success and rolling back on any error, so
+// a failed multi-statement write leaves the database unchanged.
 func Tx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
@@ -159,28 +149,21 @@ func Tx(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
 	return tx.Commit()
 }
 
-// TimeLayout is the canonical on-disk time format shared by every durable
-// backend: RFC 3339 with the fractional second zero-padded to nine digits.
-//
-// The padding is the whole point. time.RFC3339Nano *strips* trailing zeros, so
-// its output is variable-width and does not compare lexicographically: '.'
-// (0x2E) sorts before 'Z' (0x5A), which puts "2026-01-01T00:00:00Z" *after*
-// "2026-01-01T00:00:00.000000001Z" one nanosecond later than it. A clock
-// reading lands exactly on the second often enough (about one in ten, and far
-// more on a coarse-resolution clock) that every ORDER BY over such a column was
-// wrong for a share of its rows. Padded, the string order is the time order, so
-// SQL can sort and range-filter these columns directly.
-//
-// A stored value is therefore always exactly 30 characters. Migration 0029
-// rewrote the columns written before this layout existed.
+// TimeLayout is the on-disk time format of every durable backend: RFC 3339 with the
+// fractional second zero-padded to nine digits, so a stored value is always 30
+// characters and string order is time order. time.RFC3339Nano strips trailing zeros,
+// and since '.' (0x2E) sorts before 'Z' (0x5A), "2026-01-01T00:00:00Z" would sort
+// after the reading one nanosecond later. About one reading in ten lands on the
+// second, more on a coarse clock, so ORDER BY over unpadded columns was wrong for a
+// share of rows. Migration 0029 rewrote the columns written before this layout.
 const TimeLayout = "2006-01-02T15:04:05.000000000Z07:00"
 
 // FormatTime renders t as UTC in TimeLayout.
 func FormatTime(t time.Time) string { return t.UTC().Format(TimeLayout) }
 
-// ParseTime parses a FormatTime string back to a UTC time, returning the zero
-// time if s is not valid RFC 3339. It reads the pre-0029 unpadded encoding too:
-// RFC3339Nano accepts any number of fractional digits, padding included.
+// ParseTime parses a FormatTime string back to a UTC time, or the zero time if s is
+// not valid RFC 3339. It reads the pre-0029 unpadded encoding too, since RFC3339Nano
+// accepts any number of fractional digits.
 func ParseTime(s string) time.Time {
 	t, err := time.Parse(time.RFC3339Nano, s)
 	if err != nil {

@@ -16,8 +16,8 @@ import (
 // opens.
 const approvalRequestedType = "approval.requested"
 
-// maxIdentifier bounds an identifier a caller supplies (a request id, a client id). They
-// are minted by the host, so the bound is a backstop, not a limit anyone meets.
+// maxIdentifier bounds a caller-supplied identifier (a request id, a client id). The
+// host mints them, so the bound is a backstop no real identifier reaches.
 const maxIdentifier = 128
 
 // Request is an approval request about to be put to a person.
@@ -56,14 +56,11 @@ type Answer struct {
 	Client string
 }
 
-// Request records that an approval request is open, as an approval.requested event
-// attributed to the system. It must be called before the prompt is shown: a client that
-// attaches while a prompt is open learns of it from the stream, and a request that was
-// asked but never written down would be one the record could not account for.
-//
-// The preview is built here from the action, scope and host by [approval.Preview], so it is
-// the same line whoever the writer is. The error is returned for the caller to act on; a
-// caller that cannot record the request should not open the prompt.
+// Request records an open approval request as an approval.requested event attributed
+// to the system. Call it before the prompt is shown, because a client that attaches
+// mid-prompt learns of it from the stream, and a caller that cannot record the request
+// should not open the prompt. The preview comes from [approval.Preview] over the
+// action, scope and host, so it is the same line whoever writes it.
 func (s *ApprovalSink) Request(ctx context.Context, r Request) error {
 	_, err := s.log.Append(ctx, spine.AppendInput{
 		Stream: s.stream,
@@ -82,13 +79,11 @@ func (s *ApprovalSink) Request(ctx context.Context, r Request) error {
 	return err
 }
 
-// Answer records how a request ended, as an approval.decision event that carries an
-// outcome. A reason outside the closed set is refused and nothing is written: the reason
-// is what a reader branches on, and a string a peer could choose must not reach one.
-//
-// The actor follows the reason. An answer at the prompt is a person's and is written as the
-// human; an expiry, a cancellation or a disconnect is the system closing the request, and
-// is written as the system, because no person decided anything.
+// Answer records how a request ended, as an approval.decision event with an outcome. A
+// reason outside the closed set is refused and nothing is written, because readers
+// branch on the reason and a peer must not choose it. An answer at the prompt is
+// written as the human; an expiry, cancellation or disconnect is written as the
+// system, because no person decided.
 func (s *ApprovalSink) Answer(ctx context.Context, a Answer) error {
 	if !a.Reason.Valid() {
 		return fmt.Errorf("spinesink: %q is not a resolution reason", string(a.Reason))

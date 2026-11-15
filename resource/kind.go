@@ -7,20 +7,17 @@ import (
 	"sync"
 )
 
-// CoreGroupVersion is the API group/version for the foundation's own built-in
-// kinds. Domains define their own groups (e.g. skill.ionagent.io/v1); the
-// `.ionagent.io` suffix marks every kind unmistakably as ours, never a Kubernetes
-// built-in.
+// CoreGroupVersion is the API group/version of the built-in kinds. Domains define
+// their own groups (skill.ionagent.io/v1); the .ionagent.io suffix keeps every kind
+// distinct from a Kubernetes built-in.
 const CoreGroupVersion = "core.ionagent.io/v1alpha1"
 
-// KindKind is the name of the kind that describes kinds. A Kind is itself stored
-// as a Resource of this kind, which is what makes the type system data the agent
-// can author and validate at runtime (meta-circular self-extension).
+// KindKind is the kind that describes kinds. A Kind is stored as a Resource of this
+// kind, so the agent can author and validate types at runtime.
 const KindKind = "Kind"
 
-// Kind describes a resource kind: the API group/version its resources carry, the
-// kind name, and the JSON Schema their Spec must satisfy (admission). A nil Schema
-// means specs are unconstrained.
+// Kind describes a resource kind: its group/version, name and the JSON Schema its
+// Spec must satisfy at admission. A nil Schema leaves specs unconstrained.
 type Kind struct {
 	APIVersion string          // group/version of resources of this kind, e.g. "skill.ionagent.io/v1"
 	Name       string          // e.g. "Skill"
@@ -31,10 +28,9 @@ type Kind struct {
 
 func kindKey(apiVersion, name string) string { return apiVersion + "/" + name }
 
-// Registry holds the registered kinds and validates resources against them. It is
-// safe for concurrent use, and is the admission control point: a resource of an
-// unregistered kind, or one whose Spec fails its kind's schema, is rejected before
-// it is ever stored.
+// Registry holds the registered kinds and is the admission point: a resource of an
+// unregistered kind, or whose Spec fails its schema, is rejected before it is
+// stored. It is safe for concurrent use.
 type Registry struct {
 	compiler SchemaCompiler
 	mu       sync.RWMutex
@@ -49,8 +45,8 @@ type registeredKind struct {
 // RegistryOption configures a Registry.
 type RegistryOption func(*Registry)
 
-// WithSchemaCompiler overrides the schema compiler (default: the built-in,
-// dependency-free subset compiler). A host can inject a full JSON Schema engine.
+// WithSchemaCompiler replaces the built-in subset compiler, so a host can inject a
+// full JSON Schema engine.
 func WithSchemaCompiler(c SchemaCompiler) RegistryOption {
 	return func(r *Registry) {
 		if c != nil {
@@ -59,8 +55,7 @@ func WithSchemaCompiler(c SchemaCompiler) RegistryOption {
 	}
 }
 
-// NewRegistry returns an empty registry using the built-in schema compiler unless
-// one is injected.
+// NewRegistry returns an empty registry.
 func NewRegistry(opts ...RegistryOption) *Registry {
 	r := &Registry{compiler: newBuiltinCompiler(), kinds: map[string]registeredKind{}}
 	for _, o := range opts {
@@ -69,8 +64,8 @@ func NewRegistry(opts ...RegistryOption) *Registry {
 	return r
 }
 
-// Register adds (or replaces) a kind, compiling its JSON Schema up front so an
-// invalid schema is rejected at registration rather than at first write.
+// Register adds or replaces a kind, compiling its schema now so an invalid schema
+// fails at registration rather than at first write.
 func (r *Registry) Register(k Kind) error {
 	if k.APIVersion == "" || k.Name == "" {
 		return fmt.Errorf("%w: kind requires APIVersion and Name", ErrInvalid)
@@ -97,8 +92,7 @@ func (r *Registry) Lookup(apiVersion, name string) (Kind, bool) {
 	return rk.kind, ok
 }
 
-// Kinds returns every registered kind, ordered by group/version then name, for
-// introspection ("what can this agent represent?").
+// Kinds returns every registered kind, ordered by group/version then name.
 func (r *Registry) Kinds() []Kind {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -115,9 +109,8 @@ func (r *Registry) Kinds() []Kind {
 	return out
 }
 
-// Validate is admission: the kind must be registered, and spec must satisfy its
-// JSON Schema (if the kind declares one). Returns an ErrInvalid-wrapped error
-// otherwise.
+// Validate admits spec: the kind must be registered and spec must satisfy its
+// schema, or the error wraps ErrInvalid.
 func (r *Registry) Validate(apiVersion, kind string, spec []byte) error {
 	r.mu.RLock()
 	rk, ok := r.kinds[kindKey(apiVersion, kind)]
@@ -138,9 +131,8 @@ func (r *Registry) Validate(apiVersion, kind string, spec []byte) error {
 	return nil
 }
 
-// decodeInstance decodes raw JSON to a generic value for validation. Empty input
-// is treated as an empty object, so a schema with no required fields admits an
-// empty spec.
+// decodeInstance decodes raw JSON for validation. Empty input is an empty object,
+// so a schema with no required fields admits an empty spec.
 func decodeInstance(b []byte) (any, error) {
 	if len(b) == 0 {
 		return map[string]any{}, nil

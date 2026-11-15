@@ -8,13 +8,13 @@ import (
 	"github.com/ionalpha/flynn/resource"
 )
 
-// probeSeed pins decoding for every probe so a measurement is reproducible on a runtime that
-// honors the seed. Greedy decoding (temperature zero) removes sampling noise from the score.
+// probeSeed pins decoding for every probe so a measurement reproduces on a runtime that
+// honors the seed. Temperature zero removes sampling noise from the score.
 var probeSeed = &llm.Sampling{Seed: 1, Temperature: 0}
 
-// probe is one reproducible challenge: a request to send and a grader that decides whether the
-// response passed. The grader is the full definition of the capability under test, so a probe is
-// self-contained and the scorer stays generic.
+// probe is one reproducible challenge: a request and a grader that decides whether the
+// response passed. The grader fully defines the capability under test, so the scorer
+// stays generic.
 type probe struct {
 	name  string
 	dim   dimension
@@ -22,9 +22,8 @@ type probe struct {
 	grade func(llm.Response) bool
 }
 
-// Tool schemas used by the battery. They are deliberately small and ordinary, the shape an agent
-// meets constantly, since the point is to measure dependability on routine calls, not to trip the
-// model with exotic schemas.
+// Tool schemas used by the battery. They are small and ordinary, like those an agent
+// meets on routine calls, because the battery measures dependability on those.
 var (
 	weatherTool = llm.Tool{
 		Name:        "get_weather",
@@ -43,7 +42,6 @@ var (
 	}
 )
 
-// ask builds a single-user-turn request offering the given tools, with decoding pinned.
 func ask(prompt string, tools ...llm.Tool) llm.Request {
 	return llm.Request{
 		Messages: []llm.Message{llm.Text(llm.RoleUser, prompt)},
@@ -52,10 +50,9 @@ func ask(prompt string, tools ...llm.Tool) llm.Request {
 	}
 }
 
-// battery is the fixed probe set. It is intentionally a pure function returning a fresh slice so
-// the set is immutable and a caller cannot accumulate state between runs. The mix covers the
-// three dimensions with several probes each, so a score is a fraction rather than a single
-// pass/fail.
+// battery is the fixed probe set. It returns a fresh slice so a caller cannot carry
+// state between runs. Each of the three dimensions has several probes, so a score is
+// a fraction.
 func battery() []probe {
 	return []probe{
 		// Tool-call: a clear need for a specific tool should produce a well-formed call to it.
@@ -72,8 +69,8 @@ func battery() []probe {
 			func(r llm.Response) bool { return callsTool(r, "create_event") },
 		},
 
-		// Structured output: when a call is emitted, its arguments must validate against the
-		// schema, the failure that burns agent turns invisibly under quantization.
+		// Structured output: an emitted call's arguments must validate against the
+		// schema. Quantization breaks this, and the agent loses turns to it.
 		{
 			"weather_args", dimStructured, ask("What is the weather in Berlin?", weatherTool),
 			gradeSchema("get_weather", weatherTool.InputSchema),
@@ -87,8 +84,8 @@ func battery() []probe {
 			gradeSchema("create_event", eventTool.InputSchema),
 		},
 
-		// Instruction-following: direct, checkable constraints, including the discipline of NOT
-		// calling a tool when told to answer directly.
+		// Instruction-following: direct, checkable constraints, including answering
+		// directly without a tool when told to.
 		{
 			"exact_word", dimInstruction, ask("Reply with exactly the single word READY and nothing else."),
 			func(r llm.Response) bool {
@@ -111,10 +108,8 @@ func battery() []probe {
 	}
 }
 
-// callsTool reports whether the response is a well-formed request to call the named tool: the
-// turn ended for tool use, and it carries a tool call of that name whose input is parseable JSON.
-// A malformed call (wrong tool, no call, or unparseable arguments) fails, which is precisely the
-// reliability the probe measures.
+// callsTool reports whether the response is a well-formed call to the named tool: the
+// turn ended for tool use with a call of that name whose input is parseable JSON.
 func callsTool(r llm.Response, name string) bool {
 	if r.StopReason != llm.StopToolUse {
 		return false
@@ -127,10 +122,10 @@ func callsTool(r llm.Response, name string) bool {
 	return false
 }
 
-// gradeSchema builds a grader that passes when the response calls the named tool with arguments
-// that validate against schema. It compiles the schema once with the same engine the resource
-// store uses, so adherence is judged consistently with the rest of the system. A response that
-// emits no matching call fails, since absent arguments cannot be schema-valid.
+// gradeSchema builds a grader that passes when the response calls the named tool with
+// arguments valid against schema. It compiles the schema once with the resource
+// store's engine, so adherence is judged as elsewhere in the system. No matching call
+// fails, since absent arguments cannot be schema-valid.
 func gradeSchema(name string, schema json.RawMessage) func(llm.Response) bool {
 	validator, err := resource.NewSchemaCompiler().Compile(schema)
 	return func(r llm.Response) bool {

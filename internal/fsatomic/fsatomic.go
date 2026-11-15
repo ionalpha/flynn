@@ -1,8 +1,7 @@
-// Package fsatomic writes files so a reader never observes a partial file and a
-// crash cannot lose the previous contents: write to a sibling temp file, fsync it,
-// rename over the destination, then fsync the directory so the rename itself is
-// durable. The rename-only idiom used before this package left a window where the
-// data sat in the page cache with no durability at all.
+// Package fsatomic writes files so a reader never sees a partial file and a crash
+// cannot lose the previous contents: write a sibling temp file, fsync it, rename it
+// over the destination, then fsync the directory so the rename is durable. A rename
+// without the fsyncs leaves the data in the page cache, lost on a crash.
 package fsatomic
 
 import (
@@ -11,10 +10,10 @@ import (
 	"path/filepath"
 )
 
-// tempFile is the part of *os.File the write path drives. Keeping it an interface is what
-// allows an individual step to fail at all (a disk that fills on write, a handle lost before
-// the sync); a real filesystem will not fail those on demand, and the previous contents have
-// to survive every one of them. Production always gets a real *os.File.
+// tempFile is the part of *os.File the write path drives. It is an interface so a
+// test can fail each step (a full disk on write, a handle lost before the sync),
+// which a real filesystem will not do on demand; the previous contents must
+// survive every one. Production always gets a real *os.File.
 type tempFile interface {
 	Name() string
 	Write(p []byte) (int, error)
@@ -23,16 +22,16 @@ type tempFile interface {
 	Close() error
 }
 
-// createTemp opens the sibling temp file the write goes through. It stays a package-level
-// variable because a failing write, chmod, sync or close cannot be provoked through a real
-// filesystem, and each of those failures has to leave the destination untouched.
+// createTemp opens the sibling temp file. It is a package variable because a failing
+// write, chmod, sync or close cannot be provoked on a real filesystem, and each must
+// leave the destination untouched.
 var createTemp = func(dir, pattern string) (tempFile, error) { return os.CreateTemp(dir, pattern) }
 
-// WriteFile atomically replaces path with data at the given permissions. The temp
-// file is created in the destination directory (rename is only atomic within one
-// filesystem) with owner-only access, then chmodded to perm before the rename, so
-// the final mode never appears with looser intermediate access. On any failure the
-// temp file is removed and the previous contents of path are untouched.
+// WriteFile atomically replaces path with data at perm. The temp file is created in
+// the destination directory, because rename is atomic only within one filesystem,
+// with owner-only access, then chmodded to perm before the rename, so the file never
+// appears with looser access. On failure the temp file is removed and path keeps its
+// previous contents.
 func WriteFile(path string, data []byte, perm os.FileMode) error {
 	return WriteStream(path, perm, func(w io.Writer) error {
 		_, err := w.Write(data)
@@ -40,12 +39,10 @@ func WriteFile(path string, data []byte, perm os.FileMode) error {
 	})
 }
 
-// WriteStream is WriteFile for content that is produced rather than held: fn writes
-// the new contents into the temp file, and the same durability sequence commits them.
-// A profile dump or an encoder streams megabytes it should not first assemble in
-// memory, and buffering that up only to hand WriteFile a byte slice is the reason
-// such a caller hand-rolls the sequence instead. An error from fn abandons the write
-// and is returned unwrapped, so the caller's own error vocabulary survives.
+// WriteStream is WriteFile for produced content: fn writes into the temp file and
+// the same sequence commits it, so a caller streaming megabytes (a profile dump, an
+// encoder) need not buffer them first. An error from fn abandons the write and is
+// returned unwrapped, so the caller's error vocabulary survives.
 func WriteStream(path string, perm os.FileMode, fn func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	tmp, err := createTemp(dir, filepath.Base(path)+".tmp-*")

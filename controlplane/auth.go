@@ -1,14 +1,3 @@
-// Package controlplane is the authenticated API surface over the agent's resource
-// store: the one boundary the CLI, the web dashboard, and remote peers read and act
-// through. This file is the authentication and authorization model; server.go
-// serves the read/watch API over it.
-//
-// The model is scope-based and identity-first: every request resolves to a
-// Principal carrying a Scope, and a handler requires a minimum scope. Local,
-// single-operator use authenticates with a bearer token; cross-instance delegated
-// authority (public-key, attenuable capability tokens) is a later layer that plugs
-// in behind the same Authenticator boundary, so the write and remote paths inherit
-// authentication that already exists.
 package controlplane
 
 import (
@@ -20,8 +9,8 @@ import (
 	"github.com/ionalpha/flynn/capability"
 )
 
-// Scope is the access level behind a request. Scopes are ordered: Admin contains
-// Operator contains Read. A handler states the minimum it requires.
+// Scope is the access level behind a request, ordered Read < Operator < Admin. A
+// handler states the minimum it requires.
 //
 //flynn:policy
 type Scope int
@@ -37,13 +26,10 @@ const (
 	ScopeAdmin
 )
 
-// Allows reports whether this scope satisfies the required minimum. Because scopes
-// are ordered, a higher scope satisfies a lower requirement.
-//
-// Both sides must be a scope this package defines. A bare comparison would admit a
-// principal whose scope is above [ScopeAdmin] (a corrupt token table, or a scope from a
-// newer build) to every route, and a requirement below [ScopeNone] would admit everyone,
-// so a value outside the scale answers false on either side.
+// Allows reports whether s meets the required minimum. A value outside the defined
+// scale answers false on either side, so a corrupt or newer-build scope above
+// [ScopeAdmin] cannot pass every route and a requirement below [ScopeNone] cannot
+// admit everyone.
 func (s Scope) Allows(required Scope) bool {
 	return s.defined() && required.defined() && s >= required
 }
@@ -65,19 +51,12 @@ func (s Scope) String() string {
 	}
 }
 
-// Principal is the authenticated identity behind a request, with the authority it
-// carries. It is recorded with every action so the audit trail attributes who did
-// what.
-//
-// Authority is two-axis. Scope is the coarse access level (read/operator/admin) a
-// handler requires. Grant is the fine-grained action authority the principal holds:
-// a local operator token carries capability.AllowAll (scope is its only limit),
-// while a delegated principal carries the verified, monotonically attenuated Grant
-// its capability token proved. The action gate at the dispatch waist intersects
-// this Grant with the target's own local grant, so a narrowed remote grant can
-// never act beyond what the target would do locally. The zero Grant denies every
-// action; an empty principal (an unauthenticated attempt) therefore carries no
-// authority by construction.
+// Principal is the authenticated identity behind a request, recorded with every
+// action for audit. Scope is the coarse access level a handler requires. Grant is the
+// action authority: capability.AllowAll for a local operator token, or the attenuated
+// Grant a delegated token proved. The action gate intersects Grant with the target's
+// local grant. The zero Grant denies everything, so an unauthenticated Principal has
+// no authority.
 type Principal struct {
 	ID    string
 	Scope Scope
@@ -95,23 +74,18 @@ type Authenticator interface {
 // ErrUnauthenticated means no valid credential was presented.
 var ErrUnauthenticated = errors.New("controlplane: unauthenticated")
 
-// DenyAll is an authenticator that refuses every request. It is the fail-closed
-// default: a server constructed without an explicit authenticator gets this, so a
-// forgotten or misconfigured auth setup locks the door rather than serving openly.
-// An unauthenticated API surface is therefore not representable: there is no "no auth"
-// mode, only "deny everything" or a real authenticator.
+// DenyAll refuses every request. A server built without an authenticator gets it, so
+// a forgotten auth setup locks the API instead of serving it openly; there is no
+// unauthenticated mode.
 type DenyAll struct{}
 
 // Authenticate always refuses.
 func (DenyAll) Authenticate(*http.Request) (Principal, error) { return Principal{}, ErrUnauthenticated }
 
-// GeneratedOperator mints a fresh, cryptographically-random bearer token and returns
-// an authenticator that accepts exactly that token as a single operator-scoped
-// principal, along with the token so the caller can present it to the operator once.
-// It is the auth-on-by-default path: bringing up the API with no operator-supplied
-// credential yields a secured-by-default endpoint with zero configuration, so there is
-// never a reason to fall back to an open one. The provided mint is the entropy source
-// (ids.Token in production); a test can inject a deterministic one.
+// GeneratedOperator mints a random bearer token and returns an authenticator that
+// accepts only it, as one principal with the given scope, plus the token to show the
+// operator once. The API can then start secured with no configuration. mint is the
+// entropy source (ids.Token in production).
 func GeneratedOperator(id string, scope Scope, mint func() (string, error)) (*TokenAuthenticator, string, error) {
 	tok, err := mint()
 	if err != nil {
@@ -120,10 +94,8 @@ func GeneratedOperator(id string, scope Scope, mint func() (string, error)) (*To
 	if tok == "" {
 		return nil, "", errors.New("controlplane: refusing an empty generated token")
 	}
-	// A local operator token is not grant-attenuated: it carries full action
-	// authority and is bounded only by its scope. AllowAll is the explicit
-	// "trusted local principal" policy, distinct from the zero Grant (deny-all),
-	// so the action gate reduces to the target's own local grant for this caller.
+	// A local operator token is bounded only by its scope, so it carries AllowAll and the
+	// action gate reduces to the instance's local grant.
 	return NewTokenAuthenticator(map[string]Principal{tok: {ID: id, Scope: scope, Grant: capability.AllowAll()}}), tok, nil
 }
 
